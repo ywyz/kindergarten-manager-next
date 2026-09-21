@@ -44,7 +44,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES, DROP ON 
   TO 'kg_test_ddl'@'127.0.0.1';
 ```
 
-> 注意：本段所有创建数据库、账号、授权、迁移与测试命令均尚未执行，必须根据你的环境另行授权和确认。
+> 注意：本段为破坏性命令模板，执行前必须根据你的环境另行授权和确认，且只允许在专门创建的隔离测试库执行。2026-09-21 已在独立容器中按此流程完成一次授权验证，实际环境与结果见 `../docs/bootstrap/i1-mysql-validation.md`（该验证使用独立容器、专用端口与卷，凭据未写入仓库）。
 
 最小权限说明：
 - 生产或日常运行账号仅需要目标库的 `SELECT/INSERT/UPDATE/DELETE`；本文档中的 `kg_test_i1`/`kg_test_ddl` 是隔离测试专用账号，不得用于生产。
@@ -109,7 +109,7 @@ cd backend
 .venv/bin/python -m unittest discover -s tests/integration -v
 ```
 
-**本次未执行集成测试**，因为没有已授权并准备好的隔离 MySQL 8.4 测试库。不得以 SQLite 或 mock 替代 MySQL 并发验证。
+集成测试已于 2026-09-21 在已授权的独立 MySQL 8.4.11 / InnoDB 隔离环境执行通过（24/24），实际环境、账号权限、测试结果与故障注入方式见 `../docs/bootstrap/i1-mysql-validation.md`。不得以 SQLite 或 mock 替代 MySQL 并发验证；验证中 mock 仅用于故障调度与 CLI 输入，数据库始终为真实 MySQL。
 
 ## 限流与并发说明
 

@@ -12,12 +12,14 @@ Set both environment variables before running:
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
 import threading
 import unittest
 import unittest.mock
+from datetime import timedelta
 from io import StringIO
 from urllib.parse import urlsplit
 
@@ -32,7 +34,6 @@ _integration_enabled = (
 if _integration_enabled:
     os.environ["DATABASE_URL"] = _test_database_url
 
-import sqlalchemy as sa
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
@@ -50,6 +51,47 @@ _ORIGIN = "http://localhost:5173"
 
 def _json_body(obj: dict) -> bytes:
     return json.dumps(obj, ensure_ascii=False).encode("utf-8")
+
+
+# Captured once: when record_operation is patched with the helper below, the
+# global lookup in auth_service is already patched, so the helper must close
+# over the genuine implementation explicitly.
+_ORIGINAL_RECORD_OPERATION = auth_service.record_operation
+
+
+def _fail_with_real_mysql_error(
+    db,
+    *,
+    operator_id,
+    operator_type,
+    action,
+    target_account_id,
+    account_version_after,
+):
+    """Fault injection scheduled at the audit-write point of a transaction.
+
+    Step 1 calls the genuine record_operation so the real audit row is added
+    to the open transaction, then db.flush() sends every pending write to the
+    database: account rows, the first-admin control row, session revocation
+    UPDATEs and this audit record are all written inside the transaction.
+
+    Step 2 executes SQL against a table that does not exist, which makes the
+    real MySQL server reject the statement (error 1146). The caller rolls the
+    whole transaction back, proving all previously flushed writes are undone.
+
+    The database is the real authorized MySQL/InnoDB instance; mocks are used
+    only to schedule the failure (and to feed CLI input).
+    """
+    _ORIGINAL_RECORD_OPERATION(
+        db,
+        operator_id=operator_id,
+        operator_type=operator_type,
+        action=action,
+        target_account_id=target_account_id,
+        account_version_after=account_version_after,
+    )
+    db.flush()
+    db.execute(text("INSERT INTO kg_i1_injected_missing_table (id) VALUES ('x')"))
 
 
 class AsgiResponse:
@@ -418,15 +460,45 @@ class IdentityIntegrationTests(unittest.TestCase):
         self.assertEqual(errors[0], 409)
 
     def test_failed_registration_does_not_consume_first_admin(self):
-        self._admin_client()
-        resp = self._register("teacher1", "teacher-password-1")
-        self.assertEqual(resp.status, 201)
-        resp = self._register("teacher1", "different-password-1")
+        # First transaction: the account, first-admin control row and audit
+        # record are all genuinely flushed to MySQL inside the transaction,
+        # then a real MySQL statement error (missing table) forces the server
+        # to reject the statement and the app rolls every flushed row back.
+        with unittest.mock.patch.object(
+            auth_service, "record_operation", _fail_with_real_mysql_error
+        ):
+            resp = self._register("first", "first-password-123")
+        self.assertEqual(resp.status, 503, resp.body)
+
+        with self.Session() as db:
+            control = db.get(FirstAdminControl, "singleton")
+            self.assertFalse(control.claimed)
+            self.assertIsNone(control.first_admin_id)
+            self.assertEqual(db.query(Account).count(), 0)
+            self.assertEqual(db.query(OperationRecord).count(), 0)
+
+        # The failed first transaction must not consume the first-admin claim:
+        # a subsequent registration still becomes the administrator.
+        resp = self._register("first", "first-password-123")
+        self.assertEqual(resp.status, 201, resp.body)
+        self.assertEqual(resp.json()["account"]["role"], "admin")
+
+        with self.Session() as db:
+            control = db.get(FirstAdminControl, "singleton")
+            self.assertTrue(control.claimed)
+            self.assertEqual(control.first_admin_id, resp.json()["account"]["id"])
+
+        # A later duplicate username still fails and changes nothing.
+        resp = self._register("first", "different-password-1")
         self.assertEqual(resp.status, 409)
         self.assertEqual(resp.json()["error"]["code"], "USERNAME_TAKEN")
-        resp = self._register("teacher2", "teacher-password-2")
-        self.assertEqual(resp.status, 201)
-        self.assertEqual(resp.json()["account"]["role"], "teacher")
+        first_row = self._account_row("first")
+        with self.Session() as db:
+            self.assertEqual(db.query(Account).count(), 1)
+            self.assertEqual(
+                db.get(FirstAdminControl, "singleton").first_admin_id,
+                first_row.id,
+            )
 
     def test_login_me_logout_lifecycle(self):
         self._create_teacher("teacher1", "teacher-password-1")
@@ -541,6 +613,8 @@ class IdentityIntegrationTests(unittest.TestCase):
         self.assertTrue(resp.json()["sessions_revoked"])
 
         self.assertEqual(teacher.request("GET", "/api/auth/me").status, 401)
+        # Resetting another account must not revoke the operator's session.
+        self.assertEqual(admin.request("GET", "/api/auth/me").status, 200)
 
         new_client = AsgiClient()
         self.assertEqual(
@@ -593,13 +667,9 @@ class IdentityIntegrationTests(unittest.TestCase):
         self._login(teacher, "teacher1", "teacher-password-1")
         before = self._snapshot_account("teacher1")
 
-        original_record = auth_service.record_operation
-
-        def failing_record(*args, **kwargs):
-            original_record(*args, **kwargs)
-            raise sa.exc.OperationalError("simulated flush failure", params=None, orig=None)
-
-        with unittest.mock.patch.object(auth_service, "record_operation", failing_record):
+        with unittest.mock.patch.object(
+            auth_service, "record_operation", _fail_with_real_mysql_error
+        ):
             resp = teacher.request(
                 "POST",
                 "/api/settings/password",
@@ -611,7 +681,9 @@ class IdentityIntegrationTests(unittest.TestCase):
                     }
                 ),
             )
-        self.assertEqual(resp.status, 503)
+        # The response is driven by a genuine MySQL 1146 error from the real
+        # database, not by an exception fabricated inside the test.
+        self.assertEqual(resp.status, 503, resp.body)
 
         after = self._snapshot_account("teacher1")
         self.assertEqual(after["password_hash"], before["password_hash"])
@@ -723,6 +795,356 @@ class IdentityIntegrationTests(unittest.TestCase):
                 auth_service.security.verify_password("teacher-password-1", row.password_hash)
             )
 
+    def test_normalized_username_collision_and_login(self):
+        resp = self._register("Teacher.A", "teacher-password-1")
+        self.assertEqual(resp.status, 201)
+        self.assertEqual(resp.json()["account"]["username"], "teacher.a")
+
+        # Different case and surrounding whitespace normalize to the same name.
+        for variant in ("  Teacher.A  ", "TEACHER.A", "\tteacher.a\n"):
+            resp = self._register(variant, "another-password-1")
+            self.assertEqual(resp.status, 409, resp.body)
+            self.assertEqual(resp.json()["error"]["code"], "USERNAME_TAKEN")
+
+        # Login applies the exact same normalization rules.
+        client = AsgiClient()
+        self.assertEqual(
+            self._login(client, "  TEACHER.A ", "teacher-password-1").status,
+            200,
+        )
+        self.assertEqual(client.request("GET", "/api/auth/me").status, 200)
+
+    def test_disabled_account_login_rejected_and_sessions_dead(self):
+        self._create_teacher("teacher1", "teacher-password-1")
+        client = AsgiClient()
+        self.assertEqual(
+            self._login(client, "teacher1", "teacher-password-1").status, 200
+        )
+
+        with self.Session() as db:
+            row = db.query(Account).filter(Account.username == "teacher1").one()
+            row.is_active = False
+            db.commit()
+
+        # Existing session stops working immediately.
+        self.assertEqual(client.request("GET", "/api/auth/me").status, 401)
+        # Disabled login is indistinguishable from bad credentials.
+        other = AsgiClient()
+        resp = self._login(other, "teacher1", "teacher-password-1")
+        self.assertEqual(resp.status, 401)
+        self.assertEqual(resp.json()["error"]["code"], "INVALID_CREDENTIALS")
+
+    def test_expired_session_is_rejected(self):
+        self._create_teacher("teacher1", "teacher-password-1")
+        client = AsgiClient()
+        resp = self._login(client, "teacher1", "teacher-password-1")
+        self.assertEqual(resp.status, 200)
+        raw_token = client.cookies["session"]
+
+        with self.Session() as db:
+            session = db.scalar(
+                select(AccountSession)
+                .where(
+                    AccountSession.token_hash
+                    == hashlib.sha256(raw_token.encode("ascii")).hexdigest()
+                )
+            )
+            self.assertIsNotNone(session)
+            session.expires_at = auth_service.utc_now() - timedelta(seconds=1)
+            db.commit()
+
+        self.assertEqual(client.request("GET", "/api/auth/me").status, 401)
+
+        # Re-login mints a fresh valid session.
+        new_client = AsgiClient()
+        self.assertEqual(
+            self._login(new_client, "teacher1", "teacher-password-1").status, 200
+        )
+        self.assertEqual(
+            new_client.request("GET", "/api/auth/me").status, 200
+        )
+
+    def test_admin_reset_failure_rolls_back_everything(self):
+        self._admin_client()
+        teacher = self._create_teacher("teacher1", "teacher-password-1")
+        account = self._account_row("teacher1")
+        before = self._snapshot_account("teacher1")
+
+        with unittest.mock.patch.object(
+            auth_service, "record_operation", _fail_with_real_mysql_error
+        ):
+            resp = self._admin_client().request(
+                "POST",
+                f"/api/admin/teachers/{account.id}/password-reset",
+                body=_json_body(
+                    {"new_password": "reset-password-1", "expected_version": 1}
+                ),
+            )
+        self.assertEqual(resp.status, 503, resp.body)
+
+        after = self._snapshot_account("teacher1")
+        self.assertEqual(after["password_hash"], before["password_hash"])
+        self.assertEqual(after["version"], before["version"])
+        self.assertEqual(after["auth_version"], before["auth_version"])
+        self.assertEqual(after["revoked_sessions"], before["revoked_sessions"])
+        self.assertEqual(after["audit_actions"], before["audit_actions"])
+
+        # Old session and old password still work; new password does not.
+        self.assertEqual(teacher.request("GET", "/api/auth/me").status, 200)
+        bad = AsgiClient()
+        self.assertEqual(
+            self._login(bad, "teacher1", "reset-password-1").status, 401
+        )
+
+    def test_cli_reset_failure_rolls_back_everything(self):
+        admin = self._create_admin("cliadmin", "cli-admin-pass-1")
+        self._login(admin, "cliadmin", "cli-admin-pass-1")
+        before = self._snapshot_account("cliadmin")
+
+        stderr_buf = StringIO()
+        with (
+            unittest.mock.patch("sys.stdin.isatty", return_value=True),
+            unittest.mock.patch(
+                "app.cli.getpass.getpass",
+                side_effect=["cli-new-password-123", "cli-new-password-123"],
+            ),
+            unittest.mock.patch("builtins.input", return_value="y"),
+            unittest.mock.patch("sys.stderr", stderr_buf),
+            unittest.mock.patch.object(
+                auth_service, "record_operation", _fail_with_real_mysql_error
+            ),
+        ):
+            from app import cli
+
+            with self.assertRaises(SystemExit) as cm:
+                cli._reset_admin_password("cliadmin")
+        self.assertEqual(cm.exception.code, 1)
+
+        after = self._snapshot_account("cliadmin")
+        self.assertEqual(after["password_hash"], before["password_hash"])
+        self.assertEqual(after["version"], before["version"])
+        self.assertEqual(after["auth_version"], before["auth_version"])
+        self.assertEqual(after["revoked_sessions"], before["revoked_sessions"])
+        self.assertEqual(after["audit_actions"], before["audit_actions"])
+
+        with self.Session() as db:
+            active = (
+                db.query(AccountSession)
+                .filter(
+                    AccountSession.account_id == self._account_row("cliadmin").id,
+                    AccountSession.revoked_at.is_(None),
+                )
+                .count()
+            )
+            self.assertEqual(active, 1)
+        # Old password still works; new password does not.
+        old = AsgiClient()
+        self.assertEqual(
+            self._login(old, "cliadmin", "cli-admin-pass-1").status, 200
+        )
+        new = AsgiClient()
+        self.assertEqual(
+            self._login(new, "cliadmin", "cli-new-password-123").status, 401
+        )
+
+    def test_persistence_contains_no_raw_secrets(self):
+        admin_pw = "admin-password-12345"
+        resp = self._register("admin1", admin_pw)
+        self.assertEqual(resp.status, 201, resp.body)
+        self.assertEqual(resp.json()["account"]["role"], "admin")
+        admin_client = AsgiClient()
+        resp = self._login(admin_client, "admin1", admin_pw)
+        self.assertEqual(resp.status, 200, resp.body)
+        # Raw session tokens captured only as local test variables so the
+        # test can prove they never appear in any persisted column. They are
+        # never printed.
+        admin_raw_token = admin_client.cookies["session"]
+
+        teacher_pw = "teacher-password-12345"
+        resp = self._register("teacher1", teacher_pw)
+        self.assertEqual(resp.status, 201, resp.body)
+        self.assertEqual(resp.json()["account"]["role"], "teacher")
+        teacher = AsgiClient()
+        resp = self._login(teacher, "teacher1", teacher_pw)
+        self.assertEqual(resp.status, 200, resp.body)
+        teacher_raw_token = teacher.cookies["session"]
+
+        # Real password hashes as persisted by the accounts table. Capturing
+        # them before and after every password mutation covers every hash the
+        # accounts ever held; none of these hashes may appear in audit rows.
+        hashes_initial = {
+            self._account_row("admin1").password_hash,
+            self._account_row("teacher1").password_hash,
+        }
+
+        # Update every audited action type so masking is checked for all rows.
+        resp = teacher.request(
+            "PATCH",
+            "/api/settings/profile",
+            body=_json_body({"display_name": "王老师", "expected_version": 1}),
+        )
+        self.assertEqual(resp.status, 200, resp.body)
+
+        resp = teacher.request(
+            "POST",
+            "/api/settings/password",
+            body=_json_body(
+                {
+                    "current_password": teacher_pw,
+                    "new_password": "teacher-new-pass-1",
+                    "expected_version": 2,
+                }
+            ),
+        )
+        self.assertEqual(resp.status, 204, resp.body)
+        hashes_after_self_change = {self._account_row("teacher1").password_hash}
+
+        account = self._account_row("teacher1")
+        resp = admin_client.request(
+            "POST",
+            f"/api/admin/teachers/{account.id}/password-reset",
+            body=_json_body(
+                {"new_password": "teacher-reset-pass-1", "expected_version": 3}
+            ),
+        )
+        self.assertEqual(resp.status, 200, resp.body)
+
+        with (
+            unittest.mock.patch("sys.stdin.isatty", return_value=True),
+            unittest.mock.patch(
+                "app.cli.getpass.getpass",
+                side_effect=["admin-new-pass-123", "admin-new-pass-123"],
+            ),
+            unittest.mock.patch("builtins.input", return_value="y"),
+        ):
+            from app import cli
+
+            cli._reset_admin_password("admin1")
+
+        hashes_final = {
+            self._account_row("admin1").password_hash,
+            self._account_row("teacher1").password_hash,
+        }
+        forbidden_password_hashes = (
+            hashes_initial | hashes_after_self_change | hashes_final
+        )
+
+        # Raw secrets: every plaintext password and every original session
+        # token minted during the test.
+        raw_secrets = [
+            admin_pw,
+            "admin-new-pass-123",
+            teacher_pw,
+            "teacher-new-pass-1",
+            "teacher-reset-pass-1",
+            admin_raw_token,
+            teacher_raw_token,
+        ]
+
+        # Physical columns of the audit and session tables.
+        def columns(table_name: str) -> set[str]:
+            with self.engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = DATABASE() AND table_name = :t"
+                    ),
+                    {"t": table_name},
+                ).fetchall()
+            return {r[0] for r in rows}
+
+        record_columns = columns("operation_records")
+        self.assertEqual(
+            record_columns,
+            {
+                "id",
+                "created_at",
+                "operator_id",
+                "operator_type",
+                "action",
+                "target_account_id",
+                "account_version_after",
+            },
+        )
+        session_columns = columns("sessions")
+        self.assertEqual(
+            session_columns,
+            {
+                "id",
+                "token_hash",
+                "account_id",
+                "auth_version",
+                "created_at",
+                "expires_at",
+                "revoked_at",
+            },
+        )
+
+        # Serialize EVERY physical column of both tables straight from the
+        # database and assert no raw password, no original session token and
+        # no account password hash leaks into either table.
+        with self.engine.connect() as conn:
+            records_blob = json.dumps(
+                [
+                    dict(row._mapping)
+                    for row in conn.execute(text("SELECT * FROM operation_records"))
+                ],
+                default=str,
+                ensure_ascii=False,
+            )
+            sessions_blob = json.dumps(
+                [
+                    dict(row._mapping)
+                    for row in conn.execute(text("SELECT * FROM sessions"))
+                ],
+                default=str,
+                ensure_ascii=False,
+            )
+        for blob in (records_blob, sessions_blob):
+            for secret in raw_secrets:
+                self.assertNotIn(secret, blob)
+        for password_hash in forbidden_password_hashes:
+            self.assertNotIn(password_hash, records_blob)
+
+        with self.Session() as db:
+            records = db.query(OperationRecord).all()
+            expected = {
+                "register": (1, "account"),
+                "update_profile": (2, "account"),
+                "change_password": (3, "account"),
+                "admin_password_reset": (4, "account"),
+                "cli_reset_admin_password": (2, "server_operator"),
+            }
+            by_action = {r.action: r for r in records}
+            self.assertEqual(set(by_action), set(expected))
+            for action, (version, operator_type) in expected.items():
+                self.assertEqual(
+                    by_action[action].account_version_after, version, action
+                )
+                self.assertEqual(
+                    by_action[action].operator_type, operator_type, action
+                )
+
+            # Sessions persist only SHA-256 hashes: every token_hash is a
+            # 64-char hex digest and equals, explicitly, the SHA-256 of the
+            # corresponding original session token captured right after
+            # login (admin token -> its row, teacher token -> its row).
+            sessions = db.query(AccountSession).all()
+            self.assertGreater(len(sessions), 0)
+            for session in sessions:
+                self.assertRegex(session.token_hash, r"^[0-9a-f]{64}$")
+                # Every session created above precedes a later password
+                # change for its account, so each one must be revoked.
+                self.assertIsNotNone(session.revoked_at)
+            stored_token_hashes = {s.token_hash for s in sessions}
+            for raw_token in (admin_raw_token, teacher_raw_token):
+                expected_hash = hashlib.sha256(raw_token.encode("ascii")).hexdigest()
+                self.assertIn(expected_hash, stored_token_hashes)
+                matching = next(
+                    s for s in sessions if s.token_hash == expected_hash
+                )
+                self.assertEqual(matching.token_hash, expected_hash)
+
     def test_cli_resets_disabled_admin_password(self):
         admin = self._create_admin("cliadmin", "cli-admin-pass-1")
         self._login(admin, "cliadmin", "cli-admin-pass-1")
@@ -748,15 +1170,27 @@ class IdentityIntegrationTests(unittest.TestCase):
             self.assertFalse(row.is_active)
             self.assertEqual(row.version, 2)
             self.assertTrue(auth_service.security.verify_password(new_password, row.password_hash))
+            # Identify the reset record by action + post-change version rather
+            # than created_at ordering: MySQL DATETIME has 1-second precision,
+            # so the register and reset records may share a timestamp.
             record = (
                 db.query(OperationRecord)
-                .filter(OperationRecord.target_account_id == row.id)
-                .order_by(OperationRecord.created_at.desc())
-                .first()
+                .filter(
+                    OperationRecord.target_account_id == row.id,
+                    OperationRecord.action == "cli_reset_admin_password",
+                    OperationRecord.account_version_after == row.version,
+                )
+                .one()
             )
-            self.assertIsNotNone(record)
             self.assertEqual(record.operator_type, "server_operator")
-            self.assertEqual(record.action, "cli_reset_admin_password")
+            self.assertIsNotNone(
+                db.query(OperationRecord)
+                .filter(
+                    OperationRecord.target_account_id == row.id,
+                    OperationRecord.action == "register",
+                )
+                .one()
+            )
             active_sessions = (
                 db.query(AccountSession)
                 .filter(
@@ -815,6 +1249,27 @@ class IdentityIntegrationTests(unittest.TestCase):
         after = self._snapshot_account("admin1")
         self.assertEqual(after["password_hash"], before["password_hash"])
         self.assertEqual(after["version"], before["version"])
+
+        # Mismatched password inputs write nothing.
+        before = self._snapshot_account("admin1")
+        stderr_buf = StringIO()
+        with (
+            unittest.mock.patch("sys.stdin.isatty", return_value=True),
+            unittest.mock.patch(
+                "app.cli.getpass.getpass",
+                side_effect=["cli-new-password-123", "other-password-123"],
+            ),
+            unittest.mock.patch("sys.stderr", stderr_buf),
+        ):
+            with self.assertRaises(SystemExit) as cm:
+                from app import cli
+
+                cli._reset_admin_password("admin1")
+        self.assertEqual(cm.exception.code, 1)
+        after = self._snapshot_account("admin1")
+        self.assertEqual(after["password_hash"], before["password_hash"])
+        self.assertEqual(after["version"], before["version"])
+        self.assertEqual(after["audit_actions"], before["audit_actions"])
 
 
 if __name__ == "__main__":
