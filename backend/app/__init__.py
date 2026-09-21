@@ -1,0 +1,1 @@
+"""Kindergarten Manager API package."""

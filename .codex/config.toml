@@ -1,0 +1,12 @@
+[memories]
+generate_memories = false
+use_memories = false
+
+[mcp_servers.codebase-memory-mcp]
+enabled = false
+
+[mcp_servers.codegraph]
+enabled = false
+
+[plugins."superpowers@openai-curated"]
+enabled = false
