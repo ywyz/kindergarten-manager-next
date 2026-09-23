@@ -111,7 +111,7 @@ class OperationRecord(Base):
         ),
         CheckConstraint(
             "target_type IN ('account', 'class', 'school', 'term', 'calendar', "
-            "'daily_plan')",
+            "'daily_plan', 'weekly_plan')",
             name="ck_operation_record_target_type",
         ),
         # For account-targeted records the legacy columns stay required and
@@ -603,5 +603,203 @@ class WeeklyPlanSyncState(Base):
         DateTime(timezone=False), default=_utc_now, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+
+
+class WeeklyPlan(Base):
+    """One effective weekly plan header for a class/term/week (I4).
+
+    Effective-row uniqueness uses a generated column so soft-deleted rows
+    leave the unique index while live rows stay one-per-(class, term, week).
+    The current draft/confirmed pointers are composite FKs into the
+    append-only content tables, filled inside the creation transaction.
+    Header snapshot columns are immutable after creation (decision U1=A).
+    """
+
+    __tablename__ = "weekly_plans"
+    __table_args__ = (
+        CheckConstraint("week_number >= 1", name="ck_weekly_plans_week_number"),
+        CheckConstraint(
+            "current_draft_version IS NULL OR current_draft_version >= 1",
+            name="ck_weekly_plans_current_draft_version",
+        ),
+        CheckConstraint(
+            "current_confirmed_content_version IS NULL "
+            "OR current_confirmed_content_version >= 1",
+            name="ck_weekly_plans_current_confirmed_content_version",
+        ),
+        UniqueConstraint(
+            "class_id", "term_id", "effective_week",
+            name="uq_weekly_plans_class_term_effective_week",
+        ),
+        Index("ix_weekly_plans_class_id", "class_id"),
+        Index("ix_weekly_plans_term_id", "term_id"),
+        # Cycles with weekly_plan_contents / weekly_plan_confirmed_contents:
+        # all three tables are created first, these composite FKs are added
+        # by ALTER afterwards (same pattern as fk_daily_plans_current_content).
+        ForeignKeyConstraint(
+            ["id", "current_draft_content_id", "current_draft_version"],
+            [
+                "weekly_plan_contents.weekly_plan_id",
+                "weekly_plan_contents.id",
+                "weekly_plan_contents.version",
+            ],
+            name="fk_weekly_plans_current_draft_content",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ["id", "current_confirmed_content_id",
+             "current_confirmed_content_version"],
+            [
+                "weekly_plan_confirmed_contents.weekly_plan_id",
+                "weekly_plan_confirmed_contents.id",
+                "weekly_plan_confirmed_contents.version",
+            ],
+            name="fk_weekly_plans_current_confirmed_content",
+            use_alter=True,
+        ),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    class_id: Mapped[str] = mapped_column(ForeignKey("classes.id"), nullable=False)
+    term_id: Mapped[str] = mapped_column(ForeignKey("terms.id"), nullable=False)
+    week_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    # creator_id is immutable; owner_id equals creator_id in I4 (takeover
+    # arrives in a later slice).
+    creator_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+
+    # Draft pointer; NULL only inside the creation transaction before the
+    # first content row is written back.
+    current_draft_content_id: Mapped[str | None] = mapped_column(
+        String(32, collation="utf8mb4_bin"), nullable=True
+    )
+    current_draft_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Confirmed pointer; NULL means never confirmed (not an error).
+    current_confirmed_content_id: Mapped[str | None] = mapped_column(
+        String(32, collation="utf8mb4_bin"), nullable=True
+    )
+    current_confirmed_content_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+
+    # Immutable header snapshot taken at creation (decision U1=A).
+    school_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    class_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    grade: Mapped[str] = mapped_column(String(20), nullable=False)
+    header_teacher_names: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    caregiver_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    # Coarse "daily-plan side moved on since last consumption" banner hint;
+    # authoritative freshness is the per-source version comparison.
+    projection_consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+
+    # Soft-delete columns reserved for delete/recover (no I4 entry point).
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    deleted_by: Mapped[str | None] = mapped_column(
+        ForeignKey("accounts.id"), nullable=True
+    )
+
+    # Server-generated effective_week (STORED); never written by the app.
+    # Declared after deleted_at, which the expression references.
+    effective_week: Mapped[int | None] = mapped_column(
+        Integer,
+        Computed(
+            "CASE WHEN deleted_at IS NULL THEN week_number END",
+            persisted=True,
+        ),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+
+
+class WeeklyPlanContent(Base):
+    """Append-only draft content version of one weekly plan (never updated)."""
+
+    __tablename__ = "weekly_plan_contents"
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_weekly_plan_contents_version"),
+        CheckConstraint(
+            "editor_role IN ('owner', 'admin')",
+            name="ck_weekly_plan_contents_editor_role",
+        ),
+        UniqueConstraint(
+            "weekly_plan_id", "id", "version",
+            name="uq_weekly_plan_contents_plan_id_version",
+        ),
+        UniqueConstraint(
+            "weekly_plan_id", "version",
+            name="uq_weekly_plan_contents_plan_version",
+        ),
+        Index("ix_weekly_plan_contents_weekly_plan_id", "weekly_plan_id"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    weekly_plan_id: Mapped[str] = mapped_column(
+        ForeignKey("weekly_plans.id"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    editor_id: Mapped[str] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    editor_role: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+
+
+class WeeklyPlanConfirmedContent(Base):
+    """Immutable confirmed snapshot of one weekly plan (append-only)."""
+
+    __tablename__ = "weekly_plan_confirmed_contents"
+    __table_args__ = (
+        CheckConstraint("version >= 1",
+                        name="ck_weekly_plan_confirmed_contents_version"),
+        UniqueConstraint(
+            "weekly_plan_id", "id", "version",
+            name="uq_weekly_plan_confirmed_contents_plan_id_version",
+        ),
+        UniqueConstraint(
+            "weekly_plan_id", "version",
+            name="uq_weekly_plan_confirmed_contents_plan_version",
+        ),
+        Index(
+            "ix_weekly_plan_confirmed_contents_weekly_plan_id",
+            "weekly_plan_id",
+        ),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    weekly_plan_id: Mapped[str] = mapped_column(
+        ForeignKey("weekly_plans.id"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    draft_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    facts: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    confirmed_by: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=_utc_now, nullable=False
     )

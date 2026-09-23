@@ -13,6 +13,7 @@ from app.routers import (
     daily_plans,
     settings as settings_router,
     weekly_plan_sync_states,
+    weekly_plans,
 )
 from app.security import is_safe_origin
 
@@ -58,6 +59,7 @@ app.include_router(calendar_read.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(context.router, prefix="/api")
 app.include_router(daily_plans.router, prefix="/api")
+app.include_router(weekly_plans.router, prefix="/api")
 app.include_router(weekly_plan_sync_states.router, prefix="/api")
 
 

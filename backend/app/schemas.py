@@ -585,3 +585,181 @@ class WeeklyPlanSyncStateOut(BaseModel):
     last_trigger_event: str | None
     created_at: datetime
     updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# I4 manual weekly plan create / edit / confirm
+# ---------------------------------------------------------------------------
+
+
+class WeeklyPlanCreateIn(BaseModel):
+    """POST /weekly-plans body (teacher path).
+
+    ``class_id`` is accepted by the schema but rejected by the router when a
+    teacher includes it — even as explicit null (presence is judged on
+    ``model_fields_set``); admins never create (service answers 403) so the
+    field only exists to keep their attempt on the permission path, not the
+    validation path. Empty theme is valid (decision U2=B).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    term_id: str
+    week_number: int = Field(..., ge=1, strict=True)
+    theme: str | None = None
+    class_id: str | None = None
+
+
+class WeeklyPlanPatchIn(BaseModel):
+    """PATCH /weekly-plans/{id} body.
+
+    Omitted optional fields inherit the current draft; explicit null is a
+    real value (``theme: null`` clears to empty, ``focus_area: null``
+    clears the slot) — the router builds the patch only from
+    ``model_fields_set``. ``source``/``effective`` layers are server-owned
+    and rejected here by ``extra="forbid"``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+    theme: str | None = None
+    deterministic_overrides: dict[str, Any] | None = None
+    outdoor_game_slots: dict[str, Any] | None = None
+    focus_area: dict[str, Any] | None = None
+    weekly_columns: dict[str, Any] | None = None
+
+
+class WeeklyPlanRefreshIn(BaseModel):
+    """POST /weekly-plans/{id}/refresh-sources body (explicit path R)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+
+
+class WeeklyPlanConfirmIn(BaseModel):
+    """POST /weekly-plans/{id}/confirm body (explicit path C).
+
+    The two acks are required strict booleans (facts are recomputed under
+    lock; the client only acknowledges). ``note`` is always optional and
+    may be null (decision U3=A).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+    acknowledge_missing: bool = Field(..., strict=True)
+    acknowledge_stale: bool = Field(..., strict=True)
+    note: str | None = None
+
+
+class WeeklyPlanListItemOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    term_id: str
+    week_number: int
+    creator_id: str
+    owner_id: str
+    draft_version: int
+    confirmed_version: int | None
+    needs_confirm: bool
+    updated_at: datetime
+
+
+class WeeklyPlanListOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[WeeklyPlanListItemOut]
+    total: int
+    offset: int
+    limit: int
+
+
+class WeeklyPlanDraftOut(BaseModel):
+    """Current draft version: public content plus server-owned audit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    version: int
+    content: dict
+    audit: dict | None
+    editor_id: str
+    editor_role: str
+    created_at: datetime
+
+
+class WeeklyPlanConfirmedSummaryOut(BaseModel):
+    """Immutable confirmation summary (detail, history list items)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int
+    draft_version: int
+    confirmed_by: str
+    facts: dict
+    created_at: datetime
+
+
+class WeeklyPlanConfirmationOut(BaseModel):
+    """Single immutable confirmation version (201 result + GET by version)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    weekly_plan_id: str
+    version: int
+    draft_version: int
+    content: dict
+    facts: dict
+    confirmed_by: str
+    created_at: datetime
+
+
+class WeeklyPlanConfirmationListOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[WeeklyPlanConfirmedSummaryOut]
+    total: int
+
+
+class WeeklyPlanDetailOut(BaseModel):
+    """Create/open, PATCH, refresh and GET detail payload.
+
+    Orthogonal dimensions stay separate (decision: no single status):
+    ``confirmation_status`` (never_confirmed / draft_ahead / draft_current),
+    live ``missing`` + ``stale_sources``, ``projection_pending`` and the
+    capability flags. ``refreshed_sources`` is only set by the refresh route.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    class_id: str
+    term_id: str
+    week_number: int
+    creator_id: str
+    owner_id: str
+    # Immutable header snapshot taken at creation (decision U1=A).
+    school_name: str | None
+    class_name: str
+    grade: str
+    header_teacher_names: list
+    caregiver_name: str | None
+    confirmation_status: Literal[
+        "never_confirmed", "draft_ahead", "draft_current"
+    ]
+    needs_confirm: bool
+    draft: WeeklyPlanDraftOut
+    confirmed: WeeklyPlanConfirmedSummaryOut | None
+    missing: list[dict]
+    stale_sources: list[dict]
+    projection_pending: bool
+    source_candidates: list[dict]
+    can_edit: bool
+    can_confirm: bool
+    refreshed_sources: list[dict] | None
+    created_at: datetime
+    updated_at: datetime
