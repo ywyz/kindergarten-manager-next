@@ -109,12 +109,24 @@ async function logout() {
   }
 }
 
+/**
+ * Invalidate any in-flight weekly create/open request and release its UI
+ * busy state immediately. The stale response is prevented from navigating
+ * (requestId mismatch), and because the busy key is cleared here — not in
+ * the stale response's own finally — the calendar entries stay clickable
+ * after returning. Request results may go stale; the busy flag must not.
+ */
+function cancelWeeklyCreate(): void {
+  weeklyRequestId.value += 1
+  weeklyCreatingKey.value = null
+}
+
 // Open entry only for server-marked eligible dates; eligibility is never
 // inferred locally and the calendar library is never called here.
 function openPlan(date: string) {
   weeklyListOpen.value = false
   weeklyPlanId.value = null
-  weeklyRequestId.value += 1
+  cancelWeeklyCreate()
   planDate.value = date
 }
 
@@ -145,6 +157,8 @@ async function openWeekly(row: CalendarDay) {
       ElMessage.error(weeklyPlanErrorMessage(err, '打开周计划失败'))
     }
   } finally {
+    // Only the still-current request may clear the busy key; responses
+    // invalidated by cancelWeeklyCreate() must not touch a newer key.
     if (requestId === weeklyRequestId.value) {
       weeklyCreatingKey.value = null
     }
@@ -152,6 +166,7 @@ async function openWeekly(row: CalendarDay) {
 }
 
 function openWeeklyFromList(planId: string) {
+  cancelWeeklyCreate()
   planDate.value = null
   weeklyPlanId.value = planId
 }
@@ -161,6 +176,7 @@ function closeWeekly() {
 }
 
 function openWeeklyList() {
+  cancelWeeklyCreate()
   planDate.value = null
   weeklyPlanId.value = null
   weeklyListOpen.value = true

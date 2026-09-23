@@ -659,7 +659,10 @@ async function doConfirm(expectedVersion: number): Promise<void> {
     conflict.value = null
     confirmOpen.value = false
     ElMessage.success(`已确认，生成确认版本 V${result.version}`)
-    await load()
+    // R2: never load() here — a full reload resets the form and dirty flags,
+    // discarding unsaved local input. Refresh only server-owned state while
+    // keeping every dirty field's value and dirty marker.
+    await refreshAfterConfirm()
   } catch (err) {
     const e = err as ApiError
     if (e.code === 'VERSION_CONFLICT') {
@@ -694,6 +697,46 @@ function submitConfirm(): void {
   const d = detail.value
   if (!d || !acksSatisfied.value || conflictActive.value) return
   void doConfirm(d.draft.version)
+}
+
+/**
+ * R2: post-confirm server-state refresh without touching local input.
+ *
+ * Confirm never changes the saved draft, so the only things that must
+ * update are the confirmation status / summary, live facts, version
+ * pointers and the history list. Dirty sections keep the user's local
+ * values (including edits made while the confirm request was in flight);
+ * non-dirty sections take the server values (identical content anyway).
+ */
+async function refreshAfterConfirm(): Promise<void> {
+  const seq = loadSeq.value
+  try {
+    const fresh = await api.getWeeklyPlan(props.planId, classIdParam())
+    if (seq !== loadSeq.value) return
+    applyDetail(fresh, { keepDirty: true })
+    void loadConfirmations(seq)
+  } catch (err) {
+    if (seq !== loadSeq.value) return
+    notify(err, '确认成功，但刷新页面状态失败，请重新打开本页核对')
+  }
+}
+
+/**
+ * R1: confirm-side conflict resolution = latest-draft review state.
+ *
+ * Adopts the conflict-time server detail as the page baseline (latest
+ * version, content for non-dirty fields, missing/stale lists), keeps all
+ * local unsaved edits, clears both acks, keeps the note, and reopens the
+ * confirm dialog. It never sends a confirm request — the user must review
+ * and click confirm again; a repeated conflict re-enters the same flow.
+ */
+function enterConfirmReview(server: WeeklyPlanDetail): void {
+  applyDetail(server, { keepDirty: true })
+  conflict.value = null
+  resetConfirmFacts()
+  confirmError.value = `服务端草稿已更新至 v${server.draft.version}，已载入最新内容与最新事实清单；此前勾选已清空、备注已保留，请重新审阅后再确认。`
+  confirmOpen.value = true
+  ElMessage.info(`已载入最新草稿 v${server.draft.version}，请重新审阅后确认`)
 }
 
 // --- version conflict handling --------------------------------------------
@@ -752,8 +795,9 @@ function resubmitConflict(): void {
   } else if (state.action === 'refresh') {
     void doRefresh(expected)
   } else {
-    confirmOpen.value = true
-    void doConfirm(expected)
+    // R1: never blind-resubmit confirm against a draft the user has not
+    // re-reviewed; enter the latest-draft review state instead.
+    enterConfirmReview(state.server)
   }
 }
 
@@ -885,6 +929,10 @@ onMounted(() => {
             <p class="conflict-hint">
               请选择处理方式：放弃本地修改并载入服务端版本，或保留本地输入、以服务端最新版本为基准重新提交。
               系统不会静默覆盖，也不会自动重试；再次冲突仍按冲突处理。
+            </p>
+            <p v-if="conflict.action === 'confirm'" class="conflict-hint">
+              确认冲突下“以服务端为基准重提”只会载入最新草稿与事实供您重新审阅，
+              不会直接发送确认请求；需您再次明确点击确认后才会提交。
             </p>
             <div class="actions-row">
               <el-button
