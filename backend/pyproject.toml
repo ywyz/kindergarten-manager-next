@@ -9,6 +9,8 @@ dependencies = [
     "alembic>=1.13,<2",
     "pymysql[rsa]>=1.1,<2",
     "pydantic-settings>=2.6,<3",
+    # Pinned per I2 spec; declared only, not installed/synced in this phase.
+    "chinesecalendar==1.11.0",
 ]
 
 [tool.uv]

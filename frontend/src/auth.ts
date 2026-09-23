@@ -5,6 +5,7 @@ import * as api from './api'
 
 export interface AuthState {
   account: Account | null
+  classId: string | null
   assignmentStatus: string
   canPrepare: boolean
   loading: boolean
@@ -13,6 +14,7 @@ export interface AuthState {
 
 export const auth = reactive<AuthState>({
   account: null,
+  classId: null,
   assignmentStatus: '',
   canPrepare: false,
   loading: false,
@@ -74,12 +76,14 @@ export async function doLogout(): Promise<void> {
 
 export function applyMe(me: Me): void {
   auth.account = me.account
+  auth.classId = me.class_id
   auth.assignmentStatus = me.assignment_status
   auth.canPrepare = me.can_prepare
 }
 
 export function reset(): void {
   auth.account = null
+  auth.classId = null
   auth.assignmentStatus = ''
   auth.canPrepare = false
 }

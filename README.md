@@ -98,6 +98,41 @@ uv run --locked alembic heads
 
 配置参考：[Vite](https://vite.dev/guide/)、[FastAPI](https://fastapi.tiangolo.com/)、[Alembic](https://alembic.sqlalchemy.org/en/latest/tutorial.html)。
 
+## I2 收尾检查（2026-09-22）
+
+I2 已完成本轮实施及直接相关验证，停止于 I2。最新范围、真实 MySQL 及浏览器证据见 [I2 实施与验证记录](docs/bootstrap/i2-implementation-status.md)。下文 2026-09-21 骨架检查为历史记录。
+
+后端单元测试：
+
+```bash
+cd backend
+export APP_DISABLE_DOTENV=1
+unset DATABASE_URL
+.venv/bin/python -m unittest discover -s tests/unit -v
+# Ran 45 tests ... OK
+```
+
+后端集成测试（仅隔离测试库）：
+
+```bash
+export APP_DISABLE_DOTENV=1
+export I2_TEST_ALLOW_DESTRUCTIVE=yes
+export I2_TEST_DATABASE_URL=mysql+pymysql://kg_test_i2:...@127.0.0.1:13384/kindergarten_test_i2
+cd backend
+.venv/bin/python -m unittest tests.integration.test_class_assignment tests.integration.test_terms_calendar tests.integration.test_i2_concurrency tests.integration.test_i2_remaining -v
+# Ran 56 tests ... OK
+```
+
+前端：
+
+```bash
+cd frontend
+npm run typecheck   # exit 0
+npm run build       # exit 0
+```
+
+新增 `tests/integration/test_i2_remaining.py` 覆盖 A-E：真实 `chinesecalendar` 调休/假日、学期范围变更保留/移除/周号、预览过期、密码重置与分配竞争、子进程重启读持久日历、`plans_started_at` 门槛。详见 `backend/README-I2.md`。
+
 
 ## 本次实际检查（2026-09-21）
 

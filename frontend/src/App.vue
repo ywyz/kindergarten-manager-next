@@ -3,11 +3,12 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import LoginView from './views/LoginView.vue'
 import RegisterView from './views/RegisterView.vue'
 import PendingView from './views/PendingView.vue'
+import TeacherView from './views/TeacherView.vue'
 import AdminView from './views/AdminView.vue'
 import SettingsView from './views/SettingsView.vue'
-import { auth, isAdmin, isLoggedIn, restoreSession } from './auth'
+import { auth, isAdmin, restoreSession } from './auth'
 
-type Page = 'login' | 'register' | 'pending' | 'admin' | 'settings'
+type Page = 'login' | 'register' | 'pending' | 'teacher' | 'admin' | 'settings'
 
 const currentPage = ref<Page>('login')
 const restoring = ref(true)
@@ -26,7 +27,7 @@ function routeByRole() {
   if (isAdmin()) {
     currentPage.value = 'admin'
   } else {
-    currentPage.value = 'pending'
+    currentPage.value = auth.classId ? 'teacher' : 'pending'
   }
 }
 
@@ -43,7 +44,7 @@ function onRegistered() {
 }
 
 function onProfileUpdated() {
-  restoreSession()
+  restoreSession().then(() => routeByRole())
 }
 
 function onPasswordChanged() {
@@ -82,6 +83,11 @@ onUnmounted(() => {
     />
     <PendingView
       v-else-if="currentPage === 'pending'"
+      @go-settings="currentPage = 'settings'"
+      @logged-out="onLoggedOut"
+    />
+    <TeacherView
+      v-else-if="currentPage === 'teacher'"
       @go-settings="currentPage = 'settings'"
       @logged-out="onLoggedOut"
     />

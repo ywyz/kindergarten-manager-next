@@ -154,12 +154,19 @@ def login(
         )
 
     security.set_session_cookie(response, token, settings.session_ttl_seconds)
-    return auth_service.me_response(account)
+    assignments = auth_service.assignment_map(db, [account.id])
+    class_id = assignments[account.id].class_id if account.id in assignments else None
+    return auth_service.me_response(account, class_id)
 
 
 @router.get("/me", response_model=MeOut)
-def me(account: Account = Depends(get_current_account)):
-    return auth_service.me_response(account)
+def me(
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
+):
+    assignments = auth_service.assignment_map(db, [account.id])
+    class_id = assignments[account.id].class_id if account.id in assignments else None
+    return auth_service.me_response(account, class_id)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

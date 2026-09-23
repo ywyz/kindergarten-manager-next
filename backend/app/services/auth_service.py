@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app import security
 from app.config import settings
-from app.models import Account, AccountSession, OperationRecord
+from app.models import Account, AccountSession, OperationRecord, TeacherAssignment
 
 
 def utc_now() -> datetime:
@@ -58,6 +58,14 @@ class AuthRequired(AuthServiceError):
     pass
 
 
+class ClassNotFound(AuthServiceError):
+    pass
+
+
+class AlreadyAssigned(AuthServiceError):
+    pass
+
+
 def account_to_out(account: Account) -> dict:
     return {
         "id": account.id,
@@ -69,16 +77,33 @@ def account_to_out(account: Account) -> dict:
     }
 
 
-def me_response(account: Account) -> dict:
-    assignment_status = (
-        "not_applicable" if account.role == "admin" else "pending_assignment"
+def me_response(account: Account, class_id: str | None = None) -> dict:
+    if account.role == "admin":
+        assignment_status = "not_applicable"
+        class_id = None
+    else:
+        assignment_status = "assigned" if class_id else "pending_assignment"
+    # Identity qualification only; date eligibility and plan APIs are separate.
+    can_prepare = bool(
+        account.role == "teacher" and account.is_active and class_id
     )
     return {
         "account": account_to_out(account),
-        "class_id": None,
+        "class_id": class_id,
         "assignment_status": assignment_status,
-        "can_prepare": False,
+        "can_prepare": can_prepare,
     }
+
+
+def assignment_map(db: Session, teacher_ids) -> dict[str, TeacherAssignment]:
+    """Return teacher_id -> current TeacherAssignment for the given ids."""
+    ids = [tid for tid in teacher_ids if tid]
+    if not ids:
+        return {}
+    rows = db.scalars(
+        select(TeacherAssignment).where(TeacherAssignment.teacher_id.in_(ids))
+    ).all()
+    return {row.teacher_id: row for row in rows}
 
 
 def record_operation(
@@ -87,15 +112,32 @@ def record_operation(
     operator_id: str | None,
     operator_type: str,
     action: str,
-    target_account_id: str,
-    account_version_after: int,
+    target_type: str = "account",
+    target_id: str | None = None,
+    target_version_after: int | None = None,
+    # Legacy account-target keyword arguments remain accepted for compatibility.
+    target_account_id: str | None = None,
+    account_version_after: int | None = None,
 ) -> OperationRecord:
+    if target_id is None:
+        target_id = target_account_id
+    if target_id is None:
+        raise ValueError("record_operation requires a target id")
+    if target_type == "account":
+        # Account records keep the legacy columns populated and required.
+        target_account_id = target_id
+        if account_version_after is None:
+            account_version_after = target_version_after
+        target_version_after = account_version_after
     record = OperationRecord(
         id=security.generate_id(),
         created_at=utc_now(),
         operator_id=operator_id,
         operator_type=operator_type,
         action=action,
+        target_type=target_type,
+        target_id=target_id,
+        target_version_after=target_version_after,
         target_account_id=target_account_id,
         account_version_after=account_version_after,
     )
@@ -166,8 +208,9 @@ def _apply_password_reset(
         operator_id=operator_id,
         operator_type=operator_type,
         action=action,
-        target_account_id=account.id,
-        account_version_after=account.version,
+        target_type="account",
+        target_id=account.id,
+        target_version_after=account.version,
     )
 
 
@@ -265,8 +308,9 @@ def update_profile(
         operator_id=locked.id,
         operator_type="account",
         action="update_profile",
-        target_account_id=locked.id,
-        account_version_after=locked.version,
+        target_type="account",
+        target_id=locked.id,
+        target_version_after=locked.version,
     )
     db.commit()
     return locked
@@ -353,6 +397,83 @@ def admin_reset_password(
     )
     db.commit()
     return target
+
+
+def assign_teacher(
+    db: Session,
+    admin_snapshot: AuthSnapshot,
+    teacher_id: str,
+    class_id: str,
+    expected_version: int,
+    expected_class_version: int,
+) -> tuple[Account, str]:
+    """First-time assignment of an unassigned teacher to a real class.
+
+    Lock order (per I2 spec): accounts in stable ID order -> operator session
+    -> class. The account owns the concurrency version: the target account's
+    ``version`` is incremented; ``auth_version`` and sessions are untouched.
+    """
+    from app.models import Class
+
+    if not db.in_transaction():
+        db.begin()
+    locked = _lock_accounts(db, {admin_snapshot.account_id, teacher_id})
+
+    admin_locked = locked.get(admin_snapshot.account_id)
+    if admin_locked is None or not admin_locked.is_active:
+        raise AuthRequired()
+    if admin_locked.auth_version != admin_snapshot.auth_version:
+        raise AuthRequired()
+    if admin_locked.role != "admin":
+        raise Forbidden()
+    validate_locked_session(db, admin_snapshot)
+
+    target = locked.get(teacher_id)
+    if target is None:
+        raise AccountNotFound()
+    if target.role != "teacher" or not target.is_active:
+        # The assignment endpoint only accepts active teachers; everything else
+        # is treated as if the target account does not exist for this operation.
+        raise AccountNotFound()
+
+    school_class = db.execute(
+        select(Class).where(Class.id == class_id).with_for_update()
+    ).scalar_one_or_none()
+    if school_class is None:
+        raise ClassNotFound()
+    if school_class.version != expected_class_version:
+        raise VersionConflict()
+    if target.version != expected_version:
+        raise VersionConflict()
+
+    existing = db.get(TeacherAssignment, teacher_id)
+    if existing is not None:
+        # Even an assignment to the same class is an explicit failure so the
+        # client can re-read to verify a possibly lost response.
+        raise AlreadyAssigned()
+
+    now = utc_now()
+    db.add(
+        TeacherAssignment(
+            teacher_id=teacher_id,
+            class_id=class_id,
+            assigned_by=admin_snapshot.account_id,
+            assigned_at=now,
+        )
+    )
+    target.version += 1
+    target.updated_at = now
+    record_operation(
+        db,
+        operator_id=admin_snapshot.account_id,
+        operator_type="account",
+        action="assign_teacher",
+        target_type="account",
+        target_id=target.id,
+        target_version_after=target.version,
+    )
+    db.commit()
+    return target, class_id
 
 
 def revoke_single_session(db: Session, snapshot: AuthSnapshot) -> None:

@@ -5,7 +5,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
-from app.routers import admin, auth, settings as settings_router
+from app.routers import (
+    admin,
+    auth,
+    calendar_read,
+    context,
+    daily_plans,
+    settings as settings_router,
+    weekly_plan_sync_states,
+)
 from app.security import is_safe_origin
 
 app = FastAPI(title=settings.app_name)
@@ -46,7 +54,11 @@ async def security_headers_and_body_check(request: Request, call_next):
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
+app.include_router(calendar_read.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(context.router, prefix="/api")
+app.include_router(daily_plans.router, prefix="/api")
+app.include_router(weekly_plan_sync_states.router, prefix="/api")
 
 
 @app.get("/health")
