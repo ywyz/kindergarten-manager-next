@@ -104,6 +104,12 @@ const loadSeq = ref(0)
 
 const confirmations = ref<WeeklyPlanConfirmedSummary[]>([])
 const confirmationsLoading = ref(false)
+/**
+ * Monotonic token for history loads: an earlier request that resolves after
+ * a later one (confirm-triggered refresh vs. the initial page load) must not
+ * overwrite the newer list. Only the most recently issued request writes.
+ */
+const confirmationsSeq = ref(0)
 const viewedConfirmation = ref<WeeklyPlanConfirmation | null>(null)
 const confirmationViewOpen = ref(false)
 const confirmationLoading = ref(false)
@@ -263,16 +269,17 @@ function resetConfirmFacts(): void {
 }
 
 async function loadConfirmations(seq: number): Promise<void> {
+  const token = ++confirmationsSeq.value
   confirmationsLoading.value = true
   try {
     const res = await api.listWeeklyPlanConfirmations(props.planId, classIdParam())
-    if (seq !== loadSeq.value) return
+    if (token !== confirmationsSeq.value || seq !== loadSeq.value) return
     confirmations.value = res.items
   } catch (err) {
-    if (seq !== loadSeq.value) return
+    if (token !== confirmationsSeq.value || seq !== loadSeq.value) return
     notify(err, '加载确认历史失败')
   } finally {
-    if (seq === loadSeq.value) confirmationsLoading.value = false
+    if (token === confirmationsSeq.value) confirmationsLoading.value = false
   }
 }
 
@@ -676,6 +683,16 @@ async function doConfirm(expectedVersion: number): Promise<void> {
         confirmFacts.value = {
           missing: facts.missing || [],
           stale_sources: facts.stale_sources || [],
+        }
+        // The server recomputes facts under lock: keep the page's live fact
+        // lists in sync so closing and reopening the dialog cannot fall back
+        // to the older GET-time snapshot (missing/stale would vanish).
+        if (detail.value) {
+          detail.value = {
+            ...detail.value,
+            missing: [...(facts.missing || [])],
+            stale_sources: [...(facts.stale_sources || [])],
+          }
         }
       } else {
         resetConfirmFacts()
