@@ -14,6 +14,14 @@ import type {
   SchoolSettings,
   TeacherListItem,
   Term,
+  WeeklyPlanConfirmation,
+  WeeklyPlanConfirmationList,
+  WeeklyPlanConfirmIn,
+  WeeklyPlanCreateIn,
+  WeeklyPlanDetail,
+  WeeklyPlanFacts,
+  WeeklyPlanList,
+  WeeklyPlanPatchIn,
 } from './types'
 
 const API_BASE = '/api'
@@ -22,6 +30,8 @@ export interface ApiError extends Error {
   status: number
   code: string
   fields?: Record<string, string>
+  /** Present on I4 409 CONFIRM_ACK_REQUIRED: latest recomputed facts. */
+  facts?: WeeklyPlanFacts
 }
 
 function makeError(message: string, status: number, body: ErrorBody | null): ApiError {
@@ -29,6 +39,7 @@ function makeError(message: string, status: number, body: ErrorBody | null): Api
   err.status = status
   err.code = body?.error?.code || 'UNKNOWN_ERROR'
   err.fields = body?.error?.fields
+  err.facts = body?.error?.facts
   return err
 }
 
@@ -253,4 +264,96 @@ export async function getDailyPlan(planId: string, classId?: string): Promise<Da
 
 export async function patchDailyPlan(planId: string, payload: DailyPlanPatchIn): Promise<DailyPlan> {
   return request(`/daily-plans/${planId}`, { method: 'PATCH', body: JSON.stringify(payload) })
+}
+
+// --- I4 manual weekly plan -------------------------------------------------
+// Teacher path: never send class_id at all (the backend 422s on presence,
+// including explicit null). Admin path: an explicit class_id query parameter
+// is required on every read and write; admins never call createWeeklyPlan.
+
+function classIdSuffix(classId?: string): string {
+  return classId ? `?class_id=${encodeURIComponent(classId)}` : ''
+}
+
+function withClassQuery(base: string, classId?: string): string {
+  if (!classId) return base
+  return `${base}${base.includes('?') ? '&' : '?'}class_id=${encodeURIComponent(classId)}`
+}
+
+export async function listWeeklyPlans(params: {
+  offset: number
+  limit: number
+  term_id?: string
+  classId?: string
+}): Promise<WeeklyPlanList> {
+  const query = new URLSearchParams()
+  query.set('offset', String(params.offset))
+  query.set('limit', String(params.limit))
+  if (params.term_id) query.set('term_id', params.term_id)
+  if (params.classId) query.set('class_id', params.classId)
+  return request(`/weekly-plans?${query.toString()}`)
+}
+
+export async function createOrOpenWeeklyPlan(
+  payload: WeeklyPlanCreateIn,
+): Promise<WeeklyPlanDetail> {
+  // class_id is intentionally never included here, not even as null.
+  return request('/weekly-plans', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export async function getWeeklyPlan(
+  planId: string,
+  classId?: string,
+): Promise<WeeklyPlanDetail> {
+  return request(`/weekly-plans/${planId}${classIdSuffix(classId)}`)
+}
+
+export async function patchWeeklyPlan(
+  planId: string,
+  payload: WeeklyPlanPatchIn,
+  classId?: string,
+): Promise<WeeklyPlanDetail> {
+  return request(withClassQuery(`/weekly-plans/${planId}`, classId), {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function refreshWeeklyPlanSources(
+  planId: string,
+  payload: { expected_draft_version: number },
+  classId?: string,
+): Promise<WeeklyPlanDetail> {
+  return request(withClassQuery(`/weekly-plans/${planId}/refresh-sources`, classId), {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function confirmWeeklyPlan(
+  planId: string,
+  payload: WeeklyPlanConfirmIn,
+  classId?: string,
+): Promise<WeeklyPlanConfirmation> {
+  return request(withClassQuery(`/weekly-plans/${planId}/confirm`, classId), {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function listWeeklyPlanConfirmations(
+  planId: string,
+  classId?: string,
+): Promise<WeeklyPlanConfirmationList> {
+  return request(`/weekly-plans/${planId}/confirmations${classIdSuffix(classId)}`)
+}
+
+export async function getWeeklyPlanConfirmation(
+  planId: string,
+  version: number,
+  classId?: string,
+): Promise<WeeklyPlanConfirmation> {
+  return request(
+    `/weekly-plans/${planId}/confirmations/${version}${classIdSuffix(classId)}`,
+  )
 }

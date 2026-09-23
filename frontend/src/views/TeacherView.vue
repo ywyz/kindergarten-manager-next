@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElAlert, ElButton, ElCard, ElTag } from 'element-plus'
+import { ElAlert, ElButton, ElCard, ElMessage, ElTag } from 'element-plus'
 import type { Calendar, CalendarDay, ClassContext } from '../types'
 import * as api from '../api'
 import { auth, doLogout, handleApiError } from '../auth'
+import { isAuthError, weeklyPlanErrorMessage } from '../weekly-plan-content'
 import { localMonthStart, monthRange, shiftMonth } from '../date-utils'
 import DailyPlanView from './DailyPlanView.vue'
+import WeeklyPlanListView from './WeeklyPlanListView.vue'
+import WeeklyPlanView from './WeeklyPlanView.vue'
 
 const emit = defineEmits<{
   (e: 'go-settings'): void
@@ -20,6 +23,13 @@ const calendarLoading = ref(false)
 const calendarRequestId = ref(0)
 const planDate = ref<string | null>(null)
 
+// I4 weekly plan navigation: calendar <-> list <-> detail. Creation happens
+// only on an explicit week click, never on mount.
+const weeklyListOpen = ref(false)
+const weeklyPlanId = ref<string | null>(null)
+const weeklyCreatingKey = ref<string | null>(null)
+const weeklyRequestId = ref(0)
+
 const GRADE_LABELS: Record<string, string> = {
   small: '小班',
   middle: '中班',
@@ -31,6 +41,23 @@ const currentRange = computed<{ from: string; to: string }>(() =>
 )
 
 const dayRows = computed<CalendarDay[]>(() => calendar.value?.items || [])
+
+/**
+ * One weekly-plan entry per server-marked (term_id, week_number), shown on
+ * the first row of that week only. Eligibility is not inferred locally:
+ * weeks come from the server calendar and date_eligible is not consulted,
+ * so a legal rest week still gets its entry.
+ */
+const weeklyEntryFlags = computed<boolean[]>(() => {
+  const seen = new Set<string>()
+  return dayRows.value.map((row) => {
+    if (!row.term_id || !row.week_number) return false
+    const key = `${row.term_id}#${row.week_number}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+})
 
 function changeMonth(delta: number) {
   month.value = shiftMonth(month.value, delta)
@@ -85,11 +112,62 @@ async function logout() {
 // Open entry only for server-marked eligible dates; eligibility is never
 // inferred locally and the calendar library is never called here.
 function openPlan(date: string) {
+  weeklyListOpen.value = false
+  weeklyPlanId.value = null
+  weeklyRequestId.value += 1
   planDate.value = date
 }
 
 function closePlan() {
   planDate.value = null
+}
+
+/** Explicit click: create-or-open the week (POST) — never on mount. */
+async function openWeekly(row: CalendarDay) {
+  if (!row.term_id || !row.week_number) return
+  const key = `${row.term_id}#${row.week_number}`
+  if (weeklyCreatingKey.value) return
+  weeklyCreatingKey.value = key
+  const requestId = ++weeklyRequestId.value
+  planDate.value = null
+  try {
+    // Teacher path: no class_id in the body, not even null.
+    const detail = await api.createOrOpenWeeklyPlan({
+      term_id: row.term_id,
+      week_number: row.week_number,
+    })
+    if (requestId !== weeklyRequestId.value) return
+    weeklyPlanId.value = detail.id
+    weeklyListOpen.value = false
+  } catch (err) {
+    if (requestId !== weeklyRequestId.value) return
+    if (!isAuthError(err)) {
+      ElMessage.error(weeklyPlanErrorMessage(err, '打开周计划失败'))
+    }
+  } finally {
+    if (requestId === weeklyRequestId.value) {
+      weeklyCreatingKey.value = null
+    }
+  }
+}
+
+function openWeeklyFromList(planId: string) {
+  planDate.value = null
+  weeklyPlanId.value = planId
+}
+
+function closeWeekly() {
+  weeklyPlanId.value = null
+}
+
+function openWeeklyList() {
+  planDate.value = null
+  weeklyPlanId.value = null
+  weeklyListOpen.value = true
+}
+
+function closeWeeklyList() {
+  weeklyListOpen.value = false
 }
 
 onMounted(async () => {
@@ -108,7 +186,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <template v-if="!planDate">
+    <template v-if="!planDate && !weeklyListOpen && !weeklyPlanId">
       <el-card v-if="context" class="section">
         <h3>{{ context.class.name }}（{{ GRADE_LABELS[context.class.grade] }}）</h3>
         <p>所属园所：{{ context.school_name || '（未填写）' }}</p>
@@ -127,6 +205,9 @@ onMounted(async () => {
           <el-button size="small" @click="changeMonth(-1)">上月</el-button>
           <strong>{{ currentRange.from }} ~ {{ currentRange.to }}</strong>
           <el-button size="small" @click="changeMonth(1)">下月</el-button>
+          <el-button size="small" type="primary" plain @click="openWeeklyList">
+            周计划列表
+          </el-button>
         </div>
         </template>
         <el-table :data="dayRows" v-loading="calendarLoading" size="small">
@@ -172,19 +253,43 @@ onMounted(async () => {
               <span v-else class="muted">不可创建</span>
             </template>
           </el-table-column>
+          <el-table-column label="周计划" width="120">
+            <template #default="{ row, $index }">
+              <el-button
+                v-if="weeklyEntryFlags[$index]"
+                size="small"
+                :loading="weeklyCreatingKey === `${row.term_id}#${row.week_number}`"
+                @click="openWeekly(row)"
+              >
+                周计划
+              </el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </el-card>
 
       <el-alert
-        title="可在日历中选择可创建日期打开或创建日计划；同班仅创建者与管理员可编辑"
+        title="可在日历中打开日计划；点击“周计划”按服务端学期周次创建或打开该周周计划（同一学期同周只有一份，点击不会重复创建）。周计划列表是次入口。"
         type="info"
         :closable="false"
         class="section"
       />
     </template>
 
+    <WeeklyPlanListView
+      v-else-if="weeklyListOpen && !weeklyPlanId && !planDate"
+      @open="openWeeklyFromList"
+      @back="closeWeeklyList"
+    />
+
+    <WeeklyPlanView
+      v-else-if="weeklyPlanId"
+      :plan-id="weeklyPlanId"
+      @back="closeWeekly"
+    />
+
     <DailyPlanView
-      v-else
+      v-else-if="planDate"
       :plan-date="planDate"
       @back="closePlan"
     />

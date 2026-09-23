@@ -21,6 +21,7 @@ import ClassesView from './ClassesView.vue'
 import SchoolProfileView from './SchoolProfileView.vue'
 import TermCalendarView from './TermCalendarView.vue'
 import AdminDailyPlansView from './AdminDailyPlansView.vue'
+import AdminWeeklyPlansView from './AdminWeeklyPlansView.vue'
 import { restorePending } from '../composables/usePendingChange'
 
 const emit = defineEmits<{
@@ -353,6 +354,10 @@ onMounted(async () => {
 
       <el-tab-pane label="日计划" name="plans">
         <AdminDailyPlansView />
+      </el-tab-pane>
+
+      <el-tab-pane label="周计划" name="weekly">
+        <AdminWeeklyPlansView />
       </el-tab-pane>
     </el-tabs>
 
