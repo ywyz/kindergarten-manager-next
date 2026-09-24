@@ -77,6 +77,12 @@ interface ConflictState {
   /** expected_draft_version of the last rejected submit. */
   attemptedVersion: number
   server: WeeklyPlanDetail | null
+  /**
+   * How the conflict arose: a submit rejected with 409 (`rejected`) or a
+   * background state read that found the server draft advanced while local
+   * dirty input was still based on `baseVersion` (`server_advanced`).
+   */
+  reason: 'rejected' | 'server_advanced'
 }
 
 const phase = ref<Phase>('opening')
@@ -101,6 +107,16 @@ const refreshing = ref(false)
 const confirming = ref(false)
 const conflict = ref<ConflictState | null>(null)
 const loadSeq = ref(0)
+/**
+ * Draft version the current unsaved local input is actually based on.
+ *
+ * `detail.draft.version` is the server's displayed version; it can advance
+ * through a background state read (e.g. the post-confirm GET) while local
+ * dirty input stays rooted in an older draft. Saving must use this baseline,
+ * never the displayed version, so a concurrent server save can never be
+ * silently overwritten by a stale local edit.
+ */
+const editBaseVersion = ref<number | null>(null)
 
 const confirmations = ref<WeeklyPlanConfirmedSummary[]>([])
 const confirmationsLoading = ref(false)
@@ -164,6 +180,10 @@ const canConfirm = computed(() => detail.value?.can_confirm === true)
 const anyDirty = computed(() => !isDirtyEmpty(dirty))
 const conflictActive = computed(() => conflict.value !== null)
 const readOnly = computed(() => detail.value !== null && !canEdit.value)
+/** Version the next PATCH will target (the dirty-input baseline, not the display). */
+const saveTargetVersion = computed(
+  () => editBaseVersion.value ?? detail.value?.draft.version ?? 0,
+)
 
 const confirmationStatusText = computed<string>(() => {
   const d = detail.value
@@ -246,6 +266,8 @@ function applyDetail(
   applyFormFrom(serverToForm(next.draft.content), base, opts.keepDirty)
   if (!opts.keepDirty) {
     resetSlotPicks()
+    // Fresh server content is now the form baseline.
+    editBaseVersion.value = next.draft.version
   }
 }
 
@@ -293,6 +315,7 @@ async function load(): Promise<void> {
     detail.value = found
     applyFormFrom(serverToForm(found.draft.content))
     resetSlotPicks()
+    editBaseVersion.value = found.draft.version
     conflict.value = null
     refreshedPanel.value = null
     phase.value = 'ready'
@@ -603,7 +626,10 @@ async function doSave(expectedVersion: number): Promise<void> {
 function save(): void {
   const d = detail.value
   if (!d || conflictActive.value || isDirtyEmpty(dirty)) return
-  void doSave(d.draft.version)
+  // Save against the baseline the local input was actually edited on, never
+  // the server display version: an implicit background refresh must not let a
+  // stale local edit overwrite a newer server draft without a 409.
+  void doSave(editBaseVersion.value ?? d.draft.version)
 }
 
 async function doRefresh(expectedVersion: number): Promise<void> {
@@ -617,7 +643,10 @@ async function doRefresh(expectedVersion: number): Promise<void> {
       classIdParam(),
     )
     // Dirty sections keep the local unsaved input; server-owned layers update.
+    // Refresh is an explicit user action that advances the draft, so the new
+    // version is adopted as the baseline for the kept dirty input.
     applyDetail(next, { keepDirty: true })
+    editBaseVersion.value = next.draft.version
     conflict.value = null
     refreshedPanel.value = next.refreshed_sources || []
     ElMessage.success('已刷新到最新来源；主题、人工覆盖与手工栏目未改动')
@@ -669,7 +698,7 @@ async function doConfirm(expectedVersion: number): Promise<void> {
     // R2: never load() here — a full reload resets the form and dirty flags,
     // discarding unsaved local input. Refresh only server-owned state while
     // keeping every dirty field's value and dirty marker.
-    await refreshAfterConfirm()
+    await refreshAfterConfirm(expectedVersion)
   } catch (err) {
     const e = err as ApiError
     if (e.code === 'VERSION_CONFLICT') {
@@ -724,14 +753,42 @@ function submitConfirm(): void {
  * pointers and the history list. Dirty sections keep the user's local
  * values (including edits made while the confirm request was in flight);
  * non-dirty sections take the server values (identical content anyway).
+ *
+ * Race-R2: confirm commits against `baseVersion`, but another writer may
+ * advance the server draft between that commit and this GET. If dirty input
+ * exists and the server version moved, adopting the new version would
+ * silently re-base the local edits and let the next PATCH overwrite the
+ * other writer. In that case server-owned state is still displayed, but the
+ * edit baseline stays at `baseVersion` and the explicit conflict path is
+ * entered so the user must choose "discard local" or "resubmit on the server
+ * baseline" before any re-base.
  */
-async function refreshAfterConfirm(): Promise<void> {
+async function refreshAfterConfirm(baseVersion: number): Promise<void> {
   const seq = loadSeq.value
   try {
     const fresh = await api.getWeeklyPlan(props.planId, classIdParam())
     if (seq !== loadSeq.value) return
     applyDetail(fresh, { keepDirty: true })
     void loadConfirmations(seq)
+    if (!isDirtyEmpty(dirty) && fresh.draft.version !== baseVersion) {
+      // Do not rebase: keep editBaseVersion at the version the local input was
+      // edited on and force an explicit conflict decision.
+      conflict.value = {
+        action: 'save',
+        baseVersion,
+        attemptedVersion: baseVersion,
+        server: fresh,
+        reason: 'server_advanced',
+      }
+      ElMessage.warning(
+        `确认成功，但服务端草稿已更新至 v${fresh.draft.version}；` +
+          '本地未保存修改仍基于旧版本，请先处理冲突再保存',
+      )
+      return
+    }
+    // No stale dirty input (or the version is unchanged): the displayed draft
+    // is a safe baseline for the local input.
+    editBaseVersion.value = fresh.draft.version
   } catch (err) {
     if (seq !== loadSeq.value) return
     notify(err, '确认成功，但刷新页面状态失败，请重新打开本页核对')
@@ -749,6 +806,9 @@ async function refreshAfterConfirm(): Promise<void> {
  */
 function enterConfirmReview(server: WeeklyPlanDetail): void {
   applyDetail(server, { keepDirty: true })
+  // Explicit user action ("resubmit on the server baseline"): adopt the
+  // reviewed server draft as the baseline for the kept dirty input.
+  editBaseVersion.value = server.draft.version
   conflict.value = null
   resetConfirmFacts()
   confirmError.value = `服务端草稿已更新至 v${server.draft.version}，已载入最新内容与最新事实清单；此前勾选已清空、备注已保留，请重新审阅后再确认。`
@@ -774,7 +834,7 @@ async function enterConflict(
   if (action === 'confirm') {
     confirmOpen.value = false
   }
-  conflict.value = { action, baseVersion, attemptedVersion, server }
+  conflict.value = { action, baseVersion, attemptedVersion, server, reason: 'rejected' }
 }
 
 async function reloadConflictServer(): Promise<void> {
@@ -927,10 +987,16 @@ onMounted(() => {
         type="warning"
         :closable="false"
         class="section conflict-alert"
-        title="草稿版本冲突（409）：本地输入已保留，未被覆盖"
+        :title="conflict.reason === 'server_advanced'
+          ? '服务端草稿已更新：本地未保存修改仍基于旧版本，未被覆盖'
+          : '草稿版本冲突（409）：本地输入已保留，未被覆盖'"
       >
         <div class="conflict-body">
-          <p>
+          <p v-if="conflict.reason === 'server_advanced'">
+            确认成功后读取到服务端草稿已推进；本地未保存修改仍基于草稿版本
+            v{{ conflict.baseVersion }}，不会静默改以新版本为基准。
+          </p>
+          <p v-else>
             本地操作基于草稿版本 v{{ conflict.baseVersion }}
             <template v-if="conflict.attemptedVersion !== conflict.baseVersion">
               ；上次提交（期望 v{{ conflict.attemptedVersion }}）被服务端拒绝
@@ -1514,7 +1580,7 @@ onMounted(() => {
         <span v-if="conflictActive" class="muted">
           冲突处理中：请先选择放弃本地或以服务端为基准重提
         </span>
-        <span v-else-if="anyDirty" class="muted">有未保存的本地修改 · 目标草稿 v{{ detail.draft.version }}</span>
+        <span v-else-if="anyDirty" class="muted">有未保存的本地修改 · 目标草稿 v{{ saveTargetVersion }}</span>
         <span v-else class="muted">草稿 v{{ detail.draft.version }}（无本地修改）</span>
       </div>
     </template>

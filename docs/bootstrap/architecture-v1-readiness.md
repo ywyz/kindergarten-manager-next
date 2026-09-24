@@ -133,6 +133,8 @@ I2 已交付园所配置、班级创建与维护、教师首次真实分配、�
 
 **I4 实施状态（2026-09-23 更新）**：第一片（三表模型与迁移、创建／打开／PATCH／refresh／confirm 事务与锁、事实重算）、第二片（8 条路由、`extra="forbid"` schema、错误映射、`source_candidates`）、第三片（§8 前端闭环，`npm run typecheck` 与 `npm run build` 通过）与第四片（隔离真实验证）均按第 10 节逐片授权完成。第四片实际结果：隔离一次性 MySQL 8.4 / InnoDB 容器与白名单库（`kg-next-i4-mysql-*`，仅 `127.0.0.1` 高位端口，独立 `i4_guard`）；空库与带 I1/I2/I3 行的库均 `alembic upgrade head` 成功，`heads == current == 20260924_i4_weekly_plans`；`tests.integration.test_i4_*` 52 项实际运行 **0 failure / 0 error / 0 skip**（V1–V14 全覆盖，含真实 SIGNAL 触发器回滚、真实线程并发与 FOR UPDATE 锁序、dispose 后重建 engine 的重启持久性）；I4 单测 186 项、I3 单测 132 项回归通过；真实浏览器（系统已装 Chrome + CDP，未新增依赖）按 §8 与 R1/R2/R3 走通并记录 54 项通过；临时 uvicorn／Vite 已停止、I4 容器已删除。验收期间发现并按最小范围修复两处前端缺陷（409 `CONFIRM_ACK_REQUIRED` 后重开确认弹窗丢失最新 facts；确认历史乱序响应覆盖新历史），均只改 `WeeklyPlanView.vue`、不改 API／权限／锁协议／U1–U5，并以同一浏览器套件复跑通过。仓库无前端测试设施，故回归以该浏览器套件与 `typecheck`/`build` 承担。部署与后续切片仍未授权。
 
+**第四片验收后的定向修复（2026-09-24）**：第四片最终验收复跑发现并修复“确认成功后自动刷新导致 dirty 输入被静默重基到更新草稿”的并发缺陷（post-confirm dirty rebase race）。仅改 `frontend/src/views/WeeklyPlanView.vue`：区分服务器展示版本与 dirty 输入实际基于的 draft version；确认后状态读取发现版本推进且存在 dirty 输入时进入显式冲突处理，不再自动重基。定向回归 Race-R2、R1、R2、R3（仅验证）、OBS-1、OBS-2 共 12 项检查通过，`npm run typecheck` 与 `npm run build` 通过；后端 0 修改，故未重跑真实 MySQL V1–V14 与浏览器套件。规格与本节为最小补充，规格条款未改。
+
 后续逐步交付周计划确认、导出、个人 AI、提示词、持久任务执行与交接恢复。AI、个人提示词与持久任务继续属于首版。
 
 ### OpenCode 执行安排
