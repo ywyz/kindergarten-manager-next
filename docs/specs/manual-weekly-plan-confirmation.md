@@ -504,6 +504,21 @@ daily_plan_contents（来源当前版本） → weekly_plan_sync_states（仅消
 
 定向回归（脚本级状态机，复用现有 TypeScript + Vue 运行时，未安装依赖）：Race-R2、R1、R2、R3（仅验证）、OBS-1、OBS-2 共 12 项检查全部通过；`npm run typecheck` 与 `npm run build` 通过。后端 0 修改，故本轮未重跑真实 MySQL V1–V14 与浏览器套件。
 
+### 12.2 I4 最终窄修复：确认目标与编辑基线分离（2026-09-24）
+
+上述定向修复复审后确认同一组合场景仍存在两处缺陷：确认侧 `VERSION_CONFLICT` 后选择“以服务端为基准重提”时，旧实现会把 `editBaseVersion` 静默重基到服务端新版本（之后保存本地 dirty 输入将以新版本无冲突覆盖他人修改、绕过保存侧 409）；且确认目标在重叠 dirty 字段上的已保存内容只存在于服务端，用户在主编辑区看到的是本地输入，无法真正复核。
+
+最终窄修复仅改 `frontend/src/views/WeeklyPlanView.vue`（147 增 / 31 删），引入独立 confirmation target（服务端已保存草稿的版本 + 内容快照）并与 `editBaseVersion` 分离：确认冲突复核只推进确认目标与页面展示，dirty 输入存在时不触碰 `editBaseVersion`（仅在无任何本地未保存输入时随展示安全取新值）；`submitConfirm` 一律按确认目标版本发请求；确认成功后的状态读取改按真实编辑基线判断，服务端版本与基线不一致即进入显式保存侧冲突（保存侧 409 不被确认冲突处理绕过）；确认对话框按确认目标显示版本，并在存在本地未保存修改时提供确认目标内容预览（含与 dirty 重叠的字段）、声明本地输入不属于本次确认目标；`ackMissing`/`ackStale` 清空、`note` 保留、复核不自动发送请求、`CONFIRM_ACK_REQUIRED` 最新 facts + 重置 ack 语义不变；R1、R2、Race-R2、R3、OBS-1、OBS-2 行为保持。未改 `TeacherView.vue`；后端 API、schema、service、迁移、数据库模型、权限、锁协议与 U1–U5 全部 0 修改；未引入新依赖。
+
+实际执行检查（2026-09-24）：
+
+- 新增脚本级状态机定向回归 A–D 共 **43 项全部通过**（复用仓库既有 TypeScript + Vue 运行时与既有 helper，无新依赖、无浏览器）：A 确认冲突后复核可见真实 v2 目标、本地 dirty 保留且不参与确认、ack 清空、再次点击前无 confirm 请求；B 确认 v2 成功后保存基于 v1 的本地输入进入保存侧版本冲突、明确处理后才以 expected=2 提交；C 复核期间服务端推进到 v3 再次进入同一流程、不自动确认、dirty 不丢、基线不污染；D `CONFIRM_ACK_REQUIRED` 最新 facts、ack 重置、不自动重试、目标版本与展示一致。
+- 既有脚本复跑通过：Race-R2/R1/R2/OBS-1/OBS-2/R3 **12/12**；R1/R2/R3 详细状态检查 **75/75**。
+- `npm run typecheck` 与 `npm run build` 通过（build 仅有既有 bundle 体积警告）。
+- 定向真实浏览器场景 **A+B 共 18 项全部通过**（系统已装 Chrome + CDP，未安装新依赖）：一次性隔离 MySQL 8.4.11 / InnoDB 容器 `kg-next-i4-mysql-20260924-ab`（仅 `127.0.0.1:13385`，白名单库 `kindergarten_test_i4_fresh`，现有 `i4_guard`，`APP_DISABLE_DOTENV=1`，未读 `.env`），`alembic upgrade head` 至 `20260924_i4_weekly_plans` 后用现有种子脚本建数据，临时 uvicorn + Vite 走通上述交互（含对话框内确认目标预览、保存基线提示、保存侧冲突与显式重提），结束后已停止服务并删除该容器；§8 的 54 项浏览器矩阵本轮未重跑（仅做上述定向 A+B）。
+
+后端 0 修改，因此未重跑真实 MySQL V1–V14 集成套件——该套件覆盖的服务、锁与 API 层不在本任务触及范围内。本节仅补充最终窄修复及其定向验证事实，不改写既有 I4 历史，也不把 I4 描述为需要新一轮全面验收。
+
 ## 结束说明
 
 本规格在本范围内**已确认**（U1=A、U2=B、U3=A、U4 双路径、U5=A，2026-09-23）：schema、API、锁协议、确认事实与校验条款可按本文冻结，无遗留待选项（§1.5 表中被拒方案仅作决策留痕）。**四片实施与第四片真实验证已于 2026-09-23 按第 10 节逐片授权完成**：集成 V1–V14 在隔离 MySQL 8.4 / InnoDB 上 0 skip 通过，§8 与 R1/R2/R3 由真实浏览器走通，临时服务与容器已清理；第 10 节第四片完成条件已满足。部署仍未授权；后续切片（Word 导出、AI、提示词、任务队列等）不因本次验证自动开始。

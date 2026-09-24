@@ -135,6 +135,8 @@ I2 已交付园所配置、班级创建与维护、教师首次真实分配、�
 
 **第四片验收后的定向修复（2026-09-24）**：第四片最终验收复跑发现并修复“确认成功后自动刷新导致 dirty 输入被静默重基到更新草稿”的并发缺陷（post-confirm dirty rebase race）。仅改 `frontend/src/views/WeeklyPlanView.vue`：区分服务器展示版本与 dirty 输入实际基于的 draft version；确认后状态读取发现版本推进且存在 dirty 输入时进入显式冲突处理，不再自动重基。定向回归 Race-R2、R1、R2、R3（仅验证）、OBS-1、OBS-2 共 12 项检查通过，`npm run typecheck` 与 `npm run build` 通过；后端 0 修改，故未重跑真实 MySQL V1–V14 与浏览器套件。规格与本节为最小补充，规格条款未改。
 
+**I4 最终窄修复（2026-09-24，见规格 §12.2）**：上述修复复审后确认“确认冲突复核”仍会把 dirty 输入的保存基线隐式重基到服务端新版本（绕过保存侧 409），且用户无法查看确认目标在重叠 dirty 字段上的已保存内容。最终窄修复仍仅改 `frontend/src/views/WeeklyPlanView.vue`，引入独立 confirmation target（版本 + 内容快照）与 `editBaseVersion` 分离：确认冲突复核只推进确认目标与展示、不重基编辑基线；确认目标推进到新版本不绕过保存侧版本冲突；确认对话框在存在本地未保存修改时预览确认目标真实内容并声明其不参与确认；ack/note/无自动请求/`CONFIRM_ACK_REQUIRED` 语义不变，R1/R2/Race-R2/R3/OBS-1/OBS-2 不回归。实际执行：新增 A–D 脚本级状态机 43 项通过，复跑既有 12 项与详细 75 项通过，`npm run typecheck` 与 `npm run build` 通过，定向真实浏览器 A+B 18 项通过（一次性隔离 MySQL 8.4.11 / InnoDB、`127.0.0.1:13385`、白名单库、现有 guard、不读 `.env`，Chrome + CDP 无新依赖，结束已停止服务并删除容器）；§8 54 项浏览器矩阵与 MySQL V1–V14 未重跑——后端 0 修改且未触及它们覆盖的服务、锁与 API 层。后端无修改，未提交、未推送；I4 不需要新一轮全面验收。
+
 后续逐步交付周计划确认、导出、个人 AI、提示词、持久任务执行与交接恢复。AI、个人提示词与持久任务继续属于首版。
 
 ### OpenCode 执行安排

@@ -113,10 +113,28 @@ const loadSeq = ref(0)
  * `detail.draft.version` is the server's displayed version; it can advance
  * through a background state read (e.g. the post-confirm GET) while local
  * dirty input stays rooted in an older draft. Saving must use this baseline,
- * never the displayed version, so a concurrent server save can never be
- * silently overwritten by a stale local edit.
+ * never the displayed version and never the confirmation target, so a
+ * concurrent server save can never be silently overwritten by a stale local
+ * edit.
  */
 const editBaseVersion = ref<number | null>(null)
+
+/**
+ * Explicit confirmation target: the saved server draft the next confirm
+ * request will act on (version + content snapshot).
+ *
+ * Kept apart from `form`/`dirty` (local unsaved edits) and from
+ * `editBaseVersion` (the save baseline of those edits). Adopting a newer
+ * server draft as the confirmation target — e.g. after a confirm-side
+ * VERSION_CONFLICT review — must never rebase the local edit baseline, and
+ * dirty fields in the main editor must not hide what is actually being
+ * confirmed: the dialog previews this snapshot so overlapping dirty fields
+ * can still be reviewed against their real saved content.
+ */
+const confirmTarget = ref<{
+  version: number
+  content: WeeklyPlanDetail['draft']['content']
+} | null>(null)
 
 const confirmations = ref<WeeklyPlanConfirmedSummary[]>([])
 const confirmationsLoading = ref(false)
@@ -268,6 +286,9 @@ function applyDetail(
     resetSlotPicks()
     // Fresh server content is now the form baseline.
     editBaseVersion.value = next.draft.version
+    // A newly installed saved baseline supersedes any pending confirmation
+    // target; the dialog (if reopened) adopts the displayed draft again.
+    confirmTarget.value = null
   }
 }
 
@@ -316,6 +337,7 @@ async function load(): Promise<void> {
     applyFormFrom(serverToForm(found.draft.content))
     resetSlotPicks()
     editBaseVersion.value = found.draft.version
+    confirmTarget.value = null
     conflict.value = null
     refreshedPanel.value = null
     phase.value = 'ready'
@@ -673,6 +695,9 @@ function openConfirm(): void {
   if (!d || !canConfirm.value || conflictActive.value) return
   resetConfirmFacts()
   confirmNote.value = ''
+  // Normal path: the confirmation target is the displayed saved draft —
+  // explicitly, not derived from the local edit state.
+  confirmTarget.value = { version: d.draft.version, content: d.draft.content }
   confirmOpen.value = true
 }
 
@@ -694,6 +719,7 @@ async function doConfirm(expectedVersion: number): Promise<void> {
     )
     conflict.value = null
     confirmOpen.value = false
+    confirmTarget.value = null
     ElMessage.success(`已确认，生成确认版本 V${result.version}`)
     // R2: never load() here — a full reload resets the form and dirty flags,
     // discarding unsaved local input. Refresh only server-owned state while
@@ -742,7 +768,9 @@ async function doConfirm(expectedVersion: number): Promise<void> {
 function submitConfirm(): void {
   const d = detail.value
   if (!d || !acksSatisfied.value || conflictActive.value) return
-  void doConfirm(d.draft.version)
+  // Confirm targets the explicit confirmation target (the reviewed saved
+  // draft), never a version derived from the local edit baseline.
+  void doConfirm(confirmTarget.value?.version ?? d.draft.version)
 }
 
 /**
@@ -754,14 +782,16 @@ function submitConfirm(): void {
  * values (including edits made while the confirm request was in flight);
  * non-dirty sections take the server values (identical content anyway).
  *
- * Race-R2: confirm commits against `baseVersion`, but another writer may
- * advance the server draft between that commit and this GET. If dirty input
- * exists and the server version moved, adopting the new version would
- * silently re-base the local edits and let the next PATCH overwrite the
- * other writer. In that case server-owned state is still displayed, but the
- * edit baseline stays at `baseVersion` and the explicit conflict path is
- * entered so the user must choose "discard local" or "resubmit on the server
- * baseline" before any re-base.
+ * Race-R2 / final-fix separation: confirm commits against `baseVersion`
+ * (the confirmation target), but the dirty input's real save baseline is
+ * `editBaseVersion` — the version the local edits were actually made on.
+ * These are different things: confirming a reviewed v2 while local edits
+ * still derive from v1 must NOT advance the edit baseline to v2, or the
+ * next PATCH would overwrite the other writer without a save-side 409.
+ * Whenever the server version differs from the real edit baseline, server-
+ * owned state is still displayed, but the edit baseline stays put and the
+ * explicit conflict path is entered so the user must choose "discard local"
+ * or "resubmit on the server baseline" before any re-base.
  */
 async function refreshAfterConfirm(baseVersion: number): Promise<void> {
   const seq = loadSeq.value
@@ -770,12 +800,13 @@ async function refreshAfterConfirm(baseVersion: number): Promise<void> {
     if (seq !== loadSeq.value) return
     applyDetail(fresh, { keepDirty: true })
     void loadConfirmations(seq)
-    if (!isDirtyEmpty(dirty) && fresh.draft.version !== baseVersion) {
+    const baseline = editBaseVersion.value ?? baseVersion
+    if (!isDirtyEmpty(dirty) && fresh.draft.version !== baseline) {
       // Do not rebase: keep editBaseVersion at the version the local input was
       // edited on and force an explicit conflict decision.
       conflict.value = {
         action: 'save',
-        baseVersion,
+        baseVersion: baseline,
         attemptedVersion: baseVersion,
         server: fresh,
         reason: 'server_advanced',
@@ -786,8 +817,8 @@ async function refreshAfterConfirm(baseVersion: number): Promise<void> {
       )
       return
     }
-    // No stale dirty input (or the version is unchanged): the displayed draft
-    // is a safe baseline for the local input.
+    // No stale dirty input (or the edit baseline is unchanged): the displayed
+    // draft is a safe baseline for the local input.
     editBaseVersion.value = fresh.draft.version
   } catch (err) {
     if (seq !== loadSeq.value) return
@@ -796,24 +827,37 @@ async function refreshAfterConfirm(baseVersion: number): Promise<void> {
 }
 
 /**
- * R1: confirm-side conflict resolution = latest-draft review state.
+ * R1 + final fix: confirm-side conflict resolution = latest-draft review
+ * state with an independent confirmation target.
  *
- * Adopts the conflict-time server detail as the page baseline (latest
- * version, content for non-dirty fields, missing/stale lists), keeps all
- * local unsaved edits, clears both acks, keeps the note, and reopens the
- * confirm dialog. It never sends a confirm request — the user must review
- * and click confirm again; a repeated conflict re-enters the same flow.
+ * Adopts the conflict-time server detail as the page display (latest
+ * version, content for non-dirty fields, missing/stale lists), installs the
+ * server draft as the new *confirmation target* (version + content
+ * snapshot, previewed in the dialog so dirty fields cannot hide it), clears
+ * both acks, keeps the note, and reopens the confirm dialog. It never sends
+ * a confirm request — the user must review and click confirm again; a
+ * repeated conflict (v2 → v3) re-enters the same flow.
+ *
+ * It deliberately does NOT touch `editBaseVersion` while local unsaved
+ * input exists: reviewing/confirming a newer server draft is not an edit
+ * rebase. The dirty input keeps its real baseline (v1 here), so a later
+ * save of that input must still hit the save-side VERSION_CONFLICT instead
+ * of silently overwriting the other writer's v2 changes. Only with no dirty
+ * input at all does the displayed draft become the trivially-safe baseline.
  */
 function enterConfirmReview(server: WeeklyPlanDetail): void {
   applyDetail(server, { keepDirty: true })
-  // Explicit user action ("resubmit on the server baseline"): adopt the
-  // reviewed server draft as the baseline for the kept dirty input.
-  editBaseVersion.value = server.draft.version
+  if (isDirtyEmpty(dirty)) {
+    // Nothing unsaved: the form already equals the server content, so the
+    // displayed draft is the truthful edit baseline.
+    editBaseVersion.value = server.draft.version
+  }
+  confirmTarget.value = { version: server.draft.version, content: server.draft.content }
   conflict.value = null
   resetConfirmFacts()
-  confirmError.value = `服务端草稿已更新至 v${server.draft.version}，已载入最新内容与最新事实清单；此前勾选已清空、备注已保留，请重新审阅后再确认。`
+  confirmError.value = `服务端草稿已更新至 v${server.draft.version}，已将该版本设为本次确认目标并载入最新事实清单；此前勾选已清空、备注已保留。页面中的本地未保存修改不属于本次确认目标，其保存基线也未改变，请重新审阅后再确认。`
   confirmOpen.value = true
-  ElMessage.info(`已载入最新草稿 v${server.draft.version}，请重新审阅后确认`)
+  ElMessage.info(`已载入最新草稿 v${server.draft.version} 作为确认目标，请重新审阅后确认`)
 }
 
 // --- version conflict handling --------------------------------------------
@@ -1014,8 +1058,10 @@ onMounted(() => {
               系统不会静默覆盖，也不会自动重试；再次冲突仍按冲突处理。
             </p>
             <p v-if="conflict.action === 'confirm'" class="conflict-hint">
-              确认冲突下“以服务端为基准重提”只会载入最新草稿与事实供您重新审阅，
-              不会直接发送确认请求；需您再次明确点击确认后才会提交。
+              确认冲突下“以服务端为基准重提”只会把服务端最新草稿设为本次确认目标，
+              并载入其内容与事实供您重新审阅，不会直接发送确认请求；
+              需您再次明确点击确认后才会提交。该操作不会推进本地未保存修改的保存基线，
+              之后保存本地修改仍按其原有基线做版本保护。
             </p>
             <div class="actions-row">
               <el-button
@@ -1580,7 +1626,12 @@ onMounted(() => {
         <span v-if="conflictActive" class="muted">
           冲突处理中：请先选择放弃本地或以服务端为基准重提
         </span>
-        <span v-else-if="anyDirty" class="muted">有未保存的本地修改 · 目标草稿 v{{ saveTargetVersion }}</span>
+        <span v-else-if="anyDirty" class="muted">
+          有未保存的本地修改 · 保存目标草稿 v{{ saveTargetVersion }}
+          <template v-if="detail && saveTargetVersion !== detail.draft.version">
+            （服务端当前为 v{{ detail.draft.version }}，保存时将按版本冲突处理，不会静默覆盖）
+          </template>
+        </span>
         <span v-else class="muted">草稿 v{{ detail.draft.version }}（无本地修改）</span>
       </div>
     </template>
@@ -1626,12 +1677,77 @@ onMounted(() => {
       :close-on-click-modal="false"
     >
       <p>
-        当前已保存草稿版本：<strong>v{{ detail?.draft.version }}</strong>
+        当前已保存草稿版本：<strong>v{{ confirmTarget?.version ?? detail?.draft.version }}</strong>
+        （本次确认目标）
       </p>
       <p class="muted">
-        确认生成不可修改的确认版本，只包含已保存的草稿内容；未保存的本地修改不会包含在内。
+        确认生成不可修改的确认版本，只包含该确认目标的已保存草稿内容；未保存的本地修改不会包含在内。
         确认不会刷新来源，陈旧来源将按草稿现状原样保留。
       </p>
+
+      <!-- 确认目标内容快照：dirty 字段在主编辑区显示本地输入时，
+           必须能在此查看确认目标在重叠字段上的真实已保存内容 -->
+      <el-alert
+        v-if="confirmTarget && anyDirty"
+        type="info"
+        :closable="false"
+        class="inline-alert"
+        :title="`确认目标内容（服务端已保存草稿 v${confirmTarget.version}）`"
+      >
+        <p class="muted">
+          主编辑区中带“未保存的本地修改”标记的字段显示的是本地输入，它们不属于本次确认目标、
+          不会被提交也不会被丢弃；以下才是本次确认目标在这些字段上的真实已保存内容。
+        </p>
+        <p><strong>主题：</strong>{{ confirmTarget.content.theme || '（空）' }}</p>
+
+        <h4 class="facts-title">每日确定性栏目</h4>
+        <el-table :data="confirmedContentRows(confirmTarget.content)" size="small">
+          <el-table-column prop="date" label="日期" width="110" />
+          <el-table-column label="晨间谈话话题（生效）">
+            <template #default="{ row }">
+              {{ row.effective?.morning_talk_topic || '（空）' }}
+              <el-tag v-if="row.override?.morning_talk_topic != null" size="small" type="warning">
+                覆盖
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="集体活动主题（生效）">
+            <template #default="{ row }">
+              {{ row.effective?.group_activity_theme || '（空）' }}
+              <el-tag v-if="row.override?.group_activity_theme != null" size="small" type="warning">
+                覆盖
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <h4 class="facts-title">户外游戏</h4>
+        <div v-for="key in OUTDOOR_SLOT_KEYS" :key="`target-${key}`" class="snapshot-line">
+          <strong>{{ SLOT_LABELS[key] }}：</strong>
+          <template v-if="confirmTarget.content.outdoor_game_slots?.[key]">
+            {{ confirmTarget.content.outdoor_game_slots[key]!.name || '（未命名）' }}
+            <span
+              v-if="confirmTarget.content.outdoor_game_slots[key]!.source_kind === 'manual'"
+              class="muted"
+            >
+              手工补充
+            </span>
+          </template>
+          <span v-else class="muted">未选择</span>
+        </div>
+
+        <h4 class="facts-title">重点区域</h4>
+        <p v-if="confirmTarget.content.focus_area" class="snapshot-line">
+          {{ confirmTarget.content.focus_area.name || '（未命名）' }}
+        </p>
+        <p v-else class="muted">未选择</p>
+
+        <h4 class="facts-title">手工栏目</h4>
+        <div v-for="key in WEEKLY_COLUMN_KEYS" :key="`target-${key}`" class="snapshot-line">
+          <strong>{{ WEEKLY_COLUMN_LABELS[key] }}：</strong>
+          {{ confirmTarget.content.weekly_columns?.[key] || '（空）' }}
+        </div>
+      </el-alert>
 
       <template v-if="confirmFacts.missing.length > 0">
         <h4 class="facts-title">缺失事实（{{ confirmFacts.missing.length }}）——必须知晓后确认</h4>
