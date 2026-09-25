@@ -332,22 +332,163 @@ class WeekHeaderAndColumnsTests(unittest.TestCase):
                 ),
             ]
         )
-        columns = {c["date"]: c for c in mapping.build_week_columns(week_days, content)}
+        columns = {
+            c["date"]: c
+            for c in mapping.build_week_columns(
+                week_days, content, week_start=date(2026, 8, 31)
+            )
+        }
+        # Fixed Mon-Fri only: Sat/Sun are rest and must not become columns.
+        self.assertEqual(
+            list(columns),
+            [
+                "2026-08-31",
+                "2026-09-01",
+                "2026-09-02",
+                "2026-09-03",
+                "2026-09-04",
+            ],
+        )
+        # 08-31 is not in the clipped week_days -> out-of-term placeholder.
+        self.assertTrue(columns["2026-08-31"]["holiday"])
+        self.assertTrue(columns["2026-08-31"]["outside_term"])
+        self.assertEqual(columns["2026-08-31"]["morning_talk_topic"], "")
         self.assertEqual(columns["2026-09-01"]["morning_talk_topic"], "人工谈话")
         self.assertEqual(
             columns["2026-09-01"]["group_activity_theme"], "人工活动"
         )
         self.assertFalse(columns["2026-09-01"]["holiday"])
+        self.assertFalse(columns["2026-09-01"]["outside_term"])
         self.assertEqual(columns["2026-09-02"]["morning_talk_topic"], "")
         self.assertFalse(columns["2026-09-02"]["holiday"])
         self.assertEqual(columns["2026-09-02"]["plan_state"], "no_plan")
         self.assertTrue(columns["2026-09-03"]["holiday"])
+        self.assertFalse(columns["2026-09-03"]["outside_term"])
         self.assertEqual(columns["2026-09-03"]["morning_talk_topic"], "")
         self.assertEqual(columns["2026-09-04"]["morning_talk_topic"], "")
         self.assertEqual(
             columns["2026-09-04"]["group_activity_theme"], ""
         )
         self.assertFalse(columns["2026-09-04"]["holiday"])
+
+    def test_weekend_and_partial_week_columns(self):
+        def cols(week_days, week_start):
+            return [
+                c["weekday"]
+                for c in mapping.build_week_columns(
+                    week_days, _weekly_content(), week_start=week_start
+                )
+            ]
+
+        week_start = date(2026, 8, 31)
+        # Ordinary week: Mon-Fri teaching, weekend rest -> five columns.
+        self.assertEqual(
+            cols(
+                {
+                    date(2026, 8, 31): "teaching",
+                    date(2026, 9, 1): "teaching",
+                    date(2026, 9, 2): "teaching",
+                    date(2026, 9, 3): "teaching",
+                    date(2026, 9, 4): "teaching",
+                    date(2026, 9, 5): "rest",
+                    date(2026, 9, 6): "rest",
+                },
+                week_start,
+            ),
+            [1, 2, 3, 4, 5],
+        )
+        # Saturday teaching -> six columns.
+        self.assertEqual(
+            cols(
+                {
+                    date(2026, 9, 1): "teaching",
+                    date(2026, 9, 5): "teaching",
+                    date(2026, 9, 6): "rest",
+                },
+                week_start,
+            ),
+            [1, 2, 3, 4, 5, 6],
+        )
+        # Sunday teaching -> six columns.
+        self.assertEqual(
+            cols(
+                {
+                    date(2026, 9, 1): "teaching",
+                    date(2026, 9, 5): "rest",
+                    date(2026, 9, 6): "teaching",
+                },
+                week_start,
+            ),
+            [1, 2, 3, 4, 5, 7],
+        )
+        # Both weekend days teaching -> seven columns.
+        self.assertEqual(
+            cols(
+                {
+                    date(2026, 9, 5): "teaching",
+                    date(2026, 9, 6): "teaching",
+                },
+                week_start,
+            ),
+            [1, 2, 3, 4, 5, 6, 7],
+        )
+        # A resting weekday still keeps its fixed column.
+        rest_monday = cols(
+            {date(2026, 8, 31): "rest", date(2026, 9, 1): "teaching"}, week_start
+        )
+        self.assertEqual(rest_monday, [1, 2, 3, 4, 5])
+
+        # Zero-teaching-day week -> five fixed holiday columns.
+        zero_week_days = {
+            date(2026, 10, 5): "rest",
+            date(2026, 10, 6): "rest",
+            date(2026, 10, 7): "rest",
+            date(2026, 10, 8): "rest",
+            date(2026, 10, 9): "rest",
+            date(2026, 10, 10): "rest",
+            date(2026, 10, 11): "rest",
+        }
+        zero_columns = mapping.build_week_columns(
+            zero_week_days, _weekly_content(), week_start=date(2026, 10, 5)
+        )
+        self.assertEqual([c["weekday"] for c in zero_columns], [1, 2, 3, 4, 5])
+        self.assertTrue(all(c["holiday"] for c in zero_columns))
+        self.assertTrue(all(not c["outside_term"] for c in zero_columns))
+
+    def test_term_start_partial_week_keeps_fixed_columns(self):
+        # Term starts on a Thursday: Mon-Wed are outside the term but the fixed
+        # weekday columns must still exist as empty placeholders.
+        week_days = {
+            date(2026, 9, 3): "teaching",
+            date(2026, 9, 4): "teaching",
+        }
+        columns = mapping.build_week_columns(
+            week_days, _weekly_content(), week_start=date(2026, 8, 31)
+        )
+        self.assertEqual([c["weekday"] for c in columns], [1, 2, 3, 4, 5])
+        self.assertEqual(
+            [c["outside_term"] for c in columns], [True, True, True, False, False]
+        )
+        for column in columns[:3]:
+            self.assertTrue(column["holiday"])
+            self.assertEqual(column["morning_talk_topic"], "")
+            self.assertEqual(column["group_activity_theme"], "")
+
+    def test_term_end_partial_week_keeps_fixed_columns(self):
+        # Term ends on a Tuesday: Wed-Fri are outside the term placeholders.
+        week_days = {
+            date(2026, 12, 1): "teaching",
+            date(2026, 12, 2): "teaching",
+        }
+        columns = mapping.build_week_columns(
+            week_days, _weekly_content(), week_start=date(2026, 11, 30)
+        )
+        self.assertEqual([c["weekday"] for c in columns], [1, 2, 3, 4, 5])
+        self.assertEqual(
+            [c["outside_term"] for c in columns],
+            [True, False, False, True, True],
+        )
+        self.assertTrue(all(c["holiday"] for c in columns[3:]))
 
 
 class WeeklyMappingTests(unittest.TestCase):
@@ -381,10 +522,10 @@ class WeeklyMappingTests(unittest.TestCase):
             view["date_range"],
             {"start": date(2026, 10, 5), "end": date(2026, 10, 11)},
         )
-        self.assertEqual(len(view["columns"]), 7)
+        self.assertEqual(len(view["columns"]), 5)
         self.assertTrue(all(c["holiday"] for c in view["columns"]))
         self.assertEqual(
-            [c["morning_talk_topic"] for c in view["columns"]], [""] * 7
+            [c["morning_talk_topic"] for c in view["columns"]], [""] * 5
         )
 
     def test_week_number_not_recomputed_from_columns(self):
@@ -410,7 +551,17 @@ class WeeklyMappingTests(unittest.TestCase):
         )
         view = mapping.map_weekly_plan(item)
         self.assertEqual(view["week_number"], 5)
-        self.assertEqual(len(view["columns"]), 1)
+        self.assertEqual(len(view["columns"]), 5)
+        self.assertEqual(
+            [c["date"] for c in view["columns"]],
+            [
+                "2026-09-28",
+                "2026-09-29",
+                "2026-09-30",
+                "2026-10-01",
+                "2026-10-02",
+            ],
+        )
         self.assertEqual(
             view["date_range"],
             {"start": date(2026, 9, 28), "end": date(2026, 9, 28)},

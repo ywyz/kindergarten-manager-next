@@ -116,6 +116,7 @@ class DailyExportBundle:
     missing: tuple[dict, ...]
     warnings: tuple[dict, ...]
     ack_required: bool
+    ack_reason: str | None
     expected_context: dict
 
 
@@ -123,48 +124,207 @@ class DailyExportBundle:
 # daily plan read / pin / missing facts
 # ---------------------------------------------------------------------------
 
-# Fixed-template column groups checked for content presence (spec 4.1,
-# engineering scheme aligned with the I4 "empty_field" wording). Empty
-# string / empty array / missing key are missing; ``{}`` misses all of them.
-DAILY_MISSING_FIELDS: tuple[tuple[str, str], ...] = (
-    ("morning_games", "section"),
-    ("morning_talk.topic", "text"),
-    ("morning_talk.questions", "text"),
-    ("group_activity.theme", "text"),
-    ("group_activity.objectives", "text"),
-    ("group_activity.preparation", "text"),
-    ("group_activity.key_points", "text"),
-    ("group_activity.difficult_points", "text"),
-    ("group_activity.process", "text"),
-    ("post_group_games", "section"),
-    ("afternoon_outdoor", "section"),
-    ("reflection", "text"),
-)
+# Per-column emptiness rules for the fixed daily template (spec 4.1/5.1).
+# A column is checked only when its branch applies: the morning template needs
+# one collective and one free_choice group, each present post-group context is
+# checked field by field, and no particular post-group context kind is
+# demanded. Every fact carries a stable locator (section / group / game) so the
+# fingerprint is deterministic and multiple same-kind entries are never lost.
+# I3's save rules are untouched: incomplete content may still be stored, it
+# only shows up here as missing template columns.
+
+_PRESENT_GROUP_KINDS = ("collective", "free_choice")
+_POST_GROUP_CONTEXTS = ("area", "outdoor", "special_room")
 
 
-def _resolve_path(content: dict, path: str):
-    current = content
-    for part in path.split("."):
-        if not isinstance(current, dict):
-            return None
-        current = current.get(part)
-    return current
+def _present(value) -> bool:
+    """True only for non-empty (non-whitespace) text."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _fact(field: str, **locators) -> dict:
+    fact: dict = {"kind": "empty_field", "field": field}
+    for key in (
+        "section",
+        "group_kind",
+        "group_index",
+        "group_id",
+        "game_index",
+        "game_id",
+    ):
+        value = locators.get(key)
+        if value is not None:
+            fact[key] = value
+    return fact
+
+
+def _missing_game_facts(
+    games, *, prefix: str, section: str, locators: dict
+) -> list[dict]:
+    """Empty game list / blank game name facts for one group."""
+    if not isinstance(games, list) or not games:
+        return [_fact(f"{prefix}.games", section=section, **locators)]
+    facts: list[dict] = []
+    for game_index, game in enumerate(games):
+        name = game.get("name") if isinstance(game, dict) else None
+        if not _present(name):
+            facts.append(
+                _fact(
+                    f"{prefix}.games[{game_index}].name",
+                    section=section,
+                    game_index=game_index,
+                    game_id=(
+                        game.get("game_id") if isinstance(game, dict) else None
+                    ),
+                    **locators,
+                )
+            )
+    return facts
 
 
 def collect_daily_missing_facts(adopted_content) -> list[dict]:
     """Server-side missing facts from the stored ``adopted_content`` only."""
     content = adopted_content if isinstance(adopted_content, dict) else {}
     facts: list[dict] = []
-    for path, kind in DAILY_MISSING_FIELDS:
-        value = _resolve_path(content, path)
-        if kind == "text":
-            missing = not (isinstance(value, str) and value.strip())
-        else:
-            missing = value is None or (
-                isinstance(value, (list, dict)) and len(value) == 0
+
+    # Morning games: the fixed collective + free_choice name columns, each
+    # group's shared objectives/guidance columns, and every game name.
+    raw_morning = content.get("morning_games")
+    morning_groups = (
+        [g for g in raw_morning if isinstance(g, dict)]
+        if isinstance(raw_morning, list)
+        else []
+    )
+    for kind in _PRESENT_GROUP_KINDS:
+        if not any(g.get("group_kind") == kind for g in morning_groups):
+            facts.append(
+                _fact(
+                    f"morning_games.{kind}",
+                    section="morning_games",
+                    group_kind=kind,
+                )
             )
-        if missing:
-            facts.append({"kind": "empty_field", "field": path})
+    for index, group in enumerate(morning_groups):
+        prefix = f"morning_games[{index}]"
+        locators = {
+            "group_kind": group.get("group_kind"),
+            "group_index": index,
+            "group_id": group.get("group_id"),
+        }
+        facts.extend(
+            _missing_game_facts(
+                group.get("games"),
+                prefix=prefix,
+                section="morning_games",
+                locators=locators,
+            )
+        )
+        for field in ("focus_guidance", "shared_objectives", "guidance_points"):
+            if not _present(group.get(field)):
+                facts.append(
+                    _fact(f"{prefix}.{field}", section="morning_games", **locators)
+                )
+
+    raw_talk = content.get("morning_talk")
+    talk = raw_talk if isinstance(raw_talk, dict) else {}
+    for field in ("topic", "questions"):
+        if not _present(talk.get(field)):
+            facts.append(_fact(f"morning_talk.{field}", section="morning_talk"))
+
+    raw_activity = content.get("group_activity")
+    activity = raw_activity if isinstance(raw_activity, dict) else {}
+    for field in (
+        "theme",
+        "objectives",
+        "preparation",
+        "key_points",
+        "difficult_points",
+        "process",
+    ):
+        if not _present(activity.get(field)):
+            facts.append(_fact(f"group_activity.{field}", section="group_activity"))
+
+    # Post-group games: the section column, then each present context group's
+    # own columns. Only the branches that actually appear are checked.
+    raw_post = content.get("post_group_games")
+    post_groups = (
+        [g for g in raw_post if isinstance(g, dict)]
+        if isinstance(raw_post, list)
+        else []
+    )
+    if not post_groups:
+        facts.append(_fact("post_group_games", section="post_group_games"))
+    else:
+        for index, group in enumerate(post_groups):
+            prefix = f"post_group_games[{index}]"
+            locators = {
+                "group_index": index,
+                "group_id": group.get("group_id"),
+            }
+            if group.get("context_kind") not in _POST_GROUP_CONTEXTS:
+                facts.append(
+                    _fact(
+                        f"{prefix}.context_kind",
+                        section="post_group_games",
+                        **locators,
+                    )
+                )
+            facts.extend(
+                _missing_game_facts(
+                    group.get("games"),
+                    prefix=prefix,
+                    section="post_group_games",
+                    locators=locators,
+                )
+            )
+            for field in (
+                "area",
+                "focus_guidance",
+                "objectives",
+                "guidance",
+                "support_strategy",
+            ):
+                if not _present(group.get(field)):
+                    facts.append(
+                        _fact(
+                            f"{prefix}.{field}",
+                            section="post_group_games",
+                            **locators,
+                        )
+                    )
+
+    afternoon = content.get("afternoon_outdoor")
+    if not isinstance(afternoon, dict):
+        facts.append(_fact("afternoon_outdoor", section="afternoon_outdoor"))
+    else:
+        locators = {"group_id": afternoon.get("group_id")}
+        facts.extend(
+            _missing_game_facts(
+                afternoon.get("games"),
+                prefix="afternoon_outdoor",
+                section="afternoon_outdoor",
+                locators=locators,
+            )
+        )
+        for field in (
+            "area",
+            "observation_focus",
+            "objectives",
+            "guidance",
+            "support_strategy",
+        ):
+            if not _present(afternoon.get(field)):
+                facts.append(
+                    _fact(
+                        f"afternoon_outdoor.{field}",
+                        section="afternoon_outdoor",
+                        **locators,
+                    )
+                )
+
+    if not _present(content.get("reflection")):
+        facts.append(_fact("reflection", section="reflection"))
+
     return facts
 
 
@@ -321,6 +481,15 @@ def prepare_daily_export(
     per-request responsibility (spec 3.5); every call here recomputes versions
     and facts, so an ack accepted on a previous request is re-validated
     against the freshly read object.
+
+    Section 11.8 option B: an echoed expected context is only honoured when it
+    equals the freshly recomputed one. A matching context with ``ack_missing``
+    continues; a context that does not match (object/version/facts changed, or
+    the context is absent/invalid on a retry) makes the old ack void and
+    requires a fresh confirmation even when the latest ``missing`` set is
+    empty, with ``ack_reason="context_changed"`` so the future API layer can
+    tell the user the displayed object changed. A first request with no echoed
+    context and no missing facts exports directly.
     """
     records = select_daily_plans(
         db, class_id=class_id, from_date=from_date, to_date=to_date
@@ -347,15 +516,33 @@ def prepare_daily_export(
         records=records,
         missing=missing,
     )
-    ack_required = bool(missing)
-    if ack_required and ack_missing and daily_ack_matches(expected_context, context):
-        ack_required = False
+    context_supplied = expected_context is not None
+    context_matches = context_supplied and daily_ack_matches(
+        expected_context, context
+    )
+
+    ack_required: bool
+    ack_reason: str | None
+    if not context_supplied:
+        ack_required = bool(missing)
+        ack_reason = "missing" if ack_required else None
+    elif context_matches:
+        ack_required = bool(missing) and not ack_missing
+        ack_reason = "missing" if ack_required else None
+    else:
+        # The displayed confirmation object changed (or an absent/invalid
+        # context was echoed): the old ack is void even when the latest
+        # missing set is empty, and the caller must re-confirm the returned
+        # latest context.
+        ack_required = True
+        ack_reason = "context_changed"
 
     return DailyExportBundle(
         items=tuple(records),
         missing=tuple(missing),
         warnings=tuple(warnings),
         ack_required=ack_required,
+        ack_reason=ack_reason,
         expected_context=context,
     )
 

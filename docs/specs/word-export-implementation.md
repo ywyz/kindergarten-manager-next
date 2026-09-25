@@ -198,7 +198,7 @@
 - 读取：`daily_plans` 行（身份、`plan_date/week_number/weekday`、快照列）+ 其当前指针指向的 `daily_plan_contents` 行（`adopted_content`、`split_baseline`、`raw_lesson_plan`）。
 - 版本：请求内只读事务一次性读取全部计划与内容（MySQL 默认 REPEATABLE READ 一致快照），导出结果即该快照的“明确内容版本”；期间他人保存不影响本次文件，文件也不回写。
 - **禁止**读取：前端 form/draft 状态、周计划投影、任何非当前指针的草稿式数据。
-- 缺项判定（工程方案，对齐 I4 `empty_field` 口径）：按固定模板栏目逐字段检查 `adopted_content`——空字符串/空数组/缺失键即列入缺项清单；`adopted_content` 为 `{}` 时全部栏目缺项。判定只决定 409 提示内容，不改变“确认后可导出、保持为空”。
+- 缺项判定（工程方案，对齐 I4 `empty_field` 口径）：按固定模板栏目**逐字段**检查 `adopted_content`——空字符串/空数组/缺失键即列入缺项清单；`adopted_content` 为 `{}` 时全部栏目缺项。晨间 `collective`/`free_choice` 组、每个已存在的课后游戏组与下午户外分支都要检查其固定栏目（游戏列表、游戏名、组级目标/指导等）在该分支实际输出的文本；不把不作为该分支输出的可选键机械判为必填，不要求每种课后 `context_kind` 都出现。每个事实携带稳定定位标识（`section`/`group_kind`/`group_index`/`group_id`/`game_index`/`game_id`），同类多组事实不丢失。判定只决定 409 提示内容，不改变“确认后可导出、保持为空”，也不改变 I3 保存规则。
 - 无 `split_baseline` 的计划正常导出，仅经 §3.6 提示“无法比较”。
 
 ### 4.2 周计划（消费 I4 confirmed content）
@@ -278,7 +278,7 @@
 ### 5.3 动态列、表头与周次
 
 - 教学日集合 = 该周周一至周日 ∩ 学期闭区间中 `effective_state=teaching` 的日期（导出时当前有效日历——**工程提案**，与 §4.2 一致；确认后日历变化的协调待 §11.9，未决期间不得写成已确认）。
-- 列集合 = **固定周一至周五列**（非教学日注明假期）∪ 该周其他教学日（周六/周日等）列，全部按日期升序；不截掉第六、第七个上课日；缺日计划的上课日仍保留其列。
+- 列集合 = **固定周一至周五列**（非教学日注明假期）∪ 该周其他教学日（周六/周日等）列，全部按日期升序；周末仅在 `teaching` 时增加列，**不得把整周日期直接变成列**；不截掉第六、第七个上课日；缺日计划的上课日仍保留其列。学期首尾不完整周由读取面裁切时，映射边界补回缺失的固定工作日为空占位（`outside_term`，假期/非教学表达），不伪造教学内容。
 - 表头起止 = 教学日集合的 min/max；零上课日周无教学日，表头取**学期范围 ∩ 该实际周区间**（已确认 §11.7 方案①，不得对空教学日集合调用 min/max）；**不因某天缺日计划缩短**。
 - 周次 = `cal.week_info(term.start_date, 该周任一实际日期)` 的学期周号；**禁止**从列数、表头跨度或上课天数重新推算。
 - 列、表头、钉住版本与日历修订必须取自同一次导出的一致性视图（§4.4）；同一列内的内容仍只读所选确认快照，两者的不一致情形见 §4.2 分析与 §11.9。
@@ -415,8 +415,8 @@ backend/app/services/word_export_docx.py     # 纯生成：模板包 + 视图模
 
 - 首次缺项检查（返回 409）：钉住当前日计划版本集合；服务端计算缺项 facts；形成客户端后续确认所需的**最小 expected context**（服务端下发的钉住版本集合 + 事实指纹）。
 - 确认重试（`ack_missing=true`）：每个请求**重新鉴权**；重新读取当前版本；重新计算 facts；将当前确认对象与首次已展示的 expected context 比较。
-- 对象未变化 → 允许继续导出；相关版本、缺项集合或确认对象发生变化 → 旧 ack 失效，再次返回 409 并展示最新缺项，用户再次确认后方可继续（含缺项减少但确认对象变化的情形）。
-- **facts 始终由服务端重新计算，客户端提交的 facts/缺项清单不作权威**；客户端只回传服务端下发的 expected context。版本清单、事实指纹、expected context 结构属工程实现选择，应确定性、可单测、不依赖持久状态、便于片 3 HTTP 层消费；**不新增持久数据库表**。
+- 对象未变化 → 允许继续导出；相关版本、缺项集合或确认对象发生变化 → 旧 ack 失效，再次返回 409 并展示最新缺项，用户再次确认后方可继续（**含缺项减少、甚至缺项归零**：只要确认对象与已展示 context 不一致，即使最新 `missing` 为空也必须重新确认，不得仅因当次无缺项直接放行）。首次即无缺项的请求无需确认；缺少/无效的 expected context 不得当作有效旧确认。
+- **facts 始终由服务端重新计算，客户端提交的 facts/缺项清单不作权威**；客户端只回传服务端下发的 expected context。版本清单、事实指纹、expected context 结构属工程实现选择，应确定性、可单测、不依赖持久状态、便于片 3 HTTP 层消费；服务端向 API 层显式表达需要确认的原因（缺项 `missing` 或确认对象变化 `context_changed`）；**不新增持久数据库表**。
 - 只保证“用户确认的对象与 UI 展示的对象一致”，不要求证明用户逐字阅读。
 
 ## 12. 实施切片（每片独立审阅，**不得自动开始，须用户逐片授权**）
@@ -429,7 +429,7 @@ backend/app/services/word_export_docx.py     # 纯生成：模板包 + 视图模
 - **最小测试**：新单测 + 既有后端单测回归（本地 Python，无 DB、无服务）。
 - **外部资源**：无。
 - **需再次授权**：本切片的启动本身；任何对现有 service 函数可见性的提取改动需在切片报告中单独列明。
-- **实施状态（2026-09-25，已完成）**：已新增 `export_read_service.py`（日计划范围选择/版本钉住/缺项 facts、§11.8 方案 B 确认上下文、周计划范围与单份选择、跨学期按实际周起始日期排序与按计划身份去重、§3.6 警示判定）与 `word_export_mapping.py`（日/周固定模板视图模型、`group_activity.process` 标红、零上课日周表头按 §11.7①）；对应纯单元测试 `tests/unit/test_i5_export_read_service.py`、`tests/unit/test_i5_export_mapping.py`。定向命令 `python -m unittest discover -s tests/unit -t .` 结果 403 项通过（含本片新增 40 项与既有 I3/I4 回归），无 DB/服务/外部进程。最小提取 `weekly_plan_read_service.read_week_days`（原 `_read_week_days` 保留为别名）供导出读取复用。片 2–4 未开始。
+- **实施状态（2026-09-25，含 R1–R3 修复）**：已新增 `export_read_service.py`（日计划范围选择/版本钉住/逐栏目缺项 facts、§11.8 方案 B 确认上下文、周计划范围与单份选择、跨学期按实际周起始日期排序与按计划身份去重、§3.6 警示判定）与 `word_export_mapping.py`（日/周固定模板视图模型、`group_activity.process` 标红、零上课日周表头与固定 Mon–Fri 列按 §11.7①/§5.3）；对应纯单元测试 `tests/unit/test_i5_export_read_service.py`、`tests/unit/test_i5_export_mapping.py`。**片 1 定向审核（`docs/bootstrap/i5-slice1-review-2026-09-25.md`，基线 `1fb49ac`）发现并已修复三处缺陷**：R1 缺项落到实际模板栏目（容器非空不再视为完整，按分支逐字段判空并带稳定定位标识）；R2 确认对象变化后即使缺项归零仍需重新确认（`context_changed`）；R3 周计划列集合按固定工作日与教学周末构建（周末仅 teaching 增列，学期裁切的固定工作日补空占位）。定向命令 `python -m unittest tests.unit.test_i5_export_read_service tests.unit.test_i5_export_mapping` 结果 56 项通过（read 36 + mapping 20）；同一组回归在修复前基线 `1fb49ac` 上 11 失败 / 13 错误。无 DB/服务/外部进程；未重跑全套（本轮未改共享 helper 语义）。最小提取 `weekly_plan_read_service.read_week_days`（原 `_read_week_days` 保留为别名）供导出读取复用。片 2–4 未开始。
 
 ### 片 2：固定模板 docx 生成
 

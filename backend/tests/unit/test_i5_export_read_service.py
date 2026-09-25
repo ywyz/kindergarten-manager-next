@@ -20,9 +20,70 @@ from app.models import (
 )
 from app.services import export_read_service as export
 from app.services import word_export_mapping as mapping
+from app.services.daily_plan_content import prepare_content
 from app.services.weekly_plan_sync_service import WeekPlanEntry
 
 _NOW = datetime(2026, 9, 23, 8, 0, 0)
+
+
+def _complete_payload():
+    """A fully-filled daily content payload (before I3 parser validation)."""
+    return {
+        "morning_games": [
+            {
+                "group_kind": "collective",
+                "games": [{"name": "集体游戏"}],
+                "focus_guidance": "重点",
+                "shared_objectives": "目标",
+                "guidance_points": "要点",
+            },
+            {
+                "group_kind": "free_choice",
+                "games": [{"name": "自主游戏"}],
+                "focus_guidance": "重点",
+                "shared_objectives": "目标",
+                "guidance_points": "要点",
+            },
+        ],
+        "morning_talk": {"topic": "话题", "questions": "问题"},
+        "group_activity": {
+            "theme": "主题",
+            "objectives": "目标",
+            "preparation": "准备",
+            "key_points": "重点",
+            "difficult_points": "难点",
+            "process": "过程",
+        },
+        "post_group_games": [
+            {
+                "context_kind": "area",
+                "area": "建构区",
+                "games": [{"name": "区域游戏"}],
+                "focus_guidance": "重点",
+                "objectives": "目标",
+                "guidance": "指导",
+                "support_strategy": "支持",
+            }
+        ],
+        "afternoon_outdoor": {
+            "area": "操场",
+            "games": [{"name": "户外游戏"}],
+            "observation_focus": "观察",
+            "objectives": "目标",
+            "guidance": "指导",
+            "support_strategy": "支持",
+        },
+        "reflection": "反思",
+    }
+
+
+def _parsed(payload=None):
+    """Run the payload through the real I3 parser (assigns group/game ids)."""
+    return prepare_content(_complete_payload() if payload is None else payload)
+
+
+def _complete_content():
+    return _parsed()
 
 
 class _Result:
@@ -247,58 +308,171 @@ class DailySelectionTests(unittest.TestCase):
         )
         self.assertEqual(records[0].warnings, ({"code": "no_split_baseline"},))
 
-    def test_missing_facts_pure(self):
-        self.assertEqual(len(export.collect_daily_missing_facts({})), 12)
-        full = {
-            "morning_games": [{"group_kind": "collective"}],
-            "morning_talk": {"topic": "话题", "questions": "问题"},
-            "group_activity": {
-                "theme": "主题",
-                "objectives": "目标",
-                "preparation": "准备",
-                "key_points": "重点",
-                "difficult_points": "难点",
-                "process": "过程",
-            },
-            "post_group_games": [{"context_kind": "area"}],
-            "afternoon_outdoor": {"area": "操场"},
-            "reflection": "反思",
-        }
-        self.assertEqual(export.collect_daily_missing_facts(full), [])
-        facts = export.collect_daily_missing_facts({"group_activity": {"theme": "主题"}})
+    def test_missing_facts_complete_parsed_content_is_empty(self):
+        # The fixture goes through the real I3 parser and every fixed template
+        # column is filled -> no missing facts.
+        self.assertEqual(export.collect_daily_missing_facts(_complete_content()), [])
+
+    def test_missing_facts_empty_content_reports_every_column(self):
+        facts = export.collect_daily_missing_facts({})
         fields = {fact["field"] for fact in facts}
+        self.assertIn("morning_games.collective", fields)
+        self.assertIn("morning_games.free_choice", fields)
+        self.assertIn("morning_talk.topic", fields)
+        self.assertIn("group_activity.theme", fields)
         self.assertIn("group_activity.objectives", fields)
-        self.assertNotIn("group_activity.theme", fields)
+        self.assertIn("post_group_games", fields)
+        self.assertIn("afternoon_outdoor", fields)
+        self.assertIn("reflection", fields)
+
+    def test_container_present_but_games_empty_is_reported(self):
+        payload = _complete_payload()
+        payload["morning_games"][0]["games"] = []
+        payload["post_group_games"][0]["games"] = []
+        payload["afternoon_outdoor"]["games"] = []
+        content = _parsed(payload)
+        facts = export.collect_daily_missing_facts(content)
+        fields = {fact["field"] for fact in facts}
+        self.assertEqual(
+            fields,
+            {
+                "morning_games[0].games",
+                "post_group_games[0].games",
+                "afternoon_outdoor.games",
+            },
+        )
+        # Stable locators point at the actual group.
+        by_field = {fact["field"]: fact for fact in facts}
+        self.assertEqual(
+            by_field["morning_games[0].games"]["group_id"],
+            content["morning_games"][0]["group_id"],
+        )
+        self.assertEqual(
+            by_field["post_group_games[0].games"]["group_id"],
+            content["post_group_games"][0]["group_id"],
+        )
+
+    def test_blank_game_name_is_reported(self):
+        payload = _complete_payload()
+        payload["morning_games"][0]["games"] = [{"name": "   "}]
+        content = _parsed(payload)
+        facts = export.collect_daily_missing_facts(content)
+        self.assertEqual(len(facts), 1)
+        fact = facts[0]
+        self.assertEqual(fact["field"], "morning_games[0].games[0].name")
+        self.assertEqual(fact["game_index"], 0)
+        self.assertEqual(
+            fact["game_id"], content["morning_games"][0]["games"][0]["game_id"]
+        )
+        self.assertEqual(
+            fact["group_id"], content["morning_games"][0]["group_id"]
+        )
+
+    def test_group_level_objectives_and_guidance_reported(self):
+        payload = _complete_payload()
+        collective = payload["morning_games"][0]
+        collective["focus_guidance"] = ""
+        collective["shared_objectives"] = "  "
+        del collective["guidance_points"]
+        content = _parsed(payload)
+        facts = export.collect_daily_missing_facts(content)
+        fields = {(fact["field"], fact.get("group_id")) for fact in facts}
+        group_id = content["morning_games"][0]["group_id"]
+        self.assertEqual(
+            fields,
+            {
+                ("morning_games[0].focus_guidance", group_id),
+                ("morning_games[0].shared_objectives", group_id),
+                ("morning_games[0].guidance_points", group_id),
+            },
+        )
+
+    def test_missing_morning_kind_reported(self):
+        payload = _complete_payload()
+        payload["morning_games"] = [payload["morning_games"][0]]  # no free_choice
+        content = _parsed(payload)
+        facts = export.collect_daily_missing_facts(content)
+        self.assertEqual(
+            [fact["field"] for fact in facts], ["morning_games.free_choice"]
+        )
+
+    def test_inapplicable_post_group_branches_not_reported(self):
+        # Only an 'area' group exists: outdoor/special_room must not be
+        # demanded, and the complete content yields no facts at all.
+        payload = _complete_payload()
+        content = _parsed(payload)
+        facts = export.collect_daily_missing_facts(content)
+        self.assertEqual(facts, [])
+        self.assertFalse(
+            any("outdoor" in fact["field"] for fact in facts)
+        )
+        self.assertFalse(
+            any("special_room" in fact["field"] for fact in facts)
+        )
+
+    def test_multiple_same_context_groups_keep_all_facts(self):
+        payload = _complete_payload()
+        second_area = dict(payload["post_group_games"][0])
+        second_area["games"] = []
+        payload["post_group_games"][0]["games"] = []
+        payload["post_group_games"].append(second_area)
+        content = _parsed(payload)
+        facts = export.collect_daily_missing_facts(content)
+        self.assertEqual(
+            [fact["field"] for fact in facts],
+            ["post_group_games[0].games", "post_group_games[1].games"],
+        )
+        group_ids = [fact["group_id"] for fact in facts]
+        self.assertEqual(len(set(group_ids)), 2)
+
+    def test_unparsed_partial_group_is_not_treated_as_complete(self):
+        # Old-style bogus "complete" fixture: only group_kind, no games/text.
+        facts = export.collect_daily_missing_facts(
+            {
+                "morning_games": [{"group_kind": "collective"}],
+                "morning_talk": {"topic": "话题", "questions": "问题"},
+                "group_activity": {
+                    "theme": "主题",
+                    "objectives": "目标",
+                    "preparation": "准备",
+                    "key_points": "重点",
+                    "difficult_points": "难点",
+                    "process": "过程",
+                },
+                "post_group_games": [{"context_kind": "area"}],
+                "afternoon_outdoor": {"area": "操场"},
+                "reflection": "反思",
+            }
+        )
+        fields = {fact["field"] for fact in facts}
+        self.assertIn("morning_games.free_choice", fields)
+        self.assertIn("morning_games[0].games", fields)
+        self.assertIn("post_group_games[0].games", fields)
+        self.assertIn("afternoon_outdoor.games", fields)
 
 
 class DailyAckBindingTests(unittest.TestCase):
-    def _full_adopted(self):
-        return {
-            "morning_games": [{"group_kind": "collective"}],
-            "morning_talk": {"topic": "话题", "questions": "问题"},
-            "group_activity": {
-                "theme": "主题",
-                "objectives": "目标",
-                "preparation": "准备",
-                "key_points": "重点",
-                "difficult_points": "难点",
-                "process": "过程",
-            },
-            "post_group_games": [{"context_kind": "area"}],
-            "afternoon_outdoor": {"area": "操场"},
-            "reflection": "反思",
-        }
-
-    def _prepared(self, expected, *, ack=True, versions=None, adopted=None):
-        plans = [_dplan(plan_id="dp1", content_id="c1", version=versions or 1)]
-        contents = [
-            _dcontent(
-                plan_id="dp1",
-                content_id="c1",
-                version=versions or 1,
-                adopted=adopted if adopted is not None else {},
+    def _prepare(self, spec, expected, *, ack=True):
+        plans = []
+        contents = []
+        for plan_id, version, adopted in spec:
+            content_id = f"c-{plan_id}"
+            plans.append(
+                _dplan(
+                    plan_id=plan_id,
+                    plan_date=date(2026, 9, 1),
+                    content_id=content_id,
+                    version=version,
+                )
             )
-        ]
+            contents.append(
+                _dcontent(
+                    plan_id=plan_id,
+                    content_id=content_id,
+                    version=version,
+                    adopted=adopted,
+                )
+            )
         db = _StubSession(scalars_queue=[plans, contents])
         return export.prepare_daily_export(
             db,
@@ -309,62 +483,124 @@ class DailyAckBindingTests(unittest.TestCase):
             expected_context=expected,
         )
 
-    def test_first_request_requires_ack_with_context(self):
-        bundle = self._prepared(None, ack=False)
+    def _single(self, expected, *, ack=True, version=1, adopted=None):
+        return self._prepare(
+            [("dp1", version, adopted if adopted is not None else {})],
+            expected,
+            ack=ack,
+        )
+
+    def test_first_incomplete_requires_ack_with_context(self):
+        bundle = self._single(None, ack=False)
         self.assertTrue(bundle.ack_required)
+        self.assertEqual(bundle.ack_reason, "missing")
         self.assertTrue(bundle.missing)
         self.assertIn("versions", bundle.expected_context)
         self.assertIn("missing_fingerprint", bundle.expected_context)
 
-    def test_unchanged_object_allows_retry(self):
-        first = self._prepared(None, ack=False)
-        retry = self._prepared(first.expected_context, ack=True)
+    def test_first_complete_content_exports_directly(self):
+        bundle = self._single(None, ack=False, adopted=_complete_content())
+        self.assertFalse(bundle.ack_required)
+        self.assertIsNone(bundle.ack_reason)
+        self.assertEqual(bundle.missing, ())
+
+    def test_same_object_allows_retry(self):
+        first = self._single(None, ack=False)
+        retry = self._single(first.expected_context, ack=True)
         self.assertFalse(retry.ack_required)
+        self.assertIsNone(retry.ack_reason)
         self.assertEqual(
             retry.expected_context["missing_fingerprint"],
             first.expected_context["missing_fingerprint"],
         )
 
-    def test_content_version_change_reprompts(self):
-        first = self._prepared(None, ack=False)
+    def test_same_object_without_ack_still_requires(self):
+        first = self._single(None, ack=False)
+        retry = self._single(first.expected_context, ack=False)
+        self.assertTrue(retry.ack_required)
+        self.assertEqual(retry.ack_reason, "missing")
+
+    def test_content_version_change_same_missing_reprompts(self):
+        first = self._single(None, ack=False)
         # Same facts, but the pinned content version moved on.
-        changed = self._prepared(first.expected_context, ack=True, versions=2)
+        changed = self._single(first.expected_context, ack=True, version=2)
         self.assertTrue(changed.ack_required)
+        self.assertEqual(changed.ack_reason, "context_changed")
 
     def test_new_missing_item_reprompts(self):
-        full = self._full_adopted()
-        initial = dict(full)
-        del initial["reflection"]  # one missing item
-        later = dict(full)
-        later["group_activity"] = dict(full["group_activity"])
-        del later["group_activity"]["theme"]  # a newly missing item
-        first = self._prepared(None, ack=False, adopted=initial)
+        initial = _complete_payload()
+        del initial["reflection"]
+        later = _complete_payload()
+        del later["reflection"]
+        del later["group_activity"]["theme"]
+        first = self._single(None, ack=False, adopted=_parsed(initial))
         self.assertTrue(first.ack_required)
-        changed = self._prepared(first.expected_context, ack=True, adopted=later)
+        changed = self._single(
+            first.expected_context, ack=True, adopted=_parsed(later)
+        )
         self.assertTrue(changed.ack_required)
+        self.assertEqual(changed.ack_reason, "context_changed")
         self.assertNotEqual(
             changed.expected_context["missing_fingerprint"],
             first.expected_context["missing_fingerprint"],
         )
 
-    def test_missing_reduction_reprompts(self):
-        full = self._full_adopted()
-        reduced = dict(full)
+    def test_missing_reduction_still_nonzero_reprompts(self):
+        reduced = _complete_payload()
         del reduced["reflection"]
-        first = self._prepared(None, ack=False, adopted={})  # all missing
-        changed = self._prepared(first.expected_context, ack=True, adopted=reduced)
-        self.assertTrue(changed.ack_required)
-        self.assertNotEqual(
-            changed.expected_context["missing_fingerprint"],
-            first.expected_context["missing_fingerprint"],
+        first = self._single(None, ack=False, adopted={})  # all missing
+        changed = self._single(
+            first.expected_context, ack=True, adopted=_parsed(reduced)
         )
+        self.assertTrue(changed.ack_required)
+        self.assertEqual(changed.ack_reason, "context_changed")
+
+    def test_missing_reduction_to_zero_reprompts(self):
+        # R2 core: V1 incomplete -> V2 complete with the old context must not
+        # silently export just because the latest missing set is now empty.
+        first = self._single(None, ack=False, adopted={})
+        complete = self._single(
+            first.expected_context, ack=True, adopted=_complete_content()
+        )
+        self.assertTrue(complete.ack_required)
+        self.assertEqual(complete.ack_reason, "context_changed")
+        self.assertEqual(complete.missing, ())
+        # Re-confirming the returned latest context then continues.
+        again = self._single(
+            complete.expected_context,
+            ack=True,
+            adopted=_complete_content(),
+        )
+        self.assertFalse(again.ack_required)
+        self.assertIsNone(again.ack_reason)
+
+    def test_object_set_change_reprompts(self):
+        first = self._single(None, ack=False, adopted={})
+        changed = self._prepare(
+            [("dp1", 1, {}), ("dp2", 1, {})],
+            first.expected_context,
+            ack=True,
+        )
+        self.assertTrue(changed.ack_required)
+        self.assertEqual(changed.ack_reason, "context_changed")
+        self.assertEqual(len(changed.expected_context["versions"]), 2)
+
+    def test_invalid_context_with_complete_content_reprompts(self):
+        forged = self._single(
+            {"class_id": "x"},
+            ack=True,
+            adopted=_complete_content(),
+        )
+        self.assertTrue(forged.ack_required)
+        self.assertEqual(forged.ack_reason, "context_changed")
 
     def test_ack_does_not_trust_client_facts(self):
-        first = self._prepared(None, ack=False)
+        first = self._single(None, ack=False)
         forged = dict(first.expected_context)
         forged["missing_fingerprint"] = "0" * 64
-        blocked = self._prepared(forged, ack=True)
+        blocked = self._single(forged, ack=True)
         self.assertTrue(blocked.ack_required)
+        self.assertEqual(blocked.ack_reason, "context_changed")
         # Server recomputed facts are still returned, not the client's.
         self.assertTrue(blocked.missing)
 

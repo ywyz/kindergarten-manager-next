@@ -147,7 +147,7 @@ I2 已交付园所配置、班级创建与维护、教师首次真实分配、�
 
 **2026-09-25 定向修订（规格层面，未实施）**：按 [I5 规格审核](i5-spec-review-2026-09-25.md) 完成修订——修正 `no_plan` 清空已确认人工内容、跨学期周号排序/去重、服务端“未包含最新变化”判定与提示承载三处缺陷。**2026-09-25 用户已决定两项片 1 依赖语义**：§11.7 零上课日周取方案①（仍可单份导出，表头=学期∩该周区间、整周注明假期、范围模式不选中）、§11.8 缺项确认取方案 B（确认绑定首次 409 已展示的版本/事实，变化则再次 409；服务端重算 facts、不信任客户端 facts）；确认后日历变化的导出布局 §11.9 仍待用户决定（当前 `plans_started_at` 门槛下不可发生，不阻塞片 1–4）。
 
-**I5 片 1 实施状态（2026-09-25，已完成）**：已按用户授权实施“导出读取、版本与映射纯逻辑”——新增 `backend/app/services/export_read_service.py`（日计划范围选择与版本钉住、缺项 facts、§11.8 方案 B 确认上下文、周计划范围/单份选择与跨学期排序去重、§3.6 警示判定、§11.7① 零上课日周）与 `backend/app/services/word_export_mapping.py`（日/周固定模板视图模型与 `group_activity.process` 标红）；新增纯单元测试两个文件（40 项），`python -m unittest discover -s tests/unit -t .` 403 项通过（含既有 I3/I4 回归），无 DB/API/Vite/浏览器/LibreOffice/依赖安装。最小提取 `weekly_plan_read_service.read_week_days`（原私有名保留为别名）。**路由、docx 生成、模板资产、依赖、schema/迁移、前端与审计均未实施；片 2–4 未开始、未授权。**
+**I5 片 1 实施状态（2026-09-25，含 R1–R3 修复）**：已按用户授权实施“导出读取、版本与映射纯逻辑”——新增 `backend/app/services/export_read_service.py`（日计划范围选择与版本钉住、逐栏目缺项 facts、§11.8 方案 B 确认上下文、周计划范围/单份选择与跨学期排序去重、§3.6 警示判定、§11.7① 零上课日周）与 `backend/app/services/word_export_mapping.py`（日/周固定模板视图模型、固定 Mon–Fri 列与教学周末增列、`group_activity.process` 标红）；新增纯单元测试两个文件。**片 1 定向审核（`docs/bootstrap/i5-slice1-review-2026-09-25.md`，基线 `1fb49ac`）发现并已修复三处缺陷**：R1 缺项落到实际模板栏目；R2 确认对象变化后即使缺项归零仍需重新确认（`context_changed`）；R3 周计划列集合按固定工作日与教学周末构建。定向命令 `python -m unittest tests.unit.test_i5_export_read_service tests.unit.test_i5_export_mapping` 结果 56 项通过；同一组回归在修复前基线 `1fb49ac` 上 11 失败 / 13 错误。无 DB/API/Vite/浏览器/LibreOffice/依赖安装。最小提取 `weekly_plan_read_service.read_week_days`（原私有名保留为别名）。**路由、docx 生成、模板资产、依赖、schema/迁移、前端与审计均未实施；片 2–4 未开始、未授权。**
 
 ### OpenCode 执行安排
 

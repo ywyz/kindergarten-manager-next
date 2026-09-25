@@ -356,22 +356,30 @@ def compute_header_range(
     )
     if teaching:
         return teaching[0], teaching[-1]
-    week_start = cal.week_anchor(term_start) + timedelta(
-        days=7 * (week_number - 1)
-    )
+    week_start = week_start_for(term_start, week_number)
     start = max(week_start, term_start)
     end = min(week_start + timedelta(days=6), term_end)
     return start, end
 
 
-def build_week_columns(
-    week_days: Mapping[date, str], content: Mapping[str, Any]
-) -> list[dict]:
-    """One column per date of the week window, ascending, holiday expressed.
+def week_start_for(term_start: date, week_number: int) -> date:
+    """Actual calendar week start (Monday) of a term week (existing algorithm)."""
+    return cal.week_anchor(term_start) + timedelta(days=7 * (week_number - 1))
 
-    Column set follows the export-time calendar (spec 5.3); content comes from
-    the confirmed snapshot's stored ``effective`` only. ``day_state=rest``
-    columns are holidays; ``plan_state=no_plan`` never empties a non-empty
+
+def build_week_columns(
+    week_days: Mapping[date, str],
+    content: Mapping[str, Any],
+    *,
+    week_start: date,
+) -> list[dict]:
+    """One column per date of the week, ascending, holiday expressed.
+
+    Fixed Mon-Fri columns are always kept (a non-teaching weekday is a holiday
+    placeholder; an out-of-term weekday is an empty placeholder, never invented
+    content). A weekend column is added only when that date is actually a
+    teaching day. Content comes from the confirmed snapshot's stored
+    ``effective`` only. ``plan_state=no_plan`` never empties a non-empty
     ``effective`` and is never labelled as a holiday.
     """
     by_date: dict[str, dict] = {}
@@ -379,44 +387,52 @@ def build_week_columns(
         if isinstance(row, dict) and isinstance(row.get("date"), str):
             by_date[row["date"]] = row
 
+    in_term = {
+        day: state for day, state in week_days.items() if isinstance(day, date)
+    }
+
     columns: list[dict] = []
-    for day in sorted(
-        d for d in week_days if isinstance(d, date)
-    ):
-        state = week_days[day]
+    for offset in range(7):
+        day = week_start + timedelta(days=offset)
+        state = in_term.get(day)
+        if day.isoweekday() > 5 and state != "teaching":
+            # Weekend columns exist only for actual weekend teaching days.
+            continue
         row = by_date.get(day.isoformat())
-        if state != "teaching":
+        if state == "teaching":
+            effective = _as_dict((row or {}).get("effective"))
+            source = _as_dict((row or {}).get("source"))
+            columns.append(
+                {
+                    "date": day.isoformat(),
+                    "weekday": day.isoweekday(),
+                    "day_state": "teaching",
+                    "holiday": False,
+                    "outside_term": False,
+                    "morning_talk_topic": _text(
+                        effective.get("morning_talk_topic")
+                    ),
+                    "group_activity_theme": _text(
+                        effective.get("group_activity_theme")
+                    ),
+                    "plan_state": (row or {}).get("plan_state"),
+                    "source_missing": source.get("daily_plan_id") is None,
+                }
+            )
+        else:
             columns.append(
                 {
                     "date": day.isoformat(),
                     "weekday": day.isoweekday(),
                     "day_state": "rest",
                     "holiday": True,
+                    "outside_term": state is None,
                     "morning_talk_topic": "",
                     "group_activity_theme": "",
                     "plan_state": None,
                     "source_missing": False,
                 }
             )
-            continue
-        effective = _as_dict((row or {}).get("effective"))
-        source = _as_dict((row or {}).get("source"))
-        columns.append(
-            {
-                "date": day.isoformat(),
-                "weekday": day.isoweekday(),
-                "day_state": "teaching",
-                "holiday": False,
-                "morning_talk_topic": _text(
-                    effective.get("morning_talk_topic")
-                ),
-                "group_activity_theme": _text(
-                    effective.get("group_activity_theme")
-                ),
-                "plan_state": (row or {}).get("plan_state"),
-                "source_missing": source.get("daily_plan_id") is None,
-            }
-        )
     return columns
 
 
@@ -454,6 +470,7 @@ def map_weekly_plan(item) -> dict:
         for day, state in (item.week_days or {}).items()
         if isinstance(day, date)
     }
+    week_start = week_start_for(item.term_start, item.week_number)
     header_start, header_end = compute_header_range(
         item.term_start,
         item.term_end,
@@ -479,7 +496,9 @@ def map_weekly_plan(item) -> dict:
             "theme": _text(content.get("theme")),
         },
         "date_range": {"start": header_start, "end": header_end},
-        "columns": build_week_columns(week_days, content),
+        "columns": build_week_columns(
+            week_days, content, week_start=week_start
+        ),
         "outdoor_game_slots": {
             key: _map_weekly_slot(slots_raw.get(key))
             for key in OUTDOOR_SLOT_KEYS
