@@ -121,7 +121,7 @@ def _load_term(db: Session, term_id: str) -> Term:
     return term
 
 
-def _read_week_days(db: Session, term: Term, week_number: int) -> dict[date, str]:
+def read_week_days(db: Session, term: Term, week_number: int) -> dict[date, str]:
     """Calendar days of the week, plain reads (no locks, GET only)."""
     if term.current_calendar_revision_id is None:
         raise WeeklyPlanDataError("学期缺少当前日历修订")
@@ -160,6 +160,12 @@ def _read_week_days(db: Session, term: Term, week_number: int) -> dict[date, str
             raise WeeklyPlanDataError("日历快照日期状态未知")
         current += timedelta(days=1)
     return days
+
+
+# Backward-compatible private alias: the original name is kept for existing
+# internal callers/tests; I5 export reads the same plain-read implementation
+# through the public ``read_week_days`` instead of copying it.
+_read_week_days = read_week_days
 
 
 def _live_context(
