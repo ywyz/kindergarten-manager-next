@@ -385,6 +385,99 @@ export function focusSourceDate(
 }
 
 // ---------------------------------------------------------------------------
+// Confirmation-target snapshot previews (saved content only, never the form)
+// ---------------------------------------------------------------------------
+
+export interface SnapshotTextField {
+  label: string
+  value: string
+}
+
+export interface OutdoorSlotSnapshotPreview {
+  name: string
+  kind: 'daily_plan' | 'manual'
+  kindLabel: string
+  /** Source version/identifier line; the date appears only when mappable. */
+  meta: string
+  /** Full stored texts; empty values stay visible as `（空）`. */
+  texts: SnapshotTextField[]
+}
+
+/**
+ * Display-only preview of one saved outdoor slot for the confirmation
+ * dialog. It reads the snapshot entry itself — never the local `form` nor
+ * the latest candidate texts — so overlapping dirty fields cannot hide what
+ * will actually be confirmed. The source date is only shown when the stored
+ * reference still resolves against the current candidates (a daily plan's
+ * date is immutable, so that mapping is reliable); otherwise it is omitted,
+ * never invented.
+ */
+export function outdoorSlotSnapshotPreview(
+  slot: OutdoorSlot,
+  candidates: SourceCandidate[],
+): OutdoorSlotSnapshotPreview | null {
+  if (!slot) return null
+  const texts: SnapshotTextField[] = [
+    { label: '共用目标', value: slot.shared_objectives || '（空）' },
+    { label: '指导要点', value: slot.guidance_points || '（空）' },
+    { label: '重点指导', value: slot.focus_guidance || '（空）' },
+  ]
+  if (slot.source_kind === 'manual') {
+    return {
+      name: slot.name || '（未命名）',
+      kind: 'manual',
+      kindLabel: '手工补充',
+      meta: `标识 ${slot.manual_item_id || '（空）'}`,
+      texts,
+    }
+  }
+  const date = slotSourceDate(slot, candidates)
+  return {
+    name: slot.name || '（未命名）',
+    kind: 'daily_plan',
+    kindLabel: '日计划来源',
+    meta: `${date ? `${shortDate(date)} · ` : ''}内容 v${slot.content_version} · 标识 ${slot.content_id}`,
+    texts,
+  }
+}
+
+export interface FocusAreaSnapshotPreview {
+  name: string
+  /** context_kind (+ stored area value, empty kept visible). */
+  context: string
+  meta: string
+  texts: SnapshotTextField[]
+}
+
+/**
+ * Display-only preview of the saved focus-area snapshot for the
+ * confirmation dialog; same rules as `outdoorSlotSnapshotPreview`.
+ */
+export function focusAreaSnapshotPreview(
+  focus: FocusArea | null,
+  candidates: SourceCandidate[],
+): FocusAreaSnapshotPreview | null {
+  if (!focus) return null
+  const date = focusSourceDate(focus, candidates)
+  const context =
+    focus.context_kind === 'outdoor'
+      ? '户外'
+      : focus.context_kind === 'special_room'
+        ? '专用室'
+        : `区域：${focus.area || '（空）'}`
+  return {
+    name: focus.name || '（未命名）',
+    context,
+    meta: `${date ? `${shortDate(date)} · ` : ''}内容 v${focus.content_version} · 标识 ${focus.content_id}`,
+    texts: [
+      { label: '目标', value: focus.objectives || '（空）' },
+      { label: '指导', value: focus.guidance || '（空）' },
+      { label: '支持策略', value: focus.support_strategy || '（空）' },
+    ],
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Fact / refresh labels (teacher-facing Chinese)
 // ---------------------------------------------------------------------------
 

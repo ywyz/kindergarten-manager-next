@@ -42,11 +42,13 @@ import {
   candidateToSlot,
   detKey,
   emptyDirty,
+  focusAreaSnapshotPreview,
   focusSourceDate,
   groupCandidates,
   isAuthError,
   isDirtyEmpty,
   missingFactLabel,
+  outdoorSlotSnapshotPreview,
   refreshedSourceLabel,
   serverToForm,
   shortDate,
@@ -55,7 +57,13 @@ import {
   staleFactLabel,
   weeklyPlanErrorMessage,
 } from '../weekly-plan-content'
-import type { DetFormRow, SaveDirty, WeeklyPlanForm } from '../weekly-plan-content'
+import type {
+  DetFormRow,
+  FocusAreaSnapshotPreview,
+  OutdoorSlotSnapshotPreview,
+  SaveDirty,
+  WeeklyPlanForm,
+} from '../weekly-plan-content'
 
 const props = defineProps<{
   planId: string
@@ -78,11 +86,14 @@ interface ConflictState {
   attemptedVersion: number
   server: WeeklyPlanDetail | null
   /**
-   * How the conflict arose: a submit rejected with 409 (`rejected`) or a
+   * How the conflict arose: a submit rejected with 409 (`rejected`), a
    * background state read that found the server draft advanced while local
-   * dirty input was still based on `baseVersion` (`server_advanced`).
+   * dirty input was still based on `baseVersion` (`server_advanced`), or a
+   * source refresh that succeeded while the dirty input's real baseline
+   * differed from the version the refresh targeted (`refresh_kept_baseline`):
+   * the refresh ran, but the save baseline was deliberately not advanced.
    */
-  reason: 'rejected' | 'server_advanced'
+  reason: 'rejected' | 'server_advanced' | 'refresh_kept_baseline'
 }
 
 const phase = ref<Phase>('opening')
@@ -665,9 +676,34 @@ async function doRefresh(expectedVersion: number): Promise<void> {
       classIdParam(),
     )
     // Dirty sections keep the local unsaved input; server-owned layers update.
-    // Refresh is an explicit user action that advances the draft, so the new
-    // version is adopted as the baseline for the kept dirty input.
+    // A refresh only validates the version it was issued against and never
+    // submits the dirty input, so its success must not, by itself, adopt a
+    // new save baseline for those edits: that would let a stale local edit
+    // overwrite another writer without a save-side 409. Adopting the new
+    // version is safe only when there is no dirty input or the dirty input
+    // was already rooted in the version the refresh targeted (the version
+    // advance then stems solely from this explicit action). Otherwise keep
+    // the real baseline and require an explicit conflict decision — a source
+    // refresh is not authorization to resolve an old edit conflict.
+    const baseline = editBaseVersion.value
     applyDetail(next, { keepDirty: true })
+    const keepBaseline =
+      baseline !== null && !isDirtyEmpty(dirty) && baseline !== expectedVersion
+    if (keepBaseline) {
+      refreshedPanel.value = next.refreshed_sources || []
+      conflict.value = {
+        action: 'save',
+        baseVersion: baseline,
+        attemptedVersion: expectedVersion,
+        server: next,
+        reason: 'refresh_kept_baseline',
+      }
+      ElMessage.warning(
+        `来源已刷新到 v${next.draft.version}，但本地未保存修改仍基于 v${baseline}，` +
+          '保存基线未推进，请先处理下方冲突再保存',
+      )
+      return
+    }
     editBaseVersion.value = next.draft.version
     conflict.value = null
     refreshedPanel.value = next.refreshed_sources || []
@@ -953,6 +989,36 @@ function confirmedContentRows(content: WeeklyPlanDetail['draft']['content']) {
   return content?.deterministic || []
 }
 
+/**
+ * Confirmation-target previews for the outdoor slots / focus area (F2).
+ *
+ * They read `confirmTarget.content` — the saved snapshot this confirm would
+ * act on — never `form` (local dirty input) and never the latest candidate
+ * texts, so a dirty slot/focus in the main editor cannot hide the real saved
+ * content being confirmed. `source_candidates` are used only to map a source
+ * date when the stored reference still resolves; snapshot texts are never
+ * replaced from the latest sources.
+ */
+const confirmSlotPreviews = computed(() => {
+  const target = confirmTarget.value
+  const candidates = detail.value?.source_candidates ?? []
+  const previews = {} as Record<OutdoorSlotKey, OutdoorSlotSnapshotPreview | null>
+  for (const key of OUTDOOR_SLOT_KEYS) {
+    previews[key] = outdoorSlotSnapshotPreview(
+      target?.content.outdoor_game_slots?.[key] ?? null,
+      candidates,
+    )
+  }
+  return previews
+})
+
+const confirmFocusPreview = computed<FocusAreaSnapshotPreview | null>(() =>
+  focusAreaSnapshotPreview(
+    confirmTarget.value?.content.focus_area ?? null,
+    detail.value?.source_candidates ?? [],
+  ),
+)
+
 onMounted(() => {
   void load()
 })
@@ -1033,10 +1099,17 @@ onMounted(() => {
         class="section conflict-alert"
         :title="conflict.reason === 'server_advanced'
           ? '服务端草稿已更新：本地未保存修改仍基于旧版本，未被覆盖'
-          : '草稿版本冲突（409）：本地输入已保留，未被覆盖'"
+          : conflict.reason === 'refresh_kept_baseline'
+            ? '已刷新来源，但本地未保存修改的保存基线未推进：请先处理冲突'
+            : '草稿版本冲突（409）：本地输入已保留，未被覆盖'"
       >
         <div class="conflict-body">
-          <p v-if="conflict.reason === 'server_advanced'">
+          <p v-if="conflict.reason === 'refresh_kept_baseline'">
+            您触发的“刷新到最新来源”已执行，服务端草稿已推进；但本地未保存修改仍基于草稿版本
+            v{{ conflict.baseVersion }}。刷新只校验并推进服务端草稿版本，不会提交这些本地修改，
+            也不是解决它们与他人编辑冲突的授权，因此其保存基线未被推进，系统未自动保存。
+          </p>
+          <p v-else-if="conflict.reason === 'server_advanced'">
             确认成功后读取到服务端草稿已推进；本地未保存修改仍基于草稿版本
             v{{ conflict.baseVersion }}，不会静默改以新版本为基准。
           </p>
@@ -1722,24 +1795,46 @@ onMounted(() => {
         </el-table>
 
         <h4 class="facts-title">户外游戏</h4>
-        <div v-for="key in OUTDOOR_SLOT_KEYS" :key="`target-${key}`" class="snapshot-line">
-          <strong>{{ SLOT_LABELS[key] }}：</strong>
-          <template v-if="confirmTarget.content.outdoor_game_slots?.[key]">
-            {{ confirmTarget.content.outdoor_game_slots[key]!.name || '（未命名）' }}
-            <span
-              v-if="confirmTarget.content.outdoor_game_slots[key]!.source_kind === 'manual'"
-              class="muted"
+        <div v-for="key in OUTDOOR_SLOT_KEYS" :key="`target-${key}`" class="snapshot-block">
+          <template v-if="confirmSlotPreviews[key]">
+            <p class="snapshot-line">
+              <strong>{{ SLOT_LABELS[key] }}：</strong>
+              {{ confirmSlotPreviews[key]!.name }}
+              <el-tag
+                size="small"
+                :type="confirmSlotPreviews[key]!.kind === 'manual' ? 'warning' : 'success'"
+              >
+                {{ confirmSlotPreviews[key]!.kindLabel }}
+              </el-tag>
+              <span class="muted">{{ confirmSlotPreviews[key]!.meta }}</span>
+            </p>
+            <p
+              v-for="t in confirmSlotPreviews[key]!.texts"
+              :key="`${key}-${t.label}`"
+              class="group-text"
             >
-              手工补充
-            </span>
+              <strong>{{ t.label }}：</strong>{{ t.value }}
+            </p>
           </template>
-          <span v-else class="muted">未选择</span>
+          <p v-else class="snapshot-line">
+            <strong>{{ SLOT_LABELS[key] }}：</strong><span class="muted">未选择</span>
+          </p>
         </div>
 
         <h4 class="facts-title">重点区域</h4>
-        <p v-if="confirmTarget.content.focus_area" class="snapshot-line">
-          {{ confirmTarget.content.focus_area.name || '（未命名）' }}
-        </p>
+        <template v-if="confirmFocusPreview">
+          <p class="snapshot-line">
+            <strong>{{ confirmFocusPreview!.name }}</strong>
+            <el-tag size="small" type="success">日计划来源</el-tag>
+            <span class="muted">{{ confirmFocusPreview!.meta }}</span>
+          </p>
+          <p class="snapshot-line">
+            <strong>上下文：</strong>{{ confirmFocusPreview!.context }}
+          </p>
+          <p v-for="t in confirmFocusPreview!.texts" :key="t.label" class="group-text">
+            <strong>{{ t.label }}：</strong>{{ t.value }}
+          </p>
+        </template>
         <p v-else class="muted">未选择</p>
 
         <h4 class="facts-title">手工栏目</h4>
@@ -1979,5 +2074,6 @@ onMounted(() => {
 .conflict-hint { color: #b88230; font-size: 0.875rem; }
 .inner-card { margin-top: 12px; }
 .snapshot-line { margin: 6px 0; font-size: 0.9rem; }
+.snapshot-block { margin: 8px 0; }
 .confirmation-dialog h4 { margin: 14px 0 6px; }
 </style>
