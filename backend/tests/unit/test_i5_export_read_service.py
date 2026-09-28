@@ -6,6 +6,7 @@ range intersection / cross-term ordering / identity dedup, explicit vs current
 confirmed version selection and the section 3.6 warning judgement.
 """
 
+import copy
 import unittest
 from datetime import date, datetime
 from types import SimpleNamespace
@@ -605,6 +606,161 @@ class DailyAckBindingTests(unittest.TestCase):
         self.assertTrue(blocked.missing)
 
 
+class DailyMissingFactsTransitTests(unittest.TestCase):
+    """Facts transit: collect -> bundle.missing -> expected-context fingerprint.
+
+    Complements the collect-layer assertions above by proving the complete
+    fact objects (with their stable locators) survive ``prepare_daily_export``
+    and that the ack fingerprint covers exactly the object returned.
+    """
+
+    def _prepare(self, adopted, expected=None, *, ack=True):
+        db = _StubSession(
+            scalars_queue=[
+                [_dplan(plan_id="dp1", content_id="c1", version=1)],
+                [
+                    _dcontent(
+                        plan_id="dp1",
+                        content_id="c1",
+                        version=1,
+                        adopted=adopted,
+                    )
+                ],
+            ]
+        )
+        return export.prepare_daily_export(
+            db,
+            class_id="cls1",
+            from_date=date(2026, 9, 1),
+            to_date=date(2026, 9, 3),
+            ack_missing=ack,
+            expected_context=expected,
+        )
+
+    def test_same_kind_groups_keep_group_locators(self):
+        payload = _complete_payload()
+        second = dict(payload["post_group_games"][0])
+        second["games"] = []
+        payload["post_group_games"][0]["games"] = []
+        payload["post_group_games"].append(second)
+        content = _parsed(payload)
+
+        bundle = self._prepare(content)
+
+        self.assertEqual(len(bundle.missing), 1)
+        entry = bundle.missing[0]
+        self.assertEqual(entry["daily_plan_id"], "dp1")
+        self.assertEqual(entry["plan_date"], "2026-09-01")
+        facts = entry["facts"]
+        self.assertEqual(
+            [fact["field"] for fact in facts],
+            ["post_group_games[0].games", "post_group_games[1].games"],
+        )
+        self.assertEqual([fact["group_index"] for fact in facts], [0, 1])
+        self.assertEqual(
+            [fact["group_id"] for fact in facts],
+            [
+                content["post_group_games"][0]["group_id"],
+                content["post_group_games"][1]["group_id"],
+            ],
+        )
+        self.assertEqual(len({fact["group_id"] for fact in facts}), 2)
+        self.assertEqual(bundle.expected_context["missing_count"], 2)
+
+    def test_multiple_games_in_one_group_keep_game_locators(self):
+        payload = _complete_payload()
+        payload["morning_games"][0]["games"] = [{"name": "  "}, {"name": ""}]
+        content = _parsed(payload)
+
+        bundle = self._prepare(content)
+
+        facts = bundle.missing[0]["facts"]
+        self.assertEqual(
+            [fact["field"] for fact in facts],
+            [
+                "morning_games[0].games[0].name",
+                "morning_games[0].games[1].name",
+            ],
+        )
+        self.assertEqual([fact["game_index"] for fact in facts], [0, 1])
+        self.assertEqual(
+            [fact["game_id"] for fact in facts],
+            [
+                content["morning_games"][0]["games"][0]["game_id"],
+                content["morning_games"][0]["games"][1]["game_id"],
+            ],
+        )
+        self.assertEqual(len({fact["game_id"] for fact in facts}), 2)
+        self.assertTrue(
+            all(
+                fact["group_id"] == content["morning_games"][0]["group_id"]
+                for fact in facts
+            )
+        )
+
+    def _single_blank_game(self):
+        payload = _complete_payload()
+        payload["morning_games"][0]["games"] = [{"name": "   "}]
+        return _parsed(payload)
+
+    def test_fingerprint_covers_returned_missing_object(self):
+        bundle = self._prepare(self._single_blank_game())
+        self.assertEqual(
+            bundle.expected_context["missing_fingerprint"],
+            export._facts_fingerprint(list(bundle.missing)),
+        )
+        self.assertEqual(bundle.expected_context["missing_count"], 1)
+        # The returned fact keeps its field and both stable locators.
+        fact = bundle.missing[0]["facts"][0]
+        self.assertEqual(fact["field"], "morning_games[0].games[0].name")
+        self.assertIn("game_index", fact)
+        self.assertIn("game_id", fact)
+        self.assertIn("group_id", fact)
+
+    def test_unchanged_locators_keep_fingerprint(self):
+        content = self._single_blank_game()
+        first = self._prepare(content)
+        retry = self._prepare(content, first.expected_context)
+        self.assertFalse(retry.ack_required)
+        self.assertEqual(
+            retry.expected_context["missing_fingerprint"],
+            first.expected_context["missing_fingerprint"],
+        )
+
+    def test_game_id_only_change_changes_fingerprint_and_reprompts(self):
+        content = self._single_blank_game()
+        first = self._prepare(content)
+        self.assertTrue(first.ack_required)
+        self.assertEqual(first.ack_reason, "missing")
+
+        # Same field string, only the stable game locator moves.
+        mutated = copy.deepcopy(content)
+        mutated["morning_games"][0]["games"][0]["game_id"] = "different-game-id"
+        changed = self._prepare(mutated, first.expected_context)
+
+        self.assertTrue(changed.ack_required)
+        self.assertEqual(changed.ack_reason, "context_changed")
+        self.assertNotEqual(
+            changed.expected_context["missing_fingerprint"],
+            first.expected_context["missing_fingerprint"],
+        )
+
+    def test_group_id_only_change_changes_fingerprint_and_reprompts(self):
+        content = self._single_blank_game()
+        first = self._prepare(content)
+
+        mutated = copy.deepcopy(content)
+        mutated["morning_games"][0]["group_id"] = "different-group-id"
+        changed = self._prepare(mutated, first.expected_context)
+
+        self.assertTrue(changed.ack_required)
+        self.assertEqual(changed.ack_reason, "context_changed")
+        self.assertNotEqual(
+            changed.expected_context["missing_fingerprint"],
+            first.expected_context["missing_fingerprint"],
+        )
+
+
 class DailyAckContextUnitTests(unittest.TestCase):
     def test_context_and_matching(self):
         records = [
@@ -612,7 +768,17 @@ class DailyAckContextUnitTests(unittest.TestCase):
             _drecord(plan_id="dp2", content_id="c2", content_version=4),
         ]
         missing = [
-            {"daily_plan_id": "dp1", "plan_date": "2026-09-01", "fields": ["reflection"]}
+            {
+                "daily_plan_id": "dp1",
+                "plan_date": "2026-09-01",
+                "facts": [
+                    {
+                        "kind": "empty_field",
+                        "field": "reflection",
+                        "section": "reflection",
+                    }
+                ],
+            }
         ]
         ctx = export.daily_ack_context(
             class_id="cls1",

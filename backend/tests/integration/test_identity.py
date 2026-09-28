@@ -8,7 +8,7 @@ Set both environment variables before running:
 
     export APP_DISABLE_DOTENV=1
     export I1_TEST_ALLOW_DESTRUCTIVE=yes
-    export I1_TEST_DATABASE_URL=mysql+pymysql://user:pass@127.0.0.1:3306/kindergarten_test_i1
+    export I1_TEST_DATABASE_URL=mysql+pymysql://user:pass@127.0.0.1:13384/kindergarten_test_i1
 """
 
 import asyncio
@@ -61,14 +61,17 @@ _ORIGINAL_RECORD_OPERATION = auth_service.record_operation
 
 def _fail_with_real_mysql_error(
     db,
-    *,
-    operator_id,
-    operator_type,
-    action,
-    target_account_id,
-    account_version_after,
+    *args,
+    **kwargs,
 ):
     """Fault injection scheduled at the audit-write point of a transaction.
+
+    Forwards every argument the caller actually passes to the genuine
+    ``record_operation`` (the current production calls use the generic
+    ``target_type``/``target_id``/``target_version_after`` keyword arguments,
+    while the I1-era registration call still passes the legacy
+    ``target_account_id``/``account_version_after`` names; the helper must not
+    narrow either shape).
 
     Step 1 calls the genuine record_operation so the real audit row is added
     to the open transaction, then db.flush() sends every pending write to the
@@ -82,14 +85,7 @@ def _fail_with_real_mysql_error(
     The database is the real authorized MySQL/InnoDB instance; mocks are used
     only to schedule the failure (and to feed CLI input).
     """
-    _ORIGINAL_RECORD_OPERATION(
-        db,
-        operator_id=operator_id,
-        operator_type=operator_type,
-        action=action,
-        target_account_id=target_account_id,
-        account_version_after=account_version_after,
-    )
+    _ORIGINAL_RECORD_OPERATION(db, *args, **kwargs)
     db.flush()
     db.execute(text("INSERT INTO kg_i1_injected_missing_table (id) VALUES ('x')"))
 
@@ -238,6 +234,10 @@ class IdentityIntegrationTests(unittest.TestCase):
             raise AssertionError("Only mysql+pymysql URLs are supported")
         if url.host not in ("127.0.0.1", "localhost"):
             raise AssertionError("Integration tests only run against 127.0.0.1/localhost")
+        # Dedicated loopback port (I1 shares 13384 with the other loopback
+        # whitelist databases); refuse any other local MySQL instance.
+        if url.port != 13384:
+            raise AssertionError("Integration tests only run against port 13384")
         if url.database != "kindergarten_test_i1":
             raise AssertionError("Integration tests require database kindergarten_test_i1")
 
@@ -1054,17 +1054,27 @@ class IdentityIntegrationTests(unittest.TestCase):
             return {r[0] for r in rows}
 
         record_columns = columns("operation_records")
-        self.assertEqual(
-            record_columns,
-            {
-                "id",
-                "created_at",
-                "operator_id",
-                "operator_type",
-                "action",
-                "target_account_id",
-                "account_version_after",
-            },
+        # I1-era exact column-set equality was valid only at migration head
+        # 20260921_i1_identity_reg. I2+ added the generic target columns, so
+        # assert the columns the current schema and every writer require are
+        # all present instead of freezing the historical set (a frozen set
+        # would reject any future additive migration and hid a real drift).
+        required_record_columns = {
+            "id",
+            "created_at",
+            "operator_id",
+            "operator_type",
+            "action",
+            "target_type",
+            "target_id",
+            "target_version_after",
+            "target_account_id",
+            "account_version_after",
+        }
+        self.assertTrue(
+            required_record_columns <= record_columns,
+            f"operation_records missing columns: "
+            f"{sorted(required_record_columns - record_columns)}",
         )
         session_columns = columns("sessions")
         self.assertEqual(
@@ -1123,6 +1133,21 @@ class IdentityIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     by_action[action].operator_type, operator_type, action
+                )
+
+            # Every audited action here targets an account, so the legacy
+            # account columns stay required and must equal the generic target
+            # columns (model constraint ck_operation_record_account_target).
+            self.assertTrue(records)
+            for record in records:
+                self.assertEqual(record.target_type, "account", record.action)
+                self.assertEqual(
+                    record.target_account_id, record.target_id, record.action
+                )
+                self.assertEqual(
+                    record.account_version_after,
+                    record.target_version_after,
+                    record.action,
                 )
 
             # Sessions persist only SHA-256 hashes: every token_hash is a

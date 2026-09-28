@@ -10,3 +10,6 @@ dist/
 __pycache__/
 *.py[cod]
 *.tsbuildinfo
+
+# Local generated code index (never product source)
+.codegraph/

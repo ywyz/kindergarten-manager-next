@@ -444,8 +444,12 @@ def daily_ack_context(
         "from": from_date.isoformat(),
         "to": to_date.isoformat(),
         "versions": versions,
+        # Fingerprint the exact grouped missing object handed to the caller
+        # (spec 4.1: each fact keeps its stable locators). Displaying one
+        # object and signing a reduced copy is forbidden: the full facts below
+        # are what ``expected_context`` covers.
         "missing_fingerprint": _facts_fingerprint(missing),
-        "missing_count": len(missing),
+        "missing_count": sum(len(entry.get("facts", ())) for entry in missing),
     }
 
 
@@ -501,11 +505,15 @@ def prepare_daily_export(
         warnings.extend(record.warnings)
         facts = collect_daily_missing_facts(record.adopted_content)
         if facts:
+            # Keep every complete fact (field + stable locators) grouped by
+            # daily plan/date. Reducing facts to field strings here would drop
+            # the locators the spec requires (4.1) and make the fingerprint
+            # cover a different object than the one returned to the caller.
             missing.append(
                 {
                     "daily_plan_id": record.plan_id,
                     "plan_date": record.plan_date.isoformat(),
-                    "fields": [fact["field"] for fact in facts],
+                    "facts": facts,
                 }
             )
 
