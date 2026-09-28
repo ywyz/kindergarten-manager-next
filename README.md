@@ -2,15 +2,15 @@
 
 面向单个幼儿园教师的教育工作支持系统，全新设计，不默认迁移旧系统代码或数据。
 
-Architecture v1 已确认。截至 2026-09-28，I1–I4 与 I5 Word 导出的片 1 已实现；I5 片 2–4 尚未开始。部署与容量仍未验证。
+Architecture v1 已确认。截至 2026-09-28，I1–I4 与 I5 Word 导出的片 1–2 已实现；I5 片 3–4 尚未开始。部署与容量仍未验证。
 
 ## 当前状态与下一步（2026-09-28）
 
-- **已实现**：I1 账号与认证，I2 班级分配与有效日历，I3 日计划，I4 周计划（含确认），以及 I5 片 1「导出读取、版本钉住与模板映射纯逻辑」（`backend/app/services/export_read_service.py`、`backend/app/services/word_export_mapping.py` 及对应纯单元测试）。
-- **未开始**：I5 片 2（固定模板 docx 生成）、片 3（API 与下载闭环）、片 4（隔离 Word 与浏览器验收）。路由、模板资产、生成依赖、前端导出入口与导出审计均未实施。
-- **验证**：后端纯单元测试 425 项通过；I1 24、I2 56、I3 27、I4 52 项隔离真实 MySQL 集成测试在当前 head `20260924_i4_weekly_plans` 通过；前端 `npm run typecheck`、`npm run build` 通过（主包约 1.12 MB，Vite 给出非阻断体积告警）。历史细节见下文“历史验证”与 `docs/bootstrap/`。
-- **待决定**：I5 §11.1–§11.6、§11.9 仍待用户决定；前端主包体积告警未处理，留待后续前端性能切片。
-- **下一步**：向用户提交 I5 片 2 真正依赖的最小决策并请求授权，不自动开始 docx 生成。
+- **已实现**：I1 账号与认证，I2 班级分配与有效日历，I3 日计划，I4 周计划（含确认），I5 片 1「导出读取、版本钉住与模板映射纯逻辑」（`backend/app/services/export_read_service.py`、`backend/app/services/word_export_mapping.py`），以及 I5 片 2「固定模板 docx 生成」（`backend/app/services/word_export_docx.py`、`backend/app/assets/word_templates/` 受控模板与锁定 `lxml` 依赖）及对应纯单元测试。
+- **未开始**：I5 片 3（API 与下载闭环）、片 4（隔离 Word 与浏览器验收）。路由、前端导出入口与导出审计均未实施。
+- **验证**：后端纯单元测试 453 项通过；I1 24、I2 56、I3 27、I4 52 项隔离真实 MySQL 集成测试在当前 head `20260924_i4_weekly_plans` 通过；前端 `npm run typecheck`、`npm run build` 通过（主包约 1.12 MB，Vite 给出非阻断体积告警）。历史细节见下文“历史验证”与 `docs/bootstrap/`。
+- **待决定**：I5 §11.1、§11.5、§11.6、§11.9 仍待用户决定；前端主包体积告警未处理，留待后续前端性能切片。
+- **下一步**：在片 3 前由用户确认 I5 §11.1、§11.5、§11.6，并另行授权片 3；不自动开始 API/下载闭环。
 
 ## 文档入口
 
@@ -28,7 +28,7 @@ Vue 3 / TypeScript / Vite / Element Plus 前端，Python / FastAPI / SQLAlchemy 
 
 首版覆盖账号与班级管理、个人 AI 配置与提示词、日计划、全班周计划及固定 Word 模板导出。支持教师分日期备课、周计划自动更新与人工确认。约 30 人并发是待验证的容量目标。
 
-早期骨架页面仅用于检查 Vue / TypeScript / Element Plus。AI、个人提示词、持久任务仍属于首版，按后续任务分步实现。Word 导出目前只完成读取与映射纯逻辑（片 1），docx 生成与下载闭环尚未开始。Word 原型证据仅限记录的 Ubuntu / LibreOffice 环境与固定案例，Microsoft Word 正式使用后反馈。
+早期骨架页面仅用于检查 Vue / TypeScript / Element Plus。AI、个人提示词、持久任务仍属于首版，按后续任务分步实现。Word 导出已完成读取、映射纯逻辑与固定模板 docx 生成（片 1–2），API 与下载闭环尚未开始。Word 原型证据仅限记录的 Ubuntu / LibreOffice 环境与固定案例，Microsoft Word 正式使用后反馈。
 
 ## 本地环境与目录
 

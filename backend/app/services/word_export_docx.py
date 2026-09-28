@@ -517,8 +517,11 @@ def _build_daily_table(canonical_table, view):
     afternoon_start = _DAILY_AFTERNOON_BLOCK[0] + offset
     afternoon_rows = rows[afternoon_start:afternoon_start + 3]
     _fill_daily_afternoon(afternoon_rows, view.get("afternoon_outdoor"))
+    # The fixed label "一日活动反思：" already lives in the template's left
+    # cell; the right cell only carries the reflection value (empty stays
+    # empty, no label, no sample text backfilled).
     _CellWriter(_cells(rows[afternoon_start + 3])[1]).field(
-        "一日活动反思：", view.get("reflection")
+        "", view.get("reflection")
     )
     return table
 
@@ -740,24 +743,30 @@ def generate_daily_export_docx(views, *, template_path=None) -> bytes:
     if canonical_table is None:
         raise WordTemplateError("日模板缺少计划表格")
 
-    title, subtitle = header_templates
-    first = views[0]
-    header = first.get("header") or {}
-    _set_paragraph_text(
-        title,
-        f"{header.get('school_name') or ''}{_DAILY_TITLE_SUFFIX}",
-    )
-    parts = [
-        header.get("grade"),
-        header.get("class_name"),
-        header.get("creator_display_name"),
-    ]
-    _set_paragraph_text(subtitle, " ".join(p for p in parts if isinstance(p, str) and p))
-
-    elements = [title, subtitle]
+    # Every plan is a complete block with its own title, subtitle and table.
+    # A range export can mix creators, so the header must never be shared or
+    # reused across plans (spec 5.1/5.3: header comes from that plan's own
+    # snapshot, never re-queried or re-derived in the generation layer).
+    elements = []
     for index, view in enumerate(views):
         if index > 0:
             elements.append(_page_break_paragraph())
+        header = view.get("header") or {}
+        title = deepcopy(header_templates[0])
+        subtitle = deepcopy(header_templates[1])
+        _set_paragraph_text(
+            title,
+            f"{header.get('school_name') or ''}{_DAILY_TITLE_SUFFIX}",
+        )
+        parts = [
+            header.get("grade"),
+            header.get("class_name"),
+            header.get("creator_display_name"),
+        ]
+        _set_paragraph_text(
+            subtitle, " ".join(p for p in parts if isinstance(p, str) and p)
+        )
+        elements.extend([title, subtitle])
         elements.append(_build_daily_table(canonical_table, view))
 
     sectPr = _reset_body(body)
@@ -794,11 +803,19 @@ def generate_weekly_export_docx(views, *, template_path=None) -> bytes:
             f"{header.get('school_name') or ''}{_WEEKLY_TITLE_SUFFIX}",
         )
         date_range = view.get("date_range") or {}
+        # Class header carries both the creation-time snapshots ``grade`` and
+        # ``class_name`` (spec 5.2/5.3), joined like the daily subtitle with a
+        # single space, empty parts filtered. Never backfilled from the
+        # current class profile.
+        class_parts = [header.get("grade"), header.get("class_name")]
+        class_text = " ".join(
+            part for part in class_parts if isinstance(part, str) and part
+        )
         _set_paragraph_text(
             theme_line,
             (
                 f"主题名称：《{header.get('theme') or ''}》 "
-                f"班级：{header.get('class_name') or ''} "
+                f"班级：{class_text} "
                 f"第（{_cn_number(view['week_number'])}）周"
                 f"（{_weekly_date_range(date_range['start'], date_range['end'])}）"
             ),

@@ -72,6 +72,27 @@ def _assert_no_strikethrough(test, root):
             test.assertIn(value, (None, "false", "0"))
 
 
+def _body_blocks(root):
+    """Text of each complete plan block (title + subtitle + table).
+
+    Blocks are split on inter-plan page breaks; ``sectPr`` and the page-break
+    paragraph itself carry no business text. A single-plan document therefore
+    has one block, and the Nth plan of a merged export is ``blocks[N-1]``.
+    """
+    body = root.find(docx._w("body"))
+    blocks = [[]]
+    for child in body:
+        if child.tag == docx._w("sectPr"):
+            continue
+        if child.tag == docx._w("p") and child.find(
+            f".//{docx._w('br')}[@{docx._w('type')}='page']"
+        ) is not None:
+            blocks.append([])
+            continue
+        blocks[-1].append(_text(child))
+    return ["\n".join(block) for block in blocks]
+
+
 # ---------------------------------------------------------------------------
 # fixtures (reuse the mapping layer)
 # ---------------------------------------------------------------------------
@@ -381,6 +402,26 @@ class DailyDocxTests(unittest.TestCase):
         for residue in ("跳圈圈", "蜜雪冰城", "暑假趣事多", "岳炜", "南通市崇川区樾府幼儿园"):
             self.assertNotIn(residue, text, residue)
 
+    def test_w1_reflection_label_once_with_body(self):
+        data = docx.generate_daily_export_docx([_daily_view()])
+        _, root = _open(data)
+        table = _tables(root)[0]
+        # The template's left-cell label is the only occurrence.
+        self.assertEqual(_text(table).count("一日活动反思："), 1)
+        reflection_row = _reflection_row(table)
+        self.assertEqual(len(reflection_row), 1)
+        self.assertEqual(_cells_text(reflection_row[0], 1), "一日反思文本")
+
+    def test_w1_reflection_label_once_when_empty(self):
+        data = docx.generate_daily_export_docx([_daily_view(adopted_content={})])
+        _, root = _open(data)
+        table = _tables(root)[0]
+        self.assertEqual(_text(table).count("一日活动反思："), 1)
+        reflection_row = _reflection_row(table)
+        self.assertEqual(len(reflection_row), 1)
+        # Empty stays empty: no repeated label, no template sample backfill.
+        self.assertEqual(_cells_text(reflection_row[0], 1), "")
+
     def test_w2_redline_insert_replace_delete(self):
         baseline = "准备纸杯。\n观察变化。\n删除我。"
         final = "准备纸杯。\n缓慢变化。\n新增提醒：先检查纸杯边缘，再开始探索。"
@@ -446,7 +487,61 @@ class DailyDocxTests(unittest.TestCase):
         _, merged_root = _open(merged)
         merged_tables = _tables(merged_root)
         self.assertEqual(len(merged_tables), 2)
-        self.assertEqual(_text(_tables(single_root)[0]), _text(merged_tables[1]))
+        # The whole plan block (its own title + subtitle + table) must be
+        # identical, not only the table body.
+        single_blocks = _body_blocks(single_root)
+        merged_blocks = _body_blocks(merged_root)
+        self.assertEqual(len(single_blocks), 1)
+        self.assertEqual(len(merged_blocks), 2)
+        self.assertEqual(single_blocks[0], merged_blocks[1])
+
+    def test_w3_multi_day_each_plan_keeps_own_header(self):
+        first = _daily_view(
+            plan_id="a",
+            plan_date=date(2026, 9, 1),
+            weekday=2,
+            school_name="甲园",
+            grade="小班",
+            class_name="小一",
+            creator_display_name="甲老师",
+        )
+        second = _daily_view(
+            plan_id="b",
+            plan_date=date(2026, 9, 2),
+            weekday=3,
+            school_name="乙园",
+            grade="大班",
+            class_name="大三",
+            creator_display_name="乙老师",
+        )
+        data = docx.generate_daily_export_docx([first, second])
+        _, root = _open(data)
+        text = _text(root)
+        # Both headers survive exactly once, in input order.
+        self.assertEqual(text.count("甲园一日活动计划"), 1)
+        self.assertEqual(text.count("乙园一日活动计划"), 1)
+        self.assertEqual(text.count("小班 小一 甲老师"), 1)
+        self.assertEqual(text.count("大班 大三 乙老师"), 1)
+        self.assertLess(
+            text.index("甲园一日活动计划"), text.index("乙园一日活动计划")
+        )
+        # Exactly one inter-plan page break, none before the first plan.
+        self.assertEqual(len(_page_breaks(root)), 1)
+        blocks = _body_blocks(root)
+        self.assertEqual(len(blocks), 2)
+        self.assertIn("甲园一日活动计划", blocks[0])
+        self.assertIn("小班 小一 甲老师", blocks[0])
+        self.assertNotIn("乙园", blocks[0])
+        # Second plan is not represented by the first plan's header.
+        self.assertIn("乙园一日活动计划", blocks[1])
+        self.assertIn("大班 大三 乙老师", blocks[1])
+        self.assertNotIn("甲园", blocks[1])
+        self.assertNotIn("小一", blocks[1])
+        # Each table keeps its own date.
+        tables = _tables(root)
+        self.assertEqual(len(tables), 2)
+        self.assertIn("9 月 1 日  周二", _text(tables[0]))
+        self.assertIn("9 月 2 日  周三", _text(tables[1]))
 
     def test_same_kind_post_groups_keep_both_blocks(self):
         content = _daily_content()
@@ -675,6 +770,25 @@ class WeeklyDocxTests(unittest.TestCase):
         for residue in ("戚甦甦", "朱维维", "老狼老狼几点了", "我是班级小主人", "国庆放假"):
             self.assertNotIn(residue, _text(root), residue)
 
+    def test_w6_header_includes_grade_and_class(self):
+        data = docx.generate_weekly_export_docx(
+            [_weekly_view(grade="大班", class_name="向日葵班")]
+        )
+        _, root = _open(data)
+        text = _text(root)
+        self.assertIn("班级：大班 向日葵班", text)
+        # Empty parts are filtered, still joined by a single space.
+        no_grade = docx.generate_weekly_export_docx(
+            [_weekly_view(grade="", class_name="向日葵班")]
+        )
+        _, no_grade_root = _open(no_grade)
+        self.assertIn("班级：向日葵班", _text(no_grade_root))
+        no_class = docx.generate_weekly_export_docx(
+            [_weekly_view(grade="大班", class_name="")]
+        )
+        _, no_class_root = _open(no_class)
+        self.assertIn("班级：大班", _text(no_class_root))
+
     def test_output_zip_preserves_other_members_and_template_hash(self):
         data = docx.generate_weekly_export_docx([_weekly_view()])
         with zipfile.ZipFile(io.BytesIO(data)) as out:
@@ -715,6 +829,15 @@ class DispatchTests(unittest.TestCase):
 def _cells_text(row, index):
     cells = row.findall(docx._w("tc"))
     return _text(cells[index])
+
+
+def _reflection_row(table):
+    """Rows whose left cell carries the fixed "一日活动反思：" label."""
+    return [
+        row
+        for row in table.findall(docx._w("tr"))
+        if "一日活动反思：" in _cells_text(row, 0)
+    ]
 
 
 if __name__ == "__main__":
