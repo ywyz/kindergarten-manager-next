@@ -6,7 +6,7 @@ dependency overrides and mocked I4 services — no database, no MySQL, no
 SQLite. Covers the spec permission matrix, the fixed status/code table
 (201/200/401/403/404/409/422/503), create/open semantics, PATCH omitted vs
 explicit-null handling, CONFIRM_ACK_REQUIRED carrying facts, and route
-registration (8 routes, no delete/recover/AI/export entries).
+registration (8 routes, no delete/recover/AI/takeover entries; export surface moved to /api/exports, I5 slice 3).
 """
 
 import asyncio
@@ -1206,7 +1206,11 @@ class RouteRegistrationTests(unittest.TestCase):
                 self.assertIn(path, paths)
                 self.assertEqual(set(paths[path]), methods)
 
-    def test_no_delete_recover_ai_export_or_takeover_routes(self):
+    def test_no_delete_recover_ai_or_takeover_routes(self):
+        # I4-scope boundary: the weekly-plan sheets expose no destructive,
+        # AI or takeover entries. The Word export surface lives on
+        # /api/exports/* and is covered positively by
+        # tests.unit.test_i5_export_api_routes (I5 slice 3).
         paths = app.openapi()["paths"]
         for path, operations in paths.items():
             if "weekly-plans" not in path:
@@ -1215,7 +1219,6 @@ class RouteRegistrationTests(unittest.TestCase):
                 self.assertNotIn("delete", operations)
                 self.assertNotIn("put", operations)
                 self.assertFalse(path.endswith("/recover"))
-                self.assertFalse(path.endswith("/export"))
                 self.assertNotIn("/ai", path)
                 self.assertNotIn("/takeover", path)
 

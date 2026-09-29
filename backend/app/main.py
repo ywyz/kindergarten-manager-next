@@ -11,6 +11,7 @@ from app.routers import (
     calendar_read,
     context,
     daily_plans,
+    exports,
     settings as settings_router,
     weekly_plan_sync_states,
     weekly_plans,
@@ -61,6 +62,7 @@ app.include_router(context.router, prefix="/api")
 app.include_router(daily_plans.router, prefix="/api")
 app.include_router(weekly_plans.router, prefix="/api")
 app.include_router(weekly_plan_sync_states.router, prefix="/api")
+app.include_router(exports.router, prefix="/api")
 
 
 @app.get("/health")

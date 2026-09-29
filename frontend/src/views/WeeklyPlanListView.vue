@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   ElButton,
   ElCard,
+  ElDatePicker,
+  ElDialog,
+  ElMessage,
   ElPagination,
   ElTable,
   ElTableColumn,
@@ -10,6 +13,11 @@ import {
 } from 'element-plus'
 import * as api from '../api'
 import { isAdmin } from '../auth'
+import {
+  EXPORT_LIMIT_WEEKLY,
+  exportWordErrorMessage,
+  triggerExportDownload,
+} from '../word-export'
 import { isAuthError, weeklyPlanErrorMessage } from '../weekly-plan-content'
 import type { Term, WeeklyPlanListItem } from '../types'
 
@@ -94,6 +102,56 @@ function onPageChange(): void {
   void load()
 }
 
+// --- I5 weekly range export (slice 3) ---------------------------------------
+// Server selects whole confirmed weeks by teaching-day intersection and
+// dedups; the client never widens the range. Admin path attaches the
+// explicit class_id; the teacher path omits it entirely.
+
+const exportState = reactive({
+  open: false,
+  from: '',
+  to: '',
+  exporting: false,
+  error: '',
+  seq: 0,
+})
+const exportLimit = EXPORT_LIMIT_WEEKLY
+
+function openExportDialog(): void {
+  exportState.from = ''
+  exportState.to = ''
+  exportState.error = ''
+  exportState.open = true
+}
+
+async function runRangeExport(): Promise<void> {
+  if (exportState.exporting || !exportState.from || !exportState.to) return
+  const seq = ++exportState.seq
+  exportState.exporting = true
+  try {
+    const payload: {
+      from: string
+      to: string
+      class_id?: string
+    } = { from: exportState.from, to: exportState.to }
+    if (props.classId) payload.class_id = props.classId
+    const result = await api.exportWeeklyPlans(payload)
+    if (seq !== exportState.seq) return
+    exportState.open = false
+    triggerExportDownload(
+      result,
+      `weekly-plans_${payload.from}_${payload.to}.docx`,
+    )
+    ElMessage.success('周计划 Word 文件已开始下载')
+  } catch (err) {
+    if (seq !== exportState.seq) return
+    if (isAuthError(err)) return
+    exportState.error = exportWordErrorMessage(err, '导出失败，请稍后重试')
+  } finally {
+    if (seq === exportState.seq) exportState.exporting = false
+  }
+}
+
 function openPlan(row: WeeklyPlanListItem): void {
   emit('open', row.id)
 }
@@ -117,6 +175,9 @@ onMounted(async () => {
       <div class="card-head">
         <strong>周计划列表</strong>
         <div class="head-actions">
+          <el-button size="small" :disabled="loading" @click="openExportDialog">
+            按日期范围导出 Word
+          </el-button>
           <el-button size="small" :disabled="loading" @click="load">刷新</el-button>
           <el-button v-if="showBack" size="small" @click="$emit('back')">返回</el-button>
         </div>
@@ -190,6 +251,48 @@ onMounted(async () => {
         还没有周计划。请在班级日历中点击对应周的“周计划”按钮创建或打开。
       </template>
     </p>
+
+    <!-- I5 周计划按日期范围合并导出（服务端按教学日相交整份选取、去重） -->
+    <el-dialog
+      v-model="exportState.open"
+      title="按日期范围导出 Word"
+      width="540px"
+      :close-on-click-modal="false"
+    >
+      <div class="export-dates">
+        <el-date-picker
+          v-model="exportState.from"
+          type="date"
+          value-format="YYYY-MM-DD"
+          placeholder="开始日期"
+          :clearable="false"
+        />
+        <span class="muted">至</span>
+        <el-date-picker
+          v-model="exportState.to"
+          type="date"
+          value-format="YYYY-MM-DD"
+          placeholder="结束日期"
+          :clearable="false"
+        />
+      </div>
+      <p class="muted">
+        导出命中的整份已确认周计划（按实际上课日与范围相交选择，去重、升序）；
+        单次最多导出 {{ exportLimit }} 份，未确认的周计划不会导出。
+      </p>
+      <el-alert v-if="exportState.error" type="error" :title="exportState.error" :closable="false" />
+      <template #footer>
+        <el-button @click="exportState.open = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="exportState.exporting"
+          :disabled="!exportState.from || !exportState.to || exportState.exporting"
+          @click="runRangeExport"
+        >
+          导出
+        </el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 
@@ -203,4 +306,6 @@ onMounted(async () => {
 .head-actions { display: flex; gap: 8px; }
 .muted { color: #909399; font-size: 0.85rem; }
 .inline-alert { margin-bottom: 12px; }
+.export-dates { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.weekly-list :deep(.el-dialog) { min-width: 380px; }
 </style>

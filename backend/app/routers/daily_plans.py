@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.deps import get_auth_snapshot, get_current_account
-from app.models import Account, DailyPlan, DailyPlanContent, TeacherAssignment
+from app.models import Account, DailyPlan, DailyPlanContent
+from app.routers.class_scope import resolve_read_class_id
 from app.schemas import (
     DailyPlanCreateIn,
     DailyPlanListItemOut,
@@ -126,19 +127,14 @@ def _reject_term_id(term_id: str | None) -> None:
 def _resolve_read_class_id(
     db: Session, account: Account, class_id: str | None
 ) -> str:
-    """Backend re-judged class context for a read request."""
-    if account.role == "admin":
-        if not class_id:
-            raise _validation_error()
-        return class_id
-    if account.role != "teacher":
-        raise _forbidden()
-    if class_id is not None:
-        raise _validation_error()
-    assignment = db.get(TeacherAssignment, account.id)
-    if assignment is None:
-        raise _forbidden()
-    return assignment.class_id
+    """Backend re-judged class context for a read request.
+
+    Delegates to the one shared role judgment (I5 extraction); the GET
+    presence semantics (``class_id is not None``) are preserved unchanged.
+    """
+    return resolve_read_class_id(
+        db, role=account.role, account_id=account.id, class_id=class_id
+    )
 
 
 def _check_create_shape(snapshot: AuthSnapshot, data: DailyPlanCreateIn) -> None:

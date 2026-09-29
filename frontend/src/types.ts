@@ -520,3 +520,62 @@ export interface WeeklyPlanConfirmIn {
   acknowledge_stale: boolean
   note?: string | null
 }
+
+// --- I5 Word export (slice 3) ----------------------------------------------
+// Mirrors the strict backend schemas. Teachers must omit class_id entirely
+// (even null is a 422); only admins attach the explicit class context.
+
+export interface DailyExportRequest {
+  from: string
+  to: string
+  /** Sent only when the user confirmed the 409 missing-facts prompt. */
+  ack_missing?: boolean
+  /** Exact expected_context object echoed back from the server 409. */
+  expected_context?: Record<string, unknown> | null
+  /** Admin only; presence carries the explicit class context. */
+  class_id?: string
+}
+
+export interface DailyExportFacts {
+  kind: string
+  field?: string
+  section?: string
+  group_kind?: string | null
+  group_index?: number
+  group_id?: string | null
+  game_index?: number
+  game_id?: string | null
+}
+
+export interface DailyMissingEntry {
+  daily_plan_id: string
+  plan_date: string
+  facts: DailyExportFacts[]
+}
+
+export interface WeeklyExportRangeRequest {
+  from: string
+  to: string
+  class_id?: string
+}
+
+export interface WeeklyExportSingleRequest {
+  plan_id: string
+  confirmed_version?: number
+  class_id?: string
+}
+
+export type WeeklyExportRequest =
+  | WeeklyExportRangeRequest
+  | WeeklyExportSingleRequest
+
+export interface ExportWarning {
+  code: string
+  reason?: string
+}
+
+export interface ExportDownloadResult {
+  blob: Blob
+  filename: string
+  warnings: ExportWarning[]
+}

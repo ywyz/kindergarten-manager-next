@@ -763,3 +763,89 @@ class WeeklyPlanDetailOut(BaseModel):
     refreshed_sources: list[dict] | None
     created_at: datetime
     updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# I5 Word export request schemas (slice 3, spec §3.2/§3.4)
+# ---------------------------------------------------------------------------
+
+
+class DailyExportIn(BaseModel):
+    """POST /exports/daily-plans body (strict, ``extra="forbid"``).
+
+    ``from``/``to`` are required and cover single-day/week/month/range forms
+    (equal dates included); the range is re-validated server-side. ``from``
+    is an alias because ``from`` is a Python keyword. ``ack_missing`` is a
+    strict boolean and ``term_id``/plan ids/content versions/client facts are
+    rejected as unknown fields: the term and the pinned versions are always
+    server-derived. ``expected_context`` is the exact object the server
+    generated on a previous 409; clients echo it unchanged and never submit
+    facts of their own. ``class_id`` exists only so the router can judge
+    presence (``model_fields_set``, explicit null included): teachers must
+    omit it entirely, admins must send it non-empty.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_: date = Field(..., alias="from")
+    to: date
+    ack_missing: bool = Field(False, strict=True)
+    expected_context: dict[str, Any] | None = None
+    class_id: str | None = None
+
+    @model_validator(mode="after")
+    def _check_range(self):
+        if self.from_ > self.to:
+            raise ValueError("from 不能晚于 to")
+        return self
+
+
+class WeeklyExportIn(BaseModel):
+    """POST /exports/weekly-plans body: mutually exclusive dual modes.
+
+    Range mode needs both ``from`` and ``to`` and must not carry
+    ``plan_id``/``confirmed_version``. Single mode needs ``plan_id``, may omit
+    ``confirmed_version`` (omit = pin the current confirmation pointer) and
+    must not carry ``from``/``to``. Presence is judged on the raw payload keys
+    (before validation) so explicit nulls cannot slip a mode through — the
+    same presence-with-null-is-real rule as ``class_id``. Fake draft/content/
+    source fields, ``term_id`` and any other unknown key are rejected by
+    ``extra="forbid"``. ``confirmed_version`` is a strict integer (booleans
+    are rejected, never coerced).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_: date | None = Field(None, alias="from")
+    to: date | None = None
+    plan_id: str | None = Field(None, min_length=1)
+    confirmed_version: int | None = Field(None, ge=1, strict=True)
+    class_id: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _exclusive_modes(cls, data):
+        if not isinstance(data, dict):
+            return data
+        keys = data.keys()
+        range_present = ("from" in keys) or ("to" in keys)
+        single_present = ("plan_id" in keys) or (
+            "confirmed_version" in keys
+        )
+        if not range_present and not single_present:
+            raise ValueError("必须提供日期范围模式或单份模式之一")
+        if range_present and single_present:
+            raise ValueError("范围模式与单份模式不能同时出现")
+        if range_present:
+            if data.get("from") is None or data.get("to") is None:
+                raise ValueError("范围模式必须同时提供 from 与 to")
+        else:
+            if "plan_id" not in keys or not data.get("plan_id"):
+                raise ValueError("单份模式必须提供 plan_id")
+        return data
+
+    @model_validator(mode="after")
+    def _check_range(self):
+        if self.from_ is not None and self.to is not None and self.from_ > self.to:
+            raise ValueError("from 不能晚于 to")
+        return self

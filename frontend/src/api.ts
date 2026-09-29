@@ -6,14 +6,18 @@ import type {
   ClassDetail,
   ClassInfo,
   ConfigurationChange,
+  DailyMissingEntry,
   DailyPlan,
   DailyPlanCreateIn,
   DailyPlanPatchIn,
   ErrorBody,
+  ExportDownloadResult,
+  ExportWarning,
   Me,
   SchoolSettings,
   TeacherListItem,
   Term,
+  WeeklyExportRequest,
   WeeklyPlanConfirmation,
   WeeklyPlanConfirmationList,
   WeeklyPlanConfirmIn,
@@ -356,4 +360,138 @@ export async function getWeeklyPlanConfirmation(
   return request(
     `/weekly-plans/${planId}/confirmations/${version}${classIdSuffix(classId)}`,
   )
+}
+
+// --- I5 Word export (slice 3) ----------------------------------------------
+// Binary helper: DOCX must never ride the JSON `request<T>()` path. A
+// successful download returns the blob plus the server-decided filename and
+// warning header; every failure keeps the slice-3 error fields (facts,
+// expected_context, reason, limit, selected_count) so the views can drive
+// the 409 ack loop. The requests still carry credentials, JSON content type
+// and the same-origin Origin header; 401 resets the session like elsewhere.
+
+/** Extended error shape maintained by exportBinary (I5 slice 3). */
+export interface ExportError extends Error {
+  status: number
+  code: string
+  /** 409 EXPORT_ACK_REQUIRED: server-grouped daily missing facts. */
+  facts?: DailyMissingEntry[]
+  /** 409 EXPORT_ACK_REQUIRED: echo back unchanged after user confirms. */
+  expected_context?: Record<string, unknown> | null
+  /** 'missing' | 'context_changed'. */
+  reason?: string
+  /** 422 EXPORT_RANGE_TOO_LARGE. */
+  limit?: number
+  selected_count?: number
+}
+
+export type { WeeklyExportRequest }
+
+function makeExportError(
+  message: string,
+  status: number,
+  body: Record<string, unknown> | null,
+): ExportError {
+  const err = new Error(message) as ExportError
+  err.status = status
+  err.code = (body?.error as Record<string, unknown> | undefined)?.code as string || 'UNKNOWN_ERROR'
+  const error = (body?.error ?? {}) as Record<string, unknown>
+  if (error.facts) err.facts = error.facts as DailyMissingEntry[]
+  if (error.expected_context !== undefined) {
+    err.expected_context = error.expected_context as Record<string, unknown> | null
+  }
+  if (error.reason) err.reason = error.reason as string
+  if (error.limit !== undefined) err.limit = error.limit as number
+  if (error.selected_count !== undefined) err.selected_count = error.selected_count as number
+  return err
+}
+
+function parseWarningsHeader(value: string | null): ExportWarning[] {
+  if (!value) return []
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter(
+          (item): item is ExportWarning =>
+            !!item &&
+            typeof (item as ExportWarning).code === 'string' &&
+            (item as ExportWarning).code !== '',
+        )
+        .map((item) => ({
+          code: item.code,
+          ...(typeof item.reason === 'string' ? { reason: item.reason } : {}),
+        }))
+    }
+  } catch {
+    // Defensive: a future format change still surfaces something readable.
+  }
+  const trimmed = value.trim()
+  return trimmed ? [{ code: trimmed }] : []
+}
+
+/** Extracts the download filename from Content-Disposition (RFC 5987 first). */
+export function filenameFromDisposition(value: string | null): string {
+  if (!value) return ''
+  const utf8 = /filename\*=UTF-8''([^;\s]+)/i.exec(value)
+  if (utf8) {
+    try {
+      return decodeURIComponent(utf8[1])
+    } catch {
+      // fall through to the ASCII fallback
+    }
+  }
+  const ascii = /filename="?([^";]+)"?/i.exec(value)
+  return ascii ? ascii[1] : ''
+}
+
+async function exportBinary(path: string, payload: unknown): Promise<ExportDownloadResult> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    },
+    body: JSON.stringify(payload),
+  })
+  if (res.ok) {
+    const blob = await res.blob()
+    return {
+      blob,
+      filename: filenameFromDisposition(res.headers.get('Content-Disposition')),
+      warnings: parseWarningsHeader(res.headers.get('X-Export-Warnings')),
+    }
+  }
+  if (res.status === 401) {
+    dispatchUnauthorized()
+  }
+  let body: Record<string, unknown> | null = null
+  try {
+    const text = await res.text()
+    body = text ? (JSON.parse(text) as Record<string, unknown>) : null
+  } catch {
+    // non-JSON error body
+  }
+  throw makeExportError(
+    (body?.error as Record<string, unknown> | undefined)?.message as string || `HTTP ${res.status}`,
+    res.status,
+    body,
+  )
+}
+
+export async function exportDailyPlans(payload: {
+  from: string
+  to: string
+  ack_missing?: boolean
+  expected_context?: Record<string, unknown> | null
+  class_id?: string
+}): Promise<ExportDownloadResult> {
+  return exportBinary('/exports/daily-plans', payload)
+}
+
+export async function exportWeeklyPlans(
+  payload: WeeklyExportRequest,
+): Promise<ExportDownloadResult> {
+  return exportBinary('/exports/weekly-plans', payload)
 }

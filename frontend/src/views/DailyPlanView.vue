@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   ElAlert,
   ElButton,
   ElCard,
+  ElCheckbox,
+  ElDatePicker,
+  ElDialog,
   ElInput,
   ElMessage,
   ElOption,
@@ -12,7 +15,15 @@ import {
 } from 'element-plus'
 import * as api from '../api'
 import { auth, isAdmin } from '../auth'
-import type { DailyPlan } from '../types'
+import type { DailyExportRequest, DailyMissingEntry, DailyPlan } from '../types'
+import { monthRange, parseLocalDate, formatLocalDate } from '../date-utils'
+import {
+  EXPORT_LIMIT_DAILY,
+  exportWarningTexts,
+  exportWordErrorMessage,
+  isExportError,
+  triggerExportDownload,
+} from '../word-export'
 import {
   MORNING_EXERCISE_LABEL,
   buildAdoptedContent,
@@ -293,6 +304,149 @@ function addAfternoonGame(): void {
   form.value.afternoon_outdoor.games.push({ name: '' })
 }
 
+// --- I5 Word export (slice 3) ----------------------------------------------
+// Range options revolve around the current planDate; the server alone
+// decides whether a range hits any plan (the current date may have none).
+// The 409 ack flow re-shows only the server-side facts and echoes back the
+// exact expected_context object; a context_changed reply re-prompts even
+// when the latest missing set is empty.
+
+type ExportMode = 'day' | 'week' | 'month' | 'custom'
+
+const exportState = reactive({
+  open: false,
+  mode: 'week' as ExportMode,
+  from: '',
+  to: '',
+  ackChecked: false,
+  facts: null as DailyMissingEntry[] | null,
+  expectedContext: null as Record<string, unknown> | null,
+  reason: null as 'missing' | 'context_changed' | null,
+  error: '',
+})
+const exporting = ref(false)
+const exportSeq = ref(0)
+/** Per-view cap text for the dialog (daily = 31, spec §11.1). */
+const exportLimit = EXPORT_LIMIT_DAILY
+
+function formatLocal(d: Date): string {
+  return formatLocalDate(d)
+}
+
+/** Monday..Sunday of the ISO date, local calendar (weekday 0 = Sunday). */
+function weekBounds(iso: string): { from: string; to: string } {
+  const day = parseLocalDate(iso)
+  const offset = (day.getDay() + 6) % 7
+  const monday = new Date(day.getFullYear(), day.getMonth(), day.getDate() - offset)
+  const sunday = new Date(
+    day.getFullYear(),
+    day.getMonth(),
+    day.getDate() + (6 - offset),
+  )
+  return { from: formatLocal(monday), to: formatLocal(sunday) }
+}
+
+function currentRange(): { from: string; to: string } {
+  if (exportState.mode === 'day') return { from: props.planDate, to: props.planDate }
+  if (exportState.mode === 'week') return weekBounds(props.planDate)
+  if (exportState.mode === 'month') return monthRange(props.planDate)
+  return { from: exportState.from, to: exportState.to }
+}
+
+/** Admin class context; the teacher path must omit class_id entirely. */
+function exportClassId(): string | undefined {
+  if (!isAdmin()) return undefined
+  return plan.value?.class_id ?? props.classId
+}
+
+function openExportDialog(): void {
+  const week = weekBounds(props.planDate)
+  exportState.mode = 'week'
+  exportState.from = week.from
+  exportState.to = week.to
+  exportState.ackChecked = false
+  exportState.facts = null
+  exportState.expectedContext = null
+  exportState.reason = null
+  exportState.error = ''
+  exportState.open = true
+}
+
+// Any range/mode change invalidates a pending confirmation: the ack binds
+// the exact displayed version/facts object, so a different range always
+// starts a fresh server round-trip (a new 409 or a direct success).
+watch(
+  () => [exportState.mode, exportState.from, exportState.to] as const,
+  () => {
+    if (exportState.ackChecked || exportState.facts !== null || exportState.error) {
+      exportState.ackChecked = false
+      exportState.facts = null
+      exportState.expectedContext = null
+      exportState.reason = null
+      exportState.error = ''
+    }
+  },
+)
+
+async function runExport(): Promise<void> {
+  if (exporting.value) return
+  const seq = ++exportSeq.value
+  exporting.value = true
+  try {
+    const payload: DailyExportRequest = {
+      ...currentRange(),
+    }
+    if (exportState.ackChecked && exportState.expectedContext) {
+      payload.ack_missing = true
+      payload.expected_context = exportState.expectedContext
+    }
+    const classId = exportClassId()
+    if (classId) payload.class_id = classId
+    const result = await api.exportDailyPlans(payload)
+    if (seq !== exportSeq.value) return
+    exportState.open = false
+    triggerExportDownload(
+      result,
+      `daily-plans_${payload.from}_${payload.to}.docx`,
+    )
+    ElMessage.success('日计划 Word 文件已开始下载')
+    // Required prompt comes from the actual response header (spec §3.6).
+    for (const line of exportWarningTexts(result.warnings)) {
+      ElMessage({ type: 'warning', message: line, duration: 8000 })
+    }
+  } catch (err) {
+    if (seq !== exportSeq.value) return
+    handleExportError(err)
+  } finally {
+    if (seq === exportSeq.value) exporting.value = false
+  }
+}
+
+function handleExportError(err: unknown): void {
+  if (isAuthError(err)) return
+  if (isExportError(err) && err.code === 'EXPORT_ACK_REQUIRED') {
+    // Never trust or reuse previous confirmations: fresh facts + fresh ack.
+    exportState.facts = err.facts || []
+    exportState.expectedContext = err.expected_context ?? null
+    exportState.reason =
+      err.reason === 'context_changed' ? 'context_changed' : 'missing'
+    exportState.ackChecked = false
+    exportState.error =
+      exportState.reason === 'context_changed'
+        ? '导出对象已变化，以下是最新缺项，请重新确认后再导出'
+        : '以下日期存在缺项，确认后将按当前内容导出（缺项保持为空，不由系统补写）'
+    return
+  }
+  exportState.facts = null
+  exportState.expectedContext = null
+  exportState.reason = null
+  exportState.error = exportWordErrorMessage(err, '导出失败，请稍后重试')
+}
+
+function factsLabel(fact: { field?: string; kind: string }): string {
+  return fact.field || fact.kind
+}
+
 onMounted(() => {
   void openExisting()
 })
@@ -306,6 +460,15 @@ onMounted(() => {
         <el-tag v-if="phase === 'ready'" size="small" :type="canEdit ? 'success' : 'info'">
           {{ canEdit ? '可编辑' : '只读' }}
         </el-tag>
+        <el-button
+          v-if="phase === 'ready' || phase === 'missing'"
+          size="small"
+          :loading="exporting"
+          :disabled="exporting"
+          @click="openExportDialog"
+        >
+          导出 Word
+        </el-button>
         <el-button @click="$emit('back')">返回日历</el-button>
       </div>
     </div>
@@ -811,6 +974,91 @@ onMounted(() => {
         只读视图：仅创建者与管理员可以编辑保存；本页不提供删除入口。
       </p>
     </template>
+
+    <!-- I5 导出 Word（范围以服务端实际命中为准；409 缺项确认闭环） -->
+    <el-dialog
+      v-model="exportState.open"
+      title="导出 Word"
+      width="600px"
+      :close-on-click-modal="false"
+    >
+      <div class="export-controls">
+        <el-select v-model="exportState.mode" style="width: 180px">
+          <el-option label="当前日期" value="day" />
+          <el-option label="所在周" value="week" />
+          <el-option label="所在月" value="month" />
+          <el-option label="自选范围" value="custom" />
+        </el-select>
+        <div v-if="exportState.mode !== 'custom'" class="muted">
+          {{ currentRange().from }} ~ {{ currentRange().to }}
+        </div>
+        <div v-if="exportState.mode === 'custom'" class="export-dates">
+          <el-date-picker
+            v-model="exportState.from"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="开始日期"
+            :clearable="false"
+          />
+          <span class="muted">至</span>
+          <el-date-picker
+            v-model="exportState.to"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="结束日期"
+            :clearable="false"
+          />
+        </div>
+        <p class="muted">
+          单次最多导出 {{ exportLimit }} 份日计划；由服务端按范围内实际存在的日计划决定是否命中，不会自动扩大范围。
+        </p>
+      </div>
+
+      <el-alert v-if="exportState.error" type="error" :title="exportState.error" :closable="false" />
+
+      <template v-if="exportState.facts && exportState.facts.length">
+        <h4 class="facts-title">缺项（确认后缺项保持为空，不会自动补写）</h4>
+        <ul class="export-facts">
+          <li v-for="entry in exportState.facts" :key="entry.daily_plan_id">
+            <strong>{{ entry.plan_date }}</strong>
+            <span class="muted">（{{ entry.facts.length }} 项）：</span>
+            <span>{{ entry.facts.map(factsLabel).join('、') }}</span>
+          </li>
+        </ul>
+        <el-alert
+          v-if="exportState.reason === 'context_changed'"
+          type="warning"
+          :closable="false"
+          title="导出对象已变化（版本或缺项有更新），此前确认已失效；请再次确认。"
+          class="inline-alert"
+        />
+        <el-checkbox v-model="exportState.ackChecked" class="inline-alert">
+          我已知晓以上缺项，确认按当前内容导出
+        </el-checkbox>
+      </template>
+
+      <template #footer>
+        <el-button @click="exportState.open = false">取消</el-button>
+        <el-button
+          v-if="exportState.facts && exportState.facts.length"
+          type="primary"
+          :loading="exporting"
+          :disabled="!exportState.ackChecked"
+          @click="runExport"
+        >
+          确认缺项并导出
+        </el-button>
+        <el-button
+          v-else
+          type="primary"
+          :loading="exporting"
+          :disabled="exporting"
+          @click="runExport"
+        >
+          导出
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -845,6 +1093,10 @@ onMounted(() => {
 .conflict-hint { color: #b88230; font-size: 0.875rem; }
 .conflict-body h4 { margin: 12px 0 6px; }
 .conflict-body .label { margin: 8px 0 4px; color: #606266; font-size: 0.85rem; }
+.export-controls { margin-bottom: 12px; }
+.export-dates { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.export-facts { margin: 6px 0; padding-left: 18px; font-size: 0.875rem; }
+.facts-title { margin: 12px 0 6px; }
 .server-block {
   margin: 0;
   padding: 8px 10px;

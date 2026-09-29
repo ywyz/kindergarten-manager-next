@@ -64,6 +64,11 @@ import type {
   SaveDirty,
   WeeklyPlanForm,
 } from '../weekly-plan-content'
+import {
+  exportWarningTexts,
+  exportWordErrorMessage,
+  triggerExportDownload,
+} from '../word-export'
 
 const props = defineProps<{
   planId: string
@@ -1019,6 +1024,64 @@ const confirmFocusPreview = computed<FocusAreaSnapshotPreview | null>(() =>
   ),
 )
 
+// --- I5 Word export (slice 3) ----------------------------------------------
+// Single confirmed version: default = current confirmation pointer; the
+// confirmation-history entry may export an explicit version. Drafts are
+// never downloadable (the server answers CONFIRMATION_NOT_FOUND). Bounded
+// response-posting guards follow the page's request-id/stale-protection
+// pattern (loadSeq / confirmationSeq style).
+
+const exporting = ref(false)
+const exportSeq = ref(0)
+
+function exportClassId(): string | undefined {
+  return props.classId
+}
+
+function buildSinglePayload(confirmedVersion?: number):
+  | { plan_id: string; confirmed_version?: number; class_id?: string } {
+  const payload: { plan_id: string; confirmed_version?: number; class_id?: string } = {
+    plan_id: props.planId,
+  }
+  if (confirmedVersion !== undefined) payload.confirmed_version = confirmedVersion
+  const classId = exportClassId()
+  if (classId) payload.class_id = classId
+  return payload
+}
+
+async function runSingleExport(confirmedVersion?: number): Promise<void> {
+  if (exporting.value) return
+  const seq = ++exportSeq.value
+  exporting.value = true
+  try {
+    const result = await api.exportWeeklyPlans(
+      buildSinglePayload(confirmedVersion),
+    )
+    if (seq !== exportSeq.value) return
+    const versionTag =
+      confirmedVersion !== undefined ? `V${confirmedVersion}` : '当前确认版本'
+    const week = viewedVersionTag(confirmedVersion)
+    triggerExportDownload(
+      result,
+      `weekly-plans_w${week}_${Date.now()}.docx`,
+    )
+    ElMessage.success(`周计划 Word 文件已开始下载（${versionTag}）`)
+    for (const line of exportWarningTexts(result.warnings)) {
+      ElMessage({ type: 'warning', message: line, duration: 8000 })
+    }
+  } catch (err) {
+    if (seq !== exportSeq.value) return
+    if (isAuthError(err)) return
+    ElMessage.error(exportWordErrorMessage(err, '导出失败，请稍后重试'))
+  } finally {
+    if (seq === exportSeq.value) exporting.value = false
+  }
+}
+
+function viewedVersionTag(confirmedVersion?: number): number {
+  return confirmedVersion ?? detail.value?.confirmed?.version ?? 0
+}
+
 onMounted(() => {
   void load()
 })
@@ -1039,6 +1102,15 @@ onMounted(() => {
           <el-tag size="small" :type="canEdit ? 'success' : 'info'">
             {{ canEdit ? '可编辑' : '只读' }}
           </el-tag>
+          <el-button
+            v-if="detail.confirmed"
+            size="small"
+            :loading="exporting"
+            :disabled="exporting"
+            @click="runSingleExport()"
+          >
+            导出 Word（当前确认版本）
+          </el-button>
         </template>
         <el-button @click="$emit('back')">返回</el-button>
       </div>
@@ -1673,10 +1745,20 @@ onMounted(() => {
           <el-table-column label="确认时事实" min-width="150">
             <template #default="{ row }">{{ confirmationFactsText(row.facts) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="120">
+          <el-table-column label="操作" width="170">
             <template #default="{ row }">
               <el-button size="small" text type="primary" @click="viewConfirmation(row.version)">
                 查看全文
+              </el-button>
+              <el-button
+                size="small"
+                text
+                type="primary"
+                :loading="exporting"
+                :disabled="exporting"
+                @click="runSingleExport(row.version)"
+              >
+                导出
               </el-button>
             </template>
           </el-table-column>
@@ -2017,6 +2099,14 @@ onMounted(() => {
       </div>
       <template #footer>
         <el-button @click="confirmationViewOpen = false">关闭</el-button>
+        <el-button
+          type="primary"
+          :loading="exporting"
+          :disabled="exporting"
+          @click="runSingleExport(viewedConfirmation?.version)"
+        >
+          导出此确认版本
+        </el-button>
       </template>
     </el-dialog>
   </div>

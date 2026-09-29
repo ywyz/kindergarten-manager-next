@@ -141,7 +141,7 @@ I2 已交付园所配置、班级创建与维护、教师首次真实分配、�
 
 后续逐步交付周计划确认、导出、个人 AI、提示词、持久任务执行与交接恢复。AI、个人提示词与持久任务继续属于首版。
 
-### 下一项：I5 Word 导出（片 1–2 已实施，片 3 待决定/授权）
+### 下一项：I5 Word 导出（片 1–3 已实施，片 4 待决定/授权）
 
 **2026-09-25 规格准备历史状态**：[I5 Word 导出实施规格](../specs/word-export-implementation.md) 基于既有 Contract、最小实施规格、Word 验证计划/原型结果与 I3/I4 读取面，收敛了 API、映射、生成、下载、错误、审计与分层验证边界，并给出四片实施切片。该日仅完成规格、不构成实现授权；后续实际状态以下列片 1/片 2 段落为准。
 
@@ -154,6 +154,8 @@ I2 已交付园所配置、班级创建与维护、教师首次真实分配、�
 **I5 片 2 实施状态（2026-09-28）**：已按授权实施纯生成层——新增 `backend/app/services/word_export_docx.py`（受控模板 ZIP + view model → 完整 docx bytes，只修改 `word/document.xml`、其余 ZIP member 逐字节保留，模板 SHA-256 校验）与 `backend/tests/unit/test_i5_word_export_docx.py`（24 项结构机检通过；全量后端单测 449 项通过）。依赖 `lxml>=6.1,<7` 锁定为 6.1.3；资产 `daily_plan.docx` SHA-256 `99008f92…`、`weekly_plan.docx` SHA-256 `24ccaa9e…`（当前周模板新字节版本已建立结构基线：5 张表、9 行块、合并跨度 `[1,1,5]`/`[1,6]`）。日/周计划覆盖范围见[规格 §12 片 2 实施状态](../specs/word-export-implementation.md)。**未执行**：LibreOffice/Microsoft Word 渲染、API/权限/下载、MySQL/浏览器、字符多重集与渲染级页面对比；片 3/4 仍未授权、未开始。
 
 **I5 片 2 审阅后窄修复（2026-09-28，F1–F3）**：审阅基线 `a9db25f` 上的三处已复现缺陷已最小修复——F1 合并日计划每份输出自身完整计划块（标题/副标题/表格）；F2 周计划班级表头补输出创建时快照 `grade`（与 `class_name` 空格连接、空值过滤）；F3 日计划反思右侧单元格只写 `reflection` 值、不重复模板左侧固定栏目名。修复未改片 1 映射语义、模板资产/哈希、依赖、数据库或迁移。实际执行：定向结构机检 28 项通过（原 24 项 + 本轮新增/加强 4 项断言，其中新增/加强的 5 项断言在修复前基线 `a9db25f` 生成器上 5 失败、确认非空转）；全量后端纯单元测试 453 项通过；`uv sync --locked` 与 `git diff --check` 通过。**未执行**：LibreOffice/Microsoft Word 渲染、API/权限/下载、MySQL/浏览器；片 3/4 仍未授权、未开始。§11.1、§11.5、§11.6 仍须在片 3 前由用户确认，§11.9 仍按各自时点待定。
+
+**I5 片 3 实施状态（2026-09-29）**：用户确认三项片 3 前决定（§11.1 取②日 ≤31/周 ≤8 按实选份数、§11.5 取 A 记成功导出 `operation_records` class 级 `export_word`、§11.6 取①同步内存下载）并授权实施片 3。已落地：`routers/exports.py` 两条路由 + `class_scope.py` 唯一共享角色判断（I3/I4 行为不变、导出 body 按 `model_fields_set` 存在语义）+ `DailyExportIn`/`WeeklyExportIn` 严格 schema（extra=forbid 双模式互斥）+ 片 1 `prepare_daily_export()` 消费的 409 facts/expected_context/reason 闭环 + §8 全表错误映射（含 503 `EXPORT_UNAVAILABLE`/`SERVICE_UNAVAILABLE`、500 `EXPORT_FAILED`）+ 完整生成→审计→提交→响应顺序与 RFC 5987 文件名、`X-Export-Warnings` 警示头；前端 `api.ts` 二进制下载 helper 保留 409 所需字段并新增 `word-export.ts`（错误/警示文案与一次性 object URL 下载），`DailyPlanView`（日/周/月/自选范围 + 缺项确认 + “无拆分基准”提示）、`WeeklyPlanView`（当前确认版本 + 确认历史显式版本导出 + `confirmed_not_latest` 提示）、`WeeklyPlanListView` 范围合并导出，管理员复用入口自动携带显式 `class_id`。实际执行：定向 I5 单测 170 项、全量后端单测 533 项通过；I5 集成 30 项通过 0 skip（专用 guard 端口 13386 白名单库 `kindergarten_test_i5`，head `20260924_i4_weekly_plans`，含真实现场并发提交下文件=钉住版本、成功恰一条审计且业务表零写入、31/32 与 8/9 实选上限、ZIP 合法性字节级检查）；`npm run typecheck`/`build` 通过（主包 1.13 MB 既有非阻断告警）。模板资产、片 1/2 语义、依赖、数据库 schema/迁移零修改。一次性容器 `kg-next-i5-mysql-20260929` 及其数据卷在验证后已停止并删除（只读验证数据不可恢复，符合一次性隔离要求）。**未执行**：LibreOffice/Microsoft Word 渲染、真实浏览器下载流程——均归片 4，未声称通过；下一步为片 4 待用户授权。
 
 ### OpenCode 执行安排
 
