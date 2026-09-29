@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   ElButton,
   ElCard,
@@ -15,6 +15,7 @@ import * as api from '../api'
 import { isAdmin } from '../auth'
 import {
   EXPORT_LIMIT_WEEKLY,
+  exportWarningTexts,
   exportWordErrorMessage,
   triggerExportDownload,
 } from '../word-export'
@@ -117,6 +118,24 @@ const exportState = reactive({
 })
 const exportLimit = EXPORT_LIMIT_WEEKLY
 
+/**
+ * Stale-response guard: dialog close, admin class switch or unmount
+ * invalidates in-flight range-export requests (slice-3 review fix 4).
+ */
+function invalidateExportRequests(): void {
+  exportState.seq++
+  exportState.exporting = false
+}
+
+watch(
+  () => exportState.open,
+  (open) => {
+    if (!open) invalidateExportRequests()
+  },
+)
+
+onBeforeUnmount(() => invalidateExportRequests())
+
 function openExportDialog(): void {
   exportState.from = ''
   exportState.to = ''
@@ -143,6 +162,11 @@ async function runRangeExport(): Promise<void> {
       `weekly-plans_${payload.from}_${payload.to}.docx`,
     )
     ElMessage.success('周计划 Word 文件已开始下载')
+    // Required prompt only ever comes from THIS response's warning header
+    // (spec §3.6); never predicted from page state.
+    for (const line of exportWarningTexts(result.warnings)) {
+      ElMessage({ type: 'warning', message: line, duration: 8000 })
+    }
   } catch (err) {
     if (seq !== exportState.seq) return
     if (isAuthError(err)) return
@@ -159,6 +183,7 @@ function openPlan(row: WeeklyPlanListItem): void {
 watch(
   () => props.classId,
   () => {
+    invalidateExportRequests()
     offset.value = 0
     void load()
   },

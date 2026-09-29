@@ -383,6 +383,8 @@ export interface ExportError extends Error {
   /** 422 EXPORT_RANGE_TOO_LARGE. */
   limit?: number
   selected_count?: number
+  /** Bounded string-only field-level validation hints (VALIDATION_ERROR). */
+  fields?: Record<string, string>
 }
 
 export type { WeeklyExportRequest }
@@ -394,15 +396,37 @@ function makeExportError(
 ): ExportError {
   const err = new Error(message) as ExportError
   err.status = status
-  err.code = (body?.error as Record<string, unknown> | undefined)?.code as string || 'UNKNOWN_ERROR'
   const error = (body?.error ?? {}) as Record<string, unknown>
-  if (error.facts) err.facts = error.facts as DailyMissingEntry[]
-  if (error.expected_context !== undefined) {
-    err.expected_context = error.expected_context as Record<string, unknown> | null
+  err.code =
+    (typeof error.code === 'string' && error.code) || 'UNKNOWN_ERROR'
+  if (Array.isArray(error.facts)) {
+    err.facts = error.facts as DailyMissingEntry[]
   }
-  if (error.reason) err.reason = error.reason as string
-  if (error.limit !== undefined) err.limit = error.limit as number
-  if (error.selected_count !== undefined) err.selected_count = error.selected_count as number
+  if (error.expected_context !== undefined) {
+    err.expected_context = error.expected_context as Record<
+      string,
+      unknown
+    > | null
+  }
+  if (typeof error.reason === 'string') err.reason = error.reason
+  if (typeof error.limit === 'number') err.limit = error.limit
+  if (typeof error.selected_count === 'number') {
+    err.selected_count = error.selected_count
+  }
+  // fields is kept strictly bounded: only string-valued entries survive.
+  if (error.fields && typeof error.fields === 'object') {
+    const fields: Record<string, string> = {}
+    for (const [key, value] of Object.entries(
+      error.fields as Record<string, unknown>,
+    )) {
+      if (typeof value === 'string') {
+        fields[key] = value
+      } else if (typeof value === 'number' || typeof value === 'boolean') {
+        fields[key] = String(value)
+      }
+    }
+    err.fields = fields
+  }
   return err
 }
 
@@ -474,7 +498,10 @@ async function exportBinary(path: string, payload: unknown): Promise<ExportDownl
     // non-JSON error body
   }
   throw makeExportError(
-    (body?.error as Record<string, unknown> | undefined)?.message as string || `HTTP ${res.status}`,
+    typeof (body?.error as Record<string, unknown> | undefined)?.message ===
+      'string'
+      ? ((body?.error as Record<string, unknown>).message as string)
+      : `HTTP ${res.status}`,
     res.status,
     body,
   )

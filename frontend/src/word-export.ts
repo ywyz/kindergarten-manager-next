@@ -35,9 +35,13 @@ export function exportWordErrorMessage(err: unknown, fallback: string): string {
     case 'VALIDATION_ERROR':
       return '导出设置或日期范围不正确，请检查后重试'
     case 'EXPORT_RANGE_TOO_LARGE': {
-      const limit = api.limit ?? (api as { limit?: number }).limit
-      if (limit) {
-        return `导出范围过大：一次最多导出 ${limit} 份，请缩小日期范围`
+      const parts: string[] = []
+      if (api.limit) parts.push(`一次最多导出 ${api.limit} 份`)
+      if (api.selected_count) {
+        parts.push(`当前选中 ${api.selected_count} 份`)
+      }
+      if (parts.length > 0) {
+        return `导出范围过大：${parts.join('，')}，请缩小日期范围`
       }
       return '导出范围过大，请缩小日期范围'
     }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   ElAlert,
   ElButton,
@@ -1034,6 +1034,29 @@ const confirmFocusPreview = computed<FocusAreaSnapshotPreview | null>(() =>
 const exporting = ref(false)
 const exportSeq = ref(0)
 
+/**
+ * Stale-response guard (slice-3 review fix 4): plan/class switch,
+ * confirmation-dialog close and unmount invalidate an in-flight export so a
+ * late response can neither download nor show messages of a context that no
+ * longer exists.
+ */
+function invalidateExportRequests(): void {
+  exportSeq.value++
+  exporting.value = false
+}
+
+watch(
+  () => [props.planId, props.classId] as const,
+  () => invalidateExportRequests(),
+)
+
+watch(
+  () => confirmationViewOpen.value,
+  (open) => {
+    if (!open) invalidateExportRequests()
+  },
+)
+
 function exportClassId(): string | undefined {
   return props.classId
 }
@@ -1081,6 +1104,8 @@ async function runSingleExport(confirmedVersion?: number): Promise<void> {
 function viewedVersionTag(confirmedVersion?: number): number {
   return confirmedVersion ?? detail.value?.confirmed?.version ?? 0
 }
+
+onBeforeUnmount(() => invalidateExportRequests())
 
 onMounted(() => {
   void load()

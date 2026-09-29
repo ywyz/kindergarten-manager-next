@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   ElAlert,
   ElButton,
@@ -329,6 +329,29 @@ const exportSeq = ref(0)
 /** Per-view cap text for the dialog (daily = 31, spec §11.1). */
 const exportLimit = EXPORT_LIMIT_DAILY
 
+/**
+ * Stale-response guard: every dialog close, route-parameter change and
+ * unmount invalidates in-flight export requests and stops the loading
+ * state, so a late response can never trigger a download, a message or a
+ * state overwrite (slice 3 review fix 4).
+ */
+function invalidateExportRequests(): void {
+  exportSeq.value++
+  exporting.value = false
+}
+
+watch(
+  () => [props.planDate, props.classId] as const,
+  () => invalidateExportRequests(),
+)
+
+watch(
+  () => exportState.open,
+  (open) => {
+    if (!open) invalidateExportRequests()
+  },
+)
+
 function formatLocal(d: Date): string {
   return formatLocalDate(d)
 }
@@ -388,6 +411,18 @@ watch(
   },
 )
 
+/**
+ * True while the dialog is waiting on the 409 ack loop, i.e. the confirmed
+ * retry must carry ``ack_missing=true`` plus the exact latest
+ * expected_context. It covers reason=context_changed even when the latest
+ * facts list is empty (slice-3 review fix 1).
+ */
+const acksNeeded = computed(() => {
+  const facts = exportState.facts
+  if (facts !== null && facts.length > 0) return true
+  return exportState.reason === 'context_changed'
+})
+
 async function runExport(): Promise<void> {
   if (exporting.value) return
   const seq = ++exportSeq.value
@@ -396,7 +431,15 @@ async function runExport(): Promise<void> {
     const payload: DailyExportRequest = {
       ...currentRange(),
     }
-    if (exportState.ackChecked && exportState.expectedContext) {
+    if (
+      acksNeeded.value &&
+      exportState.ackChecked &&
+      exportState.reason !== null &&
+      exportState.expectedContext !== null
+    ) {
+      // Re-confirmation must echo the latest server-issued expected_context
+      // verbatim together with ack_missing=true; dropping the context would
+      // silently degrade the retry into a brand-new first request.
       payload.ack_missing = true
       payload.expected_context = exportState.expectedContext
     }
@@ -446,6 +489,8 @@ function handleExportError(err: unknown): void {
 function factsLabel(fact: { field?: string; kind: string }): string {
   return fact.field || fact.kind
 }
+
+onBeforeUnmount(() => invalidateExportRequests())
 
 onMounted(() => {
   void openExisting()
@@ -1016,15 +1061,10 @@ onMounted(() => {
 
       <el-alert v-if="exportState.error" type="error" :title="exportState.error" :closable="false" />
 
-      <template v-if="exportState.facts && exportState.facts.length">
-        <h4 class="facts-title">缺项（确认后缺项保持为空，不会自动补写）</h4>
-        <ul class="export-facts">
-          <li v-for="entry in exportState.facts" :key="entry.daily_plan_id">
-            <strong>{{ entry.plan_date }}</strong>
-            <span class="muted">（{{ entry.facts.length }} 项）：</span>
-            <span>{{ entry.facts.map(factsLabel).join('、') }}</span>
-          </li>
-        </ul>
+      <!-- 409 ack loop: shown for both 'missing' and 'context_changed';
+           an empty latest facts list must still expose the re-confirmation
+           control when the server says the confirmation object changed -->
+      <template v-if="acksNeeded">
         <el-alert
           v-if="exportState.reason === 'context_changed'"
           type="warning"
@@ -1032,21 +1072,34 @@ onMounted(() => {
           title="导出对象已变化（版本或缺项有更新），此前确认已失效；请再次确认。"
           class="inline-alert"
         />
+        <div v-if="exportState.facts && exportState.facts.length" class="inline-alert">
+          <h4 class="facts-title">缺项（确认后缺项保持为空，不会自动补写）</h4>
+          <ul class="export-facts">
+            <li v-for="entry in exportState.facts" :key="entry.daily_plan_id">
+              <strong>{{ entry.plan_date }}</strong>
+              <span class="muted">（{{ entry.facts.length }} 项）：</span>
+              <span>{{ entry.facts.map(factsLabel).join('、') }}</span>
+            </li>
+          </ul>
+        </div>
+        <p v-else class="muted inline-alert">
+          当前范围内的缺项清单已为空，但仍需重新确认后才能导出。
+        </p>
         <el-checkbox v-model="exportState.ackChecked" class="inline-alert">
-          我已知晓以上缺项，确认按当前内容导出
+          我已重新确认上述导出对象，按其当前内容导出
         </el-checkbox>
       </template>
 
       <template #footer>
         <el-button @click="exportState.open = false">取消</el-button>
         <el-button
-          v-if="exportState.facts && exportState.facts.length"
+          v-if="acksNeeded"
           type="primary"
           :loading="exporting"
           :disabled="!exportState.ackChecked"
           @click="runExport"
         >
-          确认缺项并导出
+          再次确认并导出
         </el-button>
         <el-button
           v-else
