@@ -2,14 +2,14 @@
 
 面向单个幼儿园教师的教育工作支持系统，全新设计，不默认迁移旧系统代码或数据。
 
-Architecture v1 已确认。截至 2026-09-29，I1–I4 与 I5 Word 导出的片 1–3 已实现；I5 片 4 尚未开始。部署与容量仍未验证。
+Architecture v1 已确认。截至 2026-09-29，I1–I4 与 I5 Word 导出的片 1–3 已实现；I5 片 4 已授权，待 Windows 11 Pro／WSL2 Ubuntu 环境迁移后执行。部署与容量仍未验证。
 
 ## 当前状态与下一步（2026-09-29）
 
 - **已实现**：I1 账号与认证，I2 班级分配与有效日历，I3 日计划，I4 周计划（含确认），I5 片 1「导出读取、版本钉住与模板映射纯逻辑」，I5 片 2「固定模板 docx 生成」（`word_export_docx.py` + 受控模板 + `lxml`），以及 I5 片 3「API 与下载闭环」（`routers/exports.py` 两条导出路由与 409/上限/审计/文件名/警示头闭环、`api.ts` 二进制下载与 `DailyPlanView`/`WeeklyPlanView`/`WeeklyPlanListView` 导出入口，2026-09-29 已确认 §11.1②/§11.5A/§11.6①）。
-- **未开始**：I5 片 4（隔离 LibreOffice 渲染与浏览器下载验收）。Microsoft Word 验收留待正式使用后反馈。
+- **已授权、待环境迁移后执行**：I5 片 4。2026-09-29 用户把开发与验收基线改为 Windows 11 Pro 主机 + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word；WSL2 运行 MySQL/API/Vite/测试，Windows 浏览器完成真实下载，Word 完成 W1–W6 打开与逐页版式验收。
 - **验证**：后端纯单元测试 533 项通过（其中片 3 定向 schema/路由 80 项、片 1–3 I5 定向共 170 项）；I5 集成 `tests.integration.test_i5_export_api` 30 项通过、0 skip（白名单库 + I5 专用 guard，head `20260924_i4_weekly_plans`，容器用后删除）；I1 24、I2 56、I3 27、I4 52 项隔离 MySQL 结果沿用之前记录；前端 `npm run typecheck`、`npm run build` 通过（主包约 1.13 MB，Vite 既有非阻断体积告警）。历史细节见 `docs/bootstrap/`。
-- **下一步**：另行授权片 4（启动临时 API/Vite/MySQL/浏览器并用已安装的 LibreOfficeDev 执行 §10.2 两行真实验收）；不自动开始。
+- **下一步**：完成开发环境迁移后，按已授权的片 4 提示词启动一次性 WSL2 MySQL/API/Vite，使用 Windows 浏览器与 Windows 桌面版 Word 执行真实下载和 W1–W6 验收；当前旧环境不得以 LibreOffice 结果替代该门槛。
 - **待决定**：I5 §11.9（确认后日历/学期变化的导出布局）留到日历影响处理能力开放前；前端主包体积告警未处理，留待后续前端性能切片。
 
 ## 文档入口
@@ -28,9 +28,11 @@ Vue 3 / TypeScript / Vite / Element Plus 前端，Python / FastAPI / SQLAlchemy 
 
 首版覆盖账号与班级管理、个人 AI 配置与提示词、日计划、全班周计划及固定 Word 模板导出。支持教师分日期备课、周计划自动更新与人工确认。约 30 人并发是待验证的容量目标。
 
-早期骨架页面仅用于检查 Vue / TypeScript / Element Plus。AI、个人提示词、持久任务仍属于首版，按后续任务分步实现。Word 导出已完成读取/映射纯逻辑、固定模板 docx 生成与 API 下载闭环（片 1–3），仅剩隔离渲染与浏览器验收（片 4）。Word 原型证据仅限记录的 Ubuntu / LibreOffice 环境与固定案例，Microsoft Word 正式使用后反馈。
+早期骨架页面仅用于检查 Vue / TypeScript / Element Plus。AI、个人提示词、持久任务仍属于首版，按后续任务分步实现。Word 导出已完成读取/映射纯逻辑、固定模板 docx 生成与 API 下载闭环（片 1–3），仅剩 Windows 11 Pro／WSL2 Ubuntu／Windows 浏览器／Microsoft Word 产品验收（片 4）。2026-09-20 Ubuntu／LibreOffice 原型只保留为历史补充证据，不能替代当前产品 Word 验收。
 
 ## 本地环境与目录
+
+2026-09-29 已确认的主要开发环境将迁移为 Windows 11 Pro + WSL2 Ubuntu：仓库、Python／uv、Node／npm、Docker／MySQL、API、Vite 和自动测试在 WSL2 Ubuntu 内运行；Windows 主机浏览器访问本地服务；Office 365／Microsoft 365 随附的 Windows 桌面版 Word 用于 DOCX 产品验收。迁移完成前，下文现有本机版本仅是旧环境记录；执行验收时必须重新记录 Windows、WSL、浏览器和 Word 的准确版本／构建／更新渠道。
 
 - `frontend/`：npm 项目，`package-lock.json` 锁定依赖；`src/App.vue` 为最小页面。
 - `backend/`：uv 项目，`uv.lock` 锁定依赖，`.venv/` 隔离 Python 环境；`app/main.py` 为启动入口。
