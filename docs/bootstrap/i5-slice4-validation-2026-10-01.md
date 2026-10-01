@@ -1,6 +1,6 @@
 # I5 片 4 产品验收记录（2026-10-01 执行轮）
 
-状态：**独立自动检查完成 / Windows 浏览器与 Word 验收待人工**。依据 [i5-slice4-opencode-prompt-2026-10-01.md](i5-slice4-opencode-prompt-2026-10-01.md) 分层执行；本轮无 GUI 能力，GUI 阶段按人工交接表暂停，**不据此宣称 I5 或片 4 完成**。
+状态：**独立自动检查完成；桌面协调者浏览器层 UI 部分完成；文件落盘与 Word 层待人工（Windows 真实浏览器 + Word）**。依据 [i5-slice4-opencode-prompt-2026-10-01.md](i5-slice4-opencode-prompt-2026-10-01.md) 分层执行；不据此宣称 I5 或片 4 完成。
 
 ## 基线与 HEAD
 
@@ -23,7 +23,7 @@
 - Windows：`EditionID=Professional`、`DisplayVersion=25H2`、`CurrentBuild=26200`、`UBR=9457`；CIM Caption 经 EditionID 交叉核对为 Windows 11 Pro。
 - Office Click-to-Run：`OfficePackageVersion=16.0.20326.20158`、`OfficeProductReleaseIds=O365HomePremRetail`；Configuration `Platform=x64`，UpdateChannel / CDNBaseUrl GUID `492350f6-3a01-4f97-b9c0-c7c6ddf67d60`（Current Channel 配置值）。
 - Word：WINWORD.EXE `FileVersion=16.0.20326.20158`（未启动 Word；“关于 Word” 界面显示与 x64 位数待 GUI 阶段核对）。
-- Windows 浏览器：待人工阶段记录名称与版本。
+- Windows 浏览器：第一轮为桌面协调者"Codex 内置浏览器"（调用 Chrome 失败，经用户授权采用）；Windows 真实桌面浏览器名称/版本待人工阶段记录。
 - 开发工具：Python 3.14.4（`UV_PYTHON_DOWNLOADS=never uv sync --locked` 成功恢复 `.venv`）、uv 0.12.21、Node 26.10.0（nvm）、npm 11.19.1、Docker 29.8.2 / Server 29.8.2、mysql:8.4 镜像 digest `sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242`。
 - 过程说明：用户不在此前 docker 组，经授权执行 `usermod -aG docker ywyz` 并重启 OpenCode 后生效；docker daemon 无代理曾无法直连 Docker Hub，由用户配置代理（代理配置为用户操作，OpenCode 未改任何全局配置）。
 
@@ -66,18 +66,50 @@
 
 | 案例 | 数据/权限/审计逻辑（自动） | Windows 浏览器下载 | Word 逐页版式 |
 | --- | --- | --- | --- |
-| W1 普通单日 / 全空子例 / 同班只读教师可导出 | 通过（单测+集成覆盖） | 待人工验收 | 待人工验收 |
-| W2 长过程分页与标红 | 通过（mapping/docx 单测） | 待人工验收 | 待人工验收（需跨页夹具） |
-| W3 三份合并、乱序升序、新页开始 | 通过（集成） | 待人工验收 | 待人工验收 |
-| W4 调休／六／七列及停课 | 通过（集成） | 待人工验收 | 待人工验收 |
-| W5 跨周排序去重、单日整周、无匹配 | 通过（集成） | 待人工验收 | 待人工验收 |
-| W6 确认版本、未确认 404、警示头 | 通过（集成） | 待人工验收 | 待人工验收 |
+| W1 普通单日 / 全空子例 / 同班只读教师可导出 | 通过（单测+集成覆盖） | UI 层部分通过（H1–H3 状态/文件名/警示头实测；下载落盘 BLOCK） | 待人工验收 |
+| W2 长过程分页与标红 | 通过（mapping/docx 单测） | HTTP 层部分通过（H4 200/文件名/无警示头；下载 BLOCK） | 待人工验收（需跨页夹具） |
+| W3 三份合并、乱序升序、新页开始 | 通过（集成） | HTTP 层部分通过（H5 200；下载 BLOCK） | 待人工验收 |
+| W4 调休／六／七列及停课 | 通过（集成） | H10/H9/H13 涉及部分通过；下载与列数版式 BLOCK/待人工 | 待人工验收 |
+| W5 跨周排序去重、单日整周、无匹配 | 通过（集成） | H10/H11 部分通过；无匹配已通过（H9 404） | 待人工验收 |
+| W6 确认版本、未确认 404、警示头 | 通过（集成） | HTTP 层部分通过（H11/H13 200；H12 未执行） | 待人工验收 |
 
 历史 Ubuntu/LibreOffice（2026-09-20 原型 31 页）与 Omarchy 结果仅为历史证据，未填入上表。
 
 ## Windows 浏览器下载闭环矩阵（原计划 11 项）
 
-无 GUI 能力，全部**待人工验收**；UI 不可发起的越权分支可在真实浏览器会话内构查 403/404。执行时逐例记录角色/入口/状态码/是否下载/文件名/提示/审计变化。
+第一轮桌面协调者会话（2026-10-01 16:13–16:35 UTC+8，Codex 内置浏览器，非 Windows 桌面浏览器）完成 UI 层部分回填；**任何下载均未落盘**（浏览器无法保存文件），文件层与 Word 层全部待人工。
+
+### 第一轮协调者会话结果与裁定
+
+| ID | 状态码（实测） | 文件名（Content-Disposition 实测） | 下载 | 裁定 / 剩余 |
+| --- | --- | --- | --- | --- |
+| H1 | 200 | `小班甲_日计划_2026-08-10_2026-08-10.docx`（Content-Length 14486，`no_split_baseline` 警示头） | BLOCK（无文件） | 浏览器层 UI 通过（状态/文件名/警示头）；下载与 Word 待人工 |
+| H2 | 409→200 | `小班甲_日计划_2026-08-18_2026-08-18.docx`（14262） | BLOCK | 409 逐项 facts（13 项）→勾选确认→200；空内容 Word 核对待人工 |
+| H3 | 200 | 同 H1 | BLOCK | tsw_i5 只读页面无编辑/确认入口、可导出；此前“日历停留”现象复验未复现，撤销缺陷标记 |
+| H4 | 200 | `小班甲_日计划_2026-08-13_2026-08-13.docx`（14895，无警示头） | BLOCK | 红字/跨页完整待 Word |
+| H5 | 200 | `小班甲_日计划_2026-08-10_2026-08-13.docx`（15865，`no_split_baseline`） | BLOCK | 三份升序/新页/单份一致待 Word |
+| H6 | 未执行 | — | — | 界面无入口；构造 403 请求待下一轮 |
+| H7 | 登录 200，未执行 | — | — | 待分配提示页正确；403 待下一轮 |
+| H8 | 200 | 同 H1 | BLOCK | 管理员显式 class_id 导出成功 |
+| H6b | 409（非 422） | — | FAIL→**裁定为交接表口径错误** | 按下限按 §11.1② 以去重后选定份数判定（本轮整学期实测 10 份 ≤31 → 409 缺项先行）；422 分支已由集成测试覆盖；产品无缺陷 |
+| H9 | 404 | — | 成功：不下载 | `EXPORT_NO_MATCH` 中文提示；tsw_i5 复核同结果并截图 |
+| H10 | 200 | `小班甲_周计划_2026-08-10_2026-10-04.docx`（20259，`confirmed_not_latest` 警示头） | BLOCK | 两份/跳过未确认与停课周待 Word |
+| H11 | 200 | `小班甲_周计划_9周_2026-09-28_2026-10-02.docx`（18996，`confirmed_not_latest`） | BLOCK | V1 快照逐字段核对待 Word |
+| H12 | 未执行 | — | — | 第 3 周无导出按钮、有“确认当前草稿”；服务端 404 待下一轮 |
+| H13 | 200（非 422） | `小班甲_周计划_2026-08-03_2026-10-25.docx`（21443） | FAIL→**裁定为交接表口径错误** | 命中 3 份确认周 ≤8 → 200 符合规格；422 由集成测试覆盖；产品无缺陷 |
+| H14 | 未执行 | — | — | context_changed 双会话流程待下一轮 |
+| H15 | 200×1 响应 | 同 H1 | BLOCK | 服务端审计恰 1 条（见下）——重复点击防重通过 |
+| H16 | 未执行 | — | — | 延迟取消/object URL 待下一轮 |
+| H17 | 部分 | 中文 filename*、ASCII fallback、`.docx` 后缀已验证 | BLOCK | ZIP/Word 得核待文件 |
+| H18 | 部分 | 控制台 4 条、关键模式匹配 0 | — | localStorage 接口不支持；面向不保留 |
+
+### 审计核对（服务端权威，OpenCode 执行）
+
+- 本轮会话恰 10 条 `operation_records(action="export_word")`：tow_i5×8、tsw_i5×1、adm_i5×1；全部 `target_type="class"`、`target_id=clsi5`、`target_version_after=null`；本地时间与协调者记录逐一对应（如 H15 双击仅 16:31:05 一条）。失败/409/404/422 均未产生成功审计。
+- 其中一条 16:13:20 `create_daily_plan`（2026-10-23 空内容计划）来自协调者会话自身创建操作，即 409 facts 中“多出 10-23”的来源；属验收数据操作，非导出行为写入。
+- 导出未产生任何其他业务表变更（不含协调者主动创建/确认场景的数据操作）。
+
+原始浏览器层证据由协调者保管（response-evidence.json、H7-unassigned.png、H9-no-match-recheck-tsw.png）。
 
 ## Word 检查（退出项与惯例）
 
@@ -109,7 +141,7 @@
 
 ## 清理与可恢复性
 
-1. 本片启动的 uvicorn（PID 9828/10374）与 Vite 已精确停止；未触碰其他进程。
+1. 本片启动的 uvicorn（PID 9828/10374）与 Vite 已精确停止；未触碰其他进程。2026-10-01 下午应用户要求为人工验收轮重建并保持运行：uvicorn（8000）与 Vite（5173）及容器 `kg-next-i5-slice4-mysql-20261001`——**属用户明确要求保留**，用于后续真实浏览器/Word 验收；本轮验收完成后由 OpenCode 精确清理。
 2. 容器与 volume：`docker rm -f kg-next-i5-slice4-mysql-20261001` + `docker volume rm kg-next-i5-slice4-data-20261001`（本轮已删除，含播种数据，**删除后不可恢复**）。
 3. 仓库外临时脚本 `/tmp/opencode/i5_seed_browser.py`、日志 ` /tmp/opencode/i5_api.log`、`login.json` 已删除；Windows 专用下载临时目录本轮未创建（无 GUI），若重建时创建须由操作者事后精确删除。
 4. 夹具重建方法（记录，供GUI 窗口约定后重建）：
