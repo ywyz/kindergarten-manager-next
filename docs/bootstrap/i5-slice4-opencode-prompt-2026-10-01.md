@@ -1,12 +1,8 @@
-# 给 OpenCode：I5 片 4 Windows／WSL2／Microsoft Word 产品验收
+# 给 OpenCode 的 I5 片 4 完整执行提示词
 
-**历史版本：当前执行请使用 [2026-10-01 完整提示词](i5-slice4-opencode-prompt-2026-10-01.md)。** 本文保留 2026-09-29 授权与执行安排，不再作为当前提示词；新版补充分层执行、Windows 版本采集和人工交接，Word 验收门槛不变。
+状态：2026-10-01 修订版，替代 2026-09-29 执行提示词。保留既有验收范围、授权与 W1–W6 完成条件，补充实测环境、版本采集、分层执行与人工交接。可将下文完整交给 WSL2 Ubuntu 内的 OpenCode。
 
-以下正文为当日提示词。用户已于 2026-09-29 明确授权进入 I5 片 4，但执行前提已调整为：开发环境完成迁移，实际为 **Windows 11 Pro 主机 + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word**。片 4 允许启动一次性隔离 MySQL、WSL2 内临时 API／Vite、Windows 浏览器和 Windows 桌面版 Word，使用产品真实 API 与页面完成 W1–W6、下载闭环和 Word 版式验收；允许在发现确定缺陷时做最小定向修复、补直接相关测试、更新状态文档并提交／push。若执行时尚未具备上述环境，必须在预检后停止并报告受阻，不得用旧 Omarchy／LibreOffice、纯 OOXML 检查或历史原型结果替代。
-
----
-
-请在仓库 `/home/ywyz/code/kindergarten-manager-next` 执行 I5 片 4“Windows／WSL2／Microsoft Word 产品验收”。
+请从实际仓库根目录（当前为 `/home/ywyz/code/kindergarten-manager-next`）执行 I5 片 4“Windows／WSL2／Microsoft Word 产品验收”。
 
 先读取并遵守：
 
@@ -31,25 +27,38 @@
 - `frontend/src/views/WeeklyPlanListView.vue`
 - 管理员复用入口 `AdminDailyPlansView.vue`、`AdminWeeklyPlansView.vue`
 
-开始先核对实际 HEAD、最近提交、`origin/main` 和工作区。当前审阅通过基线为：
+开始先核对实际 HEAD、最近提交、`origin/main` 和工作区。当前协调审阅基线为 `main` / `3ad97dd`；本地 `origin/main` 指向同一提交（未刷新远端）。此前代码审阅基线为：
 
 - `224bdfd`：I5 片 3 API 与下载闭环；
 - `0c5c3a1`：片 3 审阅后四项前端窄修复，且当时已推送到 `origin/main`。
 
 如已有后续提交，只核对与本任务相关的差异。旧切片提示词与临时审核材料已在当前基线清理；需要追溯时查看上述提交及 Git 历史，不恢复为当前指令。保留用户已有 `.codex/config.toml` 及其他未提交修改，不覆盖、不回退、不暂存、不顺手整理。不要启用或安装新的 MCP／Skill，不修改 Windows、WSL、Office、浏览器、Docker 或全局 Codex 配置。
 
+## 当前事实与执行分层
+
+2026-10-01 只读实测：WSL2 Ubuntu 26.04.1，内核 `6.18.33.2-microsoft-standard-WSL2`；Windows `EditionID=Professional`，25H2，build `26200.9457`；Office Click-to-Run `OfficePackageVersion=16.0.20326.20158`，`OfficeProductReleaseIds=O365HomePremRetail`，平台 x64；Word 文件版本同为 `16.0.20326.20158`。这是当日安装信息，不证明 Word 可交互使用、浏览器下载或产品版式通过。项目 `.venv`／`node_modules` 当日缺失。执行时重新查询并记录实际值。
+
+本片分三阶段：
+
+1. **版本与环境采集**：WSL/Linux 只读信息与 Windows PowerShell 只读查询；区分命令可达、软件安装信息、GUI 实际可用性。
+2. **独立自动检查与交接准备**：即使尚无 GUI 能力，也可恢复锁定项目依赖、运行纯单元测试和前端 typecheck/build、核对模板哈希，并准备人工案例表。已有工具缺失时列出缺项，不安装系统工具。隔离 MySQL 集成可按本片既有授权执行并用后清理；不把集成测试当真实 UI 下载。
+3. **Windows 浏览器与 Word 验收**：由已有且可验证的桌面工具执行，或由用户人工执行并交回逐项证据。OpenCode 负责夹具、服务、追溯和整合；仅 OpenCode 写业务修复。人工／桌面协调者不并行修改业务代码。
+
+没有 GUI 能力时不得让用户先安装 Windows 版 OpenCode，也不得自行安装 Computer Use、浏览器扩展或 MCP。完成独立检查后提交具体交接清单，状态为“自动检查完成／待人工验收”，暂停 GUI 阶段。不能宣布 I5／片 4 完成。
+
 ## 执行门槛与授权边界
 
-先只读确认以下四项同时成立：
+独立自动检查先核对其必要工具；进入 GUI 验收前，只读确认以下条件：
 
 1. 主机实际为 Windows 11 Pro；
 2. 仓库和开发命令运行于 WSL2 Ubuntu，而不是 WSL1 或其他 Linux 发行版；
 3. Windows 侧存在可交互使用的桌面版 Microsoft Word，能够打开本轮真实下载的 `.docx` 并查看全部页面／打印预览；
-4. Windows 浏览器能访问 WSL2 内本片临时启动的产品页面并完成真实下载。
+4. Windows 浏览器能访问 WSL2 内本片临时启动的产品页面并完成真实下载（服务启动后检查）。
+5. 明确实际操作者：OpenCode 已有 GUI 工具、已具备权限的桌面协调者，或用户人工验收；不能仅凭“安装桌面应用”认定具备 GUI 工具。
 
-任一项不成立或 OpenCode 无法可靠观察 Windows 浏览器／Word 界面时，记录实际环境与阻塞点后停止。不得安装软件、切回旧环境验收、把 Word 项写成通过，亦不得仅完成 WSL 自动检查后宣布片 4 完成。
+目标 OS／Word 不满足时记录阻塞；OpenCode 缺少界面能力时完成可独立执行的自动检查与交接，再暂停 GUI 阶段。人工路径须有用户明确反馈的实际浏览器与 Word 操作结果，记录其为人工证据；用户尚未反馈时记“待人工验收”。不得安装软件、切回旧环境验收、把 Word 项写成通过，亦不得仅完成 WSL 自动检查后宣布片 4 完成。
 
-门槛满足后，本片明确授权：
+按上述分层与必要门槛，本片既有授权包括：
 
 1. 在 WSL2 内启动一个全新、一次性、仅监听回环地址的 MySQL 8.4／InnoDB 容器和白名单测试库，执行现有 Alembic 迁移并播种专用验收数据。
 2. 以 `APP_DISABLE_DOTENV=1` 和显式测试 DSN 启动临时 FastAPI 与 Vite；使用 Windows 浏览器完成真实 UI 操作和下载。
@@ -68,6 +77,23 @@
 - 强制执行 LibreOffice；如环境恰好已有，可作为补充证据，但不能替代 Word 门槛；
 - 自行决定 §11.9，或人工制造当前 `plans_started_at` 门槛下不可达的日历／学期变更语义；
 - 把历史原型、PDF、纯 OOXML 单测或片 3 集成结果冒充 Windows 浏览器／Word 产品验收。
+
+## Windows 与 Office 只读采集方法
+
+优先在 WSL 调用 `powershell.exe -NoProfile -NonInteractive -Command` 与 `wsl.exe --version`，Linux 命令采集 Ubuntu／内核及开发工具。只读查询范围：
+
+- `Get-CimInstance Win32_OperatingSystem`：仅取 Caption、Version、BuildNumber。
+- `HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion`：仅取 EditionID、DisplayVersion、CurrentBuild／UBR，避免设备标识。
+- Office Click-to-Run：`HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Inventory\Office\16.0` 的 `OfficePackageVersion`、`OfficeProductReleaseIds`；不把 Configuration 的 `VersionToReport` 当安装版本权威。
+- Configuration 仅取 Platform、UpdateChannel、CDNBaseUrl，作为平台和渠道配置证据。
+- 从 App Paths 找 WINWORD.EXE，只读其 FileVersion／ProductVersion；不启动 COM、不执行宏。
+- GUI 阶段再记录 Word“关于 Word”显示的产品、版本、build、位数／渠道，核对安装信息；缺失字段单列，不猜测版本营销名称。
+
+仅查询命名属性，不输出注册表整项、Microsoft 账户、许可证、产品密钥或设备唯一标识。处理 PowerShell 编码后再记录中文名称；EditionID 可用于交叉核对。
+
+采集依据：[WSL 互操作](https://learn.microsoft.com/en-us/windows/wsl/filesystems)、[Office 安装版本检测](https://learn.microsoft.com/en-us/microsoft-365-apps/updates/microsoft-guidance-on-office-build-install)。
+
+若 `powershell.exe` 出现 WSL vsock／互操作错误，区分 Agent 沙箱阻断与系统互操作不可用。按当前执行环境的权限流程请求该只读命令必要的权限；不关闭沙箱、不修改 WSL／注册表。不能执行时提供命名属性的 PowerShell 查询给用户手动运行，缺少反馈记待确认。
 
 ## 环境预检与证据边界
 
@@ -91,8 +117,8 @@
 
 建议使用下列独立标识；如实际调整，必须保持同等隔离并写入报告：
 
-- 容器：`kg-next-i5-slice4-mysql-20260929`
-- volume：`kg-next-i5-slice4-data-20260929`
+- 容器：`kg-next-i5-slice4-mysql-YYYYMMDD`（以实际日期替换）
+- volume：`kg-next-i5-slice4-data-YYYYMMDD`（以实际日期替换）
 - 映射：`127.0.0.1:13386 -> 3306`
 - 数据库：`kindergarten_test_i5_fresh`
 - MySQL：`mysql:8.4`，运行版本须为 8.4.x，默认引擎须为 InnoDB
@@ -202,7 +228,17 @@ UI 无法直接发起的越权分支可在同一真实浏览器会话中构造�
 
 可用 Word 自带 PDF 导出或打印预览截图保留最小辅助证据，但不是强制项，也不能取代逐页观察。不得通过 Office COM 宏、信任中心放宽、全局 Normal 模板修改或安装字体规避问题。页数与历史 LibreOffice 原型不同不自动判失败，只要内容完整且符合标准；不得为追求固定页数缩字、删栏目或改模板。
 
-若 OpenCode 无法控制或观察 Word、无法检查打印预览或全部页面，对应项记“受阻”，片 4 不得标记完成。LibreOffice、WPS 和实体打印均不是替代方案。
+若 OpenCode 无法控制或观察 Word，交由明确的人工／已有桌面协调者逐页验收，结果注明操作者与证据来源，不冒充 OpenCode 自动观察。没有逐页反馈或证据不足的项记“待人工验收／受阻”，片 4 不得标记完成。LibreOffice、WPS 和实体打印均不是替代方案。
+
+## 人工与桌面协调者交接
+
+GUI 能力缺失时先完成可独立执行的检查，提供交接表；不要在等待未知时长的人工反馈期间无期限保留服务、容器或含测试数据的下载。默认清理本轮资源并记录重建方法；仅用户明确要求保留时记录资源、用途和清理责任。需要现场浏览器／Word 验收时与操作者约定可执行窗口后重建夹具。
+
+交接表至少包含：案例及子例 ID、角色、浏览器操作、请求／范围／确认版本、预期状态与提示、预期下载文件名、响应文件 SHA-256／大小、Word 应检查的全部页面／颜色／表格事项、实际页数、修复提示与 Protected View、实际结果、操作者、时间、证据来源。浏览器下载完成后由 WSL 或 Windows 只读哈希关联实际文件，不能只用 API 补充请求的哈希代替浏览器文件。
+
+人工操作者执行 Windows 浏览器真实页面点击与 Word 实际逐页检查并反馈；截图脱敏，不能包含账户、许可证、cookie、密码或真实教师资料。OpenCode 核对夹具、文件及来源后整合。证据不完整时提出精确缺项；用户笼统回复“看起来没问题”不足以判所有子例通过。
+
+桌面版 ChatGPT／Codex 如果已经具有可用 Computer Use 和所需权限，可以作为 GUI 协调者；仅打开测试页面／文件，不改业务代码。普通聊天、WSL 命令能力或内置浏览器能力不等于 Word 桌面能力。不得为本片主动安装新插件、扩展或 MCP。
 
 ## 审计和数据边界
 
@@ -225,9 +261,10 @@ UI 无法直接发起的越权分支可在同一真实浏览器会话中构造�
 
 ## 文档更新
 
-新增 `docs/bootstrap/i5-slice4-validation-2026-09-29.md`，至少记录：
+新增 `docs/bootstrap/i5-slice4-validation-YYYY-MM-DD.md`（替换为实际执行日期），至少记录：
 
 - 实际基线、修复提交（如有）、最终 HEAD；
+- 自动检查／浏览器下载／Word 验收各层状态、实际操作者与证据来源；待人工项不写成已完成；
 - Windows、WSL2、Ubuntu、浏览器、Word 产品／版本／build／位数／更新渠道及开发工具版本；
 - 隔离 MySQL 资源、版本、InnoDB、Alembic head；
 - W1–W6 每个主例和子例状态、文件 SHA-256／大小／Word 页数、浏览器入口、警示、审计和版式结论；
@@ -245,7 +282,7 @@ UI 无法直接发起的越权分支可在同一真实浏览器会话中构造�
 - `docs/bootstrap/architecture-v1-readiness.md`：完成／受阻边界和下一步；
 - `README.md`：实际通过项、环境限制和精确测试结果。
 
-不要修改 `ARCHITECTURE.md`、ADR、模块 Contract、模板资产或历史事实。任一 Windows 浏览器或 Word 必需项受阻时，必须精确写到哪一层完成，不能笼统写“I5／片 4 全部完成”。
+当前文档已在 2026-10-01 校正阶段、API 代理与环境信息；不重复重写历史结果。不要修改 `ARCHITECTURE.md`、ADR、模块 Contract、模板资产或历史事实。任一 Windows 浏览器或 Word 必需项受阻时，必须精确写到哪一层完成，不能笼统写“I5／片 4 全部完成”。
 
 ## 回归命令
 
@@ -263,6 +300,8 @@ APP_DISABLE_DOTENV=1 .venv/bin/python -m unittest \
 APP_DISABLE_DOTENV=1 .venv/bin/python -m unittest discover -s tests/unit -q
 
 cd ../frontend
+# 仅首次恢复锁定依赖时执行 npm ci；依赖已就绪的修复回归无需重复安装
+npm ci --registry=https://registry.npmjs.org
 npm run typecheck
 npm run build
 
@@ -283,7 +322,7 @@ git status --short
 4. 说明临时数据库、下载及截图／PDF（如有）删除后不可恢复；Git 内脱敏文字和哈希可恢复。
 5. 确认 Git 未纳入凭据、cookie、认证头、计划全文、DOCX／PDF bytes、浏览器 profile、Office 临时文件、截图缓存或临时日志。
 
-最终检查 diff，确认没有纳入 `.codex/config.toml` 或其他用户既有修改。应提交本提示词、片 4 验证记录、直接相关状态文档及确有必要的最小修复／测试，按现有流程 commit 并 push 当前分支。不要部署，不要创建 PR，不要自动开始其他功能。
+最终检查 diff，确认没有纳入 `.codex/config.toml` 或其他用户既有修改。按既有片 4 授权与实际环境权限 commit／push 本任务验证记录、直接相关状态文档及确有必要的最小修复／测试，不强推。协调者本轮未提交的文档更新须逐项核对属于本任务，不能盲目 git add 全部；不要重新提交未改动的提示词或配置。不要部署，不要创建 PR，不要自动开始其他功能。
 
 结束报告必须包含：实际基线与最终 HEAD、Windows／WSL2／Ubuntu／浏览器／Word 版本、隔离资源、数据构造方式、W1–W6 逐项结果、浏览器矩阵、Word 逐页／打印预览结果、历史 LibreOffice 证据边界、模板哈希、审计与零非预期业务写入、定向／全量测试精确数量、typecheck/build、发现和修复、Windows 与 WSL 清理、commit/push、未执行项、剩余风险及最终 diff 摘要。
 

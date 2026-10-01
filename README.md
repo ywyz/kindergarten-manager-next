@@ -2,14 +2,14 @@
 
 面向单个幼儿园教师的教育工作支持系统，全新设计，不默认迁移旧系统代码或数据。
 
-Architecture v1 已确认。截至 2026-09-29，I1–I4 与 I5 Word 导出的片 1–3 已实现；I5 片 4 已授权，待 Windows 11 Pro／WSL2 Ubuntu 环境迁移后执行。部署与容量仍未验证。
+Architecture v1 已确认。截至 2026-10-01，I1–I4 与 I5 Word 导出的片 1–3 已实现；I5 片 4 已授权，当前已确认 WSL2 Ubuntu、Windows 11 Pro 和 Word 安装版本，待项目运行环境恢复及真实浏览器／Word 产品验收。部署与容量仍未验证。
 
-## 当前状态与下一步（2026-09-29）
+## 当前状态与下一步（2026-10-01）
 
 - **已实现**：I1 账号与认证，I2 班级分配与有效日历，I3 日计划，I4 周计划（含确认），I5 片 1「导出读取、版本钉住与模板映射纯逻辑」，I5 片 2「固定模板 docx 生成」（`word_export_docx.py` + 受控模板 + `lxml`），以及 I5 片 3「API 与下载闭环」（`routers/exports.py` 两条导出路由与 409/上限/审计/文件名/警示头闭环、`api.ts` 二进制下载与 `DailyPlanView`/`WeeklyPlanView`/`WeeklyPlanListView` 导出入口，2026-09-29 已确认 §11.1②/§11.5A/§11.6①）。
-- **已授权、待环境迁移后执行**：I5 片 4。2026-09-29 用户把开发与验收基线改为 Windows 11 Pro 主机 + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word；WSL2 运行 MySQL/API/Vite/测试，Windows 浏览器完成真实下载，Word 完成 W1–W6 打开与逐页版式验收。
-- **验证**：后端纯单元测试 533 项通过（其中片 3 定向 schema/路由 80 项、片 1–3 I5 定向共 170 项）；I5 集成 `tests.integration.test_i5_export_api` 30 项通过、0 skip（白名单库 + I5 专用 guard，head `20260924_i4_weekly_plans`，容器用后删除）；I1 24、I2 56、I3 27、I4 52 项隔离 MySQL 结果沿用之前记录；前端 `npm run typecheck`、`npm run build` 通过（主包约 1.13 MB，Vite 既有非阻断体积告警）。历史细节见 `docs/bootstrap/`。
-- **下一步**：完成开发环境迁移后，按已授权的片 4 提示词启动一次性 WSL2 MySQL/API/Vite，使用 Windows 浏览器与 Windows 桌面版 Word 执行真实下载和 W1–W6 验收；当前旧环境不得以 LibreOffice 结果替代该门槛。
+- **已授权、待运行环境与桌面能力预检后执行**：I5 片 4。2026-09-29 用户把开发与验收基线改为 Windows 11 Pro 主机 + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word；WSL2 运行 MySQL/API/Vite/测试，Windows 浏览器完成真实下载，Word 完成 W1–W6 打开与逐页版式验收。
+- **验证**：2026-10-01 依赖恢复后复跑全绿——后端纯单元测试 533 项通过（其中片 3 定向 schema/路由 80 项、片 1–3 I5 定向共 170 项）；I5 集成 `tests.integration.test_i5_export_api` 30 项通过、0 skip（mysql:8.4.11 + InnoDB，白名单库 + I5 专用 guard，head `20260924_i4_weekly_plans`，容器用后删除）；I1 24、I2 56、I3 27、I4 52 项隔离 MySQL 结果沿用之前记录；前端 `npm run typecheck`、`npm run build` 通过（主包 1135.42 kB，Vite 既有非阻断体积告警）；隔离 API/Vite 启动、`/api` 代理、合法口令登录与 `Cache-Control` 已核验。Windows 浏览器下载与 Word 逐页验收待人工（交接表见 [片 4 验证记录](docs/bootstrap/i5-slice4-validation-2026-10-01.md)）。历史细节见 `docs/bootstrap/`。
+- **下一步**：按 [2026-10-01 完整提示词](docs/bootstrap/i5-slice4-opencode-prompt-2026-10-01.md)恢复锁定项目依赖并做分层预检，完成独立自动检查后执行 Windows 浏览器真实下载与 W1–W6 Word 验收。OpenCode 缺少桌面能力时准备人工交接并暂停对应阶段，保留“待人工验收”状态；LibreOffice 不替代 Word 门槛。
 - **待决定**：I5 §11.9（确认后日历/学期变化的导出布局）留到日历影响处理能力开放前；前端主包体积告警未处理，留待后续前端性能切片。
 
 ## 文档入口
@@ -21,6 +21,8 @@ Architecture v1 已确认。截至 2026-09-29，I1–I4 与 I5 Word 导出的片
 - 模块 Contract：[用户与班级](docs/modules/identity-and-class.md)、[提示词](docs/modules/prompts.md)、[AI Service](docs/modules/ai-service.md)、[日计划](docs/modules/daily-plans.md)、[周计划](docs/modules/weekly-plans.md)、[Word 导出](docs/modules/word-export.md)、[操作日志](docs/modules/audit-log.md)。
 - [实施准备清单](docs/bootstrap/architecture-v1-readiness.md)：待定事项、验证要求与建议下一步。
 - [仓库工作约束](AGENTS.md)。
+- [WSL 与 Windows 验收能力报告](docs/bootstrap/wsl-windows-validation-review-2026-10-01.md)。
+- [I5 片 4 完整 OpenCode 提示词](docs/bootstrap/i5-slice4-opencode-prompt-2026-10-01.md)。
 
 ## 已确认方向
 
@@ -32,17 +34,19 @@ Vue 3 / TypeScript / Vite / Element Plus 前端，Python / FastAPI / SQLAlchemy 
 
 ## 本地环境与目录
 
-2026-09-29 已确认的主要开发环境将迁移为 Windows 11 Pro + WSL2 Ubuntu：仓库、Python／uv、Node／npm、Docker／MySQL、API、Vite 和自动测试在 WSL2 Ubuntu 内运行；Windows 主机浏览器访问本地服务；Office 365／Microsoft 365 随附的 Windows 桌面版 Word 用于 DOCX 产品验收。迁移完成前，下文现有本机版本仅是旧环境记录；执行验收时必须重新记录 Windows、WSL、浏览器和 Word 的准确版本／构建／更新渠道。
+2026-10-01 只读检查确认当前为 WSL2 Ubuntu 26.04.1（内核 `6.18.33.2-microsoft-standard-WSL2`）；Windows `EditionID=Professional`，25H2，build `26200.9457`；Office Click-to-Run 安装版本与 Word 文件版本均为 `16.0.20326.20158`，Office 平台为 x64。安装信息不证明 Word 可交互使用或产品版式通过。后端 `.venv`、前端 `node_modules` 本轮检查时缺失，尚未恢复或运行测试。
 
-- `frontend/`：npm 项目，`package-lock.json` 锁定依赖；`src/App.vue` 为最小页面。
+仓库、Python／uv、Node／npm、Docker／MySQL、API、Vite 和自动测试继续在 WSL2 内运行；Windows 浏览器与桌面版 Word 用于产品验收。浏览器版本、WSL 工具版本、Word 界面显示的版本／build／更新渠道和桌面能力在实际验收时重新确认。
+
+- `frontend/`：npm 项目，`package-lock.json` 锁定依赖；`src/App.vue` 为登录／待分配／教师／管理员／设置页面入口，业务页面在 `src/views/`。
 - `backend/`：uv 项目，`uv.lock` 锁定依赖，`.venv/` 隔离 Python 环境；`app/main.py` 为启动入口。
 - `backend/migrations/`：Alembic 环境与 revision；`versions/` 已包含 I1–I4 迁移脚本，当前 head 为 `20260924_i4_weekly_plans`。
 
-需要已有 Node.js（22.12+ 的 22 系列，或 24+）、npm、Python 与 uv。本次本机使用 Node 26.8.1、npm 12.0.2、uv 0.12.7、Python 3.14.7；后端 `.python-version` 选择 3.14。下列命令不安装系统工具；`UV_PYTHON_DOWNLOADS=never` 禁止自动下载 Python，若本机没有该解释器会停止。项目声明 Python >=3.12，其他版本尚未做本地启动验证。
+需要已有 Node.js（22.12+ 的 22 系列，或 24+）、npm、Python 与 uv。2026-09-21 旧环境记录为 Node 26.8.1、npm 12.0.2、uv 0.12.7、Python 3.14.7，不代表当前 WSL 工具版本；后端 `.python-version` 选择 3.14。下列命令不安装系统工具；`UV_PYTHON_DOWNLOADS=never` 禁止自动下载 Python，若本机没有该解释器会停止。项目声明 Python >=3.12，其他版本尚未做本地启动验证。
 
 ## 安装与启动
 
-从仓库根目录分别在两个终端运行。首次安装依赖需要访问包仓库，无需 MySQL、AI 密钥或服务器。
+从仓库根目录分别在两个终端运行。首次恢复锁定依赖需要访问包仓库；仅进程启动和 `/health` 检查无需 MySQL、AI 密钥或服务器。登录、班级、计划与导出依赖已迁移的 MySQL 测试库，片 4 使用下方提示词的隔离环境，不连接真实业务库。
 
 后端：
 
@@ -60,15 +64,15 @@ npm ci --registry=https://registry.npmjs.org
 npm run dev
 ```
 
-若本机现有代理访问包仓库返回 `503 Forwarding failure`，本次安装通过仅对 npm 官方仓库直连解决；后续锁定安装可使用 `NO_PROXY=registry.npmjs.org no_proxy=registry.npmjs.org npm ci --registry=https://registry.npmjs.org`；不修改全局代理或 npm 配置。
+旧环境曾遇到代理访问包仓库返回 `503 Forwarding failure`，当时通过仅对 npm 官方仓库直连解决；后续锁定安装可使用 `NO_PROXY=registry.npmjs.org no_proxy=registry.npmjs.org npm ci --registry=https://registry.npmjs.org`；不修改全局代理或 npm 配置。
 
-打开 <http://127.0.0.1:5173>，点击“检查交互”应更新计数。前端目前不调用后端，因此不需要 CORS 或 API 代理。健康检查为 <http://127.0.0.1:8000/health>，应返回 HTTP 200 和 `{"status":"ok"}`；它只表示 API 进程存活，不代表数据库就绪。两个终端分别按 Ctrl+C 停止。
+Windows 浏览器打开 <http://127.0.0.1:5173>。当前前端会调用 `/api`，Vite 已代理到 `http://127.0.0.1:8000`；注册／登录及业务操作需要显式配置的隔离 MySQL 和现有迁移，写请求的 Origin 必须满足后端配置。健康检查 <http://127.0.0.1:8000/health> 应返回 HTTP 200 和 `{"status":"ok"}`，仅证明 API 存活，不代表数据库就绪或业务通过。两个终端分别按 Ctrl+C 停止。
 
 Vite 开发服务器固定监听 `127.0.0.1:5173`，预览服务器固定监听 `127.0.0.1:4173`；端口占用时直接失败，不自动换端口。后端也只按上述命令监听回环地址。不要为了本地检查改为 `0.0.0.0`。
 
 ## 配置约定
 
-无需创建 `.env` 即可启动骨架。需要覆盖配置时直接设置进程环境变量，例如：
+无需创建 `.env` 即可启动 API 进程并检查 `/health`；业务接口仍需要数据库配置。需要覆盖配置时直接设置进程环境变量，例如：
 
 ```bash
 export APP_DISABLE_DOTENV=1
@@ -79,7 +83,7 @@ export ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 实际 `.env`、虚拟环境、依赖和构建输出已加入 `.gitignore`。I1 没有单独的 session secret 配置项。
 
-后端配置优先级为进程环境变量 > `backend/.env`（如未禁用）> 代码默认值。`APP_NAME` 控制 API 标题；`DATABASE_URL` 默认空，仅迁移入口需要，健康检查不会解析或连接它。数据库连接采用 `mysql+pymysql`；不把连接地址写入日志或 `alembic.ini`。
+后端配置优先级为进程环境变量 > `backend/.env`（如未禁用）> 代码默认值。`APP_NAME` 控制 API 标题；`DATABASE_URL` 默认空，迁移和访问持久数据的业务接口需要它，健康检查不会连接数据库。数据库连接采用 `mysql+pymysql`；不把连接地址写入日志或 `alembic.ini`。
 
 前端采用 Vite 配置约定，`VITE_APP_TITLE` 为公开的页面标题，缺省使用代码默认值；进程环境优先于环境文件。`VITE_*` 会进入浏览器产物，绝不能存放密钥。修改后重启开发服务器；构建产物需重新构建。
 
@@ -104,7 +108,7 @@ uv run --locked alembic heads
 
 以下段落记录 2026-09-21 骨架阶段的历史边界，已被后续 I1–I4 实施取代：当时不创建数据库、不生成 revision、不运行任何迁移，`target_metadata=None`。当前 `versions/` 已含 I1–I4 迁移，实际迁移按各切片授权在隔离库执行；应用启动仍不执行建表或迁移。
 
-启动与构建成功仅是骨架检查，不是登录、权限、日历、计划保存、Word 导出、真实 AI、持久任务或容量验收。骨架阶段没有部署命令，也没有连接 `ssh aliyun`。
+仅启动与构建成功属于进程／构建检查，不是登录、权限、日历、计划保存、Word 导出、真实 AI、持久任务或容量验收。骨架阶段没有部署命令，也没有连接 `ssh aliyun`。
 
 配置参考：[Vite](https://vite.dev/guide/)、[FastAPI](https://fastapi.tiangolo.com/)、[Alembic](https://alembic.sqlalchemy.org/en/latest/tutorial.html)。
 

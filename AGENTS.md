@@ -7,7 +7,9 @@
 
 当前处于：
 
-**Architecture v1 已确认 / 实施准备阶段**
+**Architecture v1 已确认 / 分片实施与产品验收阶段**
+
+I1–I4 与 I5 Word 导出片 1–3 已实现；当前优先完成 I5 片 4 Windows／WSL2／Microsoft Word 产品验收。实现、自动测试与产品验收状态分别记录，不相互替代。
 
 当前有效架构见 `ARCHITECTURE.md`，决策原因见 `docs/adr/`，模块 Contract 见 `docs/modules/`。
 
@@ -82,7 +84,7 @@ Agent 不拥有产品需求最终解释权。
 
 ## Skills / MCP 临时规则
 
-当前处于开发环境收敛阶段。
+Skills / MCP 的审计约束继续有效，不因进入实施或迁移到 WSL2 自动解除。
 
 在完成 Skills / MCP Audit 之前：
 
@@ -122,6 +124,8 @@ AGENTS.md 自身应保持简短，不作为完整项目百科全书。
 
 ## 当前最高优先级
 
-当前优先级是按已确认架构准备最小实施规格与验证方案，再在明确任务授权后建立最小项目骨架。
+当前优先级是按已授权范围完成 I5 片 4：恢复锁定项目依赖、验证 WSL2 产品运行、Windows 浏览器真实下载和 Microsoft Word 逐页版式。缺少桌面能力时先完成独立自动检查和人工交接，不得把缺少 Word 证据写成验收通过。
+
+业务代码由 OpenCode 唯一写入；协调、只读审阅和文档更新不另起业务实现者。I5 验收后先收口 AI Service、提示词与持久任务实施规格，不自动启动实现或部署。
 
 待定事项与建议顺序见 `docs/bootstrap/architecture-v1-readiness.md`。不因后续任务重新开展环境全面审计，也不把旧项目功能当作新版需求。

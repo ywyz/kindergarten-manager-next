@@ -2,6 +2,10 @@
 
 状态：计划已建立；隔离原型执行结果见[结果记录](word-template-prototype-results.md)，生产生成路径已由 I5 片 2 实施。2026-09-29 用户将当前开发与验收基线改为 Windows 11 Pro + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word；既有 Ubuntu／LibreOffice 原型证据保留为历史补充，不替代产品 Word 验收。业务依据见 [最小实施规格](manual-plans-and-word-export.md) 与 [Word 导出 Contract](../modules/word-export.md)。
 
+2026-10-01 已只读确认 WSL2 Ubuntu、Windows 11 Pro 和 Office／Word 安装版本，未执行产品文件打开或逐页版式检查。缺少 Agent 桌面能力时可由人工逐项验收并记录操作者、文件哈希和页面证据，不能写成 Agent 自动观察通过；片 4 的 Word 门槛保持不变。执行见[完整提示词](../bootstrap/i5-slice4-opencode-prompt-2026-10-01.md)。
+
+2026-10-01 执行轮的自动检查（模板哈希核对、隔离 MySQL、启动验证）已完成，W1–W6 的 Windows 浏览器与 Word 逐项结果按交接表[片 4 验证记录](../bootstrap/i5-slice4-validation-2026-10-01.md)逐例回填，未人工执行前一律为"待人工验收"。
+
 ## 范围与证据
 
 2026-09-20 可只读访问两份原始文件，已用 ZIP／OOXML 读取栏目及表格结构，未修改、复制或上传原文件。结构检查不证明字体、分页、合并或标红兼容。
