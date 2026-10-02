@@ -1,5 +1,7 @@
 # Word 模板隔离原型结果
 
+> 当前验收环境已于2026-10-02再次更新，见 [当前口径](i5-validation-environment.md)。本文继续保留2026-09-20历史结果，不能代替远程产品真实下载与选定Word／WPS逐页证据。
+
 2026-09-20。依据：[验证计划](word-template-validation.md)、[实施规格](manual-plans-and-word-export.md)。本文件记录当时的 Ubuntu + LibreOffice 隔离原型事实。**2026-09-29 用户已将现行开发与验收基线改为 Windows 11 Pro + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word；本历史结果继续保留，但不能替代当前产品 Word 验收。**
 
 ## 结果与证据范围

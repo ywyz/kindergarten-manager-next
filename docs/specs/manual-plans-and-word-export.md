@@ -163,7 +163,7 @@ MySQL 8.4 / InnoDB 是业务权威来源；导出文件是所选版本的时间�
 
 | 项目 | 当前决定 |
 | --- | --- |
-| 目标软件版本 | **已于 2026-09-29 改为** Windows 11 Pro + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word；WSL2 承载开发服务与自动测试，Windows 浏览器执行真实下载，Word 执行实际打开、逐页版式与页面视图／打印预览检查。记录 Windows、WSL、Word 的准确版本／构建／更新渠道及字体；不要求实体打印。既有 Ubuntu／LibreOffice 原型仅为历史补充证据，不能替代当前 Word 验收 |
+| 目标软件版本 | **2026-10-02 当前口径**：SSH `root@bwh.ywyz.tech` 独立验收服务与 Trae Work 真实浏览器下载；Windows 10／11／Server 2022／Server 2025 与 Office 2010 以上桌面 Word／WPS 文字任一组合完成全部必需案例即可通过。记录实际系统、浏览器与软件版本／build／位数／字体；不要求实体打印，不再要求本机WSL。详见 [当前验收环境](i5-validation-environment.md)，旧Ubuntu／LibreOffice原型仍为历史补充 |
 | 差异算法歧义 | 已确认无基准不标红并提示无法比较；新增和替换标红，纯删除不显示，纯移动及仅格式变化不标红；算法在模板试验验证 |
 | 文件上限及清理 | **已于 2026-09-29 确认并由 I5 片 3 实施**：按实际入选份数限制日计划 ≤31、周计划 ≤8；完整 DOCX 只在请求内存生成并直接响应，不落盘，因此没有服务端临时导出文件清理任务 |
 

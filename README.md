@@ -2,9 +2,17 @@
 
 面向单个幼儿园教师的教育工作支持系统，全新设计，不默认迁移旧系统代码或数据。
 
-Architecture v1 已确认。截至 2026-10-01，I1–I4 与 I5 Word 导出的片 1–3 已实现；I5 片 4 已授权，当前已确认 WSL2 Ubuntu、Windows 11 Pro 和 Word 安装版本，待项目运行环境恢复及真实浏览器／Word 产品验收。部署与容量仍未验证。
+Architecture v1 已确认。I1–I4 与 I5 Word 导出的片 1–3 已实现；2026-10-02 已最小修复导出范围竞态并部署独立远程验收实例。I5 片4的真实浏览器落盘与 Office／WPS 逐页验收仍待 Trae Work 执行，AI、容量和备份恢复分别待验证。
 
-## 当前状态与下一步（2026-10-01）
+## 当前状态与下一步（2026-10-02）
+
+- **验收入口**：[kg-next-verify.ywyz.tech](https://kg-next-verify.ywyz.tech)。SSH 密钥连接 `root@bwh.ywyz.tech`；独立目录、内部 API、独立 MySQL 8.4.11 与 Caddy HTTPS，保留实例供验证，不使用本机 WSL 验收服务器。
+- **已修复**：日／周导出期间改范围使旧响应立即失效，日计划模式变化同样处理；清空旧缺项确认与错误，旧 finally 不清除新请求 loading。源提交 `2cb8d81`；18 项可控延迟检查、前端 typecheck/build、Windows及服务器533项后端单测通过，服务器 I5 集成30项通过、0skip。两个锁文件未变。
+- **环境门槛**：Windows 10／11／Server 2022／Server 2025 与 Office 2010 以上桌面 Word／WPS 文字任一组合完成全部必需案例即可通过；不要求所有组合验证。实际下载、哈希和全部页面检查不可省略，见 [当前验收口径](docs/specs/i5-validation-environment.md)。
+- **下一步**：将 [Trae Work 提示词](docs/bootstrap/i5-trae-work-prompt-2026-10-02.md)交给 Trae Work。私密测试口令仅在仓库外与服务器 root 配置目录，不入 Git。案例 ID 使用 R01–R16，初始数据见 [夹具清单](docs/bootstrap/i5-remote-fixtures-2026-10-02.json)。
+- **状态与边界**：[本轮修复部署记录](docs/bootstrap/i5-remote-validation-2026-10-02.md)分层记录自动检查、HTTPS/API、下载和桌面证据。当前尚不能宣布 I5 片4完成；§11.9与后续 AI Service／提示词／持久任务规格仍按原范围收口，不自动实现。
+
+## 历史状态（2026-10-01，环境限制已由新口径替代）
 
 - **已实现**：I1 账号与认证，I2 班级分配与有效日历，I3 日计划，I4 周计划（含确认），I5 片 1「导出读取、版本钉住与模板映射纯逻辑」，I5 片 2「固定模板 docx 生成」（`word_export_docx.py` + 受控模板 + `lxml`），以及 I5 片 3「API 与下载闭环」（`routers/exports.py` 两条导出路由与 409/上限/审计/文件名/警示头闭环、`api.ts` 二进制下载与 `DailyPlanView`/`WeeklyPlanView`/`WeeklyPlanListView` 导出入口，2026-09-29 已确认 §11.1②/§11.5A/§11.6①）。
 - **已授权、待运行环境与桌面能力预检后执行**：I5 片 4。2026-09-29 用户把开发与验收基线改为 Windows 11 Pro 主机 + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word；WSL2 运行 MySQL/API/Vite/测试，Windows 浏览器完成真实下载，Word 完成 W1–W6 打开与逐页版式验收。
@@ -26,13 +34,15 @@ Architecture v1 已确认。截至 2026-10-01，I1–I4 与 I5 Word 导出的片
 
 ## 已确认方向
 
-Vue 3 / TypeScript / Vite / Element Plus 前端，Python / FastAPI / SQLAlchemy 2.x / Alembic 后端，MySQL 8.4 / InnoDB 数据库。部署目标为 `ssh aliyun` 对应服务器，复用 Caddy；独立 Python 工作进程执行数据库持久任务。
+Vue 3 / TypeScript / Vite / Element Plus 前端，Python / FastAPI / SQLAlchemy 2.x / Alembic 后端，MySQL 8.4 / InnoDB 数据库。当前 I5 验收部署目标为 SSH `root@bwh.ywyz.tech`，复用 Caddy；系统设计仍由独立 Python 工作进程执行数据库持久任务，尚未实现。
 
 首版覆盖账号与班级管理、个人 AI 配置与提示词、日计划、全班周计划及固定 Word 模板导出。支持教师分日期备课、周计划自动更新与人工确认。约 30 人并发是待验证的容量目标。
 
-早期骨架页面仅用于检查 Vue / TypeScript / Element Plus。AI、个人提示词、持久任务仍属于首版，按后续任务分步实现。Word 导出已完成读取/映射纯逻辑、固定模板 docx 生成与 API 下载闭环（片 1–3），仅剩 Windows 11 Pro／WSL2 Ubuntu／Windows 浏览器／Microsoft Word 产品验收（片 4）。2026-09-20 Ubuntu／LibreOffice 原型只保留为历史补充证据，不能替代当前产品 Word 验收。
+早期骨架页面仅用于检查 Vue / TypeScript / Element Plus。AI、个人提示词、持久任务仍属于首版，按后续任务分步实现。Word 导出已完成片1–3与本轮范围竞态修复，片4的Trae Work真实下载与Word／WPS逐页验收待执行。旧Ubuntu／LibreOffice原型只保留为历史补充证据。
 
-## 本地环境与目录
+## 本地开发与历史环境（不是当前验收服务器）
+
+以下 WSL 采集和启动说明保留为 2026-10-01 开发记录。当前 Windows checkout 为 `C:\Users\admin\code\kindergarten-manager-next`，PowerShell 7.6.6 在 `D:\Program Files\PowerShell\7\pwsh.exe`；本轮本地恢复依赖用于修复检查，产品验收访问远程 HTTPS。不要求安装或恢复 WSL。
 
 2026-10-01 只读检查确认当前为 WSL2 Ubuntu 26.04.1（内核 `6.18.33.2-microsoft-standard-WSL2`）；Windows `EditionID=Professional`，25H2，build `26200.9457`；Office Click-to-Run 安装版本与 Word 文件版本均为 `16.0.20326.20158`，Office 平台为 x64。安装信息不证明 Word 可交互使用或产品版式通过。后端 `.venv`、前端 `node_modules` 本轮检查时缺失，尚未恢复或运行测试。
 

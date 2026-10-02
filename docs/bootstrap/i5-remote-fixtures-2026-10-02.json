@@ -1,0 +1,198 @@
+{
+  "source_commit": "2cb8d81556f47936e236dadedcb37bf3cec5b3c8",
+  "class_id": "clsi5",
+  "daily": [
+    {
+      "date": "2026-08-03",
+      "id": "a7fO14QBTDLb1A2pZzKX9g"
+    },
+    {
+      "date": "2026-08-04",
+      "id": "hOmHsNN4TMKKewLc3FT4rg"
+    },
+    {
+      "date": "2026-08-05",
+      "id": "K5z5FTvMV2l-KjGFhxDUnQ"
+    },
+    {
+      "date": "2026-08-06",
+      "id": "9OLUy_65-zkD4Q0Ji9Upew"
+    },
+    {
+      "date": "2026-08-07",
+      "id": "bhhLufknzt8tP8LgKTZeww"
+    },
+    {
+      "date": "2026-08-10",
+      "id": "4s3ANrhcEN2j0AKQiWrVcg"
+    },
+    {
+      "date": "2026-08-11",
+      "id": "qqOLN8C-rsKlkJxbhZCBZA"
+    },
+    {
+      "date": "2026-08-12",
+      "id": "eFyyAcpVvfVdqu6Jexs50w"
+    },
+    {
+      "date": "2026-08-13",
+      "id": "foX2Rp1Zuwpkxgz_ps-C1Q"
+    },
+    {
+      "date": "2026-08-14",
+      "id": "CU6orpQWEeRiSRhFxSGhCA"
+    },
+    {
+      "date": "2026-08-17",
+      "id": "qcJtMexy5E-yE1-T7-ShTQ"
+    },
+    {
+      "date": "2026-08-18",
+      "id": "QxmHzoYexlS9_vLjkw-HHQ"
+    },
+    {
+      "date": "2026-08-19",
+      "id": "bPzkkf5y3PoHUTJugaNHUA"
+    },
+    {
+      "date": "2026-08-20",
+      "id": "ixAA0IqI625kd7fFiO53GQ"
+    },
+    {
+      "date": "2026-08-21",
+      "id": "EvDWqMo4yr1LLGIu_rEo9w"
+    },
+    {
+      "date": "2026-08-24",
+      "id": "IVLXl8NnV46SLkb9_YvNFQ"
+    },
+    {
+      "date": "2026-08-25",
+      "id": "pMwa1dtkEkBewupKzSbtkQ"
+    },
+    {
+      "date": "2026-08-26",
+      "id": "u6bXPdKNWno_LjI0W1qJ3Q"
+    },
+    {
+      "date": "2026-08-27",
+      "id": "i9w-fQ9kZW5-mesrjo-8bg"
+    },
+    {
+      "date": "2026-08-28",
+      "id": "yJCeJpLscsjLZo2wmowjDA"
+    },
+    {
+      "date": "2026-08-31",
+      "id": "tbgUt6Ng87pntqjtm1yPGA"
+    },
+    {
+      "date": "2026-09-01",
+      "id": "MWWF8tKNqgKowF4l_h5j6A"
+    },
+    {
+      "date": "2026-09-02",
+      "id": "H7zjZpxMYEy6cfB5GDsxKQ"
+    },
+    {
+      "date": "2026-09-03",
+      "id": "smveKp-SqCpbhhBq8KwvEQ"
+    },
+    {
+      "date": "2026-09-04",
+      "id": "qCj4xn9c0ze1GA3pILbTeQ"
+    },
+    {
+      "date": "2026-09-07",
+      "id": "S3NRwNeQvipEPSuaZuUA5w"
+    },
+    {
+      "date": "2026-09-08",
+      "id": "h712RDacB4-VPNpLX8kIfQ"
+    },
+    {
+      "date": "2026-09-09",
+      "id": "ksft2df-GOWygsxgHHfg3w"
+    },
+    {
+      "date": "2026-09-10",
+      "id": "q1_JHLzM0Ex8HW3nHKtn_g"
+    },
+    {
+      "date": "2026-09-11",
+      "id": "pExXN-dfc94hh16JzjDDcg"
+    },
+    {
+      "date": "2026-09-12",
+      "id": "JIMnEibT76n52d3f4ZYgQw"
+    },
+    {
+      "date": "2026-09-14",
+      "id": "tyd3ny6ZttVk0yLFljZxcQ"
+    }
+  ],
+  "weekly": [
+    {
+      "week": 1,
+      "id": "ke4-GYxV2Ca7AXif-q-Zew",
+      "state": "confirmed",
+      "confirmed_version": 1
+    },
+    {
+      "week": 2,
+      "id": "xiP6_H5rhsRgAJ1IMg5cgg",
+      "state": "confirmed",
+      "confirmed_version": 2
+    },
+    {
+      "week": 3,
+      "id": "Gsqq9pf8uMz1Cl1hIhCnMA",
+      "state": "confirmed",
+      "confirmed_version": 1
+    },
+    {
+      "week": 4,
+      "id": "hiQNbXWgBj6h7Qj43qdDmQ",
+      "state": "confirmed",
+      "confirmed_version": 1
+    },
+    {
+      "week": 5,
+      "id": "z9PHQKgOZV2uyaQqTaR1AA",
+      "state": "confirmed",
+      "confirmed_version": 1
+    },
+    {
+      "week": 6,
+      "id": "yPX61XbycdLMnvsCs4epuA",
+      "state": "confirmed",
+      "confirmed_version": 1
+    },
+    {
+      "week": 7,
+      "id": "wdB7NhnnBtyZowj-_LGaYQ",
+      "state": "confirmed",
+      "confirmed_version": 1
+    },
+    {
+      "week": 8,
+      "id": "LOw6Kq0d__aQcE4rr8gwDg",
+      "state": "confirmed",
+      "confirmed_version": 1
+    },
+    {
+      "week": 9,
+      "id": "sH63BsGRi2rPSDJBvGQo5g",
+      "state": "confirmed",
+      "confirmed_version": 1
+    },
+    {
+      "week": 10,
+      "id": "EPVfe0wYlXONtbD2ou48jQ",
+      "state": "unconfirmed"
+    }
+  ],
+  "daily_31_to": "2026-09-12",
+  "daily_32_to": "2026-09-14",
+  "note": "All content and identities are synthetic. No actual AI executed."
+}

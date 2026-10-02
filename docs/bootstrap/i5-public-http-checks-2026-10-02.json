@@ -1,0 +1,169 @@
+{
+  "layer": "Public HTTPS/API from Windows; not browser download or Office/WPS evidence",
+  "source_commit": "2cb8d81556f47936e236dadedcb37bf3cec5b3c8",
+  "checks": [
+    {
+      "case": "five role logins / secure cookie / no-store",
+      "status": "passed"
+    },
+    {
+      "case": "normal-day",
+      "status": 200
+    },
+    {
+      "case": "empty-first",
+      "status": 409
+    },
+    {
+      "case": "empty-ack",
+      "status": 200
+    },
+    {
+      "case": "long-day",
+      "status": 200
+    },
+    {
+      "case": "three-days",
+      "status": 200
+    },
+    {
+      "case": "daily-31",
+      "status": 200
+    },
+    {
+      "case": "daily-32",
+      "status": 422
+    },
+    {
+      "case": "weekly-8",
+      "status": 200
+    },
+    {
+      "case": "weekly-9",
+      "status": 422
+    },
+    {
+      "case": "weekly-current",
+      "status": 200
+    },
+    {
+      "case": "weekly-history",
+      "status": 200
+    },
+    {
+      "case": "weekly-unconfirmed",
+      "status": 404
+    },
+    {
+      "case": "no-match",
+      "status": 404
+    },
+    {
+      "case": "same-class",
+      "status": 200
+    },
+    {
+      "case": "cross-class-single",
+      "status": 403
+    },
+    {
+      "case": "unassigned",
+      "status": 403
+    },
+    {
+      "case": "admin-no-class",
+      "status": 422
+    },
+    {
+      "case": "admin-class",
+      "status": 200
+    },
+    {
+      "case": "no-origin",
+      "status": 403
+    }
+  ],
+  "files": [
+    {
+      "case": "normal-day",
+      "filename": "http-normal-day.docx",
+      "bytes": 14490,
+      "sha256": "c06e1a15ac1c9442a1ea4582c92105a870871da1391e5fbc3543a6ee938b00ca",
+      "content_disposition": "attachment; filename=\"daily-plans_2026-09-01_2026-09-01.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E6%97%A5%E8%AE%A1%E5%88%92_2026-09-01_2026-09-01.docx",
+      "warnings": "[{\"code\":\"no_split_baseline\"}]"
+    },
+    {
+      "case": "empty-ack",
+      "filename": "http-empty-ack.docx",
+      "bytes": 14262,
+      "sha256": "ba7654760e0bd99be84cb476556e8651beade975e4da32303bf85848f0c1c308",
+      "content_disposition": "attachment; filename=\"daily-plans_2026-09-02_2026-09-02.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E6%97%A5%E8%AE%A1%E5%88%92_2026-09-02_2026-09-02.docx",
+      "warnings": "[{\"code\":\"no_split_baseline\"}]"
+    },
+    {
+      "case": "long-day",
+      "filename": "http-long-day.docx",
+      "bytes": 15356,
+      "sha256": "ceecc9e018da3897601dbc305f05ba61ac39543debae0c738803b36468545e86",
+      "content_disposition": "attachment; filename=\"daily-plans_2026-09-03_2026-09-03.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E6%97%A5%E8%AE%A1%E5%88%92_2026-09-03_2026-09-03.docx",
+      "warnings": ""
+    },
+    {
+      "case": "three-days",
+      "filename": "http-three-days.docx",
+      "bytes": 16732,
+      "sha256": "d8be9b663395b27a2d1380b8d4a556d07ae50e80bee67062732e559abffebc9c",
+      "content_disposition": "attachment; filename=\"daily-plans_2026-09-03_2026-09-07.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E6%97%A5%E8%AE%A1%E5%88%92_2026-09-03_2026-09-07.docx",
+      "warnings": "[{\"code\":\"no_split_baseline\"}]"
+    },
+    {
+      "case": "daily-31",
+      "filename": "http-daily-31.docx",
+      "bytes": 25872,
+      "sha256": "999a4e8cabc6629e1c9356904eefbefda784df1b701128a77ed1c8b22627bbb9",
+      "content_disposition": "attachment; filename=\"daily-plans_2026-08-03_2026-09-12.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E6%97%A5%E8%AE%A1%E5%88%92_2026-08-03_2026-09-12.docx",
+      "warnings": "[{\"code\":\"no_split_baseline\"}]"
+    },
+    {
+      "case": "weekly-8",
+      "filename": "http-weekly-8.docx",
+      "bytes": 28077,
+      "sha256": "5acf20110d3a10a9a4a55f4d0dc811b6b7c434d074efbbf43f3a318a30a0a7e3",
+      "content_disposition": "attachment; filename=\"weekly-plans_2026-08-03_2026-09-27.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E5%91%A8%E8%AE%A1%E5%88%92_2026-08-03_2026-09-27.docx",
+      "warnings": "[{\"code\":\"confirmed_not_latest\",\"reason\":\"draft_ahead\"}]"
+    },
+    {
+      "case": "weekly-current",
+      "filename": "http-weekly-current.docx",
+      "bytes": 19232,
+      "sha256": "28c038c68ed9074cc70dbfb5c1d9fc1a0d04c8977fd6508d2849f6df8201e7fe",
+      "content_disposition": "attachment; filename=\"weekly-plans_w2_2026-08-10_2026-08-14.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E5%91%A8%E8%AE%A1%E5%88%92_2%E5%91%A8_2026-08-10_2026-08-14.docx",
+      "warnings": "[{\"code\":\"confirmed_not_latest\",\"reason\":\"draft_ahead\"}]"
+    },
+    {
+      "case": "weekly-history",
+      "filename": "http-weekly-history.docx",
+      "bytes": 19225,
+      "sha256": "b5bc8754d5b565bf8d57499171060aeed633f3840fb7e7dca5aea62f0a36a36d",
+      "content_disposition": "attachment; filename=\"weekly-plans_w2_2026-08-10_2026-08-14.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E5%91%A8%E8%AE%A1%E5%88%92_2%E5%91%A8_2026-08-10_2026-08-14.docx",
+      "warnings": "[{\"code\":\"confirmed_not_latest\",\"reason\":\"draft_ahead\"},{\"code\":\"confirmed_not_latest\",\"reason\":\"superseded\"}]"
+    },
+    {
+      "case": "same-class",
+      "filename": "http-same-class.docx",
+      "bytes": 14490,
+      "sha256": "c06e1a15ac1c9442a1ea4582c92105a870871da1391e5fbc3543a6ee938b00ca",
+      "content_disposition": "attachment; filename=\"daily-plans_2026-09-01_2026-09-01.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E6%97%A5%E8%AE%A1%E5%88%92_2026-09-01_2026-09-01.docx",
+      "warnings": "[{\"code\":\"no_split_baseline\"}]"
+    },
+    {
+      "case": "admin-class",
+      "filename": "http-admin-class.docx",
+      "bytes": 14490,
+      "sha256": "c06e1a15ac1c9442a1ea4582c92105a870871da1391e5fbc3543a6ee938b00ca",
+      "content_disposition": "attachment; filename=\"daily-plans_2026-09-01_2026-09-01.docx\"; filename*=UTF-8''%E5%B0%8F%E7%8F%AD%E7%94%B2_%E6%97%A5%E8%AE%A1%E5%88%92_2026-09-01_2026-09-01.docx",
+      "warnings": "[{\"code\":\"no_split_baseline\"}]"
+    }
+  ],
+  "success_exports": 10
+}

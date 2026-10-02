@@ -1,0 +1,27 @@
+{
+  "database": "kg_next_i5_acceptance",
+  "counts": {
+    "accounts": 5,
+    "classes": 2,
+    "terms": 1,
+    "calendar_days": 84,
+    "daily_plans": 32,
+    "daily_plan_contents": 32,
+    "weekly_plans": 10,
+    "weekly_plan_contents": 21,
+    "weekly_plan_confirmed_contents": 10,
+    "sessions": 10
+  },
+  "successful_export_audits": 19,
+  "http_rounds": {
+    "initial_before_correcting_cross_class_case": 9,
+    "completed_round": 10
+  },
+  "public_builder_tokens_absent": true,
+  "first_admin_claimed": true,
+  "application_grants": [
+    "GRANT USAGE ON *.* TO `kg_next_i5_app`@`%`",
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON `kg_next_i5_acceptance`.* TO `kg_next_i5_app`@`%`"
+  ],
+  "note": "Export-only HTTP checks did not append plan content versions; audit records include both smoke-check rounds."
+}

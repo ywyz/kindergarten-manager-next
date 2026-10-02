@@ -9,7 +9,7 @@
 
 **Architecture v1 已确认 / 分片实施与产品验收阶段**
 
-I1–I4 与 I5 Word 导出片 1–3 已实现；当前优先完成 I5 片 4 Windows／WSL2／Microsoft Word 产品验收。实现、自动测试与产品验收状态分别记录，不相互替代。
+I1–I4 与 I5 Word 导出片 1–3 已实现；当前优先完成 I5 片 4 远程服务／Trae Work 浏览器／Office 或 WPS 产品验收。实现、自动测试与产品验收状态分别记录，不相互替代。
 
 当前有效架构见 `ARCHITECTURE.md`，决策原因见 `docs/adr/`，模块 Contract 见 `docs/modules/`。
 
@@ -124,8 +124,10 @@ AGENTS.md 自身应保持简短，不作为完整项目百科全书。
 
 ## 当前最高优先级
 
-当前优先级是按已授权范围完成 I5 片 4：恢复锁定项目依赖、验证 WSL2 产品运行、Windows 浏览器真实下载和 Microsoft Word 逐页版式。缺少桌面能力时先完成独立自动检查和人工交接，不得把缺少 Word 证据写成验收通过。
+当前优先级是按已授权范围完成 I5 片 4：SSH 密钥连接 `root@bwh.ywyz.tech` 并部署独立验收实例，由 Trae Work 验证真实浏览器下载；Windows 10／11／Server 2022／Server 2025 与 Office 2010 及以上桌面 Word／WPS 文字任一组合完成必需案例即满足环境门槛。不再使用本机 WSL 验收服务器。实际下载与逐页版式证据不可省略，详见 `docs/specs/i5-validation-environment.md`。
 
 业务代码由 OpenCode 唯一写入；协调、只读审阅和文档更新不另起业务实现者。I5 验收后先收口 AI Service、提示词与持久任务实施规格，不自动启动实现或部署。
+
+2026-10-02 用户明确授权本轮协调者直接最小修复两处导出范围竞态、部署验收实例并 commit／push；后续默认写入约束保持不变。
 
 待定事项与建议顺序见 `docs/bootstrap/architecture-v1-readiness.md`。不因后续任务重新开展环境全面审计，也不把旧项目功能当作新版需求。
