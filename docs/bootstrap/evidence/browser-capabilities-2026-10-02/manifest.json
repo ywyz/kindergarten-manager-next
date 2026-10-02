@@ -1,0 +1,62 @@
+{
+  "kind": "capability-check-not-full-i5-acceptance",
+  "executor": "Codex coordinator",
+  "recorded_at": "2026-10-02T17:17:48.4811674+08:00",
+  "download": {
+    "browser": "external Edge extension provider 4",
+    "filename": "小班甲_日计划_2026-09-01_2026-09-01 (2).docx",
+    "bytes": 14490,
+    "observed_last_write_at": "2026-10-02T16:46:28.2421982+08:00",
+    "original_sha256_before_word": "C06E1A15AC1C9442A1EA4582C92105A870871DA1391E5FBC3543A6EE938B00CA",
+    "original_sha256_after_word": "C06E1A15AC1C9442A1EA4582C92105A870871DA1391E5FBC3543A6EE938B00CA",
+    "zip_crc_check": "passed",
+    "zip_entries": 13,
+    "download_event": "15-second wait timed out; file physically saved"
+  },
+  "desktop": {
+    "os": "Windows Server 2025 Datacenter",
+    "os_version": "10.0.26100",
+    "word_product_name": "Microsoft Office",
+    "word_ui": "Word",
+    "word_version": "16.0.20430.20092",
+    "word_architecture": "x64",
+    "protected_view": true,
+    "observed_pages": 2,
+    "open_zoom_scroll_close": "passed",
+    "print_preview": "blocked by Protected View enable-print requirement",
+    "complete_layout_acceptance": "not performed"
+  },
+  "remaining": {
+    "R13": "not executed",
+    "R14": "request pause/interception not exposed",
+    "R15": "not executed; controlled-delay subcases blocked",
+    "all_W1_W6": "not executed"
+  },
+  "files": [
+    {
+      "path": "小班甲_日计划_2026-09-01_2026-09-01 (2).docx",
+      "bytes": 14490,
+      "sha256": "C06E1A15AC1C9442A1EA4582C92105A870871DA1391E5FBC3543A6EE938B00CA"
+    },
+    {
+      "path": "edge-daily-ui.png",
+      "bytes": 44505,
+      "sha256": "6270F0E38B348FBB077DAD649528AB21BF0BEA1F97566B09A4A72C188448F49E"
+    },
+    {
+      "path": "word-page-1-capability.jpg",
+      "bytes": 59868,
+      "sha256": "F362D7A20BF91AE0ADEB38213B10E780947B60A052CC19E989A0AE981720D0F7"
+    },
+    {
+      "path": "word-page-1-detail.jpg",
+      "bytes": 66567,
+      "sha256": "84F1193DB349B3CFEB5448760F8038EB80BF4CF6840922CD25ED6A241135B218"
+    },
+    {
+      "path": "word-page-2-capability.jpg",
+      "bytes": 46834,
+      "sha256": "33659B41A1A0D7FD024E1BEC7369276D30C9C789E57007084E18282FFD94C2A2"
+    }
+  ]
+}
