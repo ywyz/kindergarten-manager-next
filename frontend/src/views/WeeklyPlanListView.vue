@@ -136,6 +136,15 @@ watch(
 
 onBeforeUnmount(() => invalidateExportRequests())
 
+watch(
+  () => [exportState.from, exportState.to] as const,
+  () => {
+    invalidateExportRequests()
+    exportState.error = ''
+  },
+  { flush: 'sync' },
+)
+
 function openExportDialog(): void {
   exportState.from = ''
   exportState.to = ''

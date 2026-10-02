@@ -395,20 +395,19 @@ function openExportDialog(): void {
   exportState.open = true
 }
 
-// Any range/mode change invalidates a pending confirmation: the ack binds
-// the exact displayed version/facts object, so a different range always
-// starts a fresh server round-trip (a new 409 or a direct success).
+// A response and its confirmation belong to the exact requested range.
+// Changing the selection must also invalidate any in-flight response.
 watch(
   () => [exportState.mode, exportState.from, exportState.to] as const,
   () => {
-    if (exportState.ackChecked || exportState.facts !== null || exportState.error) {
-      exportState.ackChecked = false
-      exportState.facts = null
-      exportState.expectedContext = null
-      exportState.reason = null
-      exportState.error = ''
-    }
+    invalidateExportRequests()
+    exportState.ackChecked = false
+    exportState.facts = null
+    exportState.expectedContext = null
+    exportState.reason = null
+    exportState.error = ''
   },
+  { flush: 'sync' },
 )
 
 /**
