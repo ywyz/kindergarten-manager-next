@@ -1,5 +1,7 @@
 # I5 Word 导出实施规格
 
+2026-10-03最新状态：当前I5已实现链路已按[正式收口](../bootstrap/i5-final-closeout-2026-10-03.md)完成产品验收。按[用户明确阶段决定](../bootstrap/i5-evidence-closeout-and-scope-decision-2026-10-03.md)，W2当前纯文本阶段以首尾空白覆盖仅格式子例；完整W6非空材料保留为[材料切片](weekly-materials-implementation.md)必需补验，仍未通过。原完整标准和各时点历史记录不删除；本条优先用于当前阶段状态判断，不表示富文本或首版整体完成。
+
 > 当前环境与执行边界于2026-10-02被用户更新，见 [I5 当前验收口径](i5-validation-environment.md)、本文§10.2／片4与 [本轮记录](../bootstrap/i5-remote-validation-2026-10-02.md)。以下2026-09-29／10-01环境描述属于历史，不能继续作为本机WSL或仅Microsoft 365 Word的要求。
 
 状态：**规格已按 2026-09-25 审核完成定向修订。片 1“导出读取、版本与映射纯逻辑”已实施并于 2026-09-28 完成 facts/I1 回归收敛。2026-09-28 用户授权进入片 2并确认：§11.2 取①（内存生成、不落临时文件）、§11.3 取②（ZIP + lxml 定点修改 OOXML，允许新增并锁定 lxml 依赖）、§11.4 取①（两份模板副本入库）；模板资产已复制到 `backend/app/assets/word_templates/`，生成器 `backend/app/services/word_export_docx.py` 已实施，`lxml` 已锁定为 6.1.3，结构机检单测通过。2026-09-29 用户已确认三项片 3 前决定：§11.1 取②（按实际入选计划份数设上限，日计划 ≤31、周计划 ≤8）、§11.5 取 A（复用 `operation_records` 记 `export_word`）、§11.6 取①（同一 POST 请求内完成鉴权、读取钉住、生成、审计提交与文件响应）；片 3“API 与下载闭环”已实施（详见 §12 片 3 实施状态），§11.9 仍留到日历/学期影响处理能力开放前决定（当前 `plans_started_at` 门槛下该场景不可发生，不阻塞片 3）。**2026-09-29 用户进一步将片 4 的开发与验收基线改为 Windows 11 Pro 主机 + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word：WSL2 承载服务、MySQL 与自动测试，Windows 浏览器执行真实下载，Word 桌面端执行 W1–W6 打开与逐页版式验收；既有 Ubuntu／LibreOffice 原型仅为历史补充证据。片 4 已获授权但尚未执行。** 本文把既有已确认的“手工日计划 / 已确认周计划 → 固定 Word 模板导出”规则收敛为可逐片授权实施的 I5 规格。

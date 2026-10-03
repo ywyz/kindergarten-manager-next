@@ -60,3 +60,7 @@
 ## 非职责
 
 不反向修改日计划，不持有所有教师的密钥，不通过自动生成决定产品权限，不将文档导出结果导回为数据权威。
+
+## 实施规格接续
+
+2026-10-03对应[实施规格](../specs/weekly-materials-implementation.md)已形成；协同依赖、产品决定与授权边界见[索引](../specs/ai-capabilities-implementation.md)。Contract规则与实现／验收状态分别记录，不因规格落盘宣布能力已实现。

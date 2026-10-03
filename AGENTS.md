@@ -9,7 +9,7 @@
 
 **Architecture v1 已确认 / 分片实施与产品验收阶段**
 
-I1–I4 与 I5 Word 导出片 1–3 已实现；当前优先完成 I5 片 4 远程服务／Trae Work 浏览器／Office 或 WPS 产品验收。实现、自动测试与产品验收状态分别记录，不相互替代。
+I1–I4 与 I5 Word 导出片 1–3 已实现；2026-10-03 已正式收口 I5 当前已实现链路产品验收，完整 W6 非空材料移交后续材料切片必需补验。实现、自动测试与产品验收状态分别记录，不相互替代。
 
 当前有效架构见 `ARCHITECTURE.md`，决策原因见 `docs/adr/`，模块 Contract 见 `docs/modules/`。
 
@@ -124,9 +124,9 @@ AGENTS.md 自身应保持简短，不作为完整项目百科全书。
 
 ## 当前最高优先级
 
-当前优先级是按已授权范围完成 I5 片 4：SSH 密钥连接 `root@bwh.ywyz.tech` 并部署独立验收实例，由 Trae Work 验证真实浏览器下载；Windows 10／11／Server 2022／Server 2025 与 Office 2010 及以上桌面 Word／WPS 文字任一组合完成必需案例即满足环境门槛。不再使用本机 WSL 验收服务器。实际下载与逐页版式证据不可省略，详见 `docs/specs/i5-validation-environment.md`。
+当前 I5 已实现链路收口见 `docs/bootstrap/i5-final-closeout-2026-10-03.md`。下一步按 `docs/specs/ai-capabilities-implementation.md` 收口产品未决项并等待具体切片实现授权；AI Service、提示词、持久任务与材料规格已形成，不自动启动实现或部署。完整 W6 材料真实下载及逐页补验不可省略；继续采用 `docs/specs/i5-validation-environment.md` 的远程实例与 Windows／Word 或 WPS 口径，不使用本机 WSL 验收服务器。
 
-业务代码由 OpenCode 唯一写入；协调、只读审阅和文档更新不另起业务实现者。I5 验收后先收口 AI Service、提示词与持久任务实施规格，不自动启动实现或部署。
+业务代码由 OpenCode 唯一写入；协调、只读审阅和文档更新不另起业务实现者。后续按规格及当前任务范围执行，不自动启动实现或部署。
 
 2026-10-02 用户明确授权本轮协调者直接最小修复两处导出范围竞态、部署验收实例并 commit／push；后续默认写入约束保持不变。
 

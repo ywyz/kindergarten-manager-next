@@ -1,0 +1,52 @@
+{
+  "review_date": "2026-10-03",
+  "review_kind": "current file integrity; GUI observations retain original executor",
+  "hash_comparison": "case-insensitive hexadecimal SHA-256",
+  "results": [
+    {
+      "manifest": "evidence-manifest.json",
+      "manifest_sha256": "0d99ddc9f165beb7efd7e7041cef955df483cceedb46dede9fb519bf808cda20",
+      "checked_paths": 138,
+      "passed": 138,
+      "errors": []
+    },
+    {
+      "manifest": "i5-desktop-followup-evidence-manifest-2026-10-03.json",
+      "manifest_sha256": "1e60655bf7e0c0ddef882e12acaba2d7e71eb98603ccd6b46f35e12c9a21eabe",
+      "checked_paths": 50,
+      "passed": 50,
+      "errors": []
+    },
+    {
+      "manifest": "i5-warning-environment-manifest-2026-10-03.json",
+      "manifest_sha256": "2f83f157428a76b85c0824c224a3679f8ec542bf4c18670d644f22709b2d61db",
+      "checked_paths": 25,
+      "passed": 25,
+      "errors": []
+    },
+    {
+      "manifest": "i5-warning-pixel-closeout-manifest-2026-10-03.json",
+      "manifest_sha256": "9924df2960d89a92cafcb18c1191f4d6d3e3847e1233930412dcf7d840638868",
+      "checked_paths": 16,
+      "passed": 16,
+      "errors": []
+    }
+  ],
+  "warning_screenshots_visual_review": [
+    "H01-warning-b.png",
+    "H02-warning-b.png"
+  ],
+  "repository_vs_deployment_manifest": {
+    "checked_files": 145,
+    "mismatches": [],
+    "scope": "current local repository vs recorded deployment source; not a new remote inspection"
+  },
+  "current_i5_unit_tests": {
+    "command": ".venv/bin/python -m unittest discover -s tests/unit -p test_i5_*.py",
+    "cwd": "backend",
+    "passed": 183,
+    "failures": 0,
+    "errors": 0,
+    "note": "current run; does not replace MySQL, browser or Word evidence"
+  }
+}

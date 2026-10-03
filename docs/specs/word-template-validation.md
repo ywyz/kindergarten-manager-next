@@ -1,5 +1,7 @@
 # 固定 Word 模板最小验证计划
 
+2026-10-03最新状态：当前I5已实现链路已按[正式收口](../bootstrap/i5-final-closeout-2026-10-03.md)完成产品验收。按[用户明确阶段决定](../bootstrap/i5-evidence-closeout-and-scope-decision-2026-10-03.md)，W2当前纯文本阶段以首尾空白覆盖仅格式子例；完整W6非空材料保留为[材料切片](weekly-materials-implementation.md)必需补验，仍未通过。原完整标准和各时点历史记录不删除；本条优先用于当前阶段状态判断，不表示富文本或首版整体完成。
+
 状态：计划已建立；隔离原型执行结果见[结果记录](word-template-prototype-results.md)，生产生成路径已由 I5 片 2 实施。2026-10-02 用户更新当前环境，权威口径见 [I5 当前验收环境](i5-validation-environment.md)：远程服务器运行，Trae Work 浏览器下载，指定 Windows 与 Office 2010 以上 Word／WPS 文字任一组合完成全部必需案例即可通过。业务依据见 [最小实施规格](manual-plans-and-word-export.md) 与 [Word 导出 Contract](../modules/word-export.md)。
 
 2026-10-01 WSL2／Windows 11／Office 安装版本采集属于历史观察，未执行产品文件打开或逐页版式检查。缺少 Agent 桌面能力时可由人工逐项验收并记录操作者、文件哈希和页面证据，不能写成 Agent 自动观察通过。当前执行见 [Trae Work 提示词](../bootstrap/i5-trae-work-prompt-2026-10-02.md)。

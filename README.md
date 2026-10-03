@@ -2,9 +2,16 @@
 
 面向单个幼儿园教师的教育工作支持系统，全新设计，不默认迁移旧系统代码或数据。
 
-Architecture v1 已确认。I1–I4 与 I5 Word 导出的片 1–3 已实现；2026-10-02 已最小修复导出范围竞态并部署独立远程验收实例。I5 片4的真实浏览器落盘与 Office／WPS 逐页验收仍待 Trae Work 执行，AI、容量和备份恢复分别待验证。
+Architecture v1 已确认。I1–I4 与 I5 Word 导出的片 1–3 已实现；2026-10-02 已最小修复导出范围竞态并部署独立远程验收实例。2026-10-03 已正式收口 I5 当前已实现链路的浏览器下载与 Word 逐页验收，完整 W6 非空材料保留为后续材料切片必需补验。AI、容量和备份恢复分别待验证。
 
-## 当前状态与下一步（2026-10-02）
+## 当前状态与下一步（2026-10-03）
+
+- **I5收口**：[正式结论](docs/bootstrap/i5-final-closeout-2026-10-03.md)逐项对应 W1–W6 和 D／F／G／H 证据，当前已实现链路通过，材料尚未通过，实际字体替代未知等限制保留。
+- **后续规格**：[协同实施索引](docs/specs/ai-capabilities-implementation.md)关联 AI Service、提示词、持久任务与材料四份规格，产品决定和工程方案分别记录。
+- **OpenCode交接**：[提示词](docs/bootstrap/ai-capabilities-opencode-prompt-2026-10-03.md)供后续具体切片授权使用；当前未启动业务编码或重新部署。
+- **验收实例**：保留独立远程服务与合成夹具；运行源用年级部署清单识别，不等同当前仓库 HEAD。材料后续真实下载及 Word／WPS 逐页补验仍必需。
+
+## 历史状态（2026-10-02）
 
 - **验收入口**：[kg-next-verify.ywyz.tech](https://kg-next-verify.ywyz.tech)。SSH 密钥连接 `root@bwh.ywyz.tech`；独立目录、内部 API、独立 MySQL 8.4.11 与 Caddy HTTPS，保留实例供验证，不使用本机 WSL 验收服务器。
 - **已修复**：日／周导出期间改范围使旧响应立即失效，日计划模式变化同样处理；清空旧缺项确认与错误，旧 finally 不清除新请求 loading。源提交 `2cb8d81`；18 项可控延迟检查、前端 typecheck/build、Windows及服务器533项后端单测通过，服务器 I5 集成30项通过、0skip。两个锁文件未变。
