@@ -1,0 +1,131 @@
+{
+  "observed_at_utc": "2026-10-03T03:41:36.178966+00:00",
+  "release": "/opt/kindergarten-manager-next-i5/releases/i5-grade-20261003-e6c15eaa0350",
+  "base_commit": "2c44ac2b01af14d02f94c0f2cbcbcc9af49ab089",
+  "source_hash_mismatches": [],
+  "templates": {
+    "backend/app/assets/word_templates/daily_plan.docx": "99008f92ae42cc87da7e42e84009ffcd8bbefdf43602f09a59ae4027e5ddc9bd",
+    "backend/app/assets/word_templates/weekly_plan.docx": "24ccaa9e557522c40a653643381e31f319ea6ae5e9f3e30e9dfa41da21986aed"
+  },
+  "counts": {
+    "daily_plans": 32,
+    "daily_plan_contents": 42,
+    "weekly_plans": 10,
+    "weekly_plan_contents": 26,
+    "weekly_plan_confirmed_contents": 13
+  },
+  "export_word_total_now": 82,
+  "actions_after_deployment_through_report": [
+    {
+      "action": "confirm_weekly_plan",
+      "count": 2
+    },
+    {
+      "action": "export_word",
+      "count": 10
+    },
+    {
+      "action": "refresh_weekly_sources",
+      "count": 1
+    },
+    {
+      "action": "save_weekly_plan",
+      "count": 3
+    },
+    {
+      "action": "update_daily_plan",
+      "count": 7
+    }
+  ],
+  "export_events_in_report_window": [
+    {
+      "id": "JuNj9akBod8wmrxJ2UZnGA",
+      "created_at": "2026-10-03 02:56:27",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    },
+    {
+      "id": "M6J_XnmOfRQCaIbyeVNz-A",
+      "created_at": "2026-10-03 03:01:50",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    },
+    {
+      "id": "CEh1N-capEbc3fekn4RWFg",
+      "created_at": "2026-10-03 03:06:05",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    },
+    {
+      "id": "Q6nl1lQSa4ZE08NZShJqiw",
+      "created_at": "2026-10-03 03:06:47",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    },
+    {
+      "id": "FVL-DJor9yq2lwvsqb8K4w",
+      "created_at": "2026-10-03 03:14:53",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    },
+    {
+      "id": "8u0yZeRNxkz5aO0-axl0rA",
+      "created_at": "2026-10-03 03:15:58",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    },
+    {
+      "id": "lEwofPsn9_Ew0fMoBjJ5DQ",
+      "created_at": "2026-10-03 03:20:32",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    },
+    {
+      "id": "OkLY8kBJGwVVsLB9Xu4KQw",
+      "created_at": "2026-10-03 03:20:50",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    },
+    {
+      "id": "YuaL3TmGktW1eiyCnqpVlw",
+      "created_at": "2026-10-03 03:23:41",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    },
+    {
+      "id": "Oj0jCjioHK62BzUQJy74vg",
+      "created_at": "2026-10-03 03:26:13",
+      "operator_id": "tow_i5",
+      "target_type": "class",
+      "target_id": "clsi5"
+    }
+  ],
+  "fifth_week_state": [
+    {
+      "id": "z9PHQKgOZV2uyaQqTaR1AA",
+      "current_draft_version": 6,
+      "current_confirmed_content_version": 3
+    }
+  ],
+  "reviewer": "协调者只读复核，非桌面GUI执行者",
+  "source_commit_at_review": "dc760de",
+  "local_integrity_review": {
+    "docx_cases": 10,
+    "original_and_copy_files": 20,
+    "unique_docx_hashes": 8,
+    "reported_actual_pages": 24,
+    "screenshots": 30,
+    "hash_size_crc_mismatches": 0,
+    "visual_gui_reinspection": false
+  },
+  "audit_limit": "audit rows contain operator/class/time, no export range, pinned versions or file hash; chronological association is supporting evidence, not a database-stored per-file mapping"
+}
