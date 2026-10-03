@@ -1,0 +1,984 @@
+{
+  "executor": "本机桌面 Codex，Windows native，本轮定向补验",
+  "execution_date": "2026-10-03",
+  "generated_at_utc": "2026-10-03T03:34:54.507715+00:00",
+  "service": "https://kg-next-verify.ywyz.tech",
+  "repository_after_pull": "dbb689e3993d99068835523da8137086492de0de",
+  "deployed_release_from_handoff": "i5-grade-20261003-e6c15eaa0350",
+  "deployed_source_identity": "2c44ac2b01af14d02f94c0f2cbcbcc9af49ab089 + three then-uncommitted OpenCode grade fix files",
+  "deployed_source_archive_sha256": "efe5b92aed81f6e9a9bb0ae8a49cf26fdffff67955ef20faaeb1142fb0d83825",
+  "runtime_release_reverified_this_round": false,
+  "environment": {
+    "windows": "Windows11 Pro25H2 build26200.9457 x64 (previous local inventory)",
+    "word_about": "Microsoft Word for Microsoft365 MSO version2609 Build16.0.20430.20032 64bit (actual GUI About this round)",
+    "word_account": "Microsoft365 商业订阅；版本2609内部版本20430.20092即点即用；当前频道（实际GUI）",
+    "word_font_substitution": "unknown; no claim from installed files",
+    "browser": "Edge extension id3; actual UI click/download; exact Edge version not captured this round",
+    "word_view": "100%, dark mode, original color appears white"
+  },
+  "overall_status": "targeted executable cases passed; I5/片4 not accepted due nonempty materials; audit and warning UI evidence limits retained",
+  "new_download_count": 10,
+  "new_actual_page_observations": 24,
+  "new_unique_byte_files": 8,
+  "structured_validation": {
+    "A": {
+      "snapshot_reference_fields_equal": {
+        "collective_1": {
+          "source_kind": true,
+          "daily_plan_id": true,
+          "content_id": true,
+          "content_version": true,
+          "group_id": true,
+          "game_id": true,
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        },
+        "collective_2": {
+          "source_kind": true,
+          "daily_plan_id": true,
+          "content_id": true,
+          "content_version": true,
+          "group_id": true,
+          "game_id": true,
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        },
+        "free_choice_1": {
+          "source_kind": true,
+          "daily_plan_id": true,
+          "content_id": true,
+          "content_version": true,
+          "group_id": true,
+          "game_id": true,
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        }
+      },
+      "all_reference_fields_equal": true,
+      "docx_source_text_present": {
+        "collective_1": {
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        },
+        "collective_2": {
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        },
+        "free_choice_1": {
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        }
+      },
+      "all_source_text_present": true,
+      "other_marker_absent": true,
+      "materials_null": true,
+      "two_collective_one_free": true,
+      "same_name_one_slot": true,
+      "zip_crc": null
+    },
+    "B": {
+      "snapshot_reference_fields_equal": {
+        "collective_1": {
+          "source_kind": true,
+          "daily_plan_id": true,
+          "content_id": true,
+          "content_version": true,
+          "group_id": true,
+          "game_id": true,
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        },
+        "collective_2": {
+          "name": true,
+          "game_id": true,
+          "group_id": true,
+          "content_id": true,
+          "source_kind": true,
+          "daily_plan_id": true,
+          "focus_guidance": true,
+          "manual_item_id": true,
+          "content_version": true,
+          "guidance_points": true,
+          "shared_objectives": true
+        },
+        "free_choice_1": {
+          "name": true,
+          "game_id": true,
+          "group_id": true,
+          "content_id": true,
+          "source_kind": true,
+          "daily_plan_id": true,
+          "focus_guidance": true,
+          "manual_item_id": true,
+          "content_version": true,
+          "guidance_points": true,
+          "shared_objectives": true
+        }
+      },
+      "all_reference_fields_equal": true,
+      "docx_source_text_present": {
+        "collective_1": {
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        },
+        "collective_2": {
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        },
+        "free_choice_1": {
+          "name": true,
+          "shared_objectives": true,
+          "guidance_points": true,
+          "focus_guidance": true
+        }
+      },
+      "all_source_text_present": true,
+      "other_marker_absent": true,
+      "materials_null": true,
+      "two_collective_one_free": true,
+      "same_name_one_slot": true,
+      "zip_crc": null
+    },
+    "move": {
+      "process_paragraphs_exact": true,
+      "red_runs_count": 0,
+      "xml_preserve_spaces": true,
+      "zip_crc": null
+    },
+    "space": {
+      "process_paragraphs_exact": true,
+      "red_runs_count": 0,
+      "xml_preserve_spaces": true,
+      "zip_crc": null
+    }
+  },
+  "W2": {
+    "id": "smveKp-SqCpbhhBq8KwvEQ",
+    "date": "2026-09-03",
+    "versions": {
+      "before": 1,
+      "move": 2,
+      "space": 3,
+      "restored": 4
+    },
+    "baseline_paragraph_indices": [
+      0,
+      1
+    ],
+    "inputs_independently_from_baseline": true,
+    "adopted_before_hash": "ed3d954495b0f9b35af60702e231e49ab222d1ff22aad583e4d1543ba6f48609",
+    "adopted_restored_hash": "ed3d954495b0f9b35af60702e231e49ab222d1ff22aad583e4d1543ba6f48609",
+    "raw_unchanged": true,
+    "baseline_unchanged": true,
+    "full_private_backups_and_inputs": "F-W2-*.private.json",
+    "weekly_sync_state_after_restore": {
+      "status": "pending_projection",
+      "has_pending_projection": true,
+      "saved_dates": [
+        "2026-08-31",
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+        "2026-09-04"
+      ],
+      "missing_dates": []
+    }
+  },
+  "W6": {
+    "week": 5,
+    "id": "z9PHQKgOZV2uyaQqTaR1AA",
+    "week9_candidate_count": 0,
+    "draft_before": 2,
+    "refresh_draft": 3,
+    "CA": {
+      "confirmation_version": 2,
+      "draft_version": 4
+    },
+    "CB": {
+      "confirmation_version": 3,
+      "draft_version": 5
+    },
+    "draft_final": 6,
+    "latest_confirmation_final": 3,
+    "needs_confirm_final": true,
+    "projection_pending_final": false,
+    "stale_sources_final": [],
+    "selection_restored": true,
+    "daily_restoration": {
+      "A": {
+        "id": "tbgUt6Ng87pntqjtm1yPGA",
+        "date": "2026-08-31",
+        "versions": [
+          1,
+          2,
+          3
+        ],
+        "adopted_restored": true
+      },
+      "B": {
+        "id": "MWWF8tKNqgKowF4l_h5j6A",
+        "date": "2026-09-01",
+        "versions": [
+          1,
+          2,
+          3
+        ],
+        "adopted_restored": true
+      }
+    },
+    "confirmation_gate": "each false/false ->409 CONFIRM_ACK_REQUIRED missing4 stale0 ->true/false ->201",
+    "immutable_snapshots_restored_unchanged": true,
+    "materials": "null; nonempty path BLOCKED",
+    "side_effect": "refresh consumed latest deterministic sources; weekly selection only restored, not entire historical projection and not latest confirmation reset"
+  },
+  "audit": {
+    "historical_handoff_baseline": 72,
+    "baseline_reread_this_round": null,
+    "final_export_word_count": null,
+    "new_ui_downloads_observed": 10,
+    "new_http200_export_responses": 9,
+    "daily_appended_content_versions": 7,
+    "weekly_appended_draft_versions": 4,
+    "weekly_appended_confirmations": 2,
+    "ssh_read_failure": "StrictHostKeyChecking=yes: no known ED25519 host key for bwh.ywyz.tech; not bypassed",
+    "warning": "counts from observed version transitions are not database audit totals; no inferred82 claim"
+  },
+  "cleanup": {
+    "browser_logout_http": 204,
+    "browser_login_ui_after_logout": "observed login screen",
+    "test_tab_closed": true,
+    "api_sessions": "each helper finally correct JSON Content-Type/Origin POST logout204; historical422 remains unverified",
+    "word_documents_closed_without_save": true,
+    "server_and_evidence_preserved": true
+  },
+  "gaps": [
+    "W6 nonempty materials no legal I4 input path; no change to required criteria",
+    "F01 HTTP missing due download listener timeout; F10 independently completes ordinary-day chain",
+    "Historical D01/D04 pre-open hash gaps and D05-D07 empty HTTP records preserved",
+    "F07/F09 warning headers captured; short-lived warning toast not captured, browser screenshots only prove version listing/source state",
+    "F10 no_split_baseline header captured, short-lived UI warning/screenshot not captured (capture timeout)",
+    "actual font substitution unknown",
+    "SSH audit/release revalidation unavailable due missing trusted host key",
+    "middle/large no live fixture: refer only upstream OpenCode tests, no live product acceptance",
+    "W2 covers plain-text whitespace, not bold/font rich text"
+  ],
+  "historical_integrity": {
+    "executor_preserved": "本机桌面Codex",
+    "historical_files": 14,
+    "historical_pages": 103,
+    "historical_screenshots": 110,
+    "original_manifest_sha256": "0d99ddc9f165beb7efd7e7041cef955df483cceedb46dede9fb519bf808cda20"
+  },
+  "files": [
+    {
+      "case": "F01",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_日计划_2026-09-01_2026-09-01 (1).docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F01-grade-daily-0901.docx",
+      "bytes": 14489,
+      "download_file_mtime_utc": "2026-10-03T02:56:29.258705+00:00",
+      "sha256_before_open": "a51ba8d2f3971e813559cb0a982e807a272c4db9b5b3ef5e0261a9567ec62974",
+      "sha256_after_close_original": "a51ba8d2f3971e813559cb0a982e807a272c4db9b5b3ef5e0261a9567ec62974",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": null,
+      "http_evidence": "logs/F01-http.json",
+      "http_warnings": null,
+      "actual_word_page_count": 2,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F01-p1-top.jpg",
+        "F01-p1-bottom-p2-top.jpg",
+        "F01-p2.jpg",
+        "F01-p2-bottom.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual_http_gap",
+      "conclusion": "普通日年级；HTTP缺失，完整链由F10独立补验",
+      "pages": [
+        {
+          "page": 1,
+          "source": "普通日年级；HTTP缺失，完整链由F10独立补验",
+          "observed_readable_screenshots": [
+            "F01-p1-top.jpg",
+            "F01-p1-bottom-p2-top.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 2,
+          "source": "普通日年级；HTTP缺失，完整链由F10独立补验",
+          "observed_readable_screenshots": [
+            "F01-p2.jpg",
+            "F01-p2-bottom.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    },
+    {
+      "case": "F02",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_日计划_2026-09-03_2026-09-07 (1).docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F02-grade-daily-range.docx",
+      "bytes": 16728,
+      "download_file_mtime_utc": "2026-10-03T03:01:50.014203+00:00",
+      "sha256_before_open": "e8764075acfa7cb75cda96cb53f17b4e32c6adbc249bfda0d9d7782a5f89b31b",
+      "sha256_after_close_original": "e8764075acfa7cb75cda96cb53f17b4e32c6adbc249bfda0d9d7782a5f89b31b",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": 200,
+      "http_evidence": "logs/F02-http.json",
+      "http_warnings": "[{\"code\":\"no_split_baseline\"}]",
+      "actual_word_page_count": 10,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F02-p1.jpg",
+        "F02-p2.jpg",
+        "F02-p3-page-down.jpg",
+        "F02-p4.jpg",
+        "F02-p5.jpg",
+        "F02-p6.jpg",
+        "F02-p7.jpg",
+        "F02-p8.jpg",
+        "F02-p9.jpg",
+        "F02-p10.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual",
+      "conclusion": "三日升序、各新页；100段长过程连续；原色／红色正确且不跨日继承",
+      "pages": [
+        {
+          "page": 1,
+          "source": "09-03",
+          "observed_readable_screenshots": [
+            "F02-p1.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 2,
+          "source": "09-03",
+          "observed_readable_screenshots": [
+            "F02-p2.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 3,
+          "source": "09-03",
+          "observed_readable_screenshots": [
+            "F02-p3-page-down.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 4,
+          "source": "09-03",
+          "observed_readable_screenshots": [
+            "F02-p4.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 5,
+          "source": "09-03",
+          "observed_readable_screenshots": [
+            "F02-p5.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 6,
+          "source": "09-03",
+          "observed_readable_screenshots": [
+            "F02-p6.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 7,
+          "source": "09-04",
+          "observed_readable_screenshots": [
+            "F02-p7.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 8,
+          "source": "09-04",
+          "observed_readable_screenshots": [
+            "F02-p8.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 9,
+          "source": "09-07",
+          "observed_readable_screenshots": [
+            "F02-p9.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 10,
+          "source": "09-07",
+          "observed_readable_screenshots": [
+            "F02-p10.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    },
+    {
+      "case": "F03",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_周计划_6周_2026-09-07_2026-09-12 (1).docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F03-grade-week6.docx",
+      "bytes": 19108,
+      "download_file_mtime_utc": "2026-10-03T03:06:04.994062+00:00",
+      "sha256_before_open": "131f48975816b40211deac698d3c5c7234bc03ddd54e5914c9f290bce1a838df",
+      "sha256_after_close_original": "131f48975816b40211deac698d3c5c7234bc03ddd54e5914c9f290bce1a838df",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": 200,
+      "http_evidence": "logs/F03-http.json",
+      "http_warnings": null,
+      "actual_word_page_count": 1,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F03-p1.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual",
+      "conclusion": "六列单周，小班、班级／人员／日期完整",
+      "pages": [
+        {
+          "page": 1,
+          "source": "六列单周，小班、班级／人员／日期完整",
+          "observed_readable_screenshots": [
+            "F03-p1.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    },
+    {
+      "case": "F04",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_周计划_2026-09-07_2026-09-20.docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F04-grade-week-range.docx",
+      "bytes": 20444,
+      "download_file_mtime_utc": "2026-10-03T03:06:48.098337+00:00",
+      "sha256_before_open": "c0757ee65f3a9cbe214e4ce9340b82b8aa50e8a0ce9985c9ed8794cec0ae025d",
+      "sha256_after_close_original": "c0757ee65f3a9cbe214e4ce9340b82b8aa50e8a0ce9985c9ed8794cec0ae025d",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": 200,
+      "http_evidence": "logs/F04-http.json",
+      "http_warnings": null,
+      "actual_word_page_count": 2,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F04-p1.jpg",
+        "F04-p2.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual",
+      "conclusion": "六／七列两周升序各新页，无计划日期为空",
+      "pages": [
+        {
+          "page": 1,
+          "source": "第6周",
+          "observed_readable_screenshots": [
+            "F04-p1.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 2,
+          "source": "第7周",
+          "observed_readable_screenshots": [
+            "F04-p2.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    },
+    {
+      "case": "F05",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_日计划_2026-09-03_2026-09-03 (1).docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F05-W2-move.docx",
+      "bytes": 14532,
+      "download_file_mtime_utc": "2026-10-03T03:14:53.543767+00:00",
+      "sha256_before_open": "d44cd4fcf7b97296479e2b4b97e32f4952fbd97a7bb58b55b8c49dceadcc5537",
+      "sha256_after_close_original": "d44cd4fcf7b97296479e2b4b97e32f4952fbd97a7bb58b55b8c49dceadcc5537",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": 200,
+      "http_evidence": "logs/F05-http.json",
+      "http_warnings": null,
+      "actual_word_page_count": 2,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F05-p1.jpg",
+        "F05-p2.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual",
+      "conclusion": "基准完整段0/1互换，顺序正确、全文原色",
+      "pages": [
+        {
+          "page": 1,
+          "source": "基准完整段0/1互换，顺序正确、全文原色",
+          "observed_readable_screenshots": [
+            "F05-p1.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 2,
+          "source": "基准完整段0/1互换，顺序正确、全文原色",
+          "observed_readable_screenshots": [
+            "F05-p2.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    },
+    {
+      "case": "F06",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_日计划_2026-09-03_2026-09-03 (2).docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F06-W2-space.docx",
+      "bytes": 14532,
+      "download_file_mtime_utc": "2026-10-03T03:15:58.048241+00:00",
+      "sha256_before_open": "d569aa48415c34df8397e8e6b27848c30e89f657bf0b01f9e4e116b5e71eb7d6",
+      "sha256_after_close_original": "d569aa48415c34df8397e8e6b27848c30e89f657bf0b01f9e4e116b5e71eb7d6",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": 200,
+      "http_evidence": "logs/F06-http.json",
+      "http_warnings": null,
+      "actual_word_page_count": 2,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F06-p1.jpg",
+        "F06-p2.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual",
+      "conclusion": "独立基准段0首添2空格／尾添1空格，文字原色；不代表富文本格式",
+      "pages": [
+        {
+          "page": 1,
+          "source": "独立基准段0首添2空格／尾添1空格，文字原色；不代表富文本格式",
+          "observed_readable_screenshots": [
+            "F06-p1.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 2,
+          "source": "独立基准段0首添2空格／尾添1空格，文字原色；不代表富文本格式",
+          "observed_readable_screenshots": [
+            "F06-p2.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    },
+    {
+      "case": "F07",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_周计划_5周_2026-08-31_2026-09-04.docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F07-W6-CA.docx",
+      "bytes": 19267,
+      "download_file_mtime_utc": "2026-10-03T03:20:32.047359+00:00",
+      "sha256_before_open": "5393062edee35f21f88c3447df54e2770b0a8bf8f0fd62503aeb4913cae9a9de",
+      "sha256_after_close_original": "5393062edee35f21f88c3447df54e2770b0a8bf8f0fd62503aeb4913cae9a9de",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": 200,
+      "http_evidence": "logs/F07-http.json",
+      "http_warnings": "[{\"code\":\"confirmed_not_latest\",\"reason\":\"draft_ahead\"},{\"code\":\"confirmed_not_latest\",\"reason\":\"superseded\"}]",
+      "actual_word_page_count": 1,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F07-p1.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual",
+      "conclusion": "历史确认V2/草稿v4完整来源A，无B混用",
+      "pages": [
+        {
+          "page": 1,
+          "source": "历史确认V2/草稿v4完整来源A，无B混用",
+          "observed_readable_screenshots": [
+            "F07-p1.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    },
+    {
+      "case": "F08",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_周计划_5周_2026-08-31_2026-09-04 (1).docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F08-W6-CB.docx",
+      "bytes": 19267,
+      "download_file_mtime_utc": "2026-10-03T03:20:50.604109+00:00",
+      "sha256_before_open": "a061e44f4db8fd55959788a86faa9895098d8406ce9648ee7655e4acb5544391",
+      "sha256_after_close_original": "a061e44f4db8fd55959788a86faa9895098d8406ce9648ee7655e4acb5544391",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": 200,
+      "http_evidence": "logs/F08-http.json",
+      "http_warnings": null,
+      "actual_word_page_count": 1,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F08-p1.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual",
+      "conclusion": "当时最新确认V3/草稿v5完整来源B，无A混用",
+      "pages": [
+        {
+          "page": 1,
+          "source": "当时最新确认V3/草稿v5完整来源B，无A混用",
+          "observed_readable_screenshots": [
+            "F08-p1.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    },
+    {
+      "case": "F09",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_周计划_5周_2026-08-31_2026-09-04 (2).docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F09-W6-CA-repeat.docx",
+      "bytes": 19267,
+      "download_file_mtime_utc": "2026-10-03T03:23:41.221272+00:00",
+      "sha256_before_open": "5393062edee35f21f88c3447df54e2770b0a8bf8f0fd62503aeb4913cae9a9de",
+      "sha256_after_close_original": "5393062edee35f21f88c3447df54e2770b0a8bf8f0fd62503aeb4913cae9a9de",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": 200,
+      "http_evidence": "logs/F09-http.json",
+      "http_warnings": "[{\"code\":\"confirmed_not_latest\",\"reason\":\"draft_ahead\"},{\"code\":\"confirmed_not_latest\",\"reason\":\"superseded\"}]",
+      "actual_word_page_count": 1,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F09-p1.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual",
+      "conclusion": "历史确认重复真实下载，字节与F07一致，仍独立打开检查",
+      "pages": [
+        {
+          "page": 1,
+          "source": "历史确认重复真实下载，字节与F07一致，仍独立打开检查",
+          "observed_readable_screenshots": [
+            "F09-p1.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    },
+    {
+      "case": "F10",
+      "browser": "Microsoft Edge/extension (this round; historical Chrome attribution retained)",
+      "downloaded_ui": true,
+      "original_path": "C:\\Users\\yw980\\Downloads\\小班甲_日计划_2026-09-01_2026-09-01 (2).docx",
+      "evidence_copy_path": "C:\\Users\\yw980\\.codex\\tmp\\i5-desktop-acceptance-20261003\\downloads\\F10-grade-daily-chain.docx",
+      "bytes": 14489,
+      "download_file_mtime_utc": "2026-10-03T03:26:13.650457+00:00",
+      "sha256_before_open": "a51ba8d2f3971e813559cb0a982e807a272c4db9b5b3ef5e0261a9567ec62974",
+      "sha256_after_close_original": "a51ba8d2f3971e813559cb0a982e807a272c4db9b5b3ef5e0261a9567ec62974",
+      "original_equals_evidence_copy": true,
+      "zip_crc_ok": true,
+      "http_status": 200,
+      "http_evidence": "logs/F10-http.json",
+      "http_warnings": "[{\"code\":\"no_split_baseline\"}]",
+      "actual_word_page_count": 2,
+      "page_count_source": "Actual desktop Word GUI status, observed at100% and all pages inspected",
+      "screenshots": [
+        "F10-p1.jpg",
+        "F10-p2.jpg"
+      ],
+      "protected_view": true,
+      "enabled_editing": false,
+      "repair_prompt_observed": false,
+      "conversion_prompt_observed": false,
+      "closed_without_save": true,
+      "review_status": "passed_visual",
+      "conclusion": "普通日新下载，独立HTTP／开前后哈希及逐页链；不回填D01/F01",
+      "pages": [
+        {
+          "page": 1,
+          "source": "普通日新下载，独立HTTP／开前后哈希及逐页链；不回填D01/F01",
+          "observed_readable_screenshots": [
+            "F10-p1.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        },
+        {
+          "page": 2,
+          "source": "普通日新下载，独立HTTP／开前后哈希及逐页链；不回填D01/F01",
+          "observed_readable_screenshots": [
+            "F10-p2.jpg"
+          ],
+          "visual_result": "实际Word观察通过；未见裁字、遮挡、越界、缺字或额外空白页"
+        }
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "filename": "F01-p1-bottom-p2-top.jpg",
+      "bytes": 153922,
+      "sha256": "a107aaf877955eacf2855fcdf5ecb04f8c317420523ed05dbe8dc648725bb252",
+      "note": ""
+    },
+    {
+      "filename": "F01-p1-top.jpg",
+      "bytes": 152342,
+      "sha256": "4b438e70694c35633df1dcf0fd3e178fe809d6df7c088f6b5b1bef15154c4c6d",
+      "note": ""
+    },
+    {
+      "filename": "F01-p2-bottom.jpg",
+      "bytes": 89198,
+      "sha256": "d9ee238742bedbd7686be4e4048403bd363fbc8167f745b52ba0d960b2929cfa",
+      "note": ""
+    },
+    {
+      "filename": "F01-p2.jpg",
+      "bytes": 120472,
+      "sha256": "8187289109f492e184207d719333b87d13caf09e7dda967c428e12f7eeea0aa3",
+      "note": ""
+    },
+    {
+      "filename": "F02-p1.jpg",
+      "bytes": 210341,
+      "sha256": "83452d4034661dea1b347b229bbabbf5bf7afdac9e580b03bb02f5507a8fe445",
+      "note": ""
+    },
+    {
+      "filename": "F02-p10.jpg",
+      "bytes": 117956,
+      "sha256": "e53b5f5f0da412823c471b4c0cd44e3759473cc3d37e3782810a4ad3cd278624",
+      "note": ""
+    },
+    {
+      "filename": "F02-p2.jpg",
+      "bytes": 240800,
+      "sha256": "7ba0ed678c014befe24b169ad52981d8984e38ae5da6ff3f1334758cc7a0eb29",
+      "note": ""
+    },
+    {
+      "filename": "F02-p3-page-down.jpg",
+      "bytes": 241241,
+      "sha256": "9a704543d0ceaaf43fd6c091765fa41a010169a38265ab0cf25e54002e44f62d",
+      "note": ""
+    },
+    {
+      "filename": "F02-p3-settled.jpg",
+      "bytes": 239342,
+      "sha256": "695fe8d60cf0518dab74e6c0a58d1f41236a5f7d6e8dbb52d86a600a2fb175d6",
+      "note": "重复第2页，不用作第3页依据"
+    },
+    {
+      "filename": "F02-p3.jpg",
+      "bytes": 239341,
+      "sha256": "d866ceaccf4a2d5de9d074fa09bea9a0be657ea57c9cb44fe29bb8bc241acf2c",
+      "note": "重复第2页，不用作第3页依据"
+    },
+    {
+      "filename": "F02-p4.jpg",
+      "bytes": 241277,
+      "sha256": "7f008424849305298cfabd35ec92c94a8d4dd1330667bf9ed1da3d297c804dd6",
+      "note": ""
+    },
+    {
+      "filename": "F02-p5.jpg",
+      "bytes": 241253,
+      "sha256": "f6752980b2d70669142726df5b3f52329d4831056add5f8bb0d81456260e0873",
+      "note": ""
+    },
+    {
+      "filename": "F02-p6.jpg",
+      "bytes": 175437,
+      "sha256": "a4824969826f9e88f2e7220bdea709b83162dd403aed1b459cdb7ae4aee6d56c",
+      "note": ""
+    },
+    {
+      "filename": "F02-p7.jpg",
+      "bytes": 191465,
+      "sha256": "35702c54d2a93a21433a56db6f934e4cdaa5e04a586ece4c1eaa9cd1d5a97194",
+      "note": ""
+    },
+    {
+      "filename": "F02-p8.jpg",
+      "bytes": 117945,
+      "sha256": "be556084c38732f200a27434a960e2f9709c72f4579c6ba6bad5e63ab32e774c",
+      "note": ""
+    },
+    {
+      "filename": "F02-p9.jpg",
+      "bytes": 191998,
+      "sha256": "a1798753713537425175dadc07afb175b408ea55c86a0572ab00aacb6056b4b2",
+      "note": ""
+    },
+    {
+      "filename": "F03-p1.jpg",
+      "bytes": 187912,
+      "sha256": "9e132cdbad7e2a00bc9b0a69803708715f30aa5549a5284ac0ca74c3e0403a00",
+      "note": ""
+    },
+    {
+      "filename": "F04-p1.jpg",
+      "bytes": 209282,
+      "sha256": "36fe0b01542e43523dc20e4f83c311c8ec9a412c30a37f40eada1e27e23fe9bd",
+      "note": ""
+    },
+    {
+      "filename": "F04-p2.jpg",
+      "bytes": 173543,
+      "sha256": "c1a8c75eb27659a0384330308a60323cdd0d0addd4e11cdc75d86225fb6b61d8",
+      "note": ""
+    },
+    {
+      "filename": "F05-p1.jpg",
+      "bytes": 196378,
+      "sha256": "1af9547f31a3a8448e174951ee7ab4d28405a9abac4d0a3468923ca4b0496f9b",
+      "note": ""
+    },
+    {
+      "filename": "F05-p2.jpg",
+      "bytes": 116388,
+      "sha256": "e8cf24802c351a6aae48bbf20b82da31ff482c69ce31488ae3b145f815ba6856",
+      "note": ""
+    },
+    {
+      "filename": "F06-p1.jpg",
+      "bytes": 199404,
+      "sha256": "6e2af04708b7f1f9555a2832cec7cba7cf3f48e1c35710d5eb0eb35b4e0d6b20",
+      "note": ""
+    },
+    {
+      "filename": "F06-p2.jpg",
+      "bytes": 116338,
+      "sha256": "e08849800fbf00088d2a4bc2bf3005246cb7acf94990358ab836536647c92a6f",
+      "note": ""
+    },
+    {
+      "filename": "F07-p1.jpg",
+      "bytes": 213680,
+      "sha256": "c8e68524cbdf5ae6fe53f56daa8f55f5267f87351f9eb2511035134ab1c4e122",
+      "note": ""
+    },
+    {
+      "filename": "F08-browser-state.png",
+      "bytes": 259710,
+      "sha256": "e0f0903a20959d761ac5e255021e98ee5b95d34d284eedebf08c0ba1d32c97d6",
+      "note": ""
+    },
+    {
+      "filename": "F08-p1.jpg",
+      "bytes": 213821,
+      "sha256": "b2daa1f92205c113a2db7f677802071298137d48205d2f24fb029315d1363849",
+      "note": ""
+    },
+    {
+      "filename": "F09-history-warning.png",
+      "bytes": 261433,
+      "sha256": "3f1062ca2608a2dfb58c1283e80afcd366387fd713008ebaf563eae33b2ed683",
+      "note": "UI状态截图没有成功捕获短暂导出toast；非警示截图"
+    },
+    {
+      "filename": "F09-p1.jpg",
+      "bytes": 213742,
+      "sha256": "f25a002c753ccbbc17e6189e31bdf944759516ecd090456bd0febd20fe202c10",
+      "note": ""
+    },
+    {
+      "filename": "F10-p1.jpg",
+      "bytes": 198246,
+      "sha256": "62fac1cc6f1892a70cfd831778c6c298e099bf571e78aec1951e8b1964b7e281",
+      "note": ""
+    },
+    {
+      "filename": "F10-p2.jpg",
+      "bytes": 116303,
+      "sha256": "6494e15050b10e46ced3a91434151385231dae6420fbfdd31c82a112e94cbf00",
+      "note": ""
+    }
+  ]
+}
