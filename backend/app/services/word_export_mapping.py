@@ -263,6 +263,23 @@ def _map_afternoon_outdoor(value: Any) -> dict | None:
     }
 
 
+# Word display boundary (spec 5.1/5.2): the class grade is persisted as the
+# I2 enum ``small/middle/large`` (``ck_classes_grade``), but the fixed
+# template headers must show the Chinese label. One shared conversion is used
+# by both the daily and the weekly header. Display-only: the creation-time
+# snapshot value, the API field and any already-Chinese fixture value are
+# untouched; an empty header stays empty; an unknown value passes through as
+# stored and is never guessed into a known grade.
+_GRADE_LABELS = {"small": "小班", "middle": "中班", "large": "大班"}
+
+
+def grade_display(value: Any) -> str:
+    """Header label for ``grade``; display-only transform of the snapshot."""
+    if not isinstance(value, str):
+        return ""
+    return _GRADE_LABELS.get(value, value)
+
+
 def map_daily_plan(record) -> dict:
     """Map one pinned daily plan record to the fixed two-column view model."""
     content = _as_dict(record.adopted_content)
@@ -292,7 +309,7 @@ def map_daily_plan(record) -> dict:
         "header": {
             "school_name": record.school_name,
             "class_name": record.class_name,
-            "grade": record.grade,
+            "grade": grade_display(record.grade),
             "creator_display_name": record.creator_display_name,
         },
         "morning_exercise_label": DAILY_MORNING_EXERCISE_LABEL,
@@ -490,7 +507,7 @@ def map_weekly_plan(item) -> dict:
         "header": {
             "school_name": item.school_name,
             "class_name": item.class_name,
-            "grade": item.grade,
+            "grade": grade_display(item.grade),
             "header_teacher_names": list(item.header_teacher_names or []),
             "caregiver_name": item.caregiver_name,
             "theme": _text(content.get("theme")),

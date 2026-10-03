@@ -580,6 +580,109 @@ class DailyDocxTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# grade display at the Word boundary (I2 enum -> Chinese header label)
+# ---------------------------------------------------------------------------
+
+
+class GradeHeaderDocxTests(unittest.TestCase):
+    """The final OOXML subtitle/class line must show 小班/中班/大班 for the
+    real persisted enum values, per plan (merged exports included)."""
+
+    _ENUM = (("small", "小班"), ("middle", "中班"), ("large", "大班"))
+
+    def test_w1_daily_subtitle_shows_chinese_for_each_enum_value(self):
+        for code, label in self._ENUM:
+            data = docx.generate_daily_export_docx(
+                [_daily_view(grade=code, class_name="中一")]
+            )
+            _, root = _open(data)
+            self.assertIn(f"{label} 中一 甲老师", _text(root), code)
+            self.assertNotIn(f"{code} 中一", _text(root), code)
+
+    def test_w6_weekly_class_line_shows_chinese_for_each_enum_value(self):
+        for code, label in self._ENUM:
+            data = docx.generate_weekly_export_docx(
+                [_weekly_view(grade=code, class_name="中一")]
+            )
+            _, root = _open(data)
+            self.assertIn(f"班级：{label} 中一", _text(root), code)
+            self.assertNotIn(f"班级：{code} 中一", _text(root), code)
+
+    def test_w1_chinese_grade_fixture_compatibility(self):
+        # Legacy Chinese fixtures keep the identical output.
+        data = docx.generate_daily_export_docx([_daily_view()])
+        _, root = _open(data)
+        self.assertIn("中班 中一 甲老师", _text(root))
+        weekly = docx.generate_weekly_export_docx(
+            [_weekly_view(grade="大班", class_name="向日葵班")]
+        )
+        _, weekly_root = _open(weekly)
+        self.assertIn("班级：大班 向日葵班", _text(weekly_root))
+
+    def test_w1_empty_grade_keeps_empty_subtitle_part(self):
+        data = docx.generate_daily_export_docx(
+            [_daily_view(grade="", class_name="中一")]
+        )
+        _, root = _open(data)
+        self.assertIn("中一 甲老师", _text(root))
+        self.assertNotIn("  中一", _text(root))
+
+    def test_w3_merged_mixed_grades_each_plan_shows_own_grade(self):
+        first = _daily_view(
+            plan_id="a",
+            plan_date=date(2026, 9, 1),
+            weekday=2,
+            grade="small",
+            class_name="小一",
+            creator_display_name="甲老师",
+        )
+        second = _daily_view(
+            plan_id="b",
+            plan_date=date(2026, 9, 2),
+            weekday=3,
+            grade="large",
+            class_name="大三",
+            creator_display_name="乙老师",
+        )
+        data = docx.generate_daily_export_docx([first, second])
+        _, root = _open(data)
+        blocks = _body_blocks(root)
+        self.assertEqual(len(blocks), 2)
+        self.assertIn("小班 小一 甲老师", blocks[0])
+        self.assertNotIn("小班", blocks[1])
+        self.assertIn("大班 大三 乙老师", blocks[1])
+        self.assertNotIn("大班", blocks[0])
+        for code in ("small", "large"):
+            self.assertNotIn(code, _text(root), code)
+
+    def test_w5_merged_weekly_mixed_grades_each_plan_shows_own_grade(self):
+        first = _weekly_view(plan_id="wa", week_number=1, grade="small")
+        second = _weekly_view(
+            plan_id="wb",
+            week_number=2,
+            grade="middle",
+        )
+        data = docx.generate_weekly_export_docx([first, second])
+        _, root = _open(data)
+        blocks = _body_blocks(root)
+        self.assertEqual(len(blocks), 2)
+        self.assertIn("班级：小班 中一", blocks[0])
+        self.assertNotIn("班级：中班 中一", blocks[0])
+        self.assertIn("班级：中班 中一", blocks[1])
+        self.assertNotIn("班级：小班 中一", blocks[1])
+        self.assertNotIn("small", _text(root))
+        self.assertNotIn("middle", _text(root))
+
+    def test_input_view_grade_not_modified_for_either_kind(self):
+        daily = _daily_view(grade="large")
+        docx.generate_daily_export_docx([daily])
+        self.assertEqual(daily["header"]["grade"], "大班")
+        weekly = _weekly_view(grade="small")
+        docx.generate_weekly_export_docx([weekly])
+        self.assertEqual(weekly["header"]["grade"], "小班")
+
+
+# ---------------------------------------------------------------------------
 # weekly plan
 # ---------------------------------------------------------------------------
 

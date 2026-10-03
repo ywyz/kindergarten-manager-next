@@ -182,6 +182,61 @@ class DiffProcessTests(unittest.TestCase):
         )
 
 
+class GradeDisplayTests(unittest.TestCase):
+    """Word display boundary (spec 5.1/5.2): the I2 stored enum value
+    ``small/middle/large`` (models.py ``ck_classes_grade``) must surface as
+    小班/中班/大班 in the header; Chinese/empty/unknown inputs keep their
+    existing behaviour and the stored value itself is never modified."""
+
+    _ENUM = (("small", "小班"), ("middle", "中班"), ("large", "大班"))
+
+    def test_daily_header_converts_real_enum_values(self):
+        for code, label in self._ENUM:
+            view = mapping.map_daily_plan(_daily_record(grade=code))
+            self.assertEqual(view["header"]["grade"], label, code)
+
+    def test_weekly_header_converts_real_enum_values(self):
+        for code, label in self._ENUM:
+            view = mapping.map_weekly_plan(_weekly_item(grade=code))
+            self.assertEqual(view["header"]["grade"], label, code)
+
+    def test_chinese_value_stays_unchanged(self):
+        for grade in ("小班", "中班", "大班"):
+            self.assertEqual(
+                mapping.map_daily_plan(_daily_record(grade=grade))["header"][
+                    "grade"
+                ],
+                grade,
+            )
+
+    def test_empty_header_stays_empty(self):
+        self.assertEqual(
+            mapping.map_daily_plan(_daily_record(grade=""))["header"]["grade"],
+            "",
+        )
+        self.assertEqual(
+            mapping.map_weekly_plan(_weekly_item(grade=""))["header"]["grade"],
+            "",
+        )
+
+    def test_unknown_value_is_not_guessed_into_a_known_grade(self):
+        # Unknown values pass through as stored; never relabelled.
+        self.assertEqual(
+            mapping.map_daily_plan(_daily_record(grade="未知"))["header"][
+                "grade"
+            ],
+            "未知",
+        )
+
+    def test_input_record_grade_not_modified(self):
+        record = _daily_record(grade="small")
+        mapping.map_daily_plan(record)
+        self.assertEqual(record.grade, "small")
+        item = _weekly_item(grade="middle")
+        mapping.map_weekly_plan(item)
+        self.assertEqual(item.grade, "middle")
+
+
 class DailyMappingTests(unittest.TestCase):
     def test_fixed_label_and_fields(self):
         record = _daily_record(
