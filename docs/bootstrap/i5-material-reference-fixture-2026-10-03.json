@@ -1,0 +1,745 @@
+{
+  "schema_purpose": "documentation_reference_fixture_not_runtime_or_test_contract",
+  "captured_at": "2026-10-03T13:29:40.636874+08:00",
+  "authorization": "用户授权从两份指定Word提取所需材料并固定到仓库；未授权本轮功能实现。",
+  "extraction_method": "只读ZIP CRC及word/document.xml正文表格；表格、行、单元格均从1计数；未核对渲染页码。",
+  "sources": [
+    {
+      "id": "daily",
+      "filename": "中四班 备课.docx",
+      "bytes": 81156,
+      "sha256": "99008f92ae42cc87da7e42e84009ffcd8bbefdf43602f09a59ae4027e5ddc9bd",
+      "zip_crc": "passed",
+      "read_only_hash_unchanged": true
+    },
+    {
+      "id": "weekly",
+      "filename": "周计划.docx",
+      "bytes": 39920,
+      "sha256": "24ccaa9e557522c40a653643381e31f319ea6ae5e9f3e30e9dfa41da21986aed",
+      "zip_crc": "passed",
+      "read_only_hash_unchanged": true
+    }
+  ],
+  "constraints": [
+    "只保存与区域材料相关片段，不复制原件，不收录教师姓名或完整备课正文。",
+    "保留原文周次及日期标签；不将其转换成验收数据库日期或来源版本。",
+    "保留每个日计划的整组目标、指导和支持策略，不将多个区域的共用内容拆成独立游戏事实。",
+    "周计划材料是原文参考，不证明由哪一天提取，也不证明负责人在新版系统确认。",
+    "周计划独有用品的生成方式未知，不自动归为AI补充建议。",
+    "无AI调用、无数据库导入、无计划修改；W6非空材料真实产品链路仍未通过。"
+  ],
+  "daily_region_references": [
+    {
+      "id": "D01",
+      "source_id": "daily",
+      "week_label_verbatim": "第 1 周",
+      "date_label_verbatim": "9 月 1 日  周二",
+      "locator": {
+        "table": 1,
+        "region_row": 13,
+        "context_row": 14,
+        "support_row": 15,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：蜜雪冰城 、 阅读区",
+      "focus_guidance_verbatim": "蜜雪冰城",
+      "shared_objectives_verbatim": "1. 通过角色扮演，体验与人交往的乐趣，学习使用礼貌用语。\n2. 了解基本的买卖流程，发展初步的社会交往能力和数学概念。\n3. 培养在阅读区安静阅读、爱护书籍的良好习惯。",
+      "guidance_points_verbatim": "1. 教师可扮演游戏中的“第一位顾客”，示范点单、礼貌询问和简单对话。\n2. 引导“店员”明确自己的职责，如制作饮品、招呼客人等，体验不同角色的责任。\n3. 观察“顾客”在阅读区的阅读行为，适时引导他们将绘本的内容与同伴或教师进行简单分享。",
+      "support_strategy_verbatim": "支持策略：1. 在蜜雪冰城区域提供自制奶茶、收银机、菜单、店员围裙等逼真的道具，增强游戏的真实感。\n2. 在阅读区投放与“购物”、“食物”或“分享”主题相关的绘本，如《买便当》、《云朵面包》等，延伸游戏经验。\n3. 建立简单的游戏规则，如“每人最多购买两杯”、“安静点单”，并适时引入排队、轮换角色等玩法。",
+      "explicit_material_mentions": [
+        {
+          "term": "自制奶茶",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 1,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 在蜜雪冰城区域提供自制奶茶、收银机、菜单、店员围裙等逼真的道具，增强游戏的真实感。"
+        },
+        {
+          "term": "收银机",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 1,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 在蜜雪冰城区域提供自制奶茶、收银机、菜单、店员围裙等逼真的道具，增强游戏的真实感。"
+        },
+        {
+          "term": "菜单",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 1,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 在蜜雪冰城区域提供自制奶茶、收银机、菜单、店员围裙等逼真的道具，增强游戏的真实感。"
+        },
+        {
+          "term": "店员围裙",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 1,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 在蜜雪冰城区域提供自制奶茶、收银机、菜单、店员围裙等逼真的道具，增强游戏的真实感。"
+        },
+        {
+          "term": "绘本",
+          "source_field": "guidance_points",
+          "locator": {
+            "table": 1,
+            "row": 14,
+            "cell": 2
+          },
+          "verbatim_evidence": "3. 观察“顾客”在阅读区的阅读行为，适时引导他们将绘本的内容与同伴或教师进行简单分享。"
+        },
+        {
+          "term": "绘本",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 1,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "2. 在阅读区投放与“购物”、“食物”或“分享”主题相关的绘本，如《买便当》、《云朵面包》等，延伸游戏经验。"
+        }
+      ]
+    },
+    {
+      "id": "D02",
+      "source_id": "daily",
+      "week_label_verbatim": "第 1 周",
+      "date_label_verbatim": "9 月 3 日  周四",
+      "locator": {
+        "table": 2,
+        "region_row": 13,
+        "context_row": 14,
+        "support_row": 15,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：阅读区 、 美工区",
+      "focus_guidance_verbatim": "美工区",
+      "shared_objectives_verbatim": "1. 培养幼儿的阅读兴趣和观察力。\n2. 发展幼儿的美术创作能力和精细动作。\n3. 促进幼儿在区域游戏中的自主探索与合作。",
+      "guidance_points_verbatim": "1. 在阅读区，引导幼儿翻阅绘本并简单描述内容。\n2. 在美工区，提供颜料、纸张等材料，鼓励幼儿自由绘画或手工。\n3. 教师观察幼儿行为，适时提供语言支持和技能指导。",
+      "support_strategy_verbatim": "支持策略：1. 准备适龄书籍和多样美术工具，满足幼儿不同需求。\n2. 布置温馨、有序的区域环境，减少干扰。\n3. 组织幼儿分享作品，增强互动与表达能力。",
+      "explicit_material_mentions": [
+        {
+          "term": "绘本",
+          "source_field": "guidance_points",
+          "locator": {
+            "table": 2,
+            "row": 14,
+            "cell": 2
+          },
+          "verbatim_evidence": "1. 在阅读区，引导幼儿翻阅绘本并简单描述内容。"
+        },
+        {
+          "term": "颜料",
+          "source_field": "guidance_points",
+          "locator": {
+            "table": 2,
+            "row": 14,
+            "cell": 2
+          },
+          "verbatim_evidence": "2. 在美工区，提供颜料、纸张等材料，鼓励幼儿自由绘画或手工。"
+        },
+        {
+          "term": "纸张",
+          "source_field": "guidance_points",
+          "locator": {
+            "table": 2,
+            "row": 14,
+            "cell": 2
+          },
+          "verbatim_evidence": "2. 在美工区，提供颜料、纸张等材料，鼓励幼儿自由绘画或手工。"
+        },
+        {
+          "term": "适龄书籍",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 准备适龄书籍和多样美术工具，满足幼儿不同需求。"
+        },
+        {
+          "term": "美术工具",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 准备适龄书籍和多样美术工具，满足幼儿不同需求。"
+        }
+      ]
+    },
+    {
+      "id": "D03",
+      "source_id": "daily",
+      "week_label_verbatim": "第 2 周",
+      "date_label_verbatim": "9 月 8 日  周二",
+      "locator": {
+        "table": 2,
+        "region_row": 32,
+        "context_row": 33,
+        "support_row": 34,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：美工区 、 科探馆",
+      "focus_guidance_verbatim": "美工区",
+      "shared_objectives_verbatim": "1. 发展幼儿的精细动作和艺术表达能力\n2. 培养幼儿的科学探究兴趣和观察力\n3. 促进幼儿在游戏中的社会交往和语言表达",
+      "guidance_points_verbatim": "1. 在美工区提供多样化材料鼓励自由创作\n2. 在科探馆设计简单有趣的科学活动引导幼儿主动探索\n3. 教师以观察者和支持者的角色介入避免过度干预",
+      "support_strategy_verbatim": "支持策略：1. 定期更新美工区的材料保持新鲜感\n2. 在科探馆设置易于操作的科学工具和材料\n3. 利用游戏时间组织幼儿分享和讨论他们的作品或发现",
+      "explicit_material_mentions": [
+        {
+          "term": "科学工具和材料",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 34,
+            "cell": 2
+          },
+          "verbatim_evidence": "2. 在科探馆设置易于操作的科学工具和材料"
+        }
+      ]
+    },
+    {
+      "id": "D04",
+      "source_id": "daily",
+      "week_label_verbatim": "第 2 周",
+      "date_label_verbatim": "9 月 10 日  周四",
+      "locator": {
+        "table": 2,
+        "region_row": 51,
+        "context_row": 52,
+        "support_row": 53,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：美工区 、 蜜雪冰城",
+      "focus_guidance_verbatim": "美工区",
+      "shared_objectives_verbatim": "1. 发展艺术创作能力和精细动作技能，培养对美的感知。\n2. 增强社会性互动，通过角色扮演学习合作与分享。\n3. 激发想象力和语言表达能力，促进创造性思维。",
+      "guidance_points_verbatim": "1. 在美工区，提供多样化材料并示范基本技巧，鼓励孩子自由探索和创作。\n2. 在蜜雪冰城，引导孩子分配角色、制定游戏规则，适时介入解决冲突。\n3. 观察孩子的兴趣点，以提问或建议方式支持深度游戏。",
+      "support_strategy_verbatim": "支持策略：1. 定期更新美工区材料，如添加新颜料或工具，保持孩子的新鲜感。\n2. 在蜜雪冰城设置真实感道具（如玩具钱币、菜单），并参与角色互动以增强氛围。\n3. 组织游戏回顾环节，让孩子分享作品和体验，促进反思与交流。",
+      "explicit_material_mentions": [
+        {
+          "term": "颜料",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 53,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 定期更新美工区材料，如添加新颜料或工具，保持孩子的新鲜感。"
+        },
+        {
+          "term": "工具",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 53,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 定期更新美工区材料，如添加新颜料或工具，保持孩子的新鲜感。"
+        },
+        {
+          "term": "玩具钱币",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 53,
+            "cell": 2
+          },
+          "verbatim_evidence": "2. 在蜜雪冰城设置真实感道具（如玩具钱币、菜单），并参与角色互动以增强氛围。"
+        },
+        {
+          "term": "菜单",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 53,
+            "cell": 2
+          },
+          "verbatim_evidence": "2. 在蜜雪冰城设置真实感道具（如玩具钱币、菜单），并参与角色互动以增强氛围。"
+        }
+      ]
+    },
+    {
+      "id": "D05",
+      "source_id": "daily",
+      "week_label_verbatim": "第 2 周",
+      "date_label_verbatim": "9 月 11 日  周五",
+      "locator": {
+        "table": 2,
+        "region_row": 70,
+        "context_row": 71,
+        "support_row": 72,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：美工区 、 蜜雪冰城",
+      "focus_guidance_verbatim": "美工区/蜜雪冰城",
+      "shared_objectives_verbatim": "1.感受不同材料的艺术表现力，尝试制作创意作品。\n2.在角色扮演中体验社会分工与合作。\n3.通过游戏发展语言表达和问题解决能力。",
+      "guidance_points_verbatim": "1.在美工区引导幼儿自主选择材料，尝试不同制作技法。\n2.在蜜雪冰城观察幼儿的角色分配和交往情况，适时提供支持。\n3.关注幼儿在游戏中的创造性表现和情绪体验，及时给予鼓励。",
+      "support_strategy_verbatim": "支持策略：1.在美工区提供丰富的、可操作的艺术材料（如黏土、彩纸、自然物等）。\n2.在蜜雪冰城创设逼真的游戏情境，提供相关道具（如菜单、收银机、仿真食品）。\n3.通过照片、视频等方式记录游戏过程，与家长分享幼儿的成长。",
+      "explicit_material_mentions": [
+        {
+          "term": "黏土",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 72,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1.在美工区提供丰富的、可操作的艺术材料（如黏土、彩纸、自然物等）。"
+        },
+        {
+          "term": "彩纸",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 72,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1.在美工区提供丰富的、可操作的艺术材料（如黏土、彩纸、自然物等）。"
+        },
+        {
+          "term": "自然物",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 72,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1.在美工区提供丰富的、可操作的艺术材料（如黏土、彩纸、自然物等）。"
+        },
+        {
+          "term": "菜单",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 72,
+            "cell": 2
+          },
+          "verbatim_evidence": "2.在蜜雪冰城创设逼真的游戏情境，提供相关道具（如菜单、收银机、仿真食品）。"
+        },
+        {
+          "term": "收银机",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 72,
+            "cell": 2
+          },
+          "verbatim_evidence": "2.在蜜雪冰城创设逼真的游戏情境，提供相关道具（如菜单、收银机、仿真食品）。"
+        },
+        {
+          "term": "仿真食品",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 2,
+            "row": 72,
+            "cell": 2
+          },
+          "verbatim_evidence": "2.在蜜雪冰城创设逼真的游戏情境，提供相关道具（如菜单、收银机、仿真食品）。"
+        }
+      ]
+    },
+    {
+      "id": "D06",
+      "source_id": "daily",
+      "week_label_verbatim": "第 3 周",
+      "date_label_verbatim": "9 月 15 日  周二",
+      "locator": {
+        "table": 3,
+        "region_row": 13,
+        "context_row": 14,
+        "support_row": 15,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：阅读区 、 建构区",
+      "focus_guidance_verbatim": "阅读区/建构区",
+      "shared_objectives_verbatim": "1. 促进幼儿的语言表达和阅读兴趣，通过阅读区活动提升词汇理解能力。\n2. 发展幼儿的建构技能和空间想象力，在建构区中锻炼手眼协调和问题解决能力。\n3. 培养幼儿的合作与社交能力，鼓励在两个区域中与同伴互动和分享创意。",
+      "guidance_points_verbatim": "1. 在阅读区，教师引导幼儿观察图书画面，鼓励他们用简单句子描述故事内容。\n2. 在建构区，教师提供搭建挑战，如“搭建一座桥”，指导幼儿尝试不同积木组合。\n3. 链接两个区域，例如引导幼儿根据阅读故事搭建相关场景，促进跨区域游戏融合。",
+      "support_strategy_verbatim": "支持策略：1. 提供丰富的阅读材料和建构玩具，如故事书和各种形状积木，以激发幼儿兴趣。\n2. 教师通过开放式提问和示范，如“这个故事里有什么建筑？你能搭出来吗？”来促进幼儿思考。\n3. 创设游戏情境，例如设立“故事建筑工作坊”，让幼儿在阅读后动手搭建，增强活动连贯性。",
+      "explicit_material_mentions": [
+        {
+          "term": "故事书",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 3,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 提供丰富的阅读材料和建构玩具，如故事书和各种形状积木，以激发幼儿兴趣。"
+        },
+        {
+          "term": "各种形状积木",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 3,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 提供丰富的阅读材料和建构玩具，如故事书和各种形状积木，以激发幼儿兴趣。"
+        }
+      ]
+    },
+    {
+      "id": "D07",
+      "source_id": "daily",
+      "week_label_verbatim": "第 3 周",
+      "date_label_verbatim": "9 月 17 日  周四",
+      "locator": {
+        "table": 3,
+        "region_row": 32,
+        "context_row": 33,
+        "support_row": 34,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：美工区 、 科探馆",
+      "focus_guidance_verbatim": "美工区/科探馆",
+      "shared_objectives_verbatim": "1. 幼儿能通过美工区活动自由使用材料进行创意表达，发展想象力和艺术感。\n2. 幼儿能在美工操作中练习剪切、粘贴等技能，提升手部精细动作和手眼协调能力。\n3. 幼儿能在区域游戏中与同伴互动，分享作品和想法，促进语言发展和社交技能。",
+      "guidance_points_verbatim": "1. 观察幼儿选择材料和工具的过程，提供适度示范，鼓励自主探索，避免过度干预。\n2. 引导幼儿描述自己的作品，例如询问“你做了什么？用了哪些颜色？”，以增强语言表达。\n3. 营造支持性氛围，及时表扬幼儿的努力和创意，帮助建立自信心。",
+      "support_strategy_verbatim": "支持策略：1. 定期更新美工区材料，如提供彩纸、颜料、自然物品等，以保持活动新鲜感和挑战性。\n2. 创设主题性美工任务，如“节日装饰”，引导幼儿有目的地创作，并与生活经验联系。\n3. 组织小组合作活动，鼓励幼儿共同完成一件大型作品，培养团队协作和沟通能力。",
+      "explicit_material_mentions": [
+        {
+          "term": "彩纸",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 3,
+            "row": 34,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 定期更新美工区材料，如提供彩纸、颜料、自然物品等，以保持活动新鲜感和挑战性。"
+        },
+        {
+          "term": "颜料",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 3,
+            "row": 34,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 定期更新美工区材料，如提供彩纸、颜料、自然物品等，以保持活动新鲜感和挑战性。"
+        },
+        {
+          "term": "自然物品",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 3,
+            "row": 34,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 定期更新美工区材料，如提供彩纸、颜料、自然物品等，以保持活动新鲜感和挑战性。"
+        }
+      ]
+    },
+    {
+      "id": "D08",
+      "source_id": "daily",
+      "week_label_verbatim": "第 4 周",
+      "date_label_verbatim": "9 月 20 日  周日",
+      "locator": {
+        "table": 4,
+        "region_row": 13,
+        "context_row": 14,
+        "support_row": 15,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：蜜雪冰城 、 建构区",
+      "focus_guidance_verbatim": "蜜雪冰城",
+      "shared_objectives_verbatim": "1. 培养幼儿在角色扮演中的社交互动和语言表达能力。\n2. 发展幼儿在建构活动中的空间认知和动手操作能力。\n3. 促进幼儿的合作精神和问题解决技能。",
+      "guidance_points_verbatim": "1. 观察幼儿在蜜雪冰城游戏中的角色分配和互动情况，及时给予鼓励和引导。\n2. 在建构区鼓励幼儿尝试不同的建构方法，支持他们克服困难。\n3. 确保游戏环境安全，并引导幼儿遵守游戏规则。",
+      "support_strategy_verbatim": "支持策略：1. 为蜜雪冰城提供丰富的道具，如玩具货币、菜单、餐具等，激发角色扮演兴趣。\n2. 在建构区展示简单的建构示例，提供多种建构材料，如积木、纸盒等。\n3. 通过开放式提问，引导幼儿反思游戏体验，促进深度学习。",
+      "explicit_material_mentions": [
+        {
+          "term": "玩具货币",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 4,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 为蜜雪冰城提供丰富的道具，如玩具货币、菜单、餐具等，激发角色扮演兴趣。"
+        },
+        {
+          "term": "菜单",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 4,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 为蜜雪冰城提供丰富的道具，如玩具货币、菜单、餐具等，激发角色扮演兴趣。"
+        },
+        {
+          "term": "餐具",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 4,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 为蜜雪冰城提供丰富的道具，如玩具货币、菜单、餐具等，激发角色扮演兴趣。"
+        },
+        {
+          "term": "积木",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 4,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "2. 在建构区展示简单的建构示例，提供多种建构材料，如积木、纸盒等。"
+        },
+        {
+          "term": "纸盒",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 4,
+            "row": 15,
+            "cell": 2
+          },
+          "verbatim_evidence": "2. 在建构区展示简单的建构示例，提供多种建构材料，如积木、纸盒等。"
+        }
+      ]
+    },
+    {
+      "id": "D09",
+      "source_id": "daily",
+      "week_label_verbatim": "第 4 周",
+      "date_label_verbatim": "9 月 22 日  周二",
+      "locator": {
+        "table": 5,
+        "region_row": 13,
+        "context_row": 14,
+        "support_row": 15,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：美工区 、 科探馆",
+      "focus_guidance_verbatim": "科探馆",
+      "shared_objectives_verbatim": "1. 通过科探馆活动，激发幼儿对科学现象的好奇心和探索欲望。\n2. 在美工区活动中，培养幼儿的创造力和动手能力。\n3. 促进幼儿在区域游戏中的社交互动和合作精神。",
+      "guidance_points_verbatim": "1. 在科探馆中，引导幼儿观察实验现象，鼓励他们提问和尝试。\n2. 在美工区，提供多样化的材料，支持幼儿自由创作。\n3. 在游戏过程中，关注幼儿的个体差异，给予适当引导和支持。",
+      "support_strategy_verbatim": "支持策略：1. 创设安全、开放的探索环境，让幼儿放心操作。\n2. 使用提问和对话策略，激发幼儿思考。\n3. 提供示范和步骤指导，帮助幼儿掌握基本技能。",
+      "explicit_material_mentions": []
+    },
+    {
+      "id": "D10",
+      "source_id": "daily",
+      "week_label_verbatim": "第 4 周",
+      "date_label_verbatim": "9 月 24 日  周四",
+      "locator": {
+        "table": 5,
+        "region_row": 32,
+        "context_row": 33,
+        "support_row": 34,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：非遗手工作坊 、 美工区",
+      "focus_guidance_verbatim": "非遗手工作坊/美工区",
+      "shared_objectives_verbatim": "1.通过手工制作体验传统节日习俗，培养对民族文化的兴趣和认同感。\n2.锻炼手部精细动作和创造力，提升艺术表达能力。\n3.增强合作意识和分享精神，在互动中学习互助与交流。",
+      "guidance_points_verbatim": "1.引导幼儿观察节日主题手工艺品的样例，激发探索和制作欲望。\n2.提供安全易用的材料和工具，如彩纸、剪刀、胶水，并示范正确使用方法。\n3.关注每位幼儿的制作进度，适时给予鼓励和个别指导，避免过度干预。",
+      "support_strategy_verbatim": "支持策略：1.提前布置节日氛围的环境，如张贴相关图片或播放轻柔音乐，增强活动情境感。\n2.准备多样化的手工材料和工具，满足不同幼儿的创作需求和兴趣差异。\n3.组织作品展示和分享时间，让幼儿讲述制作体验，促进语言表达和集体认同。",
+      "explicit_material_mentions": [
+        {
+          "term": "彩纸",
+          "source_field": "guidance_points",
+          "locator": {
+            "table": 5,
+            "row": 33,
+            "cell": 2
+          },
+          "verbatim_evidence": "2.提供安全易用的材料和工具，如彩纸、剪刀、胶水，并示范正确使用方法。"
+        },
+        {
+          "term": "剪刀",
+          "source_field": "guidance_points",
+          "locator": {
+            "table": 5,
+            "row": 33,
+            "cell": 2
+          },
+          "verbatim_evidence": "2.提供安全易用的材料和工具，如彩纸、剪刀、胶水，并示范正确使用方法。"
+        },
+        {
+          "term": "胶水",
+          "source_field": "guidance_points",
+          "locator": {
+            "table": 5,
+            "row": 33,
+            "cell": 2
+          },
+          "verbatim_evidence": "2.提供安全易用的材料和工具，如彩纸、剪刀、胶水，并示范正确使用方法。"
+        },
+        {
+          "term": "手工材料和工具",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 5,
+            "row": 34,
+            "cell": 2
+          },
+          "verbatim_evidence": "2.准备多样化的手工材料和工具，满足不同幼儿的创作需求和兴趣差异。"
+        }
+      ]
+    },
+    {
+      "id": "D11",
+      "source_id": "daily",
+      "week_label_verbatim": "第 5 周",
+      "date_label_verbatim": "9 月 29 日  周二",
+      "locator": {
+        "table": 5,
+        "region_row": 51,
+        "context_row": 52,
+        "support_row": 53,
+        "cell": 2
+      },
+      "region_names_verbatim": "游戏区域：美工区 、 建构区",
+      "focus_guidance_verbatim": "美工区",
+      "shared_objectives_verbatim": "1. 通过美工活动，激发幼儿的色彩感知和创意表达。\n2. 在建构游戏中，提升幼儿的空间思维和问题解决能力。\n3. 培养幼儿在区域活动中的自主性和社交技能。",
+      "guidance_points_verbatim": "1. 观察幼儿使用材料的熟练程度，适时提供示范。\n2. 鼓励幼儿尝试不同的创作方法，不局限于固定模式。\n3. 引导幼儿分享作品，促进语言表达和自信心。",
+      "support_strategy_verbatim": "支持策略：1. 提供丰富多样的美工材料，如彩纸、颜料、粘土等。\n2. 设置建构区的安全规则，确保材料使用得当。\n3. 定期组织区域分享会，让幼儿展示和讨论自己的作品。",
+      "explicit_material_mentions": [
+        {
+          "term": "彩纸",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 5,
+            "row": 53,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 提供丰富多样的美工材料，如彩纸、颜料、粘土等。"
+        },
+        {
+          "term": "颜料",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 5,
+            "row": 53,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 提供丰富多样的美工材料，如彩纸、颜料、粘土等。"
+        },
+        {
+          "term": "粘土",
+          "source_field": "support_strategy",
+          "locator": {
+            "table": 5,
+            "row": 53,
+            "cell": 2
+          },
+          "verbatim_evidence": "支持策略：1. 提供丰富多样的美工材料，如彩纸、颜料、粘土等。"
+        }
+      ]
+    }
+  ],
+  "weekly_material_references": [
+    {
+      "id": "W01",
+      "source_id": "weekly",
+      "locator": {
+        "table": 1,
+        "row": 5,
+        "cell": 3
+      },
+      "focus_guidance_verbatim": "攀爬区",
+      "objectives_verbatim": "1.能手脚协调地攀爬不同难度的攀爬架和攀爬网，发展上肢力量、手脚协调性和身体控制能力。\n2.知道攀爬的基本安全规则：排队等候、手抓牢脚踩实、前面的小朋友爬到位置再跟上，不推挤不催促。\n3.勇敢尝试有挑战性的攀爬路线，克服害怕心理，在完成挑战中获得自信心。",
+      "materials_verbatim": "大型攀爬架、攀爬网、软梯、绳梯、轮胎攀爬墙、木桩、安全地垫、安全规则图卡、闯关小贴纸等",
+      "guidance_verbatim": "1．游戏前带领幼儿认识攀爬区的材料和路线，示范讲解“手抓牢、脚踩实”的攀爬要领，师幼共同讨论攀爬安全规则，并用图示呈现在区域墙面上。\n2.游戏中重点观察幼儿攀爬情况，对能力较弱的幼儿给予鼓励和保护性帮助，引导能力强的幼儿挑战新路线，及时肯定幼儿的勇敢行为。\n3．游戏后组织幼儿分享攀爬经验和感受，讨论“遇到困难怎么办”，并将幼儿的攀爬照片布置在区域环境中，增强幼儿的自信心和成就感。",
+      "origin_classification": "existing_weekly_document_materials_not_ai_output"
+    },
+    {
+      "id": "W02",
+      "source_id": "weekly",
+      "locator": {
+        "table": 2,
+        "row": 5,
+        "cell": 3
+      },
+      "focus_guidance_verbatim": "蜜雪冰城",
+      "objectives_verbatim": "1.了解蜜雪冰城中收银员、服务员、顾客等角色的职责，能使用“欢迎光临”“请问需要什么”“谢谢”等礼貌用语进行交往。\n2.能围绕“点单—制作—购买”的情节展开角色对话，发展语言表达能力和同伴交往能力。\n3.学会正确使用游戏材料，游戏结束后能按标记分类整理归位。",
+      "materials_verbatim": "收银台、玩具收银机、菜单价目表、自制冰淇淋和奶茶杯、吸管、纸杯等",
+      "guidance_verbatim": "1.游戏前通过谈话和门店照片唤醒已有经验，帮助幼儿明确角色分工与游戏情节。\n2.游戏中以“顾客”身份自然介入指导，示范点单、付钱、道谢等交往语言。\n3.游戏结束组织分享交流，针对材料乱放的问题引导幼儿建立按标记分类整理规则。",
+      "origin_classification": "existing_weekly_document_materials_not_ai_output"
+    },
+    {
+      "id": "W03",
+      "source_id": "weekly",
+      "locator": {
+        "table": 3,
+        "row": 5,
+        "cell": 3
+      },
+      "focus_guidance_verbatim": "美工区",
+      "objectives_verbatim": "1.学习用画、剪、贴、捏等方式表现“我会做的事”和秋天的发现，发展手部精细动作和手眼协调能力。\n2.能自主选择彩纸、黏土、自然物等材料，有目的地完成作品，并大胆向同伴介绍自己的作品。\n3.学习与同伴协商共用材料，工具用后放回原处，保持桌面和地面整洁。",
+      "materials_verbatim": "画纸、水彩笔、油画棒、彩纸、安全剪刀、胶棒、超轻黏土、秋天的树叶、树枝、松果、值日生袖章、“小巧手”作品展示板等。",
+      "guidance_verbatim": "1．游戏前结合“老师的手真巧”和值日生话题，和幼儿讨论“我们的小巧手能为班级做什么”，支持幼儿把想做的事画下来、做出来。\n2.游戏中观察幼儿使用剪刀、胶棒和自然材料的情况，对动手能力较弱的幼儿示范基本的剪、贴、捏动作，鼓励能力强的幼儿为作品添画细节、合作完成大件作品。\n3．游戏后布置“小巧手作品展”，引导幼儿介绍自己的作品，并按标记把工具和材料分类收拾归位。",
+      "origin_classification": "existing_weekly_document_materials_not_ai_output"
+    },
+    {
+      "id": "W04",
+      "source_id": "weekly",
+      "locator": {
+        "table": 4,
+        "row": 5,
+        "cell": 3
+      },
+      "focus_guidance_verbatim": "蜜雪冰城（手打柠檬饮品店）",
+      "objectives_verbatim": "1.了解饮品店收银员、服务员、顾客等角色的职责，能使用“欢迎光临”“请问需要什么”“谢谢光临”等礼貌用语进行角色交往。\n2.能围绕“点单——制作——购买——收拾”的情节展开游戏，发展语言表达、同伴交往能力和简单的数概念运用能力。\n3.学习正确使用雪克杯、夹子、纸杯等游戏材料，游戏结束后能按分类整理归位。",
+      "materials_verbatim": "菜单价目表、仿真柠檬和水果、手打棒、雪克杯、纸杯、吸管、号码牌。",
+      "guidance_verbatim": "1.游戏前结合逛菜场、买饮品的生活经验谈话，借助门店照片、视频帮助幼儿明确角色分工与游戏流程。\n2.游戏中教师以顾客身份自然介入，示范礼貌交往语言和手打柠檬茶的制作步骤，鼓励幼儿拓展外卖、团购等新情节。\n3.游戏后组织分享交流，针对材料乱放的问题引导幼儿完善按标记分类整理的规则。",
+      "origin_classification": "existing_weekly_document_materials_not_ai_output"
+    },
+    {
+      "id": "W05",
+      "source_id": "weekly",
+      "locator": {
+        "table": 5,
+        "row": 5,
+        "cell": 3
+      },
+      "focus_guidance_verbatim": "美工区（蔬菜与自然物创意制作）",
+      "objectives_verbatim": "1.尝试用蔬菜切面印画、自然物拼贴和超轻黏土捏塑等方式表现自己喜欢的蔬菜，发展手部精细动作和审美表现力。\n2.能根据蔬菜和自然材料的外形特征大胆想象、自主创作作品，并愿意向同伴介绍自己的作品。\n3.学习安全使用小剪刀、模具等工具，与同伴协商共用材料，活动后能归类整理。",
+      "materials_verbatim": "藕、青椒、胡萝卜等蔬菜切面，水粉颜料、画纸、彩纸、安全剪刀、胶棒、超轻黏土，树叶、树枝、松果等自然物，“蔬菜乐园”作品展示板等。",
+      "guidance_verbatim": "1.游戏前结合“蔬菜里面的秘密”活动，引导幼儿欣赏蔬菜切面的图案，讨论它们像什么，支持幼儿大胆构想创作内容。\n2.游戏中观察幼儿印画、拼贴、捏塑的情况，对动手能力较弱的幼儿示范蘸色轻压、擦手换色等技能，鼓励能力强的幼儿合作完成“菜地里的歌”组画。\n3.游戏后举办“蔬菜乐园”作品展，引导幼儿介绍自己的作品，并按标记清洗、归位工具和材料。",
+      "origin_classification": "existing_weekly_document_materials_not_ai_output"
+    }
+  ],
+  "future_fixture_uses": [
+    {
+      "purpose": "nonempty_material_column_reference",
+      "weekly_reference_ids": [
+        "W02",
+        "W03"
+      ],
+      "status": "原文非空栏目参考；不是当前产品下载结果"
+    },
+    {
+      "purpose": "same_focus_different_daily_source",
+      "daily_reference_ids": [
+        "D01",
+        "D08"
+      ],
+      "status": "重点指导同为蜜雪冰城，支持策略用品不同；整个区域组分别保留，不混用"
+    },
+    {
+      "purpose": "supplement_origin_distinction",
+      "status": "两文件未提供AI补充标记；后续模拟或真实候选必须另标生成依据与建议身份，当前不填造"
+    }
+  ],
+  "validation": {
+    "daily_region_count": 11,
+    "weekly_nonempty_material_count": 5,
+    "all_material_terms_have_verbatim_evidence": true,
+    "source_versions_in_acceptance_database": "unknown_not_imported",
+    "ai_supplement_provenance": "unknown_not_generated",
+    "product_w6_nonempty_materials_passed": false
+  }
+}
