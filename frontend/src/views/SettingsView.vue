@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
-import { ElButton, ElForm, ElFormItem, ElInput, ElMessage } from 'element-plus'
+import { ElAlert, ElButton, ElForm, ElFormItem, ElInput, ElMessage } from 'element-plus'
 import { auth, doLogout, expectedVersion, handleApiError, reset, restoreSession } from '../auth'
 import * as api from '../api'
+import AiConfigCard from '../components/ai/AiConfigCard.vue'
+import PromptGuidanceCard from '../components/ai/PromptGuidanceCard.vue'
+import AdminPromptDefaultsCard from '../components/ai/AdminPromptDefaultsCard.vue'
 
 const emit = defineEmits<{
   (e: 'profile-updated'): void
@@ -72,13 +75,12 @@ async function changePassword() {
     handleApiError(err, '修改密码失败')
   } finally {
     savingPassword.value = false
-    if (savingPassword.value === false) {
-      // intentionally left: passwords are cleared only on success or version conflict above
-    }
   }
 }
 
 async function logout() {
+  // Exit clears the in-memory key immediately, before the components go.
+  aiConfigCard.value?.teardownSecretInput?.()
   loggingOut.value = true
   try {
     await doLogout()
@@ -90,14 +92,66 @@ async function logout() {
   }
 }
 
-function goBack() {
-  emit('go-back')
+/**
+ * 401 within any AI card: the global handler dispatches the login flow, so
+ * page state simply goes down with it. The config secret input is wiped
+ * immediately; nothing is persisted anywhere.
+ */
+function onAccountInvalid() {
+  aiConfigCard.value?.teardownSecretInput()
+}
+
+const aiConfigCard = ref<{
+  teardownSecretInput: () => void
+  hasUnsavedChanges?: () => boolean
+} | null>(null)
+const promptCard = ref<{ hasUnsavedChanges?: () => boolean } | null>(null)
+const adminCard = ref<{ hasUnsavedChanges?: () => boolean } | null>(null)
+
+// --- Leaving with unsaved AI drafts (R6) -----------------------------------
+// Each card reports unsaved input/drafts; leaving via 返回 or 退出登录 with
+// any unsaved draft demands an explicit confirmation. Drafts stay in-page
+// memory only — no browser storage of any kind. 401/logout still wipes the
+// secret input immediately and unconditionally.
+const leaveConfirm = ref<'back' | 'logout' | null>(null)
+
+function cardUnsaved(): boolean {
+  return (
+    !!aiConfigCard.value?.hasUnsavedChanges?.() ||
+    !!promptCard.value?.hasUnsavedChanges?.() ||
+    !!adminCard.value?.hasUnsavedChanges?.()
+  )
+}
+
+function requestLeave(kind: 'back' | 'logout') {
+  if (kind === 'logout') {
+    // The key is wiped immediately even when a draft confirmation appears.
+    aiConfigCard.value?.teardownSecretInput()
+  }
+  if (cardUnsaved()) {
+    leaveConfirm.value = kind
+    return
+  }
+  if (kind === 'back') emit('go-back')
+  else void logout()
+}
+
+function confirmLeave() {
+  const kind = leaveConfirm.value
+  leaveConfirm.value = null
+  if (kind === 'back') emit('go-back')
+  else void logout()
+}
+
+function cancelLeave() {
+  leaveConfirm.value = null
 }
 
 onBeforeUnmount(() => {
   currentPassword.value = ''
   newPassword.value = ''
   newPasswordConfirm.value = ''
+  leaveConfirm.value = null
 })
 </script>
 
@@ -106,10 +160,23 @@ onBeforeUnmount(() => {
     <div class="toolbar">
       <h2>系统设置</h2>
       <div class="actions">
-        <el-button @click="goBack">返回</el-button>
-        <el-button :loading="loggingOut" @click="logout">退出登录</el-button>
+        <el-button @click="requestLeave('back')">返回</el-button>
+        <el-button :loading="loggingOut" @click="requestLeave('logout')">退出登录</el-button>
       </div>
     </div>
+
+    <el-alert
+      v-if="leaveConfirm"
+      type="warning"
+      :closable="false"
+      title="存在未保存的修改（AI 配置或指导文字）。离开后这些本页内存草稿将被丢弃，是否确认离开？"
+      class="section"
+    >
+      <div class="confirm-actions">
+        <el-button type="warning" @click="confirmLeave">确认离开（不保存）</el-button>
+        <el-button @click="cancelLeave">留在此页继续编辑</el-button>
+      </div>
+    </el-alert>
 
     <el-card class="section">
       <template #header>修改姓名</template>
@@ -142,13 +209,33 @@ onBeforeUnmount(() => {
         </el-form-item>
       </el-form>
     </el-card>
+
+    <AiConfigCard
+      ref="aiConfigCard"
+      class="section"
+      @account-invalid="onAccountInvalid"
+    />
+
+    <PromptGuidanceCard
+      ref="promptCard"
+      class="section"
+      @account-invalid="onAccountInvalid"
+    />
+
+    <AdminPromptDefaultsCard
+      v-if="auth.account?.role === 'admin'"
+      ref="adminCard"
+      class="section"
+    />
   </div>
 </template>
 
 <style scoped>
-.settings { max-width: 600px; margin: 0 auto; }
+.settings { max-width: 860px; margin: 0 auto; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; }
 .actions { display: flex; gap: 12px; }
 .section { margin-bottom: 24px; }
+.confirm-actions { display: flex; gap: 12px; margin-top: 8px; }
 .rule { color: #606266; font-size: 0.85rem; margin-top: 4px; line-height: 1.4; }
+.hint { color: #606266; font-size: 0.85rem; margin-top: 4px; line-height: 1.4; }
 </style>

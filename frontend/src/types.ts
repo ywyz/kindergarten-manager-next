@@ -579,3 +579,155 @@ export interface ExportDownloadResult {
   filename: string
   warnings: ExportWarning[]
 }
+
+// --- AI settings slice 1B/1C -----------------------------------------------
+// Strict fields mirror the 1B schemas (AiConfigOut / TaskStatus* /
+// PromptDetailOut / Personal*Out / PromptDefaultOut and every write DTO in
+// backend/app/schemas.py). Versions are per-resource values returned by these
+// APIs only; the account version is never reused as a settings version.
+
+export type AiReadyReason =
+  | 'NOT_CONFIGURED'
+  | 'MISSING_URL'
+  | 'MISSING_MODEL'
+  | 'MISSING_SECRET'
+  | 'DECRYPT_UNAVAILABLE'
+
+export type AiProtocolId = 'chat_completions_v1'
+
+/** GET /settings/ai-config response (desensitized; mask is always ********). */
+export interface AiConfigOut {
+  version: number
+  protocol_id: AiProtocolId | null
+  base_url: string | null
+  model: string | null
+  has_secret: boolean
+  secret_mask: string | null
+  ready: boolean
+  ready_reason: AiReadyReason | null
+}
+
+/**
+ * PATCH /settings/ai-config. Full metadata is mandatory; `secret` is omitted
+ * entirely to keep the stored key, and a non-empty string is sent raw
+ * (no trim). Explicit null / empty string are 422 (never sent by this
+ * frontend: empty input means "keep", not "clear").
+ */
+export interface AiConfigPatchIn {
+  expected_version: number
+  protocol_id: string
+  base_url: string
+  model: string
+  secret?: string
+}
+
+/** DELETE /settings/ai-config: clear the stored secret only. */
+export interface AiConfigDeleteIn {
+  expected_version: number
+}
+
+export interface TaskStatusOut {
+  task_type: string
+  initialized: boolean
+  adaptation_state: 'current' | 'adaptation_required'
+  required_contract_version: number | null
+  pending_default_update: boolean
+  latest_default_revision: number
+  latest_contract_version: number
+}
+
+export interface TaskStatusListOut {
+  items: TaskStatusOut[]
+}
+
+export interface AiLatestDefaultOut {
+  default_revision: number
+  contract_version: number
+  guidance_map: Record<string, string>
+}
+
+export interface AiPromptDetailOut {
+  task_type: string
+  state: 'not_initialized' | 'initialized'
+  latest_contract_version: number
+  latest_default_revision: number
+  guidance_fields: string[]
+  latest_default: AiLatestDefaultOut
+  personal_revision: number | null
+  guidance_map: Record<string, string> | null
+  based_contract_version: number | null
+  accepted_default_revision: number | null
+  based_guidance_fields: string[]
+  adaptation_state: 'current' | 'adaptation_required'
+  required_contract_version: number | null
+  pending_default_update: boolean
+  last_rejected_default_revision: number | null
+}
+
+/** POST /settings/prompts/{task_type}/initialize body is exactly {}. */
+export interface AiPromptInitializeIn {
+  // Intentionally empty: extra=forbid on the server, so never add fields.
+}
+
+export interface AiPromptEditIn {
+  expected_personal_revision: number
+  guidance_map: Record<string, string>
+}
+
+export interface AiPromptAcceptDefaultIn {
+  expected_personal_revision: number
+  target_default_revision: number
+  accepted_fields: string[]
+}
+
+export interface AiPromptRejectDefaultIn {
+  expected_personal_revision: number
+  target_default_revision: number
+}
+
+export interface AiPromptAdaptIn {
+  expected_personal_revision: number
+  target_contract_version: number
+  guidance_map: Record<string, string>
+}
+
+export interface AiPersonalInitOut {
+  state: 'initialized'
+  idempotent: boolean
+  task_type: string
+  personal_revision: number
+  guidance_map: Record<string, string>
+  based_contract_version: number
+  accepted_default_revision: number
+}
+
+export interface AiPersonalWriteOut {
+  state: 'initialized'
+  task_type: string
+  personal_revision: number
+  guidance_map: Record<string, string>
+  based_contract_version: number
+  accepted_default_revision: number
+  adaptation_state: 'current' | 'adaptation_required'
+}
+
+export interface AiPersonalRejectOut {
+  state: 'unchanged'
+  idempotent: boolean
+  task_type: string
+  personal_revision: number
+  last_rejected_default_revision: number | null
+}
+
+export interface AiAdminDefaultPatchIn {
+  expected_default_revision: number
+  guidance_map: Record<string, string>
+}
+
+export interface AiPromptDefaultOut {
+  task_type: string
+  default_revision: number
+  contract_version: number
+  guidance_fields: string[]
+  guidance_map: Record<string, string>
+}

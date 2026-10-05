@@ -803,3 +803,371 @@ class WeeklyPlanConfirmedContent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=_utc_now, nullable=False
     )
+
+
+AI_TASK_TYPES_SQL = (
+    "'daily_lesson_split','daily_process_adapt','daily_other_activities',"
+    "'weekly_games','weekly_columns','weekly_theme_suggestion','weekly_materials'"
+)
+
+
+class AiConfigVersion(Base):
+    """Append-only per-account AI provider config version (never rewritten)."""
+
+    __tablename__ = "ai_config_versions"
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_ai_config_versions_version"),
+        CheckConstraint(
+            "protocol_id IN ('chat_completions_v1')",
+            name="ck_ai_config_versions_protocol",
+        ),
+        CheckConstraint(
+            "(secret_ciphertext IS NULL AND key_id IS NULL) "
+            "OR (secret_ciphertext IS NOT NULL AND key_id IS NOT NULL)",
+            name="ck_ai_config_versions_secret_key",
+        ),
+        UniqueConstraint(
+            "account_id", "version",
+            name="uq_ai_config_versions_account_version",
+        ),
+        Index("ix_ai_config_versions_account_id", "account_id"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    model: Mapped[str] = mapped_column(String(200), nullable=False)
+    secret_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id"), nullable=False
+    )
+    # The audit row that produced this version (written in the same tx,
+    # flushed BEFORE this row so the FK exists).
+    operation_record_id: Mapped[str] = mapped_column(
+        ForeignKey("operation_records.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+
+
+class AiConfigHead(Base):
+    """At most one current pointer row per account (composite-FK bound)."""
+
+    __tablename__ = "ai_config_heads"
+    __table_args__ = (
+        CheckConstraint(
+            "config_version >= 1", name="ck_ai_config_heads_version"
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "config_version"],
+            ["ai_config_versions.account_id", "ai_config_versions.version"],
+            name="fk_ai_config_heads_current",
+        ),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+
+
+class PromptContractVersion(Base):
+    """Append-only field protocol version per task type (migration-seeded)."""
+
+    __tablename__ = "prompt_contract_versions"
+    __table_args__ = (
+        CheckConstraint("contract_version >= 1",
+                        name="ck_prompt_contract_versions_contract_version"),
+        CheckConstraint(
+            f"task_type IN ({AI_TASK_TYPES_SQL})",
+            name="ck_prompt_contract_versions_task_type",
+        ),
+        UniqueConstraint(
+            "task_type", "contract_version",
+            name="uq_prompt_contract_versions_task_contract",
+        ),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    task_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_vars: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    output_schema: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    guidance_fields: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(
+        ForeignKey("accounts.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+
+
+class PromptDefaultVersion(Base):
+    """Append-only default guidance revision per task type."""
+
+    __tablename__ = "prompt_default_versions"
+    __table_args__ = (
+        CheckConstraint("default_revision >= 1",
+                        name="ck_prompt_default_versions_default_revision"),
+        CheckConstraint(
+            f"task_type IN ({AI_TASK_TYPES_SQL})",
+            name="ck_prompt_default_versions_task_type",
+        ),
+        UniqueConstraint(
+            "task_type", "default_revision",
+            name="uq_prompt_default_versions_task_revision",
+        ),
+        ForeignKeyConstraint(
+            ["task_type", "contract_version"],
+            ["prompt_contract_versions.task_type",
+             "prompt_contract_versions.contract_version"],
+            name="fk_prompt_default_versions_contract",
+        ),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    task_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    default_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    guidance_map: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(
+        ForeignKey("accounts.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+
+
+class PersonalPromptVersion(Base):
+    """Append-only personal guidance version (map = full field snapshot)."""
+
+    __tablename__ = "personal_prompt_versions"
+    __table_args__ = (
+        CheckConstraint("personal_revision >= 1",
+                        name="ck_personal_prompt_versions_revision"),
+        CheckConstraint(
+            f"task_type IN ({AI_TASK_TYPES_SQL})",
+            name="ck_personal_prompt_versions_task_type",
+        ),
+        UniqueConstraint(
+            "account_id", "task_type", "personal_revision",
+            name="uq_personal_prompt_versions_account_task_revision",
+        ),
+        Index("ix_personal_prompt_versions_account_id", "account_id"),
+        ForeignKeyConstraint(
+            ["task_type", "based_contract_version"],
+            ["prompt_contract_versions.task_type",
+             "prompt_contract_versions.contract_version"],
+            name="fk_ppv_contract",
+        ),
+        ForeignKeyConstraint(
+            ["task_type", "accepted_default_revision"],
+            ["prompt_default_versions.task_type",
+             "prompt_default_versions.default_revision"],
+            name="fk_ppv_default",
+        ),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id"), nullable=False
+    )
+    task_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    personal_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    guidance_map: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    based_contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    accepted_default_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    created_by: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+
+
+class PersonalPromptHead(Base):
+    """At most one current personal pointer per (account, task type)."""
+
+    __tablename__ = "personal_prompt_heads"
+    __table_args__ = (
+        CheckConstraint(
+            "current_personal_revision >= 1", name="ck_pph_current_revision"
+        ),
+        CheckConstraint(
+            "adaptation_state IN ('current','adaptation_required')",
+            name="ck_pph_adaptation_state",
+        ),
+        CheckConstraint(
+            "(adaptation_state = 'current' AND required_contract_version IS NULL) "
+            "OR (adaptation_state = 'adaptation_required' "
+            "AND required_contract_version IS NOT NULL "
+            "AND required_contract_version >= 1)",
+            name="ck_pph_adapt_ref",
+        ),
+        CheckConstraint(
+            "last_seen_default_revision IS NULL OR last_seen_default_revision >= 1",
+            name="ck_pph_last_seen",
+        ),
+        CheckConstraint(
+            "last_rejected_default_revision IS NULL "
+            "OR last_rejected_default_revision >= 1",
+            name="ck_pph_last_rejected",
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "task_type", "current_personal_revision"],
+            ["personal_prompt_versions.account_id",
+             "personal_prompt_versions.task_type",
+             "personal_prompt_versions.personal_revision"],
+            name="fk_pph_current",
+        ),
+        ForeignKeyConstraint(
+            ["task_type", "required_contract_version"],
+            ["prompt_contract_versions.task_type",
+             "prompt_contract_versions.contract_version"],
+            name="fk_pph_required_contract",
+        ),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    task_type: Mapped[str] = mapped_column(String(50), primary_key=True)
+    current_personal_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    adaptation_state: Mapped[str] = mapped_column(String(30), nullable=False)
+    required_contract_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    last_seen_default_revision: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    last_rejected_default_revision: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )
+
+
+PCR_EVENT_KINDS_SQL = (
+    "'default_update','personal_init','personal_edit','accept_default',"
+    "'reject_default','adapt'"
+)
+_PCR_REV_NULL_OR_GE_1 = "(%(col)s IS NULL OR %(col)s >= 1)"
+
+
+class PromptChangeRecord(Base):
+    """Append-only personal/default change audit detail (no guidance text)."""
+
+    __tablename__ = "prompt_change_records"
+    __table_args__ = (
+        CheckConstraint(f"task_type IN ({AI_TASK_TYPES_SQL})",
+                        name="ck_pcr_task_type"),
+        CheckConstraint(f"event_kind IN ({PCR_EVENT_KINDS_SQL})",
+                        name="ck_pcr_event_kind"),
+        CheckConstraint("personal_revision_before IS NULL OR personal_revision_before >= 1",
+                        name="ck_pcr_rev_before"),
+        CheckConstraint("personal_revision_after IS NULL OR personal_revision_after >= 1",
+                        name="ck_pcr_rev_after"),
+        CheckConstraint("default_revision_target IS NULL OR default_revision_target >= 1",
+                        name="ck_pcr_default_target"),
+        CheckConstraint("contract_version_target IS NULL OR contract_version_target >= 1",
+                        name="ck_pcr_contract_target"),
+        CheckConstraint(
+            "event_kind <> 'default_update' OR ("
+            "personal_revision_before IS NULL AND personal_revision_after IS NULL "
+            "AND contract_version_target IS NOT NULL AND default_revision_target IS NOT NULL)",
+            name="ck_pcr_default_update",
+        ),
+        CheckConstraint(
+            "event_kind <> 'personal_init' OR ("
+            "personal_revision_before IS NULL AND personal_revision_after IS NOT NULL "
+            "AND default_revision_target IS NOT NULL AND contract_version_target IS NOT NULL)",
+            name="ck_pcr_personal_init",
+        ),
+        CheckConstraint(
+            "event_kind <> 'personal_edit' OR ("
+            "personal_revision_before IS NOT NULL AND personal_revision_after IS NOT NULL "
+            "AND personal_revision_after <> personal_revision_before "
+            "AND default_revision_target IS NULL AND contract_version_target IS NULL)",
+            name="ck_pcr_personal_edit",
+        ),
+        CheckConstraint(
+            "event_kind <> 'accept_default' OR ("
+            "personal_revision_before IS NOT NULL AND personal_revision_after IS NOT NULL "
+            "AND personal_revision_after <> personal_revision_before "
+            "AND default_revision_target IS NOT NULL AND contract_version_target IS NOT NULL)",
+            name="ck_pcr_accept_default",
+        ),
+        CheckConstraint(
+            "event_kind <> 'reject_default' OR ("
+            "personal_revision_before IS NOT NULL AND personal_revision_after IS NOT NULL "
+            "AND personal_revision_after = personal_revision_before "
+            "AND default_revision_target IS NOT NULL AND contract_version_target IS NOT NULL)",
+            name="ck_pcr_reject_default",
+        ),
+        CheckConstraint(
+            "event_kind <> 'adapt' OR ("
+            "personal_revision_before IS NOT NULL AND personal_revision_after IS NOT NULL "
+            "AND personal_revision_after <> personal_revision_before "
+            "AND default_revision_target IS NOT NULL AND contract_version_target IS NOT NULL)",
+            name="ck_pcr_adapt",
+        ),
+        Index("ix_prompt_change_records_operation_record_id", "operation_record_id"),
+        Index("ix_prompt_change_records_task_type", "task_type"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_unicode_ci"},
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(32, collation="utf8mb4_bin"), primary_key=True
+    )
+    operation_record_id: Mapped[str] = mapped_column(
+        ForeignKey("operation_records.id"), nullable=False
+    )
+    task_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    personal_revision_before: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    personal_revision_after: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    default_revision_target: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    contract_version_target: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    changed_fields: Mapped[list[Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=_utc_now, nullable=False
+    )

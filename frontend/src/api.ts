@@ -1,6 +1,19 @@
 import { reset } from './auth'
 import type {
   Account,
+  AiConfigDeleteIn,
+  AiConfigOut,
+  AiConfigPatchIn,
+  AiPersonalInitOut,
+  AiPersonalRejectOut,
+  AiPersonalWriteOut,
+  AiPromptAdaptIn,
+  AiPromptDefaultOut,
+  AiPromptDetailOut,
+  AiPromptEditIn,
+  AiPromptAcceptDefaultIn,
+  AiPromptRejectDefaultIn,
+  AiAdminDefaultPatchIn,
   Calendar,
   ClassContext,
   ClassDetail,
@@ -15,6 +28,7 @@ import type {
   ExportWarning,
   Me,
   SchoolSettings,
+  TaskStatusListOut,
   TeacherListItem,
   Term,
   WeeklyExportRequest,
@@ -521,4 +535,107 @@ export async function exportWeeklyPlans(
   payload: WeeklyExportRequest,
 ): Promise<ExportDownloadResult> {
   return exportBinary('/exports/weekly-plans', payload)
+}
+
+// --- AI settings slice 1B/1C -----------------------------------------------
+// All requests ride the existing request(): same-origin cookies ride along
+// automatically, bodies are always JSON, and the browser's Origin header is
+// never set or overridden here. GET reads carry no body and need no Origin.
+// Versions come exclusively from these endpoints; the account version is
+// never borrowed.
+
+export async function getAiConfig(): Promise<AiConfigOut> {
+  return request('/settings/ai-config')
+}
+
+export async function patchAiConfig(payload: AiConfigPatchIn): Promise<AiConfigOut> {
+  return request('/settings/ai-config', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteAiConfig(payload: AiConfigDeleteIn): Promise<AiConfigOut> {
+  return request('/settings/ai-config', {
+    method: 'DELETE',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function listPromptTasks(): Promise<TaskStatusListOut> {
+  return request('/settings/prompts')
+}
+
+export async function getPromptDetail(taskType: string): Promise<AiPromptDetailOut> {
+  return request(`/settings/prompts/${encodeURIComponent(taskType)}`)
+}
+
+export async function initializePromptTask(
+  taskType: string,
+): Promise<AiPersonalInitOut> {
+  // Body must be exactly {} (initialize is always explicit JSON).
+  return request(`/settings/prompts/${encodeURIComponent(taskType)}/initialize`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+}
+
+export async function patchPromptGuidance(
+  taskType: string,
+  payload: AiPromptEditIn,
+): Promise<AiPersonalWriteOut> {
+  return request(`/settings/prompts/${encodeURIComponent(taskType)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function acceptPromptDefault(
+  taskType: string,
+  payload: AiPromptAcceptDefaultIn,
+): Promise<AiPersonalWriteOut> {
+  return request(
+    `/settings/prompts/${encodeURIComponent(taskType)}/accept-default`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export async function rejectPromptDefault(
+  taskType: string,
+  payload: AiPromptRejectDefaultIn,
+): Promise<AiPersonalRejectOut> {
+  return request(
+    `/settings/prompts/${encodeURIComponent(taskType)}/reject-default`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export async function adaptPrompt(
+  taskType: string,
+  payload: AiPromptAdaptIn,
+): Promise<AiPersonalWriteOut> {
+  return request(`/settings/prompts/${encodeURIComponent(taskType)}/adapt`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getAdminPromptDefault(taskType: string): Promise<AiPromptDefaultOut> {
+  return request(`/admin/prompt-defaults/${encodeURIComponent(taskType)}`)
+}
+
+export async function patchAdminPromptDefault(
+  taskType: string,
+  payload: AiAdminDefaultPatchIn,
+): Promise<AiPromptDefaultOut> {
+  return request(`/admin/prompt-defaults/${encodeURIComponent(taskType)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
 }

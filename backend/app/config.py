@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     rate_limit_max_failures: int = Field(default=20)
     rate_limit_max_keys: int = Field(default=10000)
     environment: str = Field(default="production")
+    # AI master key material (checklist §5.2): optional SecretStr, empty =
+    # degraded state (AI paused, manual paths unaffected). Format errors are
+    # never raised at import/startup; ai_crypto loads them lazily.
+    ai_master_key: SecretStr = SecretStr("")
+    ai_master_key_id: SecretStr = SecretStr("")
 
     @field_validator(
         "rate_limit_window_seconds",

@@ -7,6 +7,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import settings
 from app.routers import (
     admin,
+    ai_settings,
     auth,
     calendar_read,
     context,
@@ -56,6 +57,10 @@ async def security_headers_and_body_check(request: Request, call_next):
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(settings_router.router, prefix="/api")
+app.include_router(
+    ai_settings.router, prefix="/api"
+)
+app.include_router(ai_settings.admin_router, prefix="/api")
 app.include_router(calendar_read.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(context.router, prefix="/api")
@@ -103,10 +108,28 @@ def _json_error(status_code: int, code: str, message: str) -> JSONResponse:
     )
 
 
+_AI1B_PATH_PREFIXES = (
+    "/api/settings/ai-config",
+    "/api/settings/prompts",
+    "/api/admin/prompt-defaults",
+)
+
+
+def _is_ai1b_path(path: str) -> bool:
+    return any(path.startswith(p) for p in _AI1B_PATH_PREFIXES)
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
+    if _is_ai1b_path(request.url.path):
+        # 1B: fixed contract; never echo loc/msg/input/ctx/body.
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content=_error_body("VALIDATION_ERROR", "请求参数校验失败"),
+            headers={"Cache-Control": "no-store"},
+        )
     fields: dict[str, str] = {}
     for err in exc.errors():
         loc = err.get("loc", [])

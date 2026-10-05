@@ -849,3 +849,238 @@ class WeeklyExportIn(BaseModel):
         if self.from_ is not None and self.to is not None and self.from_ > self.to:
             raise ValueError("from 不能晚于 to")
         return self
+
+
+# ---------------------------------------------------------------------------
+# 1B AI settings API (ai-settings-api-1b.md): strict request/response DTOs
+# ---------------------------------------------------------------------------
+
+_GUIDANCE_FIELD_CHARS = 8000
+
+
+def _strict_guidance_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict) or not value:
+        raise ValueError("guidance_map 必须是非空对象")
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError("guidance_map 的键必须是字符串")
+        if not isinstance(item, str):
+            raise ValueError(f"指导字段 {key!r} 必须为字符串")
+        if len(item) > _GUIDANCE_FIELD_CHARS:
+            raise ValueError(
+                f"指导字段 {key!r} 单字段长度不能超过 {_GUIDANCE_FIELD_CHARS} 字符"
+            )
+    return value
+
+
+def _strict_str_list(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("字段列表必须是非空字符串数组")
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("字段列表项必须是字符串")
+    if len(set(value)) != len(value):
+        raise ValueError("字段列表不能有重复")
+    return value
+
+
+class AiConfigPatchIn(BaseModel):
+    """PATCH /settings/ai-config: full metadata + expected_version; the
+    secret key may be omitted (keep), null/empty/wrong-type rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(..., ge=0, strict=True)
+    protocol_id: str = Field(..., strict=True)
+    base_url: str = Field(..., strict=True, max_length=500)
+    model: str = Field(..., strict=True)
+    secret: str | None = Field(None, strict=True)
+
+    @field_validator("secret")
+    @classmethod
+    def _secret_not_empty(cls, value):
+        if value == "":
+            raise ValueError("secret 不能为空串")
+        return value
+
+    @model_validator(mode="after")
+    def _secret_presence(self):
+        if "secret" in self.model_fields_set and self.secret is None:
+            raise ValueError("secret 不允许显式 null")
+        return self
+
+
+class AiConfigDeleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(..., ge=0, strict=True)
+
+
+class PromptInitializeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PromptEditIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_personal_revision: int = Field(..., ge=1, strict=True)
+    guidance_map: dict[str, str]
+
+    @field_validator("guidance_map")
+    @classmethod
+    def _check_map(cls, value):
+        return _strict_guidance_map(value)
+
+
+class PromptAcceptDefaultIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_personal_revision: int = Field(..., ge=1, strict=True)
+    target_default_revision: int = Field(..., ge=1, strict=True)
+    accepted_fields: list[str]
+
+    @field_validator("accepted_fields")
+    @classmethod
+    def _check_fields(cls, value):
+        return _strict_str_list(value)
+
+
+class PromptRejectDefaultIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_personal_revision: int = Field(..., ge=1, strict=True)
+    target_default_revision: int = Field(..., ge=1, strict=True)
+
+
+class PromptAdaptIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_personal_revision: int = Field(..., ge=1, strict=True)
+    target_contract_version: int = Field(..., ge=1, strict=True)
+    guidance_map: dict[str, str]
+
+    @field_validator("guidance_map")
+    @classmethod
+    def _check_map(cls, value):
+        return _strict_guidance_map(value)
+
+
+class AdminPromptDefaultPatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_default_revision: int = Field(..., ge=1, strict=True)
+    guidance_map: dict[str, str]
+
+    @field_validator("guidance_map")
+    @classmethod
+    def _check_map(cls, value):
+        return _strict_guidance_map(value)
+
+
+class AiConfigOut(BaseModel):
+    """Desensitized config response (ai-settings-api-1b.md §4): the protocol
+    is pinned to the single supported value (or null when not configured)
+    and ``ready_reason`` is pinned to the five fixed reasons (or null when
+    ready). A service that ever produced an out-of-contract value must fail
+    here instead of passing unknown strings through (1B repair R4)."""
+
+    version: int = Field(..., ge=0)
+    protocol_id: Literal["chat_completions_v1"] | None
+    base_url: str | None
+    model: str | None
+    has_secret: bool
+    secret_mask: str | None
+    ready: bool
+    ready_reason: (
+        Literal[
+            "NOT_CONFIGURED",
+            "MISSING_URL",
+            "MISSING_MODEL",
+            "MISSING_SECRET",
+            "DECRYPT_UNAVAILABLE",
+        ]
+        | None
+    )
+
+
+_READY_REASON_VALUES = (
+    "NOT_CONFIGURED",
+    "MISSING_URL",
+    "MISSING_MODEL",
+    "MISSING_SECRET",
+    "DECRYPT_UNAVAILABLE",
+)
+
+
+class TaskStatusOut(BaseModel):
+    task_type: str
+    initialized: bool
+    adaptation_state: Literal["current", "adaptation_required"]
+    required_contract_version: int | None = Field(None, ge=1)
+    pending_default_update: bool
+    latest_default_revision: int = Field(..., ge=1)
+    latest_contract_version: int = Field(..., ge=1)
+
+
+class TaskStatusListOut(BaseModel):
+    items: list[TaskStatusOut]
+
+
+class LatestDefaultOut(BaseModel):
+    default_revision: int = Field(..., ge=1)
+    contract_version: int = Field(..., ge=1)
+    guidance_map: dict[str, str]
+
+
+class PromptDetailOut(BaseModel):
+    task_type: str
+    state: Literal["not_initialized", "initialized"]
+    latest_contract_version: int = Field(..., ge=1)
+    latest_default_revision: int = Field(..., ge=1)
+    guidance_fields: list[str]
+    latest_default: LatestDefaultOut
+    personal_revision: int | None = Field(None, ge=1)
+    guidance_map: dict[str, str] | None
+    based_contract_version: int | None = Field(None, ge=1)
+    accepted_default_revision: int | None = Field(None, ge=1)
+    based_guidance_fields: list[str]
+    adaptation_state: Literal["current", "adaptation_required"]
+    required_contract_version: int | None = Field(None, ge=1)
+    pending_default_update: bool
+    last_rejected_default_revision: int | None = Field(None, ge=1)
+
+
+class PersonalInitOut(BaseModel):
+    state: Literal["initialized"]
+    idempotent: bool
+    task_type: str
+    personal_revision: int = Field(..., ge=1)
+    guidance_map: dict[str, str]
+    based_contract_version: int = Field(..., ge=1)
+    accepted_default_revision: int = Field(..., ge=1)
+
+
+class PersonalWriteOut(BaseModel):
+    state: Literal["initialized"]
+    task_type: str
+    personal_revision: int = Field(..., ge=1)
+    guidance_map: dict[str, str]
+    based_contract_version: int = Field(..., ge=1)
+    accepted_default_revision: int = Field(..., ge=1)
+    adaptation_state: Literal["current", "adaptation_required"]
+
+
+class PersonalRejectOut(BaseModel):
+    state: Literal["unchanged"]
+    idempotent: bool
+    task_type: str
+    personal_revision: int = Field(..., ge=1)
+    last_rejected_default_revision: int | None = Field(None, ge=1)
+
+
+class PromptDefaultOut(BaseModel):
+    task_type: str
+    default_revision: int = Field(..., ge=1)
+    contract_version: int = Field(..., ge=1)
+    guidance_fields: list[str]
+    guidance_map: dict[str, str]

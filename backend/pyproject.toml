@@ -13,6 +13,9 @@ dependencies = [
     "lxml>=6.1,<7",
     # Pinned per I2 spec; declared only, not installed/synced in this phase.
     "chinesecalendar==1.11.0",
+    # AI 1A: AES-256-GCM secret encryption (already locked at 50.0.1 via
+    # pymysql[rsa]; now declared direct per checklist §1 #9).
+    "cryptography==50.0.1",
 ]
 
 [tool.uv]

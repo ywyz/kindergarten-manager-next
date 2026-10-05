@@ -48,7 +48,7 @@ worker非锁定扫描到期head，只用读取结果定位。领取短事务先�
 
 不要求`SKIP LOCKED`读取业务数据，业务一致性读取遵循原锁协议。[MySQL 8.4官方说明](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking-reads.html)将跳过锁行适用于队列式场景，不能拿不完整来源集合生成计划。本项目选择以上domain前缀后条件领取方案。
 
-新增config／prompt当前指针锁放在业务／sync锁之后、task锁之前，多账号按id升序、多task_type按固定registry序；保存配置／指导的事务只拿account及自身指针，不反向取得班级／计划锁。交接／恢复同序，heartbeat仅更新task，不持task锁调用业务方法。开工时把实际新增锁逐一映射到此顺序并做真实MySQL竞争验证。
+新增config／prompt当前指针锁放在业务／sync锁之后、task锁之前，多账号按id升序、多task_type按固定registry序；保存配置／指导的事务沿account／交互session→自身指针，个人指导写入随后拿对应contract v1固定锚点FOR SHARE，发布默认及协议拿该锚点FOR UPDATE；最新契约使用locking read。锚点属于提示词指针锁区域，在task锁之前，不反向取得班级／计划锁。细节见[1A定稿§7](../bootstrap/ai-slice1a-implementation-checklist-2026-10-03.md)。交接／恢复同序，heartbeat仅更新task，不持task锁调用业务方法。开工时把实际新增锁逐一映射到此顺序并做真实MySQL竞争验证。
 
 ## 5. 发送窗口和结果写入
 

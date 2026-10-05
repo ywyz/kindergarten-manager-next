@@ -18,13 +18,13 @@
 | --- | --- | --- |
 | `daily_lesson_split` | 原始教案、年级；输出group_activity的theme／objectives／preparation／key_points／difficult_points／process | 日计划候选；采用拆分时保留原文、未经适龄调整的拆分基准 |
 | `daily_process_adapt` | 明确拆分基准或已保存过程、班级年级；仅返回process候选 | 教师比较后采用最终过程；不改原基准 |
-| `daily_other_activities` | 日期／周次／有效日历、班级游戏配置及日计划快照；返回morning_games／morning_talk／post_group_games／afternoon_outdoor对应字段 | 预览和选择采用；不替教师编写真实活动反思 |
+| `daily_other_activities` | 日期／周次／有效日历、目标日期前后各7日（含边界）的节假日上下文、班级游戏配置及日计划快照；返回morning_games／morning_talk／post_group_games／afternoon_outdoor对应字段 | 预览和选择采用；不替教师编写真实活动反思 |
 | `weekly_games` | 全班本周日计划候选集合、当前草稿和班级配置；返回两集体一自选、重点区域的具体来源选取与不足补充 | 周游戏候选；来源校验后采用，补充标AI，不伪造日来源 |
 | `weekly_columns` | 本周日计划、有效日期上下文；返回key_week_focus／environment_setup／habit_culture／home_cooperation | 负责人按字段选择替换，未选字段保留人工内容 |
 | `weekly_theme_suggestion` | 本周日计划及已有主题上下文；返回主题建议 | 只显示建议，负责人明确采用，不自动覆盖theme |
 | `weekly_materials` | 确切游戏／区域选择、整组文本、年级及依据标识；返回提取／补充材料项 | [材料规格](weekly-materials-implementation.md)候选、编辑、确认 |
 
-所有首版任务均有个人字段指导编辑面，不只提供材料或周计划提示词。日计划其他活动涉及“周边节假日”的语义尚未确认，见索引P4；对应功能实施前收口，不能从日期邻近任意猜测节日或新增外部服务。
+所有首版任务均有个人字段指导编辑面，不只提供材料或周计划提示词。日计划其他活动按已确认P4，仅使用现有有效日历及`chinese_calendar`支持的节日名称，取目标日期前后各7日（含边界）作为生成参考，不强制安排节日活动；未覆盖不猜测，不新增外部日历服务，不改已保存有效日历。
 
 ## 3. 存储和不可变引用
 
@@ -68,6 +68,21 @@ schema版本及实际个人版本被执行／候选引用后不删除；未引�
 | 两设备同时编辑或适配时contract再次推进 | 旧提交409，输入保留，不虚标适配完成 |
 | 排队／运行期间修改个人指导 | 排队用启动时最新有效版本；运行记录保持旧版本，候选不自动采用 |
 | 接管负责人、管理员个人操作 | 用实际负责人与管理员本人的个人版本，不继承他人可编辑指导 |
+| 节假日上下文窗口与来源 | 目标日期前后各7日边界纳入，窗口外排除；仅用有效日历及库支持的节日名称，未覆盖不猜测，不改变已保存日历或强制安排节日活动 |
 | 日／周全部registry任务 | 每种任务有字段编辑面和输出校验，非空主题不遗漏 |
 
 完成记录分别说明schema／API／UI、自动验证、真实任务调用。个人提示词编辑通过不等于全部AI业务候选或材料产品验收完成。
+
+## 8. 1A设计收敛（2026-10-03）
+
+用户授权协调者规划、设计，OpenCode唯一业务代码写入。1A精确表结构、registry、默认正文和验证以[协调者定稿v3](../bootstrap/ai-slice1a-implementation-checklist-2026-10-03.md)为工程细化；不改变上文产品规则。
+
+- afternoon_outdoor候选沿用单对象；日其他活动可以生成建议，不限制游戏名只能来自输入；适龄调整不增加“禁止调整步骤”的教学限制。
+- 普通默认接受只允许与当前有效contract相同的修订，空字段选择拒绝；按字段动作记录changed_fields字段名而非全文。GET不推进已处理修订。
+- reject不推进personal_revision；reject先提交、accept随后可成功；accept先提交、旧expected的reject冲突。两者行锁顺序化不等于恰一成功。
+- 同任务contract v1行是固定锁锚点：个人写FOR SHARE，默认及协议发布FOR UPDATE；锁内使用locking read读取最新契约，避免REPEATABLE READ旧快照。后续系统发布需在DDL后独立DML事务遵循同协议。
+- 服务交互写入口沿account→session→自身head→contract锁序重查身份；内部执行解析不依赖会话、不自行提交业务事务。API/UI及worker仍属后续切片。
+
+## 9. 1B API 定稿接续（2026-10-04）
+
+1A 已通过[阶段收口复审](../bootstrap/ai-slice1a-closeout-review-2026-10-04.md)。用户本轮要求定稿并交 OpenCode 实施 1B；§5 的拟定接口按[1B API／权限定稿](ai-settings-api-1b.md)细化，补齐显式 initialize、reject-default、最新默认比较和本人 based 字段集的只读响应。[编码提示词](../bootstrap/ai-slice1b-opencode-coding-prompt-2026-10-04.md)仅授权本片，不进入前端／worker，也不将自动测试记为产品验收。
