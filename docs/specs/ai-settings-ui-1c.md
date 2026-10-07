@@ -1,8 +1,8 @@
 # AI 设置 1C：前端与桌面验收准备
 
-日期：2026-10-04。用户要求提前实施 1C，以便调用桌面版完成验收。本文细化已确认的设置流程，不改变架构；业务编码交给 OpenCode。**1B 已通过[第二轮补修复审](../bootstrap/ai-slice1b-closeout-review-2026-10-04.md)，1C 编码前提已满足；本轮审阅未启动编码，产品验收与部署另记。**
+状态更新：2026-10-07。本文为 1C 的有效工程规格，1C 已实现并完成阶段审阅，1A／1B／1C 已部署。实际部署见 [部署结果](../bootstrap/ai-slice1abc-deployment-result-2026-10-05.md)；产品结论见 [Windows 验收报告](../bootstrap/ai-slice1c-desktop-validation-2026-10-05.md)，相关夹具子例仍受阻，尚未全通过。业务代码由 OpenCode 唯一写入，本文不自动授权重做或部署。
 
-依据：[1B API 定稿](ai-settings-api-1b.md)、AI Service／提示词规格、[1B 审阅](../bootstrap/ai-slice1b-review-2026-10-04.md)。1C 只有设置界面，不实现调用供应商、测试连接、worker、AI 生成按钮、候选、材料或完整 W6。
+依据：[1B API 定稿](ai-settings-api-1b.md)、AI Service／提示词规格、[1B 审阅](../bootstrap/ai-slice1b-closeout-review-2026-10-04.md)。1C 只有设置界面，不实现调用供应商、测试连接、worker、AI 生成按钮、候选、材料或完整 W6。
 
 ## 1. 入口与文件范围
 
@@ -29,6 +29,8 @@
 展示 personal_revision、based/latest contract、最新 default revision，以及普通更新／待适配两个独立状态。初始化不能与“本地配置可用”合并成一个假就绪标签。
 
 普通默认更新：比较本人当前文字和最新默认，各字段选择后显示将覆盖的字段；接受列表非空且无重复，提交捕获的 personal_revision 和 target_default_revision。未选字段保持原值。若尚有未保存编辑，应先保存或显式放弃，再接受／拒绝，避免覆盖本地文字。拒绝为“保留当前指导”，不改个人文字或 revision；拒绝后仍允许主动打开比较并接受同默认，不强制重复弹窗。
+
+2026-10-07 用户确认方案 A：接受绑定教师实际查看并勾选的默认修订；比较期间管理员仅发布更新的默认文字，不使同契约的旧目标失效，也不自动替换教师所见内容。目标仍须存在且与本人 based／当前 contract 兼容，个人 expected 仍须有效。成功只记录所接受修订，更晚默认仍作为未处理更新展示，不视为一并接受。 前端不得静默更换比较目标或勾选字段。
 
 待适配：旧 based 字段仍能普通保存，但禁止接受／拒绝默认。另设完整适配编辑面：按最新 `guidance_fields` 组装，保留同名原文字，新增字段预填最新默认，移除字段原文另行只读展示；只发送完整最新集合。显式“完成适配”携带编辑时 target_contract_version 与 expected_personal_revision；关闭／普通保存不能标已适配。当前 API 不提供详细类型差异，页面只能呈现两套字段、增删、原文和版本，不能虚构类型变化详情或新增 schema 接口。
 

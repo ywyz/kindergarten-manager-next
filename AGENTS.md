@@ -124,12 +124,12 @@ AGENTS.md 自身应保持简短，不作为完整项目百科全书。
 
 ## 当前最高优先级
 
-2026-10-05 用户授权完成 1A＋1B＋1C 远程部署、旧测试实例归档清理及 commit／push。当前运行源与迁移见 `docs/bootstrap/ai-slice1abc-deployment-result-2026-10-05.md`；下一步按桌面交接执行 C1–C7，真实 v2/v3 与缺错主密钥夹具子例仍受阻，部署不等于产品验收，不启动其他切片。
+2026-10-05 用户授权完成 1A＋1B＋1C 远程部署、旧测试实例归档清理及 commit／push。当前运行源与迁移见 `docs/bootstrap/ai-slice1abc-deployment-result-2026-10-05.md`。2026-10-07 Windows 补验与收尾报告已交付，见 `docs/bootstrap/ai-slice1c-desktop-validation-2026-10-05.md`；用户确认方案 A：可接受已查看勾选的同契约默认修订，新默认仍保留更新状态，旧目标行为不再作为修复阻塞。真实 v2/v3 与缺／错主密钥夹具方案及 OpenCode 工具提示词见 `docs/bootstrap/ai-slice1c-fixture-plan-2026-10-07.md`，隔离真库复审见 `docs/bootstrap/ai-slice1c-fixture-mysql-review-2026-10-07.md`：两项加固及14项真库已通过，本机专用容器已停止并保留数据。远程准备具体清单见 `docs/bootstrap/ai-slice1c-fixture-remote-preparation-plan-2026-10-07.md`，用户已授权本轮提交／推送后准备正常v1基线并实际恢复，再按阶段交接契约／密钥故障补验；相关子例仍受阻，不宣布全通过，不启动其他切片。
 
-当前 I5 已实现链路收口见 `docs/bootstrap/i5-final-closeout-2026-10-03.md`。`docs/specs/ai-capabilities-implementation.md` 中 P1–P4 产品决定已确认，下一步等待具体切片实现授权；AI Service、提示词、持久任务与材料规格已形成，不自动启动实现或部署。完整 W6 材料真实下载及逐页补验不可省略；继续采用 `docs/specs/i5-validation-environment.md` 的远程实例与 Windows／Word 或 WPS 口径，不使用本机 WSL 验收服务器。
+当前 I5 已实现链路收口见 `docs/bootstrap/i5-final-closeout-2026-10-03.md`。`docs/specs/ai-capabilities-implementation.md` 中 P1–P4 产品决定已确认，基础配置／提示词 1A／1B／1C 已实现并部署；其余 AI Service 调用、持久任务与材料切片规格已形成，仍待具体实现授权，不自动启动实现或部署。完整 W6 材料真实下载及逐页补验不可省略；继续采用 `docs/specs/i5-validation-environment.md` 的远程实例与 Windows／Word 或 WPS 口径，不使用本机 WSL 验收服务器。
 
 业务代码由 OpenCode 唯一写入；协调、只读审阅和文档更新不另起业务实现者。后续按规格及当前任务范围执行，不自动启动实现或部署。
 
 2026-10-02 用户明确授权本轮协调者直接最小修复两处导出范围竞态、部署验收实例并 commit／push；后续默认写入约束保持不变。
 
-待定事项与建议顺序见 `docs/bootstrap/architecture-v1-readiness.md`。不因后续任务重新开展环境全面审计，也不把旧项目功能当作新版需求。
+文档入口见 `docs/bootstrap/README.md`，待定事项与建议顺序见 `docs/bootstrap/architecture-v1-readiness.md`。不因后续任务重新开展环境全面审计，也不把旧项目功能当作新版需求。

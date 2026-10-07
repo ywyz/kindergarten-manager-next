@@ -1,6 +1,6 @@
 # 基础配置与提示词 1B：API／权限设计定稿
 
-日期：2026-10-04。状态：用户要求先定稿设计和编码提示词，再交 OpenCode 实施；本文为本轮工程定稿，API 实现、自动验证和产品验收分别记录。业务代码由 OpenCode 唯一写入。
+状态更新：2026-10-07。本文为 1B 的有效工程规格，1B 已实现并完成阶段审阅，1A／1B／1C 已部署。实际部署见 [部署结果](../bootstrap/ai-slice1abc-deployment-result-2026-10-05.md)；产品结论见 [Windows 验收报告](../bootstrap/ai-slice1c-desktop-validation-2026-10-05.md)，相关夹具子例仍受阻，尚未全通过。业务代码由 OpenCode 唯一写入，本文不自动授权重做或部署。
 
 依据：[1A 阶段收口](../bootstrap/ai-slice1a-closeout-review-2026-10-04.md)、[1A v3](../bootstrap/ai-slice1a-implementation-checklist-2026-10-03.md)、[AI Service 规格](ai-service-implementation.md)、[提示词规格](prompts-implementation.md)、AI Service／提示词／操作日志 Contract、ADR 0002。本文细化既有设置行为，不改变 Architecture v1。此前规格的“拟定”接口在本片按本文落实。
 
@@ -78,6 +78,8 @@ DELETE 仅清当前密钥，保留元信息和历史版本；带当前 expected 
 `PersonalRejectOut`：state 固定 unchanged、idempotent bool、task_type、personal_revision、last_rejected_default_revision。拒绝不增加个人版本；同有效状态重复拒绝不增加事件。之后主动接受同默认仍可成功。写响应不隐含更晚默认已被处理，客户端可 GET 刷新状态。
 
 普通编辑保留其 based contract；待适配仍可编辑旧字段且保持待适配。accept／reject 在待适配时 409；accept 只改选定字段、保留未选字段；目标默认必须存在且与本人 based 和当前 contract 兼容，不能跨结构接受。adapt 必须完整当前字段集，旧 target contract 为 409，缺字段／未知字段为 422，不替客户端补齐；普通编辑／拒绝不能代替完成适配。
+
+2026-10-07 用户确认方案 A：接受绑定教师实际查看并勾选的默认修订；比较期间管理员仅发布更新的默认文字，不使同契约的旧目标失效，也不自动替换教师所见内容。目标仍须存在且与本人 based／当前 contract 兼容，个人 expected 仍须有效。成功只记录所接受修订，更晚默认仍作为未处理更新展示，不视为一并接受。 因此 target_default_revision 不要求等于最新 default revision；仅默认文字推进不返回冲突，个人版本冲突及契约不兼容仍按既有规则拒绝。
 
 ## 6. 管理员默认接口
 

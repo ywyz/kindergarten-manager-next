@@ -103,7 +103,7 @@ no_proxy: [i.env.no_proxy || i.env.NO_PROXY, "localhost", "127.0.0.1", "::1"].fi
 - 桌面输入使用已安装 `computer-use` 技能的正式 `@oai/sky` API。CUA 的原生应用入口不可用，不等于独立桌面技能不可用；此前“无法操作 Word”的判断已纠正。
 - 原生控件树曾与前台截图不同步，部分索引操作报 `element ... is not available in cached app state`。重新激活／刷新，并依据匹配的截图定位文件名、缩放和关闭控件后成功。快捷键 Ctrl+F12、Ctrl+Home、Ctrl+W 未得到相应完成证据，改用可见控件／滚动完成；不将快捷键发送成功当作动作完成。
 
-Protected View 的打印入口未执行，依据已读 [computer-use SKILL.md](../../../../.codex/plugins/cache/openai-bundled/computer-use/26.930.21537/skills/computer-use/SKILL.md) 所要求读取的 [guidance.md](../../../../.codex/plugins/cache/openai-bundled/computer-use/26.930.21537/docs/guidance.md) 明文约束：**“Do not act on security or privacy permission requests.”** 将本文件的“启用打印”视为此类安全权限入口是本轮解释；页面查看、缩放、滚动与关闭已经完成，不要求用户解除全局 Protected View。
+Protected View 的打印入口未执行，依据已读 `../../../../.codex/plugins/cache/openai-bundled/computer-use/26.930.21537/skills/computer-use/SKILL.md`（当时本机文件） 所要求读取的 `../../../../.codex/plugins/cache/openai-bundled/computer-use/26.930.21537/docs/guidance.md`（当时本机文件） 明文约束：**“Do not act on security or privacy permission requests.”** 将本文件的“启用打印”视为此类安全权限入口是本轮解释；页面查看、缩放、滚动与关闭已经完成，不要求用户解除全局 Protected View。
 
 本轮产生的文件与截图副本见 [证据清单](evidence/browser-capabilities-2026-10-02/manifest.json)。截图仅包含合成产品数据，保存为能力证据；35% 整页图用于确认页面整体可见，75% 图用于文字及第二页状态，不能以低倍率截图证明所有文字无缺字。浏览器产品页截图在收尾时采集，期间其他验收操作可能已改变夹具，不能拿它重建 16:46 的完整数据库快照。
 

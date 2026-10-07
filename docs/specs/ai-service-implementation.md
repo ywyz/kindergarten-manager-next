@@ -1,6 +1,6 @@
 # AI Service 实施规格
 
-状态：2026-10-03规格收敛；管理员本人配置入口已获本轮用户确认。工程参数为本规格方案，不代表已实现、真实供应商兼容或代码／部署授权。依据：[AI Contract](../modules/ai-service.md)、[提示词Contract](../modules/prompts.md)、[ADR 0002](../adr/0002-background-tasks-and-versions.md)、[协同实施索引](ai-capabilities-implementation.md)。不改变Architecture v1。
+状态更新：2026-10-07。管理员本人配置入口已确认；配置服务、API 与设置 UI 已实现并部署，产品受阻子例见 §9。本文的 transport、调用与失败处理仍为待实现工程契约，不代表真实供应商兼容或新增代码／部署授权。依据：[AI Contract](../modules/ai-service.md)、[提示词Contract](../modules/prompts.md)、[ADR 0002](../adr/0002-background-tasks-and-versions.md)、[协同实施索引](ai-capabilities-implementation.md)。不改变Architecture v1。
 
 ## 1. 范围与身份
 
@@ -16,7 +16,7 @@
 
 密钥字段输入仅写；GET只返回`has_secret`及固定遮罩，不返回尾码或可逆编码。PATCH未传secret保留旧密钥，传新非空值轮换，null／空串拒绝；清除密钥用明确DELETE操作并产生新“未配置”版本。首次有效配置必须有URL／model／secret，缺配置显示未就绪。
 
-密钥采用成熟认证加密库（工程方案AES-GCM、随机nonce、绑定account／config version作AAD）；不自行写密码算法。当前`uv.lock`已通过`pymysql[rsa]`间接锁定`cryptography`，尚未在项目中声明为直接依赖；OpenCode实施前列出直接依赖声明及实际锁文件变更供对应实现授权核对，本轮不安装。应用解密材料与DB分开，部署时由受保护配置注入；不写仓库或业务表。启动不能解密时AI暂停，手工链路仍可用。
+密钥采用成熟认证加密库（工程方案AES-GCM、随机nonce、绑定account／config version作AAD）；不自行写密码算法。1A 已将 `cryptography` 声明为直接依赖并锁定；实际版本以 `backend/pyproject.toml` 与 `backend/uv.lock` 为准，后续依赖变更按具体切片核对。应用解密材料与DB分开，部署时由受保护配置注入；不写仓库或业务表。启动不能解密时AI暂停，手工链路仍可用。
 
 待执行任务启动时读取最新有效版本；已钉住且执行中的任务保留旧版本完成。清除或轮换配置不把旧请求换为新secret。仅保留有执行引用的旧加密secret；执行结束、无未决调用引用后允许清除旧secret而保留无密钥元信息。结果不明任务不会再自动使用旧secret；手动重试创建新执行并用当时最新有效版本。应用加密主密钥轮换须先验证双key_id解密与重加密回滚，不自动随个人配置操作轮换。
 
@@ -76,6 +76,6 @@
 
 完成须分别记录实现、自动测试和实际供应商调用结果。真实地址／模型／凭证和付费操作授权属于接入资源，待实施验收提供，不能从现有私人浏览器页或旧系统提取。
 
-## 9. 1B API 定稿接续（2026-10-04）
+## 9. 设置能力实施状态（2026-10-07）
 
-1A 已通过[阶段收口复审](../bootstrap/ai-slice1a-closeout-review-2026-10-04.md)。用户本轮要求定稿并交 OpenCode 实施 1B；设置接口的精确输入输出、本人权限、密钥省略／清除、错误脱敏与验证以[1B API／权限定稿](ai-settings-api-1b.md)为准，编码交接见[1B 提示词](../bootstrap/ai-slice1b-opencode-coding-prompt-2026-10-04.md)。此前 §7 拟定接口由该工程细化落实，不表示 API 已通过验证、真实调用或部署完成。
+基础配置服务 1A、设置 API 1B 和前端 1C 已实现并部署。精确输入输出、权限、密钥省略／清除及错误脱敏以 [1B API 规格](ai-settings-api-1b.md)为准，阶段证据见 [1B 收口](../bootstrap/ai-slice1b-closeout-review-2026-10-04.md)。[Windows 报告](../bootstrap/ai-slice1c-desktop-validation-2026-10-05.md)仍保留契约演进与缺／错主密钥受阻子例。transport、DNS 防护、真实供应商调用与 worker 尚未实现／验收；设置保存不调用供应商。

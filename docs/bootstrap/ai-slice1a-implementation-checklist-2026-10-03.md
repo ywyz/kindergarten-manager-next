@@ -1,8 +1,8 @@
 # 基础配置与提示词 1A 实施清单（2026-10-03 协调者设计定稿 v3）
 
-状态：2026-10-03 OpenCode 只读预检输出，**本文不代表已实现、已授权或已验收**。依据链：AGENTS.md → ARCHITECTURE.md → ADR 0002 → AI Service／提示词／日志 Contract → [第一片实施准备](ai-foundation-slice1-preparation-2026-10-03.md) → 四份协同规格（[AI Service](../specs/ai-service-implementation.md)／[提示词](../specs/prompts-implementation.md)／[持久任务](../specs/persistent-ai-tasks-implementation.md)／[材料](../specs/weekly-materials-implementation.md)）→ 现有代码（`backend/app/models.py` 17 表、迁移链 head `20260924_i4_weekly_plans`、`backend/app/services/auth_service.py` 的 `record_operation` 与 `_lock_account`、`backend/app/services/daily_plan_service.py` 的锁与事务模式、`backend/tests/integration/i3_guard.py`／`i4_guard.py`／`i5_guard.py` 隔离模式、`backend/app/config.py`）。
+状态：本文保留 2026-10-03 v3 工程定稿与当时预检基线。1A 已实现并通过 [阶段收口](ai-slice1a-closeout-review-2026-10-04.md)，实际部署见 [部署结果](ai-slice1abc-deployment-result-2026-10-05.md)。本文本身不构成重新编码或验收授权。依据链：AGENTS.md → ARCHITECTURE.md → ADR 0002 → AI Service／提示词／日志 Contract → 四份协同规格（[AI Service](../specs/ai-service-implementation.md)／[提示词](../specs/prompts-implementation.md)／[持久任务](../specs/persistent-ai-tasks-implementation.md)／[材料](../specs/weekly-materials-implementation.md)）→ 现有代码（`backend/app/models.py` 17 表、迁移链 head `20260924_i4_weekly_plans`、`backend/app/services/auth_service.py` 的 `record_operation` 与 `_lock_account`、`backend/app/services/daily_plan_service.py` 的锁与事务模式、`backend/tests/integration/i3_guard.py`／`i4_guard.py`／`i5_guard.py` 隔离模式、`backend/app/config.py`）。
 
-开工前 git 状态已重录：HEAD `1647fc9`；当时已有 7 份文档未提交修改 + 1 份未跟踪准备文件，全部保留不动。未读 `.env`、未连数据库、未安装依赖、未启动服务、未调用供应商、未 commit／push。预检未做任何业务写入；本文件本身是文档，不构成编码授权。v2为OpenCode补正版；v3由协调者按用户授权收敛设计，取代v2冲突规则。下一步见 [1A编码提示词](ai-slice1a-opencode-coding-prompt-2026-10-03.md)；本轮仅文档写入。
+开工前 git 状态已重录：HEAD `1647fc9`；当时已有 7 份文档未提交修改 + 1 份未跟踪准备文件，全部保留不动。未读 `.env`、未连数据库、未安装依赖、未启动服务、未调用供应商、未 commit／push。预检未做任何业务写入；本文件本身是文档，不构成编码授权。v2为OpenCode补正版；v3由协调者按用户授权收敛设计，取代v2冲突规则。此为实施前预检记录；现行阶段判断见上方收口报告。
 
 ## 0. 范围声明
 
@@ -510,7 +510,7 @@ accepted_default_revision记录最后一次init／accept／adapt所基于的默�
 | PF-3 | 重复拒绝同一修订 | **采用同一有效状态（operator／target／expected／last_rejected 一致）重复拒绝→幂等返回，不追加个人版本也不追加事件行**；仍先完整校验身份和 expected；目标或 expected 不同则走各自 typed 错误。与 `ck_pcr_reject_default` 兼容——幂等路径不写行，该 CHECK 不受影响。 |
 | PF-4 | 候选输出文本字段长度上限细节 | **既有“未规定”处保持未规定**（具体每字段见 §3 长度依据列）；仅材料任务使用材料规格已写明限额；输出总负载以 AI Service 规格 1MiB 响应限额为兜底；不新增其他候选字段长度上限，避免提前收紧业务尚未确认的边界。 |
 
-## 13. 实施准备结论
+## 13. 实施前准备结论（历史）
 
 当前1A设计可交OpenCode编码，无新增产品决定或Architecture v1变更。业务游戏配置、候选采用、网络调用和材料闭环仍留后续片，不把占位输入记为已实现。协调者规划／设计及只读审阅，OpenCode唯一业务代码写入。
 
@@ -524,13 +524,9 @@ accepted_default_revision记录最后一次init／accept／adapt所基于的默�
 6. 提取要求非空证据／quote，默认正文遵守JSON；修复事件CHECK的NULL放行、缓存与有效适配状态关系、无密钥版本更新及审计插入顺序。
 7. PF-1–PF-4已收敛，设计和验证矩阵同步，固定种子比较JSON内容；未执行代码、测试、安装或数据库操作。
 
-## 15. 编码交接
+## 15. 当前状态与历史边界
 
-下一步使用 [1A编码提示词](ai-slice1a-opencode-coding-prompt-2026-10-03.md)。提示词涵盖本片代码、直接依赖及一次性本地隔离MySQL验证；不涵盖1B/1C、供应商、部署、commit/push。本文不自行启动OpenCode。
-
-## 16. 停止声明
-
-本清单为只读预检及文档补正输出。未修改业务代码、未安装依赖、未连接数据库、未启动服务、未调用供应商、未 commit／push、未进入 1B／下一片。本轮按用户要求修正文档并提供下一步编码提示词；待用户交给OpenCode执行，不自动启动业务编码或测试资源。
+本片编码及补修提示词已经执行，现由 [1A 最终审阅](ai-slice1a-closeout-review-2026-10-04.md)保留阶段结论与验证限度，不再作为待执行任务。本文中的文件清单、旧 head、预检与 v3 收敛说明均属于实施前的工程基线，不代表当前工作区文件差分或数据库状态。
 
 ### 附：URL与纯读取实现边界
 

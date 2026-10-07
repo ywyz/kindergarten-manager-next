@@ -1,6 +1,6 @@
 # 提示词与字段适配实施规格
 
-状态：2026-10-03规格收敛；继承已确认的接受／拒绝与适配规则，以下存储、API和界面为工程方案。本轮只交付规格，不授权实现。依据：[提示词Contract](../modules/prompts.md)、[AI Service规格](ai-service-implementation.md)、[实施索引](ai-capabilities-implementation.md)。
+状态更新：2026-10-07。提示词版本化服务、API 与设置 UI 已实现并部署，真实契约演进产品子例仍受阻，见 §9。本文继承已确认的接受／拒绝与适配规则，规格本身不构成新增实现授权。依据：[提示词Contract](../modules/prompts.md)、[AI Service规格](ai-service-implementation.md)、[实施索引](ai-capabilities-implementation.md)。
 
 ## 1. 系统协议与个人指导
 
@@ -37,6 +37,8 @@ schema版本及实际个人版本被执行／候选引用后不删除；未引�
 ## 4. 更新、拒绝与适配流程
 
 普通默认文字更新：个人任务卡显示“系统指导已更新”，展示自己的当前指导与新默认，允许“保留当前”或“接受新默认”。保留记录拒绝的revision，避免同一更新反复强制弹窗；以后可主动再接受。接受页面列明会覆盖哪些个人字段，按字段选择；提交expected_personal_revision，变动则409保留输入，不静默合并。
+
+2026-10-07 用户确认方案 A：接受绑定教师实际查看并勾选的默认修订；比较期间管理员仅发布更新的默认文字，不使同契约的旧目标失效，也不自动替换教师所见内容。目标仍须存在且与本人 based／当前 contract 兼容，个人 expected 仍须有效。成功只记录所接受修订，更晚默认仍作为未处理更新展示，不视为一并接受。
 
 必需字段变化：显示字段增删／类型变化及原个人文字；缺的新字段预填对应默认，原字段文字保留。教师逐字段查看并显式“完成适配”，服务端验证完整guidance_map和当前contract；成功建立新个人revision和适配状态。未保存、关闭窗口或只点普通“保留当前”均不能标为适配完成。其他任务不受阻。
 
@@ -83,6 +85,6 @@ schema版本及实际个人版本被执行／候选引用后不删除；未引�
 - 同任务contract v1行是固定锁锚点：个人写FOR SHARE，默认及协议发布FOR UPDATE；锁内使用locking read读取最新契约，避免REPEATABLE READ旧快照。后续系统发布需在DDL后独立DML事务遵循同协议。
 - 服务交互写入口沿account→session→自身head→contract锁序重查身份；内部执行解析不依赖会话、不自行提交业务事务。API/UI及worker仍属后续切片。
 
-## 9. 1B API 定稿接续（2026-10-04）
+## 9. 设置能力实施状态（2026-10-07）
 
-1A 已通过[阶段收口复审](../bootstrap/ai-slice1a-closeout-review-2026-10-04.md)。用户本轮要求定稿并交 OpenCode 实施 1B；§5 的拟定接口按[1B API／权限定稿](ai-settings-api-1b.md)细化，补齐显式 initialize、reject-default、最新默认比较和本人 based 字段集的只读响应。[编码提示词](../bootstrap/ai-slice1b-opencode-coding-prompt-2026-10-04.md)仅授权本片，不进入前端／worker，也不将自动测试记为产品验收。
+1A 版本化服务、1B API 与 1C 设置前端已实现并部署。接口以 [1B API 规格](ai-settings-api-1b.md)为准，最终审阅见 [1B 收口](../bootstrap/ai-slice1b-closeout-review-2026-10-04.md)，产品补验见 [Windows 报告](../bootstrap/ai-slice1c-desktop-validation-2026-10-05.md)。用户已确认方案 A：接受已查看勾选的同契约默认修订，较新默认仍保留更新状态。真实契约演进子例尚受阻，不将自动测试写成产品全通过。

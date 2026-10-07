@@ -11,7 +11,7 @@
 - [F轮定向验收](i5-desktop-followup-validation-2026-10-03.md)：10份下载／24页，修复后代表文件、纯移动／空白、同名完整来源改选和历史隔离。
 - [G轮补验](i5-warning-environment-followup-2026-10-03.md)：3次新下载，G02两页／G03一页Word观察、环境版本和字体信息。
 - [H轮警示与用户阶段决定](i5-evidence-closeout-and-scope-decision-2026-10-03.md)：2次新下载，实际警示像素，字节一致时复用G的逐页观察；不把H写成新Word观察。
-- [运行源清单](i5-grade-deployment-source-2026-10-03.json)、[协调者只读复核](i5-followup-review-and-next-steps-2026-10-03.md)、[脱敏记录](i5-followup-coordinator-readonly-evidence-2026-10-03.json)。
+- [运行源清单](i5-grade-deployment-source-2026-10-03.json)、[脱敏记录](i5-followup-coordinator-readonly-evidence-2026-10-03.json)。
 
 实际验收环境为Windows 11专业版25H2／26200.9457／x64，桌面Microsoft 365 Word版本2609；F轮About为MSO 16.0.20430.20032／64位，帐户页即点即用为20430.20092／当前频道，分别记录。D轮Chrome 154.0.8037.98；F／G／H轮外置Edge，G于12:13:02读取154.0.4258.48，不追溯成F时版本。满足任一允许Windows＋桌面Word／WPS组合的门槛，未验组合没有兼容性结论。
 
@@ -50,4 +50,4 @@
 4. 历史部分HTTP／打开前哈希缺失、旧API补查注销未证实保留；新F／G／H证据不回填历史。修复后只跑受影响代表文件，D全矩阵未在新版重跑。
 5. I5服务是独立合成验收实例；真实AI、任务恢复、容量、S3备份恢复和正式上线均没有通过结论。
 
-**当前I5实施／自动测试／已实现链路产品验收均已分别收口，下一步为规格收口。** 未发现本轮需交OpenCode修复的新业务缺陷；不自动重部署或改写验收库。
+**I5实施／自动测试／已实现链路产品验收均已分别收口。** 四项协同规格已形成，后续状态见 [当前待办](architecture-v1-readiness.md)。 未发现本轮需交OpenCode修复的新业务缺陷；不自动重部署或改写验收库。

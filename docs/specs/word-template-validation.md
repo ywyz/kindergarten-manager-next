@@ -4,7 +4,7 @@
 
 状态：计划已建立；隔离原型执行结果见[结果记录](word-template-prototype-results.md)，生产生成路径已由 I5 片 2 实施。2026-10-02 用户更新当前环境，权威口径见 [I5 当前验收环境](i5-validation-environment.md)：远程服务器运行，Trae Work 浏览器下载，指定 Windows 与 Office 2010 以上 Word／WPS 文字任一组合完成全部必需案例即可通过。业务依据见 [最小实施规格](manual-plans-and-word-export.md) 与 [Word 导出 Contract](../modules/word-export.md)。
 
-2026-10-01 WSL2／Windows 11／Office 安装版本采集属于历史观察，未执行产品文件打开或逐页版式检查。缺少 Agent 桌面能力时可由人工逐项验收并记录操作者、文件哈希和页面证据，不能写成 Agent 自动观察通过。当前执行见 [Trae Work 提示词](../bootstrap/i5-trae-work-prompt-2026-10-02.md)。
+2026-10-01 WSL2／Windows 11／Office 安装版本采集属于历史观察，未执行产品文件打开或逐页版式检查。缺少 Agent 桌面能力时可由人工逐项验收并记录操作者、文件哈希和页面证据，不能写成 Agent 自动观察通过。已实现链路当前结论见 [I5 正式收口](../bootstrap/i5-final-closeout-2026-10-03.md)；后续完整 W6 随材料切片补验。
 
 2026-10-01 执行轮的自动检查（模板哈希核对、隔离 MySQL、启动验证）已完成，W1–W6 的 Windows 浏览器与 Word 逐项结果按交接表[片 4 验证记录](../bootstrap/i5-slice4-validation-2026-10-01.md)逐例回填，未人工执行前一律为"待人工验收"。
 
