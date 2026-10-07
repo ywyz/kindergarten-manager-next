@@ -11,6 +11,12 @@
 - 账号私密文件在服务器 `/opt/kindergarten-manager-next-ai-fixture/private/acceptance-accounts.json`，通过已有私密通道交接；Windows 如需另存，沿用既有受限 ACL 目录，不放仓库或截图。
 - 当前 sessions=0；B_contract 已实际恢复，恢复前后全部 25 表匹配。备份与配置在同一私密目录的 B_contract.sql／B_contract-app.env。
 
+## 本轮执行授权与入口
+
+2026-10-07 用户在了解 Windows／WSL 分工后明确授权契约发布、故障密钥切换及相应补验。授权已具备，无需重复申请；发布与切换仍按桌面阶段就绪信息顺序执行。本 WSL 会话没有 node_repl、cua_repl 或浏览器控制工具；Windows Codex／Edge 进程存在不等于当前会话能够操作真实 DOM。
+
+第一步使用[Windows 首阶段提示词](ai-slice1c-fixture-windows-stage1-prompt-2026-10-07.md)，仅建立 C5 的 v1 个人状态并交回版本证据。收到并核对就绪报告后才发布 v2；在此之前保留正常主密钥与 v1 基线。未执行场景不记为通过。
+
 ## 下一阶段安排
 
 授权后先由桌面端对照当前实际 URL／角色／基线。契约案例仍按 C5→V1/U3 四组及各变体推进：Windows 先在 v1 建立各例所需个人状态，托管者收到当前阶段就绪信息后才逐次发布；取得成功 manifest 后 Windows 继续真实 DOM／HTTP 动作，不先一次性发完 v2/v3。各例恢复 B_contract 时先退出并关闭自建页面，托管者停临时 API、归档证据、还原精确临时库与配套配置、清会话、重启核验，再重新登录。
