@@ -6,11 +6,12 @@
 
 - [夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)：真实契约演进及缺／错主密钥的隔离范围与资源门槛。
 - [最新真库复审](ai-slice1c-fixture-mysql-review-2026-10-07.md)：本片 37 项（含 14 项真库）全部通过、零 skip；38 项离线单元及清理入口临时探针通过；两项测试加固由 OpenCode 写入。
-- [远程准备执行清单](ai-slice1c-fixture-remote-preparation-plan-2026-10-07.md)：用户已授权本轮提交／推送后执行，尚未准备实例；只准备正常 v1 基线，契约发布／密钥故障补验另按阶段交接。
+- [远程准备实际结果](ai-slice1c-fixture-remote-preparation-result-2026-10-07.md)：用户授权后独立实例、正常 v1 与 B_contract 实际恢复已完成；[Windows 交接](ai-slice1c-fixture-windows-handoff-2026-10-07.md)已形成，契约发布／密钥故障及桌面补验待阶段授权。
+- [远程准备执行清单](ai-slice1c-fixture-remote-preparation-plan-2026-10-07.md)：本轮已执行范围，实际身份以结果报告为准。
 - [本机资源清单](ai-slice1c-fixture-mysql-plan-2026-10-07.md)已授权并完成，专用容器已停止，volume／私密配置保留；[OpenCode 交接](ai-slice1c-fixture-mysql-opencode-prompt-2026-10-07.md)与[第三轮复审](ai-slice1c-fixture-repair3-review-2026-10-07.md)保留过程身份。
 - [Windows 验收与补验报告](ai-slice1c-desktop-validation-2026-10-05.md)、[桌面补验提示词](ai-slice1abc-desktop-codex-prompt-2026-10-05.md)：方案 A 已确认，剩余受阻子例不能宣布通过。
 
-隔离真库验证已通过，远程准备与真实补验尚待执行；整组提示词、交付与审阅文档暂时保留，收口后再合并。本文不放行真库资源、远程准备、部署或其他切片。
+隔离真库验证已通过，远程准备已完成、真实补验尚待执行；整组提示词、交付与审阅文档暂时保留，收口后再合并。本文不放行真库资源、远程准备、部署或其他切片。
 
 ## 已收口报告与部署身份
 

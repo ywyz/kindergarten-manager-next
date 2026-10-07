@@ -124,7 +124,7 @@ AGENTS.md 自身应保持简短，不作为完整项目百科全书。
 
 ## 当前最高优先级
 
-2026-10-05 用户授权完成 1A＋1B＋1C 远程部署、旧测试实例归档清理及 commit／push。当前运行源与迁移见 `docs/bootstrap/ai-slice1abc-deployment-result-2026-10-05.md`。2026-10-07 Windows 补验与收尾报告已交付，见 `docs/bootstrap/ai-slice1c-desktop-validation-2026-10-05.md`；用户确认方案 A：可接受已查看勾选的同契约默认修订，新默认仍保留更新状态，旧目标行为不再作为修复阻塞。真实 v2/v3 与缺／错主密钥夹具方案及 OpenCode 工具提示词见 `docs/bootstrap/ai-slice1c-fixture-plan-2026-10-07.md`，隔离真库复审见 `docs/bootstrap/ai-slice1c-fixture-mysql-review-2026-10-07.md`：两项加固及14项真库已通过，本机专用容器已停止并保留数据。远程准备具体清单见 `docs/bootstrap/ai-slice1c-fixture-remote-preparation-plan-2026-10-07.md`，用户已授权本轮提交／推送后准备正常v1基线并实际恢复，再按阶段交接契约／密钥故障补验；相关子例仍受阻，不宣布全通过，不启动其他切片。
+2026-10-05 用户授权完成 1A＋1B＋1C 远程部署、旧测试实例归档清理及 commit／push。当前运行源与迁移见 `docs/bootstrap/ai-slice1abc-deployment-result-2026-10-05.md`。2026-10-07 Windows 补验与收尾报告已交付，见 `docs/bootstrap/ai-slice1c-desktop-validation-2026-10-05.md`；用户确认方案 A：可接受已查看勾选的同契约默认修订，新默认仍保留更新状态，旧目标行为不再作为修复阻塞。真实 v2/v3 与缺／错主密钥夹具方案及 OpenCode 工具提示词见 `docs/bootstrap/ai-slice1c-fixture-plan-2026-10-07.md`，隔离真库复审见 `docs/bootstrap/ai-slice1c-fixture-mysql-review-2026-10-07.md`：两项加固及14项真库已通过，本机专用容器已停止并保留数据。用户已授权提交／推送及远程准备，独立实例与正常v1基线已完成并实际恢复，见 `docs/bootstrap/ai-slice1c-fixture-remote-preparation-result-2026-10-07.md`；桌面交接见 `docs/bootstrap/ai-slice1c-fixture-windows-handoff-2026-10-07.md`，契约发布／密钥故障及Windows补验仍待阶段授权；相关子例仍未补验，不宣布全通过，不启动其他切片。
 
 当前 I5 已实现链路收口见 `docs/bootstrap/i5-final-closeout-2026-10-03.md`。`docs/specs/ai-capabilities-implementation.md` 中 P1–P4 产品决定已确认，基础配置／提示词 1A／1B／1C 已实现并部署；其余 AI Service 调用、持久任务与材料切片规格已形成，仍待具体实现授权，不自动启动实现或部署。完整 W6 材料真实下载及逐页补验不可省略；继续采用 `docs/specs/i5-validation-environment.md` 的远程实例与 Windows／Word 或 WPS 口径，不使用本机 WSL 验收服务器。
 

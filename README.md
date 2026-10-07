@@ -7,7 +7,7 @@
 - I1–I4 已实现；I5 手工日／周计划 Word 导出已完成实现、自动验证及已实现链路的产品验收，见 [I5 正式收口](docs/bootstrap/i5-final-closeout-2026-10-03.md)。完整 W6 非空材料仍归后续材料切片必需补验。
 - AI 基础配置与提示词 1A／1B／1C 已实现并于 2026-10-05 部署。实际运行源与迁移见 [部署结果](docs/bootstrap/ai-slice1abc-deployment-result-2026-10-05.md)，不能仅以仓库 HEAD 识别运行内容。
 - [Windows 验收报告](docs/bootstrap/ai-slice1c-desktop-validation-2026-10-05.md)已补充至 2026-10-07。方案 A 已获确认：可以接受教师已查看勾选的同契约默认修订；较新默认仍保留更新状态。真实契约演进及缺／错主密钥相关子例仍受阻，尚未全通过。
-- [验收夹具真库复审](docs/bootstrap/ai-slice1c-fixture-mysql-review-2026-10-07.md)已通过：本片 37 项含 14 项真库全部实跑，零 skip；本机专用容器已停止并保留数据。用户已授权本轮提交／推送后按[远程准备清单](docs/bootstrap/ai-slice1c-fixture-remote-preparation-plan-2026-10-07.md)准备独立正常 v1 基线；真实 Windows 子例仍待补验。transport、worker、业务 AI、材料、容量及备份恢复尚未完成，不自动启动其他切片。
+- [验收夹具真库复审](docs/bootstrap/ai-slice1c-fixture-mysql-review-2026-10-07.md)已通过：本片 37 项含 14 项真库全部实跑，零 skip；本机专用容器已停止并保留数据。用户授权后已完成[独立远程准备与实际恢复](docs/bootstrap/ai-slice1c-fixture-remote-preparation-result-2026-10-07.md)，正常 v1 基线已就绪；[Windows 交接](docs/bootstrap/ai-slice1c-fixture-windows-handoff-2026-10-07.md)已形成，真实子例仍待阶段授权及补验。transport、worker、业务 AI、材料、容量及备份恢复尚未完成，不自动启动其他切片。
 
 ## 文档入口
 

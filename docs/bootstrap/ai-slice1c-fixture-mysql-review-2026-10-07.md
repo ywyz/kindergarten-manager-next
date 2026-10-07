@@ -1,6 +1,6 @@
 # AI 1C 隔离 MySQL 准备与验证复审（2026-10-07）
 
-状态：**隔离 MySQL 验证及两项测试加固通过；可以进入远程资源准备清单授权阶段，尚未准备远程夹具。** 授权为用户在[第三轮复审](ai-slice1c-fixture-repair3-review-2026-10-07.md)与[资源清单](ai-slice1c-fixture-mysql-plan-2026-10-07.md)交付后回复“授权”。本轮范围不含远程、主密钥切换、部署、供应商调用、commit／push 或资源删除。
+状态：**隔离 MySQL 验证及两项测试加固通过；本报告交付时进入远程资源准备清单授权阶段，尚未准备远程夹具；后续用户授权后已完成准备，见[实际结果](ai-slice1c-fixture-remote-preparation-result-2026-10-07.md)。** 授权为用户在[第三轮复审](ai-slice1c-fixture-repair3-review-2026-10-07.md)与[资源清单](ai-slice1c-fixture-mysql-plan-2026-10-07.md)交付后回复“授权”。本轮范围不含远程、主密钥切换、部署、供应商调用、commit／push 或资源删除。
 
 ## 实际资源身份
 
@@ -59,4 +59,4 @@ OpenCode 的较大交接调用数次在输出长度限制处结束，未完成�
 
 测试进程及本轮 OpenCode 进程均结束后，已停止本次容器，实际 exited／exit code 0，13387 无监听。保留专用 volume、私密凭证及日志，未删除资源，未改历史 I5 容器。后续恢复本次容器仍须按实际任务授权使用，不能把其库当远程验收数据。
 
-下一步是[远程准备执行清单](ai-slice1c-fixture-remote-preparation-plan-2026-10-07.md)的具体授权。真实 C5／V1／U3／C7 仍未补验，不宣布 1A–1C 产品全通过，不启动其他切片。
+本报告当时的下一步是[远程准备执行清单](ai-slice1c-fixture-remote-preparation-plan-2026-10-07.md)的具体授权；后续执行身份见上述实际结果。真实 C5／V1／U3／C7 仍未补验，不宣布 1A–1C 产品全通过，不启动其他切片。
