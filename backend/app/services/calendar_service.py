@@ -136,6 +136,10 @@ def iter_dates(start: date, end: date):
     current = start
     while current <= end:
         yield current
+        if current == end:
+            # Avoid the overflow that ``current + timedelta(days=1)`` would
+            # raise after yielding date.max (endpoints are inclusive).
+            return
         current += timedelta(days=1)
 
 

@@ -1,5 +1,7 @@
 # AI 设置 1C：前端与桌面验收准备
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。本文的“桌面验收”指 v1 在 Windows 浏览器中的验收，不表示已实现 pywebview 桌面应用。界面供复用审查，本地身份、会话和存储另行适配。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 状态更新：2026-10-07。本文为 1C 的有效工程规格，1C 已实现并完成阶段审阅，1A／1B／1C 已部署。实际部署见 [部署结果](../bootstrap/ai-slice1abc-deployment-result-2026-10-05.md)；产品结论见 [Windows 验收报告](../bootstrap/ai-slice1c-desktop-validation-2026-10-05.md)，相关夹具子例仍受阻，尚未全通过。业务代码由 OpenCode 唯一写入，本文不自动授权重做或部署。
 
 依据：[1B API 定稿](ai-settings-api-1b.md)、AI Service／提示词规格、[1B 审阅](../bootstrap/ai-slice1b-closeout-review-2026-10-04.md)。1C 只有设置界面，不实现调用供应商、测试连接、worker、AI 生成按钮、候选、材料或完整 W6。

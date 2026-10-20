@@ -1,5 +1,9 @@
 # Architecture v1 当前待办与验证门槛
 
+> **历史快照，已于 2026-10-08 被新方向替代。** 下文保留截至 2026-10-07 的 v1 状态、待办和门槛，不再作为当前执行指令。用户已接受 [ADR 0004 教师本地应用架构](../adr/0004-local-desktop-architecture-proposal.md)，当前待办见 [Architecture v2 实施入口](architecture-v2-readiness.md)。旧云端剩余验收保持未通过记录，但不自动阻塞桌面方向或授权继续远程任务；30 人并发与 S3 恢复属于 v1 目标，不作为 v2 执行门槛。
+
+后续结果补记（2026-10-09 整理）：2026-10-07 20:50 的 [C5 Windows 结果](ai-slice1c-fixture-c5-windows-result-2026-10-07.md)已确认 v2 主流程与真实飞行窗口通过；V1/U3、参考区处置及 C7 缺／错主密钥仍未验。下文“C5 未补验”“v1 基线”“待取得授权”等保留的是更早时点，不能覆盖后续已授权、发布和通过事实。历史状态入口见[夹具状态与剩余事项](ai-slice1c-fixture-windows-handoff-2026-10-07.md)。
+
 更新：2026-10-07。本文记录当前阶段及待办，不构成新需求、编码、资源创建或部署授权。系统级事实以 [ARCHITECTURE.md](../../ARCHITECTURE.md) 为准，产品规则以模块 Contract 和具体规格为准；报告入口见 [文档索引](README.md)。
 
 ## 当前阶段

@@ -3,10 +3,14 @@
 .env.*
 !.env.example
 
+# D0 desktop verification build outputs (frontend + PyInstaller package)
+build/
+
 # Project dependencies and generated output
 node_modules/
 dist/
 .venv/
+.venv-d1/
 __pycache__/
 *.py[cod]
 *.tsbuildinfo

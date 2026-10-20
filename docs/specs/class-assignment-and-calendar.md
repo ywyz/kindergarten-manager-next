@@ -1,5 +1,7 @@
 # I2 班级、教师分配、学期与有效日历
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。有效日历、年级和游戏配置的非冲突规则保留；集中分配、多人权限和 MySQL 实现须适配本地身份与 SQLite。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 状态：2026-09-21 最小实施规格与验证方案已形成，P1–P3 已由用户确认；工程方案待整体审阅；未实现、未验证 I2。本轮仅文档工作，不授权编码、依赖安装、数据库启动、迁移执行、生产连接、AI 调用、部署或 Git 暂存／提交／推送。
 
 基线：`main` / `5efe5d3`。I1 已实现；真实 MySQL 验证为 24 项通过，加强证据后定向 5 项通过，其余结果复用。事实和限制以 [I1 验证记录](../bootstrap/i1-mysql-validation.md) 为准；浏览器密码变更提交和真实人工 CLI 输入未验证。

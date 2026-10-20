@@ -1,5 +1,7 @@
 # AI Service 实施规格
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。结构校验、公网 HTTPS 防护、版本与失败保护按非冲突部分保留；AI 改从教师电脑调用，本地凭据与任务运行需适配。中央管理员与云端离线执行语义失效，transport 尚未因选型而实现。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 状态更新：2026-10-07。管理员本人配置入口已确认；配置服务、API 与设置 UI 已实现并部署，产品受阻子例见 §9。本文的 transport、调用与失败处理仍为待实现工程契约，不代表真实供应商兼容或新增代码／部署授权。依据：[AI Contract](../modules/ai-service.md)、[提示词Contract](../modules/prompts.md)、[ADR 0002](../adr/0002-background-tasks-and-versions.md)、[协同实施索引](ai-capabilities-implementation.md)。不改变Architecture v1。
 
 ## 1. 范围与身份

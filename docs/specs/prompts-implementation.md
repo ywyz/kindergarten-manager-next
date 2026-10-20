@@ -1,5 +1,7 @@
 # 提示词与字段适配实施规格
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。字段契约、个人指导、默认更新及版本保护按非冲突部分保留；本地身份、存储与契约分发需适配，旧设置验收不是新桌面验收。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 状态更新：2026-10-07。提示词版本化服务、API 与设置 UI 已实现并部署，真实契约演进产品子例仍受阻，见 §9。本文继承已确认的接受／拒绝与适配规则，规格本身不构成新增实现授权。依据：[提示词Contract](../modules/prompts.md)、[AI Service规格](ai-service-implementation.md)、[实施索引](ai-capabilities-implementation.md)。
 
 ## 1. 系统协议与个人指导

@@ -2,7 +2,7 @@
 
 结论：**T1／T2 的原阻塞已解除，可以进入获授权的隔离 MySQL 8.4 验证阶段；尚不放行远程夹具使用或 Windows 补验。** 不再要求先进行一轮重复离线补修。下面两项测试加固应由 OpenCode 在真库阶段一并完成，最终放行前核对；不改产品代码或发布工具。
 
-依据：[第三轮交付](ai-slice1c-fixture-repair3-result-2026-10-07.md)、[本轮要求](ai-slice1c-fixture-repair3-opencode-prompt-2026-10-07.md)、[第二轮复审](ai-slice1c-fixture-repair2-review-2026-10-07.md)。协调者只读审阅代码、执行离线检查及更新文档，未创建资源、连接数据库／远程、部署、调用供应商或 commit／push；既有工作区改动保留。
+依据：[第三轮交付](ai-slice1c-fixture-repair3-result-2026-10-07.md)、[第二轮复审中的 T1／T2 要求](ai-slice1c-fixture-repair2-review-2026-10-07.md)。已使用的分轮提示词已清理，实际审阅依据保留。协调者只读审阅代码、执行离线检查及更新文档，未创建资源、连接数据库／远程、部署、调用供应商或 commit／push；既有工作区改动保留。
 
 ## 已成立的修复
 

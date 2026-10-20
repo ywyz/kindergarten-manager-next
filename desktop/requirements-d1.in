@@ -1,0 +1,27 @@
+# D1 unified runtime: selected desktop / test / packaging inputs.
+#
+# Business dependencies are NOT repeated here: they come from
+# backend/pyproject.toml (the authoritative business declaration). This file
+# only adds the already-selected desktop, test and packaging pins; the
+# complete resolved install set lives in requirements-d1.lock.txt, generated
+# by one single resolver run (see docs/bootstrap/desktop-d1-technical-review.md
+# §8.2). Regenerating the lock must never pass --upgrade; dependency changes
+# require their own reviewed task.
+
+# Desktop host window (pywebview + WebView2 via pythonnet/WinForms).
+pywebview==6.2.1
+pythonnet==3.2.1
+clr-loader==0.3.1
+
+# Packaging only; never part of the teacher runtime.
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+
+# Tests only.
+pytest==8.4.2
+httpx==0.28.1
+
+# The one reviewed source-artifact exception: proxy-tools 0.1.0 publishes only
+# a pure-Python sdist (sha256 ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010);
+# it is built in an isolated environment with the pinned setuptools below.
+proxy-tools==0.1.0

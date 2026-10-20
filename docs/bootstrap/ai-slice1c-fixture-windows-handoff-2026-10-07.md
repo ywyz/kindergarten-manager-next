@@ -1,28 +1,37 @@
-# AI 1C 独立夹具 Windows 交接入口（2026-10-07）
+# AI 1C 独立夹具历史状态与剩余事项（2026-10-07）
 
-准备依据：[实际远程结果](ai-slice1c-fixture-remote-preparation-result-2026-10-07.md)。场景行为继续按[夹具方案 §4–§5](ai-slice1c-fixture-plan-2026-10-07.md)和[原桌面补验提示词](ai-slice1abc-desktop-codex-prompt-2026-10-05.md)执行；方案 A 保持确认口径。本交接记录准备完成，不代替 Windows 补验、v2/v3 发布或故障密钥切换的授权。
+2026-10-09 文档整理：本文保留 v1 夹具的已知状态、授权记录、恢复边界和未验定义，不再作为当前桌面开发执行提示词。当前工作以 [Architecture v2 实施入口](architecture-v2-readiness.md)为准；本次整理未连接远程，也未重新核验服务或测试页面是否仍在运行。
 
-## 当前真实基线
+**最后一份 Windows 结果已确认 C5 v2 主流程通过。** 2026-10-07 20:50（Asia/Shanghai），`tfr_i5`／`daily_lesson_split` 的个人 revision4、based contract2、latest contract2、default9、accepted default9、adaptation_state=current。普通保存、完整适配、草稿保护、真实提交飞行窗口锁定和刷新持久化均有证据，详见 [C5 Windows 结果](ai-slice1c-fixture-c5-windows-result-2026-10-07.md)。V1/U3 四组及其变体、参考区处置和 C7 缺／错主密钥仍未验，不宣布 1A–1C 全通过。
 
-- 只使用 **https://kg-next-ai-fixture.ywyz.tech**，当前独立服务正常；原 kg-next-verify 域名不是本轮契约／密钥故障目标。
-- release 为 `ai1c-v1-20261007-176b5ed`，工具哈希和 170 文件源身份见远程结果；正常独立 K_good，七任务全部 v1。
-- daily_lesson_split 最新默认现场为 r8／v1；每次发布前托管者重新 inspect 后填写真实 expected，不用旧 r1 假设。
-- `tfr_i5` 未初始化任何个人 head，适合契约案例；`tow_i5` 供既有手工链路定向验证。五个账号及原密码保留，仅登录临时实例。
-- 账号私密文件在服务器 `/opt/kindergarten-manager-next-ai-fixture/private/acceptance-accounts.json`，通过已有私密通道交接；Windows 如需另存，沿用既有受限 ACL 目录，不放仓库或截图。
-- 当前 sessions=0；B_contract 已实际恢复，恢复前后全部 25 表匹配。备份与配置在同一私密目录的 B_contract.sql／B_contract-app.env。
+## 已完成阶段与证据
 
-## 本轮执行授权与入口
+| 阶段 | 记录与边界 |
+| --- | --- |
+| 独立实例与 B_contract | [远程准备结果](ai-slice1c-fixture-remote-preparation-result-2026-10-07.md)：独立服务、正常主密钥和七任务 v1 已准备；B_contract 实际恢复前后 25 表匹配。该结果是准备期事实，不是当前 v2 现场。 |
+| C5 v1 个人状态 | [首阶段结果](ai-slice1c-fixture-windows-stage1-result-2026-10-07.md)：20:18:33 刷新 GET200，个人 revision2／based1／default8，六份合成标记持久。原保存请求 HTTP 未捕获，缺口仍保留。 |
+| C5 v2 唯一发布 | [发布记录](ai-slice1c-fixture-c5-v2-publication-2026-10-07.md)：20:25:17 发布 v2／r9；未修改个人表、未发布 v3、未切主密钥、未调用供应商。 |
+| C5 v2 Windows 验证 | [最终结果](ai-slice1c-fixture-c5-windows-result-2026-10-07.md)：20:50 主流程及真实飞行窗口通过；文内早先工具受阻报告保留为历史，不覆盖顶部成功结果。 |
 
-2026-10-07 用户在了解 Windows／WSL 分工后明确授权契约发布、故障密钥切换及相应补验。授权已具备，无需重复申请；发布与切换仍按桌面阶段就绪信息顺序执行。本 WSL 会话没有 node_repl、cua_repl 或浏览器控制工具；Windows Codex／Edge 进程存在不等于当前会话能够操作真实 DOM。
+上述阶段的原始执行提示词已清理；阶段结果保留实际动作、HTTP、版本和证据清单。没有记录证明 C5 后已恢复 B_contract、形成 B_crypto 或完成其余子例，不据此推定现场已经复位。
 
-第一步使用[Windows 首阶段提示词](ai-slice1c-fixture-windows-stage1-prompt-2026-10-07.md)，仅建立 C5 的 v1 个人状态并交回版本证据。收到并核对就绪报告后才发布 v2；在此之前保留正常主密钥与 v1 基线。未执行场景不记为通过。
+## 历史资源与授权
 
-20:18:33 Windows已交回v1就绪证明；协调者核对远程个人revision2／v1／r8后，20:25:17实际发布v2／r9，并完成只读复核。当前真实状态由[发布记录](ai-slice1c-fixture-c5-v2-publication-2026-10-07.md)覆盖上方准备期v1基线；Windows接续[第二阶段提示词](ai-slice1c-fixture-windows-stage2-prompt-2026-10-07.md)，先完成C5，不批量进入其他案例。
+- 独立夹具域名为 `https://kg-next-ai-fixture.ywyz.tech`；原 `kg-next-verify` 域名不是契约／密钥故障目标。
+- 准备期 release 为 `ai1c-v1-20261007-176b5ed`，工具哈希、170 文件源身份、端口和权限见远程准备结果。正常独立密钥称为 K_good；准备时七任务全 v1、daily 最新默认 r8，随后仅 daily 已发布 v2／r9。
+- `tfr_i5` 用于契约案例，`tow_i5` 用于手工链路定向验证。五个合成账号与原密码保留，凭据不得进入仓库或截图。
+- 服务器私密目录 `/opt/kindergarten-manager-next-ai-fixture/private` 保留 `acceptance-accounts.json`、`B_contract.sql`、`B_contract-app.env` 和发布 manifest；实际文件与权限记录见远程结果。Windows 私密证据位于 `C:\Users\yw980\.codex\tmp\ai1abc-desktop-acceptance-20261005\logs`。
+- 用户在 2026-10-07 明确授权过该轮契约发布、故障密钥切换与 Windows 补验；首阶段就绪后才发布 v2，发布成功 manifest 后再进行 Windows 适配。该历史授权及执行范围保留，本轮文档整理不继续远程操作。
+- 当时协调会话在 WSL，无真实浏览器工具，因此采用 WSL 托管与 Windows DOM 验收分工。这是该轮环境记录，不是新桌面项目必须使用 WSL 的规则。
 
-## 下一阶段安排
+## 保留的未验定义与恢复边界
 
-授权后先由桌面端对照当前实际 URL／角色／基线。契约案例仍按 C5→V1/U3 四组及各变体推进：Windows 先在 v1 建立各例所需个人状态，托管者收到当前阶段就绪信息后才逐次发布；取得成功 manifest 后 Windows 继续真实 DOM／HTTP 动作，不先一次性发完 v2/v3。各例恢复 B_contract 时先退出并关闭自建页面，托管者停临时 API、归档证据、还原精确临时库与配套配置、清会话、重启核验，再重新登录。
+具体场景保留在[夹具方案 §4–§5](ai-slice1c-fixture-plan-2026-10-07.md)，方案 A 的同契约旧默认可接受口径保持不变。
 
-缺／错主密钥阶段另交接：Windows 在临时 UI 保存新合成 secret，托管者核对当前版本确由 K_good 加密，建立 B_crypto 并实际恢复；之后才进入每轮服务配置切换与真实重启。错误主密钥下显式提交新 secret 可重新加密，不写成必然503。每轮恢复正常密钥与匹配数据后核验；供应商调用不在这些补验范围。
+- **V1/U3**：远端已适配／仍待适配、同字段去重／不同字段双草稿、收缩契约移除字段，以及普通框与参考区文字、明确处置、离开确认仍需真实 DOM／HTTP 证据。已完成 C5 不替代这些冲突子例。
+- **C7**：B_crypto 尚无已完成记录；必须先在正常 K_good 下通过 UI 保存新合成 secret，确认当前密文身份并形成、实际恢复该基线，才能验证缺／错主密钥。错误主密钥下显式提交新 secret 可重新加密，不能写成必然 503。
+- **阶段交接**：历史方案要求 Windows 先准备个人状态，托管者核对后单次发布，再用成功 manifest 接续真实页面；不批量提前发布 v2/v3，不以 API 直调替代 DOM。
+- **恢复**：各例恢复 B_contract／B_crypto 前，Windows 退出并关闭自建测试页面，托管者停临时 API、归档证据、还原精确临时库及配套配置、清会话、重启核验，再重新登录。不得修改原实例或把恢复当成产品历史回退。
+- **证据边界**：准备、发布、服务器配置、真实浏览器和模拟分别登记。供应商调用不在这些补验范围；手工 Word 下载不替代完整 W6 或 Word／WPS 逐页验收。退役、删除和原环境清理不因文档清理而发生。
 
-报告分别记录准备、发布、服务器配置状态、浏览器真实结果；仍受阻或未跑子例保持原状态。下载和手工 Word 定向回归不冒称完整 W6 或 Office/WPS 全页补验。完成后退出测试登录、关闭自建页面并按托管者交接恢复正常基线；退役与清理另定范围。
+这些历史未验项保留原状态，不作为桌面方向的总阻塞。如未来重启其中某项，应根据实际任务范围和现场状态形成当次交接，不能直接重放已使用的提示词。

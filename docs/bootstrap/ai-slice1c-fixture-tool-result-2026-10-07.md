@@ -2,7 +2,7 @@
 
 状态：编码与离线验证完成，交付在"工具可复审"停止点；未部署、未连接远程验收服务器、未发布任何真实契约，未 commit／push。
 
-依据：[编码提示词](ai-slice1c-fixture-opencode-prompt-2026-10-07.md)、[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)、[Windows 报告](ai-slice1c-desktop-validation-2026-10-05.md)。方案 A 口径不变；本工具不读取 AI_MASTER_KEY，不迁移、不建库、不 GRANT、不启动服务，也不提供 reset／drop／truncate 或任意 schema 编辑。
+依据：[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)、[Windows 报告](ai-slice1c-desktop-validation-2026-10-05.md)。本轮已使用的编码提示词已清理，实际交付范围保留在下文。方案 A 口径不变；本工具不读取 AI_MASTER_KEY，不迁移、不建库、不 GRANT、不启动服务，也不提供 reset／drop／truncate 或任意 schema 编辑。
 
 ## 1. 实际修改文件（本轮新增，全部为新增文件，零产品代码改动）
 

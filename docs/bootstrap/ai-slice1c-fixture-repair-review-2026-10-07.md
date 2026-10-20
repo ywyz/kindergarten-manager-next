@@ -42,7 +42,7 @@
 
 ## 下一步与放行门槛
 
-1. 按[第二轮集中补修提示词](ai-slice1c-fixture-repair2-opencode-prompt-2026-10-07.md)修正 S1–S6、测试资源清理及报告口径；增加覆盖这些 dormant 入口与合法竞争结果的离线检查，避免全skip掩盖确定运行错误。
+1. 本轮曾交 OpenCode 修正上述 S1–S6、测试资源清理及报告口径，并增加入口与合法竞争结果的离线检查；后续交付见[第二轮补修结果](ai-slice1c-fixture-repair2-result-2026-10-07.md)。
 2. 复审通过后申请／准备一次性 MySQL 8.4／InnoDB、127.0.0.1:13387、精确 kindergarten_test_ai1c_fixture、独立仅本库测试与迁移账号；不借用原远程库，不拉新镜像或安装依赖。资源授权另记。
 3. 集成全部实际执行、0 failure／0 error／0 skip，真实回滚／锁竞争／编号／CLI结果通过后，再形成具体远程部署清单和 Windows 接续交接。
 

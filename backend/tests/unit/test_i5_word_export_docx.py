@@ -93,6 +93,41 @@ def _body_blocks(root):
     return ["\n".join(block) for block in blocks]
 
 
+def _block_header_paragraphs(root):
+    """Header paragraphs (title, subtitle) of every plan block, in order.
+
+    A header paragraph list ends when the block's table starts; the inter-plan
+    page-break paragraph carries no text and is skipped.
+    """
+    body = root.find(docx._w("body"))
+    blocks = []
+    current = []
+    for child in body:
+        if child.tag == docx._w("sectPr"):
+            continue
+        if child.tag == docx._w("tbl"):
+            blocks.append(current)
+            current = []
+        elif child.tag == docx._w("p") and child.find(
+            f".//{docx._w('br')}[@{docx._w('type')}='page']"
+        ) is None:
+            current.append(child)
+    return blocks
+
+
+def _paragraph_jc(paragraph):
+    jc = paragraph.find(f"{docx._w('pPr')}/{docx._w('jc')}")
+    return jc.get(docx._w("val")) if jc is not None else None
+
+
+def _run_bold_value(run, tag="b"):
+    """Explicit ``w:b``/``w:bCs`` value; None when missing or val-less."""
+    element = run.find(f"{docx._w('rPr')}/{docx._w(tag)}")
+    if element is None:
+        return None
+    return element.get(docx._w("val"))
+
+
 # ---------------------------------------------------------------------------
 # fixtures (reuse the mapping layer)
 # ---------------------------------------------------------------------------
@@ -352,7 +387,6 @@ class DailyDocxTests(unittest.TestCase):
         text = _text(root)
         for expected in (
             "阳光园一日活动计划",
-            "中班",
             "中一",
             "甲老师",
             "第 1 周",
@@ -378,6 +412,10 @@ class DailyDocxTests(unittest.TestCase):
             "一日反思文本",
         ):
             self.assertIn(expected, text, expected)
+        # R18-B: the signature uses only the class and creator snapshots.
+        header = _block_header_paragraphs(root)[0]
+        self.assertEqual(_text(header[1]), "中一 甲老师")
+        self.assertNotIn("中班", text)
         # No template sample people / sample text survives.
         for residue in ("南通市崇川区樾府幼儿园", "岳炜", "暑假趣事多", "蜜雪冰城"):
             self.assertNotIn(residue, text, residue)
@@ -517,11 +555,14 @@ class DailyDocxTests(unittest.TestCase):
         data = docx.generate_daily_export_docx([first, second])
         _, root = _open(data)
         text = _text(root)
-        # Both headers survive exactly once, in input order.
+        # Both headers survive exactly once, in input order. R18-B: the
+        # signature shows class + creator only, no grade part.
         self.assertEqual(text.count("甲园一日活动计划"), 1)
         self.assertEqual(text.count("乙园一日活动计划"), 1)
-        self.assertEqual(text.count("小班 小一 甲老师"), 1)
-        self.assertEqual(text.count("大班 大三 乙老师"), 1)
+        self.assertEqual(text.count("小一 甲老师"), 1)
+        self.assertEqual(text.count("大三 乙老师"), 1)
+        self.assertNotIn("小班", text)
+        self.assertNotIn("大班", text)
         self.assertLess(
             text.index("甲园一日活动计划"), text.index("乙园一日活动计划")
         )
@@ -530,11 +571,11 @@ class DailyDocxTests(unittest.TestCase):
         blocks = _body_blocks(root)
         self.assertEqual(len(blocks), 2)
         self.assertIn("甲园一日活动计划", blocks[0])
-        self.assertIn("小班 小一 甲老师", blocks[0])
+        self.assertIn("小一 甲老师", blocks[0])
         self.assertNotIn("乙园", blocks[0])
         # Second plan is not represented by the first plan's header.
         self.assertIn("乙园一日活动计划", blocks[1])
-        self.assertIn("大班 大三 乙老师", blocks[1])
+        self.assertIn("大三 乙老师", blocks[1])
         self.assertNotIn("甲园", blocks[1])
         self.assertNotIn("小一", blocks[1])
         # Each table keeps its own date.
@@ -585,19 +626,24 @@ class DailyDocxTests(unittest.TestCase):
 
 
 class GradeHeaderDocxTests(unittest.TestCase):
-    """The final OOXML subtitle/class line must show 小班/中班/大班 for the
-    real persisted enum values, per plan (merged exports included)."""
+    """Grade display rules at the Word boundary after the 2026-10-17 R18
+    decision: the daily signature shows only the class + creator snapshots
+    (grade stays in the data model/mapping), while the weekly class line still
+    renders 小班/中班/大班 for the real persisted enum values."""
 
     _ENUM = (("small", "小班"), ("middle", "中班"), ("large", "大班"))
 
-    def test_w1_daily_subtitle_shows_chinese_for_each_enum_value(self):
+    def test_r18b_daily_subtitle_omits_grade_for_each_enum_value(self):
         for code, label in self._ENUM:
             data = docx.generate_daily_export_docx(
                 [_daily_view(grade=code, class_name="中一")]
             )
             _, root = _open(data)
-            self.assertIn(f"{label} 中一 甲老师", _text(root), code)
-            self.assertNotIn(f"{code} 中一", _text(root), code)
+            text = _text(root)
+            self.assertIn("中一 甲老师", text, code)
+            self.assertNotIn(f"{label} 中一", text, code)
+            self.assertNotIn(label, text, code)
+            self.assertNotIn(code, text, code)
 
     def test_w6_weekly_class_line_shows_chinese_for_each_enum_value(self):
         for code, label in self._ENUM:
@@ -608,26 +654,30 @@ class GradeHeaderDocxTests(unittest.TestCase):
             self.assertIn(f"班级：{label} 中一", _text(root), code)
             self.assertNotIn(f"班级：{code} 中一", _text(root), code)
 
-    def test_w1_chinese_grade_fixture_compatibility(self):
-        # Legacy Chinese fixtures keep the identical output.
+    def test_r18b_daily_fixture_drops_grade_weekly_keeps_it(self):
+        # Legacy Chinese fixtures: the daily signature keeps class + teacher
+        # only; the weekly class line keeps the grade label unchanged.
         data = docx.generate_daily_export_docx([_daily_view()])
         _, root = _open(data)
-        self.assertIn("中班 中一 甲老师", _text(root))
+        self.assertIn("中一 甲老师", _text(root))
+        self.assertNotIn("中班", _text(root))
         weekly = docx.generate_weekly_export_docx(
             [_weekly_view(grade="大班", class_name="向日葵班")]
         )
         _, weekly_root = _open(weekly)
         self.assertIn("班级：大班 向日葵班", _text(weekly_root))
 
-    def test_w1_empty_grade_keeps_empty_subtitle_part(self):
+    def test_r18b_daily_empty_grade_same_signature_no_double_space(self):
         data = docx.generate_daily_export_docx(
             [_daily_view(grade="", class_name="中一")]
         )
         _, root = _open(data)
-        self.assertIn("中一 甲老师", _text(root))
+        header = _block_header_paragraphs(root)[0]
+        self.assertEqual(_text(header[1]), "中一 甲老师")
         self.assertNotIn("  中一", _text(root))
+        self.assertNotIn("  ", _text(header[1]))
 
-    def test_w3_merged_mixed_grades_each_plan_shows_own_grade(self):
+    def test_r18b_merged_daily_snapshots_class_only(self):
         first = _daily_view(
             plan_id="a",
             plan_date=date(2026, 9, 1),
@@ -648,10 +698,12 @@ class GradeHeaderDocxTests(unittest.TestCase):
         _, root = _open(data)
         blocks = _body_blocks(root)
         self.assertEqual(len(blocks), 2)
-        self.assertIn("小班 小一 甲老师", blocks[0])
-        self.assertNotIn("小班", blocks[1])
-        self.assertIn("大班 大三 乙老师", blocks[1])
-        self.assertNotIn("大班", blocks[0])
+        self.assertIn("小一 甲老师", blocks[0])
+        self.assertNotIn("大三", blocks[0])
+        self.assertIn("大三 乙老师", blocks[1])
+        self.assertNotIn("小一", blocks[1])
+        for grade_label in ("小班", "大班"):
+            self.assertNotIn(grade_label, _text(root), grade_label)
         for code in ("small", "large"):
             self.assertNotIn(code, _text(root), code)
 
@@ -680,6 +732,162 @@ class GradeHeaderDocxTests(unittest.TestCase):
         weekly = _weekly_view(grade="small")
         docx.generate_weekly_export_docx([weekly])
         self.assertEqual(weekly["header"]["grade"], "小班")
+
+
+# ---------------------------------------------------------------------------
+# R18 daily-plan format (2026-10-17 user decision, spec §12.4)
+# ---------------------------------------------------------------------------
+
+
+class R18DailyFormatDocxTests(unittest.TestCase):
+    """Output-level checks for the three R18 adjustments.
+
+    A: every daily title paragraph is explicitly centered (also with an empty
+    or long school snapshot), never via space padding.
+    B: the signature uses the plan's class + creator snapshots, no grade part,
+    and never rewrites the class text itself.
+    C: every run inside the daily table carries explicit ``w:b``/``w:bCs``
+    off so neither direct formatting nor inherited template/style bold can
+    survive; red comparison runs stay red.
+    """
+
+    def test_r18a_title_centered_normal_empty_and_long_school(self):
+        long_school = "超长园所名称用于自然换行验证" * 3
+        cases = (
+            ("阳光园", "阳光园一日活动计划"),
+            (None, "一日活动计划"),
+            ("", "一日活动计划"),
+            (long_school, long_school + "一日活动计划"),
+        )
+        for school, expected in cases:
+            data = docx.generate_daily_export_docx(
+                [_daily_view(school_name=school)]
+            )
+            _, root = _open(data)
+            blocks = _block_header_paragraphs(root)
+            self.assertEqual(len(blocks), 1)
+            title, subtitle = blocks[0]
+            self.assertEqual(_paragraph_jc(title), "center", school)
+            self.assertEqual(_text(title), expected)
+            # centered by paragraph alignment, never by space simulation
+            self.assertEqual(_text(title), _text(title).strip())
+            self.assertNotIn("  ", _text(title))
+            # the signature keeps its template alignment
+            self.assertEqual(_paragraph_jc(subtitle), "center")
+
+    def test_r18a_merged_export_centers_every_title(self):
+        views = [
+            _daily_view(plan_id="a", school_name="甲园"),
+            _daily_view(
+                plan_id="b",
+                plan_date=date(2026, 9, 2),
+                weekday=3,
+                school_name=None,
+            ),
+        ]
+        data = docx.generate_daily_export_docx(views)
+        _, root = _open(data)
+        blocks = _block_header_paragraphs(root)
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(_paragraph_jc(blocks[0][0]), "center")
+        self.assertEqual(_text(blocks[0][0]), "甲园一日活动计划")
+        self.assertEqual(_paragraph_jc(blocks[1][0]), "center")
+        self.assertEqual(_text(blocks[1][0]), "一日活动计划")
+
+    def test_r18b_signature_snapshots_class_plus_teacher(self):
+        first = _daily_view(
+            plan_id="a",
+            grade="middle",
+            class_name="体验中四班",
+            creator_display_name="体验教师",
+        )
+        second = _daily_view(
+            plan_id="b",
+            plan_date=date(2026, 9, 2),
+            weekday=3,
+            grade="large",
+            class_name="大班一班",
+            creator_display_name="乙老师",
+        )
+        data = docx.generate_daily_export_docx([first, second])
+        _, root = _open(data)
+        blocks = _block_header_paragraphs(root)
+        self.assertEqual(_text(blocks[0][1]), "体验中四班 体验教师")
+        # the class text itself is preserved verbatim even when it contains
+        # grade characters; only the extra grade part is gone
+        self.assertEqual(_text(blocks[1][1]), "大班一班 乙老师")
+        self.assertNotIn("中班 体验中四班", _text(root))
+        self.assertEqual(_text(root).count("大班"), 1)
+        self.assertEqual(_text(root).count("体验中四班"), 1)
+
+    def test_r18c_all_daily_table_runs_explicit_bold_off(self):
+        baseline = "第一段。\n第二段。"
+        final = (
+            "第一段。\n新增：先检查纸杯边缘。\n第三段长内容。" + "重复。" * 40
+        )
+        view = _daily_view(
+            adopted_content=_daily_content(
+                group_activity={"theme": "主题", "process": final}
+            ),
+            split_baseline={"group_activity_process": baseline},
+        )
+        empty_view = _daily_view(plan_id="e", adopted_content={})
+        data = docx.generate_daily_export_docx([view, empty_view])
+        _, root = _open(data)
+        tables = _tables(root)
+        self.assertEqual(len(tables), 2)
+        text_runs = 0
+        for table in tables:
+            for run in table.iter(docx._w("r")):
+                self.assertIn(_run_bold_value(run, "b"), ("false", "0"))
+                self.assertIn(_run_bold_value(run, "bCs"), ("false", "0"))
+                if _text(run):
+                    text_runs += 1
+        # fixed labels + dynamic labels + long process + empty columns all run
+        # through the same normalization
+        self.assertGreater(text_runs, 50)
+        table_text = _text(tables[0]) + _text(tables[1])
+        for label in (
+            "晨间活动：",
+            "一日活动反思：",
+            "重点指导：",
+            "活动过程：",
+            "第 1 周",
+        ):
+            self.assertIn(label, table_text)
+        # non-bold must not have touched other run properties
+        sized = [
+            run
+            for run in tables[0].iter(docx._w("r"))
+            if run.find(f"{docx._w('rPr')}/{docx._w('sz')}") is not None
+        ]
+        self.assertTrue(sized)
+        # red comparison runs keep their color and are explicitly non-bold
+        red = _red_text(root)
+        self.assertIn("新增：先检查纸杯边缘", red)
+        red_runs = 0
+        for run in tables[0].iter(docx._w("r")):
+            color = run.find(f"{docx._w('rPr')}/{docx._w('color')}")
+            if color is not None and color.get(docx._w("val")) == "FF0000":
+                red_runs += 1
+                self.assertIn(_run_bold_value(run, "b"), ("false", "0"))
+        self.assertGreater(red_runs, 0)
+
+    def test_r18c_no_baseline_export_has_no_red(self):
+        data = docx.generate_daily_export_docx(
+            [_daily_view(split_baseline=None)]
+        )
+        _, root = _open(data)
+        self.assertEqual(_red_text(root), "")
+        for run in _tables(root)[0].iter(docx._w("r")):
+            self.assertIn(_run_bold_value(run, "b"), ("false", "0"))
+
+    def test_r18_daily_normalization_not_applied_to_weekly_output(self):
+        data = docx.generate_weekly_export_docx([_weekly_view()])
+        _, root = _open(data)
+        for run in root.iter(docx._w("r")):
+            self.assertNotIn(_run_bold_value(run, "b"), ("false", "0"))
+            self.assertNotIn(_run_bold_value(run, "bCs"), ("false", "0"))
 
 
 # ---------------------------------------------------------------------------

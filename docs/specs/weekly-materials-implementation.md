@@ -1,5 +1,7 @@
 # 周计划材料候选、采用与W6补验实施规格
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。P2／P3 的材料采用、人工编辑和改选保护仍为后续规格依据；来源改为本人游戏与班级配置，其他周输入需澄清。当前不启动材料实施，完整 W6 非空材料仍须补验。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 状态：2026-10-03规格收敛。用户已确认：**采用AI材料候选后负责人可编辑／清空；无候选时继续保留空栏。** 用户已确认P3：来源改选后保留旧材料正文与依据并标陈旧，由负责人明确请求重生成，不因改选自动排队。材料尚未实现／产品验收未通过，不因规格落盘转为通过。依据：[周计划Contract](../modules/weekly-plans.md)、[最小规格材料规则](manual-plans-and-word-export.md)、[用户阶段决定](../bootstrap/i5-evidence-closeout-and-scope-decision-2026-10-03.md)、[原文参考提取](../bootstrap/i5-material-reference-extraction-2026-10-03.md)。
 
 ## 1. 已确认业务边界

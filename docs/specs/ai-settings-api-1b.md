@@ -1,5 +1,7 @@
 # 基础配置与提示词 1B：API／权限设计定稿
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。本文是 v1 已实施 API 的工程记录；字段与版本规则供复用审查，本地身份、会话及存储需适配，管理员角色不延续为集中管理需求。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 状态更新：2026-10-07。本文为 1B 的有效工程规格，1B 已实现并完成阶段审阅，1A／1B／1C 已部署。实际部署见 [部署结果](../bootstrap/ai-slice1abc-deployment-result-2026-10-05.md)；产品结论见 [Windows 验收报告](../bootstrap/ai-slice1c-desktop-validation-2026-10-05.md)，相关夹具子例仍受阻，尚未全通过。业务代码由 OpenCode 唯一写入，本文不自动授权重做或部署。
 
 依据：[1A 阶段收口](../bootstrap/ai-slice1a-closeout-review-2026-10-04.md)、[1A v3](../bootstrap/ai-slice1a-implementation-checklist-2026-10-03.md)、[AI Service 规格](ai-service-implementation.md)、[提示词规格](prompts-implementation.md)、AI Service／提示词／操作日志 Contract、ADR 0002。本文细化既有设置行为，不改变 Architecture v1。此前规格的“拟定”接口在本片按本文落实。

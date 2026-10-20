@@ -10,6 +10,8 @@
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
     "build": "vite build",
+    "build:d1": "vite build --config vite.d1.config.ts",
+    "test:d1": "node src/d1/d1.test.mjs && node src/d1/d1.components.test.mjs && node src/d1/d1.w5.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

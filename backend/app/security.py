@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from fastapi import Request, Response
 
 from app.config import settings
+from app.ids import new_opaque_id
 
 
 _SCRYPT_N = 2**14
@@ -19,8 +20,13 @@ _SALT_BYTES = 32
 
 
 def generate_id() -> str:
-    """Opaque stable identifier (22 url-safe characters)."""
-    return secrets.token_urlsafe(16)
+    """Opaque stable identifier (22 url-safe characters).
+
+    Delegates to :func:`app.ids.new_opaque_id` so pure modules (content
+    validation, local desktop code) can share the primitive without
+    importing this settings-aware module. Behaviour is unchanged.
+    """
+    return new_opaque_id()
 
 
 def hash_password(password: str) -> str:

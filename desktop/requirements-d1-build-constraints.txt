@@ -1,0 +1,4 @@
+# Build constraints for the D1 runtime: isolated source-build tooling only.
+# The single source artifact (proxy-tools==0.1.0 sdist) must build with this
+# fixed setuptools; the temporary build environment may never fetch "latest".
+setuptools==84.0.0

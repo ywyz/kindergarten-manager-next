@@ -1,0 +1,4 @@
+pytest>=8,<9
+httpx>=0.27,<1
+# Build-time only (D0-6 test package); never part of the teacher runtime.
+pyinstaller>=6.10

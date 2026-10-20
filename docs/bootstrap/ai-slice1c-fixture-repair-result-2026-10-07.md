@@ -2,7 +2,7 @@
 
 状态：**编码与离线验证完成，继续停在"补修交付、交协调者复审"停止点**；真库集成仍未执行（资源未具备，全部如实登记 skip），未连接远程、未部署、未操作主密钥、未调用供应商、未 commit／push。原[交付报告](ai-slice1c-fixture-tool-result-2026-10-07.md)历史保留，不追溯改写；本报告只记录补修增量。
 
-依据：[复审报告](ai-slice1c-fixture-tool-review-2026-10-07.md)、[补修提示词](ai-slice1c-fixture-repair-opencode-prompt-2026-10-07.md)、[原编码提示词](ai-slice1c-fixture-opencode-prompt-2026-10-07.md)、[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)。方案 A 口径不变，未新增"默认目标必须最新"检查。
+依据：[复审报告中的 R1／R2 要求](ai-slice1c-fixture-tool-review-2026-10-07.md)、[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)。已使用的编码及补修提示词已清理，实际修改与验证保留在本报告。方案 A 口径不变，未新增"默认目标必须最新"检查。
 
 ## 1. 实际修改文件（本轮范围）
 

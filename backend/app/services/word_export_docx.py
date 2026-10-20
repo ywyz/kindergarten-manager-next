@@ -369,6 +369,156 @@ def _set_paragraph_text(paragraph, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# R18 daily-plan normalization (2026-10-17 user decision, spec §12.4)
+#
+# Applies to the daily generation path only: the shared cell writer and the
+# weekly generator are untouched. The three fixes are output-level:
+#   A) every daily title paragraph gets an explicit ``w:jc`` = center (the
+#      template copy previously inherited Normal's two-sided alignment);
+#   B) the signature joins only the plan's class + creator snapshots (the
+#      grade stays in the data model/mapping but is not printed);
+#   C) every run inside the daily table gets explicit ``w:b``/``w:bCs`` =
+#      false, so the template's direct bold formatting and any style-inherited
+#      bold cannot survive (removing the tags alone would keep the styles).
+# ---------------------------------------------------------------------------
+
+# ECMA-376 child order of CT_PPrBase / CT_RPr; inserted elements must stay in
+# a schema-valid position instead of a blind trailing append.
+_PPR_CHILD_ORDER = (
+    "pStyle",
+    "keepNext",
+    "keepLines",
+    "pageBreakBefore",
+    "framePr",
+    "widowControl",
+    "numPr",
+    "suppressLineNumbers",
+    "pBdr",
+    "shd",
+    "tabs",
+    "suppressAutoHyphens",
+    "kinsoku",
+    "wordWrap",
+    "overflowPunct",
+    "topLinePunct",
+    "autoSpaceDE",
+    "autoSpaceDN",
+    "bidi",
+    "adjustRightInd",
+    "snapToGrid",
+    "spacing",
+    "ind",
+    "contextualSpacing",
+    "mirrorIndents",
+    "suppressOverlap",
+    "jc",
+    "textDirection",
+    "textAlignment",
+    "textboxTightWrap",
+    "outlineLvl",
+    "divId",
+    "cnfStyle",
+    "rPr",
+    "sectPr",
+    "pPrChange",
+)
+
+_RPR_CHILD_ORDER = (
+    "rStyle",
+    "rFonts",
+    "b",
+    "bCs",
+    "i",
+    "iCs",
+    "caps",
+    "smallCaps",
+    "strike",
+    "dstrike",
+    "outline",
+    "shadow",
+    "emboss",
+    "imprint",
+    "noProof",
+    "snapToGrid",
+    "vanish",
+    "webHidden",
+    "color",
+    "spacing",
+    "w",
+    "kern",
+    "position",
+    "sz",
+    "szCs",
+    "highlight",
+    "u",
+    "effect",
+    "bdr",
+    "shd",
+    "fitText",
+    "vertAlign",
+    "rtl",
+    "cs",
+    "em",
+    "lang",
+    "eastAsianLayout",
+    "specVanish",
+    "oMath",
+)
+
+
+def _insert_ordered(parent, element, order) -> None:
+    """Insert ``element`` before the first sibling that must follow it."""
+    rank = order.index(etree.QName(element).localname)
+    for position, child in enumerate(parent):
+        tag = etree.QName(child).localname
+        if tag in order and order.index(tag) > rank:
+            parent.insert(position, element)
+            return
+    parent.append(element)
+
+
+def _force_paragraph_alignment(paragraph, value: str) -> None:
+    """Explicit paragraph alignment (R18-A: title must not inherit jc=both)."""
+    pPr = paragraph.find(_w("pPr"))
+    if pPr is None:
+        pPr = etree.Element(_w("pPr"))
+        paragraph.insert(0, pPr)
+    for existing in pPr.findall(_w("jc")):
+        pPr.remove(existing)
+    alignment = etree.Element(_w("jc"))
+    alignment.set(_w("val"), value)
+    _insert_ordered(pPr, alignment, _PPR_CHILD_ORDER)
+
+
+def _force_run_bold_off(run) -> None:
+    """Explicitly turn bold off on one run via direct run formatting.
+
+    Direct ``w:b``/``w:bCs`` = false overrides both character and paragraph
+    styles, so deleting the template's bold tags is not enough (R18-C).
+    """
+    rPr = run.find(_w("rPr"))
+    if rPr is None:
+        rPr = etree.Element(_w("rPr"))
+        run.insert(0, rPr)
+    for tag in ("b", "bCs"):
+        for existing in rPr.findall(_w(tag)):
+            rPr.remove(existing)
+        off = etree.Element(_w(tag))
+        off.set(_w("val"), "false")
+        _insert_ordered(rPr, off, _RPR_CHILD_ORDER)
+
+
+def _force_daily_table_not_bold(table) -> None:
+    """R18-C: every run inside the daily table is effectively non-bold.
+
+    Covers template-origin fixed labels (week/day cells, left labels) and all
+    dynamically written content runs, including red comparison runs.
+    """
+    for run in table.iter(_w("r")):
+        _force_run_bold_off(run)
+
+
+# ---------------------------------------------------------------------------
 # daily plan table
 # ---------------------------------------------------------------------------
 
@@ -758,8 +908,13 @@ def generate_daily_export_docx(views, *, template_path=None) -> bytes:
             title,
             f"{header.get('school_name') or ''}{_DAILY_TITLE_SUFFIX}",
         )
+        # R18-A: explicit centered title; the template copy alone inherits
+        # Normal's two-sided alignment.
+        _force_paragraph_alignment(title, "center")
+        # R18-B: the daily signature is "class_name creator_display_name".
+        # The creation-time grade snapshot stays in the content model and
+        # mapping but is not printed (empty parts are still filtered).
         parts = [
-            header.get("grade"),
             header.get("class_name"),
             header.get("creator_display_name"),
         ]
@@ -767,7 +922,9 @@ def generate_daily_export_docx(views, *, template_path=None) -> bytes:
             subtitle, " ".join(p for p in parts if isinstance(p, str) and p)
         )
         elements.extend([title, subtitle])
-        elements.append(_build_daily_table(canonical_table, view))
+        table = _build_daily_table(canonical_table, view)
+        _force_daily_table_not_bold(table)
+        elements.append(table)
 
     sectPr = _reset_body(body)
     _append_body(body, elements, sectPr)

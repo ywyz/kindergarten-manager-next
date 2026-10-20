@@ -2,7 +2,7 @@
 
 结论：**暂不通过远程使用门槛。先交 OpenCode 最小补修，再完成隔离真实 MySQL 验证，之后才准备具体远程执行清单。** 当前 1A–1C 产品代码与方案 A 不需因此修改；工具与其集成测试存在独立问题。
 
-依据：[交付报告](ai-slice1c-fixture-tool-result-2026-10-07.md)、[原编码提示词](ai-slice1c-fixture-opencode-prompt-2026-10-07.md)、[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)。审阅为本地工作区只读代码复核及离线验证，未连接数据库或服务器，未改工具／测试业务文件、未部署、未 commit／push。保留实现者报告的历史身份。
+依据：[交付报告](ai-slice1c-fixture-tool-result-2026-10-07.md)、[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)。已使用的编码提示词已清理，审阅要求和发现保留在本报告。审阅为本地工作区只读代码复核及离线验证，未连接数据库或服务器，未改工具／测试业务文件、未部署、未 commit／push。保留实现者报告的历史身份。
 
 ## 已成立的部分
 
@@ -43,7 +43,7 @@ inspect 当前 select(PromptDefaultVersion) 会加载 guidance_map，虽未输�
 
 ## 下一步和完成条件
 
-1. 按[最小补修提示词](ai-slice1c-fixture-repair-opencode-prompt-2026-10-07.md)由 OpenCode 补修 R1／R2，协调者独立复审。
+1. 本轮曾交 OpenCode 补修上述 R1／R2；后续实际交付见[第一轮补修结果](ai-slice1c-fixture-repair-result-2026-10-07.md)，不再重复执行旧提示词。
 2. 真库资源尚未授权／具备：需要一次性 MySQL 8.4／InnoDB、127.0.0.1:13387、精确 kindergarten_test_ai1c_fixture、独立仅本库测试账号；允许其迁移、测试数据准备与恢复。准备资源前先确认端口归属与可用镜像，不安装或拉取新依赖。本轮未建立资源，后续资源清单获授权才运行。
 3. 真实集成全部实际执行且0 failure／0 error／0 skip，确认提交结果、故障回滚、锁序与真实默认竞争；再填独立远程实例清单，经相应授权准备。
 4. Windows 接续剩余 C5／V1／U3／C7，全部证据收口之后才考虑持久执行核心。

@@ -59,7 +59,7 @@
 
 ## 桌面交接／未执行
 
-[完整桌面测试方案](ai-slice1abc-desktop-codex-prompt-2026-10-05.md)已生成。新的 Windows 私密交接目录 `C:\Users\yw980\.codex\tmp\ai1abc-desktop-acceptance-20261005` 含原五账号 credentials 的 accounts.private.json、references 和 logs；旧 I5 私密目录不覆盖。
+本轮已生成并交付桌面测试方案；已使用提示词现已清理，后续实际结果见[Windows 验收报告](ai-slice1c-desktop-validation-2026-10-05.md)，剩余夹具案例定义见[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)。新的 Windows 私密交接目录 `C:\Users\yw980\.codex\tmp\ai1abc-desktop-acceptance-20261005` 含原五账号 credentials 的 accounts.private.json、references 和 logs；旧 I5 私密目录不覆盖。
 
 **真实浏览器 C1–C7 未执行；真实 v2/v3 发布、V1 双草稿契约推进与缺／错主密钥服务夹具未准备，相关子例仍受阻。** 没有改 registry／共享库来冒充真实发布，也没有为普通部署临时改正常主密钥来凑降级验收。1A＋1B 真库 50＋23 项仍引用既有实现者报告，本轮未另跑破坏性集成测试。未执行供应商调用、transport、worker、材料、完整 W6、Office/WPS 逐页、容量或灾备恢复；不启动其他切片。
 

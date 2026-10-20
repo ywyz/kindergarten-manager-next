@@ -1,5 +1,7 @@
 # MySQL 持久AI任务实施规格
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。本文 MySQL 领取、租约与云端 worker 不是本地执行定稿。保留未发送可恢复、已发送结果不明不重发和候选保护原则；SQLite 状态、退出／休眠／换机恢复与周触发需新规格。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 状态：2026-10-03工程规格收敛；只继承[ADR 0002](../adr/0002-background-tasks-and-versions.md)和现有I3／I4版本规则，不新增技术组件，不授权worker启动或部署。依赖[AI Service](ai-service-implementation.md)、[提示词](prompts-implementation.md)、[材料](weekly-materials-implementation.md)及[实施索引](ai-capabilities-implementation.md)。
 
 ## 1. 当前差距与责任

@@ -1,6 +1,6 @@
 # ADR 0001 技术栈与数据库选型
 
-状态：已接受。用户在本次会话中接受 MySQL 8.4 推荐，随后确认部署与任务方案；本文记录既有决定，不构成安装或迁移授权。
+状态：部分被替代，2026-10-08。[ADR 0004](0004-local-desktop-architecture-proposal.md)已确认 Windows 本地应用使用 SQLite；本文的 MySQL／中央数据库部署决策仅保留为 Architecture v1 历史依据。Vue／TypeScript、Python／FastAPI、SQLAlchemy／Alembic 继续沿用。以下记录原决策，不作为桌面版继续采用 MySQL 的依据，也不表示既有代码或数据库已经迁移。
 
 ## 背景
 

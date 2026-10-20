@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from app import security
+from app.ids import new_opaque_id
 
 
 class ContentValidationError(Exception):
@@ -123,6 +123,26 @@ def prepare_content(
     set; missing IDs are generated server-side; duplicates are rejected.
     """
     model = parse_adopted_content(payload)
+    return materialize_adopted_content(
+        model,
+        allowed_group_ids=allowed_group_ids,
+        allowed_game_ids=allowed_game_ids,
+    )
+
+
+def materialize_adopted_content(
+    model: AdoptedContentModel,
+    *,
+    allowed_group_ids: frozenset[str] = frozenset(),
+    allowed_game_ids: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Enforce ID rules on an already structure-validated content model.
+
+    This is the lock-free structure parse split out of ``prepare_content``
+    so callers can validate the pure structure before taking a write lock
+    and still run identity membership/assignment inside it. Behavior is
+    exactly the ID half of ``prepare_content``.
+    """
     result: dict[str, Any] = model.model_dump(exclude_none=True)
 
     seen_groups: set[str] = set()
@@ -191,7 +211,7 @@ def _assert_unique(value: str, seen: set[str], label: str) -> None:
 
 def _fresh_id(reserved: set[str]) -> str:
     while True:
-        candidate = security.generate_id()
+        candidate = new_opaque_id()
         if candidate not in reserved:
             return candidate
 

@@ -2,7 +2,7 @@
 
 状态：**T1／T2 最小补修与新增离线入口验证完成，停止于"交协调者复审"停止点**。工具 R1 与集成 S1–S5 已由复审确认成立，本轮未重做、未改动；产品代码、发布工具、registry、迁移、前端、依赖均未改动；未创建数据库／容器，未安装／拉镜像，未连接远程、未部署、未操作主密钥、未调用供应商、未 commit／push。真库资源仍未授权／未具备，14 项真库用例如实登记 skip；SQLite／替身不替代真库。
 
-依据：[第二轮补修复审](ai-slice1c-fixture-repair2-review-2026-10-07.md)、[第三轮提示词](ai-slice1c-fixture-repair3-opencode-prompt-2026-10-07.md)、[第二轮交付报告](ai-slice1c-fixture-repair2-result-2026-10-07.md)（历史保留）。协调者与用户已有文档改动全部保留，无 reset／stash／覆盖。
+依据：[第二轮补修复审中的 T1／T2 要求](ai-slice1c-fixture-repair2-review-2026-10-07.md)、[第二轮交付报告](ai-slice1c-fixture-repair2-result-2026-10-07.md)（历史保留）。已使用的第三轮提示词已清理，要求和实际结果由审阅报告及本报告保留。协调者与用户已有文档改动全部保留，无 reset／stash／覆盖。
 
 ## 1. 实际修改文件（本轮范围）
 

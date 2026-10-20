@@ -1,5 +1,7 @@
 # Word 模板隔离原型结果
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。本文只记录原型时点的事实，既不等于 v1 产品验收，也不等于 v2 桌面验收；不因架构调整改写原始结果。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 > 当前验收环境已于2026-10-02再次更新，见 [当前口径](i5-validation-environment.md)。本文继续保留2026-09-20历史结果，不能代替远程产品真实下载与选定Word／WPS逐页证据。
 
 2026-09-20。依据：[验证计划](word-template-validation.md)、[实施规格](manual-plans-and-word-export.md)。本文件记录当时的 Ubuntu + LibreOffice 隔离原型事实。**2026-09-29 用户已将现行开发与验收基线改为 Windows 11 Pro + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word；本历史结果继续保留，但不能替代当前产品 Word 验收。**

@@ -1,5 +1,7 @@
 # 手工日计划到周计划确认与 Word 导出最小实施规格
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。日计划编辑、版本、确认和固定模板规则按非冲突部分保留；同班来源、管理员权限及 MySQL 前提需适配。当前先完整交付每日活动计划，再做游戏观察记录。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 状态：首个最小实施规格已形成，关键业务规则已逐项确认。Architecture v1 及本次用户明确同意的规则为已确认；本文标注“建议”或“未决”的条目不构成产品规则。当前仅编写文档，不授权代码、数据库、依赖安装、骨架或部署。
 
 依据：[用户与班级](../modules/identity-and-class.md)、[日计划](../modules/daily-plans.md)、[周计划](../modules/weekly-plans.md)、[Word 导出](../modules/word-export.md)。验证见 [Word 模板验证计划](word-template-validation.md)。

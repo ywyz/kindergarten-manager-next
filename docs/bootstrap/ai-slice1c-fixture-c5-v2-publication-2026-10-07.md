@@ -1,5 +1,7 @@
 # C5 v2 契约发布与 Windows 接续（2026-10-07）
 
+后续结果：2026-10-07 20:50 的 [Windows C5 报告](ai-slice1c-fixture-c5-windows-result-2026-10-07.md)已确认 v2 主流程及真实飞行窗口通过；下文保留发布时记录，V1/U3 与 C7 未验状态不变。
+
 结论：在已有用户授权及 [Windows 首阶段就绪报告](ai-slice1c-fixture-windows-stage1-result-2026-10-07.md)的基础上，协调者已向独立夹具发布 daily_lesson_split v2／默认 r9。只执行一次发布；C5 产品验收仍待 Windows 完成适配验证。
 
 ## 实际发布与复核
@@ -18,4 +20,4 @@
 
 服务器私密目录 `/opt/kindergarten-manager-next-ai-fixture/private` 保留 `c5-v1-before-publish.json`、`c5-v2-command-output.json`、`c5-v2-publish-manifest-20261007.json`。成功manifest只含去敏目标、版本、字段名、哈希和状态，交接至Windows既有logs目录。
 
-Windows按 [C5 v2 接续提示词](ai-slice1c-fixture-windows-stage2-prompt-2026-10-07.md)执行，不重建v1、不重新初始化、不进入V1/U3或C7。原保存HTTP未捕获的缺口继续保留；新增适配阶段应独立记录真实HTTP和DOM。取得本阶段结果后再决定归档、恢复 B_contract 与下一案例交接。
+Windows 后续已完成本阶段，见 [C5 v2 适配结果](ai-slice1c-fixture-c5-windows-result-2026-10-07.md)；已执行的接续提示词已清理。该轮未重建 v1、未重新初始化，也未进入 V1/U3 或 C7。首阶段原保存 HTTP 未捕获的缺口继续保留，适配阶段独立记录真实 HTTP 和 DOM；剩余事项及恢复边界见[历史夹具状态](ai-slice1c-fixture-windows-handoff-2026-10-07.md)。

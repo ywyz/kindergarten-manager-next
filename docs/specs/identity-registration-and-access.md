@@ -1,5 +1,7 @@
 # 账号注册、登录与待分配访问规格
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。中央注册、管理员分班与同班访问属于 v1 设计；本地教师身份、班级配置及原账号流程的替代另行定义，不能把旧路由和角色直接作为桌面需求。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 状态：2026-09-21 用户已确认本节列出的产品决定；其余具体字段、路由和并发方案为本次选定的工程方案，不冒充逐项用户确认。I1 已实现，真实 MySQL 验证及限制见 [I1 验证记录](../bootstrap/i1-mysql-validation.md)：24 项通过，加强证据后定向 5 项通过，其余复用；浏览器密码变更提交和真实人工 CLI 输入未验证。本文不授予新的执行授权。
 
 依据：[Architecture v1](../../ARCHITECTURE.md)、[用户与班级 Contract](../modules/identity-and-class.md)、[最小计划规格](manual-plans-and-word-export.md)、[事务与版本 ADR](../adr/0002-background-tasks-and-versions.md)、[日志 Contract](../modules/audit-log.md)。

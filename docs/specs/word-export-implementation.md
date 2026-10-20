@@ -1,5 +1,7 @@
 # I5 Word 导出实施规格
 
+> 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。固定模板、范围、版本和标红规则保留；本地身份、SQLite 读取及桌面文件保存需适配。v1 收口不代替新桌面实测，完整 W6 非空材料未通过状态保留。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
+
 2026-10-03最新状态：当前I5已实现链路已按[正式收口](../bootstrap/i5-final-closeout-2026-10-03.md)完成产品验收。按[用户明确阶段决定](../bootstrap/i5-evidence-closeout-and-scope-decision-2026-10-03.md)，W2当前纯文本阶段以首尾空白覆盖仅格式子例；完整W6非空材料保留为[材料切片](weekly-materials-implementation.md)必需补验，仍未通过。原完整标准和各时点历史记录不删除；本条优先用于当前阶段状态判断，不表示富文本或首版整体完成。
 
 > 当前环境与执行边界于2026-10-02被用户更新，见 [I5 当前验收口径](i5-validation-environment.md)、本文§10.2／片4与 [本轮记录](../bootstrap/i5-remote-validation-2026-10-02.md)。以下2026-09-29／10-01环境描述属于历史，不能继续作为本机WSL或仅Microsoft 365 Word的要求。

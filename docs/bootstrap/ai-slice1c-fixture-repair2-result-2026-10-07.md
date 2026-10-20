@@ -2,7 +2,7 @@
 
 状态：**S1–S6 与测试／报告问题集中补修完成，离线验证完成；停止于"交协调者复审"停止点**。真库资源未获授权、未具备，全部集成真库用例如实登记 skip，未连接任何数据库服务器，未创建库／容器，未安装／拉镜像，未操作主密钥，未调用供应商，未 commit／push。
 
-依据：[补修复审](ai-slice1c-fixture-repair-review-2026-10-07.md)、[第二轮集中补修提示词](ai-slice1c-fixture-repair2-opencode-prompt-2026-10-07.md)、[上轮提示词](ai-slice1c-fixture-repair-opencode-prompt-2026-10-07.md)、[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)、[上轮补修结果](ai-slice1c-fixture-repair-result-2026-10-07.md)（历史保留，不追溯改写）。
+依据：[补修复审中的 S1–S6 要求](ai-slice1c-fixture-repair-review-2026-10-07.md)、[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)、[上轮补修结果](ai-slice1c-fixture-repair-result-2026-10-07.md)（历史保留，不追溯改写）。已使用的分轮提示词已清理，要求与实际结果由上述报告及本报告保留。
 
 工具 R1（发布返回值捕获／COMMIT 边界）已由协调者确认成立，本轮未重做、未改动 `backend/scripts/ai1c_acceptance_fixture.py`。方案 A 口径不变。协调者与用户已有文档修改全部保留。
 
