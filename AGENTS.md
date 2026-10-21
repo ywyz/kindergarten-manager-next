@@ -16,6 +16,8 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 架构确认不等于代码、迁移、安装、付费 AI 调用或部署授权，按用户当前任务范围执行。
 
+2026-10-20后续已授权并完成普通运行验证包整合：OpenCode沿用Go套餐DeepSeek V4.1 Flash，Codex独立核查通过，N01／N02回修关闭。新包与限定证据见`docs/bootstrap/desktop-d2-normal-package-review.md`§6；旧包与人工数据保持，应用真实AI／发布仍未授权，本轮未自动commit/push。
+
 ## 核心原则
 
 这是一个 clean-slate 项目。旧 kindergartenManager 仅作业务行为、Word 模板、已验证规则和历史经验参考；不得因代码已存在就复制或迁移。默认重新设计，复用旧代码须经过明确审查。

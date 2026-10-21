@@ -28,6 +28,12 @@ import d0_paths
 from build_d0 import resolve_node_tool
 
 BUILD_ROOT = d0_paths.REPO_ROOT / "build" / "desktop-d2"
+LEGACY_BUILD_ROOT = BUILD_ROOT
+PROTECTED_BUILD_ROOTS = (
+    d0_paths.REPO_ROOT / "build" / "desktop-d2",
+    d0_paths.REPO_ROOT / "build" / "desktop-d2-manual-ai",
+    d0_paths.REPO_ROOT / "build" / "desktop-d2-manual-ai-h06-r01",
+)
 FRONTEND_DIR = BUILD_ROOT / "frontend"
 PACKAGE_DIR = BUILD_ROOT / "package"
 WORK_DIR = BUILD_ROOT / "pyinstaller-work"
@@ -86,7 +92,7 @@ def build_frontend(frontend_out: Path, *, reuse: bool) -> None:
         raise SystemExit(f"D2 前端构建输出异常：{frontend_out}")
 
 
-def build_package(dist_root: Path, frontend_out: Path) -> Path:
+def build_package(dist_root: Path, frontend_out: Path, work_dir: Path, spec_dir: Path) -> Path:
     print("== D2 PyInstaller onedir windowed package ==")
     separator = os_sep()
     command = [
@@ -102,9 +108,9 @@ def build_package(dist_root: Path, frontend_out: Path) -> Path:
         "--distpath",
         str(dist_root),
         "--workpath",
-        str(WORK_DIR),
+        str(work_dir),
         "--specpath",
-        str(SPEC_DIR),
+        str(spec_dir),
         "--paths",
         str(d0_paths.APP_DIR),
         "--paths",
@@ -162,17 +168,74 @@ def hash_tree(root: Path) -> list[dict]:
     return entries
 
 
+def _overlaps(left: Path, right: Path) -> bool:
+    """True when either path is the other or one is an ancestor (resolved)."""
+    return left == right or left in right.parents or right in left.parents
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build the D2 W6 full desktop package")
     parser.add_argument("--skip-frontend", action="store_true", help="复用已构建的 D2 前端输出")
     parser.add_argument("--reuse-frontend", action="store_true", help="已有输出则直接复用（不重建）")
-    parser.add_argument("--dist-root", help="打包输出父目录（默认 build/desktop-d2/package）")
+    parser.add_argument(
+        "--build-root",
+        help="独立构建根（默认 build/desktop-d2；旧根受保护）",
+    )
+    parser.add_argument(
+        "--frontend-dir",
+        help="显式指定已构建前端目录（只读输入，不重建）",
+    )
+    parser.add_argument("--dist-root", help="打包输出父目录（默认 <build-root>/package）")
     parser.add_argument("--hash-out", help="将包内逐文件 SHA256 清单写入该 JSON 文件")
     args = parser.parse_args()
 
-    build_frontend(FRONTEND_DIR, reuse=args.skip_frontend or args.reuse_frontend)
-    dist_root = Path(args.dist_root) if args.dist_root else PACKAGE_DIR
-    package_root = build_package(dist_root, FRONTEND_DIR)
+    build_root = (
+        Path(args.build_root).resolve()
+        if args.build_root
+        else LEGACY_BUILD_ROOT.resolve()
+    )
+    frontend_out = (
+        Path(args.frontend_dir).resolve() if args.frontend_dir else build_root / "frontend"
+    )
+    work_dir = build_root / "pyinstaller-work"
+    spec_dir = build_root / "spec"
+    dist_root = Path(args.dist_root).resolve() if args.dist_root else build_root / "package"
+
+    # Every path this run will WRITE must be checked (resolved) before any build
+    # or file write. An explicit --frontend-dir is a read-only input and is
+    # deliberately not checked as a write target (reusing an old frontend is
+    # allowed); it still must exist below.
+    write_paths: dict[str, Path] = {
+        "work": work_dir.resolve(),
+        "spec": spec_dir.resolve(),
+        "package": dist_root.resolve(),
+    }
+    if args.frontend_dir is None:
+        write_paths["frontend"] = frontend_out.resolve()
+    if args.hash_out:
+        write_paths["hash-out"] = Path(args.hash_out).resolve()
+    protected = tuple(root.resolve() for root in PROTECTED_BUILD_ROOTS)
+    locations: dict[str, Path] = {
+        "build-root": build_root,
+        "dist-root": dist_root,
+        **write_paths,
+    }
+    for label, target in locations.items():
+        for root in protected:
+            if _overlaps(target, root):
+                raise SystemExit(
+                    f"拒绝写入受保护的旧构建根（{label}: {target} 与 {root} 相交）；"
+                    "请使用独立 --build-root／--dist-root／--hash-out。"
+                )
+
+    if args.frontend_dir is None:
+        build_frontend(frontend_out, reuse=args.skip_frontend or args.reuse_frontend)
+    elif not (frontend_out / "d1.html").is_file():
+        raise SystemExit(f"显式前端目录缺少 d1.html: {frontend_out}")
+    else:
+        print(f"== 复用显式前端目录 {frontend_out} ==")
+
+    package_root = build_package(dist_root, frontend_out, work_dir, spec_dir)
     if args.hash_out:
         Path(args.hash_out).write_text(
             json.dumps(

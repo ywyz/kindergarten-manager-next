@@ -304,6 +304,11 @@ def _run_w5_in_package(exe, root, copied, dates, ca_dir, leaf, checks, report):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify the complete D2 W6 package")
     parser.add_argument("--package", default=str(PACKAGE_DEFAULT))
+    parser.add_argument(
+        "--frontend-dir",
+        default=str(FRONTEND_SOURCE),
+        help="要逐字节核对的前端构建目录（默认既有 build/desktop-d2/frontend）",
+    )
     parser.add_argument("--out", default=None)
     parser.add_argument("--date", default="2026-09-15")
     parser.add_argument("--date2", default="2026-09-16")
@@ -349,7 +354,9 @@ def main() -> int:
                 return bundled.is_file() and _sha(bundled) == _sha(source)
             return _tree(bundled) == _tree(source)
 
-        checks["bundle_frontend_matches"] = compare_bundle("frontend", "frontend", FRONTEND_SOURCE)
+        checks["bundle_frontend_matches"] = compare_bundle(
+            "frontend", "frontend", Path(args.frontend_dir).resolve()
+        )
         checks["bundle_templates_match"] = compare_bundle(
             "templates", "app/assets/word_templates", TEMPLATE_SOURCE
         )

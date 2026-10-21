@@ -6,6 +6,8 @@
 
 最新状态与处理决定见[W6收口及三项后续事件](desktop-d2-w6-closeout.md)和[逐项人工记录](desktop-d2-w6-manual-acceptance.md)：已验Word／候选／保存／重启／在途子项保持；跨120秒睡眠不再验证，白屏等复发，额外任务用户倾向误点、保留观察。三项留作同类再现处理，不主动追测，不改记为技术通过／已修复。用户已授权相关Git提交／推送，未授权应用真实AI或发布。
 
+2026-10-20后续授权的[普通运行验证包整合](desktop-d2-normal-package-result.md)已由OpenCode使用同一Go套餐DeepSeek V4.1 Flash完成，并经[Codex独立核查§6](desktop-d2-normal-package-review.md#6-最终独立核查与交付结论)通过：新包位于build/desktop-d2-normal-r01/，普通入口与54模块同源、前端与已验R01一致；独立前端、196桌面、8项构建路径保护及仓外冻结130项通过，旧包及保护数据未变。N01／N02回修关闭，真实AI与发布边界保持；本轮未自动commit/push。
+
 已进入 `codex/desktop-v2-foundation`，采用 Windows 11 原生开发。OpenCode 写实现、测试、迁移及构建脚本；Codex 负责技术核查、规划设计、审阅、相关验证与 Git／发布管理，均按当前授权执行。
 
 - [唯一当前任务](../tasks/current.md)：D2 W1数据迁移／凭据保存已由OpenCode实施并经Codex核查关闭。[W1实现结果](desktop-d2-w1-result.md)。[产品规格](../specs/desktop-ai-daily-plan.md)、[工程规格及清单](../specs/desktop-ai-engineering.md)、[W1独立核查](desktop-d2-w1-review.md)。W1独立全local286项、迁移18项及冻结重启探针通过，R01–R09已关闭（核查§12）；[W2](desktop-d2-w2-review.md)已由OpenCode使用Go套餐DeepSeek V4.1 Flash交付并经Codex核查通过；[实现结果](desktop-d2-w2-result.md)含后续接口交接；[W3实现](desktop-d2-w3-result.md)及[独立核查](desktop-d2-w3-review.md)已完成，当前Windows 11合成环境工程通过；[W4实现](desktop-d2-w4-result.md)及[独立核查§10](desktop-d2-w4-review.md#10-最终工程结论w4通过停在w4)已完成，独立全local470项／桌面146项及API复核通过，R01–R09关闭；[W5实现](desktop-d2-w5-result.md)与[W5独立核查§8](desktop-d2-w5-review.md#8-最终工程结论w5限定源码集成通过)已完成，三类候选采用及退出已用独立真实源码窗口复核；[W6实现](desktop-d2-w6-result.md)及[Codex独立核查§9](desktop-d2-w6-review.md#9-最终工程结论w6限定环境工程核查通过)已完成，独立477项local／168项桌面、前端及新完整包130项通过，54归档模块和真实入口同源，R01–R09关闭；后续指定Word及合成人工验收结果以本页上方2026-10-20收口记录为准；G17真实AI未授权，不宣布D2完整产品或发行完成。
