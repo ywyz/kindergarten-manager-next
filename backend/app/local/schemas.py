@@ -625,6 +625,25 @@ class LocalAITaskListOut(BaseModel):
     next_cursor: str | None = None
 
 
+class LocalAIProgressOut(BaseModel):
+    """Read-only streaming progress for one current execution (display only)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool
+    task_id: str
+    execution_id: str | None = None
+    attempt_id: str | None = None
+    attempt_no: int | None = None
+    seq: int = 0
+    phase: str = "unavailable"
+    elapsed_ms: int = 0
+    last_data_age_ms: int | None = None
+    reasoning: str = ""
+    content_chars: int = 0
+    truncated: bool = False
+
+
 # ---------------------------------------------------------------------------
 # D2 W4 candidates and adoption (engineering spec §5.1-§5.3)
 # ---------------------------------------------------------------------------

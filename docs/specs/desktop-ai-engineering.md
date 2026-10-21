@@ -97,7 +97,9 @@
 
 ### 4.2 协议和网络边界
 
-- 采用产品规格§11的非流式Chat Completions文本JSON子集。规范化HTTPS前缀后只追加`/chat/completions`；拒绝userinfo、query、fragment、控制字符、反斜线、内网／回环／链路本地／保留地址、非常规数值IP和完整completion路径。端口允许显式1–65535，不把“公网HTTPS”缩成某供应商品牌名单。
+2026-10-21用户确认实时思考展示，已按[流式设计](desktop-ai-streaming-progress.md)扩展原非流式协议、现有IPC进度帧及本地只读进度查询；当前Windows 11合成工程核查通过，见[独立结论](../bootstrap/desktop-d2-streaming-review.md#11-最终交付限定合成工程核查通过)。原网络防护、期限、许可、最终校验及恢复语义保持，真实供应商仍未验。
+
+- 采用产品规格§11的Chat Completions文本JSON子集，请求`stream:true`，SSE思考只作临时展示、正文完整后校验；同一请求的合法JSON响应保持兼容，不补发。规范化HTTPS前缀后只追加`/chat/completions`；拒绝userinfo、query、fragment、控制字符、反斜线、内网／回环／链路本地／保留地址、非常规数值IP和完整completion路径。端口允许显式1–65535，不把“公网HTTPS”缩成某供应商品牌名单。
 - 每次尝试解析A/AAAA，限制解析结果最多32个且全部必须是允许的全球单播地址；IPv4-mapped IPv6同样检查，混合公私地址直接拒绝。socket连接明确的已验证numeric sockaddr，连接后getpeername与选中地址核对，不让HTTP库按hostname再解析。可在**发送前**依次尝试该批地址，10秒连接总预算不重置；HTTP一旦可能发送，不换地址重发。
 - 用标准库`socket`＋`ssl.create_default_context`＋`http.client.HTTPResponse`解析响应；TLS保留原hostname的SNI及证书主机名验证，Host header同源。HTTPS握手后、发送前再检查剩余时限。不要以替换URL host为IP的方式关闭主机名校验。[Python TLS](https://docs.python.org/3.14/library/ssl.html)、[HTTP接口](https://docs.python.org/3.14/library/http.client.html)
 - 不继承HTTP_PROXY/HTTPS_PROXY/ALL_PROXY，不自动redirect，不执行CONNECT，不禁用证书验证。固定`Accept-Encoding: identity`、Content-Length、`Connection: close`；首片拒绝gzip/br等非identity Content-Encoding，不做无界解压。拒绝冲突Content-Length／Transfer-Encoding及无效HTTP帧；限制响应头64KiB、正文1MiB（分块读取也累计），不得只相信Content-Length。错误体也受同样上限，避免写入日志。

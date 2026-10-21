@@ -110,6 +110,22 @@ def _recv(conn: Any, maxlength: int) -> dict[str, Any] | None:
     return frame
 
 
+PROGRESS_CHUNK_CHARS = 2000
+
+
+def _progress_chunks(text: str) -> list[str]:
+    """Split display text so one JSON-encoded progress frame stays bounded.
+
+    A CJK character is 3 UTF-8 bytes, an astral one 4, and a JSON-escaped
+    control character 6; 2000 characters therefore stay below the 16 KiB
+    control-frame cap even with metadata. The final result is never affected.
+    """
+    return [
+        text[i : i + PROGRESS_CHUNK_CHARS]
+        for i in range(0, len(text), PROGRESS_CHUNK_CHARS)
+    ] or [""]
+
+
 def _send(conn: Any, frame: dict[str, Any]) -> bool:
     try:
         raw = _encode(frame)
@@ -117,7 +133,13 @@ def _send(conn: Any, frame: dict[str, Any]) -> bool:
         return False
     limit = RESPONSE_FRAME_MAX if frame.get("type") == "result" else CONTROL_FRAME_MAX
     if len(raw) > limit:
-        # Never emit an over-cap frame; report a fixed, material-free failure.
+        if frame.get("type") == "progress":
+            # Display-only progress must never be turned into a fake final
+            # result; dropping one update is safe and the final result frame
+            # carries the authoritative outcome.
+            return False
+        # Never emit an over-cap result/control frame; report a fixed,
+        # material-free failure.
         raw = _encode(_result_frame(ai_transport.TransportResult(
             ai_transport.PROVIDER_ERROR, reason="provider_error", detail="frame_too_large"
         )))
@@ -186,7 +208,78 @@ def run(conn: Any) -> None:
         prepared.sock.close()
         return
 
-    result = ai_transport.send(prepared, deadline_ms=deadline_ms)
+    # Streaming progress: coalesce high-frequency deltas into small bounded
+    # control frames. Only display text crosses the pipe; the final result is a
+    # separate frame and the parent re-validates everything.
+    import time as _time  # noqa: PLC0415
+
+    progress = {"seq": 0, "reasoning": [], "content_chars": 0, "last": 0.0}
+
+    def flush_progress(phase: str) -> None:
+        text = "".join(progress["reasoning"])
+        progress["reasoning"].clear()
+        progress["last"] = _time.monotonic()
+        # Split very large deltas so a control frame never approaches its cap
+        # in UTF-8 bytes (CJK 3 bytes/char, astral 4, JSON-escaped control 6).
+        chunks = _progress_chunks(text)
+        for chunk in chunks:
+            progress["seq"] += 1
+            _send(
+                conn,
+                {
+                    "type": "progress",
+                    "seq": progress["seq"],
+                    "phase": phase,
+                    "reasoning": chunk,
+                    "content_chars": progress["content_chars"],
+                },
+            )
+
+    def on_progress(reasoning: str, content: str) -> None:
+        if reasoning:
+            progress["reasoning"].append(reasoning)
+        if content:
+            progress["content_chars"] += len(content)
+        pending_chars = sum(len(item) for item in progress["reasoning"])
+        if pending_chars >= 4096 or _time.monotonic() - progress["last"] >= 0.1:
+            flush_progress("thinking" if progress["reasoning"] else "generating")
+
+    def on_heartbeat() -> None:
+        # A real SSE keepalive updates only the "last supplier data" clock; it
+        # never changes the phase, fabricates reasoning or resets the deadline.
+        progress["seq"] += 1
+        _send(
+            conn,
+            {
+                "type": "progress",
+                "seq": progress["seq"],
+                "phase": "heartbeat",
+                "heartbeat": True,
+                "reasoning": "",
+                "content_chars": progress["content_chars"],
+            },
+        )
+
+    result = ai_transport.send(
+        prepared,
+        deadline_ms=deadline_ms,
+        on_progress=on_progress,
+        on_heartbeat=on_heartbeat,
+    )
+    if progress["reasoning"]:
+        flush_progress("thinking")
+    # A short "validating" phase before the final result frame (display only).
+    progress["seq"] += 1
+    _send(
+        conn,
+        {
+            "type": "progress",
+            "seq": progress["seq"],
+            "phase": "validating",
+            "reasoning": "",
+            "content_chars": progress["content_chars"],
+        },
+    )
     _send(conn, _result_frame(result))
 
 

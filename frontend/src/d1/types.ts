@@ -334,6 +334,22 @@ export interface AiTaskList {
   next_cursor: string | null
 }
 
+/** Read-only streaming progress for the task's current execution (display only). */
+export interface AiTaskProgress {
+  available: boolean
+  task_id: string
+  execution_id: string | null
+  attempt_id: string | null
+  attempt_no: number | null
+  seq: number
+  phase: string
+  elapsed_ms: number
+  last_data_age_ms: number | null
+  reasoning: string
+  content_chars: number
+  truncated: boolean
+}
+
 // --- D2 candidates and adoption (engineering spec §5.1/§5.3) --------------
 
 export type AdoptionState = 'eligible' | 'source_changed' | 'contract_obsolete'

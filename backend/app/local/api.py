@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from app.local import (
     ai_adoption,
     ai_candidates,
+    ai_progress,
     ai_task_service,
     calendar_read,
     config_service,
@@ -40,6 +41,7 @@ from app.local import (
     export_service,
     profile_service,
 )
+from app.local.ai_transport import now_ticks
 from app.local.ai_config_service import (
     clear_secret,
     get_config,
@@ -77,6 +79,7 @@ from app.local.schemas import (
     LocalAITaskListOut,
     LocalAITaskOut,
     LocalAITaskRetryIn,
+    LocalAIProgressOut,
     LocalCalendarOut,
     LocalClassGamesOut,
     LocalConfigApplyIn,
@@ -625,6 +628,131 @@ def list_ai_tasks(
 def get_ai_task(task_id: str, session: Session = Depends(get_session)):
     with storage_errors():
         return ai_task_service.get_task(session, task_id)
+
+
+@local_router.get("/ai/tasks/{task_id}/progress", response_model=LocalAIProgressOut)
+def get_ai_task_progress(task_id: str, session: Session = Depends(get_session)):
+    """Read-only display progress for the task's current execution.
+
+    It never starts a task, opens a network connection or writes anything: a
+    missing snapshot returns an explicit unavailable projection. The task is
+    resolved through the normal profile-scoped read (foreign/missing = 404).
+    """
+    with storage_errors():
+        task = ai_task_service.get_task(session, task_id)
+        status = str(task.get("status") or "")
+        execution = task.get("execution") or {}
+        execution_id = execution.get("id")
+        current_attempt = execution.get("attempt_no")
+        if not execution_id:
+            return {
+                "available": False,
+                "task_id": task_id,
+                "execution_id": None,
+                "attempt_id": None,
+                "attempt_no": None,
+                "seq": 0,
+                "phase": "waiting" if status == "pending" else "unavailable",
+                "elapsed_ms": 0,
+                "last_data_age_ms": None,
+                "reasoning": "",
+                "content_chars": 0,
+                "truncated": False,
+            }
+        if status == "pending":
+            # Artificial retry/resume leaves the old execution id in place until
+            # the next claim; it is history, not this pending activity.
+            return {
+                "available": False,
+                "task_id": task_id,
+                "execution_id": execution_id,
+                "attempt_id": None,
+                "attempt_no": current_attempt,
+                "seq": 0,
+                "phase": "waiting",
+                "elapsed_ms": 0,
+                "last_data_age_ms": None,
+                "reasoning": "",
+                "content_chars": 0,
+                "truncated": False,
+            }
+        snapshot = ai_progress.snapshot(task_id, execution_id)
+        if (
+            snapshot is not None
+            and isinstance(current_attempt, int)
+            and snapshot["attempt_no"] != current_attempt
+        ):
+            # A new attempt has begun (or the snapshot is from an old one); it
+            # must never be projected as the current attempt.
+            snapshot = None
+        if snapshot is not None and status == "claimed" and snapshot["ended"]:
+            # A claim is pre-send; a finished snapshot on this execution is the
+            # old activity, not the new claim's progress.
+            return {
+                "available": False,
+                "task_id": task_id,
+                "execution_id": execution_id,
+                "attempt_id": None,
+                "attempt_no": current_attempt,
+                "seq": 0,
+                "phase": "waiting",
+                "elapsed_ms": 0,
+                "last_data_age_ms": None,
+                "reasoning": "",
+                "content_chars": 0,
+                "truncated": False,
+            }
+        if snapshot is None:
+            return {
+                "available": False,
+                "task_id": task_id,
+                "execution_id": execution_id,
+                "attempt_no": current_attempt,
+                "phase": "unavailable",
+            }
+        terminal = status in ("succeeded", "failed", "outcome_unknown", "cancelled", "paused")
+        now = now_ticks()
+        if terminal:
+            end_ticks = (
+                snapshot["ended_at_ticks"]
+                or snapshot["last_data_ticks"]
+                or snapshot["started_ticks"]
+            )
+            clock = end_ticks
+        else:
+            clock = now
+        elapsed = max(0, clock - snapshot["started_ticks"])
+        last_data = snapshot["last_data_ticks"]
+        last_age = max(0, clock - last_data) if last_data else None
+        phase = snapshot["phase"]
+        if status == "succeeded":
+            phase = "completed"
+        elif status == "failed":
+            phase = "failed"
+        elif status == "outcome_unknown":
+            phase = "unknown"
+        elif status == "cancelled":
+            phase = "cancelled"
+        elif status == "paused":
+            phase = "paused"
+        elif snapshot["ended"] and snapshot["phase"] == "completed":
+            # Transport success is not business success: while the persistent
+            # task is still live, the result is being validated/persisted.
+            phase = "validating"
+        return {
+            "available": True,
+            "task_id": task_id,
+            "execution_id": execution_id,
+            "attempt_id": snapshot["attempt_id"],
+            "attempt_no": snapshot["attempt_no"] or current_attempt,
+            "seq": snapshot["seq"],
+            "phase": phase,
+            "elapsed_ms": elapsed,
+            "last_data_age_ms": last_age,
+            "reasoning": snapshot["reasoning"],
+            "content_chars": snapshot["content_chars"],
+            "truncated": snapshot["truncated"],
+        }
 
 
 def _current_execution_id(session: Session, task_id: str) -> str | None:

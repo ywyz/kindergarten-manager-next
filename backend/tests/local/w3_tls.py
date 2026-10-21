@@ -15,6 +15,7 @@ import ipaddress
 import socket
 import ssl
 import threading
+import time
 from pathlib import Path
 
 from cryptography import x509
@@ -188,9 +189,11 @@ class TlsServer:
         reply: bytes | None = None,
         hang_after_request: bool = False,
         reply_factory=None,
+        segment_factory=None,
     ):
         self._reply = reply
         self._reply_factory = reply_factory
+        self._segment_factory = segment_factory
         self._hang = hang_after_request
         self.requests: list[bytes] = []
         self._lock = threading.Lock()
@@ -259,6 +262,21 @@ class TlsServer:
                         break
                 return
             reply = self._reply
+            if self._segment_factory is not None:
+                segments = self._segment_factory(head + b"\r\n\r\n" + rest)
+                if segments is None:
+                    while not self._stop.is_set():
+                        try:
+                            if tls.recv(1) == b"":
+                                break
+                        except Exception:  # noqa: BLE001
+                            break
+                    return
+                for segment, delay in segments:
+                    if delay:
+                        time.sleep(delay)
+                    tls.sendall(segment)
+                return
             if self._reply_factory is not None:
                 reply = self._reply_factory(head + b"\r\n\r\n" + rest)
             if reply is None:

@@ -8,7 +8,7 @@
 
 2026-10-20后续授权的[普通运行验证包整合](desktop-d2-normal-package-result.md)已由OpenCode使用同一Go套餐DeepSeek V4.1 Flash完成，并经[Codex独立核查§6](desktop-d2-normal-package-review.md#6-最终独立核查与交付结论)通过：新包位于build/desktop-d2-normal-r01/，普通入口与54模块同源、前端与已验R01一致；独立前端、196桌面、8项构建路径保护及仓外冻结130项通过，旧包及保护数据未变。N01／N02回修关闭；相关修改已按2026-10-21用户授权提交并推送（2cafa49），未上传包、数据库或凭据。
 
-2026-10-21 [G17真实AI验收方案](desktop-d2-g17-acceptance-plan.md)不设计预算限额；用户指定DeepSeek、MiMo及OpenCode Go的[官方文档兼容性核对](desktop-d2-g17-provider-compatibility-review.md)已完成。DeepSeek官方API与MiMo标准API可准备后续验收，MiMo Token Plan不适用本后端，Go用途／客户端要求尚未满足；具体型号／账户类型／顺序待定。当前真实调用0次、尚未授权，不把文档符合或配置ready当作G17通过。
+2026-10-21 [G17方案](desktop-d2-g17-acceptance-plan.md)不设计预算限额；[官方文档核对](desktop-d2-g17-provider-compatibility-review.md)后，用户决定应用仅使用DeepSeek官方与MiMo标准API，并确认[实时思考与等待反馈](../specs/desktop-ai-streaming-progress.md)默认展开／可折叠、阶段／计时显示。已由OpenCode沿用原Go套餐DeepSeek V4.1 Flash实现，并经[Codex独立核查§11](desktop-d2-streaming-review.md#11-最终交付限定合成工程核查通过)通过：源码窗口33项、新完整普通包142项通过，R01–R11关闭；新包位于build/desktop-d2-streaming-r10-r11/，旧包与失败材料保留，下一步仅准备G17。应用真实调用0次、尚未授权，不把文档符合或配置ready当作G17通过。
 
 已进入 `codex/desktop-v2-foundation`，采用 Windows 11 原生开发。OpenCode 写实现、测试、迁移及构建脚本；Codex 负责技术核查、规划设计、审阅、相关验证与 Git／发布管理，均按当前授权执行。
 

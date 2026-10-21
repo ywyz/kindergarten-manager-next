@@ -38,6 +38,7 @@ sys.path.insert(0, str(BACKEND))
 sys.path.insert(0, str(HERE))
 
 from tests.local import w3_tls  # noqa: E402
+from verify_d2_w6_common import adapt_hold_segments, sse_segments  # noqa: E402
 
 SPLIT_OUT = json.dumps(
     {
@@ -61,21 +62,24 @@ OTHER_OUT = json.dumps(
 )
 
 
-def make_reply_factory(seen: dict):
-    """Answer split/other from the real input; keep adapt open (live task)."""
+def make_segment_factory(seen: dict):
+    """Answer split with delayed SSE, other with JSON and keep adapt open."""
 
     def factory(request: bytes):
         text = request.decode("utf-8", "replace")
         if "process_source" in text:
             seen["adapt"] = seen.get("adapt", 0) + 1
-            # Keep the connection open: the adapt task stays live for the close
-            # choice (the worker is later stopped by the host drain).
-            return None
+            # Keep the connection open after real reasoning so the window can
+            # prove the request was received, then abort it in the close flow.
+            return adapt_hold_segments()
         if "calendar_context" in text or "morning_games" in text:
             seen["other"] = seen.get("other", 0) + 1
-            return w3_tls.envelope(OTHER_OUT, usage={"prompt_tokens": 3})
+            return [(w3_tls.envelope(OTHER_OUT, usage={"prompt_tokens": 3}), 0.0)]
         seen["split"] = seen.get("split", 0) + 1
-        return w3_tls.envelope(SPLIT_OUT, usage={"prompt_tokens": 3})
+        # The source window must show real reasoning before the final answer,
+        # exactly like the frozen-package verifier. Reuse the same delayed SSE
+        # helper so the W5 DOM assertions are meaningful in both entries.
+        return sse_segments(SPLIT_OUT, delay=2.5)
 
     return factory
 
@@ -110,7 +114,7 @@ def main() -> int:
         _cert, _key, _pem = w3_tls.create_ca(ca_dir)
         leaf = w3_tls.create_leaf(ca_dir, root / "tls-leaf")
         server = w3_tls.TlsServer(
-            cert=leaf[0], key=leaf[1], reply_factory=make_reply_factory(seen)
+            cert=leaf[0], key=leaf[1], segment_factory=make_segment_factory(seen)
         ).start()
         report["provider_port"] = server.port
 
@@ -172,6 +176,11 @@ def main() -> int:
             "provider_split_received": seen.get("split", 0) >= 1,
             "provider_other_received": seen.get("other", 0) >= 1,
             "provider_adapt_received": seen.get("adapt", 0) >= 1,
+            # Progress polling, collapse/expand and repeated queries must not
+            # create a second supplier request for any capability.
+            "provider_split_once": seen.get("split", 0) == 1,
+            "provider_other_once": seen.get("other", 0) == 1,
+            "provider_adapt_once": seen.get("adapt", 0) == 1,
         }
         # Cross-assert the provider observation with the persisted outcome: a
         # request the controlled TLS actually received must finalize as
@@ -186,11 +195,17 @@ def main() -> int:
             "w5_ai_configured",
             "w5_close_save_conflict_stays",
             "w5_trigger_split_saved",
+            "w5_stream_progress_visible",
+            "w5_stream_progress_default_expanded",
+            "w5_stream_progress_collapsed",
+            "w5_stream_progress_re_expanded",
+            "w5_stream_progress_phase",
             "w5_split_edit_adopt",
             "w5_candidate_draft_blocks_leave",
             "w5_trigger_other_activities",
             "w5_settings_draft_blocks_leave",
             "w5_live_task",
+            "w5_live_task_received",
             "w5_close_keep_waiting",
             "w5_close_old_request_aborted",
             "w5_close_stop_and_exit_choice",
@@ -203,6 +218,9 @@ def main() -> int:
             "provider_split_received",
             "provider_other_received",
             "provider_adapt_received",
+            "provider_split_once",
+            "provider_other_once",
+            "provider_adapt_once",
             "w5_adapt_final_matches_provider",
         }
         all_checks = {**checks, **provider_checks}

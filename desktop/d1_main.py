@@ -4168,6 +4168,7 @@ def run_w6_resources(args) -> int:
         # --- real spawn worker + Job + production transport ---------------
         if args.synthetic_provider_port:
             from app.local.ai_executor import AiExecutor
+            from app.local import ai_progress
             import time as _time
 
             # 1) Create the plan only; the task is registered *after* the
@@ -4218,21 +4219,45 @@ def run_w6_resources(args) -> int:
 
             deadline = _time.monotonic() + 90
             status = None
+            stream_phases: set[str] = set()
+            stream_reasoning = 0
+            stream_last_phase = None
             while _time.monotonic() < deadline:
                 session = runtime.session()
+                execution_id = None
                 try:
                     from app.local.models import LocalAITask
 
                     task_row = session.get(LocalAITask, task["id"], populate_existing=True)
                     status = task_row.status if task_row else None
+                    execution_id = (
+                        task_row.current_execution_id if task_row is not None else None
+                    )
                 finally:
                     session.close()
+                if execution_id:
+                    snapshot = ai_progress.snapshot(task["id"], execution_id)
+                    if snapshot is not None:
+                        if snapshot.get("phase"):
+                            stream_phases.add(str(snapshot["phase"]))
+                            stream_last_phase = str(snapshot["phase"])
+                        reasoning = snapshot.get("reasoning") or ""
+                        if reasoning:
+                            stream_reasoning = max(stream_reasoning, len(reasoning))
                 if status in ("succeeded", "failed", "outcome_unknown", "cancelled", "paused"):
                     break
                 _time.sleep(0.05)
             summary["task_status"] = status
             summary["executor_events"] = events
             summary["worker_pid"] = worker_pid["pid"]
+            # Display-only streaming evidence from the in-package executor cache.
+            # It is metadata (the source-level test proves the "before final"
+            # ordering); a non-streaming synthetic provider legitimately leaves
+            # this false and the verifier only enforces it with --stream.
+            summary["streaming_progress_seen"] = stream_reasoning > 0
+            summary["streaming_progress_phases"] = sorted(stream_phases)
+            summary["streaming_progress_reasoning_chars"] = stream_reasoning
+            summary["streaming_progress_final_phase"] = stream_last_phase
             # Job usage is a real event, not inferred from child_started.
             checks["job_object_used"] = "job_assigned" in events
             checks["spawn_child_ran"] = worker_pid["pid"] is not None
@@ -4458,6 +4483,47 @@ def drive_w5_ui(driver, args, summary, checks, host_api, port) -> None:
 
     step("w5_trigger_split_saved", trigger_split)
 
+    def split_stream_progress_visible():
+        # R08: the controlled split response is delayed, so the real frozen
+        # window must show reasoning before the final answer. Assert the DOM,
+        # default expansion and collapse/expand, not a backend flag.
+        driver.wait_until(
+            "Boolean(document.querySelector('[data-d1^=\"ai-progress-text-\"]'))",
+            what="W5 流式思考文字",
+            timeout=40,
+        )
+        text = driver.eval(
+            "(document.querySelector('[data-d1^=\"ai-progress-text-\"]')||{}).textContent || ''"
+        )
+        assert "W5 合成思考过程" in text, f"stream reasoning missing: {text!r}"
+        phase_text = driver.eval(
+            "(document.querySelector('[data-d1^=\"ai-progress-\"]')||{}).textContent || ''"
+        )
+        assert ("正在思考" in phase_text or "正在生成结果" in phase_text), phase_text
+        checks["w5_stream_progress_visible"] = True
+        checks["w5_stream_progress_default_expanded"] = True
+        checks["w5_stream_progress_phase"] = True
+        driver.eval(
+            "(document.querySelector('[data-d1^=\"ai-progress-toggle-\"]')||{}).click?.()"
+        )
+        driver.wait_until(
+            "!document.querySelector('[data-d1^=\"ai-progress-text-\"]')",
+            what="W5 折叠思考",
+            timeout=15,
+        )
+        checks["w5_stream_progress_collapsed"] = True
+        driver.eval(
+            "(document.querySelector('[data-d1^=\"ai-progress-toggle-\"]')||{}).click?.()"
+        )
+        driver.wait_until(
+            "Boolean(document.querySelector('[data-d1^=\"ai-progress-text-\"]'))",
+            what="W5 展开思考",
+            timeout=15,
+        )
+        checks["w5_stream_progress_re_expanded"] = True
+
+    step("w5_stream_progress", split_stream_progress_visible)
+
     def split_succeeded_and_raw_preserved():
         driver.wait_until(
             "window.__d1AiTasks.tasks().some(function(t){return t.task_type==='daily_lesson_split'"
@@ -4584,6 +4650,16 @@ def drive_w5_ui(driver, args, summary, checks, host_api, port) -> None:
         driver.wait_until(
             "window.__d1AiTasks.liveCount() >= 1", what="W5 活跃任务", timeout=60
         )
+        # Do not infer supplier receipt from pending/claimed/dispatching. The
+        # test provider's adapt response first emits this unique reasoning, so a
+        # visible text node is real evidence that the request reached it.
+        driver.wait_until(
+            "Array.from(document.querySelectorAll('[data-d1^=\"ai-progress-text-\"]'))"
+            ".some(function(el){return (el.textContent || '').indexOf('W5 适配准备') >= 0})",
+            what="W5 适配请求已真实返回思考",
+            timeout=60,
+        )
+        checks["w5_live_task_received"] = True
 
     step("w5_live_task", start_live_task)
 

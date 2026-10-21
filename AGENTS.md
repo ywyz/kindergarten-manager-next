@@ -16,7 +16,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 架构确认不等于代码、迁移、安装、付费 AI 调用或部署授权，按用户当前任务范围执行。
 
-2026-10-20后续普通运行验证包已由OpenCode沿用Go套餐DeepSeek V4.1 Flash整合，Codex核查通过，N01／N02关闭；证据见`docs/bootstrap/desktop-d2-normal-package-review.md`§6，修改已推送（2cafa49）。2026-10-21用户指定DeepSeek／MiMo／Go先查官方文档；核对见`docs/bootstrap/desktop-d2-g17-provider-compatibility-review.md`：DeepSeek官方与MiMo标准API为文档级候选，MiMo Token Plan不适用本后端，Go用途／客户端要求待解决；具体配置待定，不设计预算。G17方案见`docs/bootstrap/desktop-d2-g17-acceptance-plan.md`，真实AI／发布仍未授权；旧包与人工数据保持。
+2026-10-20后续普通包已由OpenCode整合、Codex核查通过，N01／N02关闭，证据见`docs/bootstrap/desktop-d2-normal-package-review.md`§6，修改已推送（2cafa49）。2026-10-21用户确定应用只接DeepSeek官方与MiMo标准API，不接Token Plan／Go；并确认实时思考默认展开、可折叠、阶段／等待时间显示，已由OpenCode Go套餐DeepSeek V4.1 Flash实现并经Codex限定合成工程核查通过（源码窗口33项、新普通包142项），R01–R11关闭；规格见`docs/specs/desktop-ai-streaming-progress.md`，最终证据与新包身份见`docs/bootstrap/desktop-d2-streaming-review.md`§11。G17方案见`docs/bootstrap/desktop-d2-g17-acceptance-plan.md`；不设计预算，应用真实AI／发布仍未授权，旧包与人工数据保持。
 
 ## 核心原则
 

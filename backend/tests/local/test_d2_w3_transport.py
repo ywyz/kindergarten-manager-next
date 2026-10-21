@@ -331,7 +331,7 @@ class RealTlsTests(unittest.TestCase):
         request = self._server.requests[0]
         self.assertTrue(request.startswith(b"POST /v1/chat/completions HTTP/1.1"))
         self.assertIn(b"Authorization: Bearer secret-value", request)
-        self.assertIn(b'"stream":false', request)
+        self.assertIn(b'"stream":true', request)
 
     def test_wrong_ca_fails_closed(self):
         prepared, failure = tr.prepare(

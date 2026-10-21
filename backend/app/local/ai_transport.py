@@ -108,6 +108,7 @@ DETAIL = {
     "bad_content_length": "bad_content_length",
     "body_too_large": "body_too_large",
     "length_mismatch": "length_mismatch",
+    "incomplete_body": "incomplete_body",
     "malformed_frame": "malformed_frame",
     "redirect": "redirect",
     "invalid_json_envelope": "invalid_json_envelope",
@@ -117,6 +118,10 @@ DETAIL = {
     "forbidden_field": "forbidden_field",
     "non_text_content": "non_text_content",
     "response_not_utf8": "response_not_utf8",
+    "stream_truncated": "stream_truncated",
+    "stream_invalid": "stream_invalid",
+    "stream_too_large": "stream_too_large",
+    "stream_unsupported": "stream_unsupported",
 }
 
 _USAGE_KEYS = frozenset(
@@ -317,14 +322,16 @@ def resolve_addresses(
 # ---------------------------------------------------------------------------
 
 
-def build_request(*, model: str, system_text: str, user_text: str) -> bytes:
+def build_request(
+    *, model: str, system_text: str, user_text: str, stream: bool = True
+) -> bytes:
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system_text},
             {"role": "user", "content": user_text},
         ],
-        "stream": False,
+        "stream": bool(stream),
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -562,8 +569,21 @@ def _check_framing(headers: Any) -> tuple[int | None, bool, str | None]:
     return length, chunked, None
 
 
-def send(prepared: Prepared, *, deadline_ms: int) -> TransportResult:
-    """Write the single HTTP request and read the strictly validated response."""
+def send(
+    prepared: Prepared,
+    *,
+    deadline_ms: int,
+    on_progress: Any = None,
+    on_heartbeat: Any = None,
+) -> TransportResult:
+    """Write the single HTTP request and read the strictly validated response.
+
+    ``on_progress(reasoning_delta, content_delta)`` is called for real SSE
+    deltas only; ``on_heartbeat()`` is called for real SSE comments/keepalives.
+    Both are display hooks and never change the final validation. A 200 response
+    may be ``text/event-stream`` (streamed) or a plain JSON document
+    (compatibility); a failed attempt is never retried here.
+    """
     if _remaining_ms(deadline_ms) <= 0:
         prepared.sock.close()
         return TransportResult(NOT_SENT, reason="connection_unavailable", transient_not_sent=True, detail=DETAIL["pre_send_timeout"])
@@ -585,13 +605,30 @@ def send(prepared: Prepared, *, deadline_ms: int) -> TransportResult:
     sock.settimeout(max(_remaining_ms(deadline_ms), 1) / 1000.0)
     response = http.client.HTTPResponse(adapter, method="POST")
     status: int | None = None
+    provider_request_id: str | None = None
+    length: int | None = None
     try:
         response.begin()
         status = response.status
-        length, _chunked, framing_error = _check_framing(response.headers)
+        provider_request_id = _sanitize_token(
+            response.getheader("x-request-id") or response.getheader("openai-request-id"),
+            MAX_REQUEST_ID_LEN,
+        )
+        length, chunked, framing_error = _check_framing(response.headers)
         if framing_error is not None:
             return TransportResult(PROVIDER_ERROR, reason="provider_error", sent=True, http_status=status, detail=framing_error)
         bounded.start_body()
+        content_type = (response.getheader("Content-Type") or "").lower()
+        if status == 200 and "text/event-stream" in content_type:
+            return _read_stream(
+                response,
+                deadline_ms,
+                provider_request_id,
+                on_progress,
+                on_heartbeat,
+                length,
+                chunked,
+            )
         body = response.read(RESPONSE_MAX_BYTES + 1)
     except _ResponseTooLarge:
         return TransportResult(PROVIDER_ERROR, reason="provider_error", sent=True, http_status=status, detail=DETAIL["body_too_large"])
@@ -616,13 +653,299 @@ def send(prepared: Prepared, *, deadline_ms: int) -> TransportResult:
         # is a malformed frame, never a candidate.
         return TransportResult(PROVIDER_ERROR, reason="provider_error", sent=True, http_status=status, detail=DETAIL["length_mismatch"])
 
-    provider_request_id = _sanitize_token(
-        response.getheader("x-request-id") or response.getheader("openai-request-id"),
-        MAX_REQUEST_ID_LEN,
-    )
     if status == 200:
         return _parse_success(body, provider_request_id, sent=True)
     return _classify_http_status(status, provider_request_id, sent=True)
+
+
+def _sse_event_boundary(text: str) -> int:
+    return text.find("\n\n")
+
+
+def _sse_data(event: str) -> str | None:
+    data_lines: list[str] = []
+    for line in event.split("\n"):
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip(" "))
+    if not data_lines:
+        return None
+    return "\n".join(data_lines)
+
+
+def _normalize_sse_buffer(text: str, *, final: bool) -> str:
+    """Normalize SSE line endings without losing a split CRLF.
+
+    A trailing CR is kept until the next chunk (or EOF), because ``\r`` may be
+    the first half of a ``\r\n`` pair. Replacing it eagerly would turn a split
+    CRLF into an extra blank line and end a multi-``data:`` event early.
+    """
+    normalized = text.replace("\r\n", "\n")
+    if final:
+        return normalized.replace("\r", "\n")
+    if normalized.endswith("\r"):
+        return normalized[:-1].replace("\r", "\n") + "\r"
+    return normalized.replace("\r", "\n")
+
+
+def _sse_has_comment(event: str) -> bool:
+    return any(line.startswith(":") for line in event.split("\n"))
+
+
+def _read_stream(
+    response: Any,
+    deadline_ms: int,
+    provider_request_id: str | None,
+    on_progress: Any,
+    on_heartbeat: Any,
+    expected_length: int | None,
+    chunked: bool,
+) -> TransportResult:
+    """Incrementally parse a standard SSE chat-completions stream.
+
+    Only ``delta.reasoning_content`` (display-only, forwarded to the progress
+    hook) and ``delta.content`` (the final answer) are accumulated. A complete
+    stream must carry ``finish_reason=stop`` on the single choice; ``[DONE]``
+    only ends the event stream and never substitutes for that normal finish.
+    The HTTP body is read to EOF and its declared Content-Length / chunked
+    termination is verified before any success, so a short declared body is not
+    a confirmed response. The final content then goes through the same strict
+    JSON object validation as the non-stream path. A socket break/timeout is
+    ``UNKNOWN`` (possibly sent, no confirmed result); a complete but malformed
+    stream is refused as invalid output.
+    """
+    import codecs
+
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    buffer = ""
+    content_parts: list[str] = []
+    state: dict[str, Any] = {
+        "usage": None,
+        "model": None,
+        "finish_reason": None,
+        "choice_index": None,
+    }
+    done = False
+    body_bytes = 0
+
+    def emit(reasoning: str, content: str) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(reasoning, content)
+        except Exception:  # noqa: BLE001 - a display hook never breaks the attempt
+            pass
+
+    def heartbeat() -> None:
+        if on_heartbeat is None:
+            return
+        try:
+            on_heartbeat()
+        except Exception:  # noqa: BLE001 - a display hook never breaks the attempt
+            pass
+
+    def apply_event(event_text: str) -> str | None:
+        """Apply one data event; return an error detail or ``__done__``."""
+        if event_text.strip() == "[DONE]":
+            return "__done__"
+        try:
+            event = parse_strict_json_object(event_text)
+        except ValueError:
+            return DETAIL["stream_invalid"]
+        if event.get("error") is not None:
+            return DETAIL["stream_invalid"]
+        if isinstance(event.get("usage"), dict):
+            state["usage"] = _sanitize_usage(event["usage"])
+        if not state["model"]:
+            state["model"] = _sanitize_token(event.get("model"), MAX_MODEL_LEN)
+        choices = event.get("choices")
+        if not isinstance(choices, list):
+            return DETAIL["stream_invalid"]
+        if len(choices) > 1:
+            return DETAIL["stream_invalid"]
+        if len(choices) == 0:
+            # Only a usage-only frame is legal; an empty frame is otherwise a
+            # malformed stream.
+            if not isinstance(event.get("usage"), dict):
+                return DETAIL["stream_invalid"]
+            return None
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            return DETAIL["stream_invalid"]
+        index = choice.get("index")
+        if index is not None:
+            if not isinstance(index, int) or isinstance(index, bool) or index != 0:
+                return DETAIL["stream_invalid"]
+            if state["choice_index"] is not None and index != state["choice_index"]:
+                return DETAIL["stream_invalid"]
+            state["choice_index"] = index
+        stopped_before = state["finish_reason"] is not None
+        finish_reason = choice.get("finish_reason")
+        if finish_reason is not None:
+            if finish_reason != "stop":
+                return DETAIL["unexpected_finish"]
+            state["finish_reason"] = "stop"
+        delta = choice.get("delta")
+        if delta is None:
+            # Compatibility with a provider that returns a full message chunk;
+            # a finish-only/usage-adjacent terminal choice is also accepted.
+            message = choice.get("message")
+            if isinstance(message, dict):
+                # A non-streaming-shaped message must pass the same forbidden
+                # field checks even when its content is not a string and stop is
+                # already present.
+                for forbidden in ("tool_calls", "function_call", "refusal"):
+                    if message.get(forbidden):
+                        return DETAIL["forbidden_field"]
+                if isinstance(message.get("content"), str):
+                    delta = message
+                elif state["finish_reason"] is not None:
+                    return None
+                else:
+                    return DETAIL["stream_invalid"]
+            elif state["finish_reason"] is not None:
+                return None
+            else:
+                return DETAIL["stream_invalid"]
+        if not isinstance(delta, dict):
+            return DETAIL["stream_invalid"]
+        for forbidden in ("tool_calls", "function_call", "refusal"):
+            if delta.get(forbidden):
+                return DETAIL["forbidden_field"]
+        reasoning = delta.get("reasoning_content")
+        content = delta.get("content")
+        if reasoning is not None and not isinstance(reasoning, str):
+            return DETAIL["stream_invalid"]
+        if content is not None and not isinstance(content, str):
+            return DETAIL["stream_invalid"]
+        # Content/reasoning in the *same* chunk as the stop marker is the normal
+        # final token; content after a previous stop is a different answer and
+        # must never be appended.
+        if stopped_before and (reasoning or content):
+            return DETAIL["stream_invalid"]
+        if reasoning:
+            emit(reasoning, "")
+        if content:
+            content_parts.append(content)
+            emit("", content)
+        return None
+
+    def process_buffer(*, final: bool) -> TransportResult | None:
+        nonlocal buffer, done
+        buffer = _normalize_sse_buffer(buffer, final=final)
+        while True:
+            if done:
+                buffer = ""
+                return None
+            boundary = _sse_event_boundary(buffer)
+            if boundary < 0:
+                return None
+            event_text, buffer = buffer[:boundary], buffer[boundary + 2:]
+            if _sse_has_comment(event_text):
+                heartbeat()
+            data = _sse_data(event_text)
+            if data is None or not data.strip():
+                continue
+            error = apply_event(data)
+            if error == "__done__":
+                done = True
+                buffer = ""
+                return None
+            if error is not None:
+                return TransportResult(
+                    OUTPUT_INVALID,
+                    reason="output_invalid",
+                    sent=True,
+                    http_status=200,
+                    provider_request_id=provider_request_id,
+                    detail=error,
+                )
+
+    while True:
+        if _remaining_ms(deadline_ms) <= 0:
+            return TransportResult(
+                UNKNOWN,
+                reason="timeout_after_dispatch",
+                sent=True,
+                http_status=200,
+                provider_request_id=provider_request_id,
+                detail=DETAIL["stream_truncated"],
+            )
+        try:
+            chunk = response.read1(65536)
+        except _ResponseTooLarge:
+            return TransportResult(PROVIDER_ERROR, reason="provider_error", sent=True, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["body_too_large"])
+        except (socket.timeout, TimeoutError):
+            return TransportResult(UNKNOWN, reason="timeout_after_dispatch", sent=True, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["stream_truncated"])
+        except (http.client.IncompleteRead, OSError, ValueError):
+            return TransportResult(UNKNOWN, reason="timeout_after_dispatch", sent=True, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["stream_truncated"])
+        if not chunk:
+            break
+        body_bytes += len(chunk)
+        try:
+            buffer += decoder.decode(chunk)
+        except UnicodeDecodeError:
+            return TransportResult(OUTPUT_INVALID, reason="output_invalid", sent=True, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["response_not_utf8"])
+        if done:
+            # The answer ended at [DONE]; keep reading only to validate the
+            # transport and UTF-8 tail, never to append more content.
+            continue
+        failure = process_buffer(final=False)
+        if failure is not None:
+            return failure
+
+    # A split trailing CR is a real line ending at EOF; process any final event
+    # before the strict decoder flush catches an incomplete multibyte tail.
+    failure = process_buffer(final=True)
+    if failure is not None:
+        return failure
+    try:
+        decoder.decode(b"", final=True)
+    except UnicodeDecodeError:
+        return TransportResult(OUTPUT_INVALID, reason="output_invalid", sent=True, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["response_not_utf8"])
+
+    if expected_length is not None and body_bytes != expected_length:
+        return TransportResult(
+            UNKNOWN,
+            reason="timeout_after_dispatch",
+            sent=True,
+            http_status=200,
+            provider_request_id=provider_request_id,
+            detail=DETAIL["incomplete_body"],
+        )
+    if chunked and not bool(getattr(response, "isclosed", lambda: True)()):
+        return TransportResult(
+            UNKNOWN,
+            reason="timeout_after_dispatch",
+            sent=True,
+            http_status=200,
+            provider_request_id=provider_request_id,
+            detail=DETAIL["incomplete_body"],
+        )
+    if state["finish_reason"] != "stop":
+        # [DONE] alone, a truncated stream, or a missing normal finish is not a
+        # complete answer, regardless of any partial content received.
+        return TransportResult(
+            OUTPUT_INVALID,
+            reason="output_invalid",
+            sent=True,
+            http_status=200,
+            provider_request_id=provider_request_id,
+            detail=DETAIL["stream_truncated"],
+        )
+    content = "".join(content_parts)
+    try:
+        parse_strict_json_object(content)
+    except ValueError:
+        return TransportResult(OUTPUT_INVALID, reason="output_invalid", sent=True, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["invalid_candidate_json"])
+    return TransportResult(
+        SUCCESS,
+        sent=True,
+        http_status=200,
+        provider_request_id=provider_request_id,
+        returned_model=state["model"],
+        usage=state["usage"],
+        candidate_text=content,
+    )
 
 
 def _classify_http_status(status: int, provider_request_id: str | None, *, sent: bool) -> TransportResult:

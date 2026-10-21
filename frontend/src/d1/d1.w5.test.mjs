@@ -672,6 +672,808 @@ async function mountTaskPanel({ routes, saveCurrent, props = {} }) {
   return { harness, ...built, calls: fetchImpl.calls }
 }
 
+// ---------------------------------------------------------------------------
+// AiTaskPanel streaming progress DOM harness (default-expanded, collapsible,
+// continuous elapsed time, plain text, terminal text not erased)
+// ---------------------------------------------------------------------------
+
+function progressFixture(overrides = {}) {
+  return {
+    available: true,
+    task_id: 'task1',
+    execution_id: 'exec1',
+    attempt_id: 'att1',
+    attempt_no: 1,
+    seq: 1,
+    phase: 'thinking',
+    elapsed_ms: 1200,
+    last_data_age_ms: 300,
+    reasoning: '正在思考的内容',
+    content_chars: 12,
+    truncated: false,
+    ...overrides,
+  }
+}
+
+function liveTask(overrides = {}) {
+  return taskFixture({
+    status: 'dispatching',
+    execution: {
+      id: 'exec1',
+      generation: 1,
+      ai_config_version: 1,
+      personal_revision: 1,
+      contract_version: 1,
+      default_revision: 1,
+      attempt_no: 1,
+    },
+    allowed_actions: ['cancel'],
+    ...overrides,
+  })
+}
+
+const DomCardStub = {
+  setup(_props, { slots, attrs }) {
+    return () =>
+      vue.h('div', { 'data-d1': attrs['data-d1'] }, [
+        slots.header?.(),
+        slots.default?.(),
+      ])
+  },
+}
+
+const DomSelectStub = {
+  props: { modelValue: String, disabled: Boolean },
+  emits: ['update:modelValue'],
+  setup(_props, { slots }) {
+    return () => vue.h('div', {}, slots.default?.())
+  },
+}
+
+const DomOptionStub = {
+  props: { label: String, value: String },
+  setup() {
+    return () => null
+  },
+}
+
+const DomTagStub = {
+  setup(_props, { slots, attrs }) {
+    return () => vue.h('span', { 'data-d1': attrs['data-d1'] }, slots.default?.())
+  },
+}
+
+async function mountTaskPanelDom({ routes, props = {} }) {
+  const fetchImpl = router(routes)
+  const harness = new Harness({ fetchImpl })
+  const file = path.join(d1Dir, 'views/AiTaskPanel.vue')
+  const source = fs.readFileSync(file, 'utf8')
+  const { descriptor } = parse(source, { filename: file })
+  const compiled = compileScript(descriptor, { id: 'task-dom', inlineTemplate: true }).content
+  const component = harness._evaluate(compiled, file).default
+  const { root, ops } = createMiniDom()
+  const renderer = vue.createRenderer(ops)
+  const app = renderer.createApp({
+    render: () =>
+      vue.h(component, {
+        planId: 'p1',
+        planGrade: 'middle',
+        contentVersion: 3,
+        hasRaw: true,
+        hasProcess: true,
+        frozen: false,
+        saveCurrent: async () => 'unchanged',
+        pollVisibleMs: 5,
+        pollHiddenMs: 5,
+        onOpenCandidate: () => {},
+        onOpenGuidance: () => {},
+        onDraftActive: () => {},
+        ...props,
+      }),
+  })
+  app.component('el-card', DomCardStub)
+  app.component('el-button', DomButtonStub)
+  app.component('el-select', DomSelectStub)
+  app.component('el-option', DomOptionStub)
+  app.component('el-tag', DomTagStub)
+  app.component('el-alert', DomAlertStub)
+  app.mount(root)
+  harness.runMounted()
+  await settle()
+  return { harness, root, ops, app, calls: fetchImpl.calls }
+}
+
+async function testTaskProgressVisibleCollapsibleAndKeptAfterTerminal() {
+  let live = true
+  let progressCalls = 0
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [
+          live
+            ? liveTask()
+            : taskFixture({
+                status: 'succeeded',
+                execution: liveTask().execution,
+                candidate_id: 'cand1',
+                allowed_actions: [],
+              }),
+        ],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () => {
+      progressCalls += 1
+      return jsonResponse(
+        200,
+        progressFixture({ reasoning: '<img src=x onerror=alert(1)>思考中' }),
+      )
+    },
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { root, calls, harness } = await mountTaskPanelDom({ routes })
+  await waitUntil(
+    () => byD1(root, 'ai-progress-text-task1') !== null,
+    'streaming progress text',
+  )
+  assert.ok(byD1(root, 'ai-progress-task1'), 'progress block must be visible while live')
+  assert.match(nodeText(byD1(root, 'ai-progress-task1')), /正在思考/)
+  assert.match(nodeText(byD1(root, 'ai-progress-task1')), /已等待/)
+  assert.match(nodeText(byD1(root, 'ai-progress-text-task1')), /<img src=x/)
+  assert.equal(
+    walkElements(root).filter((node) => node.tag === 'img').length,
+    0,
+    'reasoning is rendered as text, never HTML',
+  )
+  assert.ok(progressCalls > 0, 'progress is polled read-only')
+
+  clickNode(byD1Button(root, 'ai-progress-toggle-task1'))
+  await settle()
+  assert.equal(byD1(root, 'ai-progress-text-task1'), null, 'collapsed by explicit action')
+  assert.match(nodeText(byD1Button(root, 'ai-progress-toggle-task1')), /展开思考/)
+  clickNode(byD1Button(root, 'ai-progress-toggle-task1'))
+  await settle()
+  assert.ok(byD1(root, 'ai-progress-text-task1'), 're-expanded text is still available')
+
+  live = false
+  await waitUntil(
+    () => nodeText(byD1(root, 'ai-progress-task1')).includes('已收到结果'),
+    'terminal progress phase',
+  )
+  assert.ok(
+    byD1(root, 'ai-progress-task1'),
+    'a terminal refresh must not erase text the teacher already saw',
+  )
+  assert.doesNotMatch(
+    nodeText(byD1(root, 'ai-progress-task1')),
+    /正在思考/,
+    'a persisted terminal task must not keep the thinking phase',
+  )
+  assert.match(nodeText(byD1(root, 'ai-progress-text-task1')), /思考中/)
+  const frozen = nodeText(byD1(root, 'ai-progress-task1'))
+  harness.window.__d1AiTasks.progressTick()
+  await settle()
+  assert.equal(
+    nodeText(byD1(root, 'ai-progress-task1')),
+    frozen,
+    'terminal elapsed is fixed, not accumulated on later renders',
+  )
+  assert.equal(
+    callsTo(calls, 'POST', '/api/local/ai/tasks').length,
+    0,
+    'reading progress never creates a new task/provider request',
+  )
+  ok('tasks streaming: progress is immediate, collapsible, plain text and kept on terminal')
+}
+
+async function testTaskProgressReadFailureKeepsShownText() {
+  let fail = false
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, { items: [liveTask()], next_cursor: null }),
+    'GET /api/local/ai/tasks/task1/progress': () =>
+      fail
+        ? apiError(500, 'READ_FAILED', 'progress read failed')
+        : jsonResponse(200, progressFixture({ reasoning: '已知的思考文字' })),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { root } = await mountTaskPanelDom({ routes })
+  await settle()
+  assert.match(nodeText(byD1(root, 'ai-progress-text-task1')), /已知的思考文字/)
+  fail = true
+  await settle(40)
+  assert.match(
+    nodeText(byD1(root, 'ai-progress-text-task1')),
+    /已知的思考文字/,
+    'a lost progress response keeps known text',
+  )
+  ok('tasks streaming: a lost progress response never erases known text')
+}
+
+async function testTaskProgressExecutionChangeReplacesOldText() {
+  let executionId = 'exec1'
+  let available = true
+  const execution = (id) => ({
+    id,
+    generation: 1,
+    ai_config_version: 1,
+    personal_revision: 1,
+    contract_version: 1,
+    default_revision: 1,
+    attempt_no: 1,
+  })
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [liveTask({ execution: execution(executionId) })],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () =>
+      available
+        ? jsonResponse(
+            200,
+            progressFixture({
+              execution_id: executionId,
+              reasoning: executionId === 'exec1' ? '旧执行思考' : '新执行思考',
+            }),
+          )
+        : jsonResponse(
+            200,
+            progressFixture({
+              available: false,
+              execution_id: executionId,
+              phase: 'waiting',
+              seq: 0,
+              reasoning: '',
+              elapsed_ms: 0,
+              last_data_age_ms: null,
+              content_chars: 0,
+              truncated: false,
+            }),
+          ),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { harness } = await mountTaskPanel({
+    routes,
+    saveCurrent: async () => 'unchanged',
+  })
+  const api = harness.window.__d1AiTasks
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.ok(api.progress('task1'))
+  assert.match(api.progress('task1').reasoning, /旧执行思考/)
+
+  executionId = 'exec2'
+  available = false
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.equal(
+    api.progress('task1').reasoning,
+    '',
+    'a new execution must not show the old attempt reasoning',
+  )
+  assert.equal(api.progress('task1').execution_id, 'exec2')
+  assert.equal(api.progress('task1').phase, 'waiting')
+
+  available = true
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.match(api.progress('task1').reasoning, /新执行思考/)
+  assert.doesNotMatch(api.progress('task1').reasoning, /旧执行思考/)
+  ok('tasks streaming: a new execution replaces old progress text')
+}
+
+async function testTaskProgressNewAttemptReplacesOldText() {
+  let attempt = 1
+  let available = true
+  const execution = (no) => ({
+    id: 'exec1',
+    generation: 1,
+    ai_config_version: 1,
+    personal_revision: 1,
+    contract_version: 1,
+    default_revision: 1,
+    attempt_no: no,
+  })
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [liveTask({ execution: execution(attempt) })],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () =>
+      available
+        ? jsonResponse(
+            200,
+            progressFixture({
+              attempt_no: attempt,
+              seq: attempt === 1 ? 5 : 1,
+              reasoning: attempt === 1 ? '旧尝试思考' : '新尝试思考',
+            }),
+          )
+        : jsonResponse(
+            200,
+            progressFixture({
+              available: false,
+              attempt_no: attempt,
+              phase: 'waiting',
+              seq: 0,
+              reasoning: '',
+              elapsed_ms: 0,
+              last_data_age_ms: null,
+              content_chars: 0,
+              truncated: false,
+            }),
+          ),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { harness } = await mountTaskPanel({
+    routes,
+    saveCurrent: async () => 'unchanged',
+  })
+  const api = harness.window.__d1AiTasks
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.match(api.progress('task1').reasoning, /旧尝试思考/)
+
+  attempt = 2
+  available = false
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.equal(api.progress('task1').attempt_no, 2)
+  assert.equal(api.progress('task1').reasoning, '')
+  assert.equal(api.progress('task1').phase, 'waiting')
+
+  available = true
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.match(api.progress('task1').reasoning, /新尝试思考/)
+  assert.doesNotMatch(api.progress('task1').reasoning, /旧尝试思考/)
+  ok('tasks streaming: a new attempt resets seq and replaces old text')
+}
+
+async function testTaskProgressTerminalFailureStopsThinking() {
+  let live = true
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [
+          live
+            ? liveTask()
+            : taskFixture({
+                status: 'failed',
+                reason: 'output_invalid',
+                execution: liveTask().execution,
+              }),
+        ],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () =>
+      jsonResponse(200, progressFixture({ reasoning: '失败前的思考' })),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { root } = await mountTaskPanelDom({ routes })
+  await waitUntil(
+    () => nodeText(byD1(root, 'ai-progress-task1')).includes('正在思考'),
+    'thinking phase',
+  )
+  live = false
+  await waitUntil(
+    () => nodeText(byD1(root, 'ai-progress-task1')).includes('已失败'),
+    'failed phase',
+  )
+  assert.doesNotMatch(nodeText(byD1(root, 'ai-progress-task1')), /正在思考/)
+  assert.match(nodeText(byD1(root, 'ai-progress-text-task1')), /失败前的思考/)
+  ok('tasks streaming: a failed terminal task stops the thinking phase')
+}
+
+async function testTaskProgressNoSnapshotKeepsStableTimer() {
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [liveTask({ status: 'dispatching' })],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () =>
+      jsonResponse(
+        200,
+        progressFixture({
+          available: false,
+          phase: 'waiting',
+          seq: 0,
+          reasoning: '',
+          elapsed_ms: 0,
+          last_data_age_ms: null,
+          content_chars: 0,
+          truncated: false,
+        }),
+      ),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { root } = await mountTaskPanelDom({ routes })
+  await waitUntil(
+    () => byD1(root, 'ai-progress-waiting-task1') !== null,
+    'waiting feedback',
+  )
+  assert.match(nodeText(byD1(root, 'ai-progress-task1')), /等待服务响应/)
+  await new Promise((resolve) => setTimeout(resolve, 1100))
+  await settle()
+  const text = nodeText(byD1(root, 'ai-progress-task1'))
+  assert.doesNotMatch(text, /NaN/)
+  assert.match(text, /已等待 [1-9][0-9]* 秒/)
+  ok('tasks streaming: a missing snapshot still has a stable increasing timer')
+}
+
+async function testTaskProgressClaimedAndDispatchingLabels() {
+  let status = 'claimed'
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [liveTask({ status })],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () =>
+      jsonResponse(
+        200,
+        progressFixture({
+          available: false,
+          phase: 'waiting',
+          seq: 0,
+          reasoning: '',
+          elapsed_ms: 0,
+          last_data_age_ms: null,
+          content_chars: 0,
+          truncated: false,
+        }),
+      ),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { root } = await mountTaskPanelDom({ routes })
+  await waitUntil(
+    () => nodeText(byD1(root, 'ai-progress-task1')).includes('准备连接供应商'),
+    'claimed label',
+  )
+  status = 'dispatching'
+  await waitUntil(
+    () => nodeText(byD1(root, 'ai-progress-task1')).includes('等待服务响应'),
+    'dispatching label',
+  )
+  assert.doesNotMatch(nodeText(byD1(root, 'ai-progress-task1')), /正在提交/)
+  ok('tasks streaming: pending/claimed/dispatching wording matches the task state')
+}
+
+async function testTaskProgressPendingWithoutExecutionHasTimer() {
+  let progressCalls = 0
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [taskFixture({ status: 'pending', execution: null })],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () => {
+      progressCalls += 1
+      return jsonResponse(200, progressFixture())
+    },
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { root } = await mountTaskPanelDom({ routes })
+  await waitUntil(
+    () => nodeText(byD1(root, 'ai-progress-task1')).includes('排队等待处理'),
+    'pending waiting feedback',
+  )
+  await new Promise((resolve) => setTimeout(resolve, 1100))
+  await settle()
+  assert.match(nodeText(byD1(root, 'ai-progress-task1')), /已等待 [1-9][0-9]* 秒/)
+  assert.equal(progressCalls, 0, 'a pending task with no execution starts no progress request')
+  ok('tasks streaming: a newly registered pending task has a stable waiting timer')
+}
+
+async function testTaskProgressTerminalNeverJumpsBackwards() {
+  let live = true
+  let failClosing = false
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [
+          live
+            ? liveTask({ status: 'dispatching' })
+            : taskFixture({
+                status: 'succeeded',
+                execution: liveTask().execution,
+                candidate_id: 'cand1',
+                allowed_actions: [],
+              }),
+        ],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () =>
+      failClosing && !live
+        ? apiError(500, 'READ_FAILED', 'closing read failed')
+        : jsonResponse(
+            200,
+            progressFixture({ elapsed_ms: 5000, reasoning: '结束前的思考' }),
+          ),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { root, harness } = await mountTaskPanelDom({ routes })
+  await waitUntil(
+    () => nodeText(byD1(root, 'ai-progress-task1')).includes('正在思考'),
+    'thinking before terminal',
+  )
+  await new Promise((resolve) => setTimeout(resolve, 1100))
+  await settle()
+  const liveText = nodeText(byD1(root, 'ai-progress-task1'))
+  const liveSeconds = Number(/已等待 ([0-9]+) 秒/.exec(liveText)?.[1] ?? 0)
+  assert.ok(liveSeconds >= 5, liveText)
+
+  live = false
+  failClosing = true
+  await waitUntil(
+    () => nodeText(byD1(root, 'ai-progress-task1')).includes('已收到结果'),
+    'terminal phase',
+  )
+  const terminalText = nodeText(byD1(root, 'ai-progress-task1'))
+  const terminalSeconds = Number(/已等待 ([0-9]+) 秒/.exec(terminalText)?.[1] ?? 0)
+  assert.ok(
+    terminalSeconds >= liveSeconds,
+    `terminal elapsed ${terminalSeconds} must not drop below displayed ${liveSeconds}`,
+  )
+  assert.doesNotMatch(terminalText, /正在思考/)
+  harness.window.__d1AiTasks.progressTick()
+  await settle()
+  assert.equal(nodeText(byD1(root, 'ai-progress-task1')), terminalText)
+  assert.match(nodeText(byD1(root, 'ai-progress-text-task1')), /结束前的思考/)
+  ok('tasks streaming: terminal elapsed freezes instead of jumping backwards')
+}
+
+async function testTaskProgressManualRetryPendingHidesOldTerminal() {
+  let status = 'dispatching'
+  let executionId = 'exec1'
+  let calls = 0
+  const execution = (id) => ({
+    id,
+    generation: 1,
+    ai_config_version: 1,
+    personal_revision: 1,
+    contract_version: 1,
+    default_revision: 1,
+    attempt_no: 1,
+  })
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [liveTask({ status, execution: execution(executionId) })],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () => {
+      calls += 1
+      return jsonResponse(
+        200,
+        progressFixture({
+          execution_id: executionId,
+          reasoning: executionId === 'exec1' ? '旧终态思考' : '新尝试思考',
+        }),
+      )
+    },
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { harness } = await mountTaskPanel({
+    routes,
+    saveCurrent: async () => 'unchanged',
+  })
+  const api = harness.window.__d1AiTasks
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.match(api.progress('task1').reasoning, /旧终态思考/)
+
+  status = 'failed'
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.equal(api.progress('task1').phase, 'failed')
+
+  // Manual retry: pending while the old execution id/attempt is still stored.
+  status = 'pending'
+  const callsBeforePending = calls
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  const pending = api.progress('task1')
+  assert.equal(pending.phase, 'waiting')
+  assert.equal(pending.reasoning, '')
+  assert.equal(pending.execution_id, 'exec1')
+  assert.ok(
+    Date.now() - pending.receivedAt < 2000,
+    'pending wait must start from the retry, not the old attempt',
+  )
+  assert.equal(
+    calls,
+    callsBeforePending,
+    'a pending task with an old execution must not read old progress',
+  )
+
+  // New claim: a new execution and a fresh attempt snapshot replace it.
+  status = 'claimed'
+  executionId = 'exec2'
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.match(api.progress('task1').reasoning, /新尝试思考/)
+  assert.doesNotMatch(api.progress('task1').reasoning, /旧终态思考/)
+  ok('tasks streaming: manual retry pending hides the old execution progress')
+}
+
+async function testTaskProgressLateOldGetDuringPendingDoesNotRestore() {
+  let status = 'dispatching'
+  let executionId = 'exec1'
+  let calls = 0
+  let releaseOld
+  const oldGate = new Promise((resolve) => {
+    releaseOld = resolve
+  })
+  const execution = (id) => ({
+    id,
+    generation: 1,
+    ai_config_version: 1,
+    personal_revision: 1,
+    contract_version: 1,
+    default_revision: 1,
+    attempt_no: 1,
+  })
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [liveTask({ status, execution: execution(executionId) })],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () => {
+      calls += 1
+      if (calls === 1) {
+        return oldGate.then(() =>
+          jsonResponse(
+            200,
+            progressFixture({ execution_id: 'exec1', reasoning: '迟到的旧思考' }),
+          ),
+        )
+      }
+      return jsonResponse(
+        200,
+        progressFixture({ execution_id: 'exec2', reasoning: '新尝试思考' }),
+      )
+    },
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { harness } = await mountTaskPanel({
+    routes,
+    saveCurrent: async () => 'unchanged',
+  })
+  const api = harness.window.__d1AiTasks
+  await waitUntil(() => calls >= 1, 'old progress request started')
+  status = 'pending'
+  await api.refresh()
+  releaseOld()
+  await settle()
+  assert.equal(api.progress('task1').phase, 'waiting')
+  assert.equal(api.progress('task1').reasoning, '')
+
+  status = 'claimed'
+  executionId = 'exec2'
+  await api.refresh()
+  await api.fetchProgress()
+  await settle()
+  assert.match(api.progress('task1').reasoning, /新尝试思考/)
+  assert.doesNotMatch(api.progress('task1').reasoning, /迟到的旧思考/)
+  ok('tasks streaming: a late old GET during pending cannot restore old text')
+}
+
+async function testTaskProgressLateOldAttemptResponseCannotOverwriteNew() {  let attempt = 1
+  let releaseOld
+  const oldGate = new Promise((resolve) => {
+    releaseOld = resolve
+  })
+  let calls = 0
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, {
+        items: [
+          liveTask({
+            execution: {
+              id: 'exec1',
+              generation: 1,
+              ai_config_version: 1,
+              personal_revision: 1,
+              contract_version: 1,
+              default_revision: 1,
+              attempt_no: attempt,
+            },
+          }),
+        ],
+        next_cursor: null,
+      }),
+    'GET /api/local/ai/tasks/task1/progress': () => {
+      calls += 1
+      if (calls === 1) {
+        return oldGate.then(() =>
+          jsonResponse(
+            200,
+            progressFixture({ attempt_no: 1, seq: 5, reasoning: '旧尝试迟到' }),
+          ),
+        )
+      }
+      return jsonResponse(
+        200,
+        progressFixture({ attempt_no: 2, seq: 1, reasoning: '新尝试文字' }),
+      )
+    },
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { harness } = await mountTaskPanel({
+    routes,
+    saveCurrent: async () => 'unchanged',
+  })
+  const api = harness.window.__d1AiTasks
+  await waitUntil(() => calls >= 1, 'first progress request started')
+  attempt = 2
+  await api.refresh()
+  releaseOld()
+  await settle()
+  assert.doesNotMatch(
+    api.progress('task1')?.reasoning ?? '',
+    /旧尝试迟到/,
+    'a late old-attempt response must not populate the new attempt cache',
+  )
+  await api.fetchProgress()
+  await settle()
+  assert.match(api.progress('task1').reasoning, /新尝试文字/)
+  assert.doesNotMatch(api.progress('task1').reasoning, /旧尝试迟到/)
+  ok('tasks streaming: a late old-attempt response cannot overwrite new text')
+}
+
+async function testTaskProgressWaitingAndGeneratingPhases() {
+  let phase = 'waiting'
+  const routes = {
+    'GET /api/local/ai/tasks': () =>
+      jsonResponse(200, { items: [liveTask()], next_cursor: null }),
+    'GET /api/local/ai/tasks/task1/progress': () =>
+      phase === 'waiting'
+        ? jsonResponse(
+            200,
+            progressFixture({
+              available: false,
+              phase: 'waiting',
+              seq: 0,
+              reasoning: '',
+              elapsed_ms: 0,
+              last_data_age_ms: null,
+              content_chars: 0,
+              truncated: false,
+            }),
+          )
+        : jsonResponse(
+            200,
+            progressFixture({ phase: 'generating', reasoning: '', seq: 2 }),
+          ),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+  }
+  const { root } = await mountTaskPanelDom({ routes })
+  await settle()
+  assert.ok(byD1(root, 'ai-progress-waiting-task1'))
+  assert.match(nodeText(byD1(root, 'ai-progress-task1')), /等待/)
+  phase = 'generating'
+  await waitUntil(
+    () => nodeText(byD1(root, 'ai-progress-task1')).includes('正在生成结果'),
+    'generating stage',
+  )
+  assert.match(nodeText(byD1(root, 'ai-progress-task1')), /正在生成结果/)
+  ok('tasks streaming: waiting and generating stages are labelled')
+}
+
 async function testTaskTriggerSavesBodyFirstThenRegisters() {
   const order = []
   const routes = tasksRouter([[]], {
@@ -2969,6 +3771,19 @@ const tests = [
   testClientUnreadable2xxIsIndeterminate,
   testComparePreviewAndLabels,
   testTaskTriggerSavesBodyFirstThenRegisters,
+  testTaskProgressVisibleCollapsibleAndKeptAfterTerminal,
+  testTaskProgressReadFailureKeepsShownText,
+  testTaskProgressWaitingAndGeneratingPhases,
+  testTaskProgressExecutionChangeReplacesOldText,
+  testTaskProgressNewAttemptReplacesOldText,
+  testTaskProgressTerminalFailureStopsThinking,
+  testTaskProgressNoSnapshotKeepsStableTimer,
+  testTaskProgressClaimedAndDispatchingLabels,
+  testTaskProgressPendingWithoutExecutionHasTimer,
+  testTaskProgressManualRetryPendingHidesOldTerminal,
+  testTaskProgressLateOldGetDuringPendingDoesNotRestore,
+  testTaskProgressTerminalNeverJumpsBackwards,
+  testTaskProgressLateOldAttemptResponseCannotOverwriteNew,
   testTaskFrozenDuringSaveNeverRegisters,
   testTaskDefiniteExecutorRefusalNotPending,
   testTaskResubmitDefiniteRefusalKeepsOldPending,

@@ -38,7 +38,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from app.local import ai_task_service, ai_transport
+from app.local import ai_progress, ai_task_service, ai_transport
 from app.local.base import utc_now
 
 # ---------------------------------------------------------------------------
@@ -466,6 +466,9 @@ class AiExecutor:
                 pass
         if not self._unconfirmed_slots:
             self._unconfirmed = False
+        if result and not self._unconfirmed_slots:
+            # The display cache is process-local and is released on exit.
+            ai_progress.clear()
         return result and not self._unconfirmed_slots
 
     def active_snapshot(self) -> dict[str, Any]:
@@ -696,6 +699,8 @@ class AiExecutor:
         self._emit("job_assigned", claim, {"pid": int(process.pid)})
         active = _Active(claim=claim, process=process, conn=parent_conn, job=job)
         self._active = active
+        # Display-only progress: "waiting" is visible before any HTTP byte.
+        ai_progress.begin(claim)
         try:
             frame_bytes = _encode_bootstrap(claim, deadline_ms, self._synthetic)
         except ValueError:
@@ -869,7 +874,42 @@ class AiExecutor:
                 return {"type": "eof"}
             if not isinstance(frame, dict):
                 return {"type": "eof"}
+            if frame.get("type") == "progress":
+                # Display-only progress: consume and keep waiting. A stale or
+                # foreign frame is ignored; the absolute deadline is re-checked
+                # at the top of this loop on the next iteration.
+                self._apply_progress(active, frame)
+                continue
             return frame
+
+    def _apply_progress(self, active: _Active, frame: dict[str, Any]) -> None:
+        """Project one worker progress frame into the bounded display cache."""
+        if self._active is not active:
+            return
+        if self._stop.is_set() or self._draining.is_set() or active.abort_mode:
+            return
+        reasoning = frame.get("reasoning")
+        content_chars = frame.get("content_chars")
+        phase = frame.get("phase")
+        seq = frame.get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool):
+            return
+        if frame.get("heartbeat") is True:
+            # A real SSE keepalive updates only the supplier-data clock; it must
+            # not change the phase or invent text.
+            ai_progress.heartbeat(active.claim, seq=seq)
+            return
+        if not isinstance(reasoning, str) or not isinstance(phase, str):
+            return
+        if not isinstance(content_chars, int) or isinstance(content_chars, bool):
+            content_chars = 0
+        ai_progress.update(
+            active.claim,
+            seq=seq,
+            phase=phase,
+            reasoning_delta=reasoning,
+            content_chars=content_chars,
+        )
 
     # -- bounded IPC (the coordinator never blocks on the pipe) ------------
     def _run_io(self, active: _Active, work) -> str:  # noqa: ANN001
@@ -1038,6 +1078,7 @@ class AiExecutor:
         if not isinstance(result, dict):
             result = {"kind": "unknown", "reason": "timeout_after_dispatch", "sent": True}
         result.setdefault("duration_ms", max(self._clock() - claim.started_ticks, 0))
+        ai_progress.finish(claim, result)
         kind = result.get("kind")
         last_error: Exception | None = None
         for _ in range(3):

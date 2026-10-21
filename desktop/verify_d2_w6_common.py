@@ -136,19 +136,133 @@ def expected_g15(prefix: str, expect: str) -> set[str]:
     return {prefix + suffix for suffix in suffixes}
 
 
-def make_reply_factory(seen: dict):
+def make_reply_factory(seen: dict, *, stream: bool = False):
     def factory(request: bytes):
         text = request.decode("utf-8", "replace")
         if "process_source" in text:
             seen["adapt"] = seen.get("adapt", 0) + 1
-            return _envelope(ADAPT_OUT)
+            return _sse_envelope(ADAPT_OUT) if stream else _envelope(ADAPT_OUT)
         if "calendar_context" in text or "morning_games" in text:
             seen["other"] = seen.get("other", 0) + 1
-            return _envelope(OTHER_OUT)
+            return _sse_envelope(OTHER_OUT) if stream else _envelope(OTHER_OUT)
         seen["split"] = seen.get("split", 0) + 1
-        return _envelope(SPLIT_OUT)
+        return _sse_envelope(SPLIT_OUT) if stream else _envelope(SPLIT_OUT)
 
     return factory
+
+
+def _sse_envelope(text: str) -> bytes:
+    """A standard OpenAI-compatible SSE reply with reasoning + split content."""
+    import json as _json
+
+    events = [
+        {
+            "model": "w6-synthetic",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "reasoning_content": "W6 合成思考过程"}}],
+        },
+        {
+            "choices": [
+                {"index": 0, "delta": {"content": text[: max(1, len(text) // 3)]}}
+            ]
+        },
+        {
+            "choices": [
+                {"index": 0, "delta": {"content": text[max(1, len(text) // 3) :]}}
+            ]
+        },
+        {
+            "choices": [
+                {"index": 0, "delta": {}, "finish_reason": "stop"}
+            ]
+        },
+    ]
+    body = b"".join(
+        b"data: " + _json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n"
+        for event in events
+    ) + b"data: [DONE]\n\n"
+    return (
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: "
+        + str(len(body)).encode()
+        + b"\r\n\r\n"
+        + body
+    )
+
+
+def sse_segments(text: str, *, reasoning: str = "W5 合成思考过程", delay: float = 1.5):
+    """A segmented SSE reply: reasoning/partial content, then a delayed final.
+
+    The returned list is ``[(bytes, delay_before_send), ...]`` for the controlled
+    TLS server. The delay is what makes the frozen-window progress assertion
+    meaningful: the window must show real reasoning *before* the final answer.
+    """
+    import json as _json
+
+    split = max(1, len(text) // 2)
+    first_events = [
+        {
+            "model": "w5-synthetic",
+            "choices": [
+                {"index": 0, "delta": {"role": "assistant", "reasoning_content": reasoning}}
+            ],
+        },
+        {
+            "choices": [
+                {"index": 0, "delta": {"content": text[:split]}}
+            ]
+        },
+    ]
+    second_events = [
+        {
+            "choices": [
+                {"index": 0, "delta": {"content": text[split:]}}
+            ]
+        },
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]
+    first_body = b"".join(
+        b"data: " + _json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n"
+        for event in first_events
+    )
+    second_body = b"".join(
+        b"data: " + _json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n"
+        for event in second_events
+    ) + b"data: [DONE]\n\n"
+    total = len(first_body) + len(second_body)
+    head = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: "
+        + str(total).encode()
+        + b"\r\n\r\n"
+    )
+    return [(head + first_body, 0.0), (second_body, delay)]
+
+
+def adapt_hold_segments(
+    *, reasoning: str = "W5 适配准备", hold: float = 30.0
+):
+    """A real provider receipt that stays open until the close flow aborts it.
+
+    The first segment is a valid SSE reasoning event (so the window can prove
+    the adapt request was actually received), followed by a deliberately
+    incomplete body held open. The declared Content-Length is larger than the
+    bytes sent; a normal completion never happens. Closing the task therefore
+    has real sent evidence, not a pending/claimed guess.
+    """
+    import json as _json
+
+    event = {
+        "model": "w5-synthetic",
+        "choices": [
+            {"index": 0, "delta": {"role": "assistant", "reasoning_content": reasoning}}
+        ],
+    }
+    first_body = (
+        b"data: " + _json.dumps(event, ensure_ascii=False).encode("utf-8") + b"\n\n"
+        + b": w5-adapt-hold\n\n"
+    )
+    head = (
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000000\r\n\r\n"
+    )
+    return [(head + first_body, 0.0), (b"", hold)]
 
 
 def _envelope(text: str) -> bytes:

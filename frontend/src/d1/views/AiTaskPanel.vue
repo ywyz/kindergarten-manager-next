@@ -16,7 +16,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiGet, apiPost, ApiError, pathSegment } from '../client'
 import { isIndeterminate, queryAiReceipt, receiptMessage } from '../operations'
 import type { SaveOutcome } from '../leave'
-import type { AiTask, AiTaskList, Grade, PromptList, TaskType } from '../types'
+import type { AiTask, AiTaskList, AiTaskProgress, Grade, PromptList, TaskType } from '../types'
 import {
   TASK_TYPES,
   TASK_TYPE_HINTS,
@@ -63,10 +63,330 @@ const pendingCreates = ref<Record<string, { requestId: string; body: Record<stri
 /** A lost action: keep the COMPLETE original request per task. */
 const pendingActions = ref<Record<string, { kind: string; requestId: string; body: Record<string, unknown> }>>({})
 
+/**
+ * Streaming progress (display only). Keyed by task; the stored entry is kept
+ * after a terminal refresh so text the teacher already saw is not erased.
+ */
+type ProgressView = AiTaskProgress & { receivedAt: number }
+const progressByTask = ref<Record<string, ProgressView>>({})
+const progressCollapsed = ref<Record<string, boolean>>({})
+const progressNow = ref(Date.now())
+const progressFetching: Record<string, boolean> = {}
+
 let pollTimer: ReturnType<typeof setTimeout> | null = null
+let progressTimer: ReturnType<typeof setInterval> | null = null
 let active = true
 let refreshSeq = 0
 let operationSeq = 0
+
+const PROGRESS_PHASE_LABELS: Record<string, string> = {
+  waiting: '等待服务响应',
+  thinking: '正在思考',
+  generating: '正在生成结果',
+  validating: '正在校验结果',
+  completed: '已收到结果',
+  failed: '已失败',
+  unknown: '结果不明',
+  paused: '已暂停',
+  cancelled: '已取消',
+  retry_wait: '等待安全重试',
+  unavailable: '暂无进度',
+}
+
+const progressWaitSince = ref<Record<string, number>>({})
+const progressTerminalAt = ref<Record<string, number>>({})
+const progressClosingFetched = new Set<string>()
+const pendingSince = ref<Record<string, number>>({})
+const lastTaskStatus = ref<Record<string, string>>({})
+
+const TERMINAL_PROGRESS_PHASES = [
+  'completed',
+  'failed',
+  'unknown',
+  'cancelled',
+  'paused',
+]
+
+function isTerminalProgressPhase(phase: string): boolean {
+  return TERMINAL_PROGRESS_PHASES.includes(phase)
+}
+
+function progressKey(task: AiTask): string {
+  return `${task.id}:${task.execution?.id ?? ''}:${task.execution?.attempt_no ?? 0}`
+}
+
+function waitingView(
+  task: AiTask,
+  executionId: string | null,
+  attemptNo: number | null,
+  receivedAt: number,
+): ProgressView {
+  return {
+    available: false,
+    task_id: task.id,
+    execution_id: executionId,
+    attempt_id: null,
+    attempt_no: attemptNo,
+    seq: 0,
+    phase: 'waiting',
+    elapsed_ms: 0,
+    last_data_age_ms: null,
+    reasoning: '',
+    content_chars: 0,
+    truncated: false,
+    receivedAt,
+  }
+}
+
+function terminalProgressPhase(status: string): string | null {
+  if (status === 'succeeded') return 'completed'
+  if (status === 'failed') return 'failed'
+  if (status === 'outcome_unknown') return 'unknown'
+  if (status === 'cancelled') return 'cancelled'
+  if (status === 'paused') return 'paused'
+  return null
+}
+
+function progressFor(task: AiTask): ProgressView | null {
+  const currentExecution = task.execution?.id ?? null
+  const currentAttempt = task.execution?.attempt_no ?? null
+  const stored = progressByTask.value[task.id]
+  const terminalPhase = terminalProgressPhase(task.status)
+  if (task.status === 'pending') {
+    // Manual retry/resume goes back to pending while the old execution id is
+    // still stored. That execution is history: show a fresh waiting state, not
+    // the old terminal reasoning/phase or its elapsed time.
+    const key = progressKey(task)
+    return waitingView(
+      task,
+      currentExecution,
+      currentAttempt,
+      pendingSince.value[key] ?? progressNow.value,
+    )
+  }
+  const attemptMatches =
+    currentAttempt === null ||
+    stored?.attempt_no === null ||
+    stored?.attempt_no === currentAttempt
+  if (stored && stored.execution_id === currentExecution && attemptMatches) {
+    if (task.status === 'claimed' && isTerminalProgressPhase(stored.phase)) {
+      // A claim is pre-send; a finished snapshot is the previous activity.
+      const key = progressKey(task)
+      return waitingView(
+        task,
+        currentExecution,
+        currentAttempt,
+        progressWaitSince.value[key] ?? progressNow.value,
+      )
+    }
+    if (terminalPhase) {
+      const key = progressKey(task)
+      const frozenAt = progressTerminalAt.value[key]
+      const extra =
+        frozenAt !== undefined ? Math.max(0, frozenAt - stored.receivedAt) : 0
+      // Freeze the last displayed value at the transition; a closing snapshot
+      // may provide a larger, authoritative final elapsed value. A failed
+      // closing GET must never make the timer jump backwards or restart.
+      const elapsed = Math.max(stored.elapsed_ms, stored.elapsed_ms + extra)
+      const lastAge =
+        stored.last_data_age_ms === null
+          ? null
+          : Math.max(
+              stored.last_data_age_ms,
+              stored.last_data_age_ms + extra,
+            )
+      return {
+        ...stored,
+        phase: terminalPhase,
+        elapsed_ms: elapsed,
+        last_data_age_ms: lastAge,
+      }
+    }
+    let phase = stored.phase
+    // Transport success while the task is still live is business validation,
+    // not a persisted successful result.
+    if (isLiveTask(task) && stored.phase === 'completed') {
+      phase = 'validating'
+    }
+    if (task.status === 'retry_wait') {
+      phase = 'retry_wait'
+    }
+    return { ...stored, phase }
+  }
+  if (isLiveTask(task)) {
+    const key = progressKey(task)
+    const started = progressWaitSince.value[key] ?? progressNow.value
+    // Immediate feedback before the first progress snapshot arrives. A stored
+    // entry for an older execution/attempt is never shown for a new attempt.
+    return waitingView(task, currentExecution, currentAttempt, started)
+  }
+  return null
+}
+
+function progressPhaseLabel(progress: ProgressView): string {
+  if (progress.phase === 'waiting' && progress.seq === 0) return '正在提交，等待处理'
+  return PROGRESS_PHASE_LABELS[progress.phase] ?? '处理中'
+}
+
+function progressLabelFor(task: AiTask): string {
+  const progress = progressFor(task)
+  if (!progress) return ''
+  if (progress.phase === 'waiting' && progress.seq === 0) {
+    if (task.status === 'pending') return '排队等待处理'
+    if (task.status === 'retry_wait') return '等待安全重试'
+    if (task.status === 'claimed') return '准备连接供应商'
+    if (task.status === 'dispatching') return '等待服务响应'
+  }
+  return progressPhaseLabel(progress)
+}
+
+function progressElapsedSeconds(progress: ProgressView): number {
+  const ended = isTerminalProgressPhase(progress.phase)
+  const local = Math.max(0, progressNow.value - progress.receivedAt)
+  const base = progress.elapsed_ms + (ended ? 0 : local)
+  return Math.max(0, Math.floor(base / 1000))
+}
+
+function progressLastDataSeconds(progress: ProgressView): number | null {
+  if (progress.last_data_age_ms === null) return null
+  const ended = isTerminalProgressPhase(progress.phase)
+  const local = Math.max(0, progressNow.value - progress.receivedAt)
+  const base = progress.last_data_age_ms + (ended ? 0 : local)
+  return Math.max(0, Math.floor(base / 1000))
+}
+
+function progressElapsedFor(task: AiTask): number {
+  const progress = progressFor(task)
+  return progress ? progressElapsedSeconds(progress) : 0
+}
+
+function progressLastFor(task: AiTask): number | null {
+  const progress = progressFor(task)
+  return progress ? progressLastDataSeconds(progress) : null
+}
+
+function progressTextFor(task: AiTask): string {
+  return progressFor(task)?.reasoning ?? ''
+}
+
+function progressTruncatedFor(task: AiTask): boolean {
+  return progressFor(task)?.truncated === true
+}
+
+function progressCollapsedFor(taskId: string): boolean {
+  return !!progressCollapsed.value[taskId]
+}
+
+function toggleProgress(taskId: string): void {
+  progressCollapsed.value = {
+    ...progressCollapsed.value,
+    [taskId]: !progressCollapsed.value[taskId],
+  }
+}
+
+async function fetchProgress(): Promise<void> {
+  if (!active) return
+  const candidates = tasks.value.filter((task) => {
+    // A pending task has no current-attempt progress; the old execution id may
+    // still be present after manual retry/resume. Never read or project it.
+    if (task.status === 'pending') return false
+    if (!task.execution?.id) return false
+    if (isLiveTask(task)) return true
+    const key = progressKey(task)
+    return (
+      Boolean(progressByTask.value[task.id]) &&
+      !progressClosingFetched.has(key)
+    )
+  })
+  for (const task of candidates) {
+    if (progressFetching[task.id]) continue
+    const executionId = task.execution?.id
+    const currentAttempt = task.execution?.attempt_no ?? null
+    if (!executionId) continue
+    const key = progressKey(task)
+    const closing = !isLiveTask(task)
+    if (!closing && progressWaitSince.value[key] === undefined) {
+      progressWaitSince.value = { ...progressWaitSince.value, [key]: Date.now() }
+    }
+    progressFetching[task.id] = true
+    try {
+      const data = await apiGet<AiTaskProgress>(
+        `/api/local/ai/tasks/${pathSegment(task.id)}/progress`,
+      )
+      if (!active) continue
+      // Re-read the latest persistent task *after* the await: an execution or
+      // attempt that changed while the request was in flight must win, and an
+      // old response must never replace the new attempt's text.
+      const current = tasks.value.find((item) => item.id === task.id)
+      if (!current || current.execution?.id !== executionId) continue
+      const latestAttempt = current.execution?.attempt_no ?? null
+      if (latestAttempt !== currentAttempt) continue
+      if (
+        latestAttempt !== null &&
+        data.attempt_no !== null &&
+        data.attempt_no !== latestAttempt
+      ) {
+        continue
+      }
+      if (!data.available) {
+        const existing = progressByTask.value[task.id]
+        if (
+          !existing ||
+          existing.execution_id !== executionId ||
+          existing.attempt_no !== data.attempt_no
+        ) {
+          progressByTask.value = {
+            ...progressByTask.value,
+            [task.id]: {
+              ...data,
+              phase: 'waiting',
+              execution_id: executionId,
+              attempt_no: data.attempt_no ?? latestAttempt,
+              receivedAt: progressWaitSince.value[key] ?? Date.now(),
+            },
+          }
+        }
+        continue
+      }
+      if (data.execution_id !== executionId) continue
+      const existing = progressByTask.value[task.id]
+      const sameAttempt =
+        existing !== undefined &&
+        existing.execution_id === data.execution_id &&
+        existing.attempt_no === data.attempt_no
+      if (sameAttempt && data.seq < existing.seq) {
+        continue
+      }
+      let elapsed = data.elapsed_ms
+      let lastAge = data.last_data_age_ms
+      const frozenAt = progressTerminalAt.value[key]
+      if (closing && existing && frozenAt !== undefined) {
+        const extra = Math.max(0, frozenAt - existing.receivedAt)
+        elapsed = Math.max(elapsed, existing.elapsed_ms + extra)
+        if (lastAge === null && existing.last_data_age_ms !== null) {
+          lastAge = existing.last_data_age_ms + extra
+        } else if (lastAge !== null && existing.last_data_age_ms !== null) {
+          lastAge = Math.max(lastAge, existing.last_data_age_ms + extra)
+        }
+      }
+      progressByTask.value = {
+        ...progressByTask.value,
+        [task.id]: {
+          ...data,
+          elapsed_ms: elapsed,
+          last_data_age_ms: lastAge,
+          receivedAt: Date.now(),
+        },
+      }
+    } catch {
+      // A progress read failure keeps the already shown text; it never changes
+      // the task state and never triggers a provider request.
+    } finally {
+      delete progressFetching[task.id]
+      if (closing) progressClosingFetched.add(key)
+    }
+  }
+}
 
 const orderedTasks = computed(() =>
   [...tasks.value].sort((a, b) => {
@@ -138,6 +458,68 @@ async function refresh(): Promise<void> {
     } while (cursor)
     if (seq !== refreshSeq) return
     tasks.value = collected
+    // Stable wait start per live task/execution/attempt: a missing progress
+    // snapshot must not reset the visible elapsed time on every render.
+    const starts = { ...progressWaitSince.value }
+    const liveKeys = new Set<string>()
+    for (const task of tasks.value) {
+      if (isLiveTask(task)) {
+        const key = progressKey(task)
+        liveKeys.add(key)
+        if (starts[key] === undefined) starts[key] = Date.now()
+      }
+    }
+    for (const key of Object.keys(starts)) {
+      if (!liveKeys.has(key)) delete starts[key]
+    }
+    progressWaitSince.value = starts
+    // On the first observation of a terminal task, freeze the last displayed
+    // elapsed value at this instant. A later one-shot closing snapshot may
+    // raise it to the authoritative final value, but a failed GET never makes
+    // the timer jump backwards or restart.
+    const terminalAt = { ...progressTerminalAt.value }
+    const pending = { ...pendingSince.value }
+    const statuses = { ...lastTaskStatus.value }
+    const taskKeys = new Set<string>()
+    const taskIds = new Set<string>()
+    for (const task of tasks.value) {
+      const key = progressKey(task)
+      taskKeys.add(key)
+      taskIds.add(task.id)
+      const previousStatus = statuses[task.id]
+      if (task.status === 'pending') {
+        if (previousStatus !== 'pending' || pending[key] === undefined) {
+          pending[key] = Date.now()
+        }
+      } else {
+        delete pending[key]
+      }
+      statuses[task.id] = task.status
+      if (isLiveTask(task)) {
+        delete terminalAt[key]
+        progressClosingFetched.delete(key)
+      } else if (
+        progressByTask.value[task.id] &&
+        terminalAt[key] === undefined
+      ) {
+        terminalAt[key] = Date.now()
+      }
+    }
+    for (const key of Object.keys(terminalAt)) {
+      if (!taskKeys.has(key)) delete terminalAt[key]
+    }
+    for (const key of Object.keys(pending)) {
+      if (!taskKeys.has(key)) delete pending[key]
+    }
+    for (const id of Object.keys(statuses)) {
+      if (!taskIds.has(id)) delete statuses[id]
+    }
+    for (const key of Array.from(progressClosingFetched)) {
+      if (!taskKeys.has(key)) progressClosingFetched.delete(key)
+    }
+    progressTerminalAt.value = terminalAt
+    pendingSince.value = pending
+    lastTaskStatus.value = statuses
     errorText.value = ''
   } catch (err) {
     if (seq !== refreshSeq) return
@@ -160,12 +542,14 @@ function schedulePoll(): void {
   const delay = pageHidden() ? props.pollHiddenMs ?? 5000 : props.pollVisibleMs ?? 2000
   pollTimer = setTimeout(async () => {
     await refresh()
+    void fetchProgress()
     schedulePoll()
   }, delay)
 }
 
 async function afterMutation(): Promise<void> {
   await refresh()
+  void fetchProgress()
   schedulePoll()
 }
 
@@ -212,6 +596,7 @@ async function submitCreate(
       body,
     )
     putTask(created)
+    void fetchProgress()
     schedulePoll()
     return true
   } catch (err) {
@@ -517,9 +902,25 @@ onMounted(() => {
     refresh: () => refresh(),
     loadGuidanceStatus: () => loadGuidanceStatus(),
     stopPolling: () => stopPolling(),
+    progress: (taskId: string) => {
+      const task = tasks.value.find((item) => item.id === taskId)
+      return task ? progressFor(task) : null
+    },
+    toggleProgress: (taskId: string) => toggleProgress(taskId),
+    progressCollapsed: (taskId: string) => !!progressCollapsed.value[taskId],
+    fetchProgress: () => fetchProgress(),
+    progressTick: () => {
+      progressNow.value = Date.now()
+    },
   }
-  void refresh().then(() => schedulePoll())
+  void refresh().then(() => {
+    void fetchProgress()
+    schedulePoll()
+  })
   void loadGuidanceStatus()
+  progressTimer = setInterval(() => {
+    progressNow.value = Date.now()
+  }, 1000)
 })
 
 onBeforeUnmount(() => {
@@ -527,6 +928,10 @@ onBeforeUnmount(() => {
   refreshSeq += 1
   operationSeq += 1
   stopPolling()
+  if (progressTimer !== null) {
+    clearInterval(progressTimer)
+    progressTimer = null
+  }
   emit('draft-active', false)
   delete (window as unknown as { __d1AiTasks?: object }).__d1AiTasks
 })
@@ -609,6 +1014,44 @@ onBeforeUnmount(() => {
       <p v-if="task.input_summary.calendar_coverage_warning" class="muted">
         {{ describeCalendarWarning(task.input_summary.calendar_coverage_warning) }}
       </p>
+      <div v-if="progressFor(task)" class="progress-block" :data-d1="`ai-progress-${task.id}`">
+        <div class="progress-head">
+          <strong>{{ progressLabelFor(task) }}</strong>
+          <span class="muted">已等待 {{ progressElapsedFor(task) }} 秒</span>
+          <span v-if="progressLastFor(task) !== null" class="muted">
+            最近数据 {{ progressLastFor(task) }} 秒前
+          </span>
+          <el-button
+            size="small"
+            text
+            :data-d1="`ai-progress-toggle-${task.id}`"
+            @click="toggleProgress(task.id)"
+          >
+            {{ progressCollapsedFor(task.id) ? '展开思考' : '折叠思考' }}
+          </el-button>
+        </div>
+        <p class="muted progress-note">
+          供应商返回的中间内容，最终结果尚未校验；只读，不写入正文。
+        </p>
+        <pre
+          v-if="!progressCollapsedFor(task.id) && progressTextFor(task)"
+          class="progress-text"
+          :data-d1="`ai-progress-text-${task.id}`"
+        >{{ progressTextFor(task) }}</pre>
+        <p
+          v-else-if="!progressCollapsedFor(task.id)"
+          class="muted"
+          :data-d1="`ai-progress-waiting-${task.id}`"
+        >
+          尚未收到思考文字；无文字不表示失败，请勿重复提交。
+        </p>
+        <p
+          v-if="progressTruncatedFor(task) && !progressCollapsedFor(task.id)"
+          class="muted"
+        >
+          较早的思考内容已省略。
+        </p>
+      </div>
       <el-alert
         v-if="task.status === 'outcome_unknown'"
         type="warning"
@@ -711,6 +1154,34 @@ onBeforeUnmount(() => {
 .task-card {
   margin-top: 10px;
   background: #fafbfc;
+}
+.progress-block {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #f5f7fa;
+}
+.progress-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.progress-note {
+  margin: 4px 0;
+}
+.progress-text {
+  margin: 4px 0 0;
+  padding: 8px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  font-size: 0.8rem;
 }
 .task-head {
   display: flex;

@@ -45,8 +45,8 @@ JSON 无法解析、必需字段缺失等输出错误须区分于网络错误；
 
 ## 实施状态与规格接续
 
-2026-10-17用户确认Q1–Q6推荐流程，Q7按OpenAI兼容选择。D2按可配置地址／模型收敛，不要求现在指定供应商品牌或型号；工程首片采用非流式Chat Completions文本JSON子集，实际兼容仍须后续验证。三类操作分别由教师触发，采用／保存不串联下一次AI。运行时关窗可继续等待或停止等待后退出，未发送任务重开后手动继续，可能已发送的不明请求不自动重发；不得将停止等待写成供应商已撤回。详见[D2规格§3、§10–11](../specs/desktop-ai-daily-plan.md)。工程核查未完成，维持暂不实施及不真实调用。
+2026-10-17用户确认Q1–Q6推荐流程，Q7按OpenAI兼容选择；工程首片采用非流式Chat Completions文本JSON子集，W1–W6限定环境工程结果见[D2规格](../specs/desktop-ai-daily-plan.md)。2026-10-21用户确定应用使用DeepSeek官方与MiMo标准API，并确认实时思考展示，已按[流式设计](../specs/desktop-ai-streaming-progress.md)实现并通过[限定合成工程核查](../bootstrap/desktop-d2-streaming-review.md#11-最终交付限定合成工程核查通过)；思考增量仅作有界临时展示，不是业务候选、日志、导出或后续提示词。最终答案仍须完整校验后成为候选，三类操作分别触发，采用／保存不串联下一次AI。运行时关窗可继续等待或停止等待后退出，未发送任务重开后手动继续，可能已发送的不明请求不自动重发，不将停止等待写成供应商已撤回。应用真实AI调用仍未授权。
 
 既有[AI Service 实施规格](../specs/ai-service-implementation.md)与[协同索引](../specs/ai-capabilities-implementation.md)保留原架构的设计、实现和验收身份。其云端任务、身份、密钥部署和数据库条款须先映射到本 Contract 与 ADR 0004，不能直接作为桌面实施指令。
 
-本次仅确认文档边界，不宣称 AI transport、本地任务、数据库迁移或桌面验收完成；后续入口见[Architecture v2 实施入口](../bootstrap/architecture-v2-readiness.md)。
+实现、合成工程核查与真实供应商／教师验收分别记录；唯一当前入口见[当前任务](../tasks/current.md)，系统实施总入口见[Architecture v2 实施入口](../bootstrap/architecture-v2-readiness.md)。

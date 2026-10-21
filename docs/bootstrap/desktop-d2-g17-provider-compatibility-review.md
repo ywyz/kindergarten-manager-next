@@ -2,13 +2,15 @@
 
 核对日期：2026-10-21。依据用户指令：预计使用DeepSeek、MiMo及OpenCode Go，先查官方文档，不设计预算限额，不实际调用真实AI或发布。
 
-结论：**DeepSeek官方API与MiMo标准API符合当前最小请求／响应形状，可进入后续G17配置准备；尚未验证真实兼容。MiMo Token Plan不适用于本应用后端；OpenCode Go有公开API，但用途与客户端要求尚未满足，暂不列为当前包可直接接入的服务。** 这是针对现有应用的技术核对，不新增供应商白名单或改变Q7产品决定。
+后续用户决定应用仅使用DeepSeek官方API及MiMo标准API，不使用Token Plan或Go，并确认实时思考展示；规格见[流式思考与等待反馈](../specs/desktop-ai-streaming-progress.md)，实现后的独立结果见[核查记录](desktop-d2-streaming-review.md)。以下保留31a3c9a非流式基线与当时三项候选的官方核对证据，不冒充新流式或真实供应商验收。开发工具OpenCode的Go套餐DeepSeek V4.1 Flash已明确可继续使用。
 
-## 1. 当前应用对照基线
+结论：**DeepSeek官方API与MiMo标准API符合核对时的非流式最小请求／响应形状，可进入后续G17配置准备；尚未验证真实兼容。MiMo Token Plan不适用于本应用后端；OpenCode Go有公开API，但用途与客户端要求尚未满足，暂不列为当前包可直接接入的服务。** 这是针对现有应用的技术核对，不新增供应商白名单或改变Q7产品决定。
 
-依据[产品规格§11](../specs/desktop-ai-daily-plan.md#11-openai兼容接入边界)及当前源码：
+## 1. 文档核对时的应用基线（31a3c9a）
 
-| 项目 | 当前行为与证据 |
+依据当时的[产品规格§11](../specs/desktop-ai-daily-plan.md#11-openai兼容接入边界)及31a3c9a源码；当前协议以该规格及流式核查为准：
+
+| 项目 | 核对时行为与证据 |
 | --- | --- |
 | 地址／鉴权 | HTTPS API前缀追加一次`/chat/completions`；`Authorization: Bearer`、JSON POST；不跟随重定向，不继承未知代理 |
 | 请求体 | `ai_transport.py`的`build_request`（320行起）只发`model`、system／user文本`messages`、`stream:false`；不发tools、`response_format`或thinking参数 |

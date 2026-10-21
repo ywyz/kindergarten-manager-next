@@ -57,6 +57,8 @@ from verify_d2_w6_common import (  # noqa: E402
     make_reply_factory,
     run_g14,
     run_g15_branch,
+    adapt_hold_segments,
+    sse_segments,
     run_window,
     sanitize_package_env,
 )
@@ -199,20 +201,22 @@ def _source_fingerprints(modules_file: Path) -> dict[str, dict]:
     return {name: d2_same_origin.fingerprint_imported_module(name) for name in names}
 
 
-def _w5_provider_factory(seen: dict):
-    """Answer split/other and keep the adapt request open (live-task close)."""
+def _w5_segment_factory(seen: dict):
+    """Answer split as delayed SSE; other as JSON; keep adapt open."""
     from verify_d2_w6_common import OTHER_OUT, SPLIT_OUT
 
     def factory(request: bytes):
         text = request.decode("utf-8", "replace")
         if "process_source" in text:
             seen["adapt"] = seen.get("adapt", 0) + 1
-            return None  # keep the connection open: the adapt task stays live
+            # Real reasoning receipt; keep the response incomplete until the
+            # close flow aborts it (never infer sent from a live task).
+            return adapt_hold_segments()
         if "calendar_context" in text or "morning_games" in text:
             seen["other"] = seen.get("other", 0) + 1
-            return w3_tls.envelope(OTHER_OUT)
+            return [(w3_tls.envelope(OTHER_OUT), 0.0)]
         seen["split"] = seen.get("split", 0) + 1
-        return w3_tls.envelope(SPLIT_OUT)
+        return sse_segments(SPLIT_OUT, delay=2.5)
 
     return factory
 
@@ -222,11 +226,17 @@ W5_EXPECTED = (
     "w5_ai_configured",
     "w5_close_save_conflict_stays",
     "w5_trigger_split_saved",
+    "w5_stream_progress_visible",
+    "w5_stream_progress_default_expanded",
+    "w5_stream_progress_collapsed",
+    "w5_stream_progress_re_expanded",
+    "w5_stream_progress_phase",
     "w5_split_edit_adopt",
     "w5_candidate_draft_blocks_leave",
     "w5_trigger_other_activities",
     "w5_settings_draft_blocks_leave",
     "w5_live_task",
+    "w5_live_task_received",
     "w5_close_keep_waiting",
     "w5_close_old_request_aborted",
     "w5_close_stop_and_exit_choice",
@@ -244,7 +254,7 @@ def _run_w5_in_package(exe, root, copied, dates, ca_dir, leaf, checks, report):
     """The existing w5-ui close loop inside the frozen package."""
     w5_seen: dict = {}
     server = w3_tls.TlsServer(
-        cert=leaf[0], key=leaf[1], reply_factory=_w5_provider_factory(w5_seen)
+        cert=leaf[0], key=leaf[1], segment_factory=_w5_segment_factory(w5_seen)
     ).start()
     try:
         env = sanitize_package_env(base_env(root, "w5"))
@@ -284,6 +294,12 @@ def _run_w5_in_package(exe, root, copied, dates, ca_dir, leaf, checks, report):
         checks["w5p_exit_zero"] = rc == 0
         for key in W5_EXPECTED:
             checks[f"w5p_{key}"] = bool(w5_checks.get(key))
+        # The controlled provider saw exactly one request per capability; the
+        # progress polling, collapse/expand and repeated queries must not add a
+        # second supplier request.
+        checks["w5p_provider_split_once"] = w5_seen.get("split") == 1
+        checks["w5p_provider_other_once"] = w5_seen.get("other") == 1
+        checks["w5p_provider_adapt_once"] = w5_seen.get("adapt") == 1
         # Cross-assert the controlled provider observation with the persisted
         # outcome: an adapt request the TLS server actually received must end
         # ``outcome_unknown``.
@@ -313,6 +329,11 @@ def main() -> int:
     parser.add_argument("--date", default="2026-09-15")
     parser.add_argument("--date2", default="2026-09-16")
     parser.add_argument("--keep", action="store_true", help="保留下载/解包合成根")
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="合成供应商返回标准 SSE（流式思考），并核对包内进度缓存证据",
+    )
     args = parser.parse_args()
 
     token = f"{random.randrange(16**8):08x}"
@@ -371,7 +392,7 @@ def main() -> int:
         leaf = w3_tls.create_leaf(ca_dir, root / "tls-leaf")
         seen: dict = {}
         server = w3_tls.TlsServer(
-            cert=leaf[0], key=leaf[1], reply_factory=make_reply_factory(seen)
+            cert=leaf[0], key=leaf[1], reply_factory=make_reply_factory(seen, stream=args.stream)
         ).start()
         report["provider_port"] = server.port
 
@@ -397,6 +418,16 @@ def main() -> int:
         )
         report["res_events"] = s1.get("executor_events")
         report["res_worker_pid"] = s1.get("worker_pid")
+        if args.stream:
+            checks["res_streaming_progress_seen"] = bool(
+                s1.get("streaming_progress_seen")
+            ) and bool(s2.get("streaming_progress_seen"))
+            checks["res_streaming_progress_phases"] = bool(
+                s1.get("streaming_progress_phases")
+            )
+            checks["res_streaming_reasoning_chars"] = (
+                int(s1.get("streaming_progress_reasoning_chars") or 0) > 0
+            )
         # Same-origin comparison of the frozen code objects.
         frozen_fp = dict(s1.get("module_fingerprints") or {})
         # The frozen entry script runs as ``__main__``; compare it to source
@@ -518,6 +549,12 @@ def main() -> int:
         expected |= expected_g15("g15_d_", "config_error")
         expected |= {"g15_d_corrupted_material"}
         expected |= {"archive_entry_matches_source"}
+        if args.stream:
+            expected |= {
+                "res_streaming_progress_seen",
+                "res_streaming_progress_phases",
+                "res_streaming_reasoning_chars",
+            }
         expected |= {f"w5p_{key}" for key in W5_EXPECTED}
         expected |= {
             "w5p_exit_zero",
@@ -525,6 +562,9 @@ def main() -> int:
             "w5p_provider_other_received",
             "w5p_provider_adapt_received",
             "w5p_adapt_final_matches_provider",
+            "w5p_provider_split_once",
+            "w5p_provider_other_once",
+            "w5p_provider_adapt_once",
         }
         report["expected_checks"] = sorted(expected)
         report["missing_checks"] = sorted(k for k in expected if k not in checks)
