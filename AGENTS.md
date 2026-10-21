@@ -16,7 +16,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 架构确认不等于代码、迁移、安装、付费 AI 调用或部署授权，按用户当前任务范围执行。
 
-2026-10-20后续已授权并完成普通运行验证包整合：OpenCode沿用Go套餐DeepSeek V4.1 Flash，Codex独立核查通过，N01／N02回修关闭。限定证据见`docs/bootstrap/desktop-d2-normal-package-review.md`§6；相关修改已按2026-10-21后续授权提交推送（2cafa49）。当前G17仅准备方案，见`docs/bootstrap/desktop-d2-g17-acceptance-plan.md`；预算为待授权建议，硬限额未落实前不执行。旧包与人工数据保持，应用真实AI／发布仍未授权。
+2026-10-20后续已授权并完成普通运行验证包整合：OpenCode沿用Go套餐DeepSeek V4.1 Flash，Codex独立核查通过，N01／N02回修关闭。限定证据见`docs/bootstrap/desktop-d2-normal-package-review.md`§6；相关修改已按2026-10-21后续授权提交推送（2cafa49）。G17见`docs/bootstrap/desktop-d2-g17-acceptance-plan.md`；按2026-10-21最新决定，本轮不设计预算限额，下一步先确定实际API服务／模型并核对协议，不增加预算功能。旧包与人工数据保持，应用真实AI／发布仍未授权。
 
 ## 核心原则
 
