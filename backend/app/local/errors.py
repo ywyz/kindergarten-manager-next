@@ -63,6 +63,30 @@ class LocalVersionConflict(LocalError):
     message = "计划内容已被其他保存更新，请刷新后重试"
 
 
+class LocalHistoryNotFound(LocalError):
+    code = "HISTORY_NOT_FOUND"
+    status_code = 404
+    message = "未找到该历史版本"
+
+
+class LocalHistoryPreviewExpired(LocalError):
+    code = "HISTORY_PREVIEW_EXPIRED"
+    status_code = 409
+    message = "历史恢复预览已失效，请重新预览"
+
+
+class LocalHistoryRequestConflict(LocalError):
+    code = "HISTORY_REQUEST_CONFLICT"
+    status_code = 409
+    message = "同一恢复请求 ID 使用了不同输入"
+
+
+class LocalHistoryOperationNotFound(LocalError):
+    code = "HISTORY_OPERATION_NOT_FOUND"
+    status_code = 404
+    message = "未找到该历史恢复回执"
+
+
 class LocalOutsideTerm(LocalError):
     code = "OUTSIDE_TERM"
     status_code = 422

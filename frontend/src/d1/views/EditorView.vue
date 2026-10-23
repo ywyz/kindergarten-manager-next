@@ -36,10 +36,12 @@ import {
 } from '../../daily-plan-content'
 import type { AdoptedContent } from '../../types'
 import type { DailyPlan, Grade, LocalContext } from '../types'
-import type { SaveOutcome } from '../leave'
+import type { SaveOutcome, BlockingDraft } from '../leave'
 import ExportDialog from './ExportDialog.vue'
 import AiTaskPanel from './AiTaskPanel.vue'
 import CandidatePreview from './CandidatePreview.vue'
+import HistoryPanel from './HistoryPanel.vue'
+import type { HistoryRestoreResult } from '../types'
 
 const props = defineProps<{
   context: LocalContext
@@ -62,7 +64,7 @@ interface EditorBridge {
   identity: () => string
   settle: () => Promise<void>
   saveCurrent: () => Promise<SaveOutcome>
-  blockingDraft?: () => { kind: 'candidate' | 'settings'; message: string } | null
+  blockingDraft?: () => BlockingDraft | null
 }
 
 interface SaveResult {
@@ -112,6 +114,11 @@ const exportOpen = ref(false)
 const candidateOpen = ref(false)
 const candidateId = ref('')
 const candidateDraftActive = ref(false)
+/** D3-A: history dialog and its restore write protection. */
+const historyOpen = ref(false)
+const historyBusy = ref(false)
+const historySettling = ref(false)
+const conflictNotice = ref('')
 
 let inFlight: Promise<SaveResult> | null = null
 
@@ -126,8 +133,22 @@ const canEdit = computed(
 // Editing is allowed in ready/conflict/save_failed; blocked while a save is
 // in flight (locked), while the window closing is finally allowed (frozen),
 // and during load/creating phases.
+/**
+ * A restore is a write of its own. While it is in flight or its outcome is
+ * unknown, no save/adopt/leave may write through the same editor. Read-only
+ * history viewing is not part of this block.
+ */
+const historyRestoreBlocked = computed(
+  () => historyBusy.value || historySettling.value,
+)
+
 const editDisabled = computed(
-  () => !canEdit.value || locked.value || props.frozen || phase.value === 'saving',
+  () =>
+    !canEdit.value ||
+    locked.value ||
+    props.frozen ||
+    phase.value === 'saving' ||
+    historyRestoreBlocked.value,
 )
 
 const weekLabel = computed(() => {
@@ -153,6 +174,7 @@ function applyPlan(next: DailyPlan): void {
   rawLessonPlan.value = next.content.raw_lesson_plan ?? ''
   baseline.value = baselineFromPlan(next)
   conflict.value = null
+  conflictNotice.value = ''
   indeterminate.value = null
   errorText.value = ''
   phase.value = 'ready'
@@ -236,6 +258,7 @@ async function enterConflict(planId: string, attemptedVersion: number): Promise<
     server = null
   }
   conflict.value = { attemptedVersion, server }
+  conflictNotice.value = ''
   phase.value = 'conflict'
 }
 
@@ -247,6 +270,11 @@ async function waitIndeterminate(planId: string, expectedVersion: number, submit
 // -- save --------------------------------------------------------------------
 
 async function saveCurrent(): Promise<SaveOutcome> {
+  if (historyRestoreBlocked.value) {
+    // The restore is the only write allowed until it is confirmed/unknown
+    // resolution; never race a PATCH against it.
+    return 'indeterminate'
+  }
   if (inFlight) {
     const result = await inFlight
     return result.status
@@ -468,6 +496,12 @@ function removeMorningGroup(index: number): void {
   form.value.morning_games.splice(index, 1)
 }
 
+function removeMorningGame(groupIndex: number, gameIndex: number): void {
+  if (editDisabled.value) return
+  touchEpoch()
+  form.value.morning_games[groupIndex]?.games.splice(gameIndex, 1)
+}
+
 function addMorningGame(groupIndex: number): void {
   if (editDisabled.value) return
   touchEpoch()
@@ -496,6 +530,12 @@ function removePostGroup(index: number): void {
   form.value.post_group_games.splice(index, 1)
 }
 
+function removePostGame(groupIndex: number, gameIndex: number): void {
+  if (editDisabled.value) return
+  touchEpoch()
+  form.value.post_group_games[groupIndex]?.games.splice(gameIndex, 1)
+}
+
 function addPostGame(groupIndex: number): void {
   if (editDisabled.value) return
   touchEpoch()
@@ -506,6 +546,12 @@ function addAfternoonGame(): void {
   if (editDisabled.value) return
   touchEpoch()
   form.value.afternoon_outdoor.games.push(markTemp({ name: '' }))
+}
+
+function removeAfternoonGame(gameIndex: number): void {
+  if (editDisabled.value) return
+  touchEpoch()
+  form.value.afternoon_outdoor.games.splice(gameIndex, 1)
 }
 
 // -- AI integration (D2 W5) ----------------------------------------------------
@@ -525,6 +571,14 @@ let editorAlive = true
 async function openCandidate(id: string): Promise<void> {
   if (locked.value || props.frozen) {
     ElMessage.warning('窗口正在关闭或正在保存：暂不能打开候选')
+    return
+  }
+  if (historyRestoreBlocked.value) {
+    ElMessage.warning('历史恢复正在提交或结果待核对：暂不能打开候选')
+    return
+  }
+  if (candidateDraftActive.value) {
+    ElMessage.warning('候选预览有未采用的编辑：请先处理当前候选')
     return
   }
   const planAtStart = plan.value?.id ?? ''
@@ -547,6 +601,117 @@ async function openCandidate(id: string): Promise<void> {
 
 function onCandidateDraft(active: boolean): void {
   candidateDraftActive.value = active
+}
+
+/**
+ * Open the history dialog only after the current body is safely saved
+ * (spec §3.1). The same saveCurrent/settle path handles IME, failure,
+ * indeterminate and late input; the dialog never opens over a dirty body.
+ */
+async function openHistory(): Promise<void> {
+  if (locked.value || props.frozen) {
+    ElMessage.warning('窗口正在关闭或正在保存：暂不能打开历史')
+    return
+  }
+  if (historyRestoreBlocked.value) {
+    ElMessage.warning('历史恢复正在提交或结果待核对：暂不能打开历史')
+    return
+  }
+  if (candidateDraftActive.value || candidateOpen.value) {
+    ElMessage.warning('候选预览有未采用的编辑：请先处理当前候选')
+    return
+  }
+  const planAtStart = plan.value?.id ?? ''
+  const outcome = await saveCurrent()
+  if (!editorAlive) return
+  if (props.frozen || locked.value || plan.value?.id !== planAtStart) return
+  if (outcome !== 'saved' && outcome !== 'unchanged') {
+    ElMessage.warning('正文未保存成功：请先处理保存结果再打开历史')
+    return
+  }
+  await nextTick()
+  if (!editorAlive) return
+  if (props.frozen || dirty.value || plan.value?.id !== planAtStart) {
+    ElMessage.warning('正文仍有未保存输入：请先保存后再打开历史')
+    return
+  }
+  historyOpen.value = true
+}
+
+/**
+ * The restore has already committed on the server. Keep the editor protected
+ * until the current plan has been re-read. A later server version, a changed
+ * edit epoch or a failed read never silently overwrites the live input; the
+ * existing conflict comparison becomes the explicit refresh path.
+ */
+async function onHistoryRestored(
+  result: HistoryRestoreResult,
+  epochAtPreview: number,
+): Promise<void> {
+  historySettling.value = true
+  const targetPlan = result.plan_id
+  try {
+    if (!plan.value || plan.value.id !== targetPlan) return
+    const server = await apiGet<DailyPlan>(`/api/daily-plans/${pathSegment(targetPlan)}`)
+    if (!editorAlive) return
+    if (!plan.value || plan.value.id !== targetPlan) return
+    if (server.current_content_version !== result.content_version) {
+      conflict.value = {
+        attemptedVersion: result.before_content_version,
+        server,
+      }
+      conflictNotice.value =
+        `恢复已保存为 v${result.content_version}，但服务端已有更新：` +
+        '当前编辑区未被覆盖，请比较后选择刷新或重新提交。'
+      phase.value = 'conflict'
+      return
+    }
+    if (editEpoch.value === epochAtPreview) {
+      applyPlan(server)
+      ElMessage.success(
+        `已从 v${result.source_content_version} 恢复并保存为 v${result.content_version}`,
+      )
+    } else {
+      conflict.value = {
+        attemptedVersion: result.before_content_version,
+        server,
+      }
+      conflictNotice.value =
+        '恢复已保存，但当前编辑区已有更新：已保留输入，未自动改写正文；' +
+        '请比较服务端内容后选择处理方式。'
+      phase.value = 'conflict'
+    }
+  } catch (err) {
+    if (!editorAlive) return
+    conflict.value = plan.value
+      ? { attemptedVersion: result.before_content_version, server: null }
+      : null
+    conflictNotice.value =
+      '恢复已保存，但读取当前版本失败：请重新读取服务端版本后再处理，未自动改写正文。'
+    errorText.value = err instanceof ApiError ? err.message : String(err)
+    phase.value = 'conflict'
+  } finally {
+    historySettling.value = false
+  }
+}
+
+/** A definite stale/version conflict from history; preserve the body and show
+ * the existing comparison instead of letting the dialog write anything. */
+async function onHistoryStale(message: string): Promise<void> {
+  historyOpen.value = false
+  const current = plan.value
+  if (!current) return
+  let server: DailyPlan | null = null
+  try {
+    server = await apiGet<DailyPlan>(`/api/daily-plans/${pathSegment(current.id)}`)
+  } catch {
+    server = null
+  }
+  if (!editorAlive || !plan.value || plan.value.id !== current.id) return
+  conflict.value = { attemptedVersion: current.current_content_version, server }
+  conflictNotice.value =
+    message || '历史操作期间服务端内容已更新：已保留当前编辑区，请比较后刷新。'
+  phase.value = 'conflict'
 }
 
 function captureEpoch(): number {
@@ -636,7 +801,13 @@ const bridge: EditorBridge = {
           message:
             '候选预览有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开',
         }
-      : null,
+      : historyRestoreBlocked.value
+        ? {
+            kind: 'history',
+            message:
+              '历史恢复正在提交或结果待核对：请先查询提交回执并完成处理后再离开',
+          }
+        : null,
 }
 
 onMounted(() => {
@@ -726,6 +897,40 @@ onMounted(() => {
     onCandidateAdopted: (result: { plan_id: string; content_version: number }, epoch: number) =>
       onCandidateAdopted(result, epoch),
     onCandidateDraft: (active: boolean) => onCandidateDraft(active),
+    openHistory: () => openHistory(),
+    historyOpen: () => historyOpen.value,
+    historyBusy: () => historyRestoreBlocked.value,
+    editDisabled: () => editDisabled.value,
+    editEpoch: () => editEpoch.value,
+    historyVersion: () => plan.value?.current_content_version ?? null,
+    historyNotice: () => conflictNotice.value,
+    structureCounts: () => ({
+      morningGroups: form.value.morning_games.length,
+      morningGames: form.value.morning_games.reduce(
+        (total, group) => total + group.games.length,
+        0,
+      ),
+      postGroups: form.value.post_group_games.length,
+      postGames: form.value.post_group_games.reduce(
+        (total, group) => total + group.games.length,
+        0,
+      ),
+      afternoonGames: form.value.afternoon_outdoor.games.length,
+    }),
+    removeMorningGame: (groupIndex: number, gameIndex: number) =>
+      removeMorningGame(groupIndex, gameIndex),
+    removePostGame: (groupIndex: number, gameIndex: number) =>
+      removePostGame(groupIndex, gameIndex),
+    removeAfternoonGame: (gameIndex: number) => removeAfternoonGame(gameIndex),
+    onHistoryRestored: (result: HistoryRestoreResult, epoch: number) =>
+      onHistoryRestored(result, epoch),
+    onHistoryStale: (message: string) => onHistoryStale(message),
+    clearGroups: () => {
+      form.value.morning_games = []
+      form.value.post_group_games = []
+      form.value.afternoon_outdoor.games = []
+      touchEpoch()
+    },
     setSplitProcess: (value: string) => {
       form.value.group_activity.process = value
       touchEpoch()
@@ -766,6 +971,14 @@ onBeforeUnmount(() => {
         />
         <el-button size="small" :disabled="props.frozen" data-d1="open-export" @click="exportOpen = true">
           导出 Word
+        </el-button>
+        <el-button
+          size="small"
+          :disabled="props.frozen || historyRestoreBlocked"
+          data-d1="open-history"
+          @click="openHistory"
+        >
+          历史记录
         </el-button>
         <el-button size="small" :disabled="props.frozen" data-d1="go-settings" @click="goSettings">设置</el-button>
         <el-button size="small" :disabled="props.frozen" data-d1="back-calendar" @click="backToCalendar">
@@ -839,6 +1052,14 @@ onBeforeUnmount(() => {
         title="内容版本冲突（409）：本地编辑已保留，未被覆盖"
       >
         <div class="conflict-body">
+          <el-alert
+            v-if="conflictNotice"
+            type="info"
+            :closable="false"
+            class="section"
+            data-d1="conflict-notice"
+            :title="conflictNotice"
+          />
           <p>
             本次提交期望内容版本 v{{ conflict?.attemptedVersion }}，服务端已有更新。
           </p>
@@ -910,7 +1131,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-for="(game, ggi) in group.games" :key="game.game_id || (game as any)._tmp || `m-${gi}-${ggi}`" class="game-row">
             <el-input v-model="game.name" placeholder="游戏名称" :disabled="editDisabled" />
-            <el-button size="small" text type="danger" :disabled="editDisabled" @click="group.games.splice(ggi, 1)">
+            <el-button size="small" text type="danger" :disabled="editDisabled" data-d1="delete-morning-game" @click="removeMorningGame(gi, ggi)">
               删除
             </el-button>
           </div>
@@ -972,7 +1193,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-for="(game, ggi) in group.games" :key="game.game_id || (game as any)._tmp || `p-${gi}-${ggi}`" class="game-row">
             <el-input v-model="game.name" placeholder="游戏名称" :disabled="editDisabled" />
-            <el-button size="small" text type="danger" :disabled="editDisabled" @click="group.games.splice(ggi, 1)">删除</el-button>
+            <el-button size="small" text type="danger" :disabled="editDisabled" data-d1="delete-post-game" @click="removePostGame(gi, ggi)">删除</el-button>
           </div>
           <el-button size="small" :disabled="editDisabled" @click="addPostGame(gi)">添加游戏</el-button>
           <div class="field-grid">
@@ -991,7 +1212,7 @@ onBeforeUnmount(() => {
         <div class="field"><label>区域名称</label><el-input v-model="form.afternoon_outdoor.area" :disabled="editDisabled" /></div>
         <div v-for="(game, ggi) in form.afternoon_outdoor.games" :key="game.game_id || (game as any)._tmp || `a-${ggi}`" class="game-row">
           <el-input v-model="game.name" placeholder="游戏名称" :disabled="editDisabled" />
-          <el-button size="small" text type="danger" :disabled="editDisabled" @click="form.afternoon_outdoor.games.splice(ggi, 1)">删除</el-button>
+          <el-button size="small" text type="danger" :disabled="editDisabled" data-d1="delete-afternoon-game" @click="removeAfternoonGame(ggi)">删除</el-button>
         </div>
         <el-button size="small" :disabled="editDisabled" @click="addAfternoonGame">添加游戏</el-button>
         <div class="field-grid">
@@ -1053,6 +1274,18 @@ onBeforeUnmount(() => {
       :capture-epoch="captureEpoch"
       @adopted="(result, epoch) => onCandidateAdopted(result, epoch)"
       @draft-active="onCandidateDraft"
+    />
+
+    <HistoryPanel
+      v-if="plan && historyOpen"
+      v-model:open="historyOpen"
+      :plan-id="plan.id"
+      :content-version="plan.current_content_version"
+      :disabled="props.frozen"
+      :capture-epoch="captureEpoch"
+      @restored="onHistoryRestored"
+      @restore-state="(active) => (historyBusy = active)"
+      @stale="onHistoryStale"
     />
   </div>
 </template>

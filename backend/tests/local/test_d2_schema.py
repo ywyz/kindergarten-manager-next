@@ -70,6 +70,7 @@ EXPECTED_D2_TABLES = {
     "local_ai_attempts",
     "local_ai_candidates",
     "local_daily_plan_ai_provenance",
+    "local_daily_plan_restores",
     "local_ai_operations",
 }
 
@@ -176,16 +177,20 @@ class D2SchemaTests(LocalTestCase):
         self.assertTrue(EXPECTED_D2_TABLES <= tables, tables)
         self.assertEqual(query_rows(db, "PRAGMA foreign_key_check"), [])
 
-        # 3 个冻结 bundle：contract_version=1, default_revision=1
+        # 7 个冻结/当前 bundle：r1/r2 三类，适龄另有 r3
         bundles = query_rows(
             db,
             "SELECT task_type, contract_version, default_revision, bundle_hash "
-            "FROM local_prompt_bundles ORDER BY task_type",
+            "FROM local_prompt_bundles ORDER BY task_type, default_revision",
         )
-        self.assertEqual(len(bundles), 3)
+        self.assertEqual(len(bundles), 7)
+        self.assertEqual(
+            [b["default_revision"] for b in bundles],
+            [1, 2, 1, 2, 1, 2, 3],
+        )
         for b in bundles:
             self.assertEqual(b["contract_version"], 1)
-            self.assertEqual(b["default_revision"], 1)
+            self.assertIn(b["default_revision"], (1, 2, 3))
             self.assertIsNotNone(b["bundle_hash"])
             self.assertEqual(len(b["bundle_hash"]), 64)
 
@@ -357,7 +362,10 @@ class D2SchemaTests(LocalTestCase):
             for h in heads:
                 self.assertEqual(h["current_revision"], 1)
                 self.assertEqual(h["required_contract_version"], 1)
-                self.assertEqual(h["latest_default_revision"], 1)
+                self.assertEqual(
+                    h["latest_default_revision"],
+                    3 if h["task_type"] == "daily_process_adapt" else 2,
+                )
 
             # 空游戏头
             class_id = payload["class"]["id"]
@@ -1055,13 +1063,13 @@ class D2SchemaTests(LocalTestCase):
                 "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
                 "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
                 "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES ('x-exec-13', ?, ?, ?, 'daily_lesson_split', 6, 'l', 'p', 1, ?, 1, 1, 2, 'pending', '{}', ?, ?)",
+                "VALUES ('x-exec-13', ?, ?, ?, 'daily_lesson_split', 6, 'l', 'p', 1, ?, 1, 1, 99, 'pending', '{}', ?, ?)",
                 (a["task"], a["plan"], a["input"], g["profile"], ts, ts), at_commit=True)
             # 14) 被拒绝的个人修订必须引用存在且同 contract 的 bundle（deferred）。
             self._expect_fk(conn,
                 "INSERT INTO local_personal_prompt_versions (profile_id, task_type, revision, contract_version, "
                 "based_default_revision, guidance_json, action, rejected_default_revision, created_at) "
-                "VALUES (?, 'daily_lesson_split', 2, 1, 1, '{}', 'reject', 2, ?)",
+                "VALUES (?, 'daily_lesson_split', 2, 1, 1, '{}', 'reject', 99, ?)",
                 (g["profile"], ts), at_commit=True)
 
             # 每次 rollback 后都不得残留外键违规。

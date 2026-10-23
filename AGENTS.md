@@ -8,6 +8,8 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 本仓库是 kindergartenManager 的全新实现。
 
+2026-10-23最新：D3-A历史查阅／整份恢复H1／H2已由原OpenCode Go套餐DeepSeek V4.1 Flash实现，并经Codex限定源码工程核查通过，R01–R11关闭，见`docs/bootstrap/desktop-d3-history-review.md`§9。H3冻结包／教师体验及4551未验边界保持；D2真实状态以G17结果§7–10为准。本轮不安排签名、不恢复真实AI／WebDAV／发行。`docs/tasks/current.md`已改为D3-B0离线摸底待审提示词，必须等用户审核后再派发。
+
 **Architecture v2 已确认（2026-10-08）／D0 工程复审通过／D1A 工程通过／D1B原R1–R17在当前Windows 11开发机工程复审通过；R18日计划Word格式修复的代码、新包及页面验收通过，用户已逐页确认长园所2页、合并7页正常，R18已关闭。T6-A／T6-B／T7及微软拼音已验证，本轮教师体验收口；D2 W1数据迁移与凭据保存、W2游戏配置与提示词已通过当前Windows 11合成环境工程核查；W3、W4已由OpenCode实现并通过Codex当前Windows 11合成环境工程核查；W5界面与宿主整合已通过限定源码集成工程核查；W6导出／无AI降级／完整包已通过当前Windows 11合成环境工程核查；指定Word与合成人工子项按2026-10-20用户决定收口，三项事件留作同类再现处理，真实AI未授权；产品与发行未整体验收。** 用户确认见 `docs/adr/0004-local-desktop-architecture-proposal.md`。现有代码仍包含 v1 云端实现，不得将架构确认或局部代码交付写成迁移或产品验收完成。
 
 当前有效架构见 `ARCHITECTURE.md`，决策原因见 `docs/adr/`，模块 Contract 见 `docs/modules/`，实施入口见 `docs/bootstrap/architecture-v2-readiness.md`。

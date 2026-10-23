@@ -664,12 +664,21 @@ class RealTlsExecutorTests(ExecutorCase):
         self.assertTrue(executor.is_runnable())
         self.assertEqual(len(self.server.requests), 1)
         request = self.server.requests[0]
-        self.assertTrue(request.startswith(b"POST /v1/chat/completions HTTP/1.1"))
-        self.assertIn(b"Authorization: Bearer s3cret", request)
+        headers, _, body = request.partition(b"\r\n\r\n")
+        self.assertTrue(headers.startswith(b"POST /v1/chat/completions HTTP/1.1"))
+        self.assertIn(b"Authorization: Bearer s3cret", headers)
         self.assertEqual(self.candidate_count(task["id"]), 1)
-        # The system message carries the output contract and the guidance.
-        self.assertIn(b"output_contract", request)
-        self.assertIn(b"instructions", request)
+        # The system message is a nested JSON string inside the HTTP JSON body;
+        # parse both layers instead of matching escaped raw bytes.
+        outer = json.loads(body.decode("utf-8"))
+        self.assertEqual(outer["messages"][0]["role"], "system")
+        system = json.loads(outer["messages"][0]["content"])
+        self.assertEqual(system["contract_version"], 1)
+        self.assertIn("output_contract", system)
+        self.assertIn("guidance", system)
+        instructions = "\n".join(system["instructions"])
+        self.assertIn("真实换行", instructions)
+        self.assertIn("只整理这些已有条目", instructions)
         # Metadata persisted from the provider are whitelisted values.
         usage = query_scalar(
             self.db,

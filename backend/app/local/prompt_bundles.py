@@ -64,7 +64,14 @@ TASK_TYPES: tuple[str, ...] = (
 # ships contract 2 or default r2/r3 only has to add manifest entries and bump
 # these; the sync path already advances heads and never rewrites personal text.
 PACKAGE_CONTRACT_VERSION = 1
+# The frozen initial default revision stays r1; r2 is the current content
+# default shipped alongside it (same schemas/field set). Keeping the r1
+# literals and hashes unchanged is required for existing archives.
 PACKAGE_DEFAULT_REVISION = 1
+PACKAGE_LATEST_DEFAULT_REVISION = 2
+# The adapt task gets a teacher-talk content revision without changing split or
+# other activities; never bump the shared latest/revision constants for this.
+PACKAGE_ADAPT_DEFAULT_REVISION = 3
 
 GUIDANCE_MAX_CHARS = 8000
 # Engineering capacity caps (spec §5.3): serialized candidate/teacher edit is
@@ -126,6 +133,15 @@ _SPLIT_GUIDANCE = {
     "difficult_points": "从原始教案摘出活动难点；保留原文语句；未写时输出空字符串。",
     "process": "从原始教案摘出活动过程，保持原文的动作步骤顺序和语句，不补写教案里没有的环节；未写时输出空字符串。",
 }
+
+_SPLIT_GUIDANCE_R2 = {
+    "theme": "从原始教案中摘出集体活动的活动主题名称；只用教案已有的表述；主题是短单值，不编号。教案未写主题时输出空字符串，不要编造。",
+    "objectives": "从原始教案摘出活动目标；保留原文语句、顺序和教学含义。原文已有多个条目时，每条使用真实换行，并以“1. ”、“2. ”、“3. ”依次编号；数量按原文实际，不强行凑三条，不扩写或补写。未写时输出空字符串。",
+    "preparation": "从原始教案摘出活动准备内容（物质准备、经验准备等）；保留原文表述、顺序和含义。原文已有多个条目时，每条使用真实换行并依次编号；数量按实际，不强行凑三条。未写时输出空字符串。",
+    "key_points": "从原始教案摘出活动重点；保留原文语句、顺序和含义。原文已有多个要点时，每条使用真实换行并依次编号；数量按实际，不强行凑三条，不扩写。未写时输出空字符串。",
+    "difficult_points": "从原始教案摘出活动难点；保留原文语句、顺序和含义。原文已有多个难点时，每条使用真实换行并依次编号；数量按实际，不强行凑三条，不扩写。未写时输出空字符串。",
+    "process": "从原始教案摘出活动过程，保持原文的动作步骤顺序、语句和教学含义，不补写教案里没有的环节。原文已有可识别的多个步骤时，整理为每条真实换行并以“1. ”、“2. ”、“3. ”依次编号；数量按实际，不强行凑三条，不扩写或改写原文事实。未写时输出空字符串。",
+}
 _ADAPT_INPUT_SCHEMA = {
     "$schema": _JSON_SCHEMA_DRAFT,
     "type": "object",
@@ -145,6 +161,12 @@ _ADAPT_OUTPUT_SCHEMA = {
 }
 _ADAPT_GUIDANCE = {
     "process": "根据班级年级调整输入活动过程的年龄适宜性，保留活动主题和主要教学意图，可调整表达、步骤和难度。返回完整的调整后过程；无需调整时返回原过程。结果供教师比较和选择，不编造已发生的课堂事实。",
+}
+_ADAPT_GUIDANCE_R2 = {
+    "process": "根据班级年级调整输入活动过程的年龄适宜性，保留活动主题和主要教学意图，可调整表达、步骤和难度。返回完整的调整后过程；最终过程按实际步骤使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；即使无需年龄适宜性调整，也保留原教学内容并整理编号和换行。结果供教师比较和选择，不编造已发生的课堂事实。",
+}
+_ADAPT_GUIDANCE_R3 = {
+    "process": "根据班级年级调整输入活动过程的年龄适宜性，保留活动主题和主要教学意图，可调整表达、步骤和难度。返回完整的调整后过程；按实际步骤真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条。每个环节都要写出教师可直接说的具体话语：在关键处包含引导语、提问和教师的预设回应或支持语，简短自然、衔接操作、适合目标年龄；补充教师话语时保持目标年级适宜的活动难度，不因话语增加认知或表达要求。即使无需年龄适宜性调整，也保留原教学内容、整理编号和换行，并为每个环节补齐教师可直接说的具体话语。回应可写成条件式建议，不虚构已经发生的课堂事实或幼儿实际回答，不要求扩成全程逐字稿。结果供教师比较和选择。",
 }
 _OTHER_INPUT_SCHEMA = {
     "$schema": _JSON_SCHEMA_DRAFT,
@@ -464,6 +486,13 @@ _OTHER_GUIDANCE = {
     "afternoon_outdoor": "根据班级年级、可用户外游戏配置和当前日计划，生成一组下午户外游戏安排建议，可含区域、游戏名称、观察重点、目标、指导和支持策略。可提出新游戏建议，不伪造真实来源或活动事实。节日仅供参考。",
 }
 
+_OTHER_GUIDANCE_R2 = {
+    "morning_games": "根据日期、周次、班级年级、可用游戏配置和当前日计划，提出晨间集体与自选/自主游戏建议。两项均为户外活动，不得使用区域游戏、室内或专用室活动（包括建构区、美工区、阅读室等）；优先使用 game_config 中 kind=outdoor 的场地及限制，没有户外场地配置时只给一般户外建议并明确未结合配置，不冒充已配置场地。多项游戏、目标、指导或要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；名称等短单值不编号。可生成新游戏建议，不伪造日计划引用或活动事实。节日仅供参考，不强制安排节日活动。",
+    "morning_talk": "根据日期、周次、班级年级和当前日计划，提出晨间谈话话题与问题。多个问题或要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；话题等短单值不编号。无建议时省略本板块，不清空已保存正文。",
+    "post_group_games": "根据班级年级、可用游戏配置和当前日计划，生成集体活动之后的室内区域/户外/专用室游戏建议，可含目标、指导和支持策略。多项游戏、目标、指导或支持策略使用真实换行并依次编号，数量按实际，不强行凑三条。可提出新游戏建议，不把生成内容声称为真实日计划来源。节日仅供参考。",
+    "afternoon_outdoor": "根据班级年级、可用户外游戏配置和当前日计划，生成一组下午户外游戏安排建议，可含区域、游戏名称、观察重点、目标、指导和支持策略。多个游戏、目标或指导要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；名称等短单值不编号。可提出新游戏建议，不伪造真实来源或活动事实。节日仅供参考。",
+}
+
 
 def canonical_json(value: Any) -> str:
     """Canonical JSON used for bundle hashes: sorted keys, no extra whitespace."""
@@ -526,6 +555,36 @@ PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
         _OTHER_INPUT_SCHEMA,
         _OTHER_OUTPUT_SCHEMA,
         _OTHER_GUIDANCE,
+    ),
+    # Content revision r2: same contract/schema/field set, new defaults only.
+    # The r1 entries above (and their hashes) remain frozen for existing heads.
+    _bundle(
+        "daily_lesson_split",
+        _SPLIT_INPUT_SCHEMA,
+        _SPLIT_OUTPUT_SCHEMA,
+        _SPLIT_GUIDANCE_R2,
+        default_revision=PACKAGE_LATEST_DEFAULT_REVISION,
+    ),
+    _bundle(
+        "daily_process_adapt",
+        _ADAPT_INPUT_SCHEMA,
+        _ADAPT_OUTPUT_SCHEMA,
+        _ADAPT_GUIDANCE_R2,
+        default_revision=PACKAGE_LATEST_DEFAULT_REVISION,
+    ),
+    _bundle(
+        "daily_process_adapt",
+        _ADAPT_INPUT_SCHEMA,
+        _ADAPT_OUTPUT_SCHEMA,
+        _ADAPT_GUIDANCE_R3,
+        default_revision=PACKAGE_ADAPT_DEFAULT_REVISION,
+    ),
+    _bundle(
+        "daily_other_activities",
+        _OTHER_INPUT_SCHEMA,
+        _OTHER_OUTPUT_SCHEMA,
+        _OTHER_GUIDANCE_R2,
+        default_revision=PACKAGE_LATEST_DEFAULT_REVISION,
     ),
 )
 
@@ -1197,6 +1256,8 @@ __all__ = [
     "TASK_TYPES",
     "PACKAGE_CONTRACT_VERSION",
     "PACKAGE_DEFAULT_REVISION",
+    "PACKAGE_LATEST_DEFAULT_REVISION",
+    "PACKAGE_ADAPT_DEFAULT_REVISION",
     "GUIDANCE_FIELDS",
     "GUIDANCE_MAX_CHARS",
     "MAX_SERIALIZED_CHARS",

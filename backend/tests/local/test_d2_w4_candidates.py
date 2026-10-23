@@ -532,6 +532,29 @@ class AdoptFlowTests(W4Case):
         self.assertNotIn("post_group_games", adopted)
         self.assertEqual(adopted["reflection"], "反思")
 
+    def test_other_activities_numbered_candidate_does_not_touch_unselected_boards(self):
+        candidate = json.loads(json.dumps(OTHER_CANDIDATE))
+        numbered = "1. 问题一\n2. 问题二\n3. 问题三"
+        candidate["morning_talk"]["questions"] = numbered
+        candidate_id = self.generate(
+            self.plan["id"], "daily_other_activities", candidate
+        )
+        preview = self.preview(
+            self.plan["id"], candidate_id, ["morning_talk"], candidate
+        )
+        result = self.adopt(self.plan["id"], candidate_id, preview["preview_token"])
+        self.assertTrue(result["changed"])
+        self.assertEqual(set(result["selected_targets"]), {"morning_talk"})
+        content = self.plan_content(self.plan["id"])
+        adopted = content["adopted_content"]
+        self.assertEqual(adopted["morning_talk"]["topic"], "今日话题")
+        self.assertEqual(adopted["morning_talk"]["questions"], numbered)
+        self.assertIn("\n", adopted["morning_talk"]["questions"])
+        self.assertNotIn("morning_games", adopted)
+        self.assertNotIn("post_group_games", adopted)
+        self.assertNotIn("afternoon_outdoor", adopted)
+        self.assertEqual(adopted["reflection"], "反思")
+
     def test_no_semantic_change_writes_no_new_version(self):
         # Put the candidate's morning talk into the content *first*, so the
         # candidate's input already snapshots it.

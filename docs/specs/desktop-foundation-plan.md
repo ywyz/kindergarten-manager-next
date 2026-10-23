@@ -1,5 +1,7 @@
 # Windows 本地应用：首片规格与后续实施顺序
 
+2026-10-23最新接续：按本文D0–D4顺序，[D3-A本机日计划历史查阅与整份恢复](desktop-daily-plan-history.md)H1／H2已由OpenCode实现并通过Codex限定源码工程核查，见[最终核查§9](../bootstrap/desktop-d3-history-review.md#9-最终独立核查通过)。H3冻结包／教师体验与4551未验边界保持；D2真实状态仍见[G17结果](../bootstrap/desktop-d2-g17-result.md)。用户当前不安排签名；[唯一下一提示词](../tasks/current.md)拟D3-B0一致性快照与跨设备接续离线工程摸底，待审核，未派发。下文D0／D1／D2的“当前”表述保留原阶段历史，不是本轮实施指令。
+
 状态更新：2026-10-13，原 D0 验证范围不变。依据 [Architecture v2](../../ARCHITECTURE.md)、[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)和用户已确认的产品与协作决定。当前分支 `codex/desktop-v2-foundation`；D0 第三轮工程复审通过，92 项测试、最新包仓外三进程、普通关闭／重启、原生保存／取消／占用重试和 Word 两页查看已有证据，详情及未验边界见 [D0 审阅 §7](../bootstrap/desktop-d0-review.md)。D1A 本地数据／API 已在 3.14.7 基线上工程通过，可进入 D1B 规格收敛，见[D1 审阅 §7](../bootstrap/desktop-d1-review.md#7-版本统一与-d1a-放行2026-10-13)。D1 统一目标为 CPython 3.14.7 标准 Windows x64；桌面环境对齐、新包和 D1B 业务未验证，用户体验及发行环境未全面验收。原复用审查基线为 `b3c5bbf`；审阅针对未提交工作区，不以该提交代替最新源码。
 
 2026-10-17接续：D1本轮教师体验已收口，最新证据见[D1结果§20.8](../bootstrap/desktop-d1-result.md#208-t6-b核对与本轮教师体验收口2026-10-17)。[D2规格草案](desktop-ai-daily-plan.md)已记录Q1–Q6确认及Q7可配置OpenAI兼容，[E1–E5工程规格及OpenCode清单](desktop-ai-engineering.md)已完成，G01–G18全部待验；用户明确暂不开始实现；本文较早的D1阶段描述保留当时状态，D0范围及D0–D4顺序不变。

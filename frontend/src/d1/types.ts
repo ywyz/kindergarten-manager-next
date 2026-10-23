@@ -414,3 +414,72 @@ export interface AiOperationReceipt {
   result: Record<string, unknown>
   committed_at: string | null
 }
+
+// --- D3-A daily-plan history / whole-plan restore --------------------------
+
+export interface HistoryListItem {
+  version: number
+  created_at: string
+  is_current: boolean
+  restored_from_version: number | null
+}
+
+export interface HistoryList {
+  items: HistoryListItem[]
+  current_content_version: number
+  next_before_version: number | null
+}
+
+export interface HistoryContent {
+  version: number
+  raw_lesson_plan: string | null
+  split_baseline: Record<string, unknown> | null
+  adopted_content: AdoptedContent
+  editor_id: string
+  created_at: string
+}
+
+export interface HistoryPlanHeader {
+  id: string
+  class_id: string
+  term_id: string
+  plan_date: string
+  week_number: number
+  weekday: number
+  calendar_revision_id: string
+  creator_id: string
+  creator_display_name: string | null
+  school_name: string | null
+  class_name: string
+  grade: string
+  created_at: string
+  updated_at: string
+  current_content_version: number
+}
+
+export interface HistoryDetail {
+  plan: HistoryPlanHeader
+  content: HistoryContent
+  is_current: boolean
+  restored_from_version: number | null
+}
+
+export interface HistoryRestorePreview {
+  preview_token: string
+  expires_at: string
+  source_version: number
+  current_version: number
+  before: HistoryContent
+  after: HistoryContent
+  warnings: string[]
+}
+
+export interface HistoryRestoreResult {
+  request_id: string
+  plan_id: string
+  source_content_version: number
+  before_content_version: number
+  content_version: number
+  content_id: string
+  created_at: string
+}

@@ -35,7 +35,21 @@ TASKS = ("daily_lesson_split", "daily_process_adapt", "daily_other_activities")
 
 
 def _task_bundle(task_type: str) -> dict:
-    return next(b for b in PROMPT_BUNDLE_MANIFEST if b["task_type"] == task_type)
+    """The current package bundle (highest contract/default) for tests."""
+    return max(
+        (b for b in PROMPT_BUNDLE_MANIFEST if b["task_type"] == task_type),
+        key=lambda b: (b["contract_version"], b["default_revision"]),
+    )
+
+
+def _bundle_at(task_type: str, contract: int, default: int) -> dict:
+    return next(
+        b
+        for b in PROMPT_BUNDLE_MANIFEST
+        if b["task_type"] == task_type
+        and b["contract_version"] == contract
+        and b["default_revision"] == default
+    )
 
 
 def make_bundle(
@@ -176,7 +190,7 @@ class PromptReadTests(PromptCase):
                 contract_version=1,
                 default_revision=1,
             )
-            self.assertEqual(out["guidance"]["process"], _task_bundle("daily_process_adapt")["guidance_defaults_json"]["process"])
+            self.assertEqual(out["guidance"]["process"], _bundle_at("daily_process_adapt", 1, 1)["guidance_defaults_json"]["process"])
             with self.assertRaises(LocalError) as ctx:
                 prompt_service.get_default(
                     session,
@@ -251,21 +265,24 @@ class PromptEditTests(PromptCase):
 
 class PromptAcceptRejectTests(PromptCase):
     def test_accept_r2_while_r3_published_only_selected_fields(self):
-        # Publish r2 then r3 (same contract/field set, only text differs).
+        # Keep a custom process in the personal version, then accept only the
+        # r2 theme after r3 is published. The unselected process must survive.
+        custom = dict(_task_bundle("daily_lesson_split")["guidance_defaults_json"])
+        custom["process"] = "教师自定义过程\n不得被默认覆盖"
+        custom["theme"] = "教师自定义主题"
+        self.edit("daily_lesson_split", custom, expected=1, contract=1)
         self.sync(
-            [
-                make_bundle("daily_lesson_split", 1, 2, text={"theme": "r2 主题"}),
-                make_bundle("daily_lesson_split", 1, 3, text={"theme": "r3 主题"}),
-            ]
+            [make_bundle("daily_lesson_split", 1, 3, text={"theme": "r3 主题"})]
         )
         out = self.prompt("daily_lesson_split")
         self.assertEqual(out["latest_default_revision"], 3)
+        self.assertEqual(out["personal_revision"], 2)
         session = self.session()
         try:
             accepted = prompt_service.accept_default(
                 session,
                 task_type="daily_lesson_split",
-                expected_personal_revision=1,
+                expected_personal_revision=2,
                 target_contract_version=1,
                 target_default_revision=2,
                 selected_fields=["theme"],
@@ -273,19 +290,16 @@ class PromptAcceptRejectTests(PromptCase):
             )
         finally:
             session.close()
-        self.assertEqual(accepted["guidance"]["theme"], "r2 主题")
+        r2 = _bundle_at("daily_lesson_split", 1, 2)["guidance_defaults_json"]
+        self.assertEqual(accepted["guidance"]["theme"], r2["theme"])
         self.assertEqual(accepted["based_default_revision"], 2)
+        self.assertEqual(accepted["personal_revision"], 3)
         # r3 is still pending: the later default is neither applied nor rejected.
         self.assertEqual(accepted["latest_default_revision"], 3)
         self.assertIsNone(accepted["rejected_default_revision"])
-        # A non-selected field keeps its original text.
-        self.assertEqual(
-            accepted["guidance"]["process"],
-            _task_bundle("daily_lesson_split")["guidance_defaults_json"]["process"],
-        )
+        self.assertEqual(accepted["guidance"]["process"], custom["process"])
 
     def test_accept_empty_selected_fields_and_bad_field_rejected(self):
-        self.sync([make_bundle("daily_lesson_split", 1, 2, text={"theme": "r2"})])
         session = self.session()
         try:
             with self.assertRaises(LocalError):
@@ -322,7 +336,7 @@ class PromptAcceptRejectTests(PromptCase):
             session.close()
 
     def test_reject_records_exact_revision_and_is_idempotent(self):
-        self.sync([make_bundle("daily_lesson_split", 1, 2, text={"theme": "r2"})])
+        self.sync([make_bundle("daily_lesson_split", 1, 3, text={"theme": "r3"})])
         session = self.session()
         try:
             rejected = prompt_service.reject_default(
@@ -330,10 +344,10 @@ class PromptAcceptRejectTests(PromptCase):
                 task_type="daily_lesson_split",
                 expected_personal_revision=1,
                 target_contract_version=1,
-                target_default_revision=2,
+                target_default_revision=3,
                 request_id=str(uuid.uuid4()),
             )
-            self.assertEqual(rejected["rejected_default_revision"], 2)
+            self.assertEqual(rejected["rejected_default_revision"], 3)
             self.assertEqual(rejected["personal_revision"], 2)
             self.assertEqual(
                 rejected["guidance"]["theme"],
@@ -345,7 +359,7 @@ class PromptAcceptRejectTests(PromptCase):
                 task_type="daily_lesson_split",
                 expected_personal_revision=2,
                 target_contract_version=1,
-                target_default_revision=2,
+                target_default_revision=3,
                 request_id=str(uuid.uuid4()),
             )
             self.assertEqual(again["personal_revision"], 2)
@@ -501,7 +515,7 @@ class PromptContractTests(PromptCase):
             self.sync(
                 [
                     make_bundle(
-                        "daily_lesson_split", 1, 2, drop_fields=("theme",)
+                        "daily_lesson_split", 1, 3, drop_fields=("theme",)
                     )
                 ]
             )
@@ -520,7 +534,7 @@ class PromptContractTests(PromptCase):
                 "WHERE task_type='daily_lesson_split' AND contract_version=1 "
                 "AND default_revision=1",
             ),
-            _task_bundle("daily_lesson_split")["bundle_hash"],
+            _bundle_at("daily_lesson_split", 1, 1)["bundle_hash"],
         )
         self.assertEqual(self.revision_of("daily_lesson_split"), 1)
 
@@ -720,9 +734,7 @@ class FreshArchiveSyncTests(LocalTestCase):
         self.assertEqual(status, 201, body)
 
     def test_healthy_new_pack_uses_latest_registered_default_and_restart_keeps_revision(self):
-        healthy = tuple(PROMPT_BUNDLE_MANIFEST) + (
-            make_bundle("daily_lesson_split", 1, 2, text={"theme": "r2 主题"}),
-        )
+        healthy = tuple(PROMPT_BUNDLE_MANIFEST)
         with mock.patch.object(prompt_bundles, "PROMPT_BUNDLE_MANIFEST", healthy):
             runtime = self.make_runtime()
             self.assertIsNone(runtime.prompt_sync_error)
@@ -734,7 +746,10 @@ class FreshArchiveSyncTests(LocalTestCase):
             self.assertEqual(status, 200, prompt)
             self.assertEqual(prompt["based_default_revision"], 2)
             self.assertEqual(prompt["latest_default_revision"], 2)
-            self.assertEqual(prompt["guidance"]["theme"], "r2 主题")
+            self.assertEqual(
+                prompt["guidance"]["theme"],
+                _task_bundle("daily_lesson_split")["guidance_defaults_json"]["theme"],
+            )
             before = prompt["personal_revision"]
             # Restart on the same data root (still the healthy package).
             server.stop()

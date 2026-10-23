@@ -53,7 +53,7 @@ export interface LeaveEditor {
 }
 
 export interface BlockingDraft {
-  kind: 'candidate' | 'settings'
+  kind: 'candidate' | 'settings' | 'history'
   message: string
 }
 

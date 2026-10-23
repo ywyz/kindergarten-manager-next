@@ -2,6 +2,8 @@
 
 状态更新：2026-10-19，E1–E5设计核查完成后，用户已明确授权直接调用OpenCode先实施W1数据迁移和凭据保存，由Codex核查并继续调用OpenCode修复。W1已完成当前Windows 11合成环境工程核查（见W1核查§12），不代表D2产品或发行通过；用户随后授权W2游戏配置与提示词，已通过[当前Windows 11工程核查](../bootstrap/desktop-d2-w2-review.md#8-最终工程结论w2通过停在w2)；W3已通过[当前Windows 11合成环境工程核查](../bootstrap/desktop-d2-w3-review.md)；W4候选与原子采用已通过[当前Windows 11合成环境工程核查](../bootstrap/desktop-d2-w4-review.md)；W5界面与宿主整合已通过[W5核查§8](../bootstrap/desktop-d2-w5-review.md#8-最终工程结论w5限定源码集成通过)所列限定源码集成工程核查，W6导出／无AI降级／新完整包已通过[当前Windows 11合成环境工程核查§9](../bootstrap/desktop-d2-w6-review.md#9-最终工程结论w6限定环境工程核查通过)；新Word逐页、真实系统睡眠、G17–G18仍待验，不调用应用真实AI或发布。本文落实[产品规格](desktop-ai-daily-plan.md)的C1–C17、Q1–Q7及§9–11；具体表结构、执行器、接口和验收以本文为准。实施范围见[当前任务](../tasks/current.md)，独立证据见[W1核查记录](../bootstrap/desktop-d2-w1-review.md)。
 
+2026-10-22实测接续：用户已另行授权真实AI验收，DeepSeek官方deepseek-flash三类真实成功及候选／采用／保存／本地导出与冷重启证据齐备，限定旧包／Windows 11／合成材料的G17实际兼容工程核查通过。教师指出的换行、1.2.3列表及晨间仅户外已落实三类默认r2和任务指令，并完成限定离线核查；修订后的真实输出质量未复验，不能判G17质量通过。规则见[产品规格§2](desktop-ai-daily-plan.md#2026-10-22-g17教师反馈补充当前有效)，本次Word“两页均正常”已获用户确认。MiMo本轮不测，不作为缺项。准确独立结果、新包窗口波动与复跑边界以[G17结果§6.4](../bootstrap/desktop-d2-g17-result.md#64-最终r03定点整改限定离线工程核查完成)为准，不替代完整G18、产品整体验收或发布。上方2026-10-19状态保留为当时事实，验收判据不变。
+
 ## 1. 核查范围和结论
 
 在`codex/desktop-v2-foundation`当前未提交工作区核查，不把HEAD当作全部被审查源码。按`codebase-memory`技能调用`list_projects`再次返回`Transport closed`，没有图谱generation／coverage证据；采用下面的限定源码阅读，没有安装或重建工具。

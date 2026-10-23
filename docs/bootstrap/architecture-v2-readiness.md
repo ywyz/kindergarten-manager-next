@@ -1,8 +1,10 @@
 # Architecture v2 当前待办与验证门槛
 
-更新：2026-10-20。用户已接受 [ADR 0004 教师本地应用架构](../adr/0004-local-desktop-architecture-proposal.md)。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，报告入口见 [文档索引](README.md)。本文记录实施状态与验收边界，操作范围以用户当前授权为准。
+更新：2026-10-23。用户已接受 [ADR 0004 教师本地应用架构](../adr/0004-local-desktop-architecture-proposal.md)。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，报告入口见 [文档索引](README.md)。本文记录实施状态与验收边界，操作范围以用户当前授权为准。
 
 ## 已确认方向与当前状态
+
+2026-10-23最新接续：[D3-A本机日计划历史查阅与整份恢复](../specs/desktop-daily-plan-history.md)H1／H2已实现并通过当前Windows 11隔离合成源码工程核查，R01–R11关闭，见[最终核查§9](desktop-d3-history-review.md#9-最终独立核查通过)。源码窗口、成功恢复后冷重启与Word XML分别有独立证据，H3冻结包及教师体验仍未验；teacher-talk-r01的SAC 4551保持。D2真实状态仍为A已采用v6、B未采用、C未发起，见[G17结果](desktop-d2-g17-result.md)。用户最新不安排签名；[当前提示词](../tasks/current.md)已拟D3-B0离线摸底，待用户审核后才派发，不启动真实AI、WebDAV、微软提交或发行。下文历史阶段的“下一步／未授权”以最新用户决定及当前提示词接续。
 
 2026-10-20接续：W1–W6限定环境工程已通过，指定Word与合成人工验收按[W6收口及三项后续事件](desktop-d2-w6-closeout.md)记录；跨期限睡眠不再验证、白屏待复发、额外任务用户倾向误点并保留观察，不再主动追测，不把未验／未修复写成通过。用户已授权当前分支相关Git提交／推送，未授权真实AI、WebDAV或发行。下一步仅建议先整合含R01修复的普通运行验证包，再准备G17；后文各轮数值／阶段表述保留当时证据，当前范围以本段、收口记录及唯一当前任务为准。
 

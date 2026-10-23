@@ -37,6 +37,7 @@ from app.local import (
     ai_task_service,
     calendar_read,
     config_service,
+    daily_plan_history_service,
     daily_plan_service,
     export_service,
     profile_service,
@@ -92,6 +93,12 @@ from app.local.schemas import (
     LocalDailyPlanListOut,
     LocalDailyPlanOut,
     LocalDailyPlanPatchIn,
+    LocalDailyPlanHistoryListOut,
+    LocalDailyPlanHistoryOut,
+    LocalHistoryRestoreIn,
+    LocalHistoryRestoreOut,
+    LocalHistoryRestorePreviewIn,
+    LocalHistoryRestorePreviewOut,
     LocalInitializeIn,
     LocalPromptAcceptDefaultIn,
     LocalPromptAdaptIn,
@@ -541,9 +548,100 @@ def get_daily_plan(
         return daily_plan_service.get_plan(session, plan_id=plan_id)
 
 
-@plans_router.patch("/daily-plans/{plan_id}", response_model=LocalDailyPlanOut)
-def patch_daily_plan(
+@plans_router.get(
+    "/daily-plans/{plan_id}/history",
+    response_model=LocalDailyPlanHistoryListOut,
+)
+def list_daily_plan_history(
     plan_id: str,
+    limit: int = Query(daily_plan_history_service.DEFAULT_HISTORY_LIMIT),
+    before_version: int | None = Query(None),
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        return daily_plan_history_service.list_history(
+            session,
+            plan_id=plan_id,
+            limit=limit,
+            before_version=before_version,
+        )
+
+
+@plans_router.get(
+    "/daily-plans/{plan_id}/history/{version}",
+    response_model=LocalDailyPlanHistoryOut,
+)
+def get_daily_plan_history(
+    plan_id: str,
+    version: int,
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        return daily_plan_history_service.get_history(
+            session, plan_id=plan_id, version=version
+        )
+
+
+@plans_router.post(
+    "/daily-plans/{plan_id}/history/preview-restore",
+    response_model=LocalHistoryRestorePreviewOut,
+)
+def preview_daily_plan_restore(
+    plan_id: str,
+    data: LocalHistoryRestorePreviewIn,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        return daily_plan_history_service.preview_restore(
+            session,
+            plan_id=plan_id,
+            source_content_version=data.source_content_version,
+            expected_content_version=data.expected_content_version,
+            launch_id=_launch_id(request),
+            session_scope=_session_scope(request),
+        )
+
+
+@plans_router.post(
+    "/daily-plans/{plan_id}/history/restore",
+    response_model=LocalHistoryRestoreOut,
+)
+def restore_daily_plan(
+    plan_id: str,
+    data: LocalHistoryRestoreIn,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        return daily_plan_history_service.restore(
+            session,
+            plan_id=plan_id,
+            expected_content_version=data.expected_content_version,
+            preview_token=data.preview_token,
+            request_id=data.request_id,
+            launch_id=_launch_id(request),
+            session_scope=_session_scope(request),
+        )
+
+
+@plans_router.get(
+    "/daily-plans/{plan_id}/history/restore-operations/{request_id}",
+    response_model=LocalHistoryRestoreOut,
+)
+def get_daily_plan_restore_operation(
+    plan_id: str,
+    request_id: str,
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        return daily_plan_history_service.get_restore_operation(
+            session, plan_id=plan_id, request_id=request_id
+        )
+
+
+@plans_router.patch("/daily-plans/{plan_id}", response_model=LocalDailyPlanOut)
+def patch_daily_plan(    plan_id: str,
     data: LocalDailyPlanPatchIn,
     session: Session = Depends(get_session),
 ):

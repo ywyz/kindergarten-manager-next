@@ -1,8 +1,10 @@
 # 文档与报告索引
 
-更新：2026-10-21。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
+更新：2026-10-23。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前阶段：D2 W6限定工程通过，指定人工验收收口，真实AI待授权
+## 当前阶段：D3-A源码工程通过，D3-B0提示词待审
+
+2026-10-23最新接续：[D3-A整份日计划历史恢复](../specs/desktop-daily-plan-history.md)H1／H2已由原OpenCode Go套餐DeepSeek V4.1 Flash实现，经Codex独立回修核查通过，R01–R11关闭，见[实现结果](desktop-d3-history-result.md)及[最终核查§9](desktop-d3-history-review.md#9-最终独立核查通过)。独立源码窗口、成功恢复后冷重启和Word XML已验，H3冻结包／教师体验及4551仍未验；D2保持A已采用v6、B未采用、C未发起。用户最新不安排签名；[唯一下一提示词](../tasks/current.md)已拟D3-B0一致性快照与跨设备接续离线工程摸底，待用户审核，未派发。下文日期段落保留历史状态，不恢复微软提交、真实AI、WebDAV或发行。
 
 最新状态与处理决定见[W6收口及三项后续事件](desktop-d2-w6-closeout.md)和[逐项人工记录](desktop-d2-w6-manual-acceptance.md)：已验Word／候选／保存／重启／在途子项保持；跨120秒睡眠不再验证，白屏等复发，额外任务用户倾向误点、保留观察。三项留作同类再现处理，不主动追测，不改记为技术通过／已修复。用户已授权相关Git提交／推送，未授权应用真实AI或发布。
 
@@ -10,9 +12,13 @@
 
 2026-10-21 [G17方案](desktop-d2-g17-acceptance-plan.md)不设计预算限额；[官方文档核对](desktop-d2-g17-provider-compatibility-review.md)后，用户决定应用仅使用DeepSeek官方与MiMo标准API，并确认[实时思考与等待反馈](../specs/desktop-ai-streaming-progress.md)默认展开／可折叠、阶段／计时显示。已由OpenCode沿用原Go套餐DeepSeek V4.1 Flash实现，并经[Codex独立核查§11](desktop-d2-streaming-review.md#11-最终交付限定合成工程核查通过)通过：源码窗口33项、新完整普通包142项通过，R01–R11关闭；新包位于build/desktop-d2-streaming-r10-r11/，旧包与失败材料保留，下一步仅准备G17。应用真实调用0次、尚未授权，不把文档符合或配置ready当作G17通过。
 
+2026-10-22 DeepSeek旧三类真实闭环、v5、冷重启及两份Word技术核查通过，用户确认旧Word两页正常，并提出换行、编号及晨间全户外整改。三项指导r2已完成限定离线核查；r03为182文件、50项归档同源，首轮129/142、同包W5复跑33/33，不声称单轮全通过或窗口波动已修复。**r03新A已审阅采用保存v6；新B成功返回且技术审阅完成，教师确认难度适合但反馈“缺少教师的话”，本轮停在B未采用，新C未发起。** 累计DeepSeek5次attempt，MiMo本轮不测且仍0次；最新快照与反馈见[G17结果§7](desktop-d2-g17-result.md#7-r03真实质量复验2026-10-22)，旧证据保持于§2–6。教师话语r3源码整改与限定离线检查通过，但新teacher-talk-r01包被Windows策略以WinError4551阻止启动，已停止；G17质量未整体通过，完整G18及产品／发行未验，暂不发布。
+
+2026-10-23 [后续定因与关闭处理](desktop-d2-g17-result.md#8-4551定因与设置窗口关闭2026-10-23)：4551已确认是Smart App Control的VerifiedAndReputableDesktop策略拒绝未签名新EXE；无下载来源标记，本机两个My存储无代码签名证书。微软单EXE复核曾获授权，但在登录前停止；用户随后明确取消提交，EXE和说明均未上传，材料保留。国内渠道核对与签名前清点见[G17结果§9](desktop-d2-g17-result.md#9-国内签名渠道与下一步提示词2026-10-23)：腾讯云自营仅企业，阿里云市场Certum个人SKU／用途待确认；现包99个PE候选中76个签名Valid、23个NotSigned。此前个人签名资格提示词现由顶部D3-A任务替代，未联系商家、申请或购买，尚未解除拦截或恢复真实B／C。旧MiMo窗口的独立AI草稿已通过对应取消按钮还原并正常关闭，两库hash／版本／调用数保持。未改安全设置或实现代码。
+
 已进入 `codex/desktop-v2-foundation`，采用 Windows 11 原生开发。OpenCode 写实现、测试、迁移及构建脚本；Codex 负责技术核查、规划设计、审阅、相关验证与 Git／发布管理，均按当前授权执行。
 
-- [唯一当前任务](../tasks/current.md)：D2 W1数据迁移／凭据保存已由OpenCode实施并经Codex核查关闭。[W1实现结果](desktop-d2-w1-result.md)。[产品规格](../specs/desktop-ai-daily-plan.md)、[工程规格及清单](../specs/desktop-ai-engineering.md)、[W1独立核查](desktop-d2-w1-review.md)。W1独立全local286项、迁移18项及冻结重启探针通过，R01–R09已关闭（核查§12）；[W2](desktop-d2-w2-review.md)已由OpenCode使用Go套餐DeepSeek V4.1 Flash交付并经Codex核查通过；[实现结果](desktop-d2-w2-result.md)含后续接口交接；[W3实现](desktop-d2-w3-result.md)及[独立核查](desktop-d2-w3-review.md)已完成，当前Windows 11合成环境工程通过；[W4实现](desktop-d2-w4-result.md)及[独立核查§10](desktop-d2-w4-review.md#10-最终工程结论w4通过停在w4)已完成，独立全local470项／桌面146项及API复核通过，R01–R09关闭；[W5实现](desktop-d2-w5-result.md)与[W5独立核查§8](desktop-d2-w5-review.md#8-最终工程结论w5限定源码集成通过)已完成，三类候选采用及退出已用独立真实源码窗口复核；[W6实现](desktop-d2-w6-result.md)及[Codex独立核查§9](desktop-d2-w6-review.md#9-最终工程结论w6限定环境工程核查通过)已完成，独立477项local／168项桌面、前端及新完整包130项通过，54归档模块和真实入口同源，R01–R09关闭；后续指定Word及合成人工验收结果以本页上方2026-10-20收口记录为准；G17真实AI未授权，不宣布D2完整产品或发行完成。
+- [唯一当前任务](../tasks/current.md)：D2 W1数据迁移／凭据保存已由OpenCode实施并经Codex核查关闭。[W1实现结果](desktop-d2-w1-result.md)。[产品规格](../specs/desktop-ai-daily-plan.md)、[工程规格及清单](../specs/desktop-ai-engineering.md)、[W1独立核查](desktop-d2-w1-review.md)。W1独立全local286项、迁移18项及冻结重启探针通过，R01–R09已关闭（核查§12）；[W2](desktop-d2-w2-review.md)已由OpenCode使用Go套餐DeepSeek V4.1 Flash交付并经Codex核查通过；[实现结果](desktop-d2-w2-result.md)含后续接口交接；[W3实现](desktop-d2-w3-result.md)及[独立核查](desktop-d2-w3-review.md)已完成，当前Windows 11合成环境工程通过；[W4实现](desktop-d2-w4-result.md)及[独立核查§10](desktop-d2-w4-review.md#10-最终工程结论w4通过停在w4)已完成，独立全local470项／桌面146项及API复核通过，R01–R09关闭；[W5实现](desktop-d2-w5-result.md)与[W5独立核查§8](desktop-d2-w5-review.md#8-最终工程结论w5限定源码集成通过)已完成，三类候选采用及退出已用独立真实源码窗口复核；[W6实现](desktop-d2-w6-result.md)及[Codex独立核查§9](desktop-d2-w6-review.md#9-最终工程结论w6限定环境工程核查通过)已完成，独立477项local／168项桌面、前端及新完整包130项通过，54归档模块和真实入口同源，R01–R09关闭；后续指定Word及合成人工验收结果以本页上方2026-10-20收口记录为准；G17最新真实结果见上方2026-10-22记录，不宣布D2完整产品或发行完成。
 - [D1本轮教师体验收口](desktop-d1-result.md#208-t6-b核对与本轮教师体验收口2026-10-17)与[独立复核](desktop-d1-review.md#209-t6-b复核与本轮人工验证收口2026-10-17)：原R1–R17工程通过、R18关闭、T6-A／T6-B／T7通过；配置v4、新旧表头和两份单日文件已核对。微软拼音按用户反馈正常，不再复验或穷举输入法。长园所2页、合并7页及起始页1／4／6、121导出相关／146桌面和c6dc1928…包证据保持，产品与发行未整体验收。
 - [D1B第八轮复审§17](desktop-d1-review.md#17-d1b-第八轮修复复审与工程收口2026-10-17)：原R17关闭、17项全部关闭，**当轮当前Windows 11开发机工程复审通过**。133本地／108回归／146桌面、纯逻辑＋60组件及构建通过；独立真实窗口9/9，137文件包同源。后续人工体验与R18见结果§20–21／审阅§20，完整产品与发行未验。
 - [D1A 独立审阅 §7](desktop-d1-review.md#7-版本统一与-d1a-放行2026-10-13)：R1–R6关闭及87／108项历史基线保留；3.12失败证据不再作唯一门槛，不重复派发已关闭问题。

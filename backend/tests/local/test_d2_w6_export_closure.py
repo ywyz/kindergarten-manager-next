@@ -25,7 +25,11 @@ from datetime import date
 
 from app.services.word_export_mapping import diff_process
 from tests.local.test_d2_w4_api import W4ApiCase
-from tests.local.test_d2_w4_candidates import ADAPT_CANDIDATE, SPLIT_CANDIDATE
+from tests.local.test_d2_w4_candidates import (
+    ADAPT_CANDIDATE,
+    OTHER_CANDIDATE,
+    SPLIT_CANDIDATE,
+)
 
 BASELINE_KEY = "group_activity_process"
 P0 = SPLIT_CANDIDATE["group_activity"]["process"]  # model raw process (baseline)
@@ -59,6 +63,22 @@ def red_and_plain_text(root) -> tuple[str, str]:
         is_red = color is not None and color.get(f"{W}val") == "FF0000"
         (red if is_red else plain).append(node.text or "")
     return "".join(red), "".join(plain)
+
+
+def cell_paragraphs(root, needle: str) -> list[str]:
+    """Paragraph text inside the table cell containing ``needle``.
+
+    ``all_text`` loses ``w:p``/``w:br`` boundaries; this helper keeps one string
+    per real Word paragraph so a merged single line cannot look like a pass.
+    """
+    for cell in root.iter(f"{W}tc"):
+        paragraphs = [
+            "".join(node.text or "" for node in paragraph.iter(f"{W}t"))
+            for paragraph in cell.findall(f"{W}p")
+        ]
+        if any(needle in text for text in paragraphs):
+            return paragraphs
+    raise AssertionError(f"cell containing {needle!r} not found")
 
 
 class W6ExportClosureCase(W4ApiCase):
@@ -226,6 +246,145 @@ class W6ExportClosureCase(W4ApiCase):
         ]
         self.assertGreaterEqual(len(page_breaks), 1, "merged export needs a page break")
         self.assertTrue(second["id"])
+
+    def test_g17_multiline_numbered_preview_adopt_restart_docx(self):
+        plan_id = self.plan["id"]
+        numbered = "1. 导入\n2. 观察\n3. 比较"
+        initial_raw = self.plan_content()["content"]["raw_lesson_plan"]
+        candidate_id = self.generate(plan_id, "daily_lesson_split", SPLIT_CANDIDATE)
+        edited = json.loads(json.dumps(SPLIT_CANDIDATE))
+        edited["group_activity"]["process"] = numbered
+
+        status, preview = self.preview_http(
+            candidate_id, ["group_activity"], edited
+        )
+        self.assertEqual(status, 200, preview)
+        self.assertEqual(
+            preview["after"]["group_activity"]["process"], numbered
+        )
+        status, adopted = self.adopt_http(
+            candidate_id,
+            preview["preview_token"],
+            request_id=str(uuid.uuid4()),
+        )
+        self.assertEqual(status, 200, adopted)
+
+        content = self.plan_content()["content"]
+        group = content["adopted_content"]["group_activity"]
+        self.assertEqual(group["process"], numbered)
+        self.assertIn("\n", group["process"])
+        self.assertEqual(group["theme"], SPLIT_CANDIDATE["group_activity"]["theme"])
+        self.assertEqual(content["raw_lesson_plan"], initial_raw)
+        self.assertEqual(
+            content["split_baseline"], {BASELINE_KEY: P0}
+        )
+
+        # A normal teacher save keeps the real newlines and does not pollute the
+        # baseline or other fields.
+        status, saved = self.client.patch(
+            f"/api/daily-plans/{plan_id}",
+            {
+                "expected_content_version": self.content_version(plan_id),
+                "adopted_content": content["adopted_content"],
+            },
+        )
+        self.assertEqual(status, 200, saved)
+        saved_version = self.content_version(plan_id)
+
+        self.cold_restart()
+        content = self.plan_content()["content"]
+        self.assertEqual(
+            content["adopted_content"]["group_activity"]["process"], numbered
+        )
+        self.assertEqual(content["adopted_content"]["group_activity"]["theme"],
+                         SPLIT_CANDIDATE["group_activity"]["theme"])
+        self.assertEqual(content["raw_lesson_plan"], initial_raw)
+        self.assertEqual(content["split_baseline"], {BASELINE_KEY: P0})
+        self.assertEqual(self.content_version(plan_id), saved_version)
+
+        payload, _headers = self.export_docx(DAY_ISO, DAY_ISO)
+        root = docx_root(payload)
+        text = all_text(root)
+        for line in ("1. 导入", "2. 观察", "3. 比较"):
+            self.assertIn(line, text)
+        process_paragraphs = cell_paragraphs(root, "活动过程：")
+        self.assertTrue(process_paragraphs[0].startswith("活动过程："))
+        self.assertEqual(
+            "\n".join(process_paragraphs[1:]),
+            numbered,
+            "the process cell must keep real Word paragraph/line breaks",
+        )
+        self.assertEqual(len(process_paragraphs[1:]), 3)
+        self.assertEqual(self.content_version(plan_id), saved_version)
+
+    def test_g17_adapt_teacher_talk_preview_adopt_restart_docx(self):
+        plan_id = self.plan["id"]
+        initial_raw = self.plan_content()["content"]["raw_lesson_plan"]
+        split_id = self.generate(plan_id, "daily_lesson_split", SPLIT_CANDIDATE)
+        self._adopt(split_id, ["group_activity"], SPLIT_CANDIDATE)
+
+        # Give the plan complete non-empty unselected activity boards before the
+        # adapt task, so the test can prove only group_activity.process changes.
+        content = self.plan_content()["content"]
+        merged = json.loads(json.dumps(content["adopted_content"]))
+        merged.update(json.loads(json.dumps(OTHER_CANDIDATE)))
+        merged["reflection"] = "反思"
+        self.save_content(plan_id, self.content_version(plan_id), merged)
+        content = self.plan_content()["content"]
+        before = json.loads(json.dumps(content["adopted_content"]))
+        self.assertEqual(content["raw_lesson_plan"], initial_raw)
+        self.assertEqual(content["split_baseline"], {BASELINE_KEY: P0})
+
+        teacher_process = (
+            "1. 导入\n"
+            "教师：“请看看这片树叶。”\n"
+            "2. 观察\n"
+            "教师：“你发现了什么？”\n"
+            "3. 比较\n"
+            "教师：“它们有什么不一样？”"
+        )
+        adapt_id = self.generate(
+            plan_id, "daily_process_adapt", {"process": teacher_process}
+        )
+        status, preview = self.preview_http(
+            adapt_id, ["group_activity.process"], {"process": teacher_process}
+        )
+        self.assertEqual(status, 200, preview)
+        self.assertEqual(preview["after"]["group_activity.process"], teacher_process)
+        status, adopted = self.adopt_http(
+            adapt_id, preview["preview_token"], request_id=str(uuid.uuid4())
+        )
+        self.assertEqual(status, 200, adopted)
+
+        expected = json.loads(json.dumps(before))
+        expected["group_activity"]["process"] = teacher_process
+        content = self.plan_content()["content"]
+        self.assertEqual(content["adopted_content"], expected)
+        self.assertEqual(content["raw_lesson_plan"], initial_raw)
+        self.assertEqual(content["split_baseline"], {BASELINE_KEY: P0})
+
+        status, saved = self.client.patch(
+            f"/api/daily-plans/{plan_id}",
+            {
+                "expected_content_version": self.content_version(plan_id),
+                "adopted_content": content["adopted_content"],
+            },
+        )
+        self.assertEqual(status, 200, saved)
+        saved_version = self.content_version(plan_id)
+        self.cold_restart()
+        content = self.plan_content()["content"]
+        self.assertEqual(content["adopted_content"], expected)
+        self.assertEqual(content["raw_lesson_plan"], initial_raw)
+        self.assertEqual(content["split_baseline"], {BASELINE_KEY: P0})
+
+        payload, _headers = self.export_docx(DAY_ISO, DAY_ISO)
+        root = docx_root(payload)
+        process_paragraphs = cell_paragraphs(root, "活动过程：")
+        self.assertTrue(process_paragraphs[0].startswith("活动过程："))
+        self.assertEqual("\n".join(process_paragraphs[1:]), teacher_process)
+        self.assertEqual(len(process_paragraphs[1:]), 6)
+        self.assertEqual(self.content_version(plan_id), saved_version)
 
     def test_redline_rules_pure_delete_move_format(self):
         # Pure delete: removed text is not shown and nothing turns red.

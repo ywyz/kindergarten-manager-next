@@ -356,7 +356,7 @@ class BundleSeedTests(LocalTestCase):
             "SELECT task_type, contract_version, default_revision, bundle_hash "
             "FROM local_prompt_bundles ORDER BY task_type",
         )
-        self.assertEqual(len(rows), 3)
+        self.assertEqual(len(rows), 7)
         manifest = {
             (b["task_type"], b["contract_version"], b["default_revision"]): b[
                 "bundle_hash"
@@ -370,6 +370,13 @@ class BundleSeedTests(LocalTestCase):
                     (row["task_type"], row["contract_version"], row["default_revision"])
                 ],
             )
+        r1 = [r for r in rows if r["default_revision"] == 1]
+        r2 = [r for r in rows if r["default_revision"] == 2]
+        r3 = [r for r in rows if r["default_revision"] == 3]
+        self.assertEqual(len(r1), 3)
+        self.assertEqual(len(r2), 3)
+        self.assertEqual(len(r3), 1)
+        self.assertEqual(r3[0]["task_type"], "daily_process_adapt")
 
     def initialize_profile(self, runtime) -> None:
         from app.local import profile_service

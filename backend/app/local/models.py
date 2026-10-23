@@ -1234,6 +1234,78 @@ class LocalDailyPlanAIProvenance(LocalBase):
     )
 
 
+class LocalDailyPlanRestore(LocalBase):
+    """D3-A whole-plan restore event and its idempotent receipt."""
+
+    __tablename__ = "local_daily_plan_restores"
+    __table_args__ = (
+        CheckConstraint(
+            "source_content_version >= 1 AND before_content_version >= 1 "
+            "AND result_content_version >= 1",
+            name="ck_local_daily_plan_restores_versions",
+        ),
+        UniqueConstraint(
+            "profile_id", "request_id",
+            name="uq_local_daily_plan_restores_profile_request",
+        ),
+        UniqueConstraint(
+            "result_content_id",
+            name="uq_local_daily_plan_restores_result_content",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id"], ["local_profile.id"],
+            name="fk_local_daily_plan_restores_profile",
+        ),
+        ForeignKeyConstraint(
+            ["daily_plan_id"], ["local_daily_plans.id"],
+            name="fk_local_daily_plan_restores_plan",
+        ),
+        ForeignKeyConstraint(
+            ["daily_plan_id", "source_content_id", "source_content_version"],
+            [
+                "local_daily_plan_contents.daily_plan_id",
+                "local_daily_plan_contents.id",
+                "local_daily_plan_contents.version",
+            ],
+            name="fk_local_daily_plan_restores_source_triple",
+        ),
+        ForeignKeyConstraint(
+            ["daily_plan_id", "before_content_id", "before_content_version"],
+            [
+                "local_daily_plan_contents.daily_plan_id",
+                "local_daily_plan_contents.id",
+                "local_daily_plan_contents.version",
+            ],
+            name="fk_local_daily_plan_restores_before_triple",
+        ),
+        ForeignKeyConstraint(
+            ["daily_plan_id", "result_content_id", "result_content_version"],
+            [
+                "local_daily_plan_contents.daily_plan_id",
+                "local_daily_plan_contents.id",
+                "local_daily_plan_contents.version",
+            ],
+            name="fk_local_daily_plan_restores_result_triple",
+        ),
+        Index("ix_local_daily_plan_restores_plan", "daily_plan_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    daily_plan_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_content_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_content_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    before_content_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    before_content_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_content_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_content_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
 class LocalAIOperation(LocalBase):
     """Committed D2 AI operation receipt: idempotent read-back by request_id."""
 

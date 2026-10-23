@@ -73,10 +73,10 @@ def _startup_log(message: str) -> None:
 # dedicated phase must be given an explicit synthetic data root (checked before
 # any LocalRuntime construction); every other launch (interactive or a D1
 # selftest) never accepts an injection.
-_DEDICATED_SYNTHETIC_PHASES = ("w5-ui", "w6-ui", "w6-ui-verify", "g15-noexec", "w6-resources")
+_DEDICATED_SYNTHETIC_PHASES = ("w5-ui", "w6-ui", "w6-ui-verify", "g15-noexec", "w6-resources", "d3-h2-ui", "d3-h2-verify")
 # Phases that must run with a controlled provider (they exercise the real
 # executor/worker/TLS).
-_PROVIDER_REQUIRED_PHASES = ("w5-ui", "w6-ui", "w6-resources")
+_PROVIDER_REQUIRED_PHASES = ("w5-ui", "w6-ui", "w6-resources", "d3-h2-ui")
 # Phases that may optionally receive a controlled provider resolution (the G15
 # network branch uses a closed local port); ``w6-ui-verify`` deliberately may
 # not accept one.
@@ -91,6 +91,82 @@ W6_MODEL_PROCESS = "一、导入\n二、观察\n三、比较"
 W6_PREVIEW_PROCESS = "一、导入\n二、观察\n三、比较（预览版）"
 W6_ADAPT_PROCESS = "一、导入\n二、观察\n三、比较（适龄版）"
 W6_FINAL_PROCESS = "一、导入\n二、观察（教师改为细致观察）\n三、比较\n四、教师新增段落"
+
+# D3-A H2 synthetic history fixture: the split baseline stays at the model
+# process; the historical manual version differs, and the later current version
+# differs again. A restore of the historical version must export a redline
+# against the baseline, not against the later current text.
+H2_BASELINE_PROCESS = "一、导入\n二、观察\n三、比较"
+H2_HISTORY_PROCESS = "一、导入\n二、观察（历史版）\n三、比较\n四、历史新增"
+H2_CURRENT_PROCESS = "一、导入\n二、观察（当前版）\n三、比较"
+H2_SPLIT_OUT = json.dumps(
+    {
+        "group_activity": {
+            "theme": "H2 合成主题",
+            "objectives": "H2 合成目标",
+            "preparation": "H2 合成准备",
+            "key_points": "H2 合成重点",
+            "difficult_points": "H2 合成难点",
+            "process": H2_BASELINE_PROCESS,
+        }
+    },
+    ensure_ascii=False,
+)
+
+# Verification-only page injection used by drive_d3_h2_ui. Kept as a module
+# constant so the cleanup regression executes the exact production JS, not a
+# copied/simplified reimplementation.
+H2_DELAYED_GET_INSTALL_JS = (
+    "(() => {"
+    " const real = window.fetch.bind(window);"
+    " window.__h2RealFetch = real;"
+    " window.__h2DelayNextPlanGet = true;"
+    " window.__h2DelayedGetStarted = false;"
+    " window.__h2ReleaseCalled = false;"
+    " window.__h2ReleaseGet = null;"
+    " window.__h2CleanupFetch = function() {"
+    "   if (window.__h2ReleaseGet) {"
+    "     try { window.__h2ReleaseGet(); } catch (e) {}"
+    "   }"
+    "   if (window.__h2RealFetch) window.fetch = window.__h2RealFetch;"
+    " };"
+    " window.fetch = function(url, options) {"
+    "   const method = ((options || {}).method || 'GET').toUpperCase();"
+    "   const text = String(url);"
+    "   if (window.__h2DelayNextPlanGet && method === 'GET'"
+    "       && /\\/api\\/daily-plans\\/[^/?]+$/.test(text)) {"
+    "     window.__h2DelayNextPlanGet = false;"
+    "     window.__h2DelayedGetStarted = true;"
+    "     return new Promise(function(resolve, reject) {"
+    "       window.__h2ReleaseGet = function() {"
+    "         if (window.__h2ReleaseCalled) return;"
+    "         window.__h2ReleaseCalled = true;"
+    "         return real(url, options).then(resolve, reject);"
+    "       };"
+    "     });"
+    "   }"
+    "   return real(url, options);"
+    " };"
+    " return true;"
+    "})()"
+)
+
+H2_CLEANUP_JS = (
+    "(() => {"
+    " let cleanupError = null;"
+    " if (window.__h2CleanupFetch) {"
+    "   try { window.__h2CleanupFetch(); } catch (e) { cleanupError = e; }"
+    " }"
+    " if (window.__h2ReleaseGet) {"
+    "   try { window.__h2ReleaseGet(); } catch (e) {"
+    "     if (!cleanupError) cleanupError = e;"
+    "   }"
+    " }"
+    " if (window.__h2RealFetch) window.fetch = window.__h2RealFetch;"
+    " if (cleanupError) throw cleanupError;"
+    " return true;"
+    "})()"
+)
 
 
 def _dedicated_synthetic(args) -> bool:
@@ -426,6 +502,737 @@ def _http_json(port: int, token: str, method: str, path: str, body: dict | None 
             return error.code, raw
 
 
+def _http_bytes(port: int, token: str, method: str, path: str, body: dict | None = None):
+    """Raw local-API call that returns bytes (DOCX export evidence)."""
+    import urllib.error
+    import urllib.request
+
+    data = None
+    headers = {
+        "X-App-Session": token,
+        "Host": f"127.0.0.1:{port}",
+        "Accept": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+        headers["Origin"] = f"http://127.0.0.1:{port}"
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=data, headers=headers, method=method
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return response.status, response.read(), dict(response.headers)
+    except urllib.error.HTTPError as error:
+        return error.code, error.read(), dict(error.headers)
+
+
+def _capture_window_bmp(path: Path, title: str) -> None:
+    """Capture the visible WebView2 window to a BMP (no external dependency).
+
+    The source window is the only visible top-level window with this exact
+    title. ``PrintWindow`` is tried first (WebView2 renders through composition);
+    a screen BitBlt is the fallback. The screenshot is evidence for human
+    visual review, not an automated pixel oracle.
+    """
+    import ctypes
+    import struct
+    import time
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetWindowDC.argtypes = [wintypes.HWND]
+    user32.GetWindowDC.restype = wintypes.HDC
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, ctypes.c_uint]
+    user32.PrintWindow.restype = wintypes.BOOL
+    gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+    gdi32.CreateCompatibleDC.restype = wintypes.HDC
+    gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+    gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+    gdi32.SelectObject.restype = wintypes.HGDIOBJ
+    gdi32.BitBlt.argtypes = [
+        wintypes.HDC,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.HDC,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.DWORD,
+    ]
+    gdi32.BitBlt.restype = wintypes.BOOL
+    gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    gdi32.DeleteDC.argtypes = [wintypes.HDC]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [
+            ("biSize", wintypes.DWORD),
+            ("biWidth", wintypes.LONG),
+            ("biHeight", wintypes.LONG),
+            ("biPlanes", wintypes.WORD),
+            ("biBitCount", wintypes.WORD),
+            ("biCompression", wintypes.DWORD),
+            ("biSizeImage", wintypes.DWORD),
+            ("biXPelsPerMeter", wintypes.LONG),
+            ("biYPelsPerMeter", wintypes.LONG),
+            ("biClrUsed", wintypes.DWORD),
+            ("biClrImportant", wintypes.DWORD),
+        ]
+
+    class BITMAPINFO(ctypes.Structure):
+        _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
+
+    hwnd = user32.FindWindowW(None, title)
+    if not hwnd:
+        raise RuntimeError(f"未找到验证窗口：{title}")
+    user32.ShowWindow(hwnd, 5)
+    user32.SetForegroundWindow(hwnd)
+    time.sleep(0.6)
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise RuntimeError("GetWindowRect failed")
+    width = max(1, rect.right - rect.left)
+    height = max(1, rect.bottom - rect.top)
+    hdc = user32.GetWindowDC(hwnd)
+    memdc = gdi32.CreateCompatibleDC(hdc)
+    bitmap = gdi32.CreateCompatibleBitmap(hdc, width, height)
+    old = gdi32.SelectObject(memdc, bitmap)
+    try:
+        # PW_RENDERFULLCONTENT = 2; fall back to a screen/window BitBlt.
+        if not user32.PrintWindow(hwnd, memdc, 2):
+            gdi32.BitBlt(memdc, 0, 0, width, height, hdc, 0, 0, 0x00CC0020)
+        bmi = BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = width
+        bmi.bmiHeader.biHeight = height
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 24
+        bmi.bmiHeader.biCompression = 0
+        stride = ((width * 3 + 3) // 4) * 4
+        size = stride * height
+        buffer = ctypes.create_string_buffer(size)
+        gdi32.GetDIBits.argtypes = [
+            wintypes.HDC,
+            wintypes.HBITMAP,
+            wintypes.UINT,
+            wintypes.UINT,
+            ctypes.c_void_p,
+            ctypes.POINTER(BITMAPINFO),
+            wintypes.UINT,
+        ]
+        gdi32.GetDIBits.restype = ctypes.c_int
+        copied = gdi32.GetDIBits(
+            memdc, bitmap, 0, height, buffer, ctypes.byref(bmi), 0
+        )
+        if copied != height:
+            raise RuntimeError(f"GetDIBits copied {copied}/{height} rows")
+        header = b"BM" + struct.pack(
+            "<IHHI", 14 + 40 + size, 0, 0, 54
+        ) + struct.pack(
+            "<IiiHHIIiiII",
+            40,
+            width,
+            height,
+            1,
+            24,
+            0,
+            size,
+            2835,
+            2835,
+            0,
+            0,
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(header + buffer.raw)
+    finally:
+        gdi32.SelectObject(memdc, old)
+        gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(memdc)
+        user32.ReleaseDC(hwnd, hdc)
+
+
+def _screenshot(args, summary: dict, name: str) -> None:
+    target = getattr(args, "screenshot_dir", None)
+    if not target:
+        return
+    path = Path(target) / f"{name}.bmp"
+    _capture_window_bmp(path, f"D1 验证窗口（{args.phase}）")
+    summary.setdefault("screenshots", []).append(str(path))
+
+
+class _H2StepFailed(RuntimeError):
+    """A verification step failed; the remaining dependent chain must stop."""
+
+
+def _h2_step(summary: dict, checks: dict, name: str, fn, *, error_key: str = "h2_errors") -> None:
+    """Run one verification step, record its first error and abort the chain.
+
+    Continuing after a failed prerequisite would let a later successful step
+    hide the first failure. The summary keeps the first error and the caller's
+    driver task exits; no dependent step is executed.
+    """
+    try:
+        fn()
+    except Exception as exc:  # noqa: BLE001 - evidence, then stop
+        checks[name] = False
+        summary.setdefault(error_key, {})[name] = str(exc)
+        summary.setdefault("h2_first_error", {"step": name, "error": str(exc)})
+        _startup_log(f"h2 step failed {name}: {exc}")
+        raise _H2StepFailed(f"{name}: {exc}") from exc
+    checks[name] = True
+
+
+def _cleanup_h2_fetch(driver, summary: dict) -> None:
+    """Release a delayed restore GET and restore the real page fetch.
+
+    Called from a ``finally`` so a failed DOM assertion cannot leave the
+    synthetic fetch wrapper installed or the parent GET suspended. Cleanup
+    failures are recorded but never replace the original step error.
+    """
+    try:
+        driver.eval(H2_CLEANUP_JS)
+    except Exception as exc:  # noqa: BLE001 - preserve the original error
+        summary.setdefault("h2_cleanup_errors", []).append(str(exc))
+        _startup_log(f"h2 fetch cleanup failed: {exc}")
+
+
+def drive_d3_h2_ui(driver, args, summary, checks, host_api, port) -> None:
+    """D3-A H2 real-window history/restore flow (source WebView2).
+
+    A controlled local TLS provider supplies only the split candidate used to
+    create a real split baseline; no external supplier or real credential is
+    involved. The window then creates a historical manual version (process Y),
+    a later current version (process Z, historical groups removed), compares
+    and restores Y, and verifies the restored current content/identity.
+    """
+    token = getattr(host_api, "_launch_token", "")
+    if not token:
+        raise RuntimeError("d3-h2-ui: host token missing")
+
+    def http(method, path, body=None):
+        return _http_json(port, token, method, path, body)
+
+    def step(name, fn):
+        _h2_step(summary, checks, name, fn, error_key="h2_errors")
+
+    driver.wait_until(
+        "Boolean(window.__d1App && window.__d1App.ready())", what="H2 页面启动", timeout=40
+    )
+    if driver.eval("window.__d1App.state()") == "uninitialized":
+        driver.eval(
+            "window.__d1Setup.fill("
+            + json.dumps(
+                {
+                    "display_name": "H2教师",
+                    "class_name": "H2中一班",
+                    "grade": "middle",
+                    "term_name": "H2学期",
+                    "start_date": args.term_start,
+                    "end_date": args.term_end,
+                    "school_name": "H2园所",
+                },
+                ensure_ascii=False,
+            )
+            + ")"
+        )
+        driver.eval("window.__d1Setup.submit()")
+        driver.wait_until("window.__d1App.state() === 'ready'", what="H2 初始化", timeout=60)
+    checks["h2_initialized"] = True
+
+    def configure_ai():
+        status, config = http(
+            "PATCH",
+            "/api/local/ai/config",
+            {
+                "request_id": "d3a11111-2222-4333-8444-555566667777",
+                "expected_ai_config_version": 0,
+                "protocol_id": "chat_completions_v1",
+                "base_url": "https://api.example.com/v1",
+                "model": "h2-synthetic",
+                "secret": "h2-synthetic-secret",
+            },
+        )
+        summary["h2_config_status"] = status
+        assert status == 200 and isinstance(config, dict) and config.get("configured"), (
+            f"AI configuration failed: {status} {config!r}"
+        )
+
+    step("h2_ai_configured", configure_ai)
+
+    driver.wait_until(
+        "Boolean(window.__d1Workbench && typeof window.__d1Workbench.openDate === 'function')",
+        what="H2 工作台就绪",
+        timeout=30,
+    )
+    driver.eval(f"window.__d1Workbench.openDate({json.dumps(args.date)})")
+    driver.wait_until("window.__d1App.view() === 'editor'", what="H2 进入编辑器", timeout=30)
+    driver.wait_until(
+        "window.__d1Editor && ['ready','create_confirmation'].includes(window.__d1Editor.phase())",
+        what="H2 编辑器就绪",
+        timeout=30,
+    )
+    if driver.eval("window.__d1Editor.phase()") == "create_confirmation":
+        driver.eval("window.__d1Editor.confirmCreate()")
+        driver.wait_until(
+            "window.__d1Editor.phase() === 'ready'", what="H2 创建日计划", timeout=30
+        )
+    plan_id = driver.eval("window.__d1Editor.planId()")
+    summary["h2_plan_id"] = plan_id
+
+    def save_initial():
+        driver.eval("window.__d1Editor.fillAll('历史v1')")
+        driver.wait_until("window.__d1Editor.dirty() === true", what="H2 初始内容变脏", timeout=15)
+        driver.eval("window.__d1Editor.save()")
+        driver.wait_until(
+            "window.__d1Editor.phase() === 'ready' && window.__d1Editor.dirty() === false",
+            what="H2 初始内容保存",
+            timeout=30,
+        )
+        summary["h2_initial_version"] = driver.eval("window.__d1Editor.version()")
+        assert summary["h2_initial_version"] >= 2, "initial content version missing"
+
+    step("h2_initial_saved", save_initial)
+
+    baseline_version = None
+
+    def create_baseline():
+        nonlocal baseline_version
+        driver.eval("window.__d1AiTasks.trigger('daily_lesson_split')")
+        driver.wait_until(
+            "window.__d1AiTasks.tasks().some(function(t){return"
+            " t.task_type==='daily_lesson_split' && t.status==='succeeded'"
+            " && t.candidate_id})",
+            what="H2 拆分候选",
+            timeout=120,
+        )
+        task = next(
+            task
+            for task in driver.eval("window.__d1AiTasks.tasks()")
+            if task.get("task_type") == "daily_lesson_split"
+        )
+        candidate_id = task.get("candidate_id")
+        summary["h2_candidate_id"] = candidate_id
+        driver.eval(f"window.__d1Editor.openCandidate({json.dumps(candidate_id)})")
+        driver.wait_until(
+            "window.__d1Candidate && window.__d1Candidate.phase() === 'ready'",
+            what="H2 候选就绪",
+            timeout=30,
+        )
+        driver.eval("window.__d1Candidate.requestPreview()")
+        driver.wait_until("Boolean(window.__d1Candidate.preview())", what="H2 采用预览", timeout=30)
+        driver.eval("window.__d1Candidate.adopt()")
+        driver.wait_until(
+            "Boolean(window.__d1Candidate.resultText())", what="H2 采用完成", timeout=60
+        )
+        driver.wait_until(
+            "window.__d1Editor.phase() === 'ready' && window.__d1Editor.dirty() === false",
+            what="H2 采用后编辑器就绪",
+            timeout=30,
+        )
+        status, plan = http("GET", f"/api/daily-plans/{plan_id}")
+        assert status == 200 and isinstance(plan, dict), "plan read failed"
+        content = plan.get("content") or {}
+        baseline = content.get("split_baseline") or {}
+        assert baseline.get("group_activity_process") == H2_BASELINE_PROCESS, (
+            f"unexpected baseline: {baseline!r}"
+        )
+        baseline_version = plan.get("current_content_version")
+        summary["h2_baseline_version"] = baseline_version
+        summary["h2_baseline_process"] = baseline.get("group_activity_process")
+
+    step("h2_baseline_adopted", create_baseline)
+
+    history_version = None
+
+    def save_history_version():
+        nonlocal history_version
+        before = driver.eval("window.__d1Editor.version()")
+        driver.eval(
+            "window.__d1Editor.setSplitProcess("
+            + json.dumps(H2_HISTORY_PROCESS, ensure_ascii=False)
+            + ")"
+        )
+        driver.eval(
+            "window.__d1Editor.setText("
+            + json.dumps("H2 历史原文\n第二行", ensure_ascii=False)
+            + ", "
+            + json.dumps("H2 历史反思", ensure_ascii=False)
+            + ")"
+        )
+        driver.wait_until("window.__d1Editor.dirty() === true", what="H2 历史版变脏", timeout=15)
+        driver.eval("window.__d1Editor.save()")
+        driver.wait_until(
+            f"window.__d1Editor.phase() === 'ready' && window.__d1Editor.version() === {before + 1}",
+            what="H2 历史版保存",
+            timeout=30,
+        )
+        history_version = driver.eval("window.__d1Editor.version()")
+        summary["h2_history_version"] = history_version
+        assert driver.eval("window.__d1Editor.groups().length") >= 1, "historical groups missing"
+
+    step("h2_history_version_saved", save_history_version)
+
+    current_version = None
+
+    def save_current_version():
+        nonlocal current_version
+        before = driver.eval("window.__d1Editor.version()")
+        # A new current-version group set (new server identities) replaces the
+        # historical groups; this keeps the three delete controls present for
+        # the delayed-GET DOM check while the old v4 group identities are absent.
+        driver.eval("window.__d1Editor.fillAll('当前v5')")
+        driver.eval(
+            "window.__d1Editor.setSplitProcess("
+            + json.dumps(H2_CURRENT_PROCESS, ensure_ascii=False)
+            + ")"
+        )
+        driver.eval(
+            "window.__d1Editor.setText("
+            + json.dumps("H2 当前原文", ensure_ascii=False)
+            + ", "
+            + json.dumps("H2 当前反思", ensure_ascii=False)
+            + ")"
+        )
+        driver.wait_until("window.__d1Editor.dirty() === true", what="H2 当前版变脏", timeout=15)
+        driver.eval("window.__d1Editor.save()")
+        driver.wait_until(
+            f"window.__d1Editor.phase() === 'ready' && window.__d1Editor.version() === {before + 1}",
+            what="H2 当前版保存",
+            timeout=30,
+        )
+        current_version = driver.eval("window.__d1Editor.version()")
+        summary["h2_current_version"] = current_version
+        groups = driver.eval("window.__d1Editor.groups()")
+        assert groups and "当前v5" in (groups[0].get("game_name") or ""), (
+            f"current version groups missing: {groups!r}"
+        )
+        summary["h2_current_groups"] = groups
+
+    step("h2_current_version_saved", save_current_version)
+
+    def open_history_list():
+        driver.eval("window.__d1Editor.openHistory()")
+        driver.wait_until(
+            "Boolean(window.__d1History && window.__d1History.phase() === 'ready')",
+            what="H2 历史列表",
+            timeout=30,
+        )
+        items = driver.eval("window.__d1History.items()")
+        versions = [item.get("version") for item in items]
+        summary["h2_history_versions"] = versions
+        assert current_version in versions, f"current version missing: {versions}"
+        assert history_version in versions, f"historical version missing: {versions}"
+        assert driver.eval("window.__d1History.currentVersion()") == current_version
+        _screenshot(args, summary, "h2-history-list")
+
+    step("h2_history_list_opened", open_history_list)
+
+    def baseline_warning_visible():
+        # The first version has no split baseline while the current one does;
+        # the expandable region must show the real stored processes, not just
+        # a warning string.
+        driver.eval("window.__d1History.selectVersion(1)")
+        driver.wait_until(
+            "window.__d1History.selectedVersion() === 1"
+            " && Boolean(window.__d1History.detail())",
+            what="H2 无基准历史详情",
+            timeout=30,
+        )
+        driver.wait_until(
+            "Boolean(window.__d1History.baselineCompare())",
+            what="H2 基准比较对象",
+            timeout=30,
+        )
+        comparison = driver.eval("window.__d1History.baselineCompare()")
+        summary["h2_baseline_compare"] = comparison
+        assert comparison.get("changed") is True
+        assert comparison.get("current", {}).get("present") is True
+        assert comparison.get("current", {}).get("process") == H2_BASELINE_PROCESS
+        assert comparison.get("historical", {}).get("present") is False
+        assert comparison.get("historical", {}).get("display") == "无基准"
+        detail_baseline = driver.eval("window.__d1History.detailBaseline()")
+        summary["h2_detail_baseline"] = detail_baseline
+        assert detail_baseline.get("present") is False
+        assert detail_baseline.get("display") == "无基准"
+        driver.eval(
+            "(document.querySelector('[data-d1=\"history-baseline-warning\"] "
+            ".el-collapse-item__header')||{click:function(){}}).click()"
+        )
+        driver.eval(
+            "(document.querySelector('[data-d1=\"history-baseline-warning\"]')"
+            "||{scrollIntoView:function(){}}).scrollIntoView({block:'start'})"
+        )
+        time.sleep(0.4)
+        _screenshot(args, summary, "h2-history-baseline-warning")
+
+    step("h2_baseline_warning_visible", baseline_warning_visible)
+
+    def compare_historical_version():
+        driver.eval(f"window.__d1History.selectVersion({history_version})")
+        driver.wait_until(
+            f"window.__d1History.selectedVersion() === {history_version}"
+            " && Boolean(window.__d1History.preview())",
+            what="H2 历史比较",
+            timeout=30,
+        )
+        assert driver.eval("window.__d1History.canRestore()") is True
+        changed = driver.eval("window.__d1History.changedCount()")
+        summary["h2_changed_count"] = changed
+        assert changed > 0, "history comparison has no changed fields"
+        sections = driver.eval("window.__d1History.fullSections()")
+        serialized = json.dumps(sections, ensure_ascii=False)
+        assert "历史v1" in serialized, "historical group content missing from full view"
+        assert "group_id" not in serialized and "game_id" not in serialized
+        driver.eval(
+            "(document.querySelector('[data-d1=\"history-compare-head\"]')"
+            "||{scrollIntoView:function(){}}).scrollIntoView({block:'start'})"
+        )
+        time.sleep(0.4)
+        _screenshot(args, summary, "h2-history-compare")
+
+    step("h2_history_compared", compare_historical_version)
+
+    restored_version = None
+
+    def _confirm_and_restore_body():
+        nonlocal restored_version
+        driver.eval("window.__d1History.requestRestore()")
+        driver.wait_until(
+            "window.__d1History.confirmOpen() === true", what="H2 恢复确认", timeout=15
+        )
+        driver.eval(
+            "(document.querySelector('[data-d1=\"history-confirm\"]')"
+            "||{scrollIntoView:function(){}}).scrollIntoView({block:'start'})"
+        )
+        time.sleep(0.4)
+        _screenshot(args, summary, "h2-history-confirm")
+        # Delay only the parent's post-restore GET. This is a verification
+        # injection at the page fetch boundary, so the real window can prove
+        # that the whole settle window (not just the POST) blocks form edits.
+        driver.eval(H2_DELAYED_GET_INSTALL_JS)
+        driver.eval("window.__d1History.confirmRestore()")
+        driver.wait_until(
+            "window.__h2DelayedGetStarted === true", what="H2 恢复后 GET 已挂起", timeout=30
+        )
+        assert driver.eval("window.__d1Editor.historyBusy()") is True
+        assert driver.eval("window.__d1Editor.editDisabled()") is True
+        controls = driver.eval(
+            "Array.from(document.querySelectorAll('[data-d1=\"editor\"] .el-card textarea,"
+            " [data-d1=\"editor\"] .el-card input'))"
+            ".map(function(el){return {tag: el.tagName, disabled: el.disabled,"
+            " type: el.type, readonly: el.readOnly, placeholder: el.placeholder,"
+            " cls: el.className, outer: el.outerHTML.slice(0, 180)};})"
+        )
+        assert controls, "no form controls found during the delayed GET"
+        summary["h2_restore_delayed_controls"] = controls
+        editable_controls = [item for item in controls if not item.get("readonly")]
+        assert editable_controls, "no editable form controls found during the delayed GET"
+        assert all(item.get("disabled") is True for item in editable_controls), controls
+        delete_buttons = driver.eval(
+            "Array.from(document.querySelectorAll("
+            "'[data-d1=\"delete-morning-game\"],"
+            "[data-d1=\"delete-post-game\"],"
+            "[data-d1=\"delete-afternoon-game\"]'))"
+            ".map(function(el){return el.disabled;})"
+        )
+        assert len(delete_buttons) >= 3, f"three game delete buttons missing: {delete_buttons!r}"
+        assert all(delete_buttons), delete_buttons
+        before_structure = driver.eval("window.__d1Editor.structureCounts()")
+        driver.eval(
+            "Array.from(document.querySelectorAll("
+            "'[data-d1=\"delete-morning-game\"],"
+            "[data-d1=\"delete-post-game\"],"
+            "[data-d1=\"delete-afternoon-game\"]')).forEach(function(el){el.click();})"
+        )
+        assert driver.eval("window.__d1Editor.structureCounts()") == before_structure
+        summary["h2_restore_delayed_get"] = {
+            "controls": len(controls),
+            "delete_buttons": len(delete_buttons),
+            "structure": before_structure,
+        }
+        driver.eval("window.__h2ReleaseGet()")
+        driver.wait_until(
+            f"window.__d1Editor.phase() === 'ready'"
+            f" && window.__d1Editor.version() === {current_version + 1}"
+            " && window.__d1Editor.dirty() === false"
+            " && window.__d1Editor.editDisabled() === false",
+            what="H2 恢复完成",
+            timeout=60,
+        )
+        _cleanup_h2_fetch(driver, summary)
+        assert driver.eval("window.__h2ReleaseCalled === true") is True
+        assert driver.eval("window.fetch === window.__h2RealFetch") is True
+        summary["h2_restore_fetch_cleanup"] = {
+            "release_called": True,
+            "fetch_restored": True,
+        }
+        restored_version = driver.eval("window.__d1Editor.version()")
+        summary["h2_restored_version"] = restored_version
+        groups = driver.eval("window.__d1Editor.groups()")
+        summary["h2_restored_groups"] = groups
+        assert groups and groups[0].get("group_id"), f"restored group identity missing: {groups!r}"
+        assert "历史v1" in (groups[0].get("game_name") or ""), (
+            f"restored historical game missing: {groups!r}"
+        )
+        assert driver.eval("window.__d1Editor.raw()") == "H2 历史原文\n第二行"
+
+    def confirm_and_restore():
+        try:
+            _confirm_and_restore_body()
+        finally:
+            # A failed DOM assertion must still release the synthetic delayed
+            # GET and restore the real fetch; the original exception remains.
+            _cleanup_h2_fetch(driver, summary)
+
+    step("h2_restored", confirm_and_restore)
+
+    def verify_restored_history_source():
+        driver.eval("window.__d1Editor.openHistory()")
+        driver.wait_until(
+            "Boolean(window.__d1History && window.__d1History.phase() === 'ready')",
+            what="H2 恢复后历史列表",
+            timeout=30,
+        )
+        items = driver.eval("window.__d1History.items()")
+        current = next(
+            (item for item in items if item.get("version") == restored_version), None
+        )
+        assert current is not None, f"restored version missing: {items!r}"
+        assert current.get("is_current") is True
+        assert current.get("restored_from_version") == history_version
+        summary["h2_restored_source"] = current.get("restored_from_version")
+        driver.eval(f"window.__d1History.selectVersion({restored_version})")
+        driver.wait_until(
+            f"window.__d1History.selectedVersion() === {restored_version}"
+            " && Boolean(window.__d1History.detail())",
+            what="H2 恢复后当前版本详情",
+            timeout=30,
+        )
+        assert driver.eval("window.__d1History.canRestore()") is False
+        _screenshot(args, summary, "h2-history-restored")
+        driver.eval("window.__d1History.requestClose()")
+
+    step("h2_restored_history_source", verify_restored_history_source)
+
+
+def drive_d3_h2_verify(driver, args, summary, checks, host_api, port) -> None:
+    """Cold-restart readback after the H2 restore, plus a real DOCX export."""
+    token = getattr(host_api, "_launch_token", "")
+    if not token:
+        raise RuntimeError("d3-h2-verify: host token missing")
+
+    def step(name, fn):
+        _h2_step(summary, checks, name, fn, error_key="h2_verify_errors")
+
+    driver.wait_until(
+        "Boolean(window.__d1App && window.__d1App.ready())", what="H2 冷重启页面", timeout=40
+    )
+    driver.wait_until(
+        "Boolean(window.__d1Workbench && typeof window.__d1Workbench.openDate === 'function')",
+        what="H2 冷重启工作台",
+        timeout=30,
+    )
+    driver.eval(f"window.__d1Workbench.openDate({json.dumps(args.date)})")
+    driver.wait_until(
+        "window.__d1App.view() === 'editor' && window.__d1Editor"
+        " && window.__d1Editor.phase() === 'ready'",
+        what="H2 冷重启编辑器",
+        timeout=30,
+    )
+
+    def content_readback():
+        version = driver.eval("window.__d1Editor.version()")
+        summary["h2_restart_version"] = version
+        assert args.expect_version is None or version == args.expect_version, (
+            f"version after restart {version} != {args.expect_version}"
+        )
+        raw = driver.eval("window.__d1Editor.raw()")
+        summary["h2_restart_raw"] = raw
+        assert raw == "H2 历史原文\n第二行", f"raw after restart: {raw!r}"
+        groups = driver.eval("window.__d1Editor.groups()")
+        summary["h2_restart_groups"] = groups
+        assert groups and groups[0].get("group_id"), "group identity lost after restart"
+        assert "历史v1" in (groups[0].get("game_name") or ""), "historical game lost after restart"
+
+    step("h2_cold_restart_content", content_readback)
+
+    def history_readback():
+        driver.eval("window.__d1Editor.openHistory()")
+        driver.wait_until(
+            "Boolean(window.__d1History && window.__d1History.phase() === 'ready')",
+            what="H2 冷重启历史",
+            timeout=30,
+        )
+        items = driver.eval("window.__d1History.items()")
+        summary["h2_restart_history_versions"] = [item.get("version") for item in items]
+        current = next(
+            (item for item in items if item.get("version") == args.expect_version), None
+        )
+        assert current is not None and current.get("is_current") is True
+        assert current.get("restored_from_version") is not None
+        summary["h2_restart_source"] = current.get("restored_from_version")
+        _screenshot(args, summary, "h2-history-cold-restart")
+        driver.eval("window.__d1History.requestClose()")
+
+    step("h2_cold_restart_history", history_readback)
+
+    def word_export():
+        if not args.word_out:
+            raise RuntimeError("--word-out is required for d3-h2-verify")
+        status, payload, headers = _http_bytes(
+            port,
+            token,
+            "POST",
+            "/api/exports/daily-plans",
+            {"from": args.date, "to": args.date},
+        )
+        summary["h2_word_status"] = status
+        if status == 409:
+            try:
+                error = json.loads(payload.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                error = {}
+            details = (error.get("error") or {}).get("details") or {}
+            if (error.get("error") or {}).get("code") == "EXPORT_ACK_REQUIRED":
+                # The synthetic fixture intentionally leaves some optional
+                # sections empty. Export the same pinned snapshot after the
+                # explicit missing-facts acknowledgement; this is the real
+                # production confirmation path, not a bypass.
+                summary["h2_word_ack_reason"] = details.get("reason")
+                status, payload, headers = _http_bytes(
+                    port,
+                    token,
+                    "POST",
+                    "/api/exports/daily-plans",
+                    {
+                        "from": args.date,
+                        "to": args.date,
+                        "ack_missing": True,
+                        "expected_context": details.get("expected_context"),
+                    },
+                )
+                summary["h2_word_status_after_ack"] = status
+        summary["h2_word_status"] = status
+        summary["h2_word_bytes"] = len(payload)
+        summary["h2_word_content_type"] = headers.get("Content-Type")
+        assert status == 200, f"Word export failed: {status} {payload[:500]!r}"
+        assert payload[:2] == b"PK", "Word export is not a DOCX zip"
+        Path(args.word_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.word_out).write_bytes(payload)
+
+    step("h2_word_export", word_export)
+
+
 def drive_selftest(window, host_api, args, summary: dict, port: int | None = None) -> None:
     driver = JsDriver(window)
     checks = summary.setdefault("checks", {})
@@ -442,6 +1249,12 @@ def drive_selftest(window, host_api, args, summary: dict, port: int | None = Non
         return
     if args.phase == "g15-noexec":
         drive_g15_noexec(driver, args, summary, checks, host_api, port)
+        return
+    if args.phase == "d3-h2-ui":
+        drive_d3_h2_ui(driver, args, summary, checks, host_api, port)
+        return
+    if args.phase == "d3-h2-verify":
+        drive_d3_h2_verify(driver, args, summary, checks, host_api, port)
         return
     if port is not None:
         summary["http_probe"] = probe_http(port)
@@ -3970,6 +4783,27 @@ def _write_summary(summary: dict, out: str | None) -> None:
             pass
 
 
+def _bundle_rows_match_manifest(rows, manifest) -> bool:
+    """Exact package-to-DB bundle equality, including revision and hash.
+
+    The resource self-check must accept the current three tasks at r1+r2 (six
+    rows) and reject a missing row, an unknown revision, a duplicate, or a hash
+    mismatch. Comparing only task_type names would silently accept r1-only or
+    duplicate revisions.
+    """
+    expected = {
+        (
+            bundle["task_type"],
+            bundle["contract_version"],
+            bundle["default_revision"],
+            bundle["bundle_hash"],
+        )
+        for bundle in manifest
+    }
+    actual = {tuple(row) for row in rows}
+    return len(rows) == len(expected) and actual == expected
+
+
 def run_w6_resources(args) -> int:
     """Headless W6 resource / same-origin probe (no window, no console output).
 
@@ -4030,7 +4864,7 @@ def run_w6_resources(args) -> int:
             profile_service,
         )
         from app.local.normalize import normalize_initialization
-        from app.local.prompt_bundles import TASK_TYPES
+        from app.local.prompt_bundles import PROMPT_BUNDLE_MANIFEST
         from app.local.runtime import LocalRuntime
 
         os.environ["KGM_LOCAL_DATA_DIR"] = str(Path(args.data).resolve())
@@ -4055,10 +4889,12 @@ def run_w6_resources(args) -> int:
             integrity = session.execute(text("PRAGMA integrity_check")).scalar()
             fk_rows = session.execute(text("PRAGMA foreign_key_check")).fetchall()
             bundles = [
-                row[0]
+                tuple(row)
                 for row in session.execute(
                     text(
-                        "SELECT task_type FROM local_prompt_bundles ORDER BY task_type"
+                        "SELECT task_type, contract_version, default_revision, bundle_hash "
+                        "FROM local_prompt_bundles "
+                        "ORDER BY task_type, contract_version, default_revision"
                     )
                 ).fetchall()
             ]
@@ -4066,11 +4902,14 @@ def run_w6_resources(args) -> int:
             summary["migration_single_head"] = len(revisions) == 1
             summary["integrity"] = integrity
             summary["foreign_key_violations"] = len(fk_rows)
-            summary["prompt_bundle_tasks"] = bundles
+            summary["prompt_bundle_rows"] = [list(row) for row in bundles]
+            summary["prompt_bundle_tasks"] = [row[0] for row in bundles]
             checks["migration_single_head"] = len(revisions) == 1
             checks["integrity_ok"] = integrity == "ok"
             checks["foreign_keys_ok"] = not fk_rows
-            checks["prompt_bundles_present"] = sorted(bundles) == sorted(TASK_TYPES)
+            checks["prompt_bundles_present"] = _bundle_rows_match_manifest(
+                bundles, PROMPT_BUNDLE_MANIFEST
+            )
             checks["prompt_sync_ok"] = runtime.prompt_sync_error is None
         finally:
             session.close()
@@ -5411,6 +6250,8 @@ def run_selftest(args) -> int:
                 "w6-ui",
                 "w6-ui-verify",
                 "g15-noexec",
+                "d3-h2-ui",
+                "d3-h2-verify",
             ):
                 deadline = 420.0
             if not finished.wait(deadline):
@@ -5662,6 +6503,16 @@ def main() -> int:
     parser.add_argument("--selftest", action="store_true", help="自动化窗口流程")
     parser.add_argument("--out", help="自检结果 JSON 输出文件")
     parser.add_argument(
+        "--screenshot-dir",
+        default=None,
+        help="验证专用：真实源码窗口截图输出目录（d3-h2-ui）",
+    )
+    parser.add_argument(
+        "--word-out",
+        default=None,
+        help="验证专用：d3-h2-verify 导出的 DOCX 目标文件",
+    )
+    parser.add_argument(
         "--phase",
         choices=[
             "first",
@@ -5681,6 +6532,8 @@ def main() -> int:
             "w6-ui-verify",
             "w6-resources",
             "g15-noexec",
+            "d3-h2-ui",
+            "d3-h2-verify",
         ],
         default="first",
     )

@@ -109,6 +109,102 @@ class LocalDailyPlanListOut(BaseModel):
     limit: int
 
 
+class LocalHistoryContentOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int
+    raw_lesson_plan: str | None
+    split_baseline: dict | None
+    adopted_content: dict
+    editor_id: str
+    created_at: datetime
+
+
+class LocalHistoryPlanHeaderOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    class_id: str
+    term_id: str
+    plan_date: date
+    week_number: int
+    weekday: int
+    calendar_revision_id: str
+    creator_id: str
+    creator_display_name: str | None
+    school_name: str | None
+    class_name: str
+    grade: str
+    created_at: datetime
+    updated_at: datetime
+    current_content_version: int
+
+
+class LocalDailyPlanHistoryListItemOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int
+    created_at: datetime
+    is_current: bool
+    restored_from_version: int | None = None
+
+
+class LocalDailyPlanHistoryListOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[LocalDailyPlanHistoryListItemOut]
+    current_content_version: int
+    next_before_version: int | None = None
+
+
+class LocalDailyPlanHistoryOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan: LocalHistoryPlanHeaderOut
+    content: LocalHistoryContentOut
+    is_current: bool
+    restored_from_version: int | None = None
+
+
+class LocalHistoryRestorePreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_content_version: int = Field(..., ge=1, strict=True)
+    expected_content_version: int = Field(..., ge=1, strict=True)
+
+
+class LocalHistoryRestorePreviewOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_token: str
+    expires_at: datetime
+    source_version: int
+    current_version: int
+    before: LocalHistoryContentOut
+    after: LocalHistoryContentOut
+    warnings: list[str]
+
+
+class LocalHistoryRestoreIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    preview_token: str
+    expected_content_version: int = Field(..., ge=1, strict=True)
+
+
+class LocalHistoryRestoreOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    plan_id: str
+    source_content_version: int
+    before_content_version: int
+    content_version: int
+    content_id: str
+    created_at: datetime
+
+
 class LocalTermDailyPlanListItemOut(LocalDailyPlanListItemOut):
     """Term-scoped list item: stored ownership is always included."""
 

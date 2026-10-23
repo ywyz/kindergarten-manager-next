@@ -171,3 +171,129 @@ r01 的 Codex 独立结果 137/141 中 adapt 相关失败，源码定位为 W5 �
 `d0e650e8…`；清单 `80f15a68…`）。按本轮要求，**未运行**完整冻结包验证与源码窗口，
 r01 自测 141 不沿用作新包通过；完整包、源码窗口、归档同源与状态/旧 GET 稳定性待 Codex
 独立核查。旧包、r01 及其独立 137/141 失败现场全部保留；未 commit／push。
+
+## 9. G17 教师内容定点整改（2026-10-22）
+
+### 9.1 实现
+
+- `prompt_bundles.py`：冻结契约 v1／默认 r1 的输入输出 schema、字段集、指导文字和 bundle
+  hash 完全保留（r1 hash：split `223a77eb9d2f…`、adapt `33dd13f4800a…`、other
+  `a952d500a843…`）；新增三类默认 r2（同 contract 1、同 schema、同字段集，仅默认指导
+  文字），新档案初始 r2，已有档案 head 推进到 2 但个人版本文字不静默覆盖。
+- r2 默认指导：多项内容／步骤真实换行并以 `1. `、`2. `、`3. ` 依次编号，数量按实际；名称／
+  主题等短单值不编号；拆分只整理原文已有条目的编号／换行，不扩写。过程适龄调整仍可按
+  年级调整表达、步骤和难度，最终过程按实际步骤分行编号；即使无需适龄调整也保留原教学
+  内容并整理编号／换行，不编造已发生课堂事实。晨间集体与自选/自主均为户外，不含区域／
+  室内／专用室活动；优先 `kind=outdoor` 配置，无户外配置给不冒充已配置的一般建议；其他
+  板块仍可使用各自适用地点。教师可见默认文字已移除“删除配置／不改计数／手工保存规则”
+  等实现者指令。
+- `ai_task_service._render_system_text`：公共与三类任务指令同步上述格式、户外和忠实原文
+  底线；实际请求 system 为正确 contract 1 与 r2 指导，不新增参数、依赖、迁移或预算。
+- 未改 schema、字段集合、持久状态机、任务协议或前端候选流程。
+
+### 9.2 验证
+
+| 检查 | 实际结果 | 日志 |
+| --- | --- | --- |
+| G17 新专项 | **5 passed**（r1 hash、新档案 r2、已有 r1 接受／拒绝 r2、system 规则、真实 claim 快照） | `%TEMP%/opencode/g17_content_t5.log`；claim 专项 `t8.log` |
+| prompt／contracts／schema | **58 passed** | `%TEMP%/opencode/g17_content_t3.log` |
+| 最终受影响合并复跑（上述 58＋G17 5） | **63 passed**（13.718 秒） | `%TEMP%/opencode/g17_content_t12.log` |
+| 实际请求 system 解析 | `test_real_tls_persistence_recovery_keeps_single_http` 改为拆 HTTP body→JSON→嵌套 system JSON；contract=1、guidance/规则解析通过，单 HTTP／恢复断言保留 | `%TEMP%/opencode/g17_content_t11.log` |
+| 资源 bundle helper | 六条精确集合单测；r1-only／缺一条／未知修订／错 hash／重复均拒绝 | `%TEMP%/opencode/g17_content_r02_test.log` |
+| 源码 `w6-resources` 实际相位 | exit 3（唯一 false 为源码 `frozen_entry`）；`prompt_bundles_present=true`、六条 r1+r2 hash 一致、任务 succeeded、其余资源检查 true | `%TEMP%/opencode/g17-r02-resources-source/resources.json` |
+| W4 多行其他活动未选板块 | numbered `1. 问题一\n2. 问题二\n3. 问题三` 采用后仅 morning_talk 变化，其他板块保持原状 | `%TEMP%/opencode/g17_content_t9.log` |
+| W6 多行编号候选 | preview→adopt→保存→同根重启→DOCX：过程单元格实际 `w:p` 为 `1. 导入\n2. 观察\n3. 比较`（3 段，不是合并一行）；原文与 split baseline／其他字段不变 | `%TEMP%/opencode/g17_content_t10.log` |
+| 桌面全套 | **204 passed**（8.76 秒） | `%TEMP%/opencode/g17_content_desktop2.log` |
+| 前端 typecheck／D2 | exit 0；**OK 94** | `%TEMP%/opencode/g17_content_ts2.log`／`_fe2.log` |
+
+Codex 独立回归报告为 159 项中 158 通过；唯一失败是上述系统消息 raw-byte 断言（嵌套 JSON
+转义），已仅修测试并定点复跑 **exit 0**，未改生产 transport、未删除单 HTTP／恢复／契约
+断言。未重复 159 全套；由 Codex 独立定点复跑。
+
+### 9.3 新包
+
+r01 内容整改包保留：`build/desktop-d2-g17-content-r01/`，EXE
+`3f6999691efeb71d78da04a4a3d97c39180d4c607abfd9c7d440166a56b69c83`，182 文件；其完整
+冻结包实际为 140/142，失败 `res_prompt_bundles_present`／`res_exit_zero`，现场保留，不写成
+通过。
+
+资源自检修正后的交付包：
+
+- 目录：`build/desktop-d2-g17-content-r03/package/KGNext-D2Verify/`
+- 182 文件；EXE `7f3ebbb53649fefc42df940beea65a76d0db2c53dcac0740c406ee6a9f57a333`
+  （15,067,834 字节）；清单
+  `f3788ef90ae68a9e9d990c0c8b988c432e815e57b87eb9adfded19627898335c`
+- 前端随包：`index-DfrJwZhO.js`／`index-zQ04hEx7.css`／`d1.html`；RUN 与逐文件散列见
+  `build/desktop-d2-g17-content-r03/RUN.md`、`package_hashes.json`。
+- r02 构建捕获了漏传 manifest 参数的缺陷版本，已保留但不作为交付包；r03 修正调用并在源码
+  资源相位验证六条精确 bundle 后再构建。
+- 实现者未执行完整冻结包；Codex后续独立r03整包首轮129/142、同包W5定点复跑33/33通过，
+  首次窗口波动原因未确认，未取得单轮142全通过。准确证据见[G17结果§6.4](desktop-d2-g17-result.md#64-最终r03定点整改限定离线工程核查完成)。源码窗口未单独复跑、真实修订输出质量未复验；未调用真实
+  AI、未发布、未 commit／push。旧包、r01／r02／r10-r11、human／诊断根与失败证据全部保留。
+
+### 9.4 资源自检精确 bundle
+
+`desktop/d1_main.py` 的资源相位不再直接把六条 `task_type` 列表与三任务列表比较，而是查询
+`(task_type, contract_version, default_revision, bundle_hash)` 并与
+`PROMPT_BUNDLE_MANIFEST` 的**精确集合**比较；缺记录（包括只有 r1）、未知修订、重复
+或错 hash 都失败。
+
+r03 当时的**六条源码相位**（r1+r2，exit 3 唯一 false 为源码 `frozen_entry=false`）是历史
+证据，保持原样；本轮**未重跑**七条源码相位。本轮仅把资源 helper 的测试从六条更新为七条
+（三任务各 r1/r2＋适龄 r3），`_bundle_rows_match_manifest` 的生产逻辑未改；该 helper 单测
+通过不冒充完整冻结包或七条源码相位通过。
+
+## 10. G17 适龄教师话语 r3（2026-10-22 最小整改）
+
+只改适龄过程任务，新增默认 r3；拆分／其他仍最新 r2，冻结 r1／r2 文字与 hash 不变。
+全局 `PACKAGE_LATEST_DEFAULT_REVISION` 保持 2，适龄使用独立
+`PACKAGE_ADAPT_DEFAULT_REVISION=3`；manifest 现为七条：三任务各 r1/r2（六条）＋
+adapt r3（第七条）。
+
+- r3 `process`：完整过程按实际步骤真实换行并连续 `1. `、`2. ` 编号；每个环节均有教师可
+  直接说的具体话语，关键处包含引导语、提问和**教师的预设回应或支持语**，简短自然、衔接
+  操作、适合目标年龄；补充话语时保持目标年级适宜的活动难度，不因话语增加认知或表达
+  要求（不把某样本的看／摸／指认写成所有小班通用限制）；即使无需年龄调整，也保留原教学
+  内容、整理编号换行并补齐每环节教师话语；可条件式回应，不虚构已发生课堂事实或幼儿实际
+  回答，不强制逐字稿。
+- 系统指令仅 `daily_process_adapt` 分支同步该要求；拆分忠原文、其他活动户外／多行规则保持。
+- 仍只输出 `process`，无 schema／字段／迁移／依赖／预算改动；个人 r2 不被静默覆盖，接受／
+  拒绝 r3 与任务版本钉住沿用现有机制。
+
+实际回归（隔离合成库，无真实 AI）：
+
+| 检查 | 实际结果 | 日志 |
+| --- | --- | --- |
+| G17 内容专项（含 r3） | **8 passed**（r1＋r2 三条 hash、新档案 split/other 2／adapt 3、r1 接受 split r2＋拒绝 adapt r3、r2 查看／接受 r3 后 claim=3、拒绝 r3 后 claim=2、system rules、真实 claim、接受 r3 后受控 HTTP/TLS 单请求） | `%TEMP%/opencode/g17_talk_t6.log`；`t3.log` |
+| prompt／contracts／schema＋G17 合并 | **68 passed**（15.677 秒） | `%TEMP%/opencode/g17_talk_t12.log` |
+| 适龄教师引语 Word 闭环 | 完整非空未选活动板块（morning_games／talk／post／afternoon）深拷贝；采用后及冷重启后仅 `group_activity.process` 改变，其余五字段与未选板块完整等值，原文／baseline 保持；过程单元格实际 6 段，拼接等于教师引语全文 | `%TEMP%/opencode/g17_talk_t11.log` |
+| 资源精确 bundle helper（七条） | **1 passed**，覆盖 r1/r2/r3、缺 r3、缺一条、未知修订、错 hash、重复 | `%TEMP%/opencode/g17_talk_desktop3.log` |
+
+文件 hash：`prompt_bundles.py 6fa9897a…`、`ai_task_service.py 07334e77…`、
+`test_d2_g17_content.py efa80c20…`、`test_d2_schema.py d8177a58…`、
+`test_d2_w2_contracts.py 6ea309b4…`、`test_d2_w6_export_closure.py 397f3e01…`、
+`test_d2_w6_degrade_host.py fe4114b1…`。
+
+本轮已构建适龄教师话语普通包：
+
+- 目录：`build/desktop-d2-g17-teacher-talk-r01/package/KGNext-D2Verify/`
+- 182 文件；EXE `cf3d4b4ca3892b838cab305ab91b6cd37686788d89965dcf19ad9120368a262a`
+  （15,068,542 字节）
+- 包清单映射摘要（排序相对路径→文件 SHA256 映射再 SHA256）：
+  `28304d72e41a15cb5dd2268d054438603ee046b9a4628eb3439da475cd1e6d6a`
+- `package_hashes.json` 原始 JSON 文件 SHA-256：
+  `aaf3495e4047d7a14740a9fbe21c2165cbac1109c93c97028cb801b5530a5f77`
+  （与映射摘要不同）
+- RUN／逐文件散列：`build/desktop-d2-g17-teacher-talk-r01/RUN.md`、
+  `package_hashes.json`。
+- 完整冻结包与源码窗口由 Codex 独立执行；r03、r02、r01、r10-r11 及旧包、真实隔离数据、
+  窗口、凭据、候选、Word 全部保留。未调用应用真实 AI、未发布、未 commit／push；真实模型
+  是否遵循 r3 教师话语仍待质量复验。
+
+## 11. 未覆盖
+
+真实 DeepSeek／MiMo 模型对 r3 教师话语的遵循与质量、真实 B／C 复验、完整冻结包与源码窗口、
+Word 新样本逐页／WPS、Win10、其他 DPI／多显示器、干净机器、发行再现性仍未验。G13／R02／
+R03 历史观察项不因本包改为已修复。
+
+2026-10-22 Codex后续独立核查：teacher-talk-r01包首次资源相位启动被Windows应用程序控制策略以WinError4551拒绝，实际exit3，已停止。源码检查通过不等于包运行通过；未重试／规避／改安全设置，真实B／C仍暂停。准确证据与保护核对见[G17结果§7.6](desktop-d2-g17-result.md#76-新教师话语包windows策略阻止启动停止)。

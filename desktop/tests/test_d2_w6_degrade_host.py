@@ -213,6 +213,44 @@ def test_validate_refuses_interactive_injection(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_resource_bundle_check_requires_exact_r1_r2_r3_rows():
+    from app.local.prompt_bundles import PROMPT_BUNDLE_MANIFEST
+
+    def rows(manifest):
+        return [
+            (
+                b["task_type"],
+                b["contract_version"],
+                b["default_revision"],
+                b["bundle_hash"],
+            )
+            for b in manifest
+        ]
+
+    exact = rows(PROMPT_BUNDLE_MANIFEST)
+    assert len(exact) == 7
+    assert d1_main._bundle_rows_match_manifest(exact, PROMPT_BUNDLE_MANIFEST)
+    assert not d1_main._bundle_rows_match_manifest(
+        [r for r in exact if r[2] == 1], PROMPT_BUNDLE_MANIFEST
+    )
+    assert not d1_main._bundle_rows_match_manifest(
+        exact[:-1], PROMPT_BUNDLE_MANIFEST
+    )
+    assert not d1_main._bundle_rows_match_manifest(
+        [r for r in exact if not (r[0] == "daily_process_adapt" and r[2] == 3)],
+        PROMPT_BUNDLE_MANIFEST,
+    )
+    unknown = list(exact)
+    unknown[0] = (unknown[0][0], unknown[0][1], 99, unknown[0][3])
+    assert not d1_main._bundle_rows_match_manifest(unknown, PROMPT_BUNDLE_MANIFEST)
+    wrong_hash = list(exact)
+    wrong_hash[0] = (*wrong_hash[0][:3], "0" * 64)
+    assert not d1_main._bundle_rows_match_manifest(wrong_hash, PROMPT_BUNDLE_MANIFEST)
+    assert not d1_main._bundle_rows_match_manifest(
+        exact + [exact[0]], PROMPT_BUNDLE_MANIFEST
+    )
+
+
 def test_w6_resources_requires_explicit_data_before_runtime(tmp_path, monkeypatch):
     calls = _spy_runtime(monkeypatch)
     namespace = _args(
