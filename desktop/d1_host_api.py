@@ -55,6 +55,12 @@ MAX_DOCX_BYTES = 30 * 1024 * 1024
 BRIDGE_ALLOWED_ENDPOINTS = frozenset(
     {
         "get_bootstrap",
+        "get_app_identity",
+        "check_for_update",
+        "start_update_download",
+        "cancel_update_download",
+        "install_update",
+        "get_update_state",
         "page_ready",
         "complete_close",
         "get_close_state",
@@ -131,6 +137,9 @@ class CloseCoordinator:
         task_snapshot=None,
         on_close_intent=None,
         on_close_canceled=None,
+        on_install_intent=None,
+        on_install_canceled=None,
+        on_install_final=None,
         drain_tasks=None,
     ):
         self._notify_page = notify_page
@@ -148,6 +157,15 @@ class CloseCoordinator:
         self._task_snapshot = task_snapshot or (lambda: {"live": 0, "in_flight": False})
         self._on_close_intent = on_close_intent or (lambda: None)
         self._on_close_canceled = on_close_canceled or (lambda: None)
+        self._on_install_intent = on_install_intent or (
+            lambda request_id, generation: None
+        )
+        self._on_install_canceled = on_install_canceled or (
+            lambda request_id, reason: None
+        )
+        self._on_install_final = on_install_final or (
+            lambda request_id, generation: None
+        )
         self._drain_tasks = drain_tasks or (lambda: True)
         self._lock = threading.RLock()
         self._state = self.IDLE
@@ -201,6 +219,26 @@ class CloseCoordinator:
             except Exception:
                 pass
 
+    def _safe_on_install_intent(self, request_id: str, generation: int) -> None:
+        try:
+            self._on_install_intent(request_id, generation)
+        except Exception:
+            pass
+
+    def _safe_on_install_canceled(
+        self, request_id: str | None, reason: str
+    ) -> None:
+        try:
+            self._on_install_canceled(request_id, reason)
+        except Exception:
+            pass
+
+    def _safe_on_install_final(self, request_id: str, generation: int) -> None:
+        try:
+            self._on_install_final(request_id, generation)
+        except Exception:
+            pass
+
     # -- events -----------------------------------------------------------
     def handle_closing(self) -> bool:
         """Return True only to consume the one-shot allow for this request."""
@@ -244,8 +282,10 @@ class CloseCoordinator:
             ).start()
         if revoked_id is not None:
             # The revoke canceled this request: release the AI freeze (only if
-            # this request still owns the close).
+            # this request still owns the close) and revoke any install plan
+            # bound to it.
             self._safe_on_canceled(revoked_id)
+            self._safe_on_install_canceled(revoked_id, "save_in_flight")
         return False
 
     def _begin_request(self) -> None:
@@ -269,6 +309,7 @@ class CloseCoordinator:
         # can run: a fast deny must never be followed by this intent freezing
         # again. The freeze is a short in-memory operation (no DB, no network).
         self._safe_on_intent()
+        self._safe_on_install_intent(request_id, generation)
         # Notify the page outside the synchronous UI callback; the generation
         # assigned under this lock is bound to the announcement (R1 §15.3).
         threading.Thread(
@@ -289,6 +330,7 @@ class CloseCoordinator:
         # The close was abandoned: release the AI freeze (only if this request
         # still owns the close).
         self._safe_on_canceled(request_id)
+        self._safe_on_install_canceled(request_id, "timeout")
         if request_id:
             self._safe_notify_aborted(request_id, "timeout")
 
@@ -342,17 +384,20 @@ class CloseCoordinator:
                     self._cancel_timer()
         if denied:
             self._safe_on_canceled(close_request_id)
+            self._safe_on_install_canceled(close_request_id, "close_denied")
             return {"accepted": True, "state": self.CANCELED}
         if refuse_busy:
             _host_log("final allow refused (save in flight)")
             self._safe_notify_aborted(close_request_id, "save_in_flight")
             self._safe_on_canceled(close_request_id)
+            self._safe_on_install_canceled(close_request_id, "save_in_flight")
             return {"accepted": False, "state": self.CANCELED}
         if refuse_reason is not None:
             _host_log(f"final allow refused ({refuse_reason})")
             self._safe_notify_aborted(close_request_id, refuse_reason)
             # A refused close releases the freeze so normal work continues.
             self._safe_on_canceled(close_request_id)
+            self._safe_on_install_canceled(close_request_id, refuse_reason)
             return {"accepted": False, "state": self.CANCELED}
         if drain_required:
             confirmed = False
@@ -383,10 +428,12 @@ class CloseCoordinator:
                         aborted_reason = None
             if superseded:
                 self._safe_on_canceled(close_request_id)
+                self._safe_on_install_canceled(close_request_id, "superseded")
                 return {"accepted": False, "state": self._public_state()}
             if aborted_reason is not None:
                 self._safe_notify_aborted(close_request_id, aborted_reason)
                 self._safe_on_canceled(close_request_id)
+                self._safe_on_install_canceled(close_request_id, aborted_reason)
                 return {"accepted": False, "state": self.CANCELED}
         try:
             self._destroy()
@@ -396,6 +443,7 @@ class CloseCoordinator:
                 self._allow_once = False
             self._safe_notify_aborted(close_request_id, "destroy_failed")
             self._safe_on_canceled(close_request_id)
+            self._safe_on_install_canceled(close_request_id, "destroy_failed")
             return {"accepted": False, "state": self.CANCELED}
         # ``destroy`` may synchronously re-enter the closing event: the
         # re-entry either consumes the one-shot allow (state stays closing)
@@ -403,9 +451,17 @@ class CloseCoordinator:
         # canceled). Never report a preset success: read the real state for
         # this request id and answer with it (R11).
         with self._lock:
-            if self._current_id == close_request_id and self._state == self.CLOSING:
-                return {"accepted": True, "state": self.CLOSING}
-            return {"accepted": False, "state": self._public_state()}
+            final = (
+                self._current_id == close_request_id
+                and self._state == self.CLOSING
+            )
+            generation = self._current_generation
+            state = self._public_state()
+        if final:
+            self._safe_on_install_final(close_request_id, generation)
+            return {"accepted": True, "state": self.CLOSING}
+        self._safe_on_install_canceled(close_request_id, "destroy_revoked")
+        return {"accepted": False, "state": state}
 
     def state(self, close_request_id: str) -> str:
         with self._lock:
@@ -653,10 +709,16 @@ class D1HostApi:
         launch_token: str,
         window_getter=None,
         verify_save_dir: Path | None = None,
+        update_manager=None,
+        install_coordinator=None,
+        ready_receipt=None,
     ):
         self._launch_token = launch_token
         self._window_getter = window_getter or self._default_window
         self._verify_save_dir = verify_save_dir or d1_paths.verify_save_dir()
+        self._update_manager = update_manager
+        self._install_coordinator = install_coordinator
+        self._ready_receipt = ready_receipt
         self._save_lock = threading.Lock()
         # One native save (dialog + write) at a time across *all* operation
         # ids; the in-flight count lets the close path refuse to destroy the
@@ -681,10 +743,13 @@ class D1HostApi:
 
     # -- session / bridge --------------------------------------------------
     def get_bootstrap(self) -> dict:
-        return {
+        result = {
             "bridge_protocol": BRIDGE_PROTOCOL,
             "launch_token": self._launch_token,
         }
+        if self._ready_receipt is not None:
+            result["update_install"] = self._ready_receipt.public_bootstrap()
+        return result
 
     def page_ready(self, payload: object = None) -> dict:
         protocol = None
@@ -692,8 +757,141 @@ class D1HostApi:
             protocol = payload.get("bridge_protocol")
         if protocol != BRIDGE_PROTOCOL:
             return {"accepted": False, "host_protocol": BRIDGE_PROTOCOL}
+        if self._ready_receipt is not None:
+            install_payload = (
+                payload.get("update_install") if isinstance(payload, dict) else None
+            )
+            confirmed = self._ready_receipt.confirm(
+                install_payload, page_ready=True
+            )
+            if not confirmed.get("accepted"):
+                return {
+                    "accepted": False,
+                    "host_protocol": BRIDGE_PROTOCOL,
+                    "update_install_error": confirmed.get("code")
+                    or "READY_CONFIRM_FAILED",
+                }
         self._page_ready = True
         return {"accepted": True, "host_protocol": BRIDGE_PROTOCOL}
+
+    # -- update discovery/download/install --------------------------------
+    def _merge_install_state(self, value: dict) -> dict:
+        result = dict(value)
+        coordinator = self._install_coordinator
+        if (
+            coordinator is not None
+            and self._update_manager is not None
+            and result.get("state") == "ready"
+        ):
+            result["install_available"] = bool(coordinator.install_available())
+        else:
+            result["install_available"] = False
+        if coordinator is not None:
+            result.update(coordinator.state())
+            # ``install_available`` from the coordinator is authoritative only
+            # for a ready U1 package; never advertise install for another state.
+            if result.get("state") != "ready":
+                result["install_available"] = False
+        return result
+
+    def _update_state_or_error(self) -> dict:
+        if not self._page_ready:
+            return {
+                "state": "failed",
+                "reason": "BRIDGE_NOT_READY",
+                "error_code": "BRIDGE_NOT_READY",
+                "error_message": "页面尚未完成桥接握手",
+                "install_available": False,
+            }
+        if self._update_manager is None:
+            return {
+                "state": "disabled",
+                "reason": "UPDATE_NOT_AVAILABLE",
+                "error_code": None,
+                "error_message": None,
+                "install_available": False,
+            }
+        return self._merge_install_state(self._update_manager.state())
+
+    def get_app_identity(self) -> dict:
+        if not self._page_ready or self._update_manager is None:
+            return {}
+        return self._update_manager.identity.as_dict()
+
+    def check_for_update(self) -> dict:
+        if not self._page_ready or self._update_manager is None:
+            return self._update_state_or_error()
+        try:
+            return self._merge_install_state(self._update_manager.check())
+        except Exception:  # noqa: BLE001 - bridge never raises
+            return {
+                "state": "failed",
+                "reason": "UPDATE_CHECK_FAILED",
+                "error_code": "UPDATE_CHECK_FAILED",
+                "error_message": "检查更新失败",
+                "install_available": False,
+            }
+
+    def start_update_download(self) -> dict:
+        if not self._page_ready or self._update_manager is None:
+            return self._update_state_or_error()
+        try:
+            return self._merge_install_state(self._update_manager.download())
+        except Exception:  # noqa: BLE001 - bridge never raises
+            return {
+                "state": "failed",
+                "reason": "UPDATE_DOWNLOAD_FAILED",
+                "error_code": "UPDATE_DOWNLOAD_FAILED",
+                "error_message": "下载更新失败",
+                "install_available": False,
+            }
+
+    def cancel_update_download(self) -> dict:
+        if not self._page_ready or self._update_manager is None:
+            return self._update_state_or_error()
+        try:
+            return self._merge_install_state(self._update_manager.cancel())
+        except Exception:  # noqa: BLE001 - bridge never raises
+            return self._update_state_or_error()
+
+    def install_update(self) -> dict:
+        """Confirm installation; the page supplies no path, URL, PID or command.
+
+        The host creates the plan from its own verified U1 state and asks the
+        window to start the existing close handshake.  If that close is
+        canceled, the plan authorization is revoked before any switch.
+        """
+        if not self._page_ready or self._update_manager is None:
+            return self._update_state_or_error()
+        coordinator = self._install_coordinator
+        if coordinator is None:
+            return {
+                "accepted": False,
+                "state": "failed",
+                "reason": "UPDATE_INSTALL_UNAVAILABLE",
+                "install_available": False,
+            }
+        try:
+            coordinator.set_destroyer(self._window().destroy)
+            result = coordinator.prepare_from_manager(self._update_manager)
+        except Exception:  # noqa: BLE001 - bridge never raises
+            return {
+                "accepted": False,
+                "state": "failed",
+                "reason": "UPDATE_INSTALL_FAILED",
+                "install_available": False,
+            }
+        if result.get("accepted"):
+            # Return the accepted result first; the close request must go
+            # through the existing page/host handshake rather than bypassing it.
+            timer = threading.Timer(0.05, coordinator.request_close)
+            timer.daemon = True
+            timer.start()
+        result["update_state"] = self._update_state_or_error()
+        return result
+
+    def get_update_state(self) -> dict:
+        return self._update_state_or_error()
 
     # -- close protocol ----------------------------------------------------
     def complete_close(self, payload: object = None) -> dict:

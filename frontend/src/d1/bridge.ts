@@ -7,6 +7,8 @@
  * (resolveCloseOutcome, waitForApi) are regression-tested under Node.
  */
 
+import type { AppIdentity, UpdateStatus } from './update'
+
 export const BRIDGE_PROTOCOL = 1
 
 export interface SaveDocxResult {
@@ -21,10 +23,26 @@ export interface HostApi {
   get_bootstrap?: () => Promise<{
     bridge_protocol?: number
     launch_token?: string
+    update_install?: {
+      plan_id: string
+      nonce: string
+      version: string
+      build_id: string
+    } | null
   }>
   page_ready?: (payload: {
     bridge_protocol: number
-  }) => Promise<{ accepted?: boolean; host_protocol?: number }>
+    update_install?: {
+      plan_id: string
+      nonce: string
+      version: string
+      build_id: string
+    } | null
+  }) => Promise<{
+    accepted?: boolean
+    host_protocol?: number
+    update_install_error?: string
+  }>
   complete_close?: (payload: {
     close_request_id: string
     allow: boolean
@@ -42,6 +60,19 @@ export interface HostApi {
   get_save_result?: (payload: {
     request_id: string
   }) => Promise<SaveDocxResult>
+  get_app_identity?: () => Promise<AppIdentity>
+  check_for_update?: () => Promise<UpdateStatus>
+  start_update_download?: () => Promise<UpdateStatus>
+  cancel_update_download?: () => Promise<UpdateStatus>
+  install_update?: () => Promise<{
+    accepted?: boolean
+    state?: string
+    reason?: string
+    plan_id?: string
+    install_available?: boolean
+    update_state?: UpdateStatus
+  }>
+  get_update_state?: () => Promise<UpdateStatus>
 }
 
 export interface PywebviewGlobal {

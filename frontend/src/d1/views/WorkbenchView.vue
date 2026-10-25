@@ -32,6 +32,7 @@ const emit = defineEmits<{
     termId?: string,
   ): void
   (e: 'open-settings'): void
+  (e: 'check-update'): void
   (e: 'reload-context'): Promise<LocalContext>
 }>()
 
@@ -293,6 +294,9 @@ defineExpose({ reload: load })
         </p>
       </div>
       <div class="actions">
+        <el-button data-d1="check-update" :disabled="frozen" @click="emit('check-update')">
+          检查更新
+        </el-button>
         <el-button data-d1="open-settings" :disabled="frozen" @click="openSettings">设置与配置维护</el-button>
       </div>
     </div>

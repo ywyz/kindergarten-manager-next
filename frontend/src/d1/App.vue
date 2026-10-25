@@ -7,7 +7,7 @@
  * (close / switch date / switch term / back to calendar / settings) go
  * through one coordinator; a failed or conflicted save keeps the page.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, ApiError, setSessionToken } from './client'
 import {
@@ -21,12 +21,14 @@ import {
   type CloseAuthority,
 } from './bridge'
 import { LeaveCoordinator, type BlockingDraft, type SaveOutcome } from './leave'
+import { isUpdateBusy, type UpdateStatus } from './update'
 import type { AiTaskList, LocalContext } from './types'
 import { isLiveTask } from './ai'
 import SetupView from './views/SetupView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import EditorView from './views/EditorView.vue'
 import SettingsView from './views/SettingsView.vue'
+import UpdatePanel from './views/UpdatePanel.vue'
 
 type View =
   | { name: 'setup' }
@@ -54,6 +56,15 @@ const closeFinalAllowed = ref(false)
 const settingsDraftActive = ref(false)
 /** Native Word save in flight (the close request must wait for it). */
 const exportBusy = ref(false)
+/** D3-U U1 update panel; no install action exists in this slice. */
+const updateOpen = ref(false)
+const updateStatus = ref<UpdateStatus | null>(null)
+/** U2: one install intent; cleared when the close attempt is canceled. */
+const installRequested = ref(false)
+const installError = ref('')
+let updatePollTimer: ReturnType<typeof setTimeout> | null = null
+let updateSeq = 0
+let updateStartupPending = false
 const activeCloseId = ref<string | null>(null)
 /**
  * Resolution of each close attempt, keyed by request id. A late reply or a
@@ -642,6 +653,10 @@ async function onRequestClose(
       { kind: 'close', closeRequestId },
       () => finishClose(closeRequestId),
     )
+    if (outcome !== 'left' && installRequested.value) {
+      installRequested.value = false
+      installError.value = '安装已取消：关闭未完成，当前程序未改动'
+    }
     const verdict = closeVerdicts.get(closeRequestId)
     closeVerdicts.delete(closeRequestId)
     if (outcome === 'left') return
@@ -678,6 +693,21 @@ function onCloseAborted(closeRequestId: string, reason: string): void {
   cancelCloseChoice(closeRequestId)
   const matchesActive = activeCloseId.value === closeRequestId
   const verifyingAuthority = verifyingCloseIds.has(closeRequestId)
+  if (
+    installRequested.value &&
+    (matchesActive ||
+      verifyingAuthority ||
+      openCloseIds.has(closeRequestId) ||
+      reason === 'timeout' ||
+      reason === 'destroy_failed' ||
+      reason === 'save_in_flight')
+  ) {
+    // The host revoked the install authorization for this exact close; a
+    // later ordinary close must not revive it.
+    installRequested.value = false
+    installError.value = `安装已取消（${reason}），当前程序未改动`
+    ElMessage.warning(installError.value)
+  }
   if (closeFinalAllowed.value && !matchesActive) {
     // A finally allowed closing belongs to its own request: late
     // notifications for ended/replaced requests never touch it (R1).
@@ -718,7 +748,146 @@ function onCloseAborted(closeRequestId: string, reason: string): void {
   }
 }
 
-// --- bootstrap --------------------------------------------------------------
+// --- D3-U U1 update discovery/download -------------------------------------
+
+function clearUpdatePoll(): void {
+  if (updatePollTimer !== null) {
+    clearTimeout(updatePollTimer)
+    updatePollTimer = null
+  }
+}
+
+function applyUpdateStatus(next: unknown, seq: number): void {
+  if (seq !== updateSeq) return
+  if (!next || typeof next !== 'object') return
+  updateStatus.value = next as UpdateStatus
+}
+
+function scheduleUpdatePoll(): void {
+  clearUpdatePoll()
+  // Poll while a host operation is in flight even if the panel was closed:
+  // a startup check must still be able to prompt when it finishes.
+  if (!isUpdateBusy(updateStatus.value)) return
+  updatePollTimer = setTimeout(() => {
+    updatePollTimer = null
+    void refreshUpdateStatus()
+  }, 400)
+}
+
+async function refreshUpdateStatus(): Promise<void> {
+  const seq = ++updateSeq
+  try {
+    const next = await hostGlobal()?.api?.get_update_state?.()
+    applyUpdateStatus(next, seq)
+    if (seq === updateSeq && updateStartupPending && updateStatus.value?.state === 'available') {
+      updateStartupPending = false
+      updateOpen.value = true
+    }
+  } catch {
+    // A status read failure must not block the page; keep the last bounded
+    // state and let the next poll/manual check retry.
+  }
+  if (seq === updateSeq) scheduleUpdatePoll()
+}
+
+async function checkForUpdate(manual: boolean): Promise<void> {
+  if (manual) updateOpen.value = true
+  if (isUpdateBusy(updateStatus.value)) return
+  if (!manual) updateStartupPending = true
+  const seq = ++updateSeq
+  try {
+    const next = await hostGlobal()?.api?.check_for_update?.()
+    if (seq !== updateSeq) return
+    applyUpdateStatus(next, seq)
+    if (manual || updateStatus.value?.state === 'available') {
+      updateOpen.value = true
+      updateStartupPending = false
+    } else if (updateStatus.value?.state !== 'checking') {
+      updateStartupPending = false
+    }
+  } catch {
+    if (seq !== updateSeq) return
+    updateStartupPending = false
+    updateStatus.value = {
+      ...(updateStatus.value ?? {}),
+      state: 'failed',
+      reason: 'UPDATE_CHECK_FAILED',
+      error_code: 'UPDATE_CHECK_FAILED',
+      error_message: '检查更新失败',
+      install_available: false,
+    } as UpdateStatus
+    updateOpen.value = true
+  }
+  if (seq === updateSeq) scheduleUpdatePoll()
+}
+
+function openUpdateManual(): void {
+  updateOpen.value = true
+  if (updateStatus.value?.state === 'idle' || updateStatus.value === null) {
+    void checkForUpdate(true)
+  } else {
+    void refreshUpdateStatus()
+  }
+}
+
+async function downloadUpdate(): Promise<void> {
+  const seq = ++updateSeq
+  try {
+    const next = await hostGlobal()?.api?.start_update_download?.()
+    applyUpdateStatus(next, seq)
+  } catch {
+    if (seq !== updateSeq) return
+    // The manager returns bounded failure states; a bridge fault stays a
+    // generic failure without pretending a download started.
+    updateStatus.value = {
+      ...(updateStatus.value ?? {}),
+      state: 'failed',
+      reason: 'UPDATE_DOWNLOAD_FAILED',
+      error_code: 'UPDATE_DOWNLOAD_FAILED',
+      error_message: '下载更新失败',
+      install_available: false,
+    } as UpdateStatus
+  }
+  if (seq === updateSeq) scheduleUpdatePoll()
+}
+
+async function cancelUpdate(): Promise<void> {
+  const seq = ++updateSeq
+  try {
+    const next = await hostGlobal()?.api?.cancel_update_download?.()
+    applyUpdateStatus(next, seq)
+  } catch {
+    // Keep the current state; the host timeout/cancel path remains bounded.
+  }
+  if (seq === updateSeq) scheduleUpdatePoll()
+}
+
+function retryUpdate(): void {
+  void checkForUpdate(true)
+}
+
+async function installUpdate(): Promise<void> {
+  if (installRequested.value) return
+  installError.value = ''
+  installRequested.value = true
+  try {
+    const result = await hostGlobal()?.api?.install_update?.()
+    if (!result || result.accepted !== true) {
+      installRequested.value = false
+      installError.value = result?.reason ?? 'UPDATE_INSTALL_FAILED'
+      ElMessage.warning('安装未能开始；当前程序和数据未改动')
+      return
+    }
+    updateOpen.value = false
+    // The host now requests the normal window close. The close/leave
+    // coordinator performs the usual save, IME, draft and AI checks.
+  } catch {
+    installRequested.value = false
+    installError.value = 'UPDATE_INSTALL_FAILED'
+    ElMessage.warning('安装请求失败；当前程序和数据未改动')
+  }
+}
+
 
 async function bootstrap(): Promise<void> {
   registerPageHandlers({
@@ -749,10 +918,13 @@ async function bootstrap(): Promise<void> {
     }
     const readyResult = await host.api.page_ready?.({
       bridge_protocol: BRIDGE_PROTOCOL,
+      update_install: bootstrapInfo.update_install ?? null,
     })
     if (readyResult && readyResult.accepted === false) {
       bootState.value = 'error'
-      bootError.value = '宿主未接受页面握手：请联系维护者更新应用。'
+      bootError.value = readyResult.update_install_error
+        ? `更新就绪确认失败：${readyResult.update_install_error}`
+        : '宿主未接受页面握手：请联系维护者更新应用。'
       return
     }
   } catch (err) {
@@ -762,6 +934,9 @@ async function bootstrap(): Promise<void> {
   }
   try {
     await reloadContext()
+    // Startup check is non-blocking; a missing/unconfigured channel or a
+    // network failure never prevents opening the workbench.
+    void checkForUpdate(false)
   } catch (err) {
     bootState.value = 'error'
     if (err instanceof ApiError) {
@@ -771,6 +946,11 @@ async function bootstrap(): Promise<void> {
     }
   }
 }
+
+onBeforeUnmount(() => {
+  updateSeq += 1
+  clearUpdatePoll()
+})
 
 onMounted(() => {
   // Verification hooks for the packaged selftest driver: state and view
@@ -795,6 +975,19 @@ onMounted(() => {
       taskChoiceId: closeChoice.value?.requestId ?? null,
       taskChoiceGeneration: closeChoice.value?.generation ?? null,
     }),
+    updateState: () => updateStatus.value,
+    updateOpen: () => updateOpen.value,
+    closeUpdate: () => {
+      updateOpen.value = false
+    },
+    refreshUpdate: () => refreshUpdateStatus(),
+    openUpdate: () => openUpdateManual(),
+    checkUpdate: () => checkForUpdate(true),
+    downloadUpdate: () => downloadUpdate(),
+    cancelUpdate: () => cancelUpdate(),
+    installUpdate: () => installUpdate(),
+    installRequested: () => installRequested.value,
+    installError: () => installError.value,
   }
   ;(window as unknown as { __d1AppCloseChoice?: object }).__d1AppCloseChoice = {
     visible: () => closeChoiceVisible.value,
@@ -828,6 +1021,7 @@ onMounted(() => {
         :frozen="closeLocked"
         @open-editor="openEditorFromWorkbench"
         @open-settings="() => void leaveForAction('settings', goSettings)"
+        @check-update="openUpdateManual"
         @reload-context="reloadContext"
       />
       <EditorView
@@ -880,6 +1074,17 @@ onMounted(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <UpdatePanel
+      v-model:open="updateOpen"
+      :status="updateStatus"
+      :frozen="closeLocked"
+      @check="() => void checkForUpdate(true)"
+      @download="() => void downloadUpdate()"
+      @cancel="() => void cancelUpdate()"
+      @retry="retryUpdate"
+      @install="() => void installUpdate()"
+    />
   </div>
 </template>
 

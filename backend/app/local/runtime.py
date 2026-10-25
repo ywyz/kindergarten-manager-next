@@ -429,6 +429,15 @@ class LocalRuntime:
         return self._engine is not None
 
     @property
+    def current_revision(self) -> str | None:
+        """The current local Alembic revision, read-only (D3-U identity)."""
+        return (
+            self._inspection.current_revision
+            if self._inspection is not None
+            else None
+        )
+
+    @property
     def engine(self) -> Engine:
         if self._engine is None:
             raise RuntimeError("LocalRuntime.prepare() has not been called")

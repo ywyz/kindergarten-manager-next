@@ -73,7 +73,17 @@ def _startup_log(message: str) -> None:
 # dedicated phase must be given an explicit synthetic data root (checked before
 # any LocalRuntime construction); every other launch (interactive or a D1
 # selftest) never accepts an injection.
-_DEDICATED_SYNTHETIC_PHASES = ("w5-ui", "w6-ui", "w6-ui-verify", "g15-noexec", "w6-resources", "d3-h2-ui", "d3-h2-verify")
+_DEDICATED_SYNTHETIC_PHASES = (
+    "w5-ui",
+    "w6-ui",
+    "w6-ui-verify",
+    "g15-noexec",
+    "w6-resources",
+    "d3-h2-ui",
+    "d3-h2-verify",
+    "u3-update",
+    "u3-verify",
+)
 # Phases that must run with a controlled provider (they exercise the real
 # executor/worker/TLS).
 _PROVIDER_REQUIRED_PHASES = ("w5-ui", "w6-ui", "w6-resources", "d3-h2-ui")
@@ -202,6 +212,16 @@ def _validate_synthetic_entry(args) -> None:
         return
     if not getattr(args, "data", None):
         raise RuntimeError(f"{phase} 自检必须显式提供 --data 合成数据根")
+    if phase in ("u3-update", "u3-verify") and not getattr(
+        args, "credential_root", None
+    ):
+        raise RuntimeError(f"{phase} 自检必须显式提供 --credential-root 合成凭据根")
+    if phase == "u3-update" and not getattr(args, "u3_config", None):
+        raise RuntimeError("u3-update 自检必须提供 --u3-config")
+    if phase == "u3-verify" and not getattr(args, "u3_source_identity", None):
+        raise RuntimeError("u3-verify 自检必须提供 --u3-source-identity")
+    if phase == "u3-verify" and not getattr(args, "u3_verify_stop", None):
+        raise RuntimeError("u3-verify 自检必须提供 --u3-verify-stop")
     if phase in _PROVIDER_REQUIRED_PHASES and port is None:
         raise RuntimeError(f"{phase} 自检必须提供受控 provider 端口")
     if phase not in _PROVIDER_ALLOWED_PHASES and port is not None:
@@ -322,10 +342,35 @@ def _start_ai_executor(runtime, args):
         return executor, reason, True
 
 
+def _source_verification_context(args) -> bool:
+    """Only the validated, non-frozen U3 source phase may relax target exe."""
+    return bool(
+        not getattr(sys, "frozen", False)
+        and getattr(args, "selftest", False)
+        and getattr(args, "phase", "") == "u3-verify"
+        and getattr(args, "u3_source_identity", None)
+        and os.environ.get("KGM_UPDATE_VERIFICATION_CONTEXT") == "1"
+    )
+
+
 def build_runtime(args):
     """Create (service, host_api, runtime) for one window run."""
     _startup_log("build_runtime:start")
     _validate_synthetic_entry(args)
+    u3_args = bool(
+        getattr(args, "u3_config", None)
+        or getattr(args, "u3_source_identity", None)
+        or getattr(args, "u3_verify_stop", None)
+        or getattr(args, "u3_close_cancel", False)
+    )
+    if u3_args and (
+        getattr(sys, "frozen", False)
+        or not (
+            getattr(args, "selftest", False)
+            and getattr(args, "phase", "") in ("u3-update", "u3-verify")
+        )
+    ):
+        raise RuntimeError("U3 源码验证参数只允许专用源码验证相位")
     from app.local.runtime import LocalRuntime
 
     _startup_log("build_runtime:app.local.runtime imported")
@@ -336,7 +381,10 @@ def build_runtime(args):
     data_dir = args.data
     if data_dir:
         os.environ["KGM_LOCAL_DATA_DIR"] = str(Path(data_dir))
-    runtime = LocalRuntime(args.data)
+    runtime = LocalRuntime(
+        args.data,
+        credential_root=getattr(args, "credential_root", None),
+    )
     _startup_log(f"build_runtime:runtime at {runtime.db_path}")
     service = None
     executor = None
@@ -370,7 +418,120 @@ def build_runtime(args):
         )
         _startup_log(f"build_runtime:app built port {port}")
         service = ServiceRun(app, port)
-        host_api = d1_host_api.D1HostApi(launch_token=token)
+        import update_identity
+        import update_install
+        import update_paths
+        import update_service
+        import update_trust
+        import update_u3_harness
+
+        u3_config = None
+        if getattr(args, "u3_config", None):
+            u3_config = update_u3_harness.load_config(args.u3_config)
+        launch_plan = update_install.read_launch_plan_from_env()
+        identity = update_identity.load_app_identity(
+            database_revision=runtime.current_revision or ""
+        )
+        if getattr(args, "u3_source_identity", None):
+            identity = update_identity.load_app_identity(
+                database_revision=runtime.current_revision or "",
+                path=args.u3_source_identity,
+                require_packaged=True,
+            )
+        if launch_plan is not None:
+            expected = launch_plan.target
+            if (
+                identity is None
+                or identity.app_id != expected.get("app_id")
+                or identity.version != expected.get("version")
+                or identity.build_id != expected.get("build_id")
+                or identity.package_format != expected.get("package_format")
+                or identity.database_revision != expected.get("database_revision")
+            ):
+                raise RuntimeError("更新后的程序构建身份与安装计划不一致")
+        source = None
+        update_enabled = bool(getattr(sys, "frozen", False))
+        if u3_config is not None:
+            source = update_u3_harness.release_source(u3_config)
+            update_enabled = True
+        identity_unavailable = identity is None
+        if identity is None:
+            # A frozen package without a trustworthy build identity must not
+            # silently become a source checkout. Keep manual work available,
+            # but disable product updates.
+            identity = update_identity.load_app_identity(
+                database_revision=runtime.current_revision or "",
+                require_packaged=False,
+            )
+            update_enabled = False
+        if update_enabled and u3_config is None:
+            try:
+                source = update_trust.load_release_source()
+            except update_trust.ReleaseConfigError:
+                source = None
+        update_manager = update_service.UpdateManager(
+            identity,
+            source=source,
+            enabled=update_enabled,
+            disabled_reason=(
+                "UPDATE_IDENTITY_UNAVAILABLE"
+                if identity_unavailable
+                else "UPDATE_DISABLED_SOURCE_RUN"
+            ),
+            data_dir=runtime.data_dir,
+            credential_root=runtime.credential_root,
+            staging_root=(
+                Path(u3_config["staging_root"]) if u3_config is not None else None
+            ),
+        )
+        install_coordinator = None
+        if update_enabled:
+            try:
+                if u3_config is not None:
+                    install_coordinator = update_install.InstallCoordinator(
+                        identity=identity,
+                        data_dir=runtime.data_dir,
+                        credential_root=runtime.credential_root,
+                        install_root=Path(u3_config["install_root"]),
+                        app_dir=Path(u3_config["app_dir"]),
+                        helper_command=list(u3_config["helper_command"]),
+                        release_config=u3_config.get(
+                            "release_config", args.u3_config
+                        ),
+                        test_only=True,
+                        new_app_command=list(u3_config["new_app_command"]),
+                    )
+                else:
+                    install_coordinator = update_install.InstallCoordinator(
+                        identity=identity,
+                        data_dir=runtime.data_dir,
+                        credential_root=runtime.credential_root,
+                        install_root=update_paths.install_root(),
+                        app_dir=Path(sys.executable).parent,
+                        helper_command=[str(update_paths.updater_exe())],
+                        release_config=(
+                            d1_paths.package_root() / "update_release.json"
+                        ),
+                    )
+            except Exception:
+                install_coordinator = None
+        ready_receipt = None
+        if launch_plan is not None:
+            verification_context = _source_verification_context(args)
+            ready_receipt = update_install.ReadyReceiptWriter(
+                launch_plan,
+                identity=identity,
+                runtime=runtime,
+                service=service,
+                service_port=port,
+                verification_context=verification_context,
+            )
+        host_api = d1_host_api.D1HostApi(
+            launch_token=token,
+            update_manager=update_manager,
+            install_coordinator=install_coordinator,
+            ready_receipt=ready_receipt,
+        )
         _startup_log("build_runtime:done")
     except _ExecutorUnconfirmed:
         # An unconfirmed AI worker must never be released: keep the executor and
@@ -1233,6 +1394,298 @@ def drive_d3_h2_verify(driver, args, summary, checks, host_api, port) -> None:
     step("h2_word_export", word_export)
 
 
+def _click_d1(driver, selector: str) -> bool:
+    return bool(
+        driver.eval(
+            "(function(){const e=document.querySelector("
+            + json.dumps(selector)
+            + "); if(!e) return false; e.click(); return true;})()"
+        )
+    )
+
+
+def drive_u3_update(driver, args, summary, checks, host_api, port) -> None:
+    """Actual Vue/WebView2 old window → UI download → confirm → close."""
+    driver.wait_until(
+        "Boolean(window.__d1App && window.__d1App.ready())",
+        what="U3 页面启动",
+        timeout=60,
+    )
+    summary["u3_initial_page_update_state"] = driver.eval(
+        "JSON.stringify(window.__d1App.updateState())"
+    )
+    if getattr(host_api, "_update_manager", None) is not None:
+        summary["u3_initial_host_update_state"] = host_api._update_manager.state()
+    driver.wait_until(
+        "Boolean(window.__d1App.updateState() && "
+        "window.__d1App.updateState().state === 'available')",
+        what="U3 启动检查发现新版",
+        timeout=120,
+    )
+    checks["u3_startup_update_available"] = True
+    driver.wait_until(
+        "Boolean(window.__d1App.updateOpen())",
+        what="U3 更新面板自动打开",
+        timeout=30,
+    )
+    _screenshot(args, summary, "u3-update-available")
+
+    assert _click_d1(driver, '[data-d1="update-download"]'), "download button missing"
+    summary["u3_state_after_download_click"] = driver.eval(
+        "JSON.stringify(window.__d1App.updateState())"
+    )
+    progress_observed = False
+    deadline = time.monotonic() + 60
+    last_state = None
+    while time.monotonic() < deadline:
+        last_state = driver.eval("JSON.stringify(window.__d1App.updateState())")
+        try:
+            parsed = json.loads(last_state) if isinstance(last_state, str) else last_state
+        except (TypeError, ValueError):
+            parsed = {}
+        if (
+            parsed.get("state") == "downloading"
+            and (parsed.get("progress") or {}).get("downloaded", 0) > 0
+        ):
+            progress_observed = True
+            break
+        if parsed.get("state") in ("failed", "ready", "cancelled"):
+            break
+        time.sleep(0.05)
+    summary["u3_progress_last_state"] = last_state
+    assert progress_observed, f"U3 download progress not observed: {last_state}"
+    checks["u3_ui_download_progress"] = True
+    _screenshot(args, summary, "u3-update-downloading")
+    assert _click_d1(driver, '[data-d1="update-cancel"]'), "cancel button missing"
+    driver.wait_until(
+        "window.__d1App.updateState().state === 'cancelled'",
+        what="U3 下载取消",
+        timeout=30,
+    )
+    checks["u3_ui_cancel_keeps_old_app"] = bool(
+        driver.eval("window.__d1App.state() === 'ready'")
+    )
+    _screenshot(args, summary, "u3-update-cancelled")
+
+    assert _click_d1(driver, '[data-d1="update-retry"]'), "retry button missing"
+    driver.wait_until(
+        "window.__d1App.updateState().state === 'available'",
+        what="U3 重试检查",
+        timeout=90,
+    )
+    assert _click_d1(driver, '[data-d1="update-download"]'), "second download missing"
+    driver.wait_until(
+        "window.__d1App.updateState().state === 'ready'",
+        what="U3 下载校验完成",
+        timeout=120,
+    )
+    checks["u3_ui_package_ready"] = True
+    driver.wait_until(
+        "Boolean(document.querySelector('[data-d1=\"update-install\"]'))",
+        what="U3 安装按钮",
+        timeout=30,
+    )
+    _screenshot(args, summary, "u3-update-ready")
+
+    driver.eval(f"window.__d1Workbench.openDate({json.dumps(args.date)})")
+    driver.wait_until(
+        "window.__d1App.view() === 'editor' && window.__d1Editor"
+        " && window.__d1Editor.phase() === 'ready'",
+        what="U3 更新前编辑器",
+        timeout=30,
+    )
+    current = driver.eval("window.__d1Editor.raw()") or ""
+    driver.eval(
+        "window.__d1Editor.setText("
+        + json.dumps(current + "\nU3 关闭前保存输入", ensure_ascii=False)
+        + ", "
+        + json.dumps("U3 关闭前反思", ensure_ascii=False)
+        + ")"
+    )
+    driver.wait_until(
+        "window.__d1Editor.dirty() === true",
+        what="U3 更新前未保存输入",
+        timeout=15,
+    )
+    checks["u3_dirty_before_install"] = True
+    _screenshot(args, summary, "u3-update-dirty")
+
+    if getattr(args, "u3_close_cancel", False):
+        # First real close attempt: make only the daily-plan PATCH fail, so the
+        # existing editor-save/close handshake cancels.  This is page fetch
+        # injection, not a direct host install call.
+        driver.eval(
+            "(() => {"
+            " window.__u3RealFetch = window.fetch.bind(window);"
+            " window.__u3FailSave = true;"
+            " window.fetch = function(input, init) {"
+            "   const method = ((init || {}).method || 'GET').toUpperCase();"
+            "   const url = String(input);"
+            "   if (window.__u3FailSave && method === 'PATCH'"
+            "       && url.indexOf('/api/daily-plans/') >= 0) {"
+            "     return Promise.resolve(new Response("
+            "       JSON.stringify({detail: 'synthetic close save failure'}),"
+            "       {status: 500, headers: {'Content-Type': 'application/json'}}));"
+            "   }"
+            "   return window.__u3RealFetch(input, init);"
+            " }; return true; })()"
+        )
+        assert _click_d1(driver, '[data-d1="update-install"]'), "install button missing"
+        driver.wait_until(
+            "Boolean(document.querySelector('[data-d1=\"update-install-confirm\"]'))",
+            what="U3 取消安装确认对话框",
+            timeout=15,
+        )
+        assert _click_d1(driver, '[data-d1="update-install-confirm-button"]'), (
+            "cancel-install confirmation button missing"
+        )
+        import update_install
+
+        coordinator = getattr(host_api, "_install_coordinator", None)
+        deadline = time.monotonic() + 90
+        revoked = None
+        while time.monotonic() < deadline:
+            if coordinator is not None and coordinator._plan is not None:
+                revoked = update_install.read_result(coordinator._plan)
+                if revoked is not None and revoked.get("status") == "revoked":
+                    break
+            time.sleep(0.05)
+        config_path = Path(args.u3_config)
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        old_marker = Path(config["app_dir"]) / "old-marker.txt"
+        page_state = driver.eval(
+            "JSON.stringify({requested: window.__d1App.installRequested(),"
+            " locked: window.__d1App.closeState().locked,"
+            " dirty: window.__d1Editor.dirty()})"
+        )
+        summary["u3_cancel_page_state"] = page_state
+        summary["u3_cancel_install_result"] = revoked
+        page_info = json.loads(page_state) if isinstance(page_state, str) else {}
+        checks["u3_close_cancel_revoked"] = bool(
+            revoked is not None and revoked.get("status") == "revoked"
+        )
+        checks["u3_close_cancel_page_kept"] = bool(
+            page_info.get("requested") is False
+            and page_info.get("locked") is False
+            and page_info.get("dirty") is True
+        )
+        checks["u3_close_cancel_old_program_intact"] = old_marker.is_file()
+        _screenshot(args, summary, "u3-close-cancelled")
+        driver.eval(
+            "(() => { window.__u3FailSave = false;"
+            " if (window.__u3RealFetch) window.fetch = window.__u3RealFetch;"
+            " window.__d1App.openUpdate();"
+            " void window.__d1App.refreshUpdate(); return true; })()"
+        )
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            try:
+                state_text = driver.eval(
+                    "JSON.stringify(window.__d1App.updateState())"
+                )
+            except Exception:
+                state_text = ""
+            summary["u3_after_cancel_update_state"] = state_text
+            if driver.eval(
+                "Boolean(document.querySelector('[data-d1=\"update-install\"]'))"
+            ):
+                break
+            try:
+                driver.eval("window.__d1App.openUpdate();")
+            except Exception:
+                pass
+            time.sleep(0.1)
+        assert driver.eval(
+            "Boolean(document.querySelector('[data-d1=\"update-install\"]'))"
+        ), "install button did not return after canceled close"
+
+    assert _click_d1(driver, '[data-d1="update-install"]'), "install button missing"
+    driver.wait_until(
+        "Boolean(document.querySelector('[data-d1=\"update-install-confirm\"]'))",
+        what="U3 安装确认对话框",
+        timeout=15,
+    )
+    assert _click_d1(driver, '[data-d1="update-install-confirm-button"]'), (
+        "install confirmation button missing"
+    )
+    checks["u3_ui_install_confirmed"] = True
+    # Once the host consumes the one-shot allow it destroys the window.  Do
+    # not keep calling evaluate_js while WebView2 is tearing down; observe the
+    # host close coordinator instead.  A save/draft failure leaves it
+    # pending/canceled and this wait fails.
+    coordinator = getattr(host_api, "_close_coordinator", None)
+    deadline = time.monotonic() + 90
+    close_allowed = False
+    while time.monotonic() < deadline:
+        if coordinator is not None and getattr(coordinator, "_state", None) == "closing":
+            close_allowed = True
+            break
+        time.sleep(0.05)
+    checks["u3_close_handshake_allowed"] = close_allowed
+    assert close_allowed, "U3 close handshake did not finish"
+
+
+def drive_u3_verify(driver, args, summary, checks, host_api, port) -> None:
+    """Actual new source window: page_ready and target identity are live."""
+    driver.wait_until(
+        "Boolean(window.__d1App && window.__d1App.ready())",
+        what="U3 新版页面就绪",
+        timeout=60,
+    )
+    checks["u3_new_page_ready"] = True
+    # The host identity is recorded after the real page/bridge handshake.
+    summary["u3_verify_identity"] = host_api.get_app_identity()
+    summary["u3_verify_pid"] = os.getpid()
+    stop = Path(args.u3_verify_stop) if args.u3_verify_stop else None
+    if stop is not None:
+        stop.parent.mkdir(parents=True, exist_ok=True)
+    if args.word_out:
+        token = getattr(host_api, "_launch_token", "")
+        status, payload, headers = _http_bytes(
+            port,
+            token,
+            "POST",
+            "/api/exports/daily-plans",
+            {"from": args.date, "to": args.date},
+        )
+        summary["u3_word_status"] = status
+        if status == 409:
+            try:
+                error = json.loads(payload.decode("utf-8"))
+            except Exception:  # noqa: BLE001
+                error = {}
+            details = (error.get("error") or {}).get("details") or {}
+            if (error.get("error") or {}).get("code") == "EXPORT_ACK_REQUIRED":
+                summary["u3_word_ack_reason"] = details.get("reason")
+                status, payload, headers = _http_bytes(
+                    port,
+                    token,
+                    "POST",
+                    "/api/exports/daily-plans",
+                    {
+                        "from": args.date,
+                        "to": args.date,
+                        "ack_missing": True,
+                        "expected_context": details.get("expected_context"),
+                    },
+                )
+                summary["u3_word_status_after_ack"] = status
+        summary["u3_word_status"] = status
+        summary["u3_word_bytes"] = len(payload)
+        summary["u3_word_content_type"] = headers.get("Content-Type")
+        assert status == 200 and payload[:2] == b"PK", (
+            f"U3 Word export failed: {status} {payload[:200]!r}"
+        )
+        Path(args.word_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.word_out).write_bytes(payload)
+        checks["u3_new_word_export"] = True
+    _screenshot(args, summary, "u3-new-page-ready")
+    deadline = time.monotonic() + 120
+    while stop is not None and time.monotonic() < deadline and not stop.exists():
+        time.sleep(0.05)
+    checks["u3_external_stop_seen"] = stop is None or stop.exists()
+
+
 def drive_selftest(window, host_api, args, summary: dict, port: int | None = None) -> None:
     driver = JsDriver(window)
     checks = summary.setdefault("checks", {})
@@ -1255,6 +1708,12 @@ def drive_selftest(window, host_api, args, summary: dict, port: int | None = Non
         return
     if args.phase == "d3-h2-verify":
         drive_d3_h2_verify(driver, args, summary, checks, host_api, port)
+        return
+    if args.phase == "u3-update":
+        drive_u3_update(driver, args, summary, checks, host_api, port)
+        return
+    if args.phase == "u3-verify":
+        drive_u3_verify(driver, args, summary, checks, host_api, port)
         return
     if port is not None:
         summary["http_probe"] = probe_http(port)
@@ -6252,6 +6711,8 @@ def run_selftest(args) -> int:
                 "g15-noexec",
                 "d3-h2-ui",
                 "d3-h2-verify",
+                "u3-update",
+                "u3-verify",
             ):
                 deadline = 420.0
             if not finished.wait(deadline):
@@ -6368,6 +6829,7 @@ def _install_close_handlers(window, host_api, runtime=None) -> None:
     import d1_host_api
 
     executor = getattr(runtime, "ai_executor", None) if runtime is not None else None
+    install_coordinator = getattr(host_api, "_install_coordinator", None)
 
     def notify_page(close_request_id: str, generation: int | None = None) -> None:
         host_api._notify_request_close(close_request_id, generation)
@@ -6410,6 +6872,18 @@ def _install_close_handlers(window, host_api, runtime=None) -> None:
             return True
         return executor.stop_and_drain(deadline=5.0)
 
+    def on_install_intent(close_request_id: str, generation: int) -> None:
+        if install_coordinator is not None:
+            install_coordinator.bind_close(close_request_id, generation)
+
+    def on_install_canceled(close_request_id: str | None, reason: str) -> None:
+        if install_coordinator is not None:
+            install_coordinator.cancel_close(close_request_id, reason)
+
+    def on_install_final(close_request_id: str, generation: int) -> None:
+        if install_coordinator is not None:
+            install_coordinator.finalize_close(close_request_id, generation)
+
     coordinator = d1_host_api.CloseCoordinator(
         notify_page=notify_page,
         destroy_window=window.destroy,
@@ -6422,6 +6896,9 @@ def _install_close_handlers(window, host_api, runtime=None) -> None:
         task_snapshot=task_snapshot,
         on_close_intent=on_close_intent,
         on_close_canceled=on_close_canceled,
+        on_install_intent=on_install_intent,
+        on_install_canceled=on_install_canceled,
+        on_install_final=on_install_final,
         drain_tasks=drain_tasks,
     )
     host_api._close_coordinator = coordinator
@@ -6483,6 +6960,18 @@ def run_interactive(args) -> int:
             show_error("窗口失败", f"窗口启动失败：\n{exc}")
             return 2
         _stop_service(service)
+        try:
+            if getattr(host_api, "_update_manager", None) is not None:
+                host_api._update_shutdown_confirmed = bool(
+                    host_api._update_manager.shutdown()
+                )
+                if not host_api._update_shutdown_confirmed:
+                    _startup_log("update manager shutdown not confirmed")
+            install_coordinator = getattr(host_api, "_install_coordinator", None)
+            if install_coordinator is not None:
+                install_coordinator.shutdown()
+        except Exception:
+            host_api._update_shutdown_confirmed = False
         return 0
     finally:
         _stop_service(service)
@@ -6499,6 +6988,11 @@ def main() -> int:
     opened = ensure_console_streams()
     parser = argparse.ArgumentParser(description="D1 desktop application")
     parser.add_argument("--data", help="合成数据目录（验证时注入）")
+    parser.add_argument(
+        "--credential-root",
+        default=None,
+        help="内部更新启动使用：保留原同机凭据根（页面不可传入）",
+    )
     parser.add_argument("--frontend", help="D1 前端构建目录")
     parser.add_argument("--selftest", action="store_true", help="自动化窗口流程")
     parser.add_argument("--out", help="自检结果 JSON 输出文件")
@@ -6511,6 +7005,14 @@ def main() -> int:
         "--word-out",
         default=None,
         help="验证专用：d3-h2-verify 导出的 DOCX 目标文件",
+    )
+    parser.add_argument("--u3-config", default=None, help="验证专用：U3 源码合成更新配置")
+    parser.add_argument("--u3-source-identity", default=None, help="验证专用：新版源码构建身份文件")
+    parser.add_argument("--u3-verify-stop", default=None, help="验证专用：u3-verify 等待外部收口文件")
+    parser.add_argument(
+        "--u3-close-cancel",
+        action="store_true",
+        help="验证专用：先注入正文保存失败取消关闭，再用同一 UI 安装",
     )
     parser.add_argument(
         "--phase",
@@ -6534,6 +7036,8 @@ def main() -> int:
             "g15-noexec",
             "d3-h2-ui",
             "d3-h2-verify",
+            "u3-update",
+            "u3-verify",
         ],
         default="first",
     )

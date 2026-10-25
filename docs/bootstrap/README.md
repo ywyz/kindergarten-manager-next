@@ -1,10 +1,10 @@
 # 文档与报告索引
 
-更新：2026-10-23。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
+更新：2026-10-25。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前阶段：D3-A源码工程通过，D3-B0提示词待审
+## 当前阶段：更新限定工程收口，下一步游戏观察规格待审
 
-2026-10-23最新接续：[D3-A整份日计划历史恢复](../specs/desktop-daily-plan-history.md)H1／H2已由原OpenCode Go套餐DeepSeek V4.1 Flash实现，经Codex独立回修核查通过，R01–R11关闭，见[实现结果](desktop-d3-history-result.md)及[最终核查§9](desktop-d3-history-review.md#9-最终独立核查通过)。独立源码窗口、成功恢复后冷重启和Word XML已验，H3冻结包／教师体验及4551仍未验；D2保持A已采用v6、B未采用、C未发起。用户最新不安排签名；[唯一下一提示词](../tasks/current.md)已拟D3-B0一致性快照与跨设备接续离线工程摸底，待用户审核，未派发。下文日期段落保留历史状态，不恢复微软提交、真实AI、WebDAV或发行。
+2026-10-25：[应用更新](../specs/desktop-application-update.md)U1–U3由原OpenCode Go Flash实施，Codex独立源码窗口42项／Python120项／更新SFC13项及typecheck通过，见[最终核查§20](desktop-update-review.md#20-最终独立核查u1u3限定源码合成工程通过)。按既有授权提交推送，再准备游戏观察记录规格待审提示词，不自动派发后续实现；[唯一当前入口](../tasks/current.md)跟随本次交接。跨设备继续后置；真实冻结更新／安装、发行源／公钥、4551及教师体验仍未验。D3-A、D2既有通过／未验状态保持，签名、真实AI、WebDAV、微软提交和发行仍不安排。
 
 最新状态与处理决定见[W6收口及三项后续事件](desktop-d2-w6-closeout.md)和[逐项人工记录](desktop-d2-w6-manual-acceptance.md)：已验Word／候选／保存／重启／在途子项保持；跨120秒睡眠不再验证，白屏等复发，额外任务用户倾向误点、保留观察。三项留作同类再现处理，不主动追测，不改记为技术通过／已修复。用户已授权相关Git提交／推送，未授权应用真实AI或发布。
 
