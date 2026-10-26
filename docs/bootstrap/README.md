@@ -2,9 +2,11 @@
 
 更新：2026-10-27。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前阶段：E03图片材料限定工程通过
+## 当前阶段：E05／E08保存、历史与恢复限定工程通过
 
-2026-10-27收口（本轮授权始于2026-10-26）：[应用更新](../specs/desktop-application-update.md)U1–U3限定工程已推送d52fa8a。游戏观察[产品C1–C33](../specs/desktop-game-observation.md)、[工程设计](../specs/desktop-game-observation-engineering.md)及[E13六份Contract](desktop-game-observation-contract-review.md)保持；E01／E02／E04独立599项通过并已推送，见[数据基础核查](desktop-game-observation-foundation-review.md)。本轮用户另授权E03，原会话以Go套餐Flash max实施及回修，见[实现结果](desktop-game-observation-assets-result.md)及[E03独立核查](desktop-game-observation-assets-review.md)，当前Windows 11隔离合成环境限定工程已通过；通过后正常提交推送。完整A01–A22尚未验收；[当前任务](../tasks/current.md)仅E03，不自动进入保存历史、视觉AI、页面、Word／宿主或构建。跨设备、真实更新安装、发行源及教师体验等既有未验保持，不安排应用真实AI、签名、WebDAV或发行。
+2026-10-27收口：E05／E08由原OpenCode会话以Go套餐DeepSeek V4.1 Flash max实施及回修，[独立核查](desktop-game-observation-history-review.md)通过：663项全local、85项相关桌面及竞态／保留库复核通过，R01–R08关闭；见[实现交付](desktop-game-observation-history-result.md)。按本轮授权正常提交推送，停在服务层本片。[当前任务](../tasks/current.md)为唯一有效入口；E06／E07视觉候选、E09／E10页面、E11／E12 Word／宿主和E14未启动，完整A01–A22及教师体验未整项验收。
+
+此前[应用更新](../specs/desktop-application-update.md)U1–U3已推送d52fa8a；游戏观察[产品C1–C33](../specs/desktop-game-observation.md)、[工程设计](../specs/desktop-game-observation-engineering.md)及[E13六份Contract](desktop-game-observation-contract-review.md)保持。E01／E02／E04独立599项通过并已推送，见[基础核查](desktop-game-observation-foundation-review.md)；E03材料限定工程已推送5e3e46f，见[实现结果](desktop-game-observation-assets-result.md)及[E03核查](desktop-game-observation-assets-review.md)。跨设备、真实更新安装、发行源与教师体验等既有未验保持，不安排应用真实AI、签名、WebDAV或发行。
 
 最新状态与处理决定见[W6收口及三项后续事件](desktop-d2-w6-closeout.md)和[逐项人工记录](desktop-d2-w6-manual-acceptance.md)：已验Word／候选／保存／重启／在途子项保持；跨120秒睡眠不再验证，白屏等复发，额外任务用户倾向误点、保留观察。三项留作同类再现处理，不主动追测，不改记为技术通过／已修复。用户已授权相关Git提交／推送，未授权应用真实AI或发布。
 

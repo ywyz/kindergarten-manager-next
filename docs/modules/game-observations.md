@@ -1,6 +1,6 @@
 # 游戏观察记录 Contract
 
-状态：Architecture v2有效业务Contract；E13设计扩展已核定，E01／E02／E04数据基础独立通过，见[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)。用户本轮另授权E03图片材料，原Go套餐Flash max会话已交付并停写，已通过[E03独立限定工程核查](../bootstrap/desktop-game-observation-assets-review.md)。其余完整保存历史、页面、视觉AI及Word／宿主仍为设计，未获后续实施或产品验收结论。
+状态：Architecture v2有效业务Contract，E13设计扩展已核定。E01／E02／E04基础、E03材料与E05／E08保存历史服务层已通过限定工程核查，见[基础](../bootstrap/desktop-game-observation-foundation-review.md)、[材料](../bootstrap/desktop-game-observation-assets-review.md)及[最新保存历史核查](../bootstrap/desktop-game-observation-history-review.md)。本轮独立663项全local、85项相关桌面及竞态／保留库复核通过，原Go套餐Flash max会话已停写，按授权正常提交推送。页面、视觉AI、Word／宿主及完整产品仍未验。
 
 产品依据为[游戏观察C1–C33](../specs/desktop-game-observation.md)，工程依据为[E01–E14](../specs/desktop-game-observation-engineering.md)。本文同时记录已实施数据基础与尚待实施的完整Contract；各项实际范围以独立核查报告为准，日计划原Contract及既有验收身份保持。
 
@@ -40,7 +40,7 @@ Word 导出 → 观察：读取固定导出快照
 
 ## 2. Canonical payload 与校验
 
-E01纯校验与hash函数已实施。canonical原图manifest按业务顺序排列，sort_order为0至N−1并等于数组下标；E03材料服务已从数据库当前关联生成该形式，并将导入／顺序／说明／移除与draft revision、唯一aggregate hash、record计数及回执／审计同事务处理。无变化顺序／说明不增revision；移除只解除当前关联。当前限定工程已通过，完整E05／E08保存历史未实施，不新增教师操作。
+E01纯校验与hash函数已实施。canonical原图manifest按业务顺序排列，sort_order为0至N−1并等于数组下标；E03材料服务已从数据库当前关联生成该形式，并将导入／顺序／说明／移除与draft revision、唯一aggregate hash、record计数及回执／审计同事务处理。无变化顺序／说明不增revision；移除只解除当前关联。E05／E08完整保存／历史／恢复服务层已接入同一hash并通过限定工程核查；页面教师操作仍待后续接入。
 
 | 字段 | 类型／可空 | 语义 |
 | --- | --- | --- |
@@ -245,6 +245,8 @@ game_observation:
 - 材料真实解码／hash 在事务外完成；锁内只做短检查。恢复不调用 AI、不自动采用、不改在途任务。
 - 晚到编辑用旧 revision 失败；损坏／缺失历史拒绝，不拿当前资料补洞。
 
+本片实际协议：preview TTL为15分钟内部参数，不是历史保留期；token只存摘要。term_snapshot_hash列为有效snapshot、明确term_decision／selected_term_id与源／当前／所选学期配置上下文的绑定摘要，snapshot为空也绑定决定。服务要求base当前稿已对应最近保留节点，不能在恢复事务内补节点伪造上层保存成功；恢复无变时result_version指实际当前保留节点。材料用严格受管布局及同句柄有界hash／串行解码，最后写锁内只短复核路径／父目录／身份。窗口／IME的先保存流程仍由后续adapter另验。
+
 ### 5.4 编辑 adapter 与离开
 
 - 观察编辑 adapter 同时处理“待保存输入”和“待保留节点”，不能只看 `isDirty`。
@@ -356,8 +358,9 @@ game_observation:
 | 并发 | `OBS_REVISION_CONFLICT` | 409，保留输入 |
 | 幂等 | `OBS_IDEMPOTENCY_CONFLICT` | 同 request id 异 fingerprint 拒绝 |
 | 材料 | `OBS_MATERIAL_INVALID/MISSING/CORRUPT/LIMIT` | 指出记录与图片；不静默漏图／换图 |
-| 历史 | `OBS_HISTORY_CORRUPT/MISSING` | 拒绝恢复，不用当前资料补洞 |
-| 恢复 | `OBS_RESTORE_TOKEN_EXPIRED/CONSUMED`、`OBS_RESTORE_TERM_CHANGED`、`OBS_RESTORE_MATERIAL_CHANGED` | 不写业务内容，要求重新预览 |
+| 归属 | `OBS_TERM_DECISION_REQUIRED` | 返回明确选择需求；不静默迁移，已确认范围不符可带warning保留 |
+| 历史 | `OBS_HISTORY_CORRUPT`、`OBS_HISTORY_NOT_FOUND` | 拒绝恢复，不用当前资料补洞 |
+| 恢复 | `OBS_RESTORE_PREVIEW_EXPIRED/INVALID`、`OBS_RESTORE_TOKEN_CONSUMED`、`OBS_RESTORE_SOURCE_INVALID`、`OBS_RESTORE_UNPROTECTED` | 不写业务内容，要求保护现稿或重新选择／预览 |
 | AI | `OBS_AI_SOURCE_CHANGED`、`OBS_AI_CONTRACT_INCOMPATIBLE`、`OBS_AI_CANDIDATE_STALE` | 默认不采用；显示差异；复核或重新生成 |
 | 导出 | `OBS_EXPORT_EMPTY`、`OBS_EXPORT_MISSING_UNCONFIRMED`、`OBS_EXPORT_BAD_MATERIAL`、`OBS_EXPORT_TOKEN_*`、`OBS_EXPORT_SAVE_*` | 分开报告；不交付残缺文件；释放临时产物 |
 | 存储 | `OBS_STORAGE_PROJECTION_MISMATCH`、`OBS_STORAGE_IO` | 明确失败，不静默覆盖权威 |
@@ -399,4 +402,4 @@ E03当前材料参数：源25MiB／40MP／单边8192同时检查，AI最长边20
 
 预计不需 ADR：技术栈、依赖方向、SQLite／受管文件权威、本机 API 与 worker 通信未变；观察是 Feature 模块，`export_id` 是现有宿主保存桥的受限扩展。若改为新服务／新进程、外部网络交付、浏览器或远端成为内容权威、改变模块所有权或通信机制，先提 ADR，不暗改 `ARCHITECTURE.md`。
 
-未验：完整A01–A22尚未整项验收。E01／E02／E04已通过限定基础工程，E03当前限定工程已通过；Pillow13.0.0已加入业务／桌面统一锁，格式／元数据／路径与故障／容量实证见[E03报告](../bootstrap/desktop-game-observation-assets-review.md)，不能再写成全部仅提案。页面／HTTP会话接入、完整保存历史、视觉AI、Word逐页／WebView2／宿主、冻结包资源／许可及新包仍未验，本片未启动桌面产品或构建。Win10、WPS、干净机器、其他DPI／显示器、签名发行和既有D2／D3未验保持。通过后正常提交推送，停在E03；后续授权见[当前任务](../tasks/current.md)。
+未验：完整A01–A22尚未整项验收。E01／E02／E04基础、E03材料及E05／E08保存历史服务层限定工程已通过；Pillow13.0.0及材料容量依据见[E03报告](../bootstrap/desktop-game-observation-assets-review.md)，保存／恢复与竞态／保留库依据见[本片报告](../bootstrap/desktop-game-observation-history-review.md)。页面／HTTP会话接入、IME／离开、视觉AI、Word逐页／WebView2／宿主、冻结资源／许可及新包仍未验，未启动桌面产品或构建。Win10、WPS、干净机器、其他DPI／显示器、签名发行和D2／D3未验保持。本轮正常提交推送后停在E05／E08；后续见[当前任务](../tasks/current.md)。

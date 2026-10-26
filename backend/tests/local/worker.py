@@ -531,6 +531,110 @@ def _action_observation_read(spec: dict, runtime) -> dict:
         session.close()
 
 
+def _action_observation_service_save(spec: dict, runtime) -> dict:
+    from app.local import observation_service
+
+    session = runtime.session()
+    try:
+        exit_mode = spec.get("exit_mode")
+        if exit_mode == "before_commit":
+            def flush_then_exit(*args, **kwargs):  # noqa: ANN001
+                session.flush()
+                os._exit(17)
+
+            session.commit = flush_then_exit  # type: ignore[method-assign]
+        result = observation_service.save_observation(
+            session,
+            profile_id=spec["profile_id"],
+            observation_id=spec["observation_id"],
+            request_id=spec["request_id"],
+            expected_revision=spec["expected_revision"],
+            payload=spec["payload"],
+            photos=spec.get("photos"),
+            save_reason=spec.get("save_reason", "auto"),
+            term_decision=spec.get("term_decision"),
+            selected_term_id=spec.get("selected_term_id"),
+        )
+        if exit_mode == "after_commit":
+            Path(spec["result_file"]).write_text(
+                json.dumps({"result": result}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os._exit(17)
+        return {"result": result}
+    finally:
+        session.close()
+
+
+def _action_observation_service_read(spec: dict, runtime) -> dict:
+    from sqlalchemy import select
+
+    from app.local import observation_history_service, observation_service
+    from app.local.models import LocalObservationOperation, LocalOperationRecord
+
+    session = runtime.session()
+    try:
+        current = observation_service.read_current(
+            session,
+            profile_id=spec["profile_id"],
+            observation_id=spec["observation_id"],
+        )
+        history = observation_history_service.list_history(
+            session,
+            profile_id=spec["profile_id"],
+            observation_id=spec["observation_id"],
+        )
+        return {
+            "current": current,
+            "history": history,
+            "receipts": len(session.scalars(select(LocalObservationOperation)).all()),
+            "audits": len(
+                [
+                    row
+                    for row in session.scalars(select(LocalOperationRecord)).all()
+                    if row.action.startswith("observation_")
+                ]
+            ),
+        }
+    finally:
+        session.close()
+
+
+def _action_observation_service_restore(spec: dict, runtime) -> dict:
+    from app.local import observation_history_service
+
+    session = runtime.session()
+    try:
+        exit_mode = spec.get("exit_mode")
+        if exit_mode == "before_commit":
+            def flush_then_exit(*args, **kwargs):  # noqa: ANN001
+                session.flush()
+                os._exit(17)
+
+            session.commit = flush_then_exit  # type: ignore[method-assign]
+        result = observation_history_service.restore_observation(
+            session,
+            runtime,
+            profile_id=spec["profile_id"],
+            observation_id=spec["observation_id"],
+            request_id=spec["request_id"],
+            restore_token=spec["restore_token"],
+            expected_base_revision=spec["expected_base_revision"],
+            expected_base_hash=spec["expected_base_hash"],
+            term_decision=spec["term_decision"],
+            selected_term_id=spec.get("selected_term_id"),
+        )
+        if exit_mode == "after_commit":
+            Path(spec["result_file"]).write_text(
+                json.dumps({"result": result}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os._exit(17)
+        return {"result": result}
+    finally:
+        session.close()
+
+
 ACTIONS = {
     "initialize": _action_initialize,
     "create_plan": _action_create_plan,
@@ -545,6 +649,9 @@ ACTIONS = {
     "read_detail_snapshot": _action_read_detail_snapshot,
     "observation_import": _action_observation_import,
     "observation_read": _action_observation_read,
+    "observation_service_save": _action_observation_service_save,
+    "observation_service_read": _action_observation_service_read,
+    "observation_service_restore": _action_observation_service_restore,
 }
 
 

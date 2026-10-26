@@ -137,6 +137,17 @@ class ObservationStorageProjectionMismatch(LocalError):
 
 
 @dataclass(frozen=True)
+class ManagedAssetInspection:
+    content_hash: str
+    byte_size: int
+    image_format: str
+    width: int
+    height: int
+    orientation: int | None
+    identity: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
 class PreparedAsset:
     content_hash: str
     byte_size: int
@@ -978,6 +989,22 @@ def _prepare_asset(source: Any) -> PreparedAsset:
             raise ObservationMaterialCorrupt("图片解码失败或文件损坏") from exc
 
 
+def managed_asset_path(
+    runtime: Any,
+    relative: str,
+    observation_id: str,
+    asset_id: str,
+) -> Path:
+    """Strict fixed layout/ownership check for a managed original."""
+    return _asset_relative(
+        runtime,
+        relative,
+        observation_id,
+        asset_id,
+        expected_leaf="original",
+    )
+
+
 def _prepare_staged_asset(path: Path, root: Path) -> PreparedAsset:
     """Decode the staging file through one verified handle while parents are pinned."""
     try:
@@ -1005,6 +1032,123 @@ def _prepare_staged_asset(path: Path, root: Path) -> PreparedAsset:
         raise
     except OSError as exc:
         raise ObservationAssetStorage("读取图片临时文件失败") from exc
+
+
+def inspect_managed_asset(path: Path, root: Path) -> ManagedAssetInspection:
+    """Hash and decode one managed asset through the same verified handle.
+
+    This is a read-only inspection for restore/history verification.  It does
+    not rebuild AI/export derivatives and it never opens the path a second time.
+    """
+    try:
+        with _hold_managed_dirs(root, path):
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            try:
+                info = _verify_handle_path(
+                    fd, path, root, error_cls=ObservationMaterialCorrupt
+                )
+                if info.st_size > MAX_SOURCE_BYTES:
+                    raise ObservationMaterialLimit("材料超过单图字节上限")
+                hasher = hashlib.sha256()
+                total = 0
+                while True:
+                    chunk = os.read(fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_SOURCE_BYTES:
+                        raise ObservationMaterialLimit("材料超过单图字节上限")
+                    hasher.update(chunk)
+                os.lseek(fd, 0, os.SEEK_SET)
+                with _IMAGE_LOCK:
+                    with os.fdopen(os.dup(fd), "rb") as handle:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter(
+                                "error", Image.DecompressionBombWarning
+                            )
+                            with Image.open(handle) as image:
+                                image_format = (image.format or "").lower()
+                                if image_format not in _MIME_BY_FORMAT:
+                                    raise ObservationMaterialInvalid("图片格式不受支持")
+                                if getattr(image, "is_animated", False) or getattr(
+                                    image, "n_frames", 1
+                                ) != 1:
+                                    raise ObservationMaterialInvalid("不支持动画图片")
+                                width, height = image.size
+                                _validate_dimensions(width, height)
+                                _validate_exif_container(image)
+                                orientation = _orientation(image)
+                                _validate_icc(image)
+                                image.load()
+                after = os.fstat(fd)
+                path_info = os.lstat(path)
+                if (
+                    not _same_identity(info, after)
+                    or not _same_identity(info, path_info)
+                    or getattr(path_info, "st_file_attributes", 0) & 0x400
+                    or getattr(path_info, "st_nlink", 1) != 1
+                ):
+                    raise ObservationMaterialCorrupt("材料文件在核验期间被替换")
+                identity = (
+                    int(info.st_dev),
+                    int(info.st_ino),
+                    int(info.st_size),
+                    int(info.st_mtime_ns),
+                )
+                return ManagedAssetInspection(
+                    content_hash=hasher.hexdigest(),
+                    byte_size=total,
+                    image_format=image_format,
+                    width=width,
+                    height=height,
+                    orientation=orientation,
+                    identity=identity,
+                )
+            finally:
+                os.close(fd)
+    except LocalError:
+        raise
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning):
+        raise ObservationMaterialLimit("图片像素总数超过技术上限") from None
+    except Image.UnidentifiedImageError:
+        raise ObservationMaterialInvalid("无法识别图片格式") from None
+    except OSError as exc:
+        raise ObservationAssetStorage("核验材料失败") from exc
+
+
+def verify_managed_asset_identity(
+    path: Path,
+    root: Path,
+    expected_identity: tuple[int, int, int, int],
+) -> None:
+    """Short final-lock check: path/parents/final handle and identity only."""
+    try:
+        with _hold_managed_dirs(root, path):
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            try:
+                info = _verify_handle_path(
+                    fd, path, root, error_cls=ObservationMaterialCorrupt
+                )
+                path_info = os.lstat(path)
+                identity = (
+                    int(info.st_dev),
+                    int(info.st_ino),
+                    int(info.st_size),
+                    int(info.st_mtime_ns),
+                )
+                if (
+                    identity != expected_identity
+                    or not _same_identity(info, path_info)
+                    or getattr(path_info, "st_file_attributes", 0) & 0x400
+                    or getattr(path_info, "st_nlink", 1) != 1
+                ):
+                    raise ObservationMaterialCorrupt("材料文件身份已变化")
+            finally:
+                os.close(fd)
+    except LocalError:
+        raise
+    except OSError as exc:
+        raise ObservationAssetStorage("核验材料身份失败") from exc
 
 
 def _move_file(
@@ -1871,6 +2015,10 @@ __all__ = [
     "ObservationAssetRevisionConflict",
     "ObservationAssetRequestConflict",
     "ObservationAssetStorage",
+    "ManagedAssetInspection",
+    "managed_asset_path",
+    "inspect_managed_asset",
+    "verify_managed_asset_identity",
     "import_asset",
     "reorder_photos",
     "set_caption",

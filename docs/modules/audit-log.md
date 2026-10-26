@@ -16,13 +16,13 @@
 
 ## 游戏观察审计扩展（2026-10-26，E13设计核定）
 
-E02仅预备观察操作／来源／导出相关表，见[E01／E02／E04独立核查](../bootstrap/desktop-game-observation-foundation-review.md)；本节审计生产者、业务事务写入及查询服务仍未实施，不把新表当作审计能力已交付。
+E02预备观察操作／来源／导出相关表，见[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)。E03材料及E05／E08创建／保存／恢复的业务回执与同事务审计已通过限定工程核查，见[材料核查](../bootstrap/desktop-game-observation-assets-review.md)及[保存历史核查](../bootstrap/desktop-game-observation-history-review.md)；AI、Word及宿主生产者仍待后续，不把本片写成全部审计查询能力已交付。
 
 生产者为观察、AI、Word及宿主；只记录创建／保存／材料导入／采用／历史恢复／导出及实际保存的非敏感元信息：内部profile/record、draft revision/history version、input/candidate、request/operation、snapshot或非敏感export reference、状态、固定错误码、耗时、大小与hash。审计不成为内容权威，不驱动恢复、采用或AI重放；业务未知结果以所属域回执读回，不凭日志猜成功。
 
 不记录儿童姓名、照片／Base64、完整正文／提示词／模型回复、密钥、认证头、真实路径或可能带儿童姓名的filename。原始export_id、restore/adoption preview token、应用会话及认证材料也不得入日志；如需关联只用非敏感引用或不可逆摘要。业务token仅存受限服务／回执，前端及宿主在必要时持有，不作通用遥测。
 
-业务成功操作及关联审计随本地事务提交／回滚，不留下假成功；宿主保存结果按实际IO，经固定受限本机API报告，生成或下载成功不能冒充saved。本轮不新增日志服务、队列、遥测、保留清理或查看界面，首期不因审计清理历史照片。字段及回执分域统一见[观察Contract§4、§8](game-observations.md#4-接口幂等与回执)；仅设计通过，未实施／运行验证，证据见[E13核定记录](../bootstrap/desktop-game-observation-contract-review.md)。
+业务成功操作及关联审计随本地事务提交／回滚，不留下假成功；E05／E08已用全部写真实flush后的SQLite故障及保留库复核证明本片事务一致性。宿主保存结果仍属后续设计：按实际IO，经固定受限本机API报告，生成或下载成功不能冒充saved。不新增日志服务、队列、遥测、保留清理或查看界面，首期不因审计清理历史照片。字段及回执分域统一见[观察Contract§4、§8](game-observations.md#4-接口幂等与回执)；完整设计依据见[E13核定记录](../bootstrap/desktop-game-observation-contract-review.md)，未实施生产者不因本片通过改记为运行通过。
 
 ## 敏感信息与遥测边界
 

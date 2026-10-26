@@ -1,6 +1,6 @@
 # D4-E：游戏观察记录工程设计
 
-更新：2026-10-27。**E01–E14及E13六份Contract设计保持；E01／E02／E04数据基础独立通过，用户本轮另授权E03图片材料，原Go套餐Flash max会话已交付并停写，已通过独立限定工程核查。** 见[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)、[E03实现](../bootstrap/desktop-game-observation-assets-result.md)及[E03独立核查](../bootstrap/desktop-game-observation-assets-review.md)。产品依据为[完整规格C1–C33](desktop-game-observation.md)。本次仅扩至E03，通过后正常提交推送；应用真实AI及后续切片／构建未授权。
+更新：2026-10-27。**E01–E14及E13六份Contract设计保持；E01／E02／E04基础、E03材料与E05／E08保存历史服务层已通过限定工程核查。** 最新[独立核查](../bootstrap/desktop-game-observation-history-review.md)为663项全local、85项相关桌面及竞态／保留库复核通过；见[本片实现](../bootstrap/desktop-game-observation-history-result.md)、[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)及[E03核查](../bootstrap/desktop-game-observation-assets-review.md)。产品依据为[完整规格C1–C33](desktop-game-observation.md)。本轮正常提交推送后停在E05／E08；其余切片、应用真实AI与构建不自动启动。
 
 原OpenCode会话`ses_ead8af71dffeJphI1NOWg4jZgI`使用`opencode-go/deepseek-v4.1-flash#default`、`plan`代理交付方案。Codex退回两轮问题、补充冷迁移问题，并核定K01–K08修正；原会话最终逐项接受。本文由Codex归并为唯一有效工程方案，取代各轮回复中的冲突表述。原始回复及审计证据保留位置见核定记录，不另存提示词副本。
 
@@ -26,7 +26,7 @@
 
 `desktop/requirements-d1.in`只声明桌面／测试／打包依赖，不重复加入Pillow业务依赖；若不需调整现有打包工具，该文件不变。锁定更新使用既有单一解析流程，不`--upgrade`无关包。现有`migrations_local/env.py`、`d1_digest.py`的事务／保护机制是复用及验证对象，不预设需要修改。
 
-准入顺序：E13已核定 → E01／E02／E04数据基础已通过 → **E03材料限定工程已通过** → E05/E08保存历史 → E06/E07视觉候选 → E09/E10入口列表 → E11/E12导出宿主 → E14集成。只执行当前已授权E03；通过后Git收口并停止，后续另获授权。系统边界改变先ADR。
+准入顺序：E13已核定 → E01／E02／E04基础已通过 → E03材料已通过 → **E05／E08保存历史服务层已通过** → E06／E07视觉候选 → E09／E10入口列表 → E11／E12导出宿主 → E14集成。本轮Git收口后停止，后续另获授权；系统边界改变先ADR。
 
 ## 2. E01：字段、权威及校验
 
@@ -199,6 +199,8 @@ auto只更新draft/照片/投影/回执，不造history。手动保存、采用�
 
 同request id同fingerprint读回原结果，异内容拒绝；响应丢失不再追加版本。晚到编辑用旧expected revision失败；先发生新编辑则预览失效。损坏／缺失历史拒绝，不拿当前资料补洞。恢复不改在途AI任务、不重跑、不自动采用，迟到候选仍经E07来源核对。
 
+本片已核定并验证：preview TTL为15分钟内部参数，不是历史保留期；token只存摘要。既有term_snapshot_hash列存有效snapshot、明确term_decision／selected_term_id与源／当前／所选学期实时配置上下文的绑定摘要，未归属时仍绑定决定。配置使原方案无效时重新选择／预览，历史原snapshot不自动重填。真实hash／解码复用E03受管句柄及串行解码锁，最终写锁内只做严格布局／父目录／文件身份短检查。完整证据见本片独立核查。
+
 ## 10. E09：入口、离开与更新
 
 工作台接实际列表／编辑视图，编辑页复用`EditorBridge`的identity/isDirty/settle/saveCurrent及现有`LeaveCoordinator`，覆盖切记录／学期、返回、设置、关窗和安装更新退出。未采用候选可保留，不强迫采用才能离开。导入、恢复、导出等真实在途写操作有明确busy状态，结束后重新核对epoch；失败留页。
@@ -293,4 +295,4 @@ npm run test:d1
 
 真实WebView2验证需记录源码/进程/数据身份，Word页面必须来自新版实际产品导出，记录Windows/Word/字体及每份起始页；XML/PNG/PDF辅助，不能以参考文件渲染代替。后续构建/包验证另有明确授权，检查模板、PIL格式插件/许可、前端与真实入口同源及冷启动；真实AI另授权并看真实读图/多人对应/补写质量，假响应不能证明效果。
 
-目前无新增待用户决定的主流程产品问题。E03材料限定工程已通过，独立复核范围与未验见[E03报告](../bootstrap/desktop-game-observation-assets-review.md)；本片只核定材料层原图／工作图及预导出图参数，不替代完整图文请求、页面、保存历史、Word／宿主或产品验收。首期保留成功staging空目录及已提交重放的未引用孤儿，不做递归自动清理；后续维护须保护历史/input引用并另行审查。Win10、WPS、干净机器、其他DPI／显示器及既有D2／D3未验保持。真实库／凭据／OneDrive原件／旧包不作自动测试材料；用户仅授权必要时只读使用六份观察DOCX图片作本地核对，不上传、不修改原件。本次Git授权明确覆盖E03审核通过后的提交推送，停在E03。
+目前无新增待用户决定的主流程产品问题。E03参数与材料结果见[E03报告](../bootstrap/desktop-game-observation-assets-review.md)；E05／E08服务层结果见[保存历史核查](../bootstrap/desktop-game-observation-history-review.md)。完整图文执行、页面／IME／离开、Word／宿主、冻结包及产品仍未整体验收。首期保留成功staging空目录及未引用孤儿，不递归自动清理；维护须保护历史/input引用并另审。Win10、WPS、干净机器、其他DPI／显示器及D2／D3未验保持。全部自动验证为独立合成数据，不改真实库／凭据／OneDrive原件／旧包；E03已授权图片核对的历史证据保持，不扩展本轮材料使用。本轮Git授权覆盖E05／E08审核通过后正常提交推送，停在本片。
