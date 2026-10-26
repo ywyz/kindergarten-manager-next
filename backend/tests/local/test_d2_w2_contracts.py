@@ -354,9 +354,17 @@ class BundleSeedTests(LocalTestCase):
         rows = query_rows(
             runtime.db_path,
             "SELECT task_type, contract_version, default_revision, bundle_hash "
-            "FROM local_prompt_bundles ORDER BY task_type",
+            "FROM local_prompt_bundles WHERE task_type LIKE 'daily_%' "
+            "ORDER BY task_type",
         )
         self.assertEqual(len(rows), 7)
+        observation_rows = query_rows(
+            runtime.db_path,
+            "SELECT task_type, contract_version, default_revision, bundle_hash "
+            "FROM local_prompt_bundles WHERE task_type LIKE 'game_observation_%' "
+            "ORDER BY task_type",
+        )
+        self.assertEqual(len(observation_rows), 2)
         manifest = {
             (b["task_type"], b["contract_version"], b["default_revision"]): b[
                 "bundle_hash"

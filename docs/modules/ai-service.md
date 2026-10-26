@@ -17,6 +17,18 @@ AI 请求由教师电脑上的 Python 程序发出，界面不直接持有密钥
 - 字段契约未适配时暂停对应任务，手工编辑和保存仍可使用。
 - 配置修改不自动重新生成已确认计划。待执行任务使用最新有效配置与已适配提示词；已开始任务保持启动时的版本，记录实际使用版本。
 
+## 游戏观察调用扩展（2026-10-26，E13设计核定）
+
+E02已实施四张AI表的来源链与旧daily必需写入适配，见[E01／E02／E04独立核查](../bootstrap/desktop-game-observation-foundation-review.md)。观察类型只登记数据；本节视觉发送、执行、候选与采用仍未实施，应用真实AI未调用。
+
+观察复用本模块同一配置、执行、校验、失败分类及任务状态；不另设观察调度／执行状态机。source_kind只为daily_plan/game_observation，观察任务固定game_observation_generate/rewrite。四AI表的非空来源复合链、旧daily约束保留及观察材料关联统一见[观察Contract§3.2](game-observations.md#32-共用-ai-四表非空同源复合链)；旧日计划API显式限定daily_plan并保留原响应，全局关闭／在途统计覆盖两类。
+
+观察从成功保存draft冻结业务input、schema、全部已关联照片／工作图／顺序／说明和派生参数；source_revision仅元信息，FK指稳定record，不把草稿revision指向历史version。待执行任务在claim／开始时选择最新有效配置及已适配提示词，execution记录实际config/default/personal/contract、模型和该input已冻结派生参数；不重建旧工作图，不因后来配置变化追溯污染兼容候选。schema不兼容时暂停该任务，不暗改input。
+
+实际基础字段与四栏／单栏上下文矩阵、候选和采用协议统一见[观察Contract§6](game-observations.md#6-ai-投影候选与采用)。所有已关联照片参与明确AI操作；不静默取子集。网络worker只读已验证图文，材料层在事务外解码／派生。视觉帧独立版本化，保留既有公网HTTPS／DNS／peer／TLS、dispatch、密钥保护及未知结果不自动重放；不全局放宽旧1MiB文本保护，视觉字节、IPC、工作集及超时仍待容量验证。
+
+AI拥有执行、结构校验、候选持久化及状态，观察拥有候选业务意义与采用决定。正常编辑、手工保存、历史恢复及Word不依赖AI就绪；候选不直接覆盖正文，补写提示不入Word／后续提示词。上述观察执行／采用仍仅设计，未调用应用真实AI；E02仅完成数据来源基础。D2／D3既有结果不因本扩展改写，设计核定见[E13记录](../bootstrap/desktop-game-observation-contract-review.md)。
+
 ## AI 与教师边界
 
 当前优先交付教案拆分、活动过程年龄适宜性调整与日计划其他活动生成。周计划游戏选取和补足、主题建议及其他栏目能力保留业务边界，按后续规格及授权实施；不能从能力清单推定本轮全部实现。

@@ -53,7 +53,11 @@ from app.local.models import (
     LocalTerm,
 )
 from app.local.normalize import NormalizedInitialization
-from app.local.prompt_bundles import effective_prompt_seed
+from app.local.prompt_bundles import (
+    REGISTERED_TASK_TYPES,
+    TASK_TYPES,
+    effective_prompt_seed,
+)
 from app.local.tx import begin_immediate, read_scope, rollback
 
 INIT_PROFILE_ACTION = "initialize_local_profile"
@@ -382,7 +386,11 @@ def _create_initialized(
         )
     )
 
-    initial_seed = effective_prompt_seed(session)
+    initial_seed = effective_prompt_seed(
+        session,
+        task_types=REGISTERED_TASK_TYPES,
+        required_task_types=TASK_TYPES,
+    )
 
     for task_type, seed in initial_seed.items():
         prompt_rev_id = new_opaque_id()

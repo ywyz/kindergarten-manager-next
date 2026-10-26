@@ -152,9 +152,11 @@ def _profile_id(session: Session) -> str:
     return row.id
 
 
-def require_task(session: Session, task_id: str) -> LocalAITask:
+def require_task(
+    session: Session, task_id: str, *, source_kind: str = "daily_plan"
+) -> LocalAITask:
     task = session.get(LocalAITask, task_id, populate_existing=True)
-    if task is None:
+    if task is None or task.source_kind != source_kind:
         raise LocalAiNotFound("未找到该 AI 任务")
     return task
 
@@ -541,6 +543,7 @@ def create_task(
             raise LocalVersionConflict(details={"current_content_version": content.version})
         active = session.scalars(
             select(LocalAITask).where(
+                LocalAITask.source_kind == "daily_plan",
                 LocalAITask.daily_plan_id == plan.id,
                 LocalAITask.task_type == task_type,
                 LocalAITask.status.in_(LIVE_STATUSES),
@@ -564,6 +567,11 @@ def create_task(
         session.add(
             LocalAIInput(
                 id=input_id,
+                profile_id=profile_id,
+                source_kind="daily_plan",
+                source_id=plan.id,
+                observation_id=None,
+                source_revision=None,
                 daily_plan_id=plan.id,
                 content_id=content.id,
                 content_version=content.version,
@@ -580,6 +588,9 @@ def create_task(
         task = LocalAITask(
             id=new_opaque_id(),
             profile_id=profile_id,
+            source_kind="daily_plan",
+            source_id=plan.id,
+            observation_id=None,
             daily_plan_id=plan.id,
             task_type=task_type,
             input_id=input_id,
@@ -643,7 +654,9 @@ def list_tasks(
         raise LocalValidationError("status 不在允许范围")
     with read_scope(session):
         _profile_id(session)
-        statement = select(LocalAITask)
+        statement = select(LocalAITask).where(
+            LocalAITask.source_kind == "daily_plan"
+        )
         if plan_id is not None:
             statement = statement.where(LocalAITask.daily_plan_id == plan_id)
         if status is not None:
@@ -839,6 +852,8 @@ def cancel_task(
 
 
 def _revalidate_source(session: Session, task: LocalAITask) -> bool:
+    if task.source_kind != "daily_plan" or task.daily_plan_id is None:
+        return False
     inp = session.get(LocalAIInput, task.input_id)
     if inp is None:
         return False
@@ -854,6 +869,7 @@ def _revalidate_source(session: Session, task: LocalAITask) -> bool:
 def _aliased_task_exists(session: Session, task: LocalAITask) -> bool:
     return session.scalars(
         select(LocalAITask).where(
+            LocalAITask.source_kind == "daily_plan",
             LocalAITask.daily_plan_id == task.daily_plan_id,
             LocalAITask.task_type == task.task_type,
             LocalAITask.status.in_(LIVE_STATUSES),
@@ -921,6 +937,8 @@ def _preflight_for_task(runtime: Any, session: Session, task_id: str) -> None:
     """
     with read_scope(session):
         task = require_task(session, task_id)
+        if task.source_kind != "daily_plan":
+            raise LocalAiNotFound("未找到该日计划任务")
         task_type = task.task_type
         plan_id = task.daily_plan_id
         inp = session.get(LocalAIInput, task.input_id)
@@ -1203,6 +1221,7 @@ def _pick_candidate(runtime: Any, now: datetime) -> tuple[_Pick | None, bool]:
                     select(LocalAITask)
                     .where(
                         LocalAITask.profile_id == profile_id,
+                        LocalAITask.source_kind == "daily_plan",
                         LocalAITask.status.in_(("pending", "retry_wait")),
                     )
                     .order_by(LocalAITask.created_at, LocalAITask.id)
@@ -1530,6 +1549,9 @@ def claim_next(
                 execution = LocalAIExecution(
                     id=execution_id,
                     task_id=task.id,
+                    source_kind=task.source_kind,
+                    source_id=task.source_id,
+                    observation_id=task.observation_id,
                     daily_plan_id=task.daily_plan_id,
                     input_id=task.input_id,
                     task_type=task.task_type,
@@ -1777,8 +1799,12 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
         session.add(
             LocalAICandidate(
                 id=new_opaque_id(),
+                profile_id=task.profile_id,
                 execution_id=execution.id,
                 task_id=task.id,
+                source_kind=task.source_kind,
+                source_id=task.source_id,
+                observation_id=task.observation_id,
                 daily_plan_id=task.daily_plan_id,
                 input_id=task.input_id,
                 task_type=task.task_type,

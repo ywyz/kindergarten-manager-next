@@ -23,6 +23,7 @@ from app.local import daily_plan_history_service, daily_plan_service, profile_se
 from app.local.ai_provenance import BASELINE_KEY
 from app.local.migrate import alembic_config
 from app.local.normalize import normalize_initialization
+from app.local.sqlite import LOCAL_VERSION_TABLE
 from tests.local.support import (
     execute_sql,
     initialize_body,
@@ -1055,15 +1056,6 @@ class D3HistoryCase(W4ApiCase):
             raw="迁移前第三版",
         )
 
-        counts_before = {
-            table: query_scalar(self.db, f"SELECT count(*) FROM {table}")
-            for table in (
-                "local_daily_plan_contents",
-                "local_daily_plan_ai_provenance",
-                "local_ai_operations",
-                "local_ai_candidates",
-            )
-        }
         baseline_row = query_scalar(
             self.db,
             "SELECT baseline_candidate_id FROM local_daily_plan_ai_provenance "
@@ -1071,7 +1063,6 @@ class D3HistoryCase(W4ApiCase):
             (plan_id,),
         )
         self.assertEqual(baseline_row, split_id)
-        self.assertGreater(counts_before["local_ai_operations"], 0)
         row_tables = (
             "local_daily_plan_contents",
             "local_daily_plan_ai_provenance",
@@ -1081,30 +1072,102 @@ class D3HistoryCase(W4ApiCase):
             "local_ai_candidates",
             "local_ai_operations",
         )
-        rows_before = {
-            table: query_rows(self.db, f"SELECT * FROM {table} ORDER BY rowid")
+
+        # Build a true 0004 source, then copy only columns that existed at
+        # 0004.  Upgrading to head exercises the real 0004 -> 0005 -> 0006
+        # chain without pretending that a current-head schema is an old one.
+        old_db = self.tmp_root / "migration-old.db"
+        command.upgrade(alembic_config(old_db), "20261017_0004_local")
+        connection = sqlite3.connect(old_db)
+        try:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.execute("ATTACH DATABASE ? AS src", (str(self.runtime.db_path),))
+            tables = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%' AND name != ? "
+                    "AND name != 'local_daily_plan_restores' ORDER BY name",
+                    (LOCAL_VERSION_TABLE,),
+                )
+            ]
+            for table in tables:
+                old_columns = [
+                    row[1]
+                    for row in connection.execute(f"PRAGMA table_info('{table}')")
+                ]
+                source_columns = {
+                    row[1]
+                    for row in connection.execute(f"PRAGMA src.table_info('{table}')")
+                }
+                if not old_columns or not set(old_columns) <= source_columns:
+                    continue
+                columns = ", ".join(f'"{column}"' for column in old_columns)
+                where = ""
+                if table in (
+                    "local_prompt_bundles",
+                    "local_personal_prompt_versions",
+                    "local_personal_prompt_heads",
+                ):
+                    where = " WHERE task_type LIKE 'daily_%'"
+                connection.execute(
+                    f'INSERT OR IGNORE INTO "{table}" ({columns}) '
+                    f'SELECT {columns} FROM src."{table}"{where}'
+                )
+            connection.commit()
+            connection.execute("DETACH DATABASE src")
+        finally:
+            connection.close()
+
+        counts_before = {
+            table: query_scalar(old_db, f"SELECT count(*) FROM {table}")
+            for table in (
+                "local_daily_plan_contents",
+                "local_daily_plan_ai_provenance",
+                "local_ai_operations",
+                "local_ai_candidates",
+            )
+        }
+        self.assertGreater(counts_before["local_ai_operations"], 0)
+        old_columns_by_table = {
+            table: [
+                row["name"]
+                for row in query_rows(old_db, f"PRAGMA table_info('{table}')")
+            ]
             for table in row_tables
         }
-
-        old_db = self.tmp_root / "migration-old.db"
-        source = sqlite3.connect(self.runtime.db_path)
-        target = sqlite3.connect(old_db)
-        try:
-            source.backup(target)
-        finally:
-            target.close()
-            source.close()
-
-        conn = sqlite3.connect(old_db)
-        try:
-            conn.execute("DROP TABLE local_daily_plan_restores")
-            conn.execute(
-                "UPDATE local_alembic_version SET version_num = ?",
-                ("20261017_0004_local",),
+        rows_before = {
+            table: query_rows(
+                old_db,
+                "SELECT " + ", ".join(f'"{c}"' for c in old_columns_by_table[table])
+                + f' FROM "{table}" ORDER BY rowid',
             )
-            conn.commit()
-        finally:
-            conn.close()
+            for table in row_tables
+        }
+        # The copy must not silently lose or change any tested old row.
+        rows_source = {
+            table: query_rows(
+                self.db,
+                "SELECT " + ", ".join(f'"{c}"' for c in old_columns_by_table[table])
+                + f' FROM "{table}" ORDER BY rowid',
+            )
+            for table in row_tables
+        }
+        self.assertEqual(rows_before, rows_source)
+        source_daily_bundles = query_rows(
+            self.db,
+            "SELECT task_type,contract_version,default_revision,bundle_hash "
+            "FROM local_prompt_bundles WHERE task_type LIKE 'daily_%' "
+            "ORDER BY task_type,contract_version,default_revision",
+        )
+        copied_daily_bundles = query_rows(
+            old_db,
+            "SELECT task_type,contract_version,default_revision,bundle_hash "
+            "FROM local_prompt_bundles WHERE task_type LIKE 'daily_%' "
+            "ORDER BY task_type,contract_version,default_revision",
+        )
+        self.assertEqual(copied_daily_bundles, source_daily_bundles)
+
         command.upgrade(alembic_config(old_db), "head")
 
         tables = {
@@ -1120,7 +1183,11 @@ class D3HistoryCase(W4ApiCase):
         }
         self.assertEqual(counts_after, counts_before)
         rows_after = {
-            table: query_rows(old_db, f"SELECT * FROM {table} ORDER BY rowid")
+            table: query_rows(
+                old_db,
+                "SELECT " + ", ".join(f'"{c}"' for c in old_columns_by_table[table])
+                + f' FROM "{table}" ORDER BY rowid',
+            )
             for table in row_tables
         }
         self.assertEqual(rows_after, rows_before)

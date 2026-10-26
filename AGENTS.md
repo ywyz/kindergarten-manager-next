@@ -8,7 +8,9 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 本仓库是 kindergartenManager 的全新实现。
 
-2026-10-25最新：应用更新D3-U已由原OpenCode Go Flash实施并通过Codex当前Windows 11限定源码／合成工程核查（U1–U3）；规格见`docs/specs/desktop-application-update.md`，最终证据见`docs/bootstrap/desktop-update-review.md`§20。按授权提交推送后准备游戏观察记录规格待审提示词，不自动派发实现；跨设备继续后置。真实冻结更新／安装、发行源、4551及教师发行体验仍未验；不安排签名、真实AI、WebDAV或发行。D3-A及D2原有通过／未验边界保持。
+2026-10-26本片已完成：原OpenCode会话以Go套餐DeepSeek V4.1 Flash实施E01／E02／E04模型、迁移与归属，按Codex独立意见修订后，599项全local隔离合成验证通过。限定工程及R01–R08见docs/bootstrap/desktop-game-observation-foundation-review.md；用户随后单独授权由原OpenCode Go会话提交并推送本片相关改动；业务停在本片，不启动后续切片、不应用真实AI，唯一入口见docs/tasks/current.md。
+
+2026-10-26阶段边界：D3-U源码／合成工程已推送d52fa8a，证据见docs/bootstrap/desktop-update-review.md§20；D4产品C1–C33、E01–E14及E13六份Contract设计已核定，见docs/modules/game-observations.md。仅上述数据基础通过限定工程，完整A01–A22、材料／保存历史服务／视觉候选／页面／Word／宿主仍未验。跨设备后置，真实冻结更新／安装、发行源、4551及教师体验仍未验，不安排签名、真实AI、WebDAV或发行，D3-A／D2原边界保持。
 
 **Architecture v2 已确认（2026-10-08）／D0 工程复审通过／D1A 工程通过／D1B原R1–R17在当前Windows 11开发机工程复审通过；R18日计划Word格式修复的代码、新包及页面验收通过，用户已逐页确认长园所2页、合并7页正常，R18已关闭。T6-A／T6-B／T7及微软拼音已验证，本轮教师体验收口；D2 W1数据迁移与凭据保存、W2游戏配置与提示词已通过当前Windows 11合成环境工程核查；W3、W4已由OpenCode实现并通过Codex当前Windows 11合成环境工程核查；W5界面与宿主整合已通过限定源码集成工程核查；W6导出／无AI降级／完整包已通过当前Windows 11合成环境工程核查；指定Word与合成人工子项按2026-10-20用户决定收口，三项事件留作同类再现处理，真实AI未授权；产品与发行未整体验收。** 用户确认见 `docs/adr/0004-local-desktop-architecture-proposal.md`。现有代码仍包含 v1 云端实现，不得将架构确认或局部代码交付写成迁移或产品验收完成。
 

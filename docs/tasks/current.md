@@ -1,18 +1,15 @@
-# D3-U：应用更新限定工程已通过，Git收口与下一步交接
+# D4：E01／E02／E04限定工程已通过，停在本片
 
-更新：2026-10-25。用户2026-10-24批准D3-U，2026-10-25明确接续原OpenCode会话核对／修复U2，通过后进入U3；本任务现已完成当前Windows 11限定源码／合成工程核查，不再派发重复实施。
+更新：2026-10-26。原OpenCode会话已使用Go套餐DeepSeek V4.1 Flash实施模型、迁移与归属切片，按Codex独立意见修订；Codex最终599项全local隔离合成回归通过。完整结论、R01–R08、源码／会话身份及未验范围见[本片独立核查](../bootstrap/desktop-game-observation-foundation-review.md)。
 
-## 当前有效结论
+## 有效入口与停止边界
 
-- 原OpenCode会话`ses_ead8af71dffeJphI1NOWg4jZgI`，模型`opencode-go/deepseek-v4.1-flash#default`；实现者已停止写入。
-- U1、U2、U3限定工程通过；原R01–R07、U2-R01–R07及U3-R01–R03已在各自范围关闭。
-- Codex最终独立实际源码窗口42项、Python120项、更新SFC13项及typecheck通过；27份源码前后hash零变化，453份非凭据保护文件hash保持。
-- 正式结论、命令、失败根及未验事项以[最终核查§20](../bootstrap/desktop-update-review.md#20-最终独立核查u1u3限定源码合成工程通过)为准；实现归并见[结果§19](../bootstrap/desktop-update-result.md#19-u3最终归并限定源码合成工程通过)。本提示词独有决定已归入[更新规格§9](../specs/desktop-application-update.md#9-2026-10-25工程收口契约与后续边界)和上述结果／核查，不新增旧提示词归档副本。
+- [产品C1–C33、A01–A22／R01–R14](../specs/desktop-game-observation.md)、[工程设计](../specs/desktop-game-observation-engineering.md)、[观察Contract](../modules/game-observations.md)及五扩展保持有效；[E13核定](../bootstrap/desktop-game-observation-contract-review.md)已完成，不重新提交设计首稿。
+- 本片仅平铺校验／聚合hash、15张关联表及四张AI表来源链、真实0006迁移／守卫后幂等种子、日期／已有学期及可信快照纯规则、旧daily必要适配。完整产品A项未验收，表结构不代表对应服务已交付。
+- 停在本片，不自动启动E03材料、E05／E08保存历史、E06／E07视觉候选采用、E09／E10页面列表、E11／E12 Word／宿主、E14集成或构建／新包。
+- 用户随后明确授权原OpenCode Go会话提交并推送本片相关设计／Contract／源码／测试／审阅文档；此授权仅替代本片原Git暂停，推送当前分支，Codex独立核对提交与远端ref，不授权后续实现。
+- 不调用应用真实AI、WebDAV、签名／发行，不读真实密钥、不修改真实库或OneDrive原件／旧包／远程资源；原D2／D3通过及未验边界保持。
 
-## Codex接续
+后续如获授权，仍由原会话ses_ead8af71dffeJphI1NOWg4jZgI以opencode-go/deepseek-v4.1-flash#default作为唯一实现者，Codex独立核查、问题交回同一会话；不另建实现者／会话／分支。分支保持codex/desktop-v2-foundation。授权范围内的本片已完成，无剩余本片编码任务。
 
-用户已授权工程通过后提交推送：核对相关源码／测试／文档范围，保持分支`codex/desktop-v2-foundation`，由Codex提交并推送；OpenCode不commit／push。随后准备游戏观察记录规格的下一步待审提示词，用户审核后再推进，不自动派发后续实现。
-
-## 保持的边界
-
-本轮为合成形状目录包＋仓库源码／独立前端，不是冻结载荷执行。真实发行URL／公钥、冻结更新／安装、首次安装／快捷方式、4551和教师逐页Word等仍未验；活动AI退出UI分支不由本轮新增验证替代。所有真实库／凭据／旧包／Word和首次失败材料保留，不读取真实密钥，不调用真实AI／WebDAV，不构建运行新冻结包，不签名、发布或修改防护。跨设备继续后置。无新增编码任务，不因整理文档重开已通过模块。
+原实施提示词的独有约束及提交前／后失败区别已归并规格、Contract和本片报告；旧提示词由Git与本轮证据保留，不另建提示词版本或归档副本。

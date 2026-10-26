@@ -181,9 +181,19 @@ class D2SchemaTests(LocalTestCase):
         bundles = query_rows(
             db,
             "SELECT task_type, contract_version, default_revision, bundle_hash "
-            "FROM local_prompt_bundles ORDER BY task_type, default_revision",
+            "FROM local_prompt_bundles WHERE task_type LIKE 'daily_%' "
+            "ORDER BY task_type, default_revision",
         )
         self.assertEqual(len(bundles), 7)
+        observation_bundles = query_rows(
+            db,
+            "SELECT task_type FROM local_prompt_bundles "
+            "WHERE task_type LIKE 'game_observation_%' ORDER BY task_type",
+        )
+        self.assertEqual(
+            [b["task_type"] for b in observation_bundles],
+            ["game_observation_generate", "game_observation_rewrite"],
+        )
         self.assertEqual(
             [b["default_revision"] for b in bundles],
             [1, 2, 1, 2, 1, 2, 3],
@@ -351,21 +361,31 @@ class D2SchemaTests(LocalTestCase):
             self.assertIsNotNone(state[0]["database_uuid"])
             self.assertIsNone(state[0]["current_config_version"])
 
-            # 3 类个人提示头
+            # 5 类个人提示头：3 个 daily + 2 个观察数据基础
             heads = query_rows(
                 runtime.db_path,
                 "SELECT task_type, current_revision, required_contract_version, latest_default_revision "
                 "FROM local_personal_prompt_heads WHERE profile_id = ? ORDER BY task_type",
                 (profile_id,),
             )
-            self.assertEqual(len(heads), 3)
-            for h in heads:
+            self.assertEqual(len(heads), 5)
+            daily_heads = [h for h in heads if h["task_type"].startswith("daily_")]
+            observation_heads = [
+                h for h in heads if h["task_type"].startswith("game_observation_")
+            ]
+            self.assertEqual(len(daily_heads), 3)
+            self.assertEqual(len(observation_heads), 2)
+            for h in daily_heads:
                 self.assertEqual(h["current_revision"], 1)
                 self.assertEqual(h["required_contract_version"], 1)
                 self.assertEqual(
                     h["latest_default_revision"],
                     3 if h["task_type"] == "daily_process_adapt" else 2,
                 )
+            for h in observation_heads:
+                self.assertEqual(h["current_revision"], 1)
+                self.assertEqual(h["required_contract_version"], 1)
+                self.assertEqual(h["latest_default_revision"], 1)
 
             # 空游戏头
             class_id = payload["class"]["id"]
@@ -514,10 +534,12 @@ class D2SchemaTests(LocalTestCase):
             (content_id, plan_id, profile_id),
         )
         conn.execute(
-            "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, target_grade, "
+            "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+            "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
             "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
-            "VALUES (?, ?, ?, 1, 'daily_lesson_split', 'middle', 1, '{}', '{}', '{}', '{}', '2026-10-17 00:00:00')",
-            (input_id, plan_id, content_id),
+            "VALUES (?, ?, 'daily_plan', ?, NULL, NULL, ?, ?, 1, 'daily_lesson_split', 'middle', 1, "
+            "'{}', '{}', '{}', '{}', '2026-10-17 00:00:00')",
+            (input_id, profile_id, plan_id, plan_id, content_id),
         )
 
     def _build_legal_execution_baseline(
@@ -538,10 +560,12 @@ class D2SchemaTests(LocalTestCase):
             conn, profile_id, class_id, term_id, rev_id, plan_id, content_id, input_id
         )
         conn.execute(
-            "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, input_id, status, reason, "
-            "current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'daily_lesson_split', ?, 'pending', NULL, NULL, 0, '{}', '2026-10-17 00:00:00', '2026-10-17 00:00:00')",
-            (task_id, profile_id, plan_id, input_id),
+            "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, observation_id, "
+            "daily_plan_id, task_type, input_id, status, reason, current_execution_id, generation, "
+            "runtime_meta_json, created_at, updated_at) "
+            "VALUES (?, ?, 'daily_plan', ?, NULL, ?, 'daily_lesson_split', ?, 'pending', NULL, NULL, 0, "
+            "'{}', '2026-10-17 00:00:00', '2026-10-17 00:00:00')",
+            (task_id, profile_id, plan_id, plan_id, input_id),
         )
         conn.execute(
             "INSERT INTO local_ai_config_versions (profile_id, version, protocol_id, base_url, model, created_at) "
@@ -556,11 +580,13 @@ class D2SchemaTests(LocalTestCase):
             (profile_id,),
         )
         conn.execute(
-            "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-            "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-            "default_revision, state, runtime_meta_json, started_at, created_at) "
-            "VALUES (?, ?, ?, ?, 'daily_lesson_split', 1, 'l1', 'p1', 1, ?, 1, 1, 1, 'pending', '{}', '2026-10-17 00:00:00', '2026-10-17 00:00:00')",
-            (execution_id, task_id, plan_id, input_id, profile_id),
+            "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+            "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+            "profile_id, personal_revision, contract_version, default_revision, state, "
+            "runtime_meta_json, started_at, created_at) "
+            "VALUES (?, ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 1, 'l1', 'p1', 1, ?, 1, 1, 1, "
+            "'pending', '{}', '2026-10-17 00:00:00', '2026-10-17 00:00:00')",
+            (execution_id, task_id, plan_id, plan_id, input_id, profile_id),
         )
 
     def test_active_credential_null_nonce_rejected(self):
@@ -601,9 +627,12 @@ class D2SchemaTests(LocalTestCase):
             conn.execute("BEGIN IMMEDIATE")
             with self.assertRaises(sqlite3.IntegrityError) as ctx:
                 conn.execute(
-                    "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, target_grade, "
+                    "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+                    "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
                     "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
-                    "VALUES ('input-bad', 'plan-fk-in', 'no-such-content', 1, 'daily_lesson_split', 'middle', 1, '{}', '{}', '{}', '{}', '2026-10-17 00:00:00')"
+                    "VALUES ('input-bad', 'p-fk-in', 'daily_plan', 'plan-fk-in', NULL, NULL, "
+                    "'plan-fk-in', 'no-such-content', 1, 'daily_lesson_split', 'middle', 1, "
+                    "'{}', '{}', '{}', '{}', '2026-10-17 00:00:00')"
                 )
             self.assertIn("FOREIGN KEY", str(ctx.exception))
             conn.rollback()
@@ -641,25 +670,33 @@ class D2SchemaTests(LocalTestCase):
                 "VALUES ('c1', 'plan1', 1, NULL, '{}', 'p2', '2026-10-17 00:00:00')"
             )
             conn.execute(
-                "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, target_grade, "
+                "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+                "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
                 "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
-                "VALUES ('in1', 'plan1', 'c1', 1, 'daily_lesson_split', 'middle', 1, '{}', '{}', '{}', '{}', '2026-10-17 00:00:00')"
+                "VALUES ('in1', 'p2', 'daily_plan', 'plan1', NULL, NULL, 'plan1', 'c1', 1, "
+                "'daily_lesson_split', 'middle', 1, '{}', '{}', '{}', '{}', '2026-10-17 00:00:00')"
             )
             conn.execute(
-                "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, input_id, status, reason, "
-                "current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
-                "VALUES ('t1', 'p2', 'plan1', 'daily_lesson_split', 'in1', 'pending', NULL, NULL, 0, '{}', '2026-10-17 00:00:00', '2026-10-17 00:00:00')"
+                "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, task_type, input_id, status, reason, current_execution_id, generation, "
+                "runtime_meta_json, created_at, updated_at) "
+                "VALUES ('t1', 'p2', 'daily_plan', 'plan1', NULL, 'plan1', 'daily_lesson_split', "
+                "'in1', 'pending', NULL, NULL, 0, '{}', '2026-10-17 00:00:00', '2026-10-17 00:00:00')"
             )
             conn.execute(
-                "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, target_grade, "
+                "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+                "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
                 "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
-                "VALUES ('in2', 'plan1', 'c1', 1, 'daily_lesson_split', 'middle', 1, '{}', '{}', '{}', '{}', '2026-10-17 00:00:00')"
+                "VALUES ('in2', 'p2', 'daily_plan', 'plan1', NULL, NULL, 'plan1', 'c1', 1, "
+                "'daily_lesson_split', 'middle', 1, '{}', '{}', '{}', '{}', '2026-10-17 00:00:00')"
             )
             with self.assertRaises(_SQLITE_INTEGRITY_ERRORS):
                 conn.execute(
-                    "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, input_id, status, reason, "
-                    "current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
-                    "VALUES ('t2', 'p2', 'plan1', 'daily_lesson_split', 'in2', 'claimed', NULL, NULL, 0, '{}', '2026-10-17 00:00:00', '2026-10-17 00:00:00')"
+                    "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, observation_id, "
+                    "daily_plan_id, task_type, input_id, status, reason, current_execution_id, generation, "
+                    "runtime_meta_json, created_at, updated_at) "
+                    "VALUES ('t2', 'p2', 'daily_plan', 'plan1', NULL, 'plan1', 'daily_lesson_split', "
+                    "'in2', 'claimed', NULL, NULL, 0, '{}', '2026-10-17 00:00:00', '2026-10-17 00:00:00')"
                 )
             conn.rollback()
         finally:
@@ -688,10 +725,12 @@ class D2SchemaTests(LocalTestCase):
             # config_version FK 为 deferred，INSERT 本身应成功，在 commit 时抛出。
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-                "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-                "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES ('exec-bad', 'task-fk-ex', 'plan-fk-ex', 'input-fk-ex', 'daily_lesson_split', 2, 'l1', 'p1', 999, "
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+                "profile_id, personal_revision, contract_version, default_revision, state, "
+                "runtime_meta_json, started_at, created_at) "
+                "VALUES ('exec-bad', 'task-fk-ex', 'daily_plan', 'plan-fk-ex', NULL, "
+                "'plan-fk-ex', 'input-fk-ex', 'daily_lesson_split', 2, 'l1', 'p1', 999, "
                 "'p-fk-ex', 1, 1, 1, 'pending', '{}', '2026-10-17 00:00:00', '2026-10-17 00:00:00')"
             )
             with self.assertRaises(sqlite3.IntegrityError) as ctx:
@@ -771,26 +810,33 @@ class D2SchemaTests(LocalTestCase):
                 "INSERT INTO local_daily_plan_contents (id, daily_plan_id, version, raw_lesson_plan, adopted_content, editor_id, created_at) "
                 "VALUES (?, ?, 1, NULL, '{}', ?, ?)", (content, plan, p, ts))
             conn.execute(
-                "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, target_grade, "
+                "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+                "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
                 "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
-                "VALUES (?, ?, ?, 1, 'daily_lesson_split', 'middle', 1, '{}', '{}', '{}', '{}', ?)",
-                (inp, plan, content, ts))
+                "VALUES (?, ?, 'daily_plan', ?, NULL, NULL, ?, ?, 1, 'daily_lesson_split', 'middle', 1, "
+                "'{}', '{}', '{}', '{}', ?)",
+                (inp, p, plan, plan, content, ts))
             conn.execute(
-                "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, input_id, status, reason, "
-                "current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'daily_lesson_split', ?, 'pending', NULL, ?, 0, '{}', ?, ?)",
-                (task, p, plan, inp, exe, ts, ts))
+                "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, task_type, input_id, status, reason, current_execution_id, generation, "
+                "runtime_meta_json, created_at, updated_at) "
+                "VALUES (?, ?, 'daily_plan', ?, NULL, ?, 'daily_lesson_split', ?, 'pending', NULL, ?, 0, "
+                "'{}', ?, ?)",
+                (task, p, plan, plan, inp, exe, ts, ts))
             conn.execute(
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-                "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-                "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES (?, ?, ?, ?, 'daily_lesson_split', 1, ?, ?, 1, ?, 1, 1, 1, 'pending', '{}', ?, ?)",
-                (exe, task, plan, inp, f"l-{key}", f"p-{key}", p, ts, ts))
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+                "profile_id, personal_revision, contract_version, default_revision, state, "
+                "runtime_meta_json, started_at, created_at) "
+                "VALUES (?, ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 1, ?, ?, 1, ?, 1, 1, 1, "
+                "'pending', '{}', ?, ?)",
+                (exe, task, plan, plan, inp, f"l-{key}", f"p-{key}", p, ts, ts))
             conn.execute(
-                "INSERT INTO local_ai_candidates (id, execution_id, task_id, daily_plan_id, input_id, task_type, "
-                "contract_version, schema_version, raw_candidate_json, candidate_hash, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'daily_lesson_split', 1, 1, '{}', ?, ?)",
-                (cand, exe, task, plan, inp, "h" * 64, ts))
+                "INSERT INTO local_ai_candidates (id, profile_id, execution_id, task_id, source_kind, "
+                "source_id, observation_id, daily_plan_id, input_id, task_type, contract_version, "
+                "schema_version, raw_candidate_json, candidate_hash, created_at) "
+                "VALUES (?, ?, ?, ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 1, 1, '{}', ?, ?)",
+                (cand, p, exe, task, plan, plan, inp, "h" * 64, ts))
             conn.execute(
                 "INSERT INTO local_daily_plan_ai_provenance (content_id, daily_plan_id, content_version, "
                 "baseline_candidate_id, adopted_candidate_id, selected_targets_json, adopted_payload_hash, created_at) "
@@ -808,11 +854,13 @@ class D2SchemaTests(LocalTestCase):
             (f"{p}-op-1", p, f"{p}-req-1"[:36], "f" * 64, ts))
         probe = f"{p}-exec-a-probe"
         conn.execute(
-            "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-            "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-            "default_revision, state, runtime_meta_json, started_at, created_at) "
-            "VALUES (?, ?, ?, ?, 'daily_lesson_split', 2, 'lp', 'pp', 1, ?, 1, 1, 1, 'pending', '{}', ?, ?)",
-            (probe, ids["a"]["task"], ids["a"]["plan"], ids["a"]["input"], p, ts, ts))
+            "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+            "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+            "profile_id, personal_revision, contract_version, default_revision, state, "
+            "runtime_meta_json, started_at, created_at) "
+            "VALUES (?, ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 2, 'lp', 'pp', 1, ?, 1, 1, 1, "
+            "'pending', '{}', ?, ?)",
+            (probe, ids["a"]["task"], ids["a"]["plan"], ids["a"]["plan"], ids["a"]["input"], p, ts, ts))
         ids.update(profile=p, cls=c, term=t, revision=r, exec_probe=probe)
         return ids
 
@@ -972,50 +1020,61 @@ class D2SchemaTests(LocalTestCase):
 
             # 1) input 内容三元：content 属于另一已提交计划 B。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, "
-                "target_grade, input_schema_version, payload_json, dependencies_json, dependency_hash, "
-                "target_hashes_json, created_at) "
-                "VALUES ('x-in-1', ?, ?, 1, 'daily_lesson_split', 'middle', 1, '{}','{}','{}','{}', ?)",
-                (a["plan"], b["content"], ts))
+                "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+                "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
+                "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
+                "VALUES ('x-in-1', ?, 'daily_plan', ?, NULL, NULL, ?, ?, 1, 'daily_lesson_split', 'middle', 1, "
+                "'{}','{}','{}','{}', ?)",
+                (g["profile"], a["plan"], a["plan"], b["content"], ts))
             # 2) input content_version 单改。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, "
-                "target_grade, input_schema_version, payload_json, dependencies_json, dependency_hash, "
-                "target_hashes_json, created_at) "
-                "VALUES ('x-in-2', ?, ?, 2, 'daily_lesson_split', 'middle', 1, '{}','{}','{}','{}', ?)",
-                (a["plan"], a["content"], ts))
+                "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+                "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
+                "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
+                "VALUES ('x-in-2', ?, 'daily_plan', ?, NULL, NULL, ?, ?, 2, 'daily_lesson_split', 'middle', 1, "
+                "'{}','{}','{}','{}', ?)",
+                (g["profile"], a["plan"], a["plan"], a["content"], ts))
             # 3) task 输入：指向 plan B 的 input（status 非活跃避免命中唯一索引）。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, input_id, status, reason, "
-                "current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
-                "VALUES ('x-task-3', ?, ?, 'daily_lesson_split', ?, 'succeeded', NULL, NULL, 0, '{}', ?, ?)",
-                (g["profile"], a["plan"], b["input"], ts, ts))
+                "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, task_type, input_id, status, reason, current_execution_id, generation, "
+                "runtime_meta_json, created_at, updated_at) "
+                "VALUES ('x-task-3', ?, 'daily_plan', ?, NULL, ?, 'daily_lesson_split', ?, "
+                "'succeeded', NULL, NULL, 0, '{}', ?, ?)",
+                (g["profile"], a["plan"], a["plan"], b["input"], ts, ts))
             # 4) task 输入 task_type 单改。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, input_id, status, reason, "
-                "current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
-                "VALUES ('x-task-4', ?, ?, 'daily_other_activities', ?, 'succeeded', NULL, NULL, 0, '{}', ?, ?)",
-                (g["profile"], a["plan"], a["input"], ts, ts))
+                "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, task_type, input_id, status, reason, current_execution_id, generation, "
+                "runtime_meta_json, created_at, updated_at) "
+                "VALUES ('x-task-4', ?, 'daily_plan', ?, NULL, ?, 'daily_other_activities', ?, "
+                "'succeeded', NULL, NULL, 0, '{}', ?, ?)",
+                (g["profile"], a["plan"], a["plan"], a["input"], ts, ts))
             # 5) execution task 四元：task 指向 plan B。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-                "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-                "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES ('x-exec-5', ?, ?, ?, 'daily_lesson_split', 2, 'l', 'p', 1, ?, 1, 1, 1, 'pending', '{}', ?, ?)",
-                (b["task"], a["plan"], a["input"], g["profile"], ts, ts))
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+                "profile_id, personal_revision, contract_version, default_revision, state, "
+                "runtime_meta_json, started_at, created_at) "
+                "VALUES ('x-exec-5', ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 2, 'l', 'p', 1, ?, 1, 1, 1, "
+                "'pending', '{}', ?, ?)",
+                (b["task"], a["plan"], a["plan"], a["input"], g["profile"], ts, ts))
             # 6) execution input 单改。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-                "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-                "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES ('x-exec-6', ?, ?, ?, 'daily_lesson_split', 3, 'l', 'p', 1, ?, 1, 1, 1, 'pending', '{}', ?, ?)",
-                (a["task"], a["plan"], b["input"], g["profile"], ts, ts))
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+                "profile_id, personal_revision, contract_version, default_revision, state, "
+                "runtime_meta_json, started_at, created_at) "
+                "VALUES ('x-exec-6', ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 3, 'l', 'p', 1, ?, 1, 1, 1, "
+                "'pending', '{}', ?, ?)",
+                (a["task"], a["plan"], a["plan"], b["input"], g["profile"], ts, ts))
             # 7) candidate 执行五元：execution 单改（probe 无 candidate，避免唯一冲突）。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_candidates (id, execution_id, task_id, daily_plan_id, input_id, task_type, "
-                "contract_version, schema_version, raw_candidate_json, candidate_hash, created_at) "
-                "VALUES ('x-cand-7', ?, ?, ?, ?, 'daily_lesson_split', 1, 1, '{}', ?, ?)",
-                (g["exec_probe"], a["task"], a["plan"], b["input"], "h" * 64, ts))
+                "INSERT INTO local_ai_candidates (id, profile_id, execution_id, task_id, source_kind, "
+                "source_id, observation_id, daily_plan_id, input_id, task_type, contract_version, "
+                "schema_version, raw_candidate_json, candidate_hash, created_at) "
+                "VALUES ('x-cand-7', ?, ?, ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 1, 1, '{}', ?, ?)",
+                (g["profile"], g["exec_probe"], a["task"], a["plan"], a["plan"], b["input"], "h" * 64, ts))
             # 8) provenance baseline：新内容 + 指向 plan B 的 baseline candidate（deferred）。
             self._expect_fk(conn,
                 "INSERT INTO local_daily_plan_ai_provenance (content_id, daily_plan_id, content_version, "
@@ -1040,31 +1099,39 @@ class D2SchemaTests(LocalTestCase):
                     (a["plan"], g["profile"], ts))])
             # 10) task.current_execution：指向 plan B 的 execution（deferred）。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, input_id, status, reason, "
-                "current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
-                "VALUES ('x-task-10', ?, ?, 'daily_lesson_split', ?, 'succeeded', NULL, ?, 0, '{}', ?, ?)",
-                (g["profile"], a["plan"], a["input"], b["exec"], ts, ts), at_commit=True)
+                "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, task_type, input_id, status, reason, current_execution_id, generation, "
+                "runtime_meta_json, created_at, updated_at) "
+                "VALUES ('x-task-10', ?, 'daily_plan', ?, NULL, ?, 'daily_lesson_split', ?, "
+                "'succeeded', NULL, ?, 0, '{}', ?, ?)",
+                (g["profile"], a["plan"], a["plan"], a["input"], b["exec"], ts, ts), at_commit=True)
             # 11) execution config_version 伪版本（deferred）。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-                "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-                "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES ('x-exec-11', ?, ?, ?, 'daily_lesson_split', 4, 'l', 'p', 999, ?, 1, 1, 1, 'pending', '{}', ?, ?)",
-                (a["task"], a["plan"], a["input"], g["profile"], ts, ts), at_commit=True)
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+                "profile_id, personal_revision, contract_version, default_revision, state, "
+                "runtime_meta_json, started_at, created_at) "
+                "VALUES ('x-exec-11', ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 4, 'l', 'p', 999, ?, 1, 1, 1, "
+                "'pending', '{}', ?, ?)",
+                (a["task"], a["plan"], a["plan"], a["input"], g["profile"], ts, ts), at_commit=True)
             # 12) execution personal_revision 伪修订（deferred）。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-                "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-                "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES ('x-exec-12', ?, ?, ?, 'daily_lesson_split', 5, 'l', 'p', 1, ?, 2, 1, 1, 'pending', '{}', ?, ?)",
-                (a["task"], a["plan"], a["input"], g["profile"], ts, ts), at_commit=True)
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+                "profile_id, personal_revision, contract_version, default_revision, state, "
+                "runtime_meta_json, started_at, created_at) "
+                "VALUES ('x-exec-12', ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 5, 'l', 'p', 1, ?, 2, 1, 1, "
+                "'pending', '{}', ?, ?)",
+                (a["task"], a["plan"], a["plan"], a["input"], g["profile"], ts, ts), at_commit=True)
             # 13) execution default_revision 伪 bundle 修订（deferred）。
             self._expect_fk(conn,
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-                "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-                "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES ('x-exec-13', ?, ?, ?, 'daily_lesson_split', 6, 'l', 'p', 1, ?, 1, 1, 99, 'pending', '{}', ?, ?)",
-                (a["task"], a["plan"], a["input"], g["profile"], ts, ts), at_commit=True)
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+                "profile_id, personal_revision, contract_version, default_revision, state, "
+                "runtime_meta_json, started_at, created_at) "
+                "VALUES ('x-exec-13', ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 6, 'l', 'p', 1, ?, 1, 1, 99, "
+                "'pending', '{}', ?, ?)",
+                (a["task"], a["plan"], a["plan"], a["input"], g["profile"], ts, ts), at_commit=True)
             # 14) 被拒绝的个人修订必须引用存在且同 contract 的 bundle（deferred）。
             self._expect_fk(conn,
                 "INSERT INTO local_personal_prompt_versions (profile_id, task_type, revision, contract_version, "
@@ -1127,17 +1194,20 @@ class D2SchemaTests(LocalTestCase):
                 (p, cr, rcv, ldr, ts, ts))
         if table == "local_ai_inputs":
             return (
-                "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, "
-                "target_grade, input_schema_version, payload_json, dependencies_json, dependency_hash, "
-                "target_hashes_json, created_at) "
-                "VALUES (?, ?, ?, 1, 'daily_lesson_split', 'middle', ?, '{}','{}','{}','{}', ?)",
-                (f"in-{value!r}"[:32], a["plan"], a["content"], value, ts))
+                "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+                "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
+                "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
+                "VALUES (?, ?, 'daily_plan', ?, NULL, NULL, ?, ?, 1, 'daily_lesson_split', 'middle', ?, "
+                "'{}','{}','{}','{}', ?)",
+                (f"in-{value!r}"[:32], p, a["plan"], a["plan"], a["content"], value, ts))
         if table == "local_ai_tasks":
             return (
-                "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, input_id, status, "
-                "reason, current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'daily_lesson_split', ?, 'succeeded', NULL, NULL, ?, '{}', ?, ?)",
-                (f"tk-{value!r}"[:32], p, a["plan"], a["input"], value, ts, ts))
+                "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, task_type, input_id, status, reason, current_execution_id, generation, "
+                "runtime_meta_json, created_at, updated_at) "
+                "VALUES (?, ?, 'daily_plan', ?, NULL, ?, 'daily_lesson_split', ?, 'succeeded', NULL, NULL, ?, "
+                "'{}', ?, ?)",
+                (f"tk-{value!r}"[:32], p, a["plan"], a["plan"], a["input"], value, ts, ts))
         if table == "local_ai_executions":
             gen = value if column == "generation" else 3
             cv = value if column == "config_version" else 1
@@ -1145,11 +1215,13 @@ class D2SchemaTests(LocalTestCase):
             ctv = value if column == "contract_version" else 1
             dr = value if column == "default_revision" else 1
             return (
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-                "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-                "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES (?, ?, ?, ?, 'daily_lesson_split', ?, 'l', 'p', ?, ?, ?, ?, ?, 'pending', '{}', ?, ?)",
-                (f"ex-{value!r}"[:32], a["task"], a["plan"], a["input"], gen,
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+                "profile_id, personal_revision, contract_version, default_revision, state, "
+                "runtime_meta_json, started_at, created_at) "
+                "VALUES (?, ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', ?, 'l', 'p', ?, ?, ?, ?, ?, "
+                "'pending', '{}', ?, ?)",
+                (f"ex-{value!r}"[:32], a["task"], a["plan"], a["plan"], a["input"], gen,
                  cv, p, pr, ctv, dr, ts, ts))
         if table == "local_ai_attempts":
             return (
@@ -1160,11 +1232,12 @@ class D2SchemaTests(LocalTestCase):
             cv = value if column == "contract_version" else 1
             sv = value if column == "schema_version" else 1
             return (
-                "INSERT INTO local_ai_candidates (id, execution_id, task_id, daily_plan_id, input_id, "
-                "task_type, contract_version, schema_version, raw_candidate_json, candidate_hash, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'daily_lesson_split', ?, ?, '{}', ?, ?)",
-                (f"cd-{value!r}"[:32], g["exec_probe"], a["task"], a["plan"], a["input"],
-                 cv, sv, "h" * 64, ts))
+                "INSERT INTO local_ai_candidates (id, profile_id, execution_id, task_id, source_kind, "
+                "source_id, observation_id, daily_plan_id, input_id, task_type, contract_version, "
+                "schema_version, raw_candidate_json, candidate_hash, created_at) "
+                "VALUES (?, ?, ?, ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', ?, ?, '{}', ?, ?)",
+                (f"cd-{value!r}"[:32], p, g["exec_probe"], a["task"], a["plan"], a["plan"],
+                 a["input"], cv, sv, "h" * 64, ts))
         raise AssertionError(f"unhandled table {table!r}")
 
     def test_strict_int_columns_traversal(self):
@@ -1260,30 +1333,38 @@ class D2SchemaTests(LocalTestCase):
             a = g["a"]
             # input 枚举
             self._expect_check(conn,
-                "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, "
-                "target_grade, input_schema_version, payload_json, dependencies_json, dependency_hash, "
-                "target_hashes_json, created_at) "
-                "VALUES ('e-in-1', ?, ?, 1, 'bogus_task', 'middle', 1, '{}','{}','{}','{}', ?)",
-                (a["plan"], a["content"], ts), name="ck_local_ai_inputs_task_type")
+                "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+                "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
+                "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
+                "VALUES ('e-in-1', ?, 'daily_plan', ?, NULL, NULL, ?, ?, 1, 'bogus_task', 'middle', 1, "
+                "'{}','{}','{}','{}', ?)",
+                (g["profile"], a["plan"], a["plan"], a["content"], ts),
+                name="ck_local_ai_inputs_task_type")
             self._expect_check(conn,
-                "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, content_version, task_type, "
-                "target_grade, input_schema_version, payload_json, dependencies_json, dependency_hash, "
-                "target_hashes_json, created_at) "
-                "VALUES ('e-in-2', ?, ?, 1, 'daily_lesson_split', 'kindergarten', 1, '{}','{}','{}','{}', ?)",
-                (a["plan"], a["content"], ts), name="ck_local_ai_inputs_target_grade")
+                "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, observation_id, "
+                "source_revision, daily_plan_id, content_id, content_version, task_type, target_grade, "
+                "input_schema_version, payload_json, dependencies_json, dependency_hash, target_hashes_json, created_at) "
+                "VALUES ('e-in-2', ?, 'daily_plan', ?, NULL, NULL, ?, ?, 1, 'daily_lesson_split', "
+                "'kindergarten', 1, '{}','{}','{}','{}', ?)",
+                (g["profile"], a["plan"], a["plan"], a["content"], ts),
+                name="ck_local_ai_inputs_source_match")
             # task / execution 状态枚举
             self._expect_check(conn,
-                "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, input_id, status, "
-                "reason, current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
-                "VALUES ('e-task-1', ?, ?, 'daily_lesson_split', ?, 'bogus_state', NULL, NULL, 0, '{}', ?, ?)",
-                (g["profile"], a["plan"], a["input"], ts, ts),
+                "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, task_type, input_id, status, reason, current_execution_id, generation, "
+                "runtime_meta_json, created_at, updated_at) "
+                "VALUES ('e-task-1', ?, 'daily_plan', ?, NULL, ?, 'daily_lesson_split', ?, "
+                "'bogus_state', NULL, NULL, 0, '{}', ?, ?)",
+                (g["profile"], a["plan"], a["plan"], a["input"], ts, ts),
                 name="ck_local_ai_tasks_status")
             self._expect_check(conn,
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, task_type, generation, "
-                "launch_id, permit_id, config_version, profile_id, personal_revision, contract_version, "
-                "default_revision, state, runtime_meta_json, started_at, created_at) "
-                "VALUES ('e-exec-1', ?, ?, ?, 'daily_lesson_split', 7, 'l', 'p', 1, ?, 1, 1, 1, 'bogus_state', '{}', ?, ?)",
-                (a["task"], a["plan"], a["input"], g["profile"], ts, ts),
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, observation_id, "
+                "daily_plan_id, input_id, task_type, generation, launch_id, permit_id, config_version, "
+                "profile_id, personal_revision, contract_version, default_revision, state, "
+                "runtime_meta_json, started_at, created_at) "
+                "VALUES ('e-exec-1', ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 7, 'l', 'p', 1, ?, 1, 1, 1, "
+                "'bogus_state', '{}', ?, ?)",
+                (a["task"], a["plan"], a["plan"], a["input"], g["profile"], ts, ts),
                 name="ck_local_ai_executions_state")
             # active 材料：空 key_id / nonce=NULL / nonce 非 12 / ciphertext 过短
             # （单档案库只能有一个 profile，复用已提交图 profile。）
@@ -1329,7 +1410,8 @@ class D2SchemaTests(LocalTestCase):
         rows = query_rows(
             db,
             "SELECT task_type, input_schema_json, output_schema_json, "
-            "guidance_defaults_json, bundle_hash FROM local_prompt_bundles",
+            "guidance_defaults_json, bundle_hash FROM local_prompt_bundles "
+            "WHERE task_type LIKE 'daily_%'",
         )
         out = {}
         for row in rows:
@@ -1431,9 +1513,9 @@ class D2SchemaTests(LocalTestCase):
         finally:
             session.close()
         self.assertEqual(
-            query_scalar(db, "SELECT count(*) FROM local_personal_prompt_heads"), 3)
+            query_scalar(db, "SELECT count(*) FROM local_personal_prompt_heads"), 5)
         self.assertEqual(
-            query_scalar(db, "SELECT count(*) FROM local_personal_prompt_versions"), 3)
+            query_scalar(db, "SELECT count(*) FROM local_personal_prompt_versions"), 5)
         self.assertEqual(
             query_scalar(db, "SELECT count(*) FROM local_class_game_revisions"), 1)
         self.assertEqual(

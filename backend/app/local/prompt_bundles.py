@@ -1,9 +1,10 @@
 """D2 W2 package prompt bundles and pure contract validation.
 
 This module is the *package manifest* source of truth for the three daily
-prompt bundles (engineering spec §5.3, §7 W2). The frozen contract v1 /
-default revision 1 literals are the D2 initial snapshot adopted from the W1
-migration ``20261017_0004_local``; they are reproduced here as plain data so
+prompt bundles (engineering spec §5.3, §7 W2), plus the two observation
+bundles registered as data for the later E06/E07 slices. The frozen contract
+v1 / default revision 1 literals are the D2 initial snapshot adopted from the
+W1 migration ``20261017_0004_local``; they are reproduced here as plain data so
 the runtime never imports the Alembic migration module. ``bundle_hash`` uses
 the same canonical-JSON algorithm as the migration, so a bundle registered by
 this manifest hashes identically to the seeded row.
@@ -51,14 +52,28 @@ from app.local.errors import (
     LocalStorageError,
     LocalValidationError,
 )
-from app.local.models import LocalPersonalPromptHead, LocalPromptBundle
+from app.local.models import (
+    LocalPersonalPromptHead,
+    LocalPersonalPromptVersion,
+    LocalProfile,
+    LocalPromptBundle,
+)
 from app.local.tx import begin_immediate, rollback
 
+# Daily task types remain the only UI/executable set in this slice.  The
+# observation types are registered data for the later E06/E07 slices; they must
+# not become visible in prompt editors or claimable by the existing daily
+# worker merely because their bundles exist.
 TASK_TYPES: tuple[str, ...] = (
     "daily_lesson_split",
     "daily_process_adapt",
     "daily_other_activities",
 )
+OBSERVATION_TASK_TYPES: tuple[str, ...] = (
+    "game_observation_generate",
+    "game_observation_rewrite",
+)
+REGISTERED_TASK_TYPES: tuple[str, ...] = TASK_TYPES + OBSERVATION_TASK_TYPES
 
 # Package contract delivered by this application build. A future build that
 # ships contract 2 or default r2/r3 only has to add manifest entries and bump
@@ -493,6 +508,212 @@ _OTHER_GUIDANCE_R2 = {
     "afternoon_outdoor": "根据班级年级、可用户外游戏配置和当前日计划，生成一组下午户外游戏安排建议，可含区域、游戏名称、观察重点、目标、指导和支持策略。多个游戏、目标或指导要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；名称等短单值不编号。可提出新游戏建议，不伪造真实来源或活动事实。节日仅供参考。",
 }
 
+# Observation bundles are registered as data for E06/E07.  They are not added
+# to the daily input/output models or prompt editor in this slice.  The schema
+# is deliberately broad enough for the V07 actual-send list: all photos carry
+# original/work hashes, order and caption; rewrite has an explicit target and
+# the five-domain object for evaluation.  No runtime validator is enabled here.
+_OBSERVATION_PHOTO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "asset_id": {"type": "string", "minLength": 1},
+        "content_hash": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "work_hash": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "format": {
+            "type": "string",
+            "enum": ["jpeg", "png", "webp", "gif", "bmp"],
+        },
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "orientation": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 8,
+        },
+        "sort_order": {"type": "integer", "minimum": 0},
+        "caption": {"type": ["string", "null"]},
+    },
+    "required": [
+        "asset_id",
+        "content_hash",
+        "work_hash",
+        "format",
+        "width",
+        "height",
+        "sort_order",
+    ],
+    "additionalProperties": False,
+}
+_OBSERVATION_EVALUATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "health": {"type": ["string", "null"]},
+        "language": {"type": ["string", "null"]},
+        "social": {"type": ["string", "null"]},
+        "science": {"type": ["string", "null"]},
+        "arts": {"type": ["string", "null"]},
+    },
+    "required": ["health", "language", "social", "science", "arts"],
+    "additionalProperties": False,
+}
+_OBSERVATION_INPUT_SCHEMA = {
+    "$schema": _JSON_SCHEMA_DRAFT,
+    "$id": "https://kindergarten-manager.local/schemas/game-observation-input-v1.json",
+    "title": "game_observation_input_v1",
+    "description": "V07 base business fields, four existing columns, ordered photo/work hashes and rewrite target/context.",
+    "type": "object",
+    "properties": {
+        "record_type": {"type": "string", "enum": ["public", "indoor", "outdoor"]},
+        "observation_date": {"type": ["string", "null"]},
+        "start_time": {"type": ["string", "null"]},
+        "end_time": {"type": ["string", "null"]},
+        "adult_count": {"type": ["integer", "null"], "minimum": 0},
+        "child_count": {"type": ["integer", "null"], "minimum": 0},
+        "age_years": {"type": ["integer", "null"], "minimum": 0},
+        "subjects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+        "environment": {"type": ["string", "null"]},
+        "observation_goal": {"type": ["string", "null"]},
+        "observation_process": {"type": ["string", "null"]},
+        "analysis_evaluation": _OBSERVATION_EVALUATION_SCHEMA,
+        "support_strategy": {"type": ["string", "null"]},
+        "photos": {
+            "type": "array",
+            "items": _OBSERVATION_PHOTO_SCHEMA,
+        },
+        "target": {
+            "type": ["string", "null"],
+            "enum": [
+                None,
+                "observation_goal",
+                "observation_process",
+                "analysis_evaluation",
+                "support_strategy",
+            ],
+        },
+        "rewrite_source": {"type": ["string", "null"]},
+    },
+    "required": ["record_type", "photos"],
+    "additionalProperties": False,
+}
+_OBSERVATION_GENERATE_OUTPUT_SCHEMA = {
+    "$schema": _JSON_SCHEMA_DRAFT,
+    "$id": "https://kindergarten-manager.local/schemas/game-observation-generate-output-v1.json",
+    "title": "game_observation_generate_output_v1",
+    "description": "Exactly four columns; evaluation keeps the fixed five domains.",
+    "type": "object",
+    "properties": {
+        "observation_goal": {"type": "string"},
+        "observation_process": {"type": "string"},
+        "analysis_evaluation": {
+            "type": "object",
+            "properties": {
+                "health": {"type": "string"},
+                "language": {"type": "string"},
+                "social": {"type": "string"},
+                "science": {"type": "string"},
+                "arts": {"type": "string"},
+            },
+            "required": ["health", "language", "social", "science", "arts"],
+            "additionalProperties": False,
+        },
+        "support_strategy": {"type": "string"},
+    },
+    "required": [
+        "observation_goal",
+        "observation_process",
+        "analysis_evaluation",
+        "support_strategy",
+    ],
+    "additionalProperties": False,
+}
+_OBSERVATION_REWRITE_OUTPUT_SCHEMA = {
+    "$schema": _JSON_SCHEMA_DRAFT,
+    "$id": "https://kindergarten-manager.local/schemas/game-observation-rewrite-output-v1.json",
+    "title": "game_observation_rewrite_output_v1",
+    "description": "One target only; evaluation target carries the full five-domain object.",
+    "type": "object",
+    "properties": {
+        "target": {
+            "type": "string",
+            "enum": [
+                "observation_goal",
+                "observation_process",
+                "analysis_evaluation",
+                "support_strategy",
+            ],
+        },
+        "text": {"type": "string"},
+        "analysis_evaluation": {
+            "type": "object",
+            "properties": {
+                "health": {"type": "string"},
+                "language": {"type": "string"},
+                "social": {"type": "string"},
+                "science": {"type": "string"},
+                "arts": {"type": "string"},
+            },
+            "required": ["health", "language", "social", "science", "arts"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["target"],
+    "additionalProperties": False,
+    "oneOf": [
+        {
+            "properties": {
+                "target": {
+                    "enum": [
+                        "observation_goal",
+                        "observation_process",
+                        "support_strategy",
+                    ]
+                },
+                "text": {"type": "string"},
+            },
+            "required": ["target", "text"],
+            "additionalProperties": False,
+        },
+        {
+            "properties": {
+                "target": {"const": "analysis_evaluation"},
+                "analysis_evaluation": {
+                    "type": "object",
+                    "properties": {
+                        "health": {"type": "string"},
+                        "language": {"type": "string"},
+                        "social": {"type": "string"},
+                        "science": {"type": "string"},
+                        "arts": {"type": "string"},
+                    },
+                    "required": ["health", "language", "social", "science", "arts"],
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["target", "analysis_evaluation"],
+            "additionalProperties": False,
+        },
+    ],
+}
+_OBSERVATION_GUIDANCE = {
+    "observation_goal": "写清本次观察想了解的重点，结合已有资料，不虚构未提供的目标。",
+    "observation_process": "依据照片、已填资料和情境写观察记录；可补对话与动作衔接，不造未提供的精确分钟、持续时长或完整新事件。",
+    "analysis_evaluation": "按健康、语言、社会、科学、艺术五个领域分析；证据不足如实说明，不硬凑。",
+    "support_strategy": "提出与观察证据对应的后续支持策略，不把AI补写当作已核实事实。",
+}
+_OBSERVATION_REWRITE_GUIDANCE = {
+    "target": "只重写目标栏，返回目标字段名；评价分析目标必须返回五领域完整对象。",
+    "text": "重写文本须与观察证据一致；多人无法对应姓名时写共同情境，不猜姓名动作。",
+    "analysis_evaluation": "评价分析目标返回健康、语言、社会、科学、艺术五领域完整对象；证据不足如实说明。",
+}
+
 
 def canonical_json(value: Any) -> str:
     """Canonical JSON used for bundle hashes: sorted keys, no extra whitespace."""
@@ -535,8 +756,8 @@ def _bundle(
     }
 
 
-# The package manifest: the three daily tasks only, at the frozen initial
-# revision. Weekly tasks are never part of D2.
+# The package manifest: three daily tasks plus two observation data bundles.
+# The daily three remain the only prompt-editor/executable set in this slice.
 PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
     _bundle(
         "daily_lesson_split",
@@ -585,6 +806,20 @@ PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
         _OTHER_OUTPUT_SCHEMA,
         _OTHER_GUIDANCE_R2,
         default_revision=PACKAGE_LATEST_DEFAULT_REVISION,
+    ),
+    # Observation data foundation only: fixed package bundles, no editor and no
+    # claimable execution in this slice.
+    _bundle(
+        "game_observation_generate",
+        _OBSERVATION_INPUT_SCHEMA,
+        _OBSERVATION_GENERATE_OUTPUT_SCHEMA,
+        _OBSERVATION_GUIDANCE,
+    ),
+    _bundle(
+        "game_observation_rewrite",
+        _OBSERVATION_INPUT_SCHEMA,
+        _OBSERVATION_REWRITE_OUTPUT_SCHEMA,
+        _OBSERVATION_REWRITE_GUIDANCE,
     ),
 )
 
@@ -989,8 +1224,8 @@ def _normalize_manifest(bundles) -> dict[tuple[str, int, int], dict]:
             guidance = dict(bundle["guidance_defaults_json"])
         except (KeyError, TypeError) as exc:
             raise LocalValidationError("提示词包清单项不完整") from exc
-        if task_type not in TASK_TYPES:
-            raise LocalValidationError("提示词包清单包含非日任务类型")
+        if task_type not in REGISTERED_TASK_TYPES:
+            raise LocalValidationError("提示词包清单包含未登记任务类型")
         if (
             not isinstance(contract, int)
             or isinstance(contract, bool)
@@ -1078,7 +1313,12 @@ def initial_prompt_seed() -> dict[str, dict]:
     return seed
 
 
-def effective_prompt_seed(session: Session) -> dict[str, dict]:
+def effective_prompt_seed(
+    session: Session,
+    *,
+    task_types: tuple[str, ...] | None = None,
+    required_task_types: tuple[str, ...] | None = None,
+) -> dict[str, dict]:
     """Effective initial bundle per task from the *registered* bundles only.
 
     A brand-new archive must seed its first personal version from bundles that
@@ -1088,9 +1328,15 @@ def effective_prompt_seed(session: Session) -> dict[str, dict]:
     manifest entry, so a refused package sync (``PROMPT_BUNDLE_CONFLICT``) can
     no longer leave initialization pointing at a missing bundle. The highest
     ``(contract_version, default_revision)`` per task wins.
+
+    ``required_task_types`` defaults to the requested set.  Profile creation
+    asks for all registered types but only requires the daily three, so a
+    degraded observation package never blocks manual initialization.
     """
+    requested = tuple(task_types or TASK_TYPES)
+    required = set(required_task_types if required_task_types is not None else requested)
     rows = session.scalars(
-        select(LocalPromptBundle).where(LocalPromptBundle.task_type.in_(TASK_TYPES))
+        select(LocalPromptBundle).where(LocalPromptBundle.task_type.in_(requested))
     ).all()
     best: dict[str, LocalPromptBundle] = {}
     for row in rows:
@@ -1101,10 +1347,12 @@ def effective_prompt_seed(session: Session) -> dict[str, dict]:
         ) > (current.contract_version, current.default_revision):
             best[row.task_type] = row
     seed: dict[str, dict] = {}
-    for task_type in TASK_TYPES:
+    for task_type in requested:
         row = best.get(task_type)
         if row is None:
-            raise LocalStorageError("提示词包缺失，无法建立初版个人指导")
+            if task_type in required:
+                raise LocalStorageError("提示词包缺失，无法建立初版个人指导")
+            continue
         guidance = row.guidance_defaults_json
         if not isinstance(guidance, dict):
             raise LocalStorageError("提示词包默认指导损坏")
@@ -1114,6 +1362,83 @@ def effective_prompt_seed(session: Session) -> dict[str, dict]:
             "guidance": dict(guidance),
         }
     return seed
+
+
+def _ensure_missing_observation_prompt_seeds(
+    session: Session,
+    items: dict[tuple[str, int, int], dict],
+    targets: dict[str, dict],
+    now,
+) -> int:
+    """Add only missing observation personal version/head pairs.
+
+    Existing daily and observation personal text is never updated.  A head
+    without its current version, or a version without a head, is treated as
+    corrupt instead of being silently half-repaired.
+    """
+    observation_targets = {
+        task_type: targets[task_type]
+        for task_type in OBSERVATION_TASK_TYPES
+        if task_type in targets
+    }
+    if not observation_targets:
+        return 0
+    seeded = 0
+    profile_ids = list(session.scalars(select(LocalProfile.id)).all())
+    for profile_id in profile_ids:
+        for task_type, target in observation_targets.items():
+            head = session.get(LocalPersonalPromptHead, (profile_id, task_type))
+            if head is not None:
+                version = session.get(
+                    LocalPersonalPromptVersion,
+                    (profile_id, task_type, head.current_revision),
+                )
+                if version is None:
+                    raise LocalStorageError("观察个人指导头缺少当前版本")
+                continue
+            existing_version = session.scalars(
+                select(LocalPersonalPromptVersion).where(
+                    LocalPersonalPromptVersion.profile_id == profile_id,
+                    LocalPersonalPromptVersion.task_type == task_type,
+                )
+            ).first()
+            if existing_version is not None:
+                raise LocalStorageError("观察个人指导版本存在但头缺失")
+            key = (
+                task_type,
+                target["required_contract_version"],
+                target["latest_default_revision"],
+            )
+            item = items.get(key)
+            if item is None:
+                raise LocalStorageError("观察提示词包目标缺失")
+            session.add(
+                LocalPersonalPromptVersion(
+                    profile_id=profile_id,
+                    task_type=task_type,
+                    revision=1,
+                    contract_version=target["required_contract_version"],
+                    based_default_revision=target["latest_default_revision"],
+                    guidance_json=dict(item["guidance_defaults_json"]),
+                    orphaned_guidance_json=None,
+                    action="initial",
+                    rejected_default_revision=None,
+                    created_at=now,
+                )
+            )
+            session.add(
+                LocalPersonalPromptHead(
+                    profile_id=profile_id,
+                    task_type=task_type,
+                    current_revision=1,
+                    required_contract_version=target["required_contract_version"],
+                    latest_default_revision=target["latest_default_revision"],
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            seeded += 1
+    return seeded
 
 
 def sync_prompt_bundles(
@@ -1128,18 +1453,22 @@ def sync_prompt_bundles(
     * each head's required/latest pointers are advanced to the manifest target;
       a head already pointing at a *newer* contract (or a later default for
       the same contract) is refused rather than silently downgraded;
-    * only head pointers change: no personal prompt version is created, so a
-      restart never bumps a personal revision.
+    * only head pointers change for existing heads; a missing observation
+      version/head pair is created once for existing profiles on the default
+      package sync, and a restart never bumps a personal revision.
 
-    Returns counts of registered bundles and updated heads.
+    Returns counts of registered bundles, updated heads and observation
+    personal seeds created.
     """
+    default_manifest = bundles is None
     items = _normalize_manifest(bundles if bundles is not None else PROMPT_BUNDLE_MANIFEST)
     if not items:
-        return {"registered": 0, "heads_updated": 0}
+        return {"registered": 0, "heads_updated": 0, "observation_seeded": 0}
     targets = _targets(items)
     now = utc_now()
     registered = 0
     heads_updated = 0
+    observation_seeded = 0
 
     begin_immediate(session)
     try:
@@ -1147,7 +1476,7 @@ def sync_prompt_bundles(
             (row.task_type, row.contract_version, row.default_revision): row
             for row in session.scalars(
                 select(LocalPromptBundle).where(
-                    LocalPromptBundle.task_type.in_(TASK_TYPES)
+                    LocalPromptBundle.task_type.in_(REGISTERED_TASK_TYPES)
                 )
             )
         }
@@ -1207,10 +1536,15 @@ def sync_prompt_bundles(
             registered += 1
         # Flush new bundle rows before the (non-deferrable) head FK is checked.
         session.flush()
+        if default_manifest:
+            observation_seeded = _ensure_missing_observation_prompt_seeds(
+                session, items, targets, now
+            )
+            session.flush()
 
         heads = session.scalars(
             select(LocalPersonalPromptHead).where(
-                LocalPersonalPromptHead.task_type.in_(TASK_TYPES)
+                LocalPersonalPromptHead.task_type.in_(REGISTERED_TASK_TYPES)
             )
         ).all()
         for head in heads:
@@ -1249,11 +1583,17 @@ def sync_prompt_bundles(
     except BaseException:
         rollback(session)
         raise
-    return {"registered": registered, "heads_updated": heads_updated}
+    return {
+        "registered": registered,
+        "heads_updated": heads_updated,
+        "observation_seeded": observation_seeded,
+    }
 
 
 __all__ = [
     "TASK_TYPES",
+    "OBSERVATION_TASK_TYPES",
+    "REGISTERED_TASK_TYPES",
     "PACKAGE_CONTRACT_VERSION",
     "PACKAGE_DEFAULT_REVISION",
     "PACKAGE_LATEST_DEFAULT_REVISION",

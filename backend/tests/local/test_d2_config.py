@@ -325,13 +325,14 @@ class ConfigServiceCase(LocalTestCase):
                 (content_id, plan_id, profile_id, stamp),
             )
             connection.execute(
-                "INSERT INTO local_ai_inputs (id, daily_plan_id, content_id, "
+                "INSERT INTO local_ai_inputs (id, profile_id, source_kind, source_id, "
+                "observation_id, source_revision, daily_plan_id, content_id, "
                 "content_version, task_type, target_grade, input_schema_version, "
                 "payload_json, dependencies_json, dependency_hash, target_hashes_json, "
                 "created_at) "
-                "VALUES (?, ?, ?, 1, 'daily_lesson_split', ?, 1, '{}', '{}', '{}', "
-                "'{}', ?)",
-                (input_id, plan_id, content_id, klass["grade"], stamp),
+                "VALUES (?, ?, 'daily_plan', ?, NULL, NULL, ?, ?, 1, "
+                "'daily_lesson_split', ?, 1, '{}', '{}', '{}', '{}', ?)",
+                (input_id, profile_id, plan_id, plan_id, content_id, klass["grade"], stamp),
             )
             connection.execute(
                 "INSERT OR IGNORE INTO local_personal_prompt_versions (profile_id, "
@@ -341,13 +342,15 @@ class ConfigServiceCase(LocalTestCase):
                 (profile_id, stamp),
             )
             connection.execute(
-                "INSERT INTO local_ai_tasks (id, profile_id, daily_plan_id, task_type, "
-                "input_id, status, reason, current_execution_id, generation, "
-                "runtime_meta_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'daily_lesson_split', ?, ?, NULL, ?, 1, '{}', ?, ?)",
+                "INSERT INTO local_ai_tasks (id, profile_id, source_kind, source_id, "
+                "observation_id, daily_plan_id, task_type, input_id, status, reason, "
+                "current_execution_id, generation, runtime_meta_json, created_at, updated_at) "
+                "VALUES (?, ?, 'daily_plan', ?, NULL, ?, 'daily_lesson_split', ?, ?, NULL, ?, 1, "
+                "'{}', ?, ?)",
                 (
                     task_id,
                     profile_id,
+                    plan_id,
                     plan_id,
                     input_id,
                     task_status,
@@ -357,15 +360,16 @@ class ConfigServiceCase(LocalTestCase):
                 ),
             )
             connection.execute(
-                "INSERT INTO local_ai_executions (id, task_id, daily_plan_id, input_id, "
-                "task_type, generation, launch_id, permit_id, config_version, profile_id, "
-                "personal_revision, contract_version, default_revision, state, "
-                "runtime_meta_json, started_at, created_at, ended_at) "
-                "VALUES (?, ?, ?, ?, 'daily_lesson_split', 1, ?, ?, 1, ?, 1, 1, 1, ?, "
+                "INSERT INTO local_ai_executions (id, task_id, source_kind, source_id, "
+                "observation_id, daily_plan_id, input_id, task_type, generation, launch_id, "
+                "permit_id, config_version, profile_id, personal_revision, contract_version, "
+                "default_revision, state, runtime_meta_json, started_at, created_at, ended_at) "
+                "VALUES (?, ?, 'daily_plan', ?, NULL, ?, ?, 'daily_lesson_split', 1, ?, ?, 1, ?, 1, 1, 1, ?, "
                 "'{}', ?, ?, ?)",
                 (
                     execution_id,
                     task_id,
+                    plan_id,
                     plan_id,
                     input_id,
                     str(uuid.uuid4()),
