@@ -400,4 +400,3 @@ game_observation:
 预计不需 ADR：技术栈、依赖方向、SQLite／受管文件权威、本机 API 与 worker 通信未变；观察是 Feature 模块，`export_id` 是现有宿主保存桥的受限扩展。若改为新服务／新进程、外部网络交付、浏览器或远端成为内容权威、改变模块所有权或通信机制，先提 ADR，不暗改 `ARCHITECTURE.md`。
 
 未验：本Contract完整A01–A22尚未验收；E01／E02／E04基础规则、模型、迁移与守卫后种子的实际独立结果见[本片报告](../bootstrap/desktop-game-observation-foundation-review.md)，其余服务及完整产品流程仍未实施／未验。本轮未启动桌面应用、构建或调用应用真实AI／WebDAV。Pillow 13.0.0仅依赖提案，未安装；Word逐页、WebView2、宿主保存、文件路径边界、容量参数均未验。Win10、WPS、干净机器、其他DPI／显示器、签名发行及D2／D3既有未验项保持未验。停在本片，后续实施须另授权，唯一入口见[当前任务](../tasks/current.md)。
-
