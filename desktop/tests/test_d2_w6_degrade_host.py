@@ -213,7 +213,7 @@ def test_validate_refuses_interactive_injection(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_resource_bundle_check_requires_exact_r1_r2_r3_rows():
+def test_resource_bundle_check_requires_exact_daily_and_observation_rows():
     from app.local.prompt_bundles import PROMPT_BUNDLE_MANIFEST
 
     def rows(manifest):
@@ -227,9 +227,77 @@ def test_resource_bundle_check_requires_exact_r1_r2_r3_rows():
             for b in manifest
         ]
 
+    # Seven frozen daily rows (r1/r2/r3) plus the two observation data rows.
+    # These literals are the already-approved E01/E02 manifest; this host test
+    # must not silently accept a shortened or re-hashed resource table.
+    expected_daily = {
+        (
+            "daily_lesson_split",
+            1,
+            1,
+            "223a77eb9d2f992e910fd59a0d7793e7bb5c63fef1a5e190549c554094db28c5",
+        ),
+        (
+            "daily_process_adapt",
+            1,
+            1,
+            "33dd13f4800ae428f74b157cdaa484abf50588258b6a4a2e00c12af24f0c73e6",
+        ),
+        (
+            "daily_other_activities",
+            1,
+            1,
+            "a952d500a843acaf2f1cfeb851bffa90d93cb4d1026e4836d0d237f271cc135b",
+        ),
+        (
+            "daily_lesson_split",
+            1,
+            2,
+            "16c155a30a898e81d17ddd1a12be9c709cfb68209ce1be9541bb63bfa5b394b1",
+        ),
+        (
+            "daily_process_adapt",
+            1,
+            2,
+            "dd3aaf65c22a600e4aa50b85360f17bf9c2e6395ededdff5d9428491e7e98751",
+        ),
+        (
+            "daily_process_adapt",
+            1,
+            3,
+            "f2c4a308db6d74b0754ce1c9370d5d551f867ad91ca1e0bcb3e39ef713353e4e",
+        ),
+        (
+            "daily_other_activities",
+            1,
+            2,
+            "4700755f7c65380c628bba4104d8f210ec3b6fea6656814f80eb81d593f87a75",
+        ),
+    }
+    expected_observation = {
+        (
+            "game_observation_generate",
+            1,
+            1,
+            "ad7736c073b48aff69f4b11be2847843abe74258e78058c606c3dc8b41ad94af",
+        ),
+        (
+            "game_observation_rewrite",
+            1,
+            1,
+            "00ce1c4125d24c6c15660de9f5c4e7174b91dd64a18960545dd283d142ace470",
+        ),
+    }
+    expected = expected_daily | expected_observation
     exact = rows(PROMPT_BUNDLE_MANIFEST)
-    assert len(exact) == 7
+    assert len(exact) == 9
+    assert set(exact) == expected
+    assert {r for r in exact if r[0].startswith("daily_")} == expected_daily
+    assert {
+        r for r in exact if r[0].startswith("game_observation_")
+    } == expected_observation
     assert d1_main._bundle_rows_match_manifest(exact, PROMPT_BUNDLE_MANIFEST)
+
     assert not d1_main._bundle_rows_match_manifest(
         [r for r in exact if r[2] == 1], PROMPT_BUNDLE_MANIFEST
     )
@@ -248,6 +316,23 @@ def test_resource_bundle_check_requires_exact_r1_r2_r3_rows():
     assert not d1_main._bundle_rows_match_manifest(wrong_hash, PROMPT_BUNDLE_MANIFEST)
     assert not d1_main._bundle_rows_match_manifest(
         exact + [exact[0]], PROMPT_BUNDLE_MANIFEST
+    )
+
+    # Removing either observation row, or changing either observation hash,
+    # must be rejected independently of the daily rows.
+    for observation_row in expected_observation:
+        assert not d1_main._bundle_rows_match_manifest(
+            [r for r in exact if r != observation_row],
+            PROMPT_BUNDLE_MANIFEST,
+        )
+        changed = [
+            (*r[:3], "0" * 64) if r == observation_row else r for r in exact
+        ]
+        assert not d1_main._bundle_rows_match_manifest(
+            changed, PROMPT_BUNDLE_MANIFEST
+        )
+    assert not d1_main._bundle_rows_match_manifest(
+        exact + [next(iter(expected_observation))], PROMPT_BUNDLE_MANIFEST
     )
 
 

@@ -1,6 +1,6 @@
 # D4-G0：游戏观察记录完整产品规格与实施前核定清单
 
-更新：2026-10-26。**产品C1–C33已确认，E01–E14及E13六份Contract设计已核定；接续获授权的E01／E02／E04数据基础已由原OpenCode实施，独立结果见[E01／E02／E04独立核查](../bootstrap/desktop-game-observation-foundation-review.md)。** 有效[工程设计](desktop-game-observation-engineering.md)、[观察Contract](../modules/game-observations.md)及[E13记录](../bootstrap/desktop-game-observation-contract-review.md)保持；完整A01–A22尚未验收，不把基础规则／迁移通过写成完整产品通过。后续切片、应用真实AI及构建均不在范围；用户随后单独授权原OpenCode Go提交推送本片相关改动。
+更新：2026-10-27。**产品C1–C33及E01–E14／E13六份Contract设计保持，E01／E02／E04数据基础独立通过；用户本轮另授权E03图片材料，原Go套餐Flash max会话已交付及回修，已通过独立限定工程核查。** 见[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)及[E03核查](../bootstrap/desktop-game-observation-assets-review.md)。完整A01–A22未整项验收；不把材料服务或基础迁移通过写成页面／保存历史／视觉AI／Word／宿主产品通过。本次Git授权覆盖E03审核通过后提交推送，后续切片、应用真实AI、构建／发行未授权。
 
 依据：[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)、[当前架构](../../ARCHITECTURE.md)、[身份与班级](../modules/identity-and-class.md)、[AI Service](../modules/ai-service.md)、[提示词](../modules/prompts.md)、[Word导出](../modules/word-export.md)。旧版行为和模板只作经审查的参考，不自动成为新版需求。
 
@@ -13,7 +13,7 @@
 | C3 AI职责 | AI读图分析，撰写观察目标、观察过程、分析评价、支持策略四部分；不要求教师先写好完整观察过程再交AI整理 |
 | C4 模板 | 用户已提供三份Word模板及七份成品参考；栏目、表格、图片位置和本机Word分页已核对，见§1.1；样例内容不自动成为全部产品规则 |
 | C5 导出 | 单份或按需选取多份合并导出；选择、顺序、版式及文件名按C13、C16–C17、C28、C31、C33 |
-| C6 当前授权 | E01–E14／E13设计已核定；用户接续仅授权原OpenCode实施E01／E02／E04并由Codex独立核查，问题回同一会话；仅隔离合成库，不自动开始后续切片或真实AI；本片相关Git随后另获授权 |
+| C6 当前授权 | E01／E02／E04基础工程已通过；用户本轮另授权原Go Flash max会话实施E03并由Codex独立核查、交回修复，通过后提交推送；仅隔离合成库及必要的授权本地图片核对，不自动开始后续切片或应用真实AI |
 | C7 开发顺序 | 当前进入游戏观察规格，跨设备继续后置；其他后置模块不并入本片 |
 | C8 首期类型 | 用户确认先做公共、室内、户外三种表格观察记录；《游戏故事》仅作写作参考，叙事式输出后置 |
 | C9 评价分析 | 固定保留健康、语言、社会、科学、艺术五大领域；证据不足如实说明，不强凑评价 |
@@ -256,7 +256,7 @@ Q1–Q15对应决定已归并C1–C33，不再保留待答标记，也不重复�
 
 ### 6.1 设计交付清单
 
-E01–E14已按[唯一工程设计](desktop-game-observation-engineering.md)核定，E13六份Contract已归并。其后用户授权E01／E02／E04实施与独立核查，实际范围见[本片报告](../bootstrap/desktop-game-observation-foundation-review.md)；下表保留完整设计清单，其余各项仍未实施。唯一操作入口见[当前任务](../tasks/current.md)。
+E01–E14已按[唯一工程设计](desktop-game-observation-engineering.md)核定，E13六份Contract保持。E01／E02／E04已完成，E03材料已通过[独立限定工程核查](../bootstrap/desktop-game-observation-assets-review.md)；下表保留完整设计清单，其他服务仍未实施。唯一操作入口见[当前任务](../tasks/current.md)。
 
 | 编号 | 核定事项 | 必须给出的方案与准入条件 |
 | --- | --- | --- |
@@ -283,7 +283,7 @@ E01–E14已按[唯一工程设计](desktop-game-observation-engineering.md)核�
 
 ## 7. 验收条件与证据矩阵
 
-下列为完整验收条件，A01–A22尚未整项验收。E01／E02／E04已覆盖的基础规则、模型与迁移独立结果见本片报告，不能替代后续服务／窗口／Word／真实AI及教师确认；真实AI仍未授权。
+下列为完整验收条件，A01–A22尚未整项验收。数据基础及材料层的限定规则／合成验证分别见E01／E02／E04与[E03报告](../bootstrap/desktop-game-observation-assets-review.md)，不替代后续完整服务、页面、Word、应用真实AI和教师确认；真实AI仍未授权。
 
 | 编号 | 场景 | 通过条件 | 需要的证据 |
 | --- | --- | --- | --- |
@@ -335,10 +335,10 @@ E01–E14已按[唯一工程设计](desktop-game-observation-engineering.md)核�
 | R13 | 参考模板已有遮文／空末页与模板遵循 | 保留栏目与确认字体，排除原缺陷；A18–A19必须新版实际Word逐页验 |
 | R14 | 供应商支持视觉与现有文本链路 | §4已直接核对文本消息／1MiB与任务绑定；E06–E07必须整体设计，不称应用已支持图像 |
 
-ARCHITECTURE.md及日计划／周计划Contract不自动扩成观察实施授权；E13已明确职责和五扩展，本次只实施E01／E02／E04，不改系统架构。后续系统级边界变化先ADR；新需求或无法满足确认规则时列影响和取舍交用户，不能静默降级。
+ARCHITECTURE.md及日计划／周计划Contract不自动扩成观察实施授权；E13职责设计保持，当前仅在已完成数据基础上接续用户明确授权的E03，不改系统架构。后续系统级边界变化先ADR；新需求或无法满足确认规则时列影响交用户，不能静默降级。
 
 ## 9. 当前授权与下一步
 
-完整产品规格、E01–E14及E13六份Contract已归并。原OpenCode在同一会话以指定Go套餐DeepSeek V4.1 Flash实施E01／E02／E04，由Codex独立核查并交回修复，详见[本片报告](../bootstrap/desktop-game-observation-foundation-review.md)。当前停在本片核查及文档收口，不自动派发E03或后续切片；不真实AI；本片相关Git收口已另获授权。§6是完整设计清单，操作入口见[当前任务](../tasks/current.md)。
+完整产品规格、E01–E14及E13六份Contract保持。E01／E02／E04数据基础已完成；E03图片材料由同一原OpenCode会话以Go套餐DeepSeek V4.1 Flash max实施和回修，已通过[独立限定工程核查](../bootstrap/desktop-game-observation-assets-review.md)。审核通过后正常提交推送并停在E03；下一步仅建议E05／E08保存历史，不自动派发。§6仍是完整设计清单，唯一入口见[当前任务](../tasks/current.md)。
 
 OpenCode仍是后续实现、测试、迁移、构建脚本唯一写入者，Codex负责设计／独立核查。继续当前分支，不另建实现者；不安装Skill／MCP，不调用真实AI／WebDAV，不读取密钥，不构建新冻结包，不改系统保护、不发行、不动旧远程资源／真实数据。应用更新及D2／D3既有通过／未验边界保持；D3-U Git授权不延续到本阶段；本片相关Git来自用户随后新的明确授权，不扩展后续实施。

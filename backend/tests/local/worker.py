@@ -7,11 +7,16 @@ writes a JSON result. Expected domain failures are returned as
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
+import os
 import sys
 import time
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 from sqlalchemy.orm import sessionmaker
 
@@ -336,6 +341,196 @@ def _action_read_detail_snapshot(spec: dict, runtime: LocalRuntime) -> dict:
         session.close()
 
 
+def _observation_image(spec: dict) -> bytes:
+    if spec.get("image_base64"):
+        return base64.b64decode(spec["image_base64"])
+    return Path(spec["image_file"]).read_bytes()
+
+
+def _action_observation_import(spec: dict, runtime) -> dict:
+    from sqlalchemy import select
+
+    from app.local import observation_assets
+    from app.local.models import LocalObservationAsset
+
+    session = runtime.session()
+    try:
+        exit_mode = spec.get("exit_mode")
+
+        def marker(stage: str) -> None:
+            if not spec.get("marker_file"):
+                return
+            rows = session.scalars(select(LocalObservationAsset)).all()
+            Path(spec["marker_file"]).write_text(
+                json.dumps(
+                    {
+                        "stage": stage,
+                        "asset_rows": len(rows),
+                        "asset_ids": [row.id for row in rows],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+        if exit_mode == "partial":
+            original_flush = session.flush
+
+            def flush_then_exit(*args, **kwargs):  # noqa: ANN001
+                original_flush(*args, **kwargs)
+                marker("partial")
+                os._exit(17)
+
+            session.flush = flush_then_exit  # type: ignore[method-assign]
+        elif exit_mode == "before_commit":
+            original_commit = session.commit
+
+            def flush_then_exit_before_commit(*args, **kwargs):  # noqa: ANN001
+                session.flush()
+                marker("before_commit")
+                os._exit(17)
+
+            session.commit = flush_then_exit_before_commit  # type: ignore[method-assign]
+        if exit_mode == "after_files":
+            def begin_then_exit(*args, **kwargs):  # noqa: ANN001
+                marker("after_files")
+                os._exit(17)
+
+            observation_assets.begin_immediate = begin_then_exit  # type: ignore[assignment]
+        result = observation_assets.import_asset(
+            session,
+            runtime,
+            profile_id=spec["profile_id"],
+            observation_id=spec["observation_id"],
+            request_id=spec["request_id"],
+            expected_revision=spec["expected_revision"],
+            stream=io.BytesIO(_observation_image(spec)),
+            display_name=spec.get("display_name", "worker.jpg"),
+            caption=spec.get("caption"),
+        )
+        if exit_mode == "after_commit":
+            Path(spec["result_file"]).write_text(
+                json.dumps({"result": result}, ensure_ascii=False), encoding="utf-8"
+            )
+            marker("after_commit")
+            os._exit(17)
+        return {"result": result}
+    finally:
+        session.close()
+
+
+def _action_observation_read(spec: dict, runtime) -> dict:
+    from sqlalchemy import select
+
+    from PIL import Image
+
+    from app.local import observation_assets
+    from app.local.models import (
+        LocalObservationAsset,
+        LocalObservationAssetDerivative,
+        LocalObservationDraftPhoto,
+        LocalObservationOperation,
+        LocalOperationRecord,
+    )
+
+    session = runtime.session()
+    try:
+        photos = observation_assets.list_photos(
+            session,
+            profile_id=spec["profile_id"],
+            observation_id=spec["observation_id"],
+        )
+        payload = {"photos": photos, "assets": [], "receipts": 0, "audits": 0}
+        for asset_id in spec.get("asset_ids", []):
+            asset = session.get(LocalObservationAsset, asset_id)
+            if asset is None or asset.observation_id != spec["observation_id"]:
+                raise AssertionError(f"asset missing or cross-record: {asset_id}")
+            original = observation_assets.read_asset_bytes(
+                session,
+                runtime,
+                profile_id=spec["profile_id"],
+                observation_id=spec["observation_id"],
+                asset_id=asset_id,
+            )
+            original_hash = hashlib.sha256(original).hexdigest()
+            if original_hash != asset.content_hash or len(original) != asset.byte_size:
+                raise AssertionError(f"original bytes/hash mismatch: {asset_id}")
+            derivatives = {}
+            for derivative_id in spec.get("derivatives", {}).get(asset_id, []):
+                derivative = session.get(
+                    LocalObservationAssetDerivative, derivative_id
+                )
+                if (
+                    derivative is None
+                    or derivative.observation_id != spec["observation_id"]
+                    or derivative.asset_id != asset_id
+                ):
+                    raise AssertionError(
+                        f"derivative missing or cross-record: {derivative_id}"
+                    )
+                data = observation_assets.read_derivative_bytes(
+                    session,
+                    runtime,
+                    profile_id=spec["profile_id"],
+                    observation_id=spec["observation_id"],
+                    asset_id=asset_id,
+                    derivative_id=derivative_id,
+                )
+                digest = hashlib.sha256(data).hexdigest()
+                if digest != derivative.content_hash:
+                    raise AssertionError(
+                        f"derivative hash mismatch: {derivative_id}"
+                    )
+                with Image.open(io.BytesIO(data)) as image:
+                    if image.size != (derivative.width, derivative.height):
+                        raise AssertionError(
+                            f"derivative dimensions mismatch: {derivative_id}"
+                        )
+                derivatives[derivative.purpose] = {
+                    "derivative_id": derivative_id,
+                    "sha256": digest,
+                    "bytes": len(data),
+                    "width": derivative.width,
+                    "height": derivative.height,
+                    "params_version": derivative.params_version,
+                    "relative_path": derivative.relative_path,
+                }
+            payload["assets"].append(
+                {
+                    "asset_id": asset_id,
+                    "sha256": original_hash,
+                    "bytes": len(original),
+                    "content_hash": asset.content_hash,
+                    "relative_path": asset.relative_path,
+                    "derivatives": derivatives,
+                }
+            )
+        payload["receipts"] = len(
+            session.scalars(select(LocalObservationOperation)).all()
+        )
+        payload["audits"] = len(
+            [
+                row
+                for row in session.scalars(select(LocalOperationRecord)).all()
+                if row.action.startswith("observation_")
+            ]
+        )
+        payload["draft_photos"] = [
+            (row.asset_id, row.sort_order, row.caption)
+            for row in session.scalars(
+                select(LocalObservationDraftPhoto)
+                .where(
+                    LocalObservationDraftPhoto.observation_id
+                    == spec["observation_id"]
+                )
+                .order_by(LocalObservationDraftPhoto.sort_order)
+            ).all()
+        ]
+        return payload
+    finally:
+        session.close()
+
+
 ACTIONS = {
     "initialize": _action_initialize,
     "create_plan": _action_create_plan,
@@ -348,6 +543,8 @@ ACTIONS = {
     "hold_write_lock": _action_hold_write_lock,
     "read_list_snapshot": _action_read_list_snapshot,
     "read_detail_snapshot": _action_read_detail_snapshot,
+    "observation_import": _action_observation_import,
+    "observation_read": _action_observation_read,
 }
 
 

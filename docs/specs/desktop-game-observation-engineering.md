@@ -1,6 +1,6 @@
 # D4-E：游戏观察记录工程设计
 
-更新：2026-10-26。**E01–E14及E13六份Contract设计已核定；用户接续授权仅E01／E02／E04模型、迁移与归属，已由原OpenCode实施，独立结果见[E01／E02／E04独立核查](../bootstrap/desktop-game-observation-foundation-review.md)。** 产品依据为[完整规格C1–C33](desktop-game-observation.md)，前轮见[工程核定](../bootstrap/desktop-game-observation-engineering-review.md)及[E13核定](../bootstrap/desktop-game-observation-contract-review.md)。后续切片及应用真实AI未授权；用户随后单独授权原OpenCode Go提交推送本片相关改动。
+更新：2026-10-27。**E01–E14及E13六份Contract设计保持；E01／E02／E04数据基础独立通过，用户本轮另授权E03图片材料，原Go套餐Flash max会话已交付并停写，已通过独立限定工程核查。** 见[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)、[E03实现](../bootstrap/desktop-game-observation-assets-result.md)及[E03独立核查](../bootstrap/desktop-game-observation-assets-review.md)。产品依据为[完整规格C1–C33](desktop-game-observation.md)。本次仅扩至E03，通过后正常提交推送；应用真实AI及后续切片／构建未授权。
 
 原OpenCode会话`ses_ead8af71dffeJphI1NOWg4jZgI`使用`opencode-go/deepseek-v4.1-flash#default`、`plan`代理交付方案。Codex退回两轮问题、补充冷迁移问题，并核定K01–K08修正；原会话最终逐项接受。本文由Codex归并为唯一有效工程方案，取代各轮回复中的冲突表述。原始回复及审计证据保留位置见核定记录，不另存提示词副本。
 
@@ -26,7 +26,7 @@
 
 `desktop/requirements-d1.in`只声明桌面／测试／打包依赖，不重复加入Pillow业务依赖；若不需调整现有打包工具，该文件不变。锁定更新使用既有单一解析流程，不`--upgrade`无关包。现有`migrations_local/env.py`、`d1_digest.py`的事务／保护机制是复用及验证对象，不预设需要修改。
 
-准入顺序：**E13已核定，E01／E02／E04本片实施与独立结果见报告** → E03材料 → E05/E08保存历史 → E06/E07视觉候选 → E09/E10入口列表 → E11/E12导出宿主 → E14集成验收。当前停在本片核查／文档收口；后续各片另获授权，不自动开始。系统边界改变先ADR。
+准入顺序：E13已核定 → E01／E02／E04数据基础已通过 → **E03材料限定工程已通过** → E05/E08保存历史 → E06/E07视觉候选 → E09/E10入口列表 → E11/E12导出宿主 → E14集成。只执行当前已授权E03；通过后Git收口并停止，后续另获授权。系统边界改变先ADR。
 
 ## 2. E01：字段、权威及校验
 
@@ -131,7 +131,7 @@ SQLite精确顺序为预检→观察基础表→inputs→tasks→executions→ca
 
 材料层承担实际解码与派生，发生在写事务外；AI网络worker只读取已验证图文，不混用“只有worker解码”与“父进程提前建图”两套假设。冻结input前工作图必须完成且hash固定。导出也逐图处理，生成过程不占长DB事务。
 
-**技术参数提案，未冻结、未实测：** 原文件25MiB、40MP／单边8192、AI长边2048／JPEG质量85／单图目标1MiB、导出长边2400；实际可行性以解码峰值／清晰度／后续供应商标准为准。40MP的RGB约120MB不能证明总RSS在256MiB内；源解码、方向/颜色/缩放副本、编码缓冲、Python/库和并发均计入。
+**E03当前参数及独立复核：** 源文件同时满足25MiB、40,000,000像素及单边8192；AI派生长边2048／JPEG q85／目标2MiB，超额按0.85缩放，最多6次编码，未满足明确失败；导出预派生长边2400／q90。原字节不改、透明白底、元数据清除；参数版本分别为ai-v2-2048-q85-target2mib-scale085、export-v1-2400-q90。解码串行，先缩至master再方向校正，1024MiB为实际管线工作集验证阈值，不是运行时硬RSS上限或完整应用内存承诺。依赖Pillow13.0.0已锁定，原包版本保持，源码／依赖／容量证据见[E03核查](../bootstrap/desktop-game-observation-assets-review.md)；最终630项全local已通过。E06请求／IPC、E11版面／Word清晰度与总文件容量另验。
 
 不设未经确认的30图、30姓名、200份等业务额度，也不以样例2/3图作限额。所有已保存照片参与明确AI生成；超预算说明具体原因，不静默选子集、不新增独立AI选图流程。请求大小、供应商图数、内存、磁盘空间、导出体积各自校验；若最终保护参数显著影响教师流程，交用户决定，不自行降低产品要求。
 
@@ -252,7 +252,7 @@ auto只更新draft/照片/投影/回执，不造history。手动保存、采用�
 
 观察业务拥有记录、材料、候选业务意义与采用决定；AI基础设施拥有配置、执行、格式校验和状态，不取得业务确认权；Word模块只按固定观察投影渲染。保持Vue→本机FastAPI→SQLite/受管文件与既有worker方向。此设计预计不需ADR；若改一级栈、所有权、数据权威或通信机制，先ADR草案，不能Feature直接改`ARCHITECTURE.md`。
 
-图像库采用`Pillow==13.0.0`作为核定的依赖提案。[PyPI元数据](https://pypi.org/project/pillow/13.0.0/)为Python>=3.11、MIT-CMU；标准GIL的`pillow-13.0.0-cp314-cp314-win_amd64.whl` SHA256为`f7cbb7a64e7ec664775195e4f81923bc8a93d9451b963f844e59118f63147a7a`。仅查元数据，未下载/安装/运行；目标CPython3.14.7 Windows x64标准GIL。后续核查锁、插件/编码器及许可、PyInstaller收集、模板/资源同源，不顺带升级业务包。不安装Skill/MCP，不引入图床/新服务。
+图像库Pillow==13.0.0已加入backend业务声明、uv.lock和桌面统一锁；原26个业务包及桌面旧46包版本／锁hash集合不变。当前CPython3.14.7 Windows x64标准GIL的新建venv已按统一hash锁离线安装47包、通过依赖检查和31项材料测试；JPEG／PNG／WebP／GIF／BMP与LCMS能力已验证，MIT-CMU元数据见[PyPI](https://pypi.org/project/pillow/13.0.0/)及[E03核查](../bootstrap/desktop-game-observation-assets-review.md)。PyInstaller插件／许可收集、模板资源和冻结新包仍后续另验；不安装Skill／MCP，不引入图床或新服务。
 
 ## 15. E14：验收矩阵与分阶段交付
 
@@ -293,4 +293,4 @@ npm run test:d1
 
 真实WebView2验证需记录源码/进程/数据身份，Word页面必须来自新版实际产品导出，记录Windows/Word/字体及每份起始页；XML/PNG/PDF辅助，不能以参考文件渲染代替。后续构建/包验证另有明确授权，检查模板、PIL格式插件/许可、前端与真实入口同源及冷启动；真实AI另授权并看真实读图/多人对应/补写质量，假响应不能证明效果。
 
-目前无新增待用户决定的主流程产品问题，E13门槛及本片实施范围见报告。后续仍须逐片授权、合成容量参数冻结及可能的流程影响核定、材料／候选／保存历史／宿主／Word证据。Win10、WPS、干净机器、其他DPI/显示器、签名发行及既有D2/D3未验项保持未验。原始数据／凭据／OneDrive原件／旧包不作本轮验证材料；本片相关Git收口已另获用户授权，业务停在E01／E02／E04。
+目前无新增待用户决定的主流程产品问题。E03材料限定工程已通过，独立复核范围与未验见[E03报告](../bootstrap/desktop-game-observation-assets-review.md)；本片只核定材料层原图／工作图及预导出图参数，不替代完整图文请求、页面、保存历史、Word／宿主或产品验收。首期保留成功staging空目录及已提交重放的未引用孤儿，不做递归自动清理；后续维护须保护历史/input引用并另行审查。Win10、WPS、干净机器、其他DPI／显示器及既有D2／D3未验保持。真实库／凭据／OneDrive原件／旧包不作自动测试材料；用户仅授权必要时只读使用六份观察DOCX图片作本地核对，不上传、不修改原件。本次Git授权明确覆盖E03审核通过后的提交推送，停在E03。

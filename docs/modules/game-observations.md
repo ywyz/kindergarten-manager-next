@@ -1,6 +1,6 @@
 # 游戏观察记录 Contract
 
-状态：Architecture v2有效业务Contract；E13设计扩展于2026-10-26经Codex独立核定。同日用户另行授权的E01／E02／E04模型、迁移与归属切片已由原OpenCode会话实施，独立结果见[E01／E02／E04独立核查](../bootstrap/desktop-game-observation-foundation-review.md)。其余服务／页面／材料／AI／Word仍为设计，未取得后续实施或产品验收结论。
+状态：Architecture v2有效业务Contract；E13设计扩展已核定，E01／E02／E04数据基础独立通过，见[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)。用户本轮另授权E03图片材料，原Go套餐Flash max会话已交付并停写，已通过[E03独立限定工程核查](../bootstrap/desktop-game-observation-assets-review.md)。其余完整保存历史、页面、视觉AI及Word／宿主仍为设计，未获后续实施或产品验收结论。
 
 产品依据为[游戏观察C1–C33](../specs/desktop-game-observation.md)，工程依据为[E01–E14](../specs/desktop-game-observation-engineering.md)。本文同时记录已实施数据基础与尚待实施的完整Contract；各项实际范围以独立核查报告为准，日计划原Contract及既有验收身份保持。
 
@@ -40,7 +40,7 @@ Word 导出 → 观察：读取固定导出快照
 
 ## 2. Canonical payload 与校验
 
-E01纯校验与hash函数已实施。canonical原图manifest按业务顺序排列，sort_order必须为0至N−1并等于数组下标；后续材料／保存服务须从数据库关联次序生成此规范形式，不新增教师操作。当前数据库仅要求非负、唯一次序；E03映射及完整业务保存未实施。
+E01纯校验与hash函数已实施。canonical原图manifest按业务顺序排列，sort_order为0至N−1并等于数组下标；E03材料服务已从数据库当前关联生成该形式，并将导入／顺序／说明／移除与draft revision、唯一aggregate hash、record计数及回执／审计同事务处理。无变化顺序／说明不增revision；移除只解除当前关联。当前限定工程已通过，完整E05／E08保存历史未实施，不新增教师操作。
 
 | 字段 | 类型／可空 | 语义 |
 | --- | --- | --- |
@@ -395,8 +395,8 @@ game_observation:
 
 ## 12. 参数、ADR 与未验
 
-待容量验证后冻结：canonical payload 字节；原图大小／像素／单边；AI 工作图长边／质量／目标字节；视觉请求体／IPC 帧／超时／工作集；导出图长边、DOCX 大小／分块／超时；`export_id`／恢复 token 期限；导入／派生并发与磁盘余量。均为提案，不在本 Contract 冻结。
+E03当前材料参数：源25MiB／40MP／单边8192同时检查，AI最长边2048／q85／目标2MiB／0.85缩放最多6次编码，导出预派生2400／q90；串行实际解码及1024MiB工作集验证阈值，后者非运行时硬上限或整应用内存承诺，见[E03核查](../bootstrap/desktop-game-observation-assets-review.md)。canonical payload字节、E06视觉请求／IPC／超时、E11 DOCX／分块／版面与导出图清晰度、token期限及整合阶段并发／磁盘余量仍须按对应切片核定，不把本片单图参数推广为整应用通过。
 
 预计不需 ADR：技术栈、依赖方向、SQLite／受管文件权威、本机 API 与 worker 通信未变；观察是 Feature 模块，`export_id` 是现有宿主保存桥的受限扩展。若改为新服务／新进程、外部网络交付、浏览器或远端成为内容权威、改变模块所有权或通信机制，先提 ADR，不暗改 `ARCHITECTURE.md`。
 
-未验：本Contract完整A01–A22尚未验收；E01／E02／E04基础规则、模型、迁移与守卫后种子的实际独立结果见[本片报告](../bootstrap/desktop-game-observation-foundation-review.md)，其余服务及完整产品流程仍未实施／未验。本轮未启动桌面应用、构建或调用应用真实AI／WebDAV。Pillow 13.0.0仅依赖提案，未安装；Word逐页、WebView2、宿主保存、文件路径边界、容量参数均未验。Win10、WPS、干净机器、其他DPI／显示器、签名发行及D2／D3既有未验项保持未验。停在本片，后续实施须另授权，唯一入口见[当前任务](../tasks/current.md)。
+未验：完整A01–A22尚未整项验收。E01／E02／E04已通过限定基础工程，E03当前限定工程已通过；Pillow13.0.0已加入业务／桌面统一锁，格式／元数据／路径与故障／容量实证见[E03报告](../bootstrap/desktop-game-observation-assets-review.md)，不能再写成全部仅提案。页面／HTTP会话接入、完整保存历史、视觉AI、Word逐页／WebView2／宿主、冻结包资源／许可及新包仍未验，本片未启动桌面产品或构建。Win10、WPS、干净机器、其他DPI／显示器、签名发行和既有D2／D3未验保持。通过后正常提交推送，停在E03；后续授权见[当前任务](../tasks/current.md)。
