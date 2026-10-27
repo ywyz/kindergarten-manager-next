@@ -8,9 +8,9 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 本仓库是 kindergartenManager 的全新实现。
 
-2026-10-27接续：E06／E07图文执行、视觉候选与原子采用服务层已由原OpenCode Go套餐DeepSeek V4.1 Flash max会话实施及回修，Codex独立718项全local／85项相关桌面、容量及真实DeepSeek闭环通过，R01–R12关闭；R13为Codex换行误判，新增处理已全部撤回并恢复已验hash。真实请求共4次，含1次unknown且无自动重发；原配置／凭据及旧数据保持。按本轮授权正常提交推送，停在本片；证据docs/bootstrap/desktop-game-observation-ai-review.md，唯一入口docs/tasks/current.md。
+2026-10-28接续：E09／E10本机API、观察编辑与查阅列表由原OpenCode Go套餐DeepSeek V4.1 Flash max会话实施及回修，Codex独立全local728／桌面285、最终全前端（观察38）及HTTP37／WebView2 9项通过；实际中文预览、勾选、四目标采用保存v14、列表及正常关窗通过，R01–R15关闭。按用户授权由原OpenCode正常提交推送后停在本片；证据docs/bootstrap/desktop-game-observation-pages-review.md §6，唯一入口docs/tasks/current.md。批选／排序及Word后置，本片应用真实AI调用0次，原配置／凭据及旧数据保持。
 
-2026-10-27阶段边界：D3-U已推送d52fa8a；D4产品C1–C33、E01–E14及E13六份Contract已核定。数据基础、E03材料、E05／E08保存历史及E06／E07视觉AI服务层限定工程通过；完整A01–A22、页面／Word／宿主及教师体验未验。本轮仅独立合成资料DeepSeek真实测试通过，MiMo无凭据、仅合成核查。后续切片、跨设备、真实冻结更新／安装、发行源、4551、签名／WebDAV／发行不自动启动，D3-A／D2既有边界保持。
+阶段边界：D3-U已推送d52fa8a；D4产品C1–C33、E01–E14及E13六份Contract已核定。数据基础、E03材料、E05／E08保存历史及E06／E07视觉AI服务层限定工程通过；前片独立718项全local／85项相关桌面、容量及真实DeepSeek闭环保持，真实请求共4次含1次unknown且无自动重发，原R13换行误判处理已撤回。当前页面／关闭协调仅按本片限定范围通过，完整A01–A22、Word／原生另存为、整包及教师体验未整体通过，MiMo真实未验。后续切片、跨设备、真实冻结更新／安装、发行源、4551、签名／WebDAV／发行不自动启动，D3-A／D2既有边界保持。
 
 **Architecture v2 已确认（2026-10-08）／D0 工程复审通过／D1A 工程通过／D1B原R1–R17在当前Windows 11开发机工程复审通过；R18日计划Word格式修复的代码、新包及页面验收通过，用户已逐页确认长园所2页、合并7页正常，R18已关闭。T6-A／T6-B／T7及微软拼音已验证，本轮教师体验收口；D2 W1数据迁移与凭据保存、W2游戏配置与提示词已通过当前Windows 11合成环境工程核查；W3、W4已由OpenCode实现并通过Codex当前Windows 11合成环境工程核查；W5界面与宿主整合已通过限定源码集成工程核查；W6导出／无AI降级／完整包已通过当前Windows 11合成环境工程核查；指定Word与合成人工子项按2026-10-20用户决定收口，三项事件留作同类再现处理，真实AI未授权；产品与发行未整体验收。** 用户确认见 `docs/adr/0004-local-desktop-architecture-proposal.md`。现有代码仍包含 v1 云端实现，不得将架构确认或局部代码交付写成迁移或产品验收完成。
 

@@ -83,6 +83,7 @@ _DEDICATED_SYNTHETIC_PHASES = (
     "d3-h2-verify",
     "u3-update",
     "u3-verify",
+    "obs-ui",
 )
 # Phases that must run with a controlled provider (they exercise the real
 # executor/worker/TLS).
@@ -1686,6 +1687,298 @@ def drive_u3_verify(driver, args, summary, checks, host_api, port) -> None:
     checks["u3_external_stop_seen"] = stop is None or stop.exists()
 
 
+def drive_observation_ui(driver, args, summary, checks, host_api, port) -> None:
+    """D4 E09/E10 real WebView2 observation page flow.
+
+    Exercises the real workbench button, list/create, hand-written editor,
+    save, authenticated photo upload through the real file input, history
+    restore, a forced version conflict and leave-with-save. AI generation is
+    deliberately not triggered here (no real provider is authorized); the
+    service/HTTP verifier covers the synthetic candidate flow.
+    """
+    import base64
+
+    token = getattr(host_api, "_launch_token", "")
+    if not token:
+        raise RuntimeError("obs-ui: host token missing")
+
+    def http(method, path, body=None):
+        return _http_json(port, token, method, path, body)
+
+    def step(name, fn):
+        try:
+            fn()
+            checks[name] = True
+        except Exception as exc:  # noqa: BLE001 - record and continue
+            checks[name] = False
+            summary.setdefault("obs_errors", {})[name] = str(exc)
+            _startup_log(f"obs step failed {name}: {exc}")
+
+    driver.wait_until(
+        "Boolean(window.__d1App && window.__d1App.ready())",
+        what="OBS 页面启动",
+        timeout=40,
+    )
+    if driver.eval("window.__d1App.state()") == "uninitialized":
+        driver.eval(
+            "window.__d1Setup.fill("
+            + json.dumps(
+                {
+                    "display_name": "OBS教师",
+                    "class_name": "OBS中一班",
+                    "grade": "middle",
+                    "term_name": "OBS学期",
+                    "start_date": args.term_start,
+                    "end_date": args.term_end,
+                    "school_name": "OBS园所",
+                },
+                ensure_ascii=False,
+            )
+            + ")"
+        )
+        driver.eval("window.__d1Setup.submit()")
+        driver.wait_until(
+            "window.__d1App.state() === 'ready'", what="OBS 初始化", timeout=60
+        )
+    checks["obs_initialized"] = True
+
+    def create_and_edit():
+        driver.wait_until(
+            "Boolean(document.querySelector('[data-d1=\"open-observations\"]'))",
+            what="OBS 工作台入口",
+            timeout=30,
+        )
+        driver.eval(
+            "document.querySelector('[data-d1=\"open-observations\"]').click()"
+        )
+        driver.wait_until(
+            "window.__d1App.view() === 'observations'", what="OBS 进入列表", timeout=30
+        )
+        driver.wait_until(
+            "Boolean(window.__d1Observations)", what="OBS 列表就绪", timeout=30
+        )
+        driver.eval("window.__d1Observations.openCreate()")
+        driver.wait_until(
+            "window.__d1Observations.createOpen() === true",
+            what="OBS 新建对话框",
+            timeout=20,
+        )
+        driver.eval("window.__d1Observations.createType('indoor')")
+        driver.eval(
+            "window.__d1Observations.createDate(" + json.dumps(args.date) + ")"
+        )
+        driver.eval("window.__d1Observations.confirmCreate()")
+        driver.wait_until(
+            "window.__d1App.view() === 'observation-editor'",
+            what="OBS 进入编辑器",
+            timeout=30,
+        )
+        driver.wait_until(
+            "Boolean(window.__d1ObservationEditor)"
+            " && window.__d1ObservationEditor.phase() === 'ready'",
+            what="OBS 编辑器就绪",
+            timeout=30,
+        )
+        observation_id = driver.eval("window.__d1ObservationEditor.observationId()")
+        summary["obs_observation_id"] = observation_id
+        assert observation_id, "observation id missing"
+        driver.eval(
+            "window.__d1ObservationEditor.setField('environment', '积木区')"
+        )
+        driver.eval(
+            "window.__d1ObservationEditor.setField('observation_goal', '观察合作')"
+        )
+        driver.eval(
+            "window.__d1ObservationEditor.setField('observation_process', '幼儿一起搭建。')"
+        )
+        driver.eval("window.__d1ObservationEditor.setField('age_years', '5')")
+        driver.eval("window.__d1ObservationEditor.setField('child_count', '5')")
+        driver.eval("window.__d1ObservationEditor.addSubject()")
+        driver.eval("window.__d1ObservationEditor.setSubject(0, '小明')")
+        driver.wait_until(
+            "window.__d1ObservationEditor.dirty() === true",
+            what="OBS 输入变脏",
+            timeout=15,
+        )
+        driver.eval("window.__d1ObservationEditor.save()")
+        driver.wait_until(
+            "window.__d1ObservationEditor.dirty() === false"
+            " && window.__d1ObservationEditor.revision() >= 2",
+            what="OBS 手动保存",
+            timeout=30,
+        )
+        summary["obs_saved_revision"] = driver.eval(
+            "window.__d1ObservationEditor.revision()"
+        )
+        # Real file input + authenticated multipart upload (no path injection).
+        from PIL import Image
+        import io as _io
+
+        buffer = _io.BytesIO()
+        Image.new("RGB", (96, 64), (180, 40, 40)).save(buffer, "JPEG", quality=88)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        driver.eval(
+            "(function(){"
+            f"const raw=atob({json.dumps(encoded)});"
+            "const bytes=new Uint8Array(raw.length);"
+            "for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);"
+            "const file=new File([bytes],'window.jpg',{type:'image/jpeg'});"
+            "const dt=new DataTransfer();dt.items.add(file);"
+            "const input=document.querySelector('[data-d1=\"obs-file\"]');"
+            "input.files=dt.files;"
+            "input.dispatchEvent(new Event('change',{bubbles:true}));"
+            "return true;})()"
+        )
+        driver.wait_until(
+            "window.__d1ObservationEditor.photos().length === 1",
+            what="OBS 照片导入",
+            timeout=40,
+        )
+        summary["obs_photo_count"] = driver.eval(
+            "window.__d1ObservationEditor.photos().length"
+        )
+        driver.wait_until(
+            "Boolean(window.__d1ObservationEditor.photoUrl("
+            "window.__d1ObservationEditor.photos()[0].asset_id))",
+            what="OBS 受控图片 Blob",
+            timeout=30,
+        )
+
+    step("obs_create_and_edit", create_and_edit)
+
+    def history_restore():
+        driver.eval(
+            "window.__d1ObservationEditor.setField('observation_process', '第二版正文')"
+        )
+        driver.eval("window.__d1ObservationEditor.save()")
+        driver.wait_until(
+            "window.__d1ObservationEditor.dirty() === false",
+            what="OBS 第二版保存",
+            timeout=30,
+        )
+        driver.eval("window.__d1ObservationEditor.openHistory()")
+        driver.wait_until(
+            "window.__d1ObservationEditor.historyOpen() === true",
+            what="OBS 历史打开",
+            timeout=30,
+        )
+        versions = driver.eval(
+            "window.__d1ObservationEditor.historyItems().map(x => x.version)"
+        )
+        assert versions, "no history versions"
+        oldest = min(versions)
+        driver.eval(
+            "window.__d1ObservationEditor.selectHistory(" + str(oldest) + ")"
+        )
+        driver.wait_until(
+            "Boolean(window.__d1ObservationEditor.historyDetail())",
+            what="OBS 历史版本读取",
+            timeout=30,
+        )
+        driver.eval("window.__d1ObservationEditor.previewRestore()")
+        driver.wait_until(
+            "Boolean(window.__d1ObservationEditor.restorePreview())",
+            what="OBS 恢复预览",
+            timeout=30,
+        )
+        before = driver.eval("window.__d1ObservationEditor.revision()")
+        driver.eval("window.__d1ObservationEditor.confirmRestore()")
+        driver.wait_until(
+            "window.__d1ObservationEditor.historyOpen() === false",
+            what="OBS 恢复提交",
+            timeout=30,
+        )
+        after = driver.eval("window.__d1ObservationEditor.revision()")
+        summary["obs_restore"] = {"before": before, "after": after}
+        assert after > before, f"restore did not advance revision: {before} -> {after}"
+
+    step("obs_history_restore", history_restore)
+
+    def conflict_then_leave():
+        observation_id = driver.eval("window.__d1ObservationEditor.observationId()")
+        status, current = http("GET", f"/api/observations/{observation_id}")
+        assert status == 200, f"read current failed: {status}"
+        status, forced = http(
+            "PATCH",
+            f"/api/observations/{observation_id}",
+            {
+                "request_id": "11111111-2222-4333-8444-555555555555",
+                "expected_revision": current["revision"],
+                "payload": {"observation_goal": "服务器抢先保存"},
+                "save_reason": "manual",
+            },
+        )
+        assert status == 200, f"forcing conflict failed: {status} {forced}"
+        driver.eval(
+            "window.__d1ObservationEditor.setField('observation_goal', '本地冲突输入')"
+        )
+        driver.eval("window.__d1ObservationEditor.save()")
+        driver.wait_until(
+            "window.__d1ObservationEditor.conflictActive() === true",
+            what="OBS 冲突保留",
+            timeout=30,
+        )
+        assert (
+            driver.eval("window.__d1App.view()") == "observation-editor"
+        ), "conflict left the editor"
+        driver.eval("window.__d1ObservationEditor.discardLocal()")
+        driver.wait_until(
+            "window.__d1ObservationEditor.phase() === 'ready'",
+            what="OBS 冲突恢复",
+            timeout=30,
+        )
+        # Dirty leave: the coordinator saves (leave node) before the list.
+        driver.eval(
+            "window.__d1ObservationEditor.setField('observation_goal', '离开前保存的目标')"
+        )
+        driver.eval("window.__d1ObservationEditor.backToList()")
+        driver.wait_until(
+            "window.__d1App.view() === 'observations'",
+            what="OBS 离开到列表",
+            timeout=40,
+        )
+        driver.wait_until(
+            "Boolean(window.__d1Observations)", what="OBS 列表重载", timeout=30
+        )
+        driver.eval(
+            "window.__d1Observations.setMonth("
+            + json.dumps(args.date[:7]) + ")"
+        )
+        driver.eval("window.__d1Observations.reload()")
+        driver.wait_until(
+            "window.__d1Observations.items().some("
+            "x => x.observation_id === " + json.dumps(observation_id) + ")",
+            what="OBS 列表包含记录",
+            timeout=30,
+        )
+        driver.eval(
+            "window.__d1Observations.open(" + json.dumps(observation_id) + ")"
+        )
+        driver.wait_until(
+            "window.__d1App.view() === 'observation-editor'"
+            " && window.__d1ObservationEditor.phase() === 'ready'",
+            what="OBS 重新打开",
+            timeout=30,
+        )
+        assert (
+            driver.eval("window.__d1ObservationEditor.form().observation_goal")
+            == "离开前保存的目标"
+        ), "leave save did not persist the observation goal"
+        summary["obs_leave_saved"] = True
+
+    step("obs_conflict_and_leave", conflict_then_leave)
+
+    summary["obs_ok"] = all(
+        checks.get(name) is True
+        for name in (
+            "obs_initialized",
+            "obs_create_and_edit",
+            "obs_history_restore",
+            "obs_conflict_and_leave",
+        )
+    )
+
+
 def drive_selftest(window, host_api, args, summary: dict, port: int | None = None) -> None:
     driver = JsDriver(window)
     checks = summary.setdefault("checks", {})
@@ -1714,6 +2007,9 @@ def drive_selftest(window, host_api, args, summary: dict, port: int | None = Non
         return
     if args.phase == "u3-verify":
         drive_u3_verify(driver, args, summary, checks, host_api, port)
+        return
+    if args.phase == "obs-ui":
+        drive_observation_ui(driver, args, summary, checks, host_api, port)
         return
     if port is not None:
         summary["http_probe"] = probe_http(port)
@@ -6713,6 +7009,7 @@ def run_selftest(args) -> int:
                 "d3-h2-verify",
                 "u3-update",
                 "u3-verify",
+                "obs-ui",
             ):
                 deadline = 420.0
             if not finished.wait(deadline):
@@ -6890,7 +7187,8 @@ def _install_close_handlers(window, host_api, runtime=None) -> None:
         notify_aborted=notify_aborted,
         # The host never destroys the window while a native Word save (dialog
         # or atomic write) is still in flight (spec §12.3 / R11).
-        busy_probe=host_api._save_in_progress,
+        busy_probe=lambda: host_api._save_in_progress()
+        or host_api._page_busy_probe(),
         # D2 §4.3: freeze AI on the close intent and require an explicit task
         # choice before releasing the window.
         task_snapshot=task_snapshot,
@@ -7038,6 +7336,7 @@ def main() -> int:
             "d3-h2-verify",
             "u3-update",
             "u3-verify",
+            "obs-ui",
         ],
         default="first",
     )

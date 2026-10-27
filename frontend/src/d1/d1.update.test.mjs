@@ -388,7 +388,10 @@ async function mountApp({ api, fetchImpl } = {}) {
       (async (url) => {
         const text = String(url)
         if (text.includes('/api/local/context')) return jsonResponse(contextFixture())
-        if (text.includes('/api/local/ai/tasks')) {
+        if (
+          text.includes('/api/local/ai/tasks') ||
+          text.includes('/api/local/ai/observation-tasks')
+        ) {
           return jsonResponse({ items: [], next_cursor: null })
         }
         return jsonResponse({})

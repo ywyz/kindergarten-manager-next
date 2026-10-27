@@ -17,6 +17,7 @@ import hashlib
 import json
 import re
 import secrets
+import base64
 import threading
 import time
 from collections import OrderedDict
@@ -842,6 +843,18 @@ def create_observation_task(
 # ---------------------------------------------------------------------------
 
 
+def read_create_operation(
+    session: Session, *, profile_id: str, request_id: Any
+) -> dict[str, Any]:
+    """Read-only create receipt (same request id, never sends AI again)."""
+    rid = _normalize_request_id(request_id)
+    with read_scope(session):
+        receipt = _find_receipt(session, profile_id, rid)
+        if receipt is None or receipt.operation_kind != OP_CREATE:
+            raise LocalAiNotFound("未找到该观察 AI 提交回执")
+        return dict(receipt.result_json or {})
+
+
 def _candidate_row(
     session: Session, *, profile_id: str, observation_id: str, candidate_id: str
 ) -> LocalAICandidate:
@@ -1566,12 +1579,27 @@ def get_candidate(
         return detail
 
 
+def _candidate_cursor(created_at: Any, candidate_id: str) -> str:
+    raw = f"{created_at.isoformat()}|{candidate_id}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _decode_candidate_cursor(value: str) -> tuple[datetime, str]:
+    try:
+        raw = base64.urlsafe_b64decode(value.encode("ascii")).decode("utf-8")
+        created, candidate_id = raw.split("|", 1)
+        return datetime.fromisoformat(created), candidate_id
+    except Exception:
+        raise LocalValidationError("cursor 不合法") from None
+
+
 def list_candidates(
     session: Session,
     *,
     profile_id: str,
     observation_id: str,
     limit: int = 20,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
         raise LocalValidationError("limit 必须在 1–100 之间")
@@ -1579,16 +1607,33 @@ def list_candidates(
         record, draft, manifest = load_current_ai_manifest(
             session, profile_id=profile_id, observation_id=observation_id
         )
-        rows = session.scalars(
-            select(LocalAICandidate)
-            .where(
-                LocalAICandidate.profile_id == profile_id,
-                LocalAICandidate.source_kind == "game_observation",
-                LocalAICandidate.observation_id == observation_id,
+        statement = select(LocalAICandidate).where(
+            LocalAICandidate.profile_id == profile_id,
+            LocalAICandidate.source_kind == "game_observation",
+            LocalAICandidate.observation_id == observation_id,
+        )
+        if cursor:
+            created, candidate_id = _decode_candidate_cursor(cursor)
+            statement = statement.where(
+                (LocalAICandidate.created_at < created)
+                | (
+                    (LocalAICandidate.created_at == created)
+                    & (LocalAICandidate.id < candidate_id)
+                )
             )
-            .order_by(LocalAICandidate.created_at, LocalAICandidate.id)
-            .limit(limit)
-        ).all()
+        rows = list(
+            session.scalars(
+                statement.order_by(
+                    LocalAICandidate.created_at.desc(),
+                    LocalAICandidate.id.desc(),
+                ).limit(limit + 1)
+            ).all()
+        )
+        next_cursor = None
+        if len(rows) > limit:
+            rows = rows[:limit]
+            last = rows[-1]
+            next_cursor = _candidate_cursor(last.created_at, last.id)
         items = []
         for candidate in rows:
             _c, raw, _execution, inp = _candidate_chain(
@@ -1610,7 +1655,7 @@ def list_candidates(
                     manifest=manifest,
                 )
             )
-        return {"items": items, "next_cursor": None}
+        return {"items": items, "next_cursor": next_cursor}
 
 
 # ---------------------------------------------------------------------------
@@ -2105,6 +2150,7 @@ __all__ = [
     "list_candidates",
     "load_observation_material",
     "preview_adoption",
+    "read_create_operation",
     "reset_tokens",
     "revalidate_observation_source",
 ]

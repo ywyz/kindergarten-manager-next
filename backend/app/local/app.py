@@ -24,6 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.local.api import exports_router, local_router, plans_router
 from app.local.errors import LocalError
+from app.local.observation_api import observations_router
 from app.local.runtime import LocalRuntime
 from app.local.schemas import LocalHealthOut
 
@@ -150,4 +151,5 @@ def create_local_app(
     app.include_router(local_router)
     app.include_router(plans_router)
     app.include_router(exports_router)
+    app.include_router(observations_router)
     return app

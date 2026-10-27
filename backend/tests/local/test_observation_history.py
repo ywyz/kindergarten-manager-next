@@ -23,6 +23,7 @@ from app.local import (
     observation_service,
     profile_service,
 )
+from app.local.base import utc_now
 from app.local.models import (
     LocalObservationAsset,
     LocalObservationDraft,
@@ -1827,7 +1828,7 @@ class ObservationHistoryServiceTests(LocalTestCase):
             base_draft_revision=current["revision"],
             base_draft_hash=current["payload_hash"],
             term_decision="keep_history",
-            now=self.now,
+            now=utc_now(),
         )
         profile_id = self.profile.id
         data_dir = self.data_dir
@@ -1881,7 +1882,7 @@ class ObservationHistoryServiceTests(LocalTestCase):
             base_draft_revision=next_current["revision"],
             base_draft_hash=next_current["payload_hash"],
             term_decision="keep_history",
-            now=self.now,
+            now=utc_now(),
         )
         self.session.close()
         self.runtime.dispose()

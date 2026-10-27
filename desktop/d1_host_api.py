@@ -33,6 +33,7 @@ import hmac
 import io
 import json
 import os
+import secrets
 import tempfile
 import threading
 import time
@@ -62,6 +63,7 @@ BRIDGE_ALLOWED_ENDPOINTS = frozenset(
         "install_update",
         "get_update_state",
         "page_ready",
+        "set_page_busy",
         "complete_close",
         "get_close_state",
         "save_docx",
@@ -727,6 +729,12 @@ class D1HostApi:
         self._save_inflight = 0
         self._save_records: dict[str, dict] = {}
         self._page_ready = False
+        self._page_busy = False
+        self._page_busy_seq = 0
+        self._page_ticket: str | None = None
+        self._page_ticket_bound = False
+        self._page_ticket_mode = False
+        self._page_lock = threading.RLock()
         self._close_coordinator: CloseCoordinator | None = None
 
     # -- window plumbing ---------------------------------------------------
@@ -743,10 +751,16 @@ class D1HostApi:
 
     # -- session / bridge --------------------------------------------------
     def get_bootstrap(self) -> dict:
-        result = {
-            "bridge_protocol": BRIDGE_PROTOCOL,
-            "launch_token": self._launch_token,
-        }
+        with self._page_lock:
+            # A fresh bootstrap ticket identifies this page instance. The
+            # previous ticket is retired; a late ready/busy from it is refused.
+            self._page_ticket = secrets.token_urlsafe(24)
+            self._page_ticket_bound = False
+            result = {
+                "bridge_protocol": BRIDGE_PROTOCOL,
+                "launch_token": self._launch_token,
+                "page_ticket": self._page_ticket,
+            }
         if self._ready_receipt is not None:
             result["update_install"] = self._ready_receipt.public_bootstrap()
         return result
@@ -757,22 +771,112 @@ class D1HostApi:
             protocol = payload.get("bridge_protocol")
         if protocol != BRIDGE_PROTOCOL:
             return {"accepted": False, "host_protocol": BRIDGE_PROTOCOL}
-        if self._ready_receipt is not None:
-            install_payload = (
-                payload.get("update_install") if isinstance(payload, dict) else None
-            )
-            confirmed = self._ready_receipt.confirm(
-                install_payload, page_ready=True
-            )
-            if not confirmed.get("accepted"):
+        ticket = None
+        install_payload = None
+        if isinstance(payload, dict):
+            raw_ticket = payload.get("page_ticket")
+            if isinstance(raw_ticket, str) and raw_ticket:
+                ticket = raw_ticket
+            install_payload = payload.get("update_install")
+        with self._page_lock:
+            # Validate page identity/legacy eligibility BEFORE any update
+            # readiness side effect. An invalid/old ticket must never call
+            # ready_receipt.confirm, even once.
+            if ticket is None:
+                if self._page_ticket_mode:
+                    return {"accepted": False, "host_protocol": BRIDGE_PROTOCOL}
+                if self._page_ready:
+                    # Legacy duplicate ready is idempotent.
+                    return {"accepted": True, "host_protocol": BRIDGE_PROTOCOL}
+            else:
+                if ticket != self._page_ticket:
+                    return {"accepted": False, "host_protocol": BRIDGE_PROTOCOL}
+                if self._page_ready and self._page_ticket_bound:
+                    # Duplicate ready for the current accepted page.
+                    return {"accepted": True, "host_protocol": BRIDGE_PROTOCOL}
+            if self._ready_receipt is not None:
+                confirmed = self._ready_receipt.confirm(
+                    install_payload, page_ready=True
+                )
+                if not confirmed.get("accepted"):
+                    return {
+                        "accepted": False,
+                        "host_protocol": BRIDGE_PROTOCOL,
+                        "update_install_error": confirmed.get("code")
+                        or "READY_CONFIRM_FAILED",
+                    }
+            if ticket is None:
+                self._page_ready = True
+                return {"accepted": True, "host_protocol": BRIDGE_PROTOCOL}
+            # Re-check under the same lock (confirm is held inside it); a new
+            # bootstrap cannot swap the ticket between validation and commit.
+            if ticket != self._page_ticket:
+                return {"accepted": False, "host_protocol": BRIDGE_PROTOCOL}
+            if not self._page_ready or not self._page_ticket_bound:
+                # First ready for this exact ticket: a new page starts clean.
+                self._page_busy = False
+                self._page_busy_seq = 0
+            self._page_ticket_bound = True
+            self._page_ticket_mode = True
+            self._page_ready = True
+            return {"accepted": True, "host_protocol": BRIDGE_PROTOCOL}
+
+    def set_page_busy(self, payload: object = None) -> dict:
+        """Versioned, page-bound write barrier (create/import/adopt/…).
+
+        The close/update barrier treats an in-flight/unknown write like a
+        native save; a persisted AI execution is not page-busy (the close
+        choice remains reachable). The ticket issued by ``get_bootstrap`` and
+        the positive sequence are checked and updated under one lock, so an
+        old page can never clear a newer page's barrier.
+        """
+        with self._page_lock:
+            if not self._page_ready or not self._page_ticket_bound:
                 return {
                     "accepted": False,
-                    "host_protocol": BRIDGE_PROTOCOL,
-                    "update_install_error": confirmed.get("code")
-                    or "READY_CONFIRM_FAILED",
+                    "busy": self._page_busy,
+                    "seq": self._page_busy_seq,
                 }
-        self._page_ready = True
-        return {"accepted": True, "host_protocol": BRIDGE_PROTOCOL}
+            ticket = None
+            seq = 0
+            busy = False
+            if isinstance(payload, dict):
+                raw_ticket = payload.get("page_ticket")
+                if isinstance(raw_ticket, str) and raw_ticket:
+                    ticket = raw_ticket
+                raw_seq = payload.get("seq")
+                if isinstance(raw_seq, int) and not isinstance(raw_seq, bool):
+                    seq = raw_seq
+                busy = payload.get("busy") is True
+            if ticket is None or ticket != self._page_ticket:
+                return {
+                    "accepted": False,
+                    "busy": self._page_busy,
+                    "seq": self._page_busy_seq,
+                }
+            if seq <= 0:
+                return {
+                    "accepted": False,
+                    "busy": self._page_busy,
+                    "seq": self._page_busy_seq,
+                }
+            if seq <= self._page_busy_seq:
+                return {
+                    "accepted": True,
+                    "busy": self._page_busy,
+                    "seq": self._page_busy_seq,
+                }
+            self._page_busy_seq = seq
+            self._page_busy = busy
+            return {
+                "accepted": True,
+                "busy": self._page_busy,
+                "seq": self._page_busy_seq,
+            }
+
+    def _page_busy_probe(self) -> bool:
+        with self._page_lock:
+            return bool(self._page_busy)
 
     # -- update discovery/download/install --------------------------------
     def _merge_install_state(self, value: dict) -> dict:

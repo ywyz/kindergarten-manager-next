@@ -23,6 +23,7 @@ export interface HostApi {
   get_bootstrap?: () => Promise<{
     bridge_protocol?: number
     launch_token?: string
+    page_ticket?: string
     update_install?: {
       plan_id: string
       nonce: string
@@ -32,6 +33,7 @@ export interface HostApi {
   }>
   page_ready?: (payload: {
     bridge_protocol: number
+    page_ticket?: string
     update_install?: {
       plan_id: string
       nonce: string
@@ -73,6 +75,12 @@ export interface HostApi {
     update_state?: UpdateStatus
   }>
   get_update_state?: () => Promise<UpdateStatus>
+  /** Page-side write barrier for close/update (observation create/import/…). */
+  set_page_busy?: (payload: {
+    busy: boolean
+    seq: number
+    page_ticket: string
+  }) => Promise<{ accepted?: boolean; busy?: boolean; seq?: number }>
 }
 
 export interface PywebviewGlobal {

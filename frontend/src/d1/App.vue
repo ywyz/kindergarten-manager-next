@@ -7,7 +7,7 @@
  * (close / switch date / switch term / back to calendar / settings) go
  * through one coordinator; a failed or conflicted save keeps the page.
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, ApiError, setSessionToken } from './client'
 import {
@@ -27,6 +27,8 @@ import { isLiveTask } from './ai'
 import SetupView from './views/SetupView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import EditorView from './views/EditorView.vue'
+import ObservationsView from './views/ObservationsView.vue'
+import ObservationEditorView from './views/ObservationEditorView.vue'
 import SettingsView from './views/SettingsView.vue'
 import UpdatePanel from './views/UpdatePanel.vue'
 
@@ -40,8 +42,11 @@ type View =
       planId?: string
       fromTermId?: string
     }
+  | { name: 'observations' }
+  | { name: 'observation-editor'; observationId: string }
   | { name: 'settings' }
 
+let pageTicket = ''
 const bootState = ref<'connecting' | 'uninitialized' | 'ready' | 'error'>(
   'connecting',
 )
@@ -56,6 +61,51 @@ const closeFinalAllowed = ref(false)
 const settingsDraftActive = ref(false)
 /** Native Word save in flight (the close request must wait for it). */
 const exportBusy = ref(false)
+/** Observation page writes (create/import/adopt/restore/AI submit). */
+const observationsBusy = ref(false)
+const editorBusy = ref(false)
+const pageBusy = computed(
+  () => observationsBusy.value || editorBusy.value || exportBusy.value,
+)
+
+let pageBusySeq = 0
+let pageBusyRetry: ReturnType<typeof setTimeout> | null = null
+let pageBusyAlive = true
+
+function schedulePageBusyRetry(seq: number): void {
+  if (!pageBusyAlive || seq !== pageBusySeq) return
+  // A newer state always takes over the retry responsibility. Keeping the
+  // old timer would let it expire for a stale seq and leave the host busy.
+  if (pageBusyRetry !== null) clearTimeout(pageBusyRetry)
+  pageBusyRetry = setTimeout(() => {
+    pageBusyRetry = null
+    if (pageBusyAlive && seq === pageBusySeq) void syncPageBusy()
+  }, 200)
+}
+
+async function syncPageBusy(): Promise<void> {
+  const seq = ++pageBusySeq
+  const busy = pageBusy.value
+  const bridge = hostGlobal()?.api?.set_page_busy
+  if (typeof bridge !== 'function' || !pageTicket) return
+  try {
+    const result = await bridge({ busy, seq, page_ticket: pageTicket })
+    if (!pageBusyAlive) return
+    if (!result || result.accepted === false) {
+      // A pre-ready page or a lost reply must retry the current final state;
+      // it must not wait for another editor change to release the host.
+      schedulePageBusyRetry(seq)
+    }
+  } catch {
+    // Retry the same current state independently; the close path still
+    // re-checks the page-side state before allowing.
+    schedulePageBusyRetry(seq)
+  }
+}
+
+watch(pageBusy, () => {
+  void syncPageBusy()
+})
 /** D3-U U1 update panel; no install action exists in this slice. */
 const updateOpen = ref(false)
 const updateStatus = ref<UpdateStatus | null>(null)
@@ -147,11 +197,11 @@ function cancelCloseChoice(requestId: string): void {
 type LiveProbe = 'live' | 'none' | 'unknown'
 
 /**
- * Whether any live AI task exists. Pages through the complete task list (the
- * API is cursor-ordered ascending) and never treats a truncated/failed read
- * as "no tasks" (R12): an unknown result is handled like "may have live tasks".
+ * Whether any live AI task exists in one source. Pages through the complete
+ * task list (cursor-ordered ascending) and never treats a truncated/failed
+ * read as "no tasks": an unknown result is handled like "may have live tasks".
  */
-async function probeLiveTasks(): Promise<LiveProbe> {
+async function probeLiveSource(source: 'daily_plan' | 'game_observation'): Promise<LiveProbe> {
   const MAX_PAGES = 100
   let cursor: string | null = null
   let pages = 0
@@ -159,7 +209,11 @@ async function probeLiveTasks(): Promise<LiveProbe> {
     do {
       let query = 'limit=100'
       if (cursor) query += `&cursor=${encodeURIComponent(cursor)}`
-      const data = await apiGet<AiTaskList>(`/api/local/ai/tasks?${query}`)
+      const path =
+        source === 'game_observation'
+          ? '/api/local/ai/observation-tasks'
+          : '/api/local/ai/tasks'
+      const data = await apiGet<AiTaskList>(`${path}?${query}`)
       if (data.items.some((task) => isLiveTask(task))) return 'live'
       cursor = data.next_cursor
       pages += 1
@@ -168,12 +222,29 @@ async function probeLiveTasks(): Promise<LiveProbe> {
   } catch (err) {
     // A legitimately uninitialised profile can never have tasks: the host's
     // no_profile snapshot is 0, so the reviewed D1 close proceeds normally.
-    if (err instanceof ApiError && err.code === 'LOCAL_PROFILE_REQUIRED') {
+    if (
+      err instanceof ApiError &&
+      (err.code === 'LOCAL_PROFILE_REQUIRED' || err.status === 404)
+    ) {
       return 'none'
     }
     // Any real read/communication failure is NOT "no tasks".
     return 'unknown'
   }
+}
+
+/**
+ * Both AI sources participate in the global close/update barrier (Contract
+ * §8). A failure in either source is conservative; a live task in either
+ * source forces the explicit choice.
+ */
+async function probeLiveTasks(): Promise<LiveProbe> {
+  const daily = await probeLiveSource('daily_plan')
+  if (daily === 'live') return 'live'
+  const observation = await probeLiveSource('game_observation')
+  if (observation === 'live') return 'live'
+  if (daily === 'unknown' || observation === 'unknown') return 'unknown'
+  return 'none'
 }
 
 interface EditorBridge {
@@ -188,6 +259,12 @@ let editorBridge: EditorBridge | null = null
 
 /** The settings / candidate draft currently blocking every leave. */
 function currentBlockingDraft(): BlockingDraft | null {
+  if (observationsBusy.value) {
+    return {
+      kind: 'material',
+      message: '观察记录正在提交：请等待结果后再离开当前页面',
+    }
+  }
   if (isSettingsDraftBlocking()) {
     return {
       kind: 'settings',
@@ -250,7 +327,7 @@ function isSettingsDraftBlocking(): boolean {
 
 async function requestLeave(
   action:
-    | { kind: 'calendar' | 'date' | 'term' | 'settings' }
+    | { kind: 'calendar' | 'date' | 'term' | 'observations' | 'settings' }
     | { kind: 'close'; closeRequestId: string },
   run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed',
 ): Promise<'left' | 'stayed' | 'busy'> {
@@ -314,8 +391,28 @@ function openEditorFromWorkbench(
   view.value = { name: 'editor', planDate: date, mode, planId, fromTermId: termId }
 }
 
+function openObservationsFromWorkbench(): void {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return
+  }
+  observationsBusy.value = false
+  view.value = { name: 'observations' }
+}
+
+function openObservationFromList(observationId: string): void {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return
+  }
+  // The list page's create barrier is local to that page; entering the
+  // editor must not inherit a stale busy flag from an unmount race.
+  observationsBusy.value = false
+  view.value = { name: 'observation-editor', observationId }
+}
+
 async function leaveForAction(
-  kind: 'calendar' | 'date' | 'term' | 'settings',
+  kind: 'calendar' | 'date' | 'term' | 'observations' | 'settings',
   run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed',
 ): Promise<'left' | 'stayed' | 'busy'> {
   if (exportBusy.value) {
@@ -330,6 +427,9 @@ async function leaveForAction(
     if (kind === 'calendar') {
       editorBridge = null
       view.value = { name: 'workbench' }
+    } else if (kind === 'observations') {
+      editorBridge = null
+      view.value = { name: 'observations' }
     } else if (kind === 'settings') {
       view.value = { name: 'settings' }
     }
@@ -417,6 +517,12 @@ async function finishClose(closeRequestId: string): Promise<'left' | 'stayed'> {
   // candidate preview edit lives on the editor bridge): a new unconfirmed
   // draft (or an open preview) created during the wait keeps the page — the
   // close never applies, posts or discards it (spec §11.3 / D2 §5.4).
+  if (observationsBusy.value || editorBusy.value) {
+    ElMessage.warning(
+      '观察记录写操作仍在提交：已取消本次关闭并保留现场，请等待结果后重试',
+    )
+    return 'stayed'
+  }
   const draft = currentBlockingDraft()
   if (draft) {
     ElMessage.warning(
@@ -916,8 +1022,13 @@ async function bootstrap(): Promise<void> {
     if (bootstrapInfo.launch_token) {
       setSessionToken(bootstrapInfo.launch_token)
     }
+    pageTicket =
+      typeof bootstrapInfo.page_ticket === 'string'
+        ? bootstrapInfo.page_ticket
+        : ''
     const readyResult = await host.api.page_ready?.({
       bridge_protocol: BRIDGE_PROTOCOL,
+      page_ticket: pageTicket || undefined,
       update_install: bootstrapInfo.update_install ?? null,
     })
     if (readyResult && readyResult.accepted === false) {
@@ -927,6 +1038,9 @@ async function bootstrap(): Promise<void> {
         : '宿主未接受页面握手：请联系维护者更新应用。'
       return
     }
+    // Re-send the page's current write barrier after the handshake; any
+    // pre-ready notification was refused by the host.
+    void syncPageBusy()
   } catch (err) {
     bootState.value = 'error'
     bootError.value = `初始化失败：${String(err)}`
@@ -950,6 +1064,19 @@ async function bootstrap(): Promise<void> {
 onBeforeUnmount(() => {
   updateSeq += 1
   clearUpdatePoll()
+  pageBusyAlive = false
+  if (pageBusyRetry !== null) {
+    clearTimeout(pageBusyRetry)
+    pageBusyRetry = null
+  }
+  // Best-effort final release; the host also resets on a new page_ready.
+  if (pageTicket) {
+    void hostGlobal()?.api?.set_page_busy?.({
+      busy: false,
+      seq: ++pageBusySeq,
+      page_ticket: pageTicket,
+    })
+  }
 })
 
 onMounted(() => {
@@ -1020,9 +1147,29 @@ onMounted(() => {
         :context="context!"
         :frozen="closeLocked"
         @open-editor="openEditorFromWorkbench"
+        @open-observations="openObservationsFromWorkbench"
         @open-settings="() => void leaveForAction('settings', goSettings)"
         @check-update="openUpdateManual"
         @reload-context="reloadContext"
+      />
+      <ObservationsView
+        v-else-if="view.name === 'observations'"
+        :context="context!"
+        :frozen="closeLocked"
+        @open-observation="openObservationFromList"
+        @back="() => (view = { name: 'workbench' })"
+        @busy="(value) => (observationsBusy = value)"
+      />
+      <ObservationEditorView
+        v-else-if="view.name === 'observation-editor'"
+        :key="view.observationId"
+        :context="context!"
+        :observation-id="view.observationId"
+        :frozen="closeLocked"
+        @register-editor="registerEditor"
+        @leave="(kind, run) => void leaveForAction(kind, run)"
+        @refresh-context="reloadContext"
+        @busy="(value) => (editorBusy = value)"
       />
       <EditorView
         v-else-if="view.name === 'editor'"

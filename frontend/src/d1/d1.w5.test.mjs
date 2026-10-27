@@ -3344,6 +3344,9 @@ async function mountApp({
             if (tasksError) throw new StubApiError(503, '任务读取失败', 'AI_EXECUTOR_UNAVAILABLE')
             return appTaskPages(tasksPages)({ url: String(path) })
           }
+          if (String(path).startsWith('/api/local/ai/observation-tasks')) {
+            return { items: [], next_cursor: null }
+          }
           return contextFixture()
         },
         apiPost: async () => {

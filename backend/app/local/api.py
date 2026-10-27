@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import date
-from typing import Iterator
+from typing import Any, Iterator
 from urllib.parse import quote
 
 from fastapi import (
@@ -722,14 +722,40 @@ def list_ai_tasks(
         )
 
 
+@local_router.get("/ai/observation-tasks")
+def list_observation_tasks(
+    observation_id: str | None = None,
+    status_: str | None = Query(default=None, alias="status"),
+    limit: int = Query(ai_task_service.DEFAULT_LIST_LIMIT),
+    cursor: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """Observation/global task projection for the close/update barrier.
+
+    The legacy ``/ai/tasks`` route above stays fixed to daily plans and its
+    original schema; this separate protected route adds the second source
+    without widening the old response.
+    """
+    with storage_errors():
+        return ai_task_service.list_tasks(
+            session,
+            observation_id=observation_id,
+            status=status_,
+            limit=limit,
+            cursor=cursor,
+            source_kind="game_observation",
+        )
+
+
 @local_router.get("/ai/tasks/{task_id}", response_model=LocalAITaskOut)
 def get_ai_task(task_id: str, session: Session = Depends(get_session)):
     with storage_errors():
         return ai_task_service.get_task(session, task_id)
 
 
-@local_router.get("/ai/tasks/{task_id}/progress", response_model=LocalAIProgressOut)
-def get_ai_task_progress(task_id: str, session: Session = Depends(get_session)):
+def _task_progress(
+    session: Session, task_id: str, source_kind: str = "daily_plan"
+) -> dict[str, Any]:
     """Read-only display progress for the task's current execution.
 
     It never starts a task, opens a network connection or writes anything: a
@@ -737,7 +763,7 @@ def get_ai_task_progress(task_id: str, session: Session = Depends(get_session)):
     resolved through the normal profile-scoped read (foreign/missing = 404).
     """
     with storage_errors():
-        task = ai_task_service.get_task(session, task_id)
+        task = ai_task_service.get_task(session, task_id, source_kind=source_kind)
         status = str(task.get("status") or "")
         execution = task.get("execution") or {}
         execution_id = execution.get("id")
@@ -851,6 +877,14 @@ def get_ai_task_progress(task_id: str, session: Session = Depends(get_session)):
             "content_chars": snapshot["content_chars"],
             "truncated": snapshot["truncated"],
         }
+
+
+
+
+@local_router.get("/ai/tasks/{task_id}/progress", response_model=LocalAIProgressOut)
+def get_ai_task_progress(task_id: str, session: Session = Depends(get_session)):
+    with storage_errors():
+        return _task_progress(session, task_id)
 
 
 def _current_execution_id(session: Session, task_id: str) -> str | None:

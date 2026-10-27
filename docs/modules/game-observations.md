@@ -348,6 +348,7 @@ game_observation:
 - **不记**原始 `export_id`／preview／adoption token／应用会话／认证材料；`filename` 可能含幼儿姓名，不入日志；业务 token 只在受限服务／回执，前端／宿主仅必要时持有，不作遥测。
 - 不记儿童姓名、照片／Base64、完整正文、提示词、密钥、认证头或真实路径。业务回执／审计同事务成功或回滚，不留下假成功；不新增日志服务／队列／遥测／查看界面。
 - 全局关闭／在途统计包含两类任务；旧日计划接口只返回 `daily_plan` 及原字段语义。
+- 页面接入仍固定旧 `/api/local/ai/tasks` 的 daily 来源与响应模型；观察全局关闭查 `/api/local/ai/observation-tasks`，单记录任务查 `/api/observations/{id}/ai-tasks`。不以开放旧接口任意 source 参数替代来源边界。页面准备／写 busy 与持久 AI 运行分开，页票据／序号及宿主关闭扩展见[保存握手规格 §11.4](../specs/desktop-manual-daily-plan.md)；观察 Word／原生另存为仍后置。
 
 ## 9. 错误分类
 
@@ -404,4 +405,4 @@ E03材料参数保持：源25MiB／40MP／单边8192，AI最长边2048／q85／�
 
 预计不需 ADR：技术栈、依赖方向、SQLite／受管文件权威、本机 API 与 worker 通信未变；观察是 Feature 模块，`export_id` 是现有宿主保存桥的受限扩展。若改为新服务／新进程、外部网络交付、浏览器或远端成为内容权威、改变模块所有权或通信机制，先提 ADR，不暗改 `ARCHITECTURE.md`。
 
-未验：完整A01–A22尚未整项验收。服务层范围见[本片核查](../bootstrap/desktop-game-observation-ai-review.md)及前片材料／历史报告。页面／HTTP会话接入、IME／离开、复杂真实照片质量、MiMo真实调用、Word逐页／WebView2／宿主、冻结资源／许可及新包仍未验；Win10、WPS、干净机器、其他DPI／显示器、签名发行和D2／D3既有未验保持。按本轮授权提交推送后停在E06／E07，后续入口见[当前任务](../tasks/current.md)。
+未验：完整A01–A22尚未整项验收。服务层范围见[图文候选核查](../bootstrap/desktop-game-observation-ai-review.md)及前片材料／历史报告；当前 E09／E10 创建、编辑、查阅、本机 HTTP、IME／离开及宿主协调的限定核查范围与结果见[观察页核查](../bootstrap/desktop-game-observation-pages-review.md)，不据局部窗口或合成用例替代教师验收。复杂真实照片质量、MiMo真实调用、观察 Word 逐页／原生另存为、冻结资源／许可及新包仍后置；Win10、WPS、干净机器、其他DPI／显示器、签名发行和D2／D3既有未验保持。当前授权与停止边界以[唯一任务入口](../tasks/current.md)为准。

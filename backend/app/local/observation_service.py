@@ -14,7 +14,7 @@ import json
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -42,6 +42,7 @@ from app.local.observation_terms import (
 )
 from app.local.observation_validation import (
     EVALUATION_KEYS,
+    ObservationValidationError,
     aggregate_hash,
     canonical_json,
     normalize_payload,
@@ -881,6 +882,7 @@ def read_current(
 ) -> dict[str, Any]:
     with read_scope(session):
         record, draft, manifest = _load_current(session, profile_id, observation_id)
+        latest = _latest_version(session, observation_id)
         return {
             "observation_id": record.id,
             "revision": draft.revision,
@@ -888,8 +890,152 @@ def read_current(
             "payload_hash": draft.payload_hash,
             "photos": manifest,
             "current_version": record.current_version,
+            "latest_version_hash": latest.payload_hash if latest is not None else None,
             "updated_at": record.updated_at.isoformat(),
         }
+
+
+DEFAULT_LIST_LIMIT = 20
+MAX_LIST_LIMIT = 100
+
+
+def _list_item(record: LocalObservationRecord) -> dict[str, Any]:
+    subjects = record.subjects_json or []
+    snapshot = record.term_snapshot_json
+    term_name = snapshot.get("name") if isinstance(snapshot, dict) else None
+    return {
+        "observation_id": record.id,
+        "record_type": record.record_type,
+        "observation_date": (
+            record.observation_date.isoformat()
+            if record.observation_date is not None
+            else None
+        ),
+        "start_time": record.start_time,
+        "end_time": record.end_time,
+        "term_id": record.term_id,
+        "term_name": term_name,
+        "school_name": record.school_name,
+        "class_name": record.class_name,
+        "observer_name": record.observer_name,
+        "subjects": [
+            str(item.get("name"))
+            for item in subjects
+            if isinstance(item, dict) and item.get("name")
+        ],
+        "environment": record.environment,
+        "adult_count": record.adult_count,
+        "child_count": record.child_count,
+        "age_years": record.age_years,
+        "current_draft_revision": record.current_draft_revision,
+        "current_version": record.current_version,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+    }
+
+
+def list_observations(
+    session: Session,
+    *,
+    profile_id: str,
+    from_date: Any = None,
+    to_date: Any = None,
+    term_id: Any = None,
+    unassigned: bool = False,
+    record_type: Any = None,
+    subject: Any = None,
+    offset: Any = 0,
+    limit: Any = DEFAULT_LIST_LIMIT,
+) -> dict[str, Any]:
+    """Read-only list projection over the record columns (never the draft)."""
+    if (
+        not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or offset < 0
+    ):
+        raise ObservationValidationError("offset 必须是非负整数", field="offset")
+    if (
+        not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or not 1 <= limit <= MAX_LIST_LIMIT
+    ):
+        raise ObservationValidationError(
+            f"limit 必须在 1–{MAX_LIST_LIMIT} 之间", field="limit"
+        )
+    if record_type is not None and record_type not in (
+        "public",
+        "indoor",
+        "outdoor",
+    ):
+        raise ObservationValidationError(
+            "record_type 不在允许范围", field="record_type"
+        )
+    start = _date_value(from_date) if from_date is not None else None
+    end = _date_value(to_date) if to_date is not None else None
+    if start is not None and end is not None and start > end:
+        raise ObservationValidationError(
+            "日期范围起点晚于终点", field="from"
+        )
+    if unassigned and term_id is not None:
+        raise ObservationValidationError(
+            "term_id 与 unassigned 不能同时使用", field="term_id"
+        )
+    conditions = [LocalObservationRecord.creator_profile_id == profile_id]
+    if start is not None:
+        conditions.append(LocalObservationRecord.observation_date >= start)
+    if end is not None:
+        conditions.append(LocalObservationRecord.observation_date <= end)
+    if unassigned:
+        conditions.append(LocalObservationRecord.term_id.is_(None))
+    elif term_id is not None:
+        if not isinstance(term_id, str) or not term_id:
+            raise ObservationValidationError("term_id 不合法", field="term_id")
+        conditions.append(LocalObservationRecord.term_id == term_id)
+    if record_type is not None:
+        conditions.append(LocalObservationRecord.record_type == record_type)
+    search = subject.strip() if isinstance(subject, str) else None
+    if subject is not None and not isinstance(subject, str):
+        raise ObservationValidationError("subject 必须是字符串", field="subject")
+    if search:
+        # JSON1 is part of the shipped SQLite; names are matched by substring
+        # on the stored ordered array, never by rewriting it.
+        conditions.append(
+            text(
+                "EXISTS (SELECT 1 FROM json_each("
+                "local_observation_records.subjects_json) AS subject_item "
+                "WHERE instr(lower(json_extract(subject_item.value, '$.name')), "
+                "lower(:subject_search)) > 0)"
+            ).bindparams(subject_search=search)
+        )
+    with read_scope(session):
+        total = int(
+            session.scalar(
+                select(func.count()).select_from(LocalObservationRecord).where(
+                    *conditions
+                )
+            )
+            or 0
+        )
+        rows = list(
+            session.scalars(
+                select(LocalObservationRecord)
+                .where(*conditions)
+                .order_by(
+                    LocalObservationRecord.observation_date.desc().nullslast(),
+                    LocalObservationRecord.start_time.asc().nullslast(),
+                    LocalObservationRecord.created_at.asc(),
+                    LocalObservationRecord.id.asc(),
+                )
+                .offset(offset)
+                .limit(limit)
+            ).all()
+        )
+    return {
+        "items": [_list_item(row) for row in rows],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 def read_operation_receipt(
@@ -1074,6 +1220,7 @@ def save_observation(
 
 __all__ = [
     "SAVE_REASONS",
+    "DEFAULT_LIST_LIMIT",
     "ObservationNotFound",
     "ObservationRevisionConflict",
     "ObservationRequestConflict",
@@ -1088,6 +1235,7 @@ __all__ = [
     "ObservationRestoreSourceInvalid",
     "ObservationOperationNotFound",
     "create_observation",
+    "list_observations",
     "read_current",
     "read_operation_receipt",
     "save_observation",

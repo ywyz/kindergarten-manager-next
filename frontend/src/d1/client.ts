@@ -107,6 +107,67 @@ export function apiPatch<T>(path: string, body: unknown): Promise<T> {
   return request<T>('PATCH', path, body)
 }
 
+export function apiDelete<T>(path: string, body: unknown): Promise<T> {
+  return request<T>('DELETE', path, body)
+}
+
+/** Multipart upload (the browser sets the boundary; never set content-type). */
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  const headers: Record<string, string> = { 'cache-control': 'no-store' }
+  if (sessionToken !== null) headers[SESSION_HEADER] = sessionToken
+  let response: Response
+  try {
+    response = await fetch(path, {
+      method: 'POST',
+      headers,
+      mode: 'same-origin',
+      body: form,
+    })
+  } catch (err) {
+    throw new ApiError(0, `网络请求异常：${String(err)}`)
+  }
+  const payload = await response.json().catch(() => UNREADABLE)
+  if (!response.ok) {
+    throw toError(response.status, payload === UNREADABLE ? null : payload)
+  }
+  if (payload === UNREADABLE || payload === null) {
+    throw new ApiError(0, `响应无法解析：结果未知（HTTP ${response.status}）`)
+  }
+  return payload as T
+}
+
+/**
+ * Authenticated binary read (observation photos). The session header is
+ * required even for images; callers receive a Blob and own its object URL.
+ */
+export async function apiGetBlob(
+  path: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const headers: Record<string, string> = { 'cache-control': 'no-store' }
+  if (sessionToken !== null) headers[SESSION_HEADER] = sessionToken
+  let response: Response
+  try {
+    response = await fetch(path, {
+      method: 'GET',
+      headers,
+      mode: 'same-origin',
+      signal,
+    })
+  } catch (err) {
+    throw new ApiError(0, `网络请求异常：${String(err)}`)
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => UNREADABLE)
+    throw toError(response.status, payload === UNREADABLE ? null : payload)
+  }
+  try {
+    return await response.blob()
+  } catch (err) {
+    throw new ApiError(0, `图片读取失败：${String(err)}`)
+  }
+}
+
 /** Percent-encode one path segment (term/plan/request ids are opaque). */
 export function pathSegment(value: string): string {
   return encodeURIComponent(value)

@@ -347,7 +347,10 @@ async function mountApp({ hostCalls, editor, fetchImpl } = {}) {
         apiGet: async (path) => {
           // D2 W5: the close-time live-task probe reads the task list; the D1
           // fixture models an empty list (no live AI tasks).
-          if (String(path).startsWith('/api/local/ai/tasks')) {
+          if (
+            String(path).startsWith('/api/local/ai/tasks') ||
+            String(path).startsWith('/api/local/ai/observation-tasks')
+          ) {
             return { items: [], next_cursor: null }
           }
           return contextFixture()

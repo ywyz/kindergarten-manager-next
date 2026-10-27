@@ -16,7 +16,13 @@ export type SaveOutcome =
   | 'conflict'
   | 'indeterminate'
 
-export type LeaveKind = 'close' | 'date' | 'term' | 'calendar' | 'settings'
+export type LeaveKind =
+  | 'close'
+  | 'date'
+  | 'term'
+  | 'calendar'
+  | 'observations'
+  | 'settings'
 
 export interface LeaveAction {
   kind: LeaveKind
@@ -53,7 +59,7 @@ export interface LeaveEditor {
 }
 
 export interface BlockingDraft {
-  kind: 'candidate' | 'settings' | 'history'
+  kind: 'candidate' | 'settings' | 'history' | 'material'
   message: string
 }
 

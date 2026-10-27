@@ -42,7 +42,7 @@ OLD_FIXTURE = DESKTOP / "tests" / "update_old_app_fixture.py"
 NEW_FIXTURE = DESKTOP / "tests" / "update_new_app_fixture.py"
 HELPER = DESKTOP / "update_helper.py"
 OLD_REV = "20261017_0004_local"
-HEAD_REV = "20261023_0005_local_history"
+HEAD_REV = "20261025_0006_local_game_observations"
 
 
 def _identity(revision: str = HEAD_REV) -> AppIdentity:
@@ -652,7 +652,7 @@ def _replace_old_process(plan: update_install.InstallPlan, pid: int):
     return plan
 
 
-def test_real_0004_to_0005_cold_migration_after_old_handles_release(tmp_path):
+def test_real_0004_to_0006_cold_migration_after_old_handles_release(tmp_path):
     plan, data, _cred, old_app = _plan(
         tmp_path, target_revision=HEAD_REV, old_revision=OLD_REV
     )
@@ -676,7 +676,7 @@ def test_real_0004_to_0005_cold_migration_after_old_handles_release(tmp_path):
         result = _result(plan, timeout=5)
         assert result["status"] == "success", result
         _stop_new(plan, result)
-        # The real new LocalRuntime performed the 0004 -> 0005 migration.
+        # The real new LocalRuntime performed the 0004 -> 0006 migration.
         runtime = LocalRuntime(data, credential_root=Path(plan.credential_root))
         try:
             runtime.prepare()

@@ -656,6 +656,7 @@ def list_tasks(
     session: Session,
     *,
     plan_id: str | None = None,
+    observation_id: str | None = None,
     status: str | None = None,
     limit: object = DEFAULT_LIST_LIMIT,
     cursor: str | None = None,
@@ -667,6 +668,8 @@ def list_tasks(
         raise LocalValidationError("status 不在允许范围")
     if source_kind not in ("daily_plan", "game_observation"):
         raise LocalValidationError("source_kind 不在允许范围")
+    if observation_id is not None and source_kind != "game_observation":
+        raise LocalValidationError("observation_id 只适用于观察任务")
     with read_scope(session):
         _profile_id(session)
         statement = select(LocalAITask).where(
@@ -674,6 +677,10 @@ def list_tasks(
         )
         if plan_id is not None:
             statement = statement.where(LocalAITask.daily_plan_id == plan_id)
+        if observation_id is not None:
+            statement = statement.where(
+                LocalAITask.observation_id == observation_id
+            )
         if status is not None:
             statement = statement.where(LocalAITask.status == status)
         if cursor:

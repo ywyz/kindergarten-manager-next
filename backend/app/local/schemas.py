@@ -835,3 +835,220 @@ class LocalAIAdoptionOut(BaseModel):
     candidate_id: str
     selected_targets: list[str]
     request_id: str
+
+
+# ---------------------------------------------------------------------------
+# D4 E09/E10: game observation pages (product C1-C33, Contract §2-§6)
+# ---------------------------------------------------------------------------
+
+OBSERVATION_RECORD_TYPES = ("public", "indoor", "outdoor")
+OBSERVATION_SAVE_REASONS = ("auto", "manual", "leave", "pre_restore", "pre_export")
+OBSERVATION_TERM_DECISIONS = (
+    "keep_current",
+    "assign_selected",
+    "unassigned",
+    "keep_history",
+)
+OBSERVATION_AI_TASK_TYPES = (
+    "game_observation_generate",
+    "game_observation_rewrite",
+)
+OBSERVATION_TARGETS = (
+    "observation_goal",
+    "observation_process",
+    "analysis_evaluation",
+    "support_strategy",
+)
+
+
+class LocalObservationCreateIn(BaseModel):
+    """Create body: type plus optional initial payload; no ownership fields.
+
+    An omitted ``observation_date`` means today (C18); an explicit ``null``
+    keeps the record unassigned without a date (C25). Pydantic's
+    ``model_fields_set`` preserves that distinction at the route.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    record_type: Literal["public", "indoor", "outdoor"]
+    payload: dict[str, Any] | None = None
+    observation_date: date | None = None
+    term_id: str | None = None
+
+
+class LocalObservationSaveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+    payload: dict[str, Any]
+    photos: list[dict[str, Any]] | None = None
+    save_reason: Literal["auto", "manual", "leave", "pre_restore", "pre_export"] = (
+        "manual"
+    )
+    term_decision: Literal[
+        "keep_current", "assign_selected", "unassigned"
+    ] | None = None
+    selected_term_id: str | None = None
+
+
+class LocalObservationPhotoCaptionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+    caption: str | None = None
+
+
+class LocalObservationPhotoReorderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+    asset_ids: list[str]
+
+
+class LocalObservationPhotoRemoveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+
+
+class LocalObservationRestorePreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    source_version: int = Field(..., ge=1, strict=True)
+    base_draft_revision: int = Field(..., ge=1, strict=True)
+    base_draft_hash: str = Field(..., min_length=64, max_length=64)
+    term_decision: Literal[
+        "keep_current", "assign_selected", "unassigned", "keep_history"
+    ]
+    selected_term_id: str | None = None
+
+
+class LocalObservationRestoreIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    restore_token: str
+    expected_base_revision: int = Field(..., ge=1, strict=True)
+    expected_base_hash: str = Field(..., min_length=64, max_length=64)
+    term_decision: Literal[
+        "keep_current", "assign_selected", "unassigned", "keep_history"
+    ]
+    selected_term_id: str | None = None
+
+
+class LocalObservationAITaskCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    task_type: Literal[
+        "game_observation_generate", "game_observation_rewrite"
+    ]
+    expected_revision: int = Field(..., ge=1, strict=True)
+    expected_hash: str = Field(..., min_length=64, max_length=64)
+    target: Literal[
+        "observation_goal",
+        "observation_process",
+        "analysis_evaluation",
+        "support_strategy",
+    ] | None = None
+
+
+class LocalObservationAIAdoptionPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+    expected_hash: str = Field(..., min_length=64, max_length=64)
+    selected_targets: list[str]
+
+
+class LocalObservationAIAdoptionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+    expected_hash: str = Field(..., min_length=64, max_length=64)
+    selected_targets: list[str]
+    preview_token: str
+    review_decision: Literal["adopt_reviewed"] | None = None
+
+
+class LocalObservationPhotoOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    content_hash: str
+    format: str
+    width: int
+    height: int
+    orientation: int | None
+    sort_order: int
+    caption: str | None
+
+
+class LocalObservationCurrentOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: str
+    revision: int
+    payload: dict[str, Any]
+    payload_hash: str
+    photos: list[LocalObservationPhotoOut]
+    current_version: int | None
+    latest_version_hash: str | None = None
+    updated_at: datetime
+
+
+class LocalObservationListItemOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: str
+    record_type: str
+    observation_date: date | None
+    start_time: str | None
+    end_time: str | None
+    term_id: str | None
+    term_name: str | None
+    school_name: str | None
+    class_name: str | None
+    observer_name: str | None
+    subjects: list[str]
+    environment: str | None
+    adult_count: int | None
+    child_count: int | None
+    age_years: int | None
+    current_draft_revision: int
+    current_version: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class LocalObservationListOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[LocalObservationListItemOut]
+    total: int
+    offset: int
+    limit: int
+
+
+class LocalObservationSaveOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    observation_id: str
+    revision: int
+    payload_hash: str
+    photos: list[LocalObservationPhotoOut]
+    current_version: int | None
+    changed: bool
+    history_created: bool
+    term_warnings: list[str]
+    target_hashes: dict[str, str]
+    saved_at: datetime

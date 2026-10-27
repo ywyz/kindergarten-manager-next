@@ -12,7 +12,7 @@
     "build": "vite build",
     "build:d1": "vite build --config vite.d1.config.ts",
     "build:d3-h2": "vite build --config vite.d3-h2.config.ts",
-    "test:d1": "node src/d1/d1.test.mjs && node src/d1/d1.components.test.mjs && node src/d1/d1.w5.test.mjs && node src/d1/d1.history.test.mjs && node src/d1/d1.update.test.mjs",
+    "test:d1": "node src/d1/d1.test.mjs && node src/d1/d1.components.test.mjs && node src/d1/d1.w5.test.mjs && node src/d1/d1.history.test.mjs && node src/d1/d1.update.test.mjs && node src/d1/d1.observation.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -804,3 +804,150 @@ def test_late_second_confirmation_across_real_bridge_threads():
         "state": "pending",
         "generation": generation_b,
     }
+
+
+def test_page_busy_probe_is_page_scoped_and_requires_ready():
+    api = d1_host_api.D1HostApi(launch_token="x")
+    # Before the page handshake the bridge refuses the state change.
+    ticket = api.get_bootstrap()["page_ticket"]
+    assert api.set_page_busy(
+        {"busy": True, "seq": 1, "page_ticket": ticket}
+    ) == {
+        "accepted": False,
+        "busy": False,
+        "seq": 0,
+    }
+    assert api.page_ready(
+        {"bridge_protocol": d1_host_api.BRIDGE_PROTOCOL, "page_ticket": ticket}
+    )["accepted"] is True
+    assert api.set_page_busy(
+        {"busy": True, "seq": 2, "page_ticket": ticket}
+    ) == {
+        "accepted": True,
+        "busy": True,
+        "seq": 2,
+    }
+    assert api._page_busy_probe() is True
+    # A duplicate page_ready from the same page must not clear the barrier.
+    assert api.page_ready(
+        {"bridge_protocol": d1_host_api.BRIDGE_PROTOCOL, "page_ticket": ticket}
+    )["accepted"] is True
+    assert api._page_busy_probe() is True
+    assert api.set_page_busy(
+        {"busy": False, "seq": 0, "page_ticket": ticket}
+    ) == {
+        "accepted": False,
+        "busy": True,
+        "seq": 2,
+    }
+    # A late older notification must not clear the newer busy state.
+    assert api.set_page_busy(
+        {"busy": False, "seq": 1, "page_ticket": ticket}
+    ) == {
+        "accepted": True,
+        "busy": True,
+        "seq": 2,
+    }
+    assert api._page_busy_probe() is True
+    assert api.set_page_busy(
+        {"busy": False, "seq": 3, "page_ticket": ticket}
+    ) == {
+        "accepted": True,
+        "busy": False,
+        "seq": 3,
+    }
+    assert api._page_busy_probe() is False
+
+
+def test_page_ticket_isolates_old_page_ready_and_busy():
+    api = d1_host_api.D1HostApi(launch_token="x")
+    ticket_a = api.get_bootstrap()["page_ticket"]
+    assert api.page_ready(
+        {"bridge_protocol": d1_host_api.BRIDGE_PROTOCOL, "page_ticket": ticket_a}
+    )["accepted"] is True
+    assert api.set_page_busy(
+        {"busy": True, "seq": 20, "page_ticket": ticket_a}
+    )["busy"] is True
+    # A new page handshake retires A; B starts its own barrier.
+    ticket_b = api.get_bootstrap()["page_ticket"]
+    assert api.page_ready(
+        {"bridge_protocol": d1_host_api.BRIDGE_PROTOCOL, "page_ticket": ticket_b}
+    )["accepted"] is True
+    assert api.set_page_busy(
+        {"busy": True, "seq": 1, "page_ticket": ticket_b}
+    )["busy"] is True
+    # A late old busy false and a late old page_ready are both refused and
+    # must not clear B's barrier.
+    assert api.set_page_busy(
+        {"busy": False, "seq": 21, "page_ticket": ticket_a}
+    )["accepted"] is False
+    assert api.page_ready(
+        {"bridge_protocol": d1_host_api.BRIDGE_PROTOCOL, "page_ticket": ticket_a}
+    )["accepted"] is False
+    assert api._page_busy_probe() is True
+    # A duplicate current ready is idempotent and keeps the barrier.
+    assert api.page_ready(
+        {"bridge_protocol": d1_host_api.BRIDGE_PROTOCOL, "page_ticket": ticket_b}
+    )["accepted"] is True
+    assert api._page_busy_probe() is True
+    # A missing/invalid ticket cannot change the barrier.
+    assert api.set_page_busy({"busy": False, "seq": 2})["accepted"] is False
+    assert api.set_page_busy(
+        {"busy": False, "seq": 2, "page_ticket": "wrong"}
+    )["accepted"] is False
+    assert api.set_page_busy(
+        {"busy": False, "seq": 2, "page_ticket": ticket_b}
+    )["busy"] is False
+
+
+def test_page_ready_validates_ticket_before_ready_receipt_confirm():
+    class Receipt:
+        def __init__(self):
+            self.calls = 0
+
+        def public_bootstrap(self):
+            return {"plan_id": "p", "nonce": "n"}
+
+        def confirm(self, payload, *, page_ready=False):
+            self.calls += 1
+            return {"accepted": True}
+
+    receipt = Receipt()
+    api = d1_host_api.D1HostApi(launch_token="x", ready_receipt=receipt)
+    ticket_a = api.get_bootstrap()["page_ticket"]
+    # Invalid ticket: refused before any ready-receipt side effect.
+    assert api.page_ready(
+        {
+            "bridge_protocol": d1_host_api.BRIDGE_PROTOCOL,
+            "page_ticket": "wrong",
+            "update_install": {"plan_id": "p", "nonce": "n"},
+        }
+    )["accepted"] is False
+    assert receipt.calls == 0
+    # Valid ticket: confirmation happens once; duplicate ready is idempotent.
+    assert api.page_ready(
+        {
+            "bridge_protocol": d1_host_api.BRIDGE_PROTOCOL,
+            "page_ticket": ticket_a,
+            "update_install": {"plan_id": "p", "nonce": "n"},
+        }
+    )["accepted"] is True
+    assert receipt.calls == 1
+    assert api.page_ready(
+        {
+            "bridge_protocol": d1_host_api.BRIDGE_PROTOCOL,
+            "page_ticket": ticket_a,
+            "update_install": {"plan_id": "p", "nonce": "n"},
+        }
+    )["accepted"] is True
+    assert receipt.calls == 1
+    # While the next page's ticket is pending, a ticketless legacy ready is
+    # not allowed to re-enter and does not call confirm.
+    api.get_bootstrap()
+    assert api.page_ready(
+        {
+            "bridge_protocol": d1_host_api.BRIDGE_PROTOCOL,
+            "update_install": {"plan_id": "p", "nonce": "n"},
+        }
+    )["accepted"] is False
+    assert receipt.calls == 1
