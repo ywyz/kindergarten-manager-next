@@ -234,24 +234,26 @@ class TlsServer:
             return
         try:
             tls.settimeout(10)
-            data = b""
+            data = bytearray()
             while b"\r\n\r\n" not in data:
                 chunk = tls.recv(65536)
                 if not chunk:
                     break
-                data += chunk
-            head, _, rest = data.partition(b"\r\n\r\n")
+                data.extend(chunk)
+            head, _, rest = bytes(data).partition(b"\r\n\r\n")
             length = 0
             for line in head.split(b"\r\n"):
                 if line.lower().startswith(b"content-length:"):
                     length = int(line.split(b":", 1)[1].strip())
-            while len(rest) < length:
+            body = bytearray(rest)
+            while len(body) < length:
                 chunk = tls.recv(65536)
                 if not chunk:
                     break
-                rest += chunk
+                body.extend(chunk)
+            request_bytes = head + b"\r\n\r\n" + bytes(body)
             with self._lock:
-                self.requests.append(head + b"\r\n\r\n" + rest)
+                self.requests.append(request_bytes)
             if self._hang:
                 # Keep the connection open without replying (timeout case).
                 while not self._stop.is_set():

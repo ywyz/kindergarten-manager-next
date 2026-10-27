@@ -95,6 +95,15 @@ GUIDANCE_MAX_CHARS = 8000
 MAX_SERIALIZED_CHARS = 1_048_576
 MAX_STRING_CHARS = 100_000
 MAX_ARRAY_ITEMS = 100
+# Product/engineering cap for one observation AI request.  The transport has a
+# matching constant; a contract test keeps the two values from drifting.
+MAX_OBSERVATION_PHOTOS = 600
+OBSERVATION_TARGETS: tuple[str, ...] = (
+    "observation_goal",
+    "observation_process",
+    "analysis_evaluation",
+    "support_strategy",
+)
 
 _JSON_SCHEMA_DRAFT = "https://json-schema.org/draft/2020-12/schema"
 
@@ -1079,10 +1088,153 @@ class OtherActivitiesInput(_InputModel):
     target_grade: Literal["small", "middle", "large"]
 
 
+# ---------------------------------------------------------------------------
+# Observation input/output contract (E06/E07)
+# ---------------------------------------------------------------------------
+
+
+class _ObservationCleanTextModel(_StrictModel):
+    """Trim only observation text; daily candidate text stays byte-stable."""
+
+    @model_validator(mode="after")
+    def _trim_observation_text(self) -> "_ObservationCleanTextModel":
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if isinstance(value, str):
+                setattr(
+                    self,
+                    name,
+                    value.replace("\r\n", "\n").replace("\r", "\n").strip(),
+                )
+        return self
+
+
+class ObservationEvaluationOutput(_ObservationCleanTextModel):
+    health: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    language: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    social: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    science: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    arts: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+
+
+class ObservationGenerateCandidate(_ObservationCleanTextModel):
+    observation_goal: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    observation_process: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    analysis_evaluation: ObservationEvaluationOutput
+    support_strategy: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+
+
+class ObservationRewriteCandidate(_ObservationCleanTextModel):
+    target: Literal[
+        "observation_goal",
+        "observation_process",
+        "analysis_evaluation",
+        "support_strategy",
+    ]
+    text: StrictStr | None = Field(default=None, max_length=MAX_STRING_CHARS)
+    analysis_evaluation: ObservationEvaluationOutput | None = None
+
+    @model_validator(mode="after")
+    def _target_shape(self) -> "ObservationRewriteCandidate":
+        if self.target == "analysis_evaluation":
+            if self.analysis_evaluation is None or self.text is not None:
+                raise ValueError("评价分析目标必须且只能返回五领域对象")
+        else:
+            if self.text is None or self.analysis_evaluation is not None:
+                raise ValueError("文本目标必须且只能返回 text")
+        return self
+
+
+_OUTPUT_MODELS.update(
+    {
+        "game_observation_generate": ObservationGenerateCandidate,
+        "game_observation_rewrite": ObservationRewriteCandidate,
+    }
+)
+
+
+class ObservationInputPhoto(_InputModel):
+    # Internal asset ids stay in local photo rows; the provider projection
+    # omits them, so the runtime input validator accepts their absence.
+    asset_id: StrictStr | None = Field(default=None, max_length=32)
+    content_hash: StrictStr = Field(..., pattern=r"^[0-9a-fA-F]{64}$")
+    work_hash: StrictStr = Field(..., pattern=r"^[0-9a-fA-F]{64}$")
+    format: Literal["jpeg", "png", "webp", "gif", "bmp"]
+    width: StrictInt = Field(..., ge=1)
+    height: StrictInt = Field(..., ge=1)
+    orientation: StrictInt | None = Field(default=None, ge=1, le=8)
+    sort_order: StrictInt = Field(..., ge=0)
+    caption: StrictStr | None = Field(default=None, max_length=MAX_STRING_CHARS)
+
+
+class ObservationEvaluationInput(_InputModel):
+    health: StrictStr | None = Field(default=None, max_length=MAX_STRING_CHARS)
+    language: StrictStr | None = Field(default=None, max_length=MAX_STRING_CHARS)
+    social: StrictStr | None = Field(default=None, max_length=MAX_STRING_CHARS)
+    science: StrictStr | None = Field(default=None, max_length=MAX_STRING_CHARS)
+    arts: StrictStr | None = Field(default=None, max_length=MAX_STRING_CHARS)
+
+
+class ObservationInput(_InputModel):
+    record_type: Literal["public", "indoor", "outdoor"]
+    observation_date: StrictStr | None = None
+    start_time: StrictStr | None = None
+    end_time: StrictStr | None = None
+    adult_count: StrictInt | None = Field(default=None, ge=0)
+    child_count: StrictInt | None = Field(default=None, ge=0)
+    age_years: StrictInt | None = Field(default=None, ge=0)
+    subjects: list[dict[str, StrictStr]] = Field(
+        default_factory=list, max_length=MAX_ARRAY_ITEMS
+    )
+    environment: StrictStr | None = Field(default=None, max_length=MAX_STRING_CHARS)
+    observation_goal: StrictStr | None = Field(default=None, max_length=MAX_STRING_CHARS)
+    observation_process: StrictStr | None = Field(
+        default=None, max_length=MAX_STRING_CHARS
+    )
+    analysis_evaluation: ObservationEvaluationInput | None = None
+    support_strategy: StrictStr | None = Field(
+        default=None, max_length=MAX_STRING_CHARS
+    )
+    photos: list[ObservationInputPhoto] = Field(
+        default_factory=list, max_length=MAX_OBSERVATION_PHOTOS
+    )
+    target: (
+        Literal[
+            "observation_goal",
+            "observation_process",
+            "analysis_evaluation",
+            "support_strategy",
+        ]
+        | None
+    ) = None
+    rewrite_source: StrictStr | None = Field(
+        default=None, max_length=MAX_STRING_CHARS
+    )
+
+    @model_validator(mode="after")
+    def _photo_order_and_subjects(self) -> "ObservationInput":
+        seen: set[str] = set()
+        for index, photo in enumerate(self.photos):
+            if photo.sort_order != index:
+                raise ValueError("photos.sort_order 必须等于数组下标")
+            if photo.asset_id is not None:
+                if photo.asset_id in seen:
+                    raise ValueError("photos.asset_id 不得重复")
+                seen.add(photo.asset_id)
+        for index, subject in enumerate(self.subjects):
+            if set(subject.keys()) != {"name"}:
+                raise ValueError("subjects 每项必须只含 name")
+            if not subject["name"].strip():
+                raise ValueError(f"subjects[{index}].name 不能为空")
+        return self
+
+
 _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "daily_lesson_split": SplitInput,
     "daily_process_adapt": AdaptInput,
     "daily_other_activities": OtherActivitiesInput,
+    "game_observation_generate": ObservationInput,
+    "game_observation_rewrite": ObservationInput,
 }
 
 
@@ -1185,7 +1337,43 @@ def validate_input(task_type: str, payload: Any) -> dict:
                 _validate_iso_date(item["date"])
         except (KeyError, ValueError):
             raise CandidateInvalid("输入结构无效：日期字段格式") from None
+    elif task_type in OBSERVATION_TASK_TYPES:
+        _validate_observation_input(task_type, dumped)
     return dumped
+
+
+def _validate_observation_input(task_type: str, dumped: dict[str, Any]) -> None:
+    """Runtime shape rules shared by submission, claim and adoption."""
+    from datetime import date as _date
+    import re as _re
+
+    try:
+        if dumped.get("observation_date") is not None:
+            _date.fromisoformat(dumped["observation_date"])
+        for key in ("start_time", "end_time"):
+            value = dumped.get(key)
+            if value is not None and not _re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", value):
+                raise ValueError(key)
+        photos = dumped.get("photos") or []
+        if len(photos) > MAX_OBSERVATION_PHOTOS:
+            raise ValueError("photos")
+        for index, photo in enumerate(photos):
+            if photo.get("sort_order") != index:
+                raise ValueError("photos.sort_order")
+        if task_type == "game_observation_generate":
+            if dumped.get("target") is not None or dumped.get("rewrite_source") is not None:
+                raise ValueError("generate target")
+        else:
+            target = dumped.get("target")
+            if target not in OBSERVATION_TARGETS:
+                raise ValueError("target")
+            if target == "analysis_evaluation":
+                if dumped.get("rewrite_source") is not None:
+                    raise ValueError("rewrite_source")
+            elif not isinstance(dumped.get("rewrite_source"), str):
+                raise ValueError("rewrite_source")
+    except (KeyError, TypeError, ValueError):
+        raise CandidateInvalid("输入结构无效：观察字段格式") from None
 
 
 def validate_guidance_map(task_type: str, mapping: Any) -> dict[str, str]:

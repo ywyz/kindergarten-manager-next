@@ -1,6 +1,6 @@
 # 游戏观察记录 Contract
 
-状态：Architecture v2有效业务Contract，E13设计扩展已核定。E01／E02／E04基础、E03材料与E05／E08保存历史服务层已通过限定工程核查，见[基础](../bootstrap/desktop-game-observation-foundation-review.md)、[材料](../bootstrap/desktop-game-observation-assets-review.md)及[最新保存历史核查](../bootstrap/desktop-game-observation-history-review.md)。本轮独立663项全local、85项相关桌面及竞态／保留库复核通过，原Go套餐Flash max会话已停写，按授权正常提交推送。页面、视觉AI、Word／宿主及完整产品仍未验。
+状态：Architecture v2有效业务Contract，E13设计扩展已核定。基础、E03、E05／E08及E06／E07图文执行／候选／采用服务层已通过限定工程核查，见[最新核查](../bootstrap/desktop-game-observation-ai-review.md)：独立718项全local、85项相关桌面、容量及真实DeepSeek合成资料闭环通过。页面／观察HTTP会话、Word／宿主、完整A01–A22与产品发行仍未验，按授权提交推送后停在本片。
 
 产品依据为[游戏观察C1–C33](../specs/desktop-game-observation.md)，工程依据为[E01–E14](../specs/desktop-game-observation-engineering.md)。本文同时记录已实施数据基础与尚待实施的完整Contract；各项实际范围以独立核查报告为准，日计划原Contract及既有验收身份保持。
 
@@ -280,7 +280,7 @@ game_observation:
 - 所有已关联照片参与明确 AI 操作；不静默选子集、不新增 AI 选图 UI；超预算整体拒绝并说明。
 - 应用固定观察 bundle／输出 schema；保留内部 default／personal／contract 版本机制，但**不承诺新增观察个人指导输入框或提示词编辑器**。教师已确认的是照片可选简短说明（其中可含观察意图），不是新增观察指导 UI；既有日计划个人指导规则不改。
 - C11／C32：允许补对话／情境动作衔接；不能造未提供的精确分钟／持续时长或完整新事件；多人无法对应姓名时写共同情境并提示补充，不猜姓名动作。
-- 保留 HTTPS／DNS／peer／TLS 校验、dispatch 标记、未知结果不重放；视觉帧独立版本化，不全局放宽旧 1MiB；完整字节预检，实际内存／复制后续容量冻结。
+- 保留 HTTPS／DNS／peer／TLS 校验、dispatch 标记、未知结果不重放；视觉帧独立版本化，不全局放宽旧1MiB。2026-10-27核定视觉小header先验、两帧合计36MiB／完整HTTP40MiB／最多600图／180秒attempt，连接仍10秒，旧文本120秒。完整字节预检、上下文估算及组合内存实测范围见[工程§7](../specs/desktop-game-observation-engineering.md#7-e06图文执行契约)和[本片核查](../bootstrap/desktop-game-observation-ai-review.md)，不静默减图。
 
 ### 6.3 候选与采用
 
@@ -288,9 +288,11 @@ game_observation:
 - 预览返回一次性adoption_token，绑定candidate/hash、profile/record、targets、当前实际依赖／target hashes、draft revision/hash、source_state、差异摘要、允许的复核决定及期限。来源变化时，提交的`review_decision='adopt_reviewed'`必须对应该预览差异，并纳入服务端fingerprint；不是要求预览创建前已有教师决定。
 - 正常采用不需要review_decision或额外审批；来源变化先明确展示当前差异，教师可对该预览确认采用、取消或重新生成；取消／重新生成不走采用提交。不能用裸bool全局绕过核对，不兼容契约或坏图不能以复核覆盖。任何晚到编辑／候选／目标变化使预览失效。
 - 已采用目标不得重复覆写；同候选剩余栏仅凭 provenance＋当前值等于该候选输出 hash 作受信替换；人工／其他候选碰巧同文字不算。
-- 多目标一次事务写 draft／历史（有变）／provenance／投影／operation；无变化重复请求不再造节点；复核 token 丢回包先读回执。
+- 多目标一次事务写draft／应留历史／provenance／投影／operation及关联审计；照片保持。draft变化与应留历史分别判断：最终aggregate相对最近保留节点有变才留节点，无首节点则首次留节点，auto后的待保留内容即使已与候选相同也须保留；无变不增revision。原请求丢回包优先读观察域强回执，不受已消费／过期token、后改内容或坏材料影响。
 - 后改个人指导／配置不否定已按 pinned 版本完成的兼容候选；契约不兼容另处理。
 - 补写片段按目标／领域、偏移和匹配hash定位；越界或不匹配只降级总体审核提示，不让有效正文失败，不把提示拼入采用、Word或后续提示词。
+
+本片内部参数：采用token最多64个／TTL600秒，reservation先于事务、包括BEGIN失败在内均释放、提交后消费；完整candidate/input及当前稿／实际依赖／材料清单和身份须锁内重新复核。metadata v1持久绑定candidate，最多64片段／每片段200字符／片段JSON64KiB预算，超额只截审核定位并保留完整正文。已采用目标被人工、auto、恢复或他候选改动后，旧候选不能因为最近历史仍等于旧输出而迟到覆写；同candidate/version无变部分采用只合并新目标账本证据，不替换先前证明。
 
 ## 7. 导出与 Word
 
@@ -398,8 +400,8 @@ game_observation:
 
 ## 12. 参数、ADR 与未验
 
-E03当前材料参数：源25MiB／40MP／单边8192同时检查，AI最长边2048／q85／目标2MiB／0.85缩放最多6次编码，导出预派生2400／q90；串行实际解码及1024MiB工作集验证阈值，后者非运行时硬上限或整应用内存承诺，见[E03核查](../bootstrap/desktop-game-observation-assets-review.md)。canonical payload字节、E06视觉请求／IPC／超时、E11 DOCX／分块／版面与导出图清晰度、token期限及整合阶段并发／磁盘余量仍须按对应切片核定，不把本片单图参数推广为整应用通过。
+E03材料参数保持：源25MiB／40MP／单边8192，AI最长边2048／q85／目标2MiB／0.85缩放最多6次编码，导出预派生2400／q90；见[E03核查](../bootstrap/desktop-game-observation-assets-review.md)。本片E06视觉两帧36MiB／完整HTTP40MiB／最多600图／180秒attempt，旧文本1MiB／120秒、连接10秒；父／worker／完整原图解码者1024MiB是组合工程验证阈值，实际独立约786MiB，不是硬RSS或整应用承诺。采用token64个／600秒、定位metadata64片段／200字符／片段JSON64KiB；详见[工程§7–§8](../specs/desktop-game-observation-engineering.md)。E11 DOCX／分块／版面及整合并发／磁盘余量仍待对应切片核定。
 
 预计不需 ADR：技术栈、依赖方向、SQLite／受管文件权威、本机 API 与 worker 通信未变；观察是 Feature 模块，`export_id` 是现有宿主保存桥的受限扩展。若改为新服务／新进程、外部网络交付、浏览器或远端成为内容权威、改变模块所有权或通信机制，先提 ADR，不暗改 `ARCHITECTURE.md`。
 
-未验：完整A01–A22尚未整项验收。E01／E02／E04基础、E03材料及E05／E08保存历史服务层限定工程已通过；Pillow13.0.0及材料容量依据见[E03报告](../bootstrap/desktop-game-observation-assets-review.md)，保存／恢复与竞态／保留库依据见[本片报告](../bootstrap/desktop-game-observation-history-review.md)。页面／HTTP会话接入、IME／离开、视觉AI、Word逐页／WebView2／宿主、冻结资源／许可及新包仍未验，未启动桌面产品或构建。Win10、WPS、干净机器、其他DPI／显示器、签名发行和D2／D3未验保持。本轮正常提交推送后停在E05／E08；后续见[当前任务](../tasks/current.md)。
+未验：完整A01–A22尚未整项验收。服务层范围见[本片核查](../bootstrap/desktop-game-observation-ai-review.md)及前片材料／历史报告。页面／HTTP会话接入、IME／离开、复杂真实照片质量、MiMo真实调用、Word逐页／WebView2／宿主、冻结资源／许可及新包仍未验；Win10、WPS、干净机器、其他DPI／显示器、签名发行和D2／D3既有未验保持。按本轮授权提交推送后停在E06／E07，后续入口见[当前任务](../tasks/current.md)。

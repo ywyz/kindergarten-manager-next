@@ -61,6 +61,7 @@ from app.local.ai_endpoint import (
 )
 COMPLETIONS_PATH = "/chat/completions"
 PROTOCOL_ID = "chat_completions_v1"
+VISION_PROTOCOL_ID = "chat_completions_vision_v1"
 
 CONNECT_BUDGET_MS = 10_000
 ATTEMPT_BUDGET_MS = 120_000
@@ -70,6 +71,15 @@ HEADER_MAX_BYTES = 64 * 1024
 MAX_RESOLVED_ADDRESSES = 32
 MAX_REQUEST_ID_LEN = 128
 MAX_MODEL_LEN = 200
+
+# E06 candidate values.  The old text limits above are never widened; a
+# vision attempt opts into these separate, independently versioned bounds.
+VISION_MAX_IMAGES = 600
+VISION_HTTP_MAX_BYTES = 40 * 1024 * 1024
+# Reserve the HTTP request line/headers inside the 40 MiB HTTP budget.
+VISION_BODY_MAX_BYTES = VISION_HTTP_MAX_BYTES - 8192
+VISION_IPC_FRAME_MAX = 36 * 1024 * 1024
+VISION_ATTEMPT_BUDGET_MS = 180_000
 
 # Transport outcome kinds (mapped to task reasons by the executor).
 SUCCESS = "success"
@@ -234,6 +244,44 @@ def _sanitize_usage(value: Any) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+def vision_capability(base_url: Any, model: Any) -> bool:
+    """Fixed official standard-API vision adapter boundary.
+
+    Only the normalized HTTPS origin and exact model IDs confirmed for this
+    product are accepted.  No arbitrary subdomain, Token Plan prefix, encoded
+    path, userinfo or non-443 port is treated as the official standard API.
+    """
+    if not isinstance(base_url, str) or not isinstance(model, str):
+        return False
+    try:
+        parsed = urlsplit(base_url)
+    except ValueError:
+        return False
+    if (
+        parsed.scheme != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    if parsed.port not in (None, 443):
+        return False
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.rstrip("/")
+    if path not in ("", "/v1"):
+        return False
+    if host == "api.deepseek.com":
+        return model in ("deepseek-flash", "deepseek-v4-flash-vision-exp")
+    if host == "api.xiaomimimo.com":
+        return model in (
+            "mimo-v2.6-flash",
+            "mimo-v2.6-pro",
+            "mimo-v2.6-pro-ultraspeed",
+        )
+    return False
+
+
 def build_target(base_url: str) -> tuple[str, str, int, str, str]:
     """Return ``(url, host, port, netloc, request_path)``.
 
@@ -336,6 +384,45 @@ def build_request(
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
+def build_vision_request(
+    *,
+    model: str,
+    system_text: str,
+    user_text: str,
+    image_urls: Sequence[str],
+    stream: bool = True,
+) -> bytes:
+    """Standard chat-completions vision body with inline data URLs.
+
+    This is a *separate* protocol from ``build_request``.  The text limits are
+    not widened; callers must preflight this body against the vision bounds.
+    """
+    if not isinstance(image_urls, (list, tuple)):
+        raise ValueError("image_urls")
+    user_content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
+    for url in image_urls:
+        if not isinstance(url, str) or not url.startswith("data:image/"):
+            raise ValueError("image_url")
+        user_content.append(
+            {"type": "image_url", "image_url": {"url": url}}
+        )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_content},
+        ],
+        "stream": bool(stream),
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def build_http_request(*, base_url: str, secret: str, body: bytes) -> bytes:
+    """Exact request bytes for a preflight; never performs network I/O."""
+    _url, _host, _port, netloc, path = build_target(base_url)
+    return _http_request_bytes(netloc=netloc, path=path, secret=secret, body=body)
+
+
 def _http_request_bytes(*, netloc: str, path: str, secret: str, body: bytes) -> bytes:
     head = (
         f"POST {path} HTTP/1.1\r\n"
@@ -379,13 +466,21 @@ def prepare(
     base_url: str,
     model: str,
     secret: str,
-    system_text: str,
-    user_text: str,
+    system_text: str = "",
+    user_text: str = "",
     deadline_ms: int,
     resolver: Sequence[dict[str, Any]] | None = None,
     ca_pem: str | None = None,
+    body: bytes | None = None,
+    request_body_max: int = REQUEST_MAX_BYTES,
+    request_total_max: int = REQUEST_MAX_BYTES + 4096,
 ) -> tuple[Prepared | None, TransportResult | None]:
-    """DNS + TCP + TLS within the 10 s connect budget; no HTTP byte."""
+    """DNS + TCP + TLS within the 10 s connect budget; no HTTP byte.
+
+    ``body`` lets the versioned vision worker supply the exact preflighted
+    body; the default text path still builds and enforces the unchanged 1 MiB
+    limit.
+    """
     start_ticks = now_ticks()
     connect_deadline = _connect_deadline(deadline_ms, start_ticks)
     try:
@@ -449,12 +544,17 @@ def prepare(
         if _remaining_ms(deadline_ms) <= 0:
             tls_sock.close()
             return None, TransportResult(NOT_SENT, reason="connection_unavailable", transient_not_sent=True, detail=DETAIL["prepare_timeout"])
-        body = build_request(model=model, system_text=system_text, user_text=user_text)
-        if len(body) > REQUEST_MAX_BYTES:
+        if body is None:
+            body = build_request(model=model, system_text=system_text, user_text=user_text)
+        if not isinstance(body, (bytes, bytearray)):
+            tls_sock.close()
+            return None, TransportResult(OUTPUT_INVALID, reason="output_invalid", detail=DETAIL["request_too_large"])
+        body = bytes(body)
+        if len(body) > request_body_max:
             tls_sock.close()
             return None, TransportResult(OUTPUT_INVALID, reason="output_invalid", detail=DETAIL["request_too_large"])
         request_bytes = _http_request_bytes(netloc=netloc, path=path, secret=secret, body=body)
-        if len(request_bytes) > REQUEST_MAX_BYTES + 4096:
+        if len(request_bytes) > request_total_max:
             tls_sock.close()
             return None, TransportResult(OUTPUT_INVALID, reason="output_invalid", detail=DETAIL["request_too_large"])
         return (
@@ -588,6 +688,20 @@ def send(
         prepared.sock.close()
         return TransportResult(NOT_SENT, reason="connection_unavailable", transient_not_sent=True, detail=DETAIL["pre_send_timeout"])
     sock = prepared.sock
+    remaining = _remaining_ms(deadline_ms)
+    if remaining <= 0:
+        sock.close()
+        return TransportResult(
+            NOT_SENT,
+            reason="connection_unavailable",
+            transient_not_sent=True,
+            detail=DETAIL["pre_send_timeout"],
+        )
+    # The TLS connect phase intentionally has a 10 s socket timeout.  The
+    # single HTTP write must use the remaining *attempt* budget instead
+    # (text 120 s / vision 180 s), otherwise a large but valid body would be
+    # cut off by the connect timeout.
+    sock.settimeout(max(remaining, 1) / 1000.0)
     try:
         sock.sendall(prepared.request_bytes)
         prepared._sent = True
@@ -1048,11 +1162,20 @@ __all__ = [
     "DETAIL",
     "Prepared",
     "TransportResult",
+    "VISION_ATTEMPT_BUDGET_MS",
+    "VISION_BODY_MAX_BYTES",
+    "VISION_HTTP_MAX_BYTES",
+    "VISION_IPC_FRAME_MAX",
+    "VISION_MAX_IMAGES",
+    "VISION_PROTOCOL_ID",
+    "build_http_request",
     "build_request",
     "build_target",
+    "build_vision_request",
     "now_ticks",
     "parse_strict_json_object",
     "prepare",
     "resolve_addresses",
     "send",
+    "vision_capability",
 ]

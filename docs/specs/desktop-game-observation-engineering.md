@@ -1,6 +1,6 @@
 # D4-E：游戏观察记录工程设计
 
-更新：2026-10-27。**E01–E14及E13六份Contract设计保持；E01／E02／E04基础、E03材料与E05／E08保存历史服务层已通过限定工程核查。** 最新[独立核查](../bootstrap/desktop-game-observation-history-review.md)为663项全local、85项相关桌面及竞态／保留库复核通过；见[本片实现](../bootstrap/desktop-game-observation-history-result.md)、[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)及[E03核查](../bootstrap/desktop-game-observation-assets-review.md)。产品依据为[完整规格C1–C33](desktop-game-observation.md)。本轮正常提交推送后停在E05／E08；其余切片、应用真实AI与构建不自动启动。
+更新：2026-10-27。**E01–E14及E13六份Contract设计保持；基础、E03材料、E05／E08保存历史及E06／E07图文执行／候选／原子采用服务层已通过限定工程核查。** 最新[独立核查](../bootstrap/desktop-game-observation-ai-review.md)为718项全local、85项相关桌面、容量及真实DeepSeek闭环通过；见[实现交接](../bootstrap/desktop-game-observation-ai-result.md)。本轮按授权正常提交推送，停在E06／E07；页面／Word／宿主、完整A01–A22及发行未验，不自动启动后续切片。
 
 原OpenCode会话`ses_ead8af71dffeJphI1NOWg4jZgI`使用`opencode-go/deepseek-v4.1-flash#default`、`plan`代理交付方案。Codex退回两轮问题、补充冷迁移问题，并核定K01–K08修正；原会话最终逐项接受。本文由Codex归并为唯一有效工程方案，取代各轮回复中的冲突表述。原始回复及审计证据保留位置见核定记录，不另存提示词副本。
 
@@ -26,7 +26,7 @@
 
 `desktop/requirements-d1.in`只声明桌面／测试／打包依赖，不重复加入Pillow业务依赖；若不需调整现有打包工具，该文件不变。锁定更新使用既有单一解析流程，不`--upgrade`无关包。现有`migrations_local/env.py`、`d1_digest.py`的事务／保护机制是复用及验证对象，不预设需要修改。
 
-准入顺序：E13已核定 → E01／E02／E04基础已通过 → E03材料已通过 → **E05／E08保存历史服务层已通过** → E06／E07视觉候选 → E09／E10入口列表 → E11／E12导出宿主 → E14集成。本轮Git收口后停止，后续另获授权；系统边界改变先ADR。
+准入顺序：E13设计核定 → E01／E02／E04基础通过 → E03材料通过 → E05／E08保存历史通过 → **E06／E07视觉候选服务层已通过限定工程核查** → E09／E10入口列表 → E11／E12导出宿主 → E14集成。本轮必要真实AI测试已按独立合成资料完成DeepSeek闭环，MiMo仅合成；后续不自动启动，系统边界改变先ADR。最新范围见[当前任务](../tasks/current.md)及[本片核查](../bootstrap/desktop-game-observation-ai-review.md)。
 
 ## 2. E01：字段、权威及校验
 
@@ -165,7 +165,11 @@ auto只更新draft/照片/投影/回执，不造history。手动保存、采用�
 
 视觉帧单独版本化并由claim合同授权；保留旧text消息、1MiB保护、现有HTTPS/目标校验、密钥脱敏及dispatch标记。逐层预检原图→实际工作图字节→Base64精确长度`4*ceil(n/3)`→UTF8文字/JSON/data URL→完整请求／IPC帧；同时校验供应商图数、单图、上下文。不得只把旧常量全局调大。
 
-视觉帧36MiB、HTTP预算40MiB、超时180秒及256MiB处理预算等均为候选值，须合成容量验证后冻结；计入父子JSON/Base64/IPC复制和真实解码者，并发要受控。未能满足容量就明确失败并提出修正，不声称已在预算内。dispatch前失败不记已发送；发送标记后崩溃／超时维持`outcome_unknown`，不自动重放。恢复／导出／重开不发AI。既有重试、取消和关闭不能误称撤回供应商请求。
+2026-10-27本片参数核定：独立`chat_completions_vision_v1`，小header先核来源／任务／schema／contract／图数与实际body帧长度，再接视觉大帧；两帧合计36MiB，完整HTTP40MiB（body另预留8192字节头部）、最多600图、attempt180秒，连接仍10秒。旧text保持1MiB／120秒。预检以4096字节认证头和保守deadline计完整帧，实际claim再次编码核对；工作图逐张有界读取与增量预算，不能先积累全部超限输入。
+
+原256MiB组合候选实测失败，失败窗口保留。Codex核定1024MiB为本片父／worker／完整原图解码者组合验证阈值，独立600张真实JPEG及40MP原图完整`inspect_managed_asset`解码的保守峰值和为824500224字节；主请求及解码并发请求均成功，见[容量核查](../bootstrap/desktop-game-observation-ai-review.md)。该值不是运行时硬RSS、整应用或任意并发承诺，不改变E03图片策略。上下文准入按冻结工作图尺寸：DeepSeek每图保守1024 tokens、MiMo官方尺寸公式，加实际UTF-8文本字节上界和8192输出／协议预留，对照1000000上下文；这是保守估算，不是实际token或费用预算，不静默减图。
+
+内部input schema v1与`observation_wire_v1`分别冻结：业务发送投影／dependency hash与内部缺项／warnings／派生引用及参数分开保存，不将旧登记bundle schema冒称完全等于wire。claim取固定input照片引用；旧bundle字面值保持。dispatch前失败不记已发送；发送标记后崩溃／超时维持`outcome_unknown`，不自动重放。恢复／导出／重开不发AI。既有重试、取消和关闭不能误称撤回供应商请求。
 
 ## 8. E07：提示词、输出、候选与采用
 
@@ -174,6 +178,8 @@ auto只更新draft/照片/投影/回执，不造history。手动保存、采用�
 完整输出恰为四栏，评价固定五领域；单栏重写只输出目标栏，评价作为一个含五领域的完整目标。允许情境对话／动作衔接，不能造精确分钟／时长或未提供完整新事件；无法对应多人姓名时写共同情境并提示补充，不猜姓名动作。不把AI补写再当作已核实证据。
 
 候选持久化内容及hash、执行来源、schema、各输出hash、补写提示／定位。片段以目标/领域、文本偏移和匹配hash定位；越界／不匹配时降级总体提示，不把坏定位当正文失败，不把提示拼进采用或Word。候选区总体提示并可展开片段，无逐句确认。
+
+本片审核metadata v1与candidate总hash／目标hash绑定，持久记录在保留前缀`cr:<candidate_id>`的AI operation；提取最多64片段、每片段200字符、片段JSON64KiB预算，超额保留完整正文并标记截断，读取时重新核偏移／目标／领域／hash。这些参数只限制审核定位，不截短正文，不扩大教师确认步骤。
 
 | 任务／目标 | 实际发送的正文依赖（资料／环境／照片另计） |
 | --- | --- |
@@ -188,6 +194,8 @@ auto只更新draft/照片/投影/回执，不造history。手动保存、采用�
 采用preview返回一次性token，绑定candidate/hash、profile/record、targets、当前实际依赖／目标／draft hash、source_state、差异及期限。正常采用不多审批、不要求review_decision；来源变化明确展示当前差异后，提交adopt_reviewed决定并绑定预览／fingerprint，或取消／重新生成；不用裸bool绕过，坏图／不兼容合同不能复核覆盖。晚到编辑／候选／目标变化失效，无变重复不造节点，回包丢失先读回执而非已消费token。详见[Contract§6.3](../modules/game-observations.md#63-候选与采用)。
 
 **同候选部分采用例外必须有账本证据：** 先采用该候选目标，当前值仍等于该输出且provenance证实，可在其余栏上下文比较中作为受信替换。因此可先目标再评价。人工/其他候选改成相同字样不能仅凭文本相等冒充本候选已采用。已采用目标不重复覆写，目标被手改亦不得晚到覆盖。整份／多目标一次采用在单事务写draft/照片不变/投影、应留版本、provenance和回执；不产生半份采用。重写后展示片段属于新候选，不串旧结果。
+
+采用token内部上限64个／TTL600秒；原子reservation先于写入，事务进入／写入失败释放，提交后消费。观察域强回执先于token／材料／当前配置，提交后崩溃重开按同fingerprint回放，不重发AI。事务外核冻结及当前照片并集，写锁内刷新并核完整candidate/input绑定和材料身份。`changed`与`history_created`分别判断：draft变化才增revision，最终aggregate相对最近保留节点有变才留history，无首节点则首次留节点；auto后的待保留内容即使已等于候选也须留节点。无变采用仍记provenance／operation，同candidate/version只合并新目标证据；已采用目标经手改／auto／恢复／他候选改动后，旧候选不能因最近历史还等于旧输出而迟到覆写。
 
 ## 9. E08：整份历史恢复
 
@@ -279,12 +287,12 @@ auto只更新draft/照片/投影/回执，不造history。手动保存、采用�
 
 失败注入至少包括：重建各表中断、原数据异常、seed前后失败、错profile/record/task/input/candidate链、NULL CHECK绕过、文件落盘后DB失败、原图/工作图缺失损坏、并发排序、导入磁盘满、采用/恢复响应丢失与同ID异请求、先目标后评价、策略依赖的过程被改、恢复时term变化、未知AI重开、导出确认后变更、宿主占用/取消、超大图请求/IPC/RSS和旧日计划回归。
 
-完整后续矩阵命令示例（本片实际命令及结果见核查报告；部分材料／AI／恢复／导出测试仍为拟名，未执行；仅合成库／图片／假供应商）：
+完整后续矩阵命令示例（不作本轮执行清单；本轮实际命令、隔离目录、真实调用与结果见核查报告；导出专项由后续E11补充）：
 
 ```powershell
 # cwd: C:/Users/yw980/code/kindergarten-manager-next/backend
 ../desktop/.venv-d1/Scripts/python.exe -m pytest tests/local/test_migrations.py tests/local/test_d2_schema.py tests/local/test_d2_migration_safety.py tests/local/test_d3_history.py -q
-../desktop/.venv-d1/Scripts/python.exe -m pytest tests/local/test_observation_models.py tests/local/test_observation_assets.py tests/local/test_observation_ai.py tests/local/test_observation_restore.py tests/local/test_observation_export.py -q
+../desktop/.venv-d1/Scripts/python.exe -m pytest tests/local/test_observation_models.py tests/local/test_observation_assets.py tests/local/test_observation_ai.py tests/local/test_observation_history.py tests/local/test_observation_ai_contracts.py tests/local/test_observation_prompt_contracts.py -q
 ../desktop/.venv-d1/Scripts/python.exe -m pytest tests/local -q
 # cwd: C:/Users/yw980/code/kindergarten-manager-next
 desktop/.venv-d1/Scripts/python.exe -m pytest desktop/tests -q
@@ -293,6 +301,6 @@ npm run typecheck
 npm run test:d1
 ```
 
-真实WebView2验证需记录源码/进程/数据身份，Word页面必须来自新版实际产品导出，记录Windows/Word/字体及每份起始页；XML/PNG/PDF辅助，不能以参考文件渲染代替。后续构建/包验证另有明确授权，检查模板、PIL格式插件/许可、前端与真实入口同源及冷启动；真实AI另授权并看真实读图/多人对应/补写质量，假响应不能证明效果。
+真实WebView2验证需记录源码／进程／数据身份，Word页面必须来自新版实际产品导出，记录Windows／Word／字体及每份起始页；XML／PNG／PDF仅辅助。后续构建／包验证另按授权，检查模板、PIL插件／许可、前端及入口同源与冷启动。本轮已获必要真实AI授权并完成独立合成资料DeepSeek闭环；复杂照片／多人对应／补写质量及教师体验仍待后续，假响应不能替代真实效果。
 
-目前无新增待用户决定的主流程产品问题。E03参数与材料结果见[E03报告](../bootstrap/desktop-game-observation-assets-review.md)；E05／E08服务层结果见[保存历史核查](../bootstrap/desktop-game-observation-history-review.md)。完整图文执行、页面／IME／离开、Word／宿主、冻结包及产品仍未整体验收。首期保留成功staging空目录及未引用孤儿，不递归自动清理；维护须保护历史/input引用并另审。Win10、WPS、干净机器、其他DPI／显示器及D2／D3未验保持。全部自动验证为独立合成数据，不改真实库／凭据／OneDrive原件／旧包；E03已授权图片核对的历史证据保持，不扩展本轮材料使用。本轮Git授权覆盖E05／E08审核通过后正常提交推送，停在本片。
+目前无新增待用户决定的主流程问题。E03材料及E05／E08历史结果保持，E06／E07图文执行／候选／采用服务层已通过[最新核查](../bootstrap/desktop-game-observation-ai-review.md)。页面／IME／离开、Word／宿主、冻结包、完整A01–A22与教师产品未整体验收。首期保留成功staging空目录及未引用孤儿，不递归自动清理；维护须保护历史／input引用并另审。Win10、WPS、干净机器、其他DPI／显示器及D2／D3未验保持。自动验证与本轮真实AI均用独立合成资料；原业务库／凭据／OneDrive原件／旧包保持。本轮Git授权覆盖E06／E07审核通过后正常提交推送，停在本片。

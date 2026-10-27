@@ -62,6 +62,7 @@ from app.local.observation_service import (
     _receipt,
     _replay,
     _replace_draft_photos,
+    _target_hashes,
     validate_version,
 )
 from app.local.observation_terms import get_term_snapshot, snapshot_from_term
@@ -816,6 +817,7 @@ def restore_observation(
                 "term_decision": term_decision,
                 "effective_term_id": effective.get("term_id"),
                 "photos": source_manifest,
+                "target_hashes": _target_hashes(effective),
                 "saved_at": commit_now.isoformat(),
             },
             now=commit_now,

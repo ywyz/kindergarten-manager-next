@@ -6,7 +6,7 @@
 
 应用维护各 AI 任务的输入变量、输出字段名称与格式，以及默认生成指导。使用者拥有个人字段生成指导，可以修改指导内容，不能删除或重命名字段，也不能改变返回结构。
 
-当前优先支持教案拆分、活动过程年龄适宜性调整与日计划其他活动生成。周计划游戏选取与补足、其他栏目及主题建议保留对应提示词能力边界，按后续周计划规格实施；不因此把周计划列入当前每日活动计划切片。游戏观察的两类任务、四栏及固定五领域契约已确认；本片只实施登记schema／种子，运行时校验与执行仍未实施。
+当前优先支持教案拆分、活动过程年龄适宜性调整与日计划其他活动生成，周计划仍按其后续规格。游戏观察两类任务、四栏及固定五领域的运行时校验／执行已通过E06／E07限定工程核查；现有提示词UI仍只三类日计划任务，不新增观察指导编辑器。
 
 具体拆分为几个实际 API 请求在调用规格中细化，不凭提示词列表增加调用次数。
 
@@ -18,7 +18,7 @@
 
 ## 游戏观察提示词扩展（2026-10-26，E13设计核定）
 
-本片已实施两个观察bundle的数据schema及守卫后幂等补种，见[E01／E02／E04独立核查](../bootstrap/desktop-game-observation-foundation-review.md)；保留旧daily七包原值，现有提示词UI／执行仍仅三类日计划任务。观察运行时校验／视觉协议后续实施。
+两个观察bundle登记／守卫后幂等补种见[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)；E06／E07运行时输入／输出校验、视觉执行及候选metadata已通过[最新核查](../bootstrap/desktop-game-observation-ai-review.md)。旧daily七包及观察v1 bundle字面schema／hash保持，内部冻结input与实际wire投影分别版本化，不把运行时wire冒称旧登记schema。提示词UI后续边界保持。
 
 应用固定维护game_observation_generate及game_observation_rewrite两类bundle、输入和输出schema；完整生成恰为观察目标／观察记录／评价分析／支持策略四栏，评价固定health/language/social/science/arts；单栏重写只输出目标栏，评价作为含五领域的完整目标。
 
@@ -26,7 +26,7 @@
 
 允许补写情境对话及动作衔接，不造未提供精确分钟／时长或完整新事件；多人无法对应姓名时写共同情境并提示，不猜姓名动作，不把补写反作已核实评价证据。补写总体提示与定位片段仅供候选审核，定位越界／hash不符降级总体提示，不拼入正文、Word或后续提示词。
 
-精确发送清单、实际上下文hash、候选复核／采用见[观察Contract§6](game-observations.md#6-ai-投影候选与采用)；迁移不提前插种子，两次guard通过后注册bundle／heads，无profile由首次建档动态seed，已有profile只幂等补观察任务，旧daily指导不变，见[§3.3](game-observations.md#33-迁移与种子)。登记／种子的本片结果见上文核查；发送／采用仍是设计。D2及既有默认更新／适配规则和未验身份保持，原设计核定见[E13记录](../bootstrap/desktop-game-observation-contract-review.md)。
+精确发送清单、实际上下文hash、候选复核／采用见[观察Contract§6](game-observations.md#6-ai-投影候选与采用)。E06／E07服务层已实现；R12仅强化观察执行协议的姓名对应／审核提示分离，保留C11补写与C32资料缺口说明，不做猜姓名／删句后处理。Codex曾误判换行而提出R13，已全部撤回，未保留格式清洗。原bundle／指导种子及D2更新规则保持，设计依据见[E13记录](../bootstrap/desktop-game-observation-contract-review.md)。
 
 ## 更新规则
 

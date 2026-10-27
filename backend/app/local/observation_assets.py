@@ -1005,6 +1005,23 @@ def managed_asset_path(
     )
 
 
+def managed_derivative_path(
+    runtime: Any,
+    relative: str,
+    observation_id: str,
+    asset_id: str,
+    derivative_id: str,
+) -> Path:
+    """Strict fixed layout/ownership check for one managed derivative."""
+    return _asset_relative(
+        runtime,
+        relative,
+        observation_id,
+        asset_id,
+        expected_leaf=derivative_id,
+    )
+
+
 def _prepare_staged_asset(path: Path, root: Path) -> PreparedAsset:
     """Decode the staging file through one verified handle while parents are pinned."""
     try:
@@ -1865,6 +1882,7 @@ def _read_verified_file(
     expected_hash: str,
     expected_size: int | None,
     expected_leaf: str,
+    max_bytes: int | None = None,
 ) -> bytes:
     path = _asset_relative(
         runtime, relative, observation_id, asset_id, expected_leaf=expected_leaf
@@ -1879,12 +1897,18 @@ def _read_verified_file(
         info = _verify_open_file(fd, path, runtime.data_dir / ASSET_ROOT)
         if expected_size is not None and info.st_size != expected_size:
             raise ObservationMaterialCorrupt("材料文件大小不一致")
+        if max_bytes is not None and info.st_size > max_bytes:
+            raise ObservationMaterialLimit("材料超过读取上限")
         hasher = hashlib.sha256()
         chunks: list[bytes] = []
+        total = 0
         while True:
             chunk = os.read(fd, 1024 * 1024)
             if not chunk:
                 break
+            total += len(chunk)
+            if max_bytes is not None and total > max_bytes:
+                raise ObservationMaterialLimit("材料超过读取上限")
             hasher.update(chunk)
             chunks.append(chunk)
         after = os.fstat(fd)
@@ -1953,6 +1977,7 @@ def read_derivative_bytes(
     derivative_id: str | None = None,
     purpose: str | None = None,
     params_version: str | None = None,
+    max_bytes: int | None = None,
 ) -> bytes:
     if derivative_id is None and (purpose is None or params_version is None):
         raise ObservationMaterialInvalid(
@@ -1992,6 +2017,7 @@ def read_derivative_bytes(
         expected_hash=expected_hash,
         expected_size=expected_size,
         expected_leaf=expected_leaf,
+        max_bytes=max_bytes,
     )
 
 
@@ -2017,6 +2043,7 @@ __all__ = [
     "ObservationAssetStorage",
     "ManagedAssetInspection",
     "managed_asset_path",
+    "managed_derivative_path",
     "inspect_managed_asset",
     "verify_managed_asset_identity",
     "import_asset",

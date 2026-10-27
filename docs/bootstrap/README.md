@@ -2,13 +2,13 @@
 
 更新：2026-10-27。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前阶段：E05／E08保存、历史与恢复限定工程通过
+## 当前阶段：E06／E07图文候选与原子采用限定工程通过
 
-2026-10-27收口：E05／E08由原OpenCode会话以Go套餐DeepSeek V4.1 Flash max实施及回修，[独立核查](desktop-game-observation-history-review.md)通过：663项全local、85项相关桌面及竞态／保留库复核通过，R01–R08关闭；见[实现交付](desktop-game-observation-history-result.md)。按本轮授权正常提交推送，停在服务层本片。[当前任务](../tasks/current.md)为唯一有效入口；E06／E07视觉候选、E09／E10页面、E11／E12 Word／宿主和E14未启动，完整A01–A22及教师体验未整项验收。
+2026-10-27收口：E06／E07由原OpenCode会话以Go套餐DeepSeek V4.1 Flash max实施及回修，[独立核查](desktop-game-observation-ai-review.md)通过：冻结718项全local、85项相关桌面、完整图文容量及真实DeepSeek生成／五领域重写／采用闭环，R01–R12关闭；R13为Codex误判，额外处理已全部撤回。真实请求共4次，含1次unknown且不自动重放；原配置／凭据及旧数据保持。见[实现交接](desktop-game-observation-ai-result.md)，按授权正常提交推送，停在服务层本片；[唯一入口](../tasks/current.md)。E09／E10页面、E11／E12 Word／宿主与E14未启动，完整A01–A22、教师体验和MiMo真实仍未验。
 
-此前[应用更新](../specs/desktop-application-update.md)U1–U3已推送d52fa8a；游戏观察[产品C1–C33](../specs/desktop-game-observation.md)、[工程设计](../specs/desktop-game-observation-engineering.md)及[E13六份Contract](desktop-game-observation-contract-review.md)保持。E01／E02／E04独立599项通过并已推送，见[基础核查](desktop-game-observation-foundation-review.md)；E03材料限定工程已推送5e3e46f，见[实现结果](desktop-game-observation-assets-result.md)及[E03核查](desktop-game-observation-assets-review.md)。跨设备、真实更新安装、发行源与教师体验等既有未验保持，不安排应用真实AI、签名、WebDAV或发行。
+此前[应用更新](../specs/desktop-application-update.md)U1–U3已推送d52fa8a；D4产品／工程／E13设计保持，基础、E03（5e3e46f）及E05／E08（541bc82）证据保留。跨设备、真实更新安装、发行源／4551、教师体验及D2／D3既有未验保持，不安排签名、WebDAV、微软提交或发行。以下各历史轮次保留当时状态及授权，当前观察范围以顶部及唯一任务为准。
 
-最新状态与处理决定见[W6收口及三项后续事件](desktop-d2-w6-closeout.md)和[逐项人工记录](desktop-d2-w6-manual-acceptance.md)：已验Word／候选／保存／重启／在途子项保持；跨120秒睡眠不再验证，白屏等复发，额外任务用户倾向误点、保留观察。三项留作同类再现处理，不主动追测，不改记为技术通过／已修复。用户已授权相关Git提交／推送，未授权应用真实AI或发布。
+此前W6状态与处理决定见[W6收口及三项后续事件](desktop-d2-w6-closeout.md)和[逐项人工记录](desktop-d2-w6-manual-acceptance.md)：已验Word／候选／保存／重启／在途子项保持；跨120秒睡眠不再验证，白屏等复发，额外任务用户倾向误点、保留观察。三项留作同类再现处理，不主动追测，不改记为技术通过／已修复。用户已授权相关Git提交／推送，未授权应用真实AI或发布。
 
 2026-10-20后续授权的[普通运行验证包整合](desktop-d2-normal-package-result.md)已由OpenCode使用同一Go套餐DeepSeek V4.1 Flash完成，并经[Codex独立核查§6](desktop-d2-normal-package-review.md#6-最终独立核查与交付结论)通过：新包位于build/desktop-d2-normal-r01/，普通入口与54模块同源、前端与已验R01一致；独立前端、196桌面、8项构建路径保护及仓外冻结130项通过，旧包及保护数据未变。N01／N02回修关闭；相关修改已按2026-10-21用户授权提交并推送（2cafa49），未上传包、数据库或凭据。
 

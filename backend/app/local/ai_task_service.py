@@ -415,12 +415,20 @@ def task_out(session: Session, task: LocalAITask) -> dict[str, Any]:
         "content_version": inp.content_version if inp else None,
         "target_grade": inp.target_grade if inp else None,
         "dependency_hash": inp.dependency_hash if inp else None,
+        "source_revision": inp.source_revision if inp else None,
     }
     if inp is not None:
         warning = ai_inputs.calendar_coverage_warning(inp.dependencies_json or {})
         if warning is not None:
             input_summary["calendar_coverage_warning"] = warning
-    return {
+        if inp.source_kind == "game_observation":
+            deps = dict(inp.dependencies_json or {})
+            internal = dict(deps.get("internal") or {})
+            input_summary["input_schema_version"] = inp.input_schema_version
+            input_summary["wire_schema_version"] = internal.get("wire_schema_version")
+            input_summary["missing_fields"] = list(internal.get("missing_fields") or [])
+            input_summary["warnings"] = list(internal.get("warnings") or [])
+    result = {
         "id": task.id,
         "plan_id": task.daily_plan_id,
         "task_type": task.task_type,
@@ -436,6 +444,10 @@ def task_out(session: Session, task: LocalAITask) -> dict[str, Any]:
         "allowed_actions": _allowed_actions(task),
         "retry_requires_ack": certainty == CERTAINTY_UNKNOWN,
     }
+    if task.source_kind == "game_observation":
+        result["source_kind"] = task.source_kind
+        result["observation_id"] = task.observation_id
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -647,15 +659,18 @@ def list_tasks(
     status: str | None = None,
     limit: object = DEFAULT_LIST_LIMIT,
     cursor: str | None = None,
+    source_kind: str = "daily_plan",
 ) -> dict[str, Any]:
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_LIST_LIMIT:
         raise LocalValidationError("limit 必须在 1–100 之间")
     if status is not None and status not in (LIVE_STATUSES + TERMINAL_STATUSES + ("paused",)):
         raise LocalValidationError("status 不在允许范围")
+    if source_kind not in ("daily_plan", "game_observation"):
+        raise LocalValidationError("source_kind 不在允许范围")
     with read_scope(session):
         _profile_id(session)
         statement = select(LocalAITask).where(
-            LocalAITask.source_kind == "daily_plan"
+            LocalAITask.source_kind == source_kind
         )
         if plan_id is not None:
             statement = statement.where(LocalAITask.daily_plan_id == plan_id)
@@ -677,10 +692,12 @@ def list_tasks(
         return {"items": [task_out(session, row) for row in rows], "next_cursor": next_cursor}
 
 
-def get_task(session: Session, task_id: str) -> dict[str, Any]:
+def get_task(
+    session: Session, task_id: str, *, source_kind: str = "daily_plan"
+) -> dict[str, Any]:
     with read_scope(session):
         _profile_id(session)
-        return task_out(session, require_task(session, task_id))
+        return task_out(session, require_task(session, task_id, source_kind=source_kind))
 
 
 # ---------------------------------------------------------------------------
@@ -741,6 +758,7 @@ def cancel_task(
     task_id: str,
     expected_execution_id: object,
     request_id: object,
+    source_kind: str = "daily_plan",
 ) -> tuple[dict[str, Any], str | None, str]:
     """Cancel; return ``(TaskOut, abort_execution_id, abort_kind)``."""
     rid = _normalize_request_id(request_id)
@@ -755,7 +773,7 @@ def cancel_task(
             result = _replay(receipt, OP_CANCEL, fingerprint)
             rollback(session)
             return result, None, "none"
-        task = require_task(session, task_id)
+        task = require_task(session, task_id, source_kind=source_kind)
         _check_expected_execution(task, expected_execution_id)
         now = _now()
         abort_id: str | None = None
@@ -852,6 +870,12 @@ def cancel_task(
 
 
 def _revalidate_source(session: Session, task: LocalAITask) -> bool:
+    if task.source_kind == "game_observation":
+        if task.observation_id is None:
+            return False
+        from app.local.observation_ai_service import revalidate_observation_source
+
+        return revalidate_observation_source(session, task)
     if task.source_kind != "daily_plan" or task.daily_plan_id is None:
         return False
     inp = session.get(LocalAIInput, task.input_id)
@@ -869,8 +893,8 @@ def _revalidate_source(session: Session, task: LocalAITask) -> bool:
 def _aliased_task_exists(session: Session, task: LocalAITask) -> bool:
     return session.scalars(
         select(LocalAITask).where(
-            LocalAITask.source_kind == "daily_plan",
-            LocalAITask.daily_plan_id == task.daily_plan_id,
+            LocalAITask.source_kind == task.source_kind,
+            LocalAITask.source_id == task.source_id,
             LocalAITask.task_type == task.task_type,
             LocalAITask.status.in_(LIVE_STATUSES),
             LocalAITask.id != task.id,
@@ -928,7 +952,9 @@ def _requeue(
     return result
 
 
-def _preflight_for_task(runtime: Any, session: Session, task_id: str) -> None:
+def _preflight_for_task(
+    runtime: Any, session: Session, task_id: str, *, source_kind: str = "daily_plan"
+) -> None:
     """Runtime preflight for resume/retry: prompt sync, credential and size.
 
     Runs after the receipt priority check and before the write transaction, so
@@ -936,15 +962,21 @@ def _preflight_for_task(runtime: Any, session: Session, task_id: str) -> None:
     pauses the task.
     """
     with read_scope(session):
-        task = require_task(session, task_id)
-        if task.source_kind != "daily_plan":
-            raise LocalAiNotFound("未找到该日计划任务")
-        task_type = task.task_type
-        plan_id = task.daily_plan_id
-        inp = session.get(LocalAIInput, task.input_id)
-        grade = inp.target_grade if inp is not None else "middle"
+        task = require_task(session, task_id, source_kind=source_kind)
+        if task.source_kind == "game_observation":
+            task_type = task.task_type
+            plan_id = None
+            grade = None
+        else:
+            if task.source_kind != "daily_plan":
+                raise LocalAiNotFound("未找到该日计划任务")
+            task_type = task.task_type
+            plan_id = task.daily_plan_id
+            inp = session.get(LocalAIInput, task.input_id)
+            grade = inp.target_grade if inp is not None else "middle"
     _preflight_ready(runtime, session, task_type)
-    _preflight_size(runtime, session, task_type, grade, plan_id, None)
+    if plan_id is not None:
+        _preflight_size(runtime, session, task_type, grade, plan_id, None)
 
 
 def resume_task(
@@ -954,6 +986,7 @@ def resume_task(
     expected_execution_id: object,
     request_id: object,
     runtime: Any | None = None,
+    source_kind: str = "daily_plan",
 ) -> dict[str, Any]:
     rid = _normalize_request_id(request_id)
     fingerprint = _fingerprint(
@@ -967,7 +1000,7 @@ def resume_task(
     if receipt is not None:
         return _replay(receipt, OP_RESUME, fingerprint)
     if runtime is not None:
-        _preflight_for_task(runtime, session, task_id)
+        _preflight_for_task(runtime, session, task_id, source_kind=source_kind)
     begin_immediate(session)
     try:
         profile_id = _profile_id(session)
@@ -976,7 +1009,7 @@ def resume_task(
             result = _replay(receipt, OP_RESUME, fingerprint)
             rollback(session)
             return result
-        task = require_task(session, task_id)
+        task = require_task(session, task_id, source_kind=source_kind)
         _check_expected_execution(task, expected_execution_id)
         if task.status != "paused":
             raise LocalAiTaskStateConflict("只有 paused 任务可以继续")
@@ -1007,6 +1040,7 @@ def retry_task(
     ack_duplicate_cost: bool,
     request_id: object,
     runtime: Any | None = None,
+    source_kind: str = "daily_plan",
 ) -> dict[str, Any]:
     rid = _normalize_request_id(request_id)
     fingerprint = _fingerprint(
@@ -1023,7 +1057,7 @@ def retry_task(
     if receipt is not None:
         return _replay(receipt, OP_RETRY, fingerprint)
     if runtime is not None:
-        _preflight_for_task(runtime, session, task_id)
+        _preflight_for_task(runtime, session, task_id, source_kind=source_kind)
     begin_immediate(session)
     try:
         profile_id = _profile_id(session)
@@ -1032,7 +1066,7 @@ def retry_task(
             result = _replay(receipt, OP_RETRY, fingerprint)
             rollback(session)
             return result
-        task = require_task(session, task_id)
+        task = require_task(session, task_id, source_kind=source_kind)
         _check_expected_execution(task, expected_execution_id)
         if task.status not in ("failed", "paused", "outcome_unknown"):
             raise LocalAiTaskStateConflict("只有 failed/paused/outcome_unknown 可以重试")
@@ -1064,7 +1098,7 @@ def retry_task(
 @dataclass
 class Claim:
     task_id: str
-    plan_id: str
+    plan_id: str | None
     input_id: str
     task_type: str
     execution_id: str
@@ -1083,13 +1117,21 @@ class Claim:
     model: str
     secret: str
     started_ticks: int = 0
+    source_kind: str = "daily_plan"
+    observation_id: str | None = None
+    image_urls: tuple[str, ...] = ()
+    attempt_budget_ms: int = ai_transport.ATTEMPT_BUDGET_MS
+    vision_authorized: bool = False
+    vision_schema_version: int | None = None
+    vision_protocol: str | None = None
+    work_dimensions: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass
 class _Pick:
     task_id: str
     task_status: str
-    plan_id: str
+    plan_id: str | None
     input_id: str
     task_type: str
     generation: int
@@ -1102,6 +1144,8 @@ class _Pick:
     contract_version: int | None
     default_revision: int | None
     pause_reason: str | None = None
+    source_kind: str = "daily_plan"
+    observation_id: str | None = None
 
 
 def _render_system_text(
@@ -1109,6 +1153,8 @@ def _render_system_text(
     contract_version: int,
     output_schema: dict[str, Any],
     guidance: dict[str, Any],
+    *,
+    protocol: str = ai_transport.PROTOCOL_ID,
 ) -> str:
     """System message: pinned output contract + separate personal guidance.
 
@@ -1145,11 +1191,24 @@ def _render_system_text(
             "不伪造日计划引用或真实活动事实；不输出“一日活动反思”。",
             "节日信息仅供参考，不强制安排节日活动。",
         ],
+        "game_observation_generate": [
+            "根据记录类型、基本资料、已有四栏正文、全部有序照片及简短说明，一次生成四个栏目；四个栏目都必须返回，暂无可写内容时使用空字符串，评价分析必须是五个领域齐全的对象。",
+            "允许补写对话和基于情境的动作衔接，但不得编造未提供的精确分钟、持续时长或完整新事件。只有在教师明确给出姓名与行为／原话对应时，才把该行为或原话写到具体姓名；仅提供 subjects 姓名不构成对应。没有明确对应时，只写材料能确定的共同情境，或写不归属具体姓名的对话／动作，不自行给幼儿分配角色、台词或动作。确有必要时可在正文简短说明人物对应缺口，但不得因此删除或禁止 C11 允许的对话与动作衔接。四栏正文若有多条或多段，JSON 解码后必须是真实换行；JSON 字符串中只转义一层（\n），不得输出字面反斜杠+n、双重转义或让教师看到 \n 字面文本。",
+            "教师已给的原话、时间、人物对应优先；AI补写的对话和动作只作为候选，不是已核实事实，不得写成“记录显示”“只能确定”等已证实表述，也不得声称从静态照片听到了原话。",
+            "审核提示、候选／AI补写／待核实等标记只由应用候选区独立 metadata 提供；四栏正文不得包裹、添加或复述这些审核说明。",
+            "只使用输入中的资料、照片和说明；不引入学校、班级、观察者、学期或任何内部身份字段。",
+        ],
+        "game_observation_rewrite": [
+            "只重写 target 指定的栏目并只返回该栏目；评价分析目标必须返回 health/language/social/science/arts 五领域完整对象，其他目标只返回 text。",
+            "输入中的其他栏目只作为上下文，不得顺带改写或返回；允许补写对话和基于情境的动作衔接，但不得编造未提供的精确分钟、持续时长或完整新事件。目标正文若有多条或多段，JSON 解码后必须是真实换行；JSON 字符串中只转义一层（\n），不得输出字面反斜杠+n、双重转义或让教师看到 \n 字面文本。",
+            "只有在教师明确给出姓名与行为／原话对应时，才把该行为或原话写到具体姓名；仅提供 subjects 姓名不构成对应。没有明确对应时，只写材料能确定的共同情境，或写不归属具体姓名的对话／动作，不自行给幼儿分配角色、台词或动作；确有必要时可简短说明人物对应缺口。教师已给的原话、时间、人物对应优先。",
+            "AI补写的对话和动作只作为候选，不是已核实事实，不得写成“记录显示”“只能确定”等已证实表述，也不得声称从静态照片听到了原话。审核提示、候选／AI补写／待核实等标记只由应用候选区独立 metadata 提供，不得写进目标正文。",
+        ],
     }
     return canonical_json(
         {
             "task_type": task_type,
-            "protocol": ai_transport.PROTOCOL_ID,
+            "protocol": protocol,
             "contract_version": contract_version,
             "output_contract": output_schema,
             "guidance": guidance,
@@ -1221,7 +1280,6 @@ def _pick_candidate(runtime: Any, now: datetime) -> tuple[_Pick | None, bool]:
                     select(LocalAITask)
                     .where(
                         LocalAITask.profile_id == profile_id,
-                        LocalAITask.source_kind == "daily_plan",
                         LocalAITask.status.in_(("pending", "retry_wait")),
                     )
                     .order_by(LocalAITask.created_at, LocalAITask.id)
@@ -1301,6 +1359,8 @@ def _pick_candidate(runtime: Any, now: datetime) -> tuple[_Pick | None, bool]:
                     personal_revision=version.revision,
                     contract_version=version.contract_version,
                     default_revision=version.based_default_revision,
+                    source_kind=target.source_kind,
+                    observation_id=target.observation_id,
                 )
             else:  # retry_wait: reuse the execution's pinned versions
                 execution = session.get(
@@ -1337,6 +1397,8 @@ def _pick_candidate(runtime: Any, now: datetime) -> tuple[_Pick | None, bool]:
                     personal_revision=execution.personal_revision,
                     contract_version=execution.contract_version,
                     default_revision=execution.default_revision,
+                    source_kind=target.source_kind,
+                    observation_id=target.observation_id,
                 )
             session.commit()
             return pick, False
@@ -1370,6 +1432,11 @@ def serialized_request_bytes(
 def _load_material(runtime: Any, pick: _Pick) -> tuple[dict[str, Any] | None, str | None]:
     """Phase 2: read pinned rows and decrypt outside any DB transaction."""
     from app.local.ai_config_service import _build_store
+
+    if pick.source_kind == "game_observation":
+        from app.local.observation_ai_service import load_observation_material
+
+        return load_observation_material(runtime, pick)
 
     session = runtime.session()
     try:
@@ -1639,6 +1706,17 @@ def claim_next(
                 model=material["model"],
                 secret=material["secret"],
                 started_ticks=started_ticks,
+                source_kind=task.source_kind,
+                observation_id=task.observation_id,
+                image_urls=tuple(material.get("image_urls") or ()),
+                attempt_budget_ms=int(
+                    material.get("attempt_budget_ms")
+                    or ai_transport.ATTEMPT_BUDGET_MS
+                ),
+                vision_authorized=bool(material.get("vision_authorized")),
+                vision_schema_version=material.get("vision_schema_version"),
+                vision_protocol=material.get("vision_protocol"),
+                work_dimensions=tuple(material.get("work_dimensions") or ()),
             )
             session.commit()
             return claim
@@ -1796,25 +1874,34 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
         if execution.state != "dispatching" or not _permit_ok(task, execution, claim, attempt):
             rollback(session)
             return False
-        session.add(
-            LocalAICandidate(
-                id=new_opaque_id(),
-                profile_id=task.profile_id,
-                execution_id=execution.id,
-                task_id=task.id,
-                source_kind=task.source_kind,
-                source_id=task.source_id,
-                observation_id=task.observation_id,
-                daily_plan_id=task.daily_plan_id,
-                input_id=task.input_id,
-                task_type=task.task_type,
-                contract_version=execution.contract_version,
-                schema_version=ai_inputs.INPUT_SCHEMA_VERSION,
-                raw_candidate_json=validated,
-                candidate_hash=_digest(validated),
-                created_at=now,
-            )
+        inp = session.get(LocalAIInput, task.input_id)
+        schema_version = inp.input_schema_version if inp is not None else 1
+        candidate = LocalAICandidate(
+            id=new_opaque_id(),
+            profile_id=task.profile_id,
+            execution_id=execution.id,
+            task_id=task.id,
+            source_kind=task.source_kind,
+            source_id=task.source_id,
+            observation_id=task.observation_id,
+            daily_plan_id=task.daily_plan_id,
+            input_id=task.input_id,
+            task_type=task.task_type,
+            contract_version=execution.contract_version,
+            schema_version=schema_version,
+            raw_candidate_json=validated,
+            candidate_hash=_digest(validated),
+            created_at=now,
         )
+        session.add(candidate)
+        session.flush()
+        if task.source_kind == "game_observation":
+            from app.local.observation_ai_service import (
+                store_candidate_review_metadata,
+            )
+
+            store_candidate_review_metadata(session, candidate, validated)
+            session.flush()
         _finish_attempt(attempt, "succeeded", result, now)
         meta = _meta(CERTAINTY_RESPONSE)
         _close_execution(execution, "succeeded", meta, now)

@@ -635,6 +635,54 @@ def _action_observation_service_restore(spec: dict, runtime) -> dict:
         session.close()
 
 
+def _action_observation_ai_adopt(spec: dict, runtime) -> dict:
+    from app.local import observation_ai_service
+
+    session = runtime.session()
+    try:
+        preview = observation_ai_service.preview_adoption(
+            session,
+            runtime,
+            profile_id=spec["profile_id"],
+            observation_id=spec["observation_id"],
+            candidate_id=spec["candidate_id"],
+            expected_revision=spec["expected_revision"],
+            expected_hash=spec["expected_hash"],
+            selected_targets=spec["selected_targets"],
+            request_id=spec["preview_request_id"],
+        )
+        result = observation_ai_service.adopt(
+            session,
+            runtime,
+            profile_id=spec["profile_id"],
+            observation_id=spec["observation_id"],
+            candidate_id=spec["candidate_id"],
+            expected_revision=spec["expected_revision"],
+            expected_hash=spec["expected_hash"],
+            selected_targets=spec["selected_targets"],
+            preview_token=preview["adoption_token"],
+            request_id=spec["request_id"],
+            review_decision=spec.get("review_decision"),
+        )
+        if spec.get("exit_mode") == "after_commit":
+            Path(spec["result_file"]).write_text(
+                json.dumps(
+                    {
+                        "result": result,
+                        "preview_token": preview["adoption_token"],
+                        "expected_revision": spec["expected_revision"],
+                        "expected_hash": spec["expected_hash"],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            os._exit(17)
+        return {"result": result, "preview_token": preview["adoption_token"]}
+    finally:
+        session.close()
+
+
 ACTIONS = {
     "initialize": _action_initialize,
     "create_plan": _action_create_plan,
@@ -652,6 +700,7 @@ ACTIONS = {
     "observation_service_save": _action_observation_service_save,
     "observation_service_read": _action_observation_service_read,
     "observation_service_restore": _action_observation_service_restore,
+    "observation_ai_adopt": _action_observation_ai_adopt,
 }
 
 

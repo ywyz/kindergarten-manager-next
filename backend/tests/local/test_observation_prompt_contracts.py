@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
-from app.local import prompt_bundles
+from app.local import ai_task_service, ai_transport, prompt_bundles
 
 
 class ObservationBundleContractTests(unittest.TestCase):
@@ -32,10 +33,10 @@ class ObservationBundleContractTests(unittest.TestCase):
                 "game_observation_rewrite",
             },
         )
-        self.assertNotIn(
+        self.assertIn(
             "game_observation_generate", prompt_bundles._OUTPUT_MODELS
         )
-        self.assertNotIn(
+        self.assertIn(
             "game_observation_rewrite", prompt_bundles._INPUT_MODELS
         )
 
@@ -189,6 +190,33 @@ class ObservationBundleContractTests(unittest.TestCase):
         for value in rejected:
             with self.subTest(rejected=value):
                 self.assertEqual(self._one_of_matches(schema, value), 0)
+
+
+    def test_runtime_observation_prompt_forbids_name_assignment_and_audit_wrappers(self):
+        for task_type in prompt_bundles.OBSERVATION_TASK_TYPES:
+            system = json.loads(
+                ai_task_service._render_system_text(
+                    task_type,
+                    1,
+                    {},
+                    {},
+                    protocol=ai_transport.VISION_PROTOCOL_ID,
+                )
+            )
+            text = "\n".join(system["instructions"])
+            self.assertIn("仅提供 subjects 姓名不构成对应", text)
+            self.assertIn("不自行给幼儿分配角色", text)
+            self.assertIn("独立 metadata", text)
+            self.assertIn("记录显示", text)
+            self.assertIn("允许补写对话", text)
+            self.assertIn("JSON 解码后必须是真实换行", text)
+            self.assertIn("只转义一层", text)
+            self.assertIn("不得输出字面反斜杠+n", text)
+            self.assertNotIn("在正文中提示补充", text)
+            if task_type == "game_observation_generate":
+                self.assertIn("四栏正文不得包裹", text)
+            else:
+                self.assertIn("不得写进目标正文", text)
 
 
 if __name__ == "__main__":

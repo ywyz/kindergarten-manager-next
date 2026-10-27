@@ -664,7 +664,7 @@ class AiExecutor:
             self._sleep(0.02)
 
     def _drive(self, claim: ai_task_service.Claim) -> Any:
-        deadline_ms = claim.started_ticks + ai_transport.ATTEMPT_BUDGET_MS
+        deadline_ms = claim.started_ticks + claim.attempt_budget_ms
         # Barrier 1: a close-intent freeze before spawning waits it out rather
         # than retiring the claim.
         verdict = self._wait_unfreeze(None, deadline_ms)
@@ -787,8 +787,10 @@ class AiExecutor:
                 self._teardown(active, grace=0.0, force=3.0)
             raise
 
-    def _sendall(self, conn: Any, data: bytes) -> bool:
-        conn.send_bytes(data)
+    def _sendall(self, conn: Any, data: Any) -> bool:
+        frames = data if isinstance(data, (list, tuple)) else (data,)
+        for frame in frames:
+            conn.send_bytes(frame)
         return True
 
     def _send_after_mark(self, active: _Active, parent_conn, deadline_ms: int) -> Any:
@@ -943,7 +945,11 @@ class AiExecutor:
         return "ok"
 
     def _deadline_hint(self, active: _Active) -> int:
-        return getattr(active, "deadline_ms", ai_transport.now_ticks() + ai_transport.ATTEMPT_BUDGET_MS)
+        return getattr(
+            active,
+            "deadline_ms",
+            ai_transport.now_ticks() + active.claim.attempt_budget_ms,
+        )
 
     def _io_pending(self, active: _Active) -> bool:
         return any(thread.is_alive() for thread in active.io_threads)
@@ -1104,8 +1110,82 @@ class AiExecutor:
         self._log(f"result persistence failed: {type(last_error).__name__}")
 
 
-def _encode_bootstrap(claim: ai_task_service.Claim, deadline_ms: int, synthetic: dict | None = None) -> bytes:
+def _encode_bootstrap(
+    claim: ai_task_service.Claim,
+    deadline_ms: int,
+    synthetic: dict | None = None,
+) -> list[bytes]:
     from app.local import ai_worker
+    from app.local.observation_ai_inputs import (
+        OBSERVATION_INPUT_SCHEMA_VERSION,
+        OBSERVATION_TASK_TYPES,
+        build_vision_frames,
+        check_vision_context,
+    )
+
+    if claim.image_urls:
+        if not (
+            claim.source_kind == "game_observation"
+            and claim.observation_id
+            and claim.task_type in OBSERVATION_TASK_TYPES
+            and claim.vision_authorized
+            and claim.vision_protocol == ai_transport.VISION_PROTOCOL_ID
+            and claim.vision_schema_version == OBSERVATION_INPUT_SCHEMA_VERSION
+            and claim.contract_version in ai_task_service.SUPPORTED_CONTRACT_VERSIONS
+            and ai_transport.vision_capability(claim.base_url, claim.model)
+            and len(claim.work_dimensions) == len(claim.image_urls)
+        ):
+            raise ValueError("vision_not_authorized")
+        if len(claim.image_urls) > ai_transport.VISION_MAX_IMAGES:
+            raise ValueError("vision_image_count")
+        if any(
+            not isinstance(url, str) or not url.startswith("data:image/")
+            for url in claim.image_urls
+        ):
+            raise ValueError("vision_image_url")
+        user_text = json.dumps(
+            claim.payload, ensure_ascii=False, separators=(",", ":")
+        )
+        check_vision_context(
+            base_url=claim.base_url,
+            model=claim.model,
+            system_text=claim.system_text,
+            user_text=user_text,
+            work_dimensions=list(claim.work_dimensions),
+        )
+        body = ai_transport.build_vision_request(
+            model=claim.model,
+            system_text=claim.system_text,
+            user_text=user_text,
+            image_urls=list(claim.image_urls),
+        )
+        if len(body) > ai_transport.VISION_BODY_MAX_BYTES:
+            raise ValueError("request_too_large")
+        total = ai_transport.build_http_request(
+            base_url=claim.base_url, secret=claim.secret, body=body
+        )
+        if len(total) > ai_transport.VISION_HTTP_MAX_BYTES:
+            raise ValueError("request_too_large")
+        frames = build_vision_frames(
+            base_url=claim.base_url,
+            model=claim.model,
+            secret=claim.secret,
+            system_text=claim.system_text,
+            user_text=user_text,
+            image_urls=list(claim.image_urls),
+            deadline_ms=deadline_ms,
+            task_type=claim.task_type,
+            contract_version=claim.contract_version,
+            synthetic=synthetic,
+        )
+        if sum(len(item) for item in frames) > ai_transport.VISION_IPC_FRAME_MAX:
+            raise ValueError("frame_too_large")
+        if len(frames[0]) > ai_worker.REQUEST_FRAME_MAX:
+            raise ValueError("frame_too_large")
+        return frames
+
+    if claim.source_kind != "daily_plan" or claim.vision_authorized:
+        raise ValueError("text_bootstrap_not_authorized")
 
     request = {
         "base_url": claim.base_url,
@@ -1135,7 +1215,7 @@ def _encode_bootstrap(claim: ai_task_service.Claim, deadline_ms: int, synthetic:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(raw) > ai_worker.REQUEST_FRAME_MAX:
         raise ValueError("frame_too_large")
-    return raw
+    return [raw]
 
 
 def ai_worker_frame_limit() -> int:

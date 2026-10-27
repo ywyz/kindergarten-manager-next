@@ -41,7 +41,9 @@ from app.local.observation_terms import (
     resolve_new,
 )
 from app.local.observation_validation import (
+    EVALUATION_KEYS,
     aggregate_hash,
+    canonical_json,
     normalize_payload,
     normalize_photo_manifest,
 )
@@ -700,6 +702,23 @@ def _save_term(
     return merged, current_snapshot, warnings
 
 
+def _target_hashes(payload: dict[str, Any]) -> dict[str, str]:
+    """Hashes used by the AI provenance ledger; no text is persisted here."""
+    evaluation = payload.get("analysis_evaluation") or {}
+    values = {
+        "observation_goal": payload.get("observation_goal") or "",
+        "observation_process": payload.get("observation_process") or "",
+        "support_strategy": payload.get("support_strategy") or "",
+        "analysis_evaluation": {
+            key: evaluation.get(key) or "" for key in EVALUATION_KEYS
+        },
+    }
+    return {
+        key: hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+        for key, value in values.items()
+    }
+
+
 def _create_result(
     record: LocalObservationRecord,
     draft: LocalObservationDraft,
@@ -715,6 +734,7 @@ def _create_result(
         "current_version": record.current_version,
         "changed": True,
         "term_warnings": list(term_warnings or []),
+        "target_hashes": _target_hashes(dict(draft.payload_json or {})),
         "saved_at": now.isoformat(),
     }
 
@@ -1017,6 +1037,7 @@ def save_observation(
             "changed": changed,
             "history_created": version_created,
             "term_warnings": term_warnings,
+            "target_hashes": _target_hashes(canonical),
             "saved_at": now.isoformat(),
         }
         _operation(

@@ -88,6 +88,8 @@ def _wait_for_frame(conn: Any, timeout: float, parent_pid: int) -> bool:
 CONTROL_FRAME_MAX = 16 * 1024
 REQUEST_FRAME_MAX = ai_transport.REQUEST_MAX_BYTES + 16 * 1024
 RESPONSE_FRAME_MAX = ai_transport.RESPONSE_MAX_BYTES + 16 * 1024
+# Vision is a separately versioned frame bound; the old text bound stays.
+VISION_REQUEST_FRAME_MAX = ai_transport.VISION_IPC_FRAME_MAX
 
 
 def _encode(frame: dict[str, Any]) -> bytes:
@@ -108,6 +110,23 @@ def _recv(conn: Any, maxlength: int) -> dict[str, Any] | None:
     if not isinstance(frame, dict):
         return None
     return frame
+
+
+def _recv_with_size(conn: Any, maxlength: int) -> tuple[dict[str, Any] | None, int]:
+    try:
+        raw = conn.recv_bytes(maxlength)
+    except (EOFError, OSError):
+        return None, 0
+    if not isinstance(raw, (bytes, bytearray)):
+        return None, 0
+    size = len(raw)
+    try:
+        frame = json.loads(bytes(raw).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, size
+    if not isinstance(frame, dict):
+        return None, size
+    return frame, size
 
 
 PROGRESS_CHUNK_CHARS = 2000
@@ -154,17 +173,129 @@ def _result_frame(result: ai_transport.TransportResult) -> dict[str, Any]:
     return {"type": "result", "result": result.to_wire()}
 
 
+VISION_TASK_TYPES = (
+    "game_observation_generate",
+    "game_observation_rewrite",
+)
+VISION_SCHEMA_VERSION = 1
+VISION_CONTRACT_VERSIONS = (1,)
+
+
+def validate_vision_header(header: Any) -> bool:
+    """Header-only contract check; must run before waiting for any body."""
+    if not isinstance(header, dict) or header.get("type") != "bootstrap_header":
+        return False
+    if header.get("vision") is not True:
+        return False
+    if header.get("protocol") != ai_transport.VISION_PROTOCOL_ID:
+        return False
+    if header.get("schema_version") != VISION_SCHEMA_VERSION:
+        return False
+    if header.get("source_kind") != "game_observation":
+        return False
+    if header.get("task_type") not in VISION_TASK_TYPES:
+        return False
+    if header.get("contract_version") not in VISION_CONTRACT_VERSIONS:
+        return False
+    image_count = header.get("image_count")
+    if (
+        not isinstance(image_count, int)
+        or isinstance(image_count, bool)
+        or not 1 <= image_count <= ai_transport.VISION_MAX_IMAGES
+    ):
+        return False
+    frame_size = header.get("frame_size")
+    if (
+        not isinstance(frame_size, int)
+        or isinstance(frame_size, bool)
+        or not 1 <= frame_size <= ai_transport.VISION_IPC_FRAME_MAX
+    ):
+        return False
+    return True
+
+
+def validate_vision_bootstrap(
+    header: Any, request: Any, image_urls: Any, actual_body_size: Any = None
+) -> bool:
+    """Pure restricted-claim check used by the worker before any network."""
+    if not validate_vision_header(header):
+        return False
+    if not isinstance(image_urls, list) or len(image_urls) > ai_transport.VISION_MAX_IMAGES:
+        return False
+    if header.get("image_count") != len(image_urls):
+        return False
+    frame_size = header.get("frame_size")
+    if actual_body_size is not None and frame_size != actual_body_size:
+        return False
+    if any(
+        not isinstance(item, str) or not item.startswith("data:image/")
+        for item in image_urls
+    ):
+        return False
+    if not isinstance(request, dict) or request.get("protocol") != ai_transport.VISION_PROTOCOL_ID:
+        return False
+    meta = request.get("vision")
+    if not isinstance(meta, dict):
+        return False
+    for key in (
+        "protocol",
+        "schema_version",
+        "source_kind",
+        "task_type",
+        "contract_version",
+        "image_count",
+    ):
+        if meta.get(key) != header.get(key):
+            return False
+    return True
+
+
 def run(conn: Any) -> None:
     """The whole worker lifetime for one attempt."""
     import os  # noqa: PLC0415
 
     parent_pid = os.getppid()
-    # 1) Wait for the bootstrap only. No network, no filesystem, no DB yet.
+    # 1) Wait for the bootstrap header only.  A text bootstrap is a single
+    # frame capped by the unchanged 1 MiB receive bound; a vision bootstrap
+    # must first prove its restricted claim metadata in a small header frame
+    # before the worker accepts the larger body frame.
     if not _wait_for_frame(conn, HANDSHAKE_TIMEOUT_SECONDS, parent_pid):
         return
-    bootstrap = _recv(conn, REQUEST_FRAME_MAX)
-    if bootstrap is None or bootstrap.get("type") != "bootstrap":
+    first, _first_size = _recv_with_size(conn, REQUEST_FRAME_MAX)
+    if first is None:
         return
+    if first.get("type") == "bootstrap_header":
+        header = first
+        if not validate_vision_header(header):
+            _send(conn, _result_frame(ai_transport.TransportResult(
+                ai_transport.POLICY, reason="endpoint_blocked", detail="vision_not_authorized"
+            )))
+            return
+        bootstrap, body_size = _recv_with_size(conn, VISION_REQUEST_FRAME_MAX)
+        if bootstrap is None or bootstrap.get("type") != "bootstrap":
+            _send(conn, _result_frame(ai_transport.TransportResult(
+                ai_transport.POLICY, reason="endpoint_blocked", detail="vision_bootstrap_invalid"
+            )))
+            return
+        request = bootstrap.get("request")
+        image_urls = request.get("image_urls") if isinstance(request, dict) else None
+        if not validate_vision_bootstrap(
+            header, request, image_urls, actual_body_size=body_size
+        ):
+            _send(conn, _result_frame(ai_transport.TransportResult(
+                ai_transport.POLICY, reason="endpoint_blocked", detail="vision_not_authorized"
+            )))
+            return
+    else:
+        bootstrap = first
+        first_request = first.get("request")
+        if isinstance(first_request, dict) and first_request.get(
+            "protocol"
+        ) == ai_transport.VISION_PROTOCOL_ID:
+            _send(conn, _result_frame(ai_transport.TransportResult(
+                ai_transport.POLICY, reason="endpoint_blocked", detail="vision_header_required"
+            )))
+            return
 
     request = bootstrap.get("request")
     deadline_ms = bootstrap.get("deadline_ms")
@@ -181,6 +312,43 @@ def run(conn: Any) -> None:
         resolver = synthetic.get("resolution")
         ca_pem = synthetic.get("ca_pem") or None
 
+    vision = request.get("protocol") == ai_transport.VISION_PROTOCOL_ID
+    if vision and not ai_transport.vision_capability(
+        request.get("base_url"), request.get("model")
+    ):
+        _send(conn, _result_frame(ai_transport.TransportResult(
+            ai_transport.POLICY, reason="endpoint_blocked", detail="vision_not_authorized"
+        )))
+        return
+    if vision:
+        image_urls = request.get("image_urls")
+        if (
+            not isinstance(image_urls, list)
+            or len(image_urls) > ai_transport.VISION_MAX_IMAGES
+            or any(
+                not isinstance(item, str) or not item.startswith("data:image/")
+                for item in image_urls
+            )
+        ):
+            _send(conn, _result_frame(ai_transport.TransportResult(
+                ai_transport.POLICY, reason="endpoint_blocked", detail="vision_bootstrap_invalid"
+            )))
+            return
+        try:
+            body = ai_transport.build_vision_request(
+                model=str(request.get("model") or ""),
+                system_text=str(request.get("system_text") or ""),
+                user_text=str(request.get("user_text") or ""),
+                image_urls=image_urls,
+            )
+        except ValueError:
+            _send(conn, _result_frame(ai_transport.TransportResult(
+                ai_transport.POLICY, reason="endpoint_blocked", detail="vision_bootstrap_invalid"
+            )))
+            return
+    else:
+        body = None
+
     # 2) DNS + TCP + TLS. Still no HTTP byte.
     prepared, failure = ai_transport.prepare(
         base_url=str(request.get("base_url") or ""),
@@ -191,6 +359,15 @@ def run(conn: Any) -> None:
         deadline_ms=deadline_ms,
         resolver=resolver,
         ca_pem=ca_pem,
+        body=body,
+        request_body_max=(
+            ai_transport.VISION_BODY_MAX_BYTES if vision else ai_transport.REQUEST_MAX_BYTES
+        ),
+        request_total_max=(
+            ai_transport.VISION_HTTP_MAX_BYTES
+            if vision
+            else ai_transport.REQUEST_MAX_BYTES + 4096
+        ),
     )
     if prepared is None:
         assert failure is not None
@@ -200,7 +377,10 @@ def run(conn: Any) -> None:
     _send(conn, {"type": "ready", "remaining_ms": max(deadline_ms - ai_transport.now_ticks(), 0)})
 
     # 3) Block until the parent's single send (or abort/parent death).
-    if not _wait_for_frame(conn, SEND_TIMEOUT_SECONDS, parent_pid):
+    send_timeout = (
+        ai_transport.VISION_ATTEMPT_BUDGET_MS if vision else ai_transport.ATTEMPT_BUDGET_MS
+    ) / 1000.0 + 5.0
+    if not _wait_for_frame(conn, send_timeout, parent_pid):
         prepared.sock.close()
         return
     command = _recv(conn, CONTROL_FRAME_MAX)
@@ -305,8 +485,14 @@ __all__ = [
     "CONTROL_FRAME_MAX",
     "REQUEST_FRAME_MAX",
     "RESPONSE_FRAME_MAX",
+    "VISION_REQUEST_FRAME_MAX",
+    "VISION_CONTRACT_VERSIONS",
+    "VISION_SCHEMA_VERSION",
+    "VISION_TASK_TYPES",
     "HANDSHAKE_TIMEOUT_SECONDS",
     "SEND_TIMEOUT_SECONDS",
+    "validate_vision_bootstrap",
+    "validate_vision_header",
     "run",
     "worker_entry",
 ]

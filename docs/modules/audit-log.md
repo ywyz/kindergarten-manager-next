@@ -16,7 +16,7 @@
 
 ## 游戏观察审计扩展（2026-10-26，E13设计核定）
 
-E02预备观察操作／来源／导出相关表，见[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)。E03材料及E05／E08创建／保存／恢复的业务回执与同事务审计已通过限定工程核查，见[材料核查](../bootstrap/desktop-game-observation-assets-review.md)及[保存历史核查](../bootstrap/desktop-game-observation-history-review.md)；AI、Word及宿主生产者仍待后续，不把本片写成全部审计查询能力已交付。
+E02预备观察操作／来源／导出表，E03及E05／E08回执／同事务审计已通过；E06／E07执行元信息及原子采用也已通过[最新核查](../bootstrap/desktop-game-observation-ai-review.md)。候选审核metadata是业务内容，不是通用审计日志；正文／照片／提示词／密钥不进入审计。Word及宿主生产者仍后置，不把本片写成全部查询能力交付。
 
 生产者为观察、AI、Word及宿主；只记录创建／保存／材料导入／采用／历史恢复／导出及实际保存的非敏感元信息：内部profile/record、draft revision/history version、input/candidate、request/operation、snapshot或非敏感export reference、状态、固定错误码、耗时、大小与hash。审计不成为内容权威，不驱动恢复、采用或AI重放；业务未知结果以所属域回执读回，不凭日志猜成功。
 
