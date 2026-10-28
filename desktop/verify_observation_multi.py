@@ -22,8 +22,18 @@ W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
 
 
+def _school_name(index: int) -> str | None:
+    """Cycle default / two explicit schools / explicit empty school.
+
+    ``None`` means the field is omitted and the profile default is applied;
+    ``""`` is an explicit empty value, which the product canonicalises to NULL
+    and the Word title must therefore keep as a blank prefix.
+    """
+    return (None, "甲园", "乙园", "")[index % 4]
+
+
 def make_payload(index: int) -> dict:
-    return {
+    payload = {
         "observation_date": f"2026-09-{index + 1:02d}",
         "start_time": f"09:{index:02d}",
         "end_time": "09:30",
@@ -44,6 +54,10 @@ def make_payload(index: int) -> dict:
         },
         "support_strategy": "跨页选集支持策略",
     }
+    school = _school_name(index)
+    if school is not None:
+        payload["school_name"] = school
+    return payload
 
 
 def run_multi_export(driver, http, summary, checks, host_api, port) -> None:
@@ -267,10 +281,29 @@ def run_multi_export(driver, http, summary, checks, host_api, port) -> None:
     assert status == 200, f"multi list failed: {status}"
     by_id = {item["observation_id"]: item for item in listed["items"]}
     labels = {"public": "公共", "indoor": "室内", "outdoor": "户外"}
+    # Each saved record keeps its own school_name (or NULL); never borrow
+    # another record's school and never invent a fallback title prefix.
     expected_titles = [
-        "OBS园所游戏观察记录（" + labels[by_id[item]["record_type"]] + "）"
+        (by_id[item].get("school_name") or "")
+        + "游戏观察记录（"
+        + labels[by_id[item]["record_type"]]
+        + "）"
         for item in selected_order
     ]
+    selected_schools = [by_id[item].get("school_name") for item in selected_order]
+    non_empty_schools = sorted({school for school in selected_schools if school})
+    checks["obs_multi_export_schools"] = (
+        len(non_empty_schools) >= 2 and any(not school for school in selected_schools)
+    )
+    summary["obs_multi_export_schools"] = {
+        "distinct_non_empty": non_empty_schools,
+        "empty_count": sum(1 for school in selected_schools if not school),
+        "default_count": sum(
+            1
+            for item in selected_order
+            if by_id[item].get("school_name") == "OBS园所"
+        ),
+    }
     expected_subjects = [
         "、".join(by_id[item].get("subjects") or []) for item in selected_order
     ]

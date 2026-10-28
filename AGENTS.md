@@ -8,7 +8,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 本仓库是 kindergartenManager 的全新实现。
 
-2026-10-28接续：批选／跨页选集／手调排序、三模板Word与E11／E12宿主交付由原OpenCode Go套餐DeepSeek V4.1 Flash max会话实施及回修，Codex限定工程核查通过，R01–R13关闭。独立全local758、最终桌面302／导出API专项41、最终完整前端（观察54）、HTTP37与真实WebView2 16项通过；7份合成Word逐页、600图／大于30MiB文件链、真实原生取消／明确重试／保存及正常关窗有实证。按授权由原OpenCode正常提交推送后停在本片；证据docs/bootstrap/desktop-game-observation-export-review.md §6，唯一入口docs/tasks/current.md。前片页面728／285及采用v14证据保持，本片应用真实AI调用0次，原配置／凭据及旧数据保持。
+2026-10-28 E14接续：用户授权整包／集成、必要真实AI及功能完成后的测试发行；原OpenCode Go套餐DeepSeek V4.1 Flash max实施及回修。Codex独立全local759、短根桌面327、完整前端、源码WebView2 17／旧库升级22、包静态26及归档15通过，E14-R01–R06在源码／构建／静态范围关闭。r03候选190文件；本轮DeepSeek2次（生成unknown不重发、process重写采用成功），原5个配置／DB／密文源hash保持。SAC4551仍阻止冻结运行，用户暂无证书／另一测试设备、准备申请；E14整体及教师体验未通过，不发行。按授权由原OpenCode正常提交推送已核查源码／文档，之后待签名补整包实证；见docs/bootstrap/desktop-game-observation-e14-review.md §6–§7及唯一入口docs/tasks/current.md。前片导出R01–R13、7份Word／容量／原生保存和页面采用v14证据保持各自身份；D3长根WinError206未修，不改系统保护。
 
 阶段边界：D3-U已推送d52fa8a；D4产品C1–C33、E01–E14及E13六份Contract已核定。数据基础、E03材料、E05／E08保存历史及E06／E07视觉AI服务层限定工程通过；前片独立718项全local／85项相关桌面、容量及真实DeepSeek闭环保持，真实请求共4次含1次unknown且无自动重发，原R13换行误判处理已撤回。当前页面／关闭、Word／原生另存为仅按相应合成环境限定范围通过，完整A01–A22、整包及教师体验未整体通过，MiMo真实未验。后续切片、跨设备、真实冻结更新／安装、发行源、4551、签名／WebDAV／发行不自动启动，D3-A／D2既有边界保持。
 

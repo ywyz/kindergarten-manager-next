@@ -169,6 +169,7 @@ def main() -> int:
             "obs_export_app_busy_cleared",
             "obs_export_cancel_busy_cleared",
             "obs_multi_page_mixed_export",
+            "obs_multi_export_schools",
             "obs_multi_export_busy_cleared",
         ):
             report["checks"][name] = checks.get(name) is True
@@ -185,6 +186,7 @@ def main() -> int:
             "obs_export_app_busy_cleared",
             "obs_export_cancel_busy_cleared",
             "obs_multi_page_mixed_export",
+            "obs_multi_export_schools",
             "obs_multi_export_busy_cleared",
             "obs_ok",
         ):

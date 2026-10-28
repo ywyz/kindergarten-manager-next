@@ -1,6 +1,6 @@
 # D4-G0：游戏观察记录完整产品规格与实施前核定清单
 
-更新：2026-10-28。**产品C1–C33及E01–E14／E13六份Contract设计保持；前片基础、材料、历史、图文服务层与页面结果保持，接续批选／排序、三模板Word及E11／E12宿主交付限定工程核查通过。** 最终范围见[导出核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)，[前片页面及采用v14证据](../bootstrap/desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)保持各自身份。本片应用真实AI调用0次；前片DeepSeek真实4次含1次unknown且不自动重发的结果独立保持。完整A01–A22、教师体验、冻结整包、安装与发行未整体验收，MiMo真实未验，后续切片不自动启动。
+更新：2026-10-28。**产品C1–C33及E01–E14／E13六份Contract设计保持；E14源码／构建／静态分发可修项已独立核查通过，冻结运行因SAC4551受阻，完整A01–A22、教师体验和发行未通过。** 最新[核查§6–§7](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)含local759、短根桌面327、完整前端、源码窗口17／旧库升级22、静态26／归档15及r03候选。旧[导出片](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)和[页面采用v14](../bootstrap/desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)保持各自身份。本轮DeepSeek2次（整份生成unknown不重发、process重写采用成功），前片4次另列；MiMo真实未验。原配置／凭据及旧数据保持，签名与整包补验见唯一任务入口。
 
 依据：[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)、[当前架构](../../ARCHITECTURE.md)、[身份与班级](../modules/identity-and-class.md)、[AI Service](../modules/ai-service.md)、[提示词](../modules/prompts.md)、[Word导出](../modules/word-export.md)。旧版行为和模板只作经审查的参考，不自动成为新版需求。
 
@@ -13,7 +13,7 @@
 | C3 AI职责 | AI读图分析，撰写观察目标、观察过程、分析评价、支持策略四部分；不要求教师先写好完整观察过程再交AI整理 |
 | C4 模板 | 用户已提供三份Word模板及七份成品参考；栏目、表格、图片位置和本机Word分页已核对，见§1.1；样例内容不自动成为全部产品规则 |
 | C5 导出 | 单份或按需选取多份合并导出；选择、顺序、版式及文件名按C13、C16–C17、C28、C31、C33 |
-| C6 当前授权 | 原OpenCode Go Flash max会话接续实施批选／排序、E11 Word与E12宿主交付，Codex交回修复并独立限定工程核查通过，最后原OpenCode正常提交推送后停本片；本片应用真实AI调用0次，不自动开始后续切片、冻结新包、真实教师资料测试或发行 |
+| C6 当前授权 | 原OpenCode Go套餐DeepSeek V4.1 Flash max会话接续E14整包／集成，Codex独立审核回修，最后原OpenCode正常提交推送；允许必要真实AI，功能完成后可测试发行。当前源码／静态可修项通过、r03候选已生成，冻结运行受SAC4551阻止，用户准备申请证书；Git收口不等于整包或教师验收，不发行受阻候选 |
 | C7 开发顺序 | 当前进入游戏观察规格，跨设备继续后置；其他后置模块不并入本片 |
 | C8 首期类型 | 用户确认先做公共、室内、户外三种表格观察记录；《游戏故事》仅作写作参考，叙事式输出后置 |
 | C9 评价分析 | 固定保留健康、语言、社会、科学、艺术五大领域；证据不足如实说明，不强凑评价 |
@@ -283,7 +283,7 @@ E01–E14已按[唯一工程设计](desktop-game-observation-engineering.md)核�
 
 ## 7. 验收条件与证据矩阵
 
-下列为完整验收条件，A01–A22尚未整项验收。基础、材料、保存历史、图文服务及[页面限定验证](../bootstrap/desktop-game-observation-pages-review.md)见前片报告；本片列表选集／排序、Word及原生交付的合成实证见[导出核查](../bootstrap/desktop-game-observation-export-review.md)，不替代整包、复杂真实照片效果或教师确认。前片已按当时授权用独立合成资料完成DeepSeek真实闭环，当前导出片应用真实AI调用0次。
+下列为完整验收条件，A01–A22尚未整项验收。E14的独立源码／静态运行矩阵和仍受阻项目见[最新核查§6](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)。基础、材料、保存历史、图文服务及[页面限定验证](../bootstrap/desktop-game-observation-pages-review.md)保留前片身份；列表选集／排序、Word及原生交付的前片合成实证见[导出核查](../bootstrap/desktop-game-observation-export-review.md)，不替代新冻结运行、复杂照片或教师确认。前片DeepSeek真实4次与本轮2次分别记录，生成unknown不记成功、不自动重发。
 
 | 编号 | 场景 | 通过条件 | 需要的证据 |
 | --- | --- | --- | --- |
@@ -312,7 +312,7 @@ E01–E14已按[唯一工程设计](desktop-game-observation-engineering.md)核�
 
 自动验证只用独立合成库、合成材料或经授权副本；不改用户原件、体验库或旧包。Word页面必须来自后续实际产品导出，记录Windows、Word版本和字体；PNG／PDF／XML仅辅助，不能拿本次参考文件渲染替代新版导出。WPS、Win10、干净机器、其他DPI／显示器与发行验证若未做，单独标未验。
 
-本轮真实DeepSeek仅验证独立合成资料的图文协议、结构、来源及采用闭环，包含质量失败样本和unknown的如实处理；未验证MiMo真实账号、复杂多人对应、任意材料的补写质量及教师体验。合成响应与有限真实样本均不能替代完整产品验收。
+前片E06／E07真实DeepSeek验证独立合成资料的图文协议、结构、来源及采用闭环，包含质量失败样本和unknown的如实处理；本轮E14新增2次请求的边界见最新核查。MiMo真实账号、复杂多人对应、任意材料的补写质量及教师体验仍未验。合成响应与有限真实样本均不能替代完整产品验收。
 
 ## 8. 遗漏与冲突核对结论
 
@@ -339,6 +339,6 @@ ARCHITECTURE.md及日计划／周计划Contract不自动扩成观察实施授权
 
 ## 9. 当前授权与下一步
 
-完整产品规格、E01–E14及E13六份Contract保持。前片基础、材料、历史、图文服务及页面结果保持；本片E10明确跨页选集／手调排序、E11三模板Word与E12宿主交付由原Go套餐DeepSeek V4.1 Flash max会话实施及回修，Codex独立核查通过，见[最新核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)。按用户授权最后由原OpenCode正常提交推送并停在本片，E14仅归并本片实际集成证据，不宣布完整A01–A22通过。唯一入口见[当前任务](../tasks/current.md)。
+用户已明确接续E14并允许必要真实AI及功能完成后的测试发行。原Go套餐DeepSeek V4.1 Flash max会话完成构建／验证及回修，Codex独立确认E14-R01–R06在源码／构建／静态分发范围关闭，见[最新核查§6–§7](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)。已核查源码／测试／文档由原OpenCode按白名单正常提交推送，以保留后续签名补验工作；不将Git或源码通过写成完整A01–A22通过。唯一入口见[当前任务](../tasks/current.md)。
 
-OpenCode仍是实现、测试、迁移、构建脚本唯一写入者，Codex负责设计／独立核查；沿用当前分支和原会话，最后Git由OpenCode执行。本片应用真实AI调用0次，不改原业务库／凭据；旧daily保存桥／30MiB保持。无新冻结包、安装／更新、Skill／MCP安装、系统保护修改、WebDAV或发行；旧远程资源、数据及D2／D3既有未验保持。Word／原生保存仅当前Windows 11合成环境限定通过，不替代教师完整体验或其他环境验证。
+OpenCode仍是实现、测试、迁移、构建脚本唯一写入者，Codex负责设计／独立核查。r03候选190文件及精简归档已生成，但SAC4551阻止冻结入口；用户暂无证书或其他测试电脑，准备申请证书。证书具备后还须签名、重算产物清单并补普通入口、包内图片解码、冷升级、AI／Word／原生保存及关闭／更新集成；当前不发行。不改系统保护、原业务库／凭据／原件／旧包／远程资源，不安装Skill／MCP，不启动WebDAV／跨设备。D3长根WinError206、Win10／WPS／干净机器／其他DPI显示器及D2／D3既有未验保持；Word／容量前片复用不等于新冻结包实证。

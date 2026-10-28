@@ -2,9 +2,11 @@
 
 更新：2026-10-28。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前阶段：批选／排序、Word 导出及宿主交付限定工程通过
+## 当前阶段：E14源码／静态工程通过，冻结运行待签名
 
-2026-10-28接续收口：原OpenCode会话以Go套餐DeepSeek V4.1 Flash max实施及回修，[导出独立核查 §6](desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)通过，R01–R13关闭：全local758、最终桌面302／导出API专项41、最终全前端（观察54）、HTTP37及真实WebView2 16项；7份合成Word逐页、600图及大于30MiB完整交付、真实原生取消／明确重试／保存与正常关闭有实证。见[实现交接](desktop-game-observation-export-result.md)，按授权由原OpenCode正常提交推送后停在本片；[唯一入口](../tasks/current.md)。完整A01–A22、教师体验、E14冻结整包、安装／发行及MiMo真实仍未整体通过；本片应用真实AI调用0次，原配置／凭据及旧数据保持。
+2026-10-28 E14已由原Go套餐DeepSeek V4.1 Flash max会话实施回修，[独立核查§6–§7](desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)确认：local759、短根桌面327、完整前端、源码真实窗口17／旧库升级22、静态包26／便携归档15通过，E14-R01–R06在该范围关闭。r03完整候选190文件，便携归档在`build/desktop-e14-r03/dist/`；[实现者结果](desktop-game-observation-e14-result.md)与独立结果分列。本轮DeepSeek2次（整份生成unknown未重发、process重写成功采用重开），5个原配置／DB／凭据源hash保持。SAC4551仍阻止冻结运行；用户准备申请证书，E14整体／教师体验未通过，不发行。已核查源码／文档按授权由原OpenCode正常提交推送，后续签名及整包补验见[唯一入口](../tasks/current.md)。长根WinError206、正式更新源／信任身份及D2／D3未验保持。
+
+此前2026-10-28导出片收口：原OpenCode会话以Go套餐DeepSeek V4.1 Flash max实施及回修，[导出独立核查 §6](desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)通过，R01–R13关闭：全local758、最终桌面302／导出API专项41、最终全前端（观察54）、HTTP37及真实WebView2 16项；7份合成Word逐页、600图及大于30MiB完整交付、真实原生取消／明确重试／保存与正常关闭有实证。见[实现交接](desktop-game-observation-export-result.md)，由原OpenCode正常提交推送至5808078。当时应用真实AI调用0次，原配置／凭据及旧数据保持；该时点未验不由E14源码／静态结果改写。
 
 前片[页面核查 §6](desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)全local728、桌面285、前端观察38、HTTP37及WebView2 9项与实际中文差异预览、勾选四目标采用保存v14结果保持，R01–R15已关闭；该片基线提交b4b2f77，不以本片导出替代其历史证据。
 

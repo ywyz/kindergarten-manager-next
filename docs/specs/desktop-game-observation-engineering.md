@@ -1,6 +1,6 @@
 # D4-E：游戏观察记录工程设计
 
-更新：2026-10-28。**E01–E14及E13六份Contract设计保持；基础、材料、保存历史、图文服务层与页面前片结果保持；接续E10批选／排序、E11三模板Word及E12宿主交付限定工程核查通过。** 最新[独立核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)含全local758、最终桌面302／导出API专项41、完整前端（观察54）、HTTP37及真实WebView2 16项、Word逐页与真实原生交付。按授权由原OpenCode正常提交推送后停在本片；冻结整包、完整A01–A22、教师体验与发行未整体验收，不自动启动后续切片。
+更新：2026-10-28。**E01–E14及E13六份Contract设计保持；E14源码／构建／静态分发可修项已独立通过，冻结运行受SAC4551阻止，E14整体及教师体验未通过。** 最新[独立核查§6–§7](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)含local759、短根桌面327、完整前端、源码窗口17／旧库升级22、静态26／归档15和r03候选；已核查源码／文档由原OpenCode按白名单正常提交推送。前片[导出核查](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)、Word逐页／原生保存及容量保留原身份。当前授权与待签名补验见§15.1及唯一任务；不把源码／静态或Git写成冻结运行、完整A01–A22或发行通过。
 
 原OpenCode会话`ses_ead8af71dffeJphI1NOWg4jZgI`使用`opencode-go/deepseek-v4.1-flash#default`、`plan`代理交付方案。Codex退回两轮问题、补充冷迁移问题，并核定K01–K08修正；原会话最终逐项接受。本文由Codex归并为唯一有效工程方案，取代各轮回复中的冲突表述。原始回复及审计证据保留位置见核定记录，不另存提示词副本。
 
@@ -236,7 +236,7 @@ E06／E07已在644ed68提交推送，接续计划已在62f1fc6提交。用户现
 
 ## 11. E10：列表、同日多份与选择
 
-2026-10-28接续授权：前片已提交推送`b4b2f77`，用户明确要求按本计划开始批选／排序、E11 Word及E12宿主交付，仍由原OpenCode／build／Go套餐DeepSeek V4.1 Flash max实施，Codex独立审核及交回修复直至通过，最后OpenCode正常提交推送。旧停点被本次授权替代；E14在本片汇总实际集成证据，不自动冻结新包、安装更新、发行或调用应用真实AI。唯一执行入口见[当前任务](../tasks/current.md)，证据见[本片核查](../bootstrap/desktop-game-observation-export-review.md)。
+前片2026-10-28导出授权：以`b4b2f77`为基线实施批选／排序、E11 Word及E12宿主，原OpenCode／build／Go套餐DeepSeek V4.1 Flash max及Codex独立回修；当时E14只汇总该片证据，不冻结新包或真实AI，已正常提交推送5808078。该时点范围保持在[导出核查](../bootstrap/desktop-game-observation-export-review.md)；现已由§15.1的E14授权接续，唯一执行入口见[当前任务](../tasks/current.md)。
 
 `GET /api/observations`按日期范围／term／未归属／类型／姓名query分页；当前投影显示日期、时段、类型、重点姓名、创建顺序等以区分同日多份。记录opaque ID独立，创建request id幂等，不以相同日期/姓名/类型覆盖。
 
@@ -332,6 +332,16 @@ npm run typecheck
 npm run test:d1
 ```
 
-真实WebView2验证需记录源码／进程／数据身份，Word页面必须来自新版实际产品导出，记录Windows／Word／字体及每份起始页；XML／PNG／PDF仅辅助。后续构建／包验证另按授权，检查模板、PIL插件／许可、前端及入口同源与冷启动。前片E06／E07已按当时授权完成独立合成资料DeepSeek真实闭环；当前页面片只使用合成任务／候选，不调用应用真实AI。复杂照片／多人对应／补写质量及教师体验仍待后续，假响应不能替代真实效果。
+真实WebView2验证需记录源码／进程／数据身份，Word页面必须来自实际产品导出，记录Windows／Word／字体及每份起始页；XML／PNG／PDF仅辅助。前片页面阶段只使用合成任务／候选；E06／E07真实闭环和E14新增真实调用分别保持其报告身份，E14构建／包验证适用§15.1。复杂照片／多人对应／补写质量及教师体验仍待后续，假响应不能替代真实效果。
 
-目前无新增待用户决定的主流程问题。E03材料、E05／E08历史、E06／E07服务层及页面结果保持；本片批选／排序、Word与原生交付按当前Windows 11合成环境限定通过，证据见[导出核查](../bootstrap/desktop-game-observation-export-review.md)。冻结包、完整A01–A22与教师产品未整体验收。业务staging／未引用孤儿不随本片递归清理，导出临时对象仅按§13.1有界释放；维护保护历史／input引用。Win10、WPS、干净机器、其他DPI／显示器及D2／D3未验保持。自动验证使用独立合成资料；原业务库／凭据／OneDrive原件／旧包保持。本轮Git授权覆盖本片相关源码／测试／文档，独立审核通过后由原OpenCode正常提交推送，停在本片。
+目前无新增待用户决定的主流程问题。前片批选／排序、Word与原生交付结果见[导出核查](../bootstrap/desktop-game-observation-export-review.md)，按原范围保持。业务staging／未引用孤儿不递归清理，导出临时对象仅按§13.1有界释放，维护保护历史／input引用；构建复制品的Python缓存清理不是业务材料清理。原业务库／凭据／OneDrive原件／旧包保持。
+
+### 15.1 E14当前交付及待签名边界（2026-10-28）
+
+用户已授权E14完整包／集成验证、必要真实AI、功能完成后的测试发行及最后由原OpenCode提交推送；旧停点由此替代。原会话`ses_ead8af71dffeJphI1NOWg4jZgI`、build、`opencode-go/deepseek-v4.1-flash#max`保持，源码／测试／构建脚本仍由OpenCode唯一写入。Codex限定源码／构建／静态审核通过后批准正常Git，不代表整包或产品验收通过。
+
+实际构建／验证入口为`desktop/build_e14.py`、`verify_e14_package.py`、`verify_e14_portable_archive.py`和`verify_observation_old_upgrade.py`，复用观察窗口入口。构建在任何写入前检查源码／旧包／只读前端与输出隔离，既有候选拒绝覆盖；Vite前及metadata后冻结产品／构建／验证来源，变化拒绝。r03包清除复制的Python缓存，包含真实UUID身份、0006、三观察模板、Pillow插件与许可证；缺失许可证／必要插件失败。入口CArchive／PYZ静态结构摘要、前端／资源字节、身份和完整归档分别核对；静态存在不等于包内运行成功。分发只带产品目录、外层便携README与相对校验清单，私有审计日志／原配置路径hash留本机。
+
+本轮独立local759、短根desktop327、完整前端、源码窗口17／旧库升级22、静态26及归档15通过，E14-R01–R06在该范围关闭；具体命令、失败、hash及实际包见[独立核查§6](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)。本轮真实DeepSeek2次为整份生成unknown（未自动重发）及process单栏重写成功／采用／重开；MiMo无凭据仍未验。Word7份逐页／原生保存和容量按未变生产源码及模板复用前片，不能当作r03冻结输出。
+
+SAC4551仍阻止冻结运行，用户暂无证书或另一测试设备、准备申请证书。原受阻EXE及各失败／候选保留，不通过改hash／换路径试跑或改变系统保护绕过；R06独立探针首次目录被清理的偏差如实留档，不以成功倒推恢复。证书具备后需签名、重算清单与归档，补普通冻结入口、图片真实解码、空／旧库冷启动、AI、Word／原生保存及关闭／更新实证，之后才能判断E14整体与测试发行。当前不发行；长根WinError206、正式发行URL／信任身份、安装、Win10／WPS／干净机器／其他DPI显示器及D2／D3未验保持。不启动WebDAV、跨设备或无关功能。
