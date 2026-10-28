@@ -101,6 +101,7 @@ export interface ObservationCurrent {
   photos: ObservationPhoto[]
   current_version: number | null
   latest_version_hash?: string | null
+  created_at: string
   updated_at: string
 }
 
@@ -530,4 +531,135 @@ export function termLabel(
 ): string {
   if (!termId) return '未归属学期'
   return terms.find((term) => term.id === termId)?.name ?? '未知学期'
+}
+
+// ---------------------------------------------------------------------------
+// D4 E11 cross-page explicit selection and stable/manual order
+// ---------------------------------------------------------------------------
+
+export interface ObservationExportRecord {
+  observation_id: string
+  record_type: ObservationRecordType
+  observation_date: string | null
+  start_time: string | null
+  subjects: string[]
+  revision: number
+  payload_hash: string
+  photo_count: number
+}
+
+export interface ObservationExportMissing {
+  observation_id: string
+  field: string
+}
+
+export interface ObservationExportWarning {
+  observation_id: string
+  code?: string
+  message?: string
+  [key: string]: unknown
+}
+
+export interface ObservationExportPreview {
+  snapshot_id: string
+  manifest_hash: string
+  expires_at: string
+  selection_hash: string
+  missing_hash: string
+  missing: ObservationExportMissing[]
+  warnings: ObservationExportWarning[]
+  requires_ack: boolean
+  suggested_filename: string
+  records: ObservationExportRecord[]
+}
+
+export interface ObservationExportCreated {
+  export_id: string
+  snapshot_id: string
+  manifest_hash: string
+  expires_at: string
+  filename: string
+  byte_size: number
+  content_hash: string
+  missing: ObservationExportMissing[]
+  warnings: ObservationExportWarning[]
+}
+
+/** Stable default order: date asc, no date last; start time asc, no time last;
+ * creation order; id tie-break. Filtering/paging never mutates this order. */
+export function compareObservationListItems(
+  a: ObservationListItem,
+  b: ObservationListItem,
+): number {
+  const aMissingDate = !a.observation_date
+  const bMissingDate = !b.observation_date
+  if (aMissingDate !== bMissingDate) return aMissingDate ? 1 : -1
+  if (!aMissingDate && a.observation_date !== b.observation_date) {
+    return a.observation_date! < b.observation_date! ? -1 : 1
+  }
+  const aMissingTime = !a.start_time
+  const bMissingTime = !b.start_time
+  if (aMissingTime !== bMissingTime) return aMissingTime ? 1 : -1
+  if (!aMissingTime && a.start_time !== b.start_time) {
+    return a.start_time! < b.start_time! ? -1 : 1
+  }
+  if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1
+  if (a.observation_id === b.observation_id) return 0
+  return a.observation_id < b.observation_id ? -1 : 1
+}
+
+/** Insert one explicitly selected id without changing existing order. */
+export function insertSelectedId(
+  order: string[],
+  items: Record<string, ObservationListItem>,
+  id: string,
+  manual: boolean,
+): string[] {
+  if (order.includes(id)) return order
+  if (manual) return [...order, id]
+  const incoming = items[id]
+  if (!incoming) return [...order, id]
+  const next = [...order]
+  const index = next.findIndex((existingId) => {
+    const existing = items[existingId]
+    return existing ? compareObservationListItems(incoming, existing) < 0 : false
+  })
+  if (index < 0) next.push(id)
+  else next.splice(index, 0, id)
+  return next
+}
+
+export function moveSelectedId(
+  order: string[],
+  id: string,
+  delta: -1 | 1,
+): string[] {
+  const index = order.indexOf(id)
+  if (index < 0) return order
+  const target = index + delta
+  if (target < 0 || target >= order.length) return order
+  const next = [...order]
+  ;[next[index], next[target]] = [next[target], next[index]]
+  return next
+}
+
+export function removeSelectedId(order: string[], id: string): string[] {
+  return order.filter((item) => item !== id)
+}
+
+export function selectedObservationItems(
+  order: string[],
+  items: Record<string, ObservationListItem>,
+): ObservationListItem[] {
+  return order
+    .map((id) => items[id])
+    .filter((item): item is ObservationListItem => item !== undefined)
+}
+
+export function observationMissingLabel(field: string): string {
+  if (field.startsWith('analysis_evaluation.')) {
+    const key = field.slice('analysis_evaluation.'.length) as EvaluationKey
+    return EVALUATION_LABELS[key] ?? field
+  }
+  return BASIC_FIELD_LABELS[field] ?? field
 }

@@ -30,13 +30,16 @@ import binascii
 import errno
 import hashlib
 import hmac
+import http.client
 import io
 import json
 import os
 import secrets
+import socket
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
@@ -49,6 +52,17 @@ import d1_paths
 BRIDGE_PROTOCOL = 1
 CLOSE_TIMEOUT_SECONDS = 30.0
 MAX_DOCX_BYTES = 30 * 1024 * 1024
+# Observation export uses a separate restricted channel: the page never
+# sends Base64 bytes, and the host streams from the fixed loopback endpoint.
+MAX_OBSERVATION_EXPORT_BYTES = 128 * 1024 * 1024
+OBSERVATION_EXPORT_CHUNK = 256 * 1024
+# Per-socket wait and the whole-transfer deadline are distinct: a trickle of
+# small chunks can satisfy the former forever, so both channels also enforce
+# a monotonic deadline covering connect/headers/body.
+OBSERVATION_EXPORT_TIMEOUT_SECONDS = 120.0
+OBSERVATION_EXPORT_JSON_TIMEOUT_SECONDS = 30.0
+OBSERVATION_EXPORT_JSON_DEADLINE_SECONDS = 30.0
+OBSERVATION_EXPORT_JSON_LIMIT = 256 * 1024
 
 # The complete set of bridge endpoints exposed to the page. Every other
 # attribute (coordinators, notification helpers) stays private (``_``) so
@@ -68,6 +82,9 @@ BRIDGE_ALLOWED_ENDPOINTS = frozenset(
         "get_close_state",
         "save_docx",
         "get_save_result",
+        "save_observation_export",
+        "get_observation_export_result",
+        "reconcile_observation_export_result",
     }
 )
 
@@ -117,6 +134,82 @@ class _SaveDialogError(RuntimeError):
     ``SAVE_DIALOG_FAILED`` reason instead of the original dialog exception
     (which may carry absolute paths).
     """
+
+
+class _LocalApiError(RuntimeError):
+    """A fixed local-API failure; never carries a path or response body."""
+
+    def __init__(self, code: str, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+
+
+class _ExportDownloadError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+class _DeadlineGuard:
+    """Interrupt a blocking http.client read at a monotonic total deadline.
+
+    A per-recv socket timeout is not enough for a slow status/header trickle:
+    getresponse() performs several reads, each refreshing the socket timeout.
+    The timer closes the socket at the whole-request deadline so the blocked
+    read cannot outlive the budget. It never covers the native Save As dialog.
+    """
+
+    def __init__(self, connection: http.client.HTTPConnection, seconds: float):
+        self.connection = connection
+        self.deadline = time.monotonic() + max(0.0, seconds)
+        self.expired = threading.Event()
+        self._response = None
+        self._response_sock = None
+        self._timer = threading.Timer(max(0.001, seconds), self._expire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def attach_response(self, response) -> None:
+        """Keep the socket of a will_close HTTPResponse interruptible.
+
+        For HTTP/1.0 or Connection: close, http.client detaches
+        ``connection.sock`` after getresponse while the response file object
+        still owns the socket. Capture that socket before reading the body.
+        """
+        self._response = response
+        sock = getattr(self.connection, "sock", None)
+        if sock is None:
+            fp = getattr(response, "fp", None)
+            raw = getattr(fp, "raw", None)
+            sock = getattr(raw, "_sock", None) or getattr(fp, "_sock", None)
+        self._response_sock = sock
+
+    def _expire(self) -> None:
+        self.expired.set()
+        sock = self._response_sock or getattr(self.connection, "sock", None)
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        if self._response is not None:
+            try:
+                self._response.close()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            self.connection.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def cancel(self) -> None:
+        self._timer.cancel()
+
+    def remaining(self) -> float:
+        return self.deadline - time.monotonic()
+
 
 
 class CloseCoordinator:
@@ -702,6 +795,117 @@ def write_docx_atomic(target: str, data: bytes) -> dict:
                 pass
 
 
+def validate_docx_file(path: str | Path) -> str | None:
+    """Structural DOCX check on a file without loading it all into memory."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            for part in _DOCX_REQUIRED_PARTS:
+                if part not in names:
+                    return f"DOCX 缺少必要部件：{part}"
+            for part in _DOCX_REQUIRED_PARTS:
+                problem = _validate_docx_part(part, archive.read(part))
+                if problem is not None:
+                    return problem
+    except zipfile.BadZipFile:
+        return "DOCX 数据不是有效的 ZIP 容器"
+    except (OSError, RuntimeError, ValueError, NotImplementedError):
+        return "DOCX 数据无法读取"
+    return None
+
+
+def write_stream_atomic(
+    target: str,
+    source: str,
+    *,
+    expected_hash: str,
+    expected_size: int,
+) -> dict:
+    """Stream a verified source file into a sibling temp + atomic replace.
+
+    The source is the host-downloaded observation export.  Both the copied
+    temp and the final target are size/hash checked; only a real successful
+    replace + verification reports ``saved``.  Failures stay desensitized and
+    never include paths or temporary names.
+    """
+    suffix_ok, reason = validate_docx_target(target)
+    if not suffix_ok:
+        return {"status": "failed", "code": "INVALID_TARGET", "message": reason}
+    if (
+        not isinstance(expected_size, int)
+        or expected_size <= 0
+        or expected_size > MAX_OBSERVATION_EXPORT_BYTES
+        or not isinstance(expected_hash, str)
+        or len(expected_hash) != 64
+    ):
+        return {
+            "status": "failed",
+            "code": "EXPORT_DOWNLOAD_INVALID",
+            "message": "导出文件大小或摘要不合法",
+        }
+    file_path = Path(target)
+    directory = file_path.parent
+    tmp_path: Path | None = None
+    try:
+        if not directory.is_dir():
+            raise FileNotFoundError("目标目录不存在")
+        if not Path(source).is_file():
+            raise FileNotFoundError("导出临时文件不存在")
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{file_path.name}.", suffix=".tmp", dir=str(directory)
+        )
+        tmp_path = Path(tmp_name)
+        hasher = hashlib.sha256()
+        total = 0
+        with open(source, "rb") as src, os.fdopen(fd, "wb") as handle:
+            while True:
+                chunk = src.read(OBSERVATION_EXPORT_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > expected_size:
+                    raise OSError("导出流超过声明大小")
+                hasher.update(chunk)
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if total != expected_size or hasher.hexdigest() != expected_hash:
+            raise OSError("导出流大小或摘要不一致")
+        written = tmp_path.stat().st_size
+        if written != expected_size:
+            raise OSError("临时文件字节数不符")
+        os.replace(str(tmp_path), str(file_path))
+        tmp_path = None  # commit point passed
+        try:
+            final_hash = hashlib.sha256()
+            final_size = 0
+            with open(file_path, "rb") as handle:
+                while True:
+                    chunk = handle.read(OBSERVATION_EXPORT_CHUNK)
+                    if not chunk:
+                        break
+                    final_size += len(chunk)
+                    final_hash.update(chunk)
+            if final_size != expected_size or final_hash.hexdigest() != expected_hash:
+                raise OSError("替换后大小或摘要不一致")
+        except OSError:
+            return {
+                "status": "unknown",
+                "code": "SAVE_RESULT_UNKNOWN",
+                "message": "替换已执行但结果无法确认：文件可能已写入，请核对保存位置后再决定下一步",
+            }
+        return {"status": "saved", "bytes": expected_size}
+    except OSError as exc:
+        code, message = _classify_write_failure(exc, file_path)
+        return {"status": "failed", "code": code, "message": message}
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
 class D1HostApi:
     """Object exposed to the window as ``window.pywebview.api``."""
 
@@ -714,6 +918,7 @@ class D1HostApi:
         update_manager=None,
         install_coordinator=None,
         ready_receipt=None,
+        service_port: int | None = None,
     ):
         self._launch_token = launch_token
         self._window_getter = window_getter or self._default_window
@@ -721,6 +926,7 @@ class D1HostApi:
         self._update_manager = update_manager
         self._install_coordinator = install_coordinator
         self._ready_receipt = ready_receipt
+        self._service_port = service_port
         self._save_lock = threading.Lock()
         # One native save (dialog + write) at a time across *all* operation
         # ids; the in-flight count lets the close path refuse to destroy the
@@ -728,6 +934,7 @@ class D1HostApi:
         self._save_mutex = threading.Lock()
         self._save_inflight = 0
         self._save_records: dict[str, dict] = {}
+        self._observation_save_records: dict[str, dict] = {}
         self._page_ready = False
         self._page_busy = False
         self._page_busy_seq = 0
@@ -1237,6 +1444,749 @@ class D1HostApi:
                 "result": result,
                 "in_flight": False,
             }
+
+    # -- restricted observation export host channel -----------------------
+    def save_observation_export(self, payload: object = None) -> dict:
+        if not self._page_ready:
+            return {
+                "status": "failed",
+                "code": "BRIDGE_NOT_READY",
+                "message": "页面尚未完成桥接握手，已拒绝保存",
+            }
+        try:
+            return self._save_observation_export_inner(payload)
+        except Exception as exc:  # never raise across the JS bridge
+            _host_log(
+                f"observation export outer failure: {type(exc).__name__}"
+            )
+            return {
+                "status": "failed",
+                "code": "EXPORT_SAVE_FAILED",
+                "message": "导出保存失败：发生未预期的错误，请重试",
+            }
+
+    def _save_observation_export_inner(self, payload: object) -> dict:
+        if not isinstance(payload, dict):
+            return {
+                "status": "failed",
+                "code": "INVALID_PAYLOAD",
+                "message": "导出保存数据格式不正确",
+            }
+        export_id = payload.get("export_id")
+        if not isinstance(export_id, str) or not export_id or len(export_id) > 128:
+            return {
+                "status": "failed",
+                "code": "INVALID_PAYLOAD",
+                "message": "缺少导出凭证",
+            }
+        filename = _base_name(str(payload.get("filename") or "")).strip()
+        if not filename:
+            filename = "游戏观察记录.docx"
+        if not filename.lower().endswith(_ALLOWED_SUFFIX):
+            filename += _ALLOWED_SUFFIX
+        with self._save_lock:
+            existing = self._observation_save_records.get(export_id)
+            if existing is not None:
+                if existing.get("filename") != filename:
+                    return {
+                        "status": "failed",
+                        "code": "EXPORT_ATTEMPT_CONFLICT",
+                        "message": "同一导出凭证已用于不同文件名",
+                    }
+                if existing.get("in_flight"):
+                    return {
+                        "status": "pending",
+                        "code": "SAVE_IN_PROGRESS",
+                        "message": "导出保存仍在进行中",
+                    }
+                return dict(existing.get("result") or {"status": "unknown"})
+            self._observation_save_records[export_id] = {
+                "filename": filename,
+                "result": None,
+                "in_flight": True,
+            }
+            self._save_inflight += 1
+        try:
+            result = self._perform_observation_export(export_id, filename)
+        except _LocalApiError as exc:
+            _host_log(f"observation export local api: {exc.code}")
+            result = {
+                "status": "failed",
+                "code": exc.code,
+                "message": exc.message,
+            }
+            if exc.retryable:
+                result["_forget"] = True
+        except Exception as exc:  # noqa: BLE001
+            _host_log(
+                f"observation export inner failure: {type(exc).__name__}"
+            )
+            result = {
+                "status": "failed",
+                "code": "EXPORT_SAVE_FAILED",
+                "message": "导出保存失败：发生未预期的错误，请重试",
+            }
+        forget = bool(result.pop("_forget", False))
+        with self._save_lock:
+            self._save_inflight -= 1
+            if forget:
+                self._observation_save_records.pop(export_id, None)
+            else:
+                record = self._observation_save_records.get(export_id) or {}
+                record["in_flight"] = False
+                record["result"] = dict(result)
+                self._observation_save_records[export_id] = record
+        return result
+
+    def get_observation_export_result(self, payload: object = None) -> dict:
+        if not self._page_ready:
+            return {"status": "unknown", "code": "BRIDGE_NOT_READY"}
+        export_id = ""
+        filename = ""
+        if isinstance(payload, dict):
+            export_id = str(payload.get("export_id") or "")
+            filename = _base_name(str(payload.get("filename") or "")).strip()
+        if not export_id:
+            return {"status": "unknown", "code": "UNKNOWN_EXPORT"}
+        with self._save_lock:
+            record = self._observation_save_records.get(export_id)
+            if record is not None:
+                if filename and filename != record.get("filename"):
+                    return {
+                        "status": "failed",
+                        "code": "EXPORT_ATTEMPT_CONFLICT",
+                        "message": "同一导出凭证已用于不同文件名",
+                    }
+                if record.get("in_flight"):
+                    return {
+                        "status": "pending",
+                        "code": "SAVE_IN_PROGRESS",
+                        "message": "导出保存仍在进行中",
+                    }
+                return dict(record.get("result") or {"status": "unknown"})
+        try:
+            attempt = self._local_json(
+                "GET",
+                f"/api/observation-exports/"
+                f"{urllib.parse.quote(export_id, safe='')}/attempts/latest",
+            )
+        except _LocalApiError as exc:
+            if exc.code == "EXPORT_NOT_FOUND":
+                return {"status": "unknown", "code": "EXPORT_NOT_FOUND"}
+            return {"status": "unknown", "code": exc.code}
+        return self._map_attempt(attempt, filename or "游戏观察记录.docx")
+
+    def reconcile_observation_export_result(self, payload: object = None) -> dict:
+        """Re-report a known terminal host result; never download or prompt.
+
+        This is only meaningful after the teacher explicitly asks to recover
+        the same fixed preview. It does not create a new token/attempt and it
+        does not guess a result: only the terminal status already observed by
+        this host process is re-sent idempotently. Read-only result queries
+        remain in ``get_observation_export_result`` and never POST.
+        """
+        if not self._page_ready:
+            return {"status": "unknown", "code": "BRIDGE_NOT_READY"}
+        export_id = ""
+        filename = ""
+        if isinstance(payload, dict):
+            export_id = str(payload.get("export_id") or "")
+            filename = _base_name(str(payload.get("filename") or "")).strip()
+        if not export_id:
+            return {"status": "unknown", "code": "UNKNOWN_EXPORT"}
+        with self._save_lock:
+            record = self._observation_save_records.get(export_id)
+            if record is None:
+                return {"status": "unknown", "code": "EXPORT_NOT_FOUND"}
+            if filename and filename != record.get("filename"):
+                return {
+                    "status": "failed",
+                    "code": "EXPORT_ATTEMPT_CONFLICT",
+                    "message": "同一导出凭证已用于不同文件名",
+                }
+            if record.get("in_flight"):
+                return {
+                    "status": "pending",
+                    "code": "SAVE_IN_PROGRESS",
+                    "message": "导出保存仍在进行中",
+                }
+            result = dict(record.get("result") or {"status": "unknown"})
+            if not result.get("receipt_pending"):
+                return result
+            attempt_id = result.get("attempt_id")
+            backend_status = {
+                "saved": "saved",
+                "canceled": "cancelled",
+                "failed": "failed",
+                "unknown": "indeterminate",
+            }.get(str(result.get("status")))
+            if not isinstance(attempt_id, str) or not backend_status:
+                return result
+            record["in_flight"] = True
+            self._save_inflight += 1
+        confirmed = False
+        try:
+            confirmed = self._report_observation_attempt(
+                export_id,
+                attempt_id,
+                backend_status,
+                byte_size=(
+                    result.get("bytes")
+                    if backend_status == "saved"
+                    else None
+                ),
+                result_hash=(
+                    result.get("result_hash")
+                    if backend_status == "saved"
+                    else None
+                ),
+            )
+        finally:
+            with self._save_lock:
+                self._save_inflight -= 1
+                record = self._observation_save_records.get(export_id) or record
+                record["in_flight"] = False
+                if confirmed:
+                    result.pop("receipt_pending", None)
+                    record["result"] = dict(result)
+                self._observation_save_records[export_id] = record
+        return result
+
+    def _perform_observation_export(self, export_id: str, filename: str) -> dict:
+        quoted = urllib.parse.quote(export_id, safe="")
+        try:
+            attempt = self._local_json(
+                "POST",
+                f"/api/observation-exports/{quoted}/attempts",
+                {"filename": filename},
+            )
+        except _LocalApiError as exc:
+            exc.retryable = True
+            raise
+        if attempt.get("should_prompt") is False:
+            return self._map_attempt(attempt, filename)
+        attempt_id = attempt.get("attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id:
+            return {
+                "status": "failed",
+                "code": "EXPORT_ATTEMPT_INVALID",
+                "message": "导出保存尝试无效",
+            }
+        temp_path: str | None = None
+        try:
+            try:
+                temp_path, digest, size = self._download_observation_export(
+                    export_id
+                )
+            except _ExportDownloadError as exc:
+                confirmed = self._report_observation_attempt(
+                    export_id, attempt_id, "failed"
+                )
+                return {
+                    "status": "failed",
+                    "code": exc.code,
+                    "message": exc.message,
+                    "export_id": export_id,
+                    "attempt_id": attempt_id,
+                    "receipt_pending": not confirmed,
+                }
+            with self._save_mutex:
+                try:
+                    target = self._choose_target(filename)
+                except _SaveDialogError:
+                    confirmed = self._report_observation_attempt(
+                        export_id, attempt_id, "failed"
+                    )
+                    return {
+                        "status": "failed",
+                        "code": "SAVE_DIALOG_FAILED",
+                        "message": "无法打开保存对话框，请重试",
+                        "export_id": export_id,
+                        "attempt_id": attempt_id,
+                        "receipt_pending": not confirmed,
+                    }
+                if target is None:
+                    confirmed = self._report_observation_attempt(
+                        export_id, attempt_id, "cancelled"
+                    )
+                    return {
+                        "status": "canceled",
+                        "export_id": export_id,
+                        "attempt_id": attempt_id,
+                        "receipt_pending": not confirmed,
+                    }
+                write_result = write_stream_atomic(
+                    target,
+                    temp_path,
+                    expected_hash=digest,
+                    expected_size=size,
+                )
+            if write_result.get("status") == "saved":
+                result = {
+                    "status": "saved",
+                    "bytes": write_result.get("bytes"),
+                    "filename": Path(target).name,
+                    "export_id": export_id,
+                    "attempt_id": attempt_id,
+                    "result_hash": digest,
+                }
+                if not self._report_observation_attempt(
+                    export_id,
+                    attempt_id,
+                    "saved",
+                    byte_size=size,
+                    result_hash=digest,
+                ):
+                    result["receipt_pending"] = True
+                return result
+            if write_result.get("status") == "unknown":
+                confirmed = self._report_observation_attempt(
+                    export_id, attempt_id, "indeterminate"
+                )
+                return {
+                    "status": "unknown",
+                    "code": write_result.get("code") or "SAVE_RESULT_UNKNOWN",
+                    "message": write_result.get("message")
+                    or "保存结果无法确认，请核对目标文件",
+                    "export_id": export_id,
+                    "attempt_id": attempt_id,
+                    "receipt_pending": not confirmed,
+                }
+            confirmed = self._report_observation_attempt(
+                export_id, attempt_id, "failed"
+            )
+            return {
+                "status": "failed",
+                "code": write_result.get("code") or "SAVE_FAILED",
+                "message": write_result.get("message") or "文件写入失败",
+                "export_id": export_id,
+                "attempt_id": attempt_id,
+                "receipt_pending": not confirmed,
+            }
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+    def _map_attempt(self, attempt: dict, filename: str) -> dict:
+        status = attempt.get("status")
+        if status == "saved":
+            return {
+                "status": "saved",
+                "bytes": attempt.get("byte_size"),
+                "filename": filename,
+                "attempt_id": attempt.get("attempt_id"),
+            }
+        if status == "cancelled":
+            return {"status": "canceled", "attempt_id": attempt.get("attempt_id")}
+        if status == "failed":
+            return {
+                "status": "failed",
+                "code": "EXPORT_ATTEMPT_FAILED",
+                "message": "上一次导出保存失败",
+                "attempt_id": attempt.get("attempt_id"),
+            }
+        if status == "indeterminate":
+            return {
+                "status": "unknown",
+                "code": "SAVE_RESULT_UNKNOWN",
+                "message": "保存结果无法确认，请核对目标文件",
+                "attempt_id": attempt.get("attempt_id"),
+            }
+        return {
+            "status": "pending",
+            "code": "SAVE_IN_PROGRESS",
+            "message": "导出保存仍在进行中",
+            "attempt_id": attempt.get("attempt_id"),
+        }
+
+    def _report_observation_attempt(
+        self,
+        export_id: str,
+        attempt_id: str,
+        status: str,
+        *,
+        byte_size: int | None = None,
+        result_hash: str | None = None,
+    ) -> bool:
+        body: dict[str, object] = {"status": status}
+        if byte_size is not None:
+            body["byte_size"] = byte_size
+        if result_hash is not None:
+            body["result_hash"] = result_hash
+        try:
+            self._local_json(
+                "POST",
+                f"/api/observation-exports/"
+                f"{urllib.parse.quote(export_id, safe='')}/attempts/"
+                f"{urllib.parse.quote(attempt_id, safe='')}/result",
+                body,
+            )
+        except _LocalApiError as exc:
+            _host_log(f"observation export receipt failed: {exc.code}")
+            return False
+        except Exception as exc:  # noqa: BLE001
+            _host_log(
+                f"observation export receipt failed: {type(exc).__name__}"
+            )
+            return False
+        return True
+
+    def _local_connection(
+        self, *, timeout: float = 30.0
+    ) -> http.client.HTTPConnection:
+        """Fixed loopback connection: no proxy, no redirect, no DNS."""
+        if not self._service_port:
+            raise _LocalApiError(
+                "EXPORT_LOCAL_API_UNAVAILABLE",
+                "本地导出服务不可用",
+                retryable=True,
+            )
+        return http.client.HTTPConnection(
+            "127.0.0.1", int(self._service_port), timeout=timeout
+        )
+
+    def _local_headers(self) -> dict[str, str]:
+        port = int(self._service_port or 0)
+        return {
+            "Host": f"127.0.0.1:{port}",
+            "Origin": f"http://127.0.0.1:{port}",
+            "X-App-Session": self._launch_token,
+            "Accept": "application/json",
+        }
+
+    def _set_remaining_timeout(
+        self,
+        connection: http.client.HTTPConnection,
+        deadline: float,
+        per_socket: float,
+    ) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("local api deadline")
+        timeout = min(per_socket, remaining)
+        connection.timeout = timeout
+        if connection.sock is not None:
+            connection.sock.settimeout(timeout)
+
+    def _read_response_bounded(
+        self,
+        response: http.client.HTTPResponse,
+        connection: http.client.HTTPConnection,
+        *,
+        deadline: float,
+        per_socket: float,
+        limit: int,
+    ) -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        read1 = getattr(response, "read1", None)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("local api deadline")
+            if connection.sock is not None:
+                connection.sock.settimeout(min(per_socket, remaining))
+            want = min(4096, limit + 1 - total)
+            if want <= 0:
+                raise ValueError("local api response too large")
+            chunk = read1(want) if read1 is not None else response.read(want)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise ValueError("local api response too large")
+            chunks.append(chunk)
+        if time.monotonic() > deadline:
+            raise TimeoutError("local api deadline")
+        return b"".join(chunks)
+
+    def _local_json(
+        self, method: str, path: str, body: dict | None = None
+    ) -> dict:
+        data = None
+        headers = self._local_headers()
+        if body is not None:
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        deadline = time.monotonic() + OBSERVATION_EXPORT_JSON_DEADLINE_SECONDS
+        per_socket = OBSERVATION_EXPORT_JSON_TIMEOUT_SECONDS
+        connection = self._local_connection(
+            timeout=min(per_socket, OBSERVATION_EXPORT_JSON_DEADLINE_SECONDS)
+        )
+        guard = _DeadlineGuard(connection, OBSERVATION_EXPORT_JSON_DEADLINE_SECONDS)
+        try:
+            self._set_remaining_timeout(connection, deadline, per_socket)
+            connection.request(method, path, body=data, headers=headers)
+            self._set_remaining_timeout(connection, deadline, per_socket)
+            response = connection.getresponse()
+            guard.attach_response(response)
+            status = response.status
+            raw = self._read_response_bounded(
+                response,
+                connection,
+                deadline=deadline,
+                per_socket=per_socket,
+                limit=OBSERVATION_EXPORT_JSON_LIMIT,
+            )
+            if guard.expired.is_set():
+                raise TimeoutError("local api deadline")
+        except TimeoutError as exc:
+            raise _LocalApiError(
+                "EXPORT_LOCAL_API_TIMEOUT",
+                "本地导出服务响应超时",
+                retryable=True,
+            ) from exc
+        except ValueError as exc:
+            raise _LocalApiError(
+                "EXPORT_LOCAL_API_INVALID",
+                "本地导出服务响应过大",
+            ) from exc
+        except (OSError, http.client.HTTPException) as exc:
+            if guard.expired.is_set():
+                raise _LocalApiError(
+                    "EXPORT_LOCAL_API_TIMEOUT",
+                    "本地导出服务响应超时",
+                    retryable=True,
+                ) from exc
+            raise _LocalApiError(
+                "EXPORT_LOCAL_API_UNAVAILABLE",
+                "无法连接本地导出服务，请稍后重试",
+                retryable=True,
+            ) from exc
+        finally:
+            guard.cancel()
+            connection.close()
+        if 300 <= status < 400:
+            raise _LocalApiError(
+                "EXPORT_LOCAL_API_REDIRECT",
+                "本地导出服务返回了不允许的重定向",
+            )
+        if status >= 400:
+            code = "EXPORT_LOCAL_API_ERROR"
+            message = "本地导出服务返回错误"
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+                error = parsed.get("error") if isinstance(parsed, dict) else None
+                if isinstance(error, dict):
+                    code = str(error.get("code") or code)
+                    message = str(error.get("message") or message)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
+            if status == 404:
+                code = "EXPORT_NOT_FOUND"
+            raise _LocalApiError(code, message)
+        if status < 200 or status >= 300:
+            raise _LocalApiError(
+                "EXPORT_LOCAL_API_INVALID",
+                "本地导出服务响应无效",
+            )
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise _LocalApiError(
+                "EXPORT_LOCAL_API_INVALID",
+                "本地导出服务响应无效",
+            ) from None
+        if not isinstance(parsed, dict):
+            raise _LocalApiError(
+                "EXPORT_LOCAL_API_INVALID",
+                "本地导出服务响应无效",
+            )
+        return parsed
+
+    def _download_observation_export(
+        self, export_id: str
+    ) -> tuple[str, str, int]:
+        path = (
+            f"/api/observation-exports/"
+            f"{urllib.parse.quote(export_id, safe='')}/content"
+        )
+        headers = self._local_headers()
+        headers["Accept"] = (
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        )
+        connection = self._local_connection(
+            timeout=OBSERVATION_EXPORT_TIMEOUT_SECONDS
+        )
+        guard = _DeadlineGuard(connection, OBSERVATION_EXPORT_TIMEOUT_SECONDS)
+        deadline = time.monotonic() + OBSERVATION_EXPORT_TIMEOUT_SECONDS
+        per_socket = OBSERVATION_EXPORT_TIMEOUT_SECONDS
+        fd, temp_name = tempfile.mkstemp(
+            prefix="kgm-observation-export-", suffix=".docx"
+        )
+        total = 0
+        digest = ""
+        expected_digest = ""
+        expected_size: int | None = None
+        try:
+            try:
+                self._set_remaining_timeout(connection, deadline, per_socket)
+                connection.request("GET", path, headers=headers)
+                self._set_remaining_timeout(connection, deadline, per_socket)
+                response = connection.getresponse()
+                guard.attach_response(response)
+                status = response.status
+                if 300 <= status < 400:
+                    raise _ExportDownloadError(
+                        "EXPORT_LOCAL_API_REDIRECT",
+                        "本地导出服务返回了不允许的重定向",
+                    )
+                if status >= 400:
+                    raw = self._read_response_bounded(
+                        response,
+                        connection,
+                        deadline=deadline,
+                        per_socket=per_socket,
+                        limit=OBSERVATION_EXPORT_JSON_LIMIT,
+                    )
+                    code = "EXPORT_DOWNLOAD_FAILED"
+                    message = "下载导出文件失败"
+                    try:
+                        parsed = json.loads(raw.decode("utf-8"))
+                        error = (
+                            parsed.get("error")
+                            if isinstance(parsed, dict)
+                            else None
+                        )
+                        if isinstance(error, dict):
+                            code = str(error.get("code") or code)
+                            message = str(error.get("message") or message)
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        pass
+                    raise _ExportDownloadError(code, message)
+                if status != 200:
+                    raise _ExportDownloadError(
+                        "EXPORT_DOWNLOAD_INVALID",
+                        "本地导出服务响应无效",
+                    )
+                length_header = response.getheader("Content-Length")
+                if length_header is not None:
+                    try:
+                        expected_size = int(length_header)
+                    except ValueError:
+                        raise _ExportDownloadError(
+                            "EXPORT_DOWNLOAD_INVALID",
+                            "导出文件长度无效",
+                        ) from None
+                    if (
+                        expected_size <= 0
+                        or expected_size > MAX_OBSERVATION_EXPORT_BYTES
+                    ):
+                        raise _ExportDownloadError(
+                            "EXPORT_TOO_LARGE",
+                            "导出文件超过技术上限",
+                        )
+                expected_digest = str(
+                    response.getheader("X-Content-SHA256") or ""
+                )
+                if len(expected_digest) != 64:
+                    raise _ExportDownloadError(
+                        "EXPORT_DOWNLOAD_INVALID",
+                        "导出文件缺少有效摘要",
+                    )
+                hasher = hashlib.sha256()
+                read1 = getattr(response, "read1", None)
+                with os.fdopen(fd, "wb") as handle:
+                    fd = -1
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("export download deadline")
+                        if connection.sock is not None:
+                            connection.sock.settimeout(
+                                min(per_socket, remaining)
+                            )
+                        want = min(
+                            OBSERVATION_EXPORT_CHUNK,
+                            MAX_OBSERVATION_EXPORT_BYTES + 1 - total,
+                        )
+                        if want <= 0:
+                            raise _ExportDownloadError(
+                                "EXPORT_TOO_LARGE",
+                                "导出文件超过技术上限",
+                            )
+                        chunk = (
+                            read1(want)
+                            if read1 is not None
+                            else response.read(want)
+                        )
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_OBSERVATION_EXPORT_BYTES:
+                            raise _ExportDownloadError(
+                                "EXPORT_TOO_LARGE",
+                                "导出文件超过技术上限",
+                            )
+                        hasher.update(chunk)
+                        handle.write(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                if time.monotonic() > deadline or guard.expired.is_set():
+                    raise TimeoutError("export download deadline")
+                digest = hasher.hexdigest()
+            except _ExportDownloadError:
+                raise
+            except ValueError as exc:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_INVALID",
+                    "导出文件响应过大或无效",
+                ) from exc
+            except TimeoutError as exc:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_TIMEOUT",
+                    "下载导出文件超时",
+                ) from exc
+            except (OSError, http.client.HTTPException) as exc:
+                if guard.expired.is_set():
+                    raise _ExportDownloadError(
+                        "EXPORT_DOWNLOAD_TIMEOUT",
+                        "下载导出文件超时",
+                    ) from exc
+                raise _ExportDownloadError(
+                    "EXPORT_TEMP_WRITE_FAILED",
+                    "写入导出临时文件失败",
+                ) from exc
+            if total <= 0:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_INVALID",
+                    "导出文件为空",
+                )
+            if expected_size is not None and total != expected_size:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_TRUNCATED",
+                    "导出文件下载不完整",
+                )
+            if digest != expected_digest:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_INVALID",
+                    "导出文件摘要不一致",
+                )
+            problem = validate_docx_file(temp_name)
+            if problem is not None:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_INVALID",
+                    "下载的 Word 文件结构无效",
+                )
+            return temp_name, digest, total
+        except Exception:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+            raise
+        finally:
+            guard.cancel()
+            connection.close()
 
     # -- host -> page notifications (private: never exposed as bridge) -----
     def _notify_request_close(

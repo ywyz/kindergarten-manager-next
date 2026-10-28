@@ -98,7 +98,11 @@ def main() -> int:
         return 2
     report["checks"]["venv_python_present"] = True
 
+    save_dir = output_dir / "saved-export"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    report["save_dir"] = str(save_dir)
     env = os.environ.copy()
+    env["KGM_D1_VERIFY_SAVE_DIR"] = str(save_dir)
     env["APP_DISABLE_DOTENV"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONPATH"] = str(REPO_ROOT / "backend") + (
@@ -159,6 +163,13 @@ def main() -> int:
             "obs_create_and_edit",
             "obs_history_restore",
             "obs_conflict_and_leave",
+            "obs_export_from_editor",
+            "obs_export_cancel_from_editor",
+            "obs_export_host_busy_cleared",
+            "obs_export_app_busy_cleared",
+            "obs_export_cancel_busy_cleared",
+            "obs_multi_page_mixed_export",
+            "obs_multi_export_busy_cleared",
         ):
             report["checks"][name] = checks.get(name) is True
         report["checks"]["obs_ok"] = summary.get("obs_ok") is True
@@ -168,6 +179,13 @@ def main() -> int:
             "obs_create_and_edit",
             "obs_history_restore",
             "obs_conflict_and_leave",
+            "obs_export_from_editor",
+            "obs_export_cancel_from_editor",
+            "obs_export_host_busy_cleared",
+            "obs_export_app_busy_cleared",
+            "obs_export_cancel_busy_cleared",
+            "obs_multi_page_mixed_export",
+            "obs_multi_export_busy_cleared",
             "obs_ok",
         ):
             report["checks"][name] = False

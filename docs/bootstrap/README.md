@@ -2,9 +2,11 @@
 
 更新：2026-10-28。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前阶段：E09／E10 本机 API、观察编辑与查阅列表限定工程通过
+## 当前阶段：批选／排序、Word 导出及宿主交付限定工程通过
 
-2026-10-28收口：原OpenCode会话以Go套餐DeepSeek V4.1 Flash max实施及回修，[独立核查 §6](desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)通过：全local728、桌面285、最终全前端（观察38）、真实HTTP37及WebView2 9项；实际中文差异预览、勾选、四目标采用保存v14、列表与正常关闭通过，R01–R15关闭。见[实现交接](desktop-game-observation-pages-result.md)，按用户授权由原OpenCode正常提交推送后停在本片；[唯一入口](../tasks/current.md)。批选／跨页选集／手调排序、E11／E12 Word／原生另存为与E14整包后置，完整A01–A22、教师体验和MiMo真实仍未验；本片应用真实AI调用0次，原配置／凭据及旧数据保持。
+2026-10-28接续收口：原OpenCode会话以Go套餐DeepSeek V4.1 Flash max实施及回修，[导出独立核查 §6](desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)通过，R01–R13关闭：全local758、最终桌面302／导出API专项41、最终全前端（观察54）、HTTP37及真实WebView2 16项；7份合成Word逐页、600图及大于30MiB完整交付、真实原生取消／明确重试／保存与正常关闭有实证。见[实现交接](desktop-game-observation-export-result.md)，按授权由原OpenCode正常提交推送后停在本片；[唯一入口](../tasks/current.md)。完整A01–A22、教师体验、E14冻结整包、安装／发行及MiMo真实仍未整体通过；本片应用真实AI调用0次，原配置／凭据及旧数据保持。
+
+前片[页面核查 §6](desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)全local728、桌面285、前端观察38、HTTP37及WebView2 9项与实际中文差异预览、勾选四目标采用保存v14结果保持，R01–R15已关闭；该片基线提交b4b2f77，不以本片导出替代其历史证据。
 
 前片E06／E07[服务层核查](desktop-game-observation-ai-review.md)718项全local、85项相关桌面、图文容量及真实DeepSeek生成／五领域重写／采用闭环保持，R01–R12关闭；原R13误判处理已撤回。前片真实请求共4次含1次unknown且不自动重放，与本片合成验证分开记录。
 

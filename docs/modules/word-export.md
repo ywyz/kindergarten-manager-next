@@ -41,7 +41,7 @@
 
 ## 游戏观察导出扩展（2026-10-26，E13设计核定）
 
-本片只预备导出关联表，见[E01／E02／E04独立核查](../bootstrap/desktop-game-observation-foundation-review.md)；本节Word生成、模板纳入、固定选集／文件交接及宿主桥均未实施、未验，不由表结构通过替代。
+导出关联表前片已通过[E01／E02／E04独立核查](../bootstrap/desktop-game-observation-foundation-review.md)。2026-10-28接续已实施三模板、明确选集／排序、固定snapshot及受限宿主交付；本片独立证据与当前回修状态见[导出核查](../bootstrap/desktop-game-observation-export-review.md)，不由表结构或实现者自测替代。
 
 输入为观察模块固定导出快照；Word只渲染，不决定采用、不回写观察资料或材料。单份及勾选多份可混合公共／室内／户外，跨页选择维护明确ID集合；默认日期升序、缺日期末尾，同日起始时间升序、缺时间当日末尾，同值创建先后，仍可手调。先成功保存当前编辑，缺项确认绑定实际选集／顺序／各draft revision及aggregate hash／完整缺项事实；变化重新预览，物化后只按固定snapshot生成，不回读当前稿混版本。
 
@@ -51,7 +51,9 @@ snapshot_id不是读取凭证；所有查询校验应用会话及归属，export
 
 成功／取消／失败／过期释放本尝试临时DOCX，保护仍在读取的流；有效期内用户可明确按固定snapshot新建token重试，过期重新预览，只清临时对象，不删业务原图／历史／input引用。旧save_docx及30MiB限制不变，不放宽原Base64入口。受限查询、快照字段、宿主回执及完整Word／命名规则统一见[观察Contract§7](game-observations.md#7-导出与-word)与[工程E11–E12](../specs/desktop-game-observation-engineering.md#12-e11三模板及固定导出)。
 
-本扩展仅设计通过，未实施、未执行宿主／真实Word逐页验证；DOCX结构或PDF不能替代Windows Word验收，D2／D3历史结果与未验身份保持，证据见[E13记录](../bootstrap/desktop-game-observation-contract-review.md)。
+本片三模板及产品实际输出已在当前Windows 11／Word16.0 Build16.0.20527以合成资料逐页核查，原生另存为取消／明确重试／实际保存另有证据；最终工程结论以[导出核查](../bootstrap/desktop-game-observation-export-review.md)为准。DOCX结构、COM或PDF不能替代真实Word页面，教师产品验收、WPS、其他环境、冻结新包与发行未整体通过；D2／D3历史结果及[E13设计记录](../bootstrap/desktop-game-observation-contract-review.md)保持各自身份。
+
+实际参数、受管产物摘要锚点、到期释放及终态待回报／明确补报协议统一见[工程§13.1](../specs/desktop-game-observation-engineering.md#131-本片实际协议与技术参数2026-10-28)。只读结果查询不执行补报；补报仅使用宿主已有实际IO事实，不再下载／弹窗／写文件，不把后端回执丢失误当文件未保存。
 
 ## 标红与兼容
 
@@ -77,4 +79,4 @@ DOCX 须通过实际产品导出并保存，再在 Windows 桌面 Word 或 WPS �
 
 既有映射见[最小实施规格](../specs/manual-plans-and-word-export.md)，案例见[模板验证计划](../specs/word-template-validation.md)。其中云端权限、浏览器交付及旧环境条款须先映射到本 Contract 与 ADR 0004，不能直接作为桌面实施指令。
 
-本次不宣称模板适配、本地文件交付或桌面验收完成；旧实现、自动测试与产品验收分别保留原身份。后续入口见[Architecture v2 实施入口](../bootstrap/architecture-v2-readiness.md)。
+日计划历史验收与本次观察三模板／本地交付的限定实证分别以各自审阅记录为准，不宣称完整桌面产品验收完成；旧实现、自动测试与产品验收分别保留原身份。后续入口见[Architecture v2 实施入口](../bootstrap/architecture-v2-readiness.md)。

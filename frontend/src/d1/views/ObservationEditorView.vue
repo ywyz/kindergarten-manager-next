@@ -82,6 +82,7 @@ const emit = defineEmits<{
   ): void
   (e: 'refresh-context'): void
   (e: 'busy', value: boolean): void
+  (e: 'request-export', item: ObservationListItem): void
 }>()
 
 interface EditorBridge {
@@ -246,6 +247,7 @@ const photoUrls = ref<Record<string, string>>({})
 const photoFailures = ref<Record<string, string>>({})
 const photoLoadError = ref('')
 const uploadBusy = ref(false)
+const exportBusy = ref(false)
 const photoBusy = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const PHOTO_CHUNK_SIZE = 8
@@ -361,12 +363,18 @@ const externalBusy = computed(
     writeBlocked.value ||
     aiIntent.value ||
     aiSubmitBusy.value ||
+    exportBusy.value ||
     indeterminate.value !== null ||
     phase.value === 'saving',
 )
 watch(externalBusy, (value) => emit('busy', value), { immediate: true })
 const editDisabled = computed(
-  () => props.frozen || locked.value || phase.value === 'loading' || writeBlocked.value,
+  () =>
+    props.frozen ||
+    locked.value ||
+    exportBusy.value ||
+    phase.value === 'loading' ||
+    writeBlocked.value,
 )
 const termLabel = computed(() => {
   const termId = current.value?.payload?.term_id ?? null
@@ -436,6 +444,7 @@ function scheduleAutoSave(): void {
     conflict.value ||
     indeterminate.value ||
     termDialog.value.visible ||
+    exportBusy.value ||
     props.frozen
   ) {
     return
@@ -2318,6 +2327,64 @@ function retryHistoryPhoto(assetId: string): void {
 
 // -- navigation ----------------------------------------------------------------
 
+function currentListItem(): ObservationListItem | null {
+  const record = current.value
+  if (!record) return null
+  const payload = record.payload
+  const term = props.context.terms.find((item) => item.id === payload.term_id)
+  return {
+    observation_id: record.observation_id,
+    record_type: payload.record_type,
+    observation_date: payload.observation_date,
+    start_time: payload.start_time,
+    end_time: payload.end_time,
+    term_id: payload.term_id ?? null,
+    term_name: term?.name ?? null,
+    school_name: payload.school_name,
+    class_name: payload.class_name,
+    observer_name: payload.observer_name,
+    subjects: (payload.subjects ?? []).map((item) => item.name),
+    environment: payload.environment,
+    adult_count: payload.adult_count,
+    child_count: payload.child_count,
+    age_years: payload.age_years,
+    current_draft_revision: record.revision,
+    current_version: record.current_version,
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+  }
+}
+
+async function exportCurrent(): Promise<void> {
+  if (props.frozen || exportBusy.value || writeBlocked.value || locked.value) return
+  exportBusy.value = true
+  try {
+    await settleComposition()
+    const outcome = await saveCurrent('pre_export')
+    await settleComposition()
+    if (outcome !== 'saved' && outcome !== 'unchanged') {
+      if (outcome === 'conflict') {
+        ElMessage.warning('当前稿保存冲突：请在当前页处理后再导出')
+      } else if (outcome === 'indeterminate') {
+        ElMessage.warning('导出前保存结果未知：请在当前页查询回执后再导出')
+      } else {
+        ElMessage.error('导出前保存当前稿失败：请处理后再导出')
+      }
+      return
+    }
+    if (needsSave.value) {
+      // Input that arrived during/after the save remains the teacher's; never
+      // export a stale snapshot or silently discard it.
+      ElMessage.warning('保存期间检测到新输入：请再次点击导出')
+      return
+    }
+    const item = currentListItem()
+    if (item) emit('request-export', item)
+  } finally {
+    exportBusy.value = false
+  }
+}
+
 function backToList(): void {
   emit('leave', 'observations', () => 'left')
 }
@@ -2427,6 +2494,8 @@ onMounted(() => {
     removeSubject: (index: number) => removeSubject(index),
     save: () => manualSave(),
     saveNow: (reason: SaveReason) => saveCurrent(reason),
+    exportCurrent: () => exportCurrent(),
+    exportBusy: () => exportBusy.value,
     autoSavePending: () => autoTimer.value !== null,
     cancelAutoSave: () => {
       if (autoTimer.value !== null) clearTimeout(autoTimer.value)
@@ -2641,6 +2710,14 @@ onBeforeUnmount(() => {
         </el-button>
         <el-button size="small" :disabled="props.frozen" data-d1="obs-back-list" @click="backToList">
           返回列表
+        </el-button>
+        <el-button
+          size="small"
+          :disabled="props.frozen || externalBusy"
+          data-d1="obs-export"
+          @click="exportCurrent"
+        >
+          导出 Word
         </el-button>
         <el-button
           type="primary"

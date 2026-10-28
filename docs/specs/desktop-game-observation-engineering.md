@@ -1,6 +1,6 @@
 # D4-E：游戏观察记录工程设计
 
-更新：2026-10-28。**E01–E14及E13六份Contract设计保持；基础、材料、保存历史及图文服务层的前片结果保持，E09／E10本机API、观察编辑与查阅列表限定工程核查通过。** 最新[独立核查 §6](../bootstrap/desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)为全local728、桌面285、最终全前端（观察38）、HTTP37／WebView2 9项及实际勾选采用v14通过。按授权由原OpenCode正常提交推送后停在本片；批选／排序、Word／原生另存为、整包、完整A01–A22及发行仍后置或未验，不自动启动后续切片。
+更新：2026-10-28。**E01–E14及E13六份Contract设计保持；基础、材料、保存历史、图文服务层与页面前片结果保持；接续E10批选／排序、E11三模板Word及E12宿主交付限定工程核查通过。** 最新[独立核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)含全local758、最终桌面302／导出API专项41、完整前端（观察54）、HTTP37及真实WebView2 16项、Word逐页与真实原生交付。按授权由原OpenCode正常提交推送后停在本片；冻结整包、完整A01–A22、教师体验与发行未整体验收，不自动启动后续切片。
 
 原OpenCode会话`ses_ead8af71dffeJphI1NOWg4jZgI`使用`opencode-go/deepseek-v4.1-flash#default`、`plan`代理交付方案。Codex退回两轮问题、补充冷迁移问题，并核定K01–K08修正；原会话最终逐项接受。本文由Codex归并为唯一有效工程方案，取代各轮回复中的冲突表述。原始回复及审计证据保留位置见核定记录，不另存提示词副本。
 
@@ -236,6 +236,8 @@ E06／E07已在644ed68提交推送，接续计划已在62f1fc6提交。用户现
 
 ## 11. E10：列表、同日多份与选择
 
+2026-10-28接续授权：前片已提交推送`b4b2f77`，用户明确要求按本计划开始批选／排序、E11 Word及E12宿主交付，仍由原OpenCode／build／Go套餐DeepSeek V4.1 Flash max实施，Codex独立审核及交回修复直至通过，最后OpenCode正常提交推送。旧停点被本次授权替代；E14在本片汇总实际集成证据，不自动冻结新包、安装更新、发行或调用应用真实AI。唯一执行入口见[当前任务](../tasks/current.md)，证据见[本片核查](../bootstrap/desktop-game-observation-export-review.md)。
+
 `GET /api/observations`按日期范围／term／未归属／类型／姓名query分页；当前投影显示日期、时段、类型、重点姓名、创建顺序等以区分同日多份。记录opaque ID独立，创建request id幂等，不以相同日期/姓名/类型覆盖。
 
 旧学期按存储term查，未归属可查改导出；切筛选不改归属，列表迟到响应按请求序号拒绝。跨页勾选维护明确ID集合，导出清单显示实际记录，不能隐式全选或漏页。合并默认日期升序、空日期末尾；同日起始时间升序、空时段当日末尾；同值创建先后再稳定ID，允许手动排序。不新增内部必填标题／31份限制／班级切换。
@@ -274,6 +276,16 @@ E06／E07已在644ed68提交推送，接续计划已在62f1fc6提交。用户现
 成功／取消／失败／过期释放本尝试临时DOCX，保护正被读取产物，流结束／明确失败后释放；有效snapshot按期限保留供教师明确新token重试，过期重新预览。只清临时对象，不删业务材料及历史/input/派生引用，不调用AI。重开不复用未知已消费token，不宣称外部保存恰好一次；字段及受限结果查询见[Contract§7](../modules/game-observations.md#7-导出与-word)。
 
 新通道须核定文件大小、分块、超时、磁盘和关闭协同并真实宿主验证。旧日计划`save_docx`及30MiB上限不变；不能为图片整体放宽旧桥接Base64入口。
+
+### 13.1 本片实际协议与技术参数（2026-10-28）
+
+实际实现为独立`observation_export_service.py`／`observation_export_api.py`，不改旧日计划渲染服务。路由根`/api/observation-exports`：`POST /prepare`保留所选现稿应留历史，`POST /preview`固定预览，`POST /`创建产物，`GET /operations/{request_id}`只读查该域回执；`/{export_id}/content`受保护流式读取；`/{export_id}/attempts`登记宿主尝试，`/attempts/latest`或`/attempts/{attempt_id}`只读查询，`/attempts/{attempt_id}/result`幂等报告实际终态。prepare／preview／create的request_id及指纹各自稳定保留，未知回包先读所属域回执；编辑页先settle并完成`saveCurrent(pre_export)`，auto后应留节点也不能跳过，再交列表固定预览。UI晚到结果按页面／请求／选集代次隔离。
+
+当前内部保护：选集序列化2MiB、冻结正文8MiB、导出照片累计64MiB、DOCX128MiB；无31／500份业务额度，无累计像素硬门槛。preview有效15分钟、token10分钟；服务端受管artifact写／hash块1MiB，HTTP与宿主传输块256KiB，sidecar64KiB；宿主JSON回包256KiB、完整网络deadline30秒，文件完整网络deadline120秒，均覆盖connect／状态行／headers／body，教师原生对话框等待不计入。固定loopback直连、不用环境代理、不跟3xx；前端不传任意URL／磁盘路径或Base64文件体。数值属工程保护，当前合成实测及未达极限项见[核查](../bootstrap/desktop-game-observation-export-review.md)，不承诺硬RSS或所有磁盘／内存组合。
+
+DOCX与sidecar位于受管`observations/export-temp`，读取除同句柄／父目录／链接检查外，须与按确切export_id定位的持久化create回执核对snapshot、manifest、大小与摘要，不能让可变sidecar自证。过期manifest排除已释放tombstone，以200行keyset、最多50批有界处理；旧launch的在途结果记indeterminate后释放临时对象，当前launch真实在途保留，读取引用结束再释放，不删除业务／历史／input材料。
+
+宿主桥为`save_observation_export`、只读`get_observation_export_result`及明确恢复动作`reconcile_observation_export_result`。真实IO终态与服务端确认分开，未确认标`receipt_pending`；显式恢复只幂等补报当前宿主已知终态及原摘要／大小，不下载、不弹窗、不重写。同一固定预览明确重试先补报必要旧终态，再申请新token；补报仍未知则停留，不自动重放。读查询不隐性POST，重开不能凭内存外部状态猜saved。
 
 ## 14. E13：Contract与依赖准入
 
@@ -322,4 +334,4 @@ npm run test:d1
 
 真实WebView2验证需记录源码／进程／数据身份，Word页面必须来自新版实际产品导出，记录Windows／Word／字体及每份起始页；XML／PNG／PDF仅辅助。后续构建／包验证另按授权，检查模板、PIL插件／许可、前端及入口同源与冷启动。前片E06／E07已按当时授权完成独立合成资料DeepSeek真实闭环；当前页面片只使用合成任务／候选，不调用应用真实AI。复杂照片／多人对应／补写质量及教师体验仍待后续，假响应不能替代真实效果。
 
-目前无新增待用户决定的主流程问题。E03材料、E05／E08历史及E06／E07服务层结果保持；页面／IME／离开及宿主关闭协调按本片限定范围通过，证据见[本片核查](../bootstrap/desktop-game-observation-pages-review.md)。Word／原生另存为、冻结包、完整A01–A22与教师产品未整体验收。首期保留成功staging空目录及未引用孤儿，不递归自动清理；维护须保护历史／input引用并另审。Win10、WPS、干净机器、其他DPI／显示器及D2／D3未验保持。自动验证使用独立合成资料；原业务库／凭据／OneDrive原件／旧包保持。本轮Git授权覆盖E09／E10限定片审核通过后由原OpenCode正常提交推送，停在本片。
+目前无新增待用户决定的主流程问题。E03材料、E05／E08历史、E06／E07服务层及页面结果保持；本片批选／排序、Word与原生交付按当前Windows 11合成环境限定通过，证据见[导出核查](../bootstrap/desktop-game-observation-export-review.md)。冻结包、完整A01–A22与教师产品未整体验收。业务staging／未引用孤儿不随本片递归清理，导出临时对象仅按§13.1有界释放；维护保护历史／input引用。Win10、WPS、干净机器、其他DPI／显示器及D2／D3未验保持。自动验证使用独立合成资料；原业务库／凭据／OneDrive原件／旧包保持。本轮Git授权覆盖本片相关源码／测试／文档，独立审核通过后由原OpenCode正常提交推送，停在本片。

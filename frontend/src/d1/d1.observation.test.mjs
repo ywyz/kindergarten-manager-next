@@ -21,6 +21,35 @@ import * as vue from 'vue'
 
 const d1Dir = path.dirname(fileURLToPath(import.meta.url))
 
+function loadObservationHelpers() {
+  const file = path.join(d1Dir, 'observation.ts')
+  const source = fs.readFileSync(file, 'utf8')
+  const js = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+  }).outputText
+  const module = { exports: {} }
+  vm.runInNewContext(js, {
+    module,
+    exports: module.exports,
+    console,
+    JSON,
+    Math,
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Date,
+  })
+  return module.exports
+}
+
+const observationHelpers = loadObservationHelpers()
+
 let passed = 0
 function ok(name) {
   passed += 1
@@ -270,6 +299,55 @@ const context = {
   ],
 }
 
+function exportListItem(id, date = '2026-09-15', start = '10:00') {
+  return {
+    observation_id: id,
+    record_type: 'public',
+    observation_date: date,
+    start_time: start,
+    end_time: null,
+    term_id: 't1',
+    term_name: '秋季学期',
+    school_name: null,
+    class_name: null,
+    observer_name: null,
+    subjects: ['小明'],
+    environment: '积木区',
+    adult_count: null,
+    child_count: null,
+    age_years: null,
+    current_draft_revision: 1,
+    current_version: null,
+    created_at: `${date}T${start}:00`,
+    updated_at: `${date}T${start}:00`,
+  }
+}
+
+function exportPreviewFor(ids, overrides = {}) {
+  return {
+    snapshot_id: `snap-${ids.join('-')}`,
+    manifest_hash: 'a'.repeat(64),
+    expires_at: '2026-09-15T10:15:00',
+    selection_hash: 'b'.repeat(64),
+    missing_hash: 'c'.repeat(64),
+    missing: [],
+    warnings: [],
+    requires_ack: false,
+    suggested_filename: '游戏观察记录.docx',
+    records: ids.map((id) => ({
+      observation_id: id,
+      record_type: 'public',
+      observation_date: '2026-09-15',
+      start_time: '10:00',
+      subjects: ['小明'],
+      revision: 1,
+      payload_hash: 'd'.repeat(64),
+      photo_count: 0,
+    })),
+    ...overrides,
+  }
+}
+
 function payload(overrides = {}) {
   return {
     record_type: 'public',
@@ -314,6 +392,7 @@ function currentFixture(overrides = {}) {
     photos: [],
     current_version: 1,
     latest_version_hash: 'a'.repeat(64),
+    created_at: '2026-09-10T08:00:00',
     updated_at: '2026-09-15T10:00:00',
     ...overrides,
   }
@@ -3138,6 +3217,898 @@ async function main() {
     ok('R04/R15 evaluation comparison keeps five Chinese domains and labels')
   }
 
+  // -- D4 E11 cross-page selection / stable order -------------------------
+  {
+    const item = (id, date, start, created) => ({
+      observation_id: id,
+      record_type: 'public',
+      observation_date: date,
+      start_time: start,
+      end_time: null,
+      term_id: 't1',
+      term_name: '秋季学期',
+      school_name: null,
+      class_name: null,
+      observer_name: null,
+      subjects: [],
+      environment: null,
+      adult_count: null,
+      child_count: null,
+      age_years: null,
+      current_draft_revision: 1,
+      current_version: null,
+      created_at: created,
+      updated_at: created,
+    })
+    const items = {
+      c: item('c', '2026-09-16', null, '2026-09-16T10:00:00'),
+      a: item('a', '2026-09-15', '11:00', '2026-09-15T10:00:00'),
+      b: item('b', '2026-09-15', '09:00', '2026-09-15T11:00:00'),
+      d: item('d', null, null, '2026-09-14T10:00:00'),
+    }
+    let order = []
+    for (const id of ['c', 'a', 'b', 'd']) {
+      order = observationHelpers.insertSelectedId(order, items, id, false)
+    }
+    assert.deepEqual(plain(order), ['b', 'a', 'c', 'd'])
+    order = observationHelpers.moveSelectedId(order, 'd', -1)
+    assert.deepEqual(plain(order), ['b', 'a', 'd', 'c'])
+    order = observationHelpers.insertSelectedId(order, items, 'a', true)
+    assert.deepEqual(plain(order), ['b', 'a', 'd', 'c'])
+    order = observationHelpers.removeSelectedId(order, 'a')
+    assert.deepEqual(plain(order), ['b', 'd', 'c'])
+    assert.equal(observationHelpers.observationMissingLabel('analysis_evaluation.health'), '健康')
+    assert.equal(observationHelpers.observationMissingLabel('observation_date'), '观察日期')
+    const maxDate = item('max', '9999-12-31', null, '9999-12-31T10:00:00')
+    const noDate = item('none', null, null, '2026-09-14T10:00:00')
+    assert.ok(observationHelpers.compareObservationListItems(maxDate, noDate) < 0)
+    assert.ok(observationHelpers.compareObservationListItems(noDate, maxDate) > 0)
+    assert.equal(observationHelpers.compareObservationListItems(maxDate, maxDate), 0)
+    ok('D4 E11 stable/manual selection order is explicit and not count-capped')
+  }
+
+  {
+    const calls = []
+    const hostCalls = []
+    const listItem = (id, date) => ({
+      observation_id: id,
+      record_type: 'public',
+      observation_date: date,
+      start_time: '10:00',
+      end_time: null,
+      term_id: 't1',
+      term_name: '秋季学期',
+      school_name: null,
+      class_name: null,
+      observer_name: null,
+      subjects: ['小明'],
+      environment: '积木区',
+      adult_count: null,
+      child_count: null,
+      age_years: null,
+      current_draft_revision: 1,
+      current_version: null,
+      created_at: `${date}T10:00:00`,
+      updated_at: `${date}T10:00:00`,
+    })
+    const routes = {
+      'GET /api/observations': () =>
+        jsonResponse(200, {
+          items: [listItem('o1', '2026-09-15'), listItem('o2', '2026-09-16')],
+          total: 2,
+          offset: 0,
+          limit: 20,
+        }),
+      'POST /api/observation-exports/prepare': ({ body }) => {
+        calls.push(['prepare', body])
+        return jsonResponse(200, { records: [] })
+      },
+      'POST /api/observation-exports/preview': ({ body }) => {
+        calls.push(['preview', body])
+        return jsonResponse(200, {
+          snapshot_id: 'snap-1',
+          manifest_hash: 'a'.repeat(64),
+          expires_at: '2026-09-15T10:15:00',
+          selection_hash: 'b'.repeat(64),
+          missing_hash: 'c'.repeat(64),
+          missing: [{ observation_id: 'o1', field: 'observation_date' }],
+          warnings: [],
+          requires_ack: true,
+          suggested_filename: '游戏观察记录.docx',
+          records: [
+            {
+              observation_id: 'o1',
+              record_type: 'public',
+              observation_date: '2026-09-15',
+              start_time: '10:00',
+              subjects: ['小明'],
+              revision: 1,
+              payload_hash: 'd'.repeat(64),
+              photo_count: 0,
+            },
+            {
+              observation_id: 'o2',
+              record_type: 'public',
+              observation_date: '2026-09-16',
+              start_time: '10:00',
+              subjects: ['小明'],
+              revision: 1,
+              payload_hash: 'e'.repeat(64),
+              photo_count: 0,
+            },
+          ],
+        })
+      },
+      'POST /api/observation-exports': ({ body }) => {
+        calls.push(['create', body])
+        return jsonResponse(201, {
+          export_id: 'export-1',
+          snapshot_id: 'snap-1',
+          manifest_hash: 'a'.repeat(64),
+          expires_at: '2026-09-15T10:10:00',
+          filename: '游戏观察记录.docx',
+          byte_size: 1234,
+          content_hash: 'f'.repeat(64),
+          missing: [],
+          warnings: [],
+        })
+      },
+    }
+    const harness = new Harness({ fetchImpl: router(routes) })
+    harness.window.pywebview = {
+      api: {
+        save_observation_export: async (payload) => {
+          hostCalls.push(payload)
+          return { status: 'saved', filename: payload.filename, bytes: 1234 }
+        },
+        get_observation_export_result: async () => ({ status: 'unknown' }),
+      },
+    }
+    const view = harness.setup('views/ObservationsView.vue', {
+      context,
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    hook.select('o1')
+    hook.select('o2')
+    assert.deepEqual(plain(hook.selectedIds()), ['o1', 'o2'])
+    hook.setTerm('t2')
+    await settle()
+    assert.deepEqual(plain(hook.selectedIds()), ['o1', 'o2'])
+    hook.setTerm('__all__')
+    await settle()
+    assert.deepEqual(plain(hook.selectedIds()), ['o1', 'o2'])
+    hook.openExport()
+    await settle()
+    assert.equal(hook.exportPhase(), 'preview_ready')
+    const prepareIndex = calls.findIndex((call) => call[0] === 'prepare')
+    const previewIndex = calls.findIndex((call) => call[0] === 'preview')
+    assert.ok(prepareIndex >= 0)
+    assert.ok(prepareIndex < previewIndex)
+    assert.deepEqual(plain(calls[prepareIndex][1].observation_ids), ['o1', 'o2'])
+    assert.deepEqual(plain(hook.exportPreview().records.map((r) => r.observation_id)), ['o1', 'o2'])
+    assert.equal(hook.exportMissingGroups().length, 1)
+    await hook.confirmExport(false)
+    await settle()
+    assert.equal(calls.filter((call) => call[0] === 'create').length, 0)
+    hook.setExportAck(true)
+    await hook.confirmExport(false)
+    await settle()
+    assert.equal(hook.exportPhase(), 'saved')
+    assert.equal(hostCalls.length, 1)
+    assert.equal(hostCalls[0].export_id, 'export-1')
+    assert.equal(calls.filter((call) => call[0] === 'create').length, 1)
+    assert.equal(calls.find((call) => call[0] === 'create')[1].ack_missing, true)
+    assert.ok(hook.exportResult().includes('游戏观察记录.docx'))
+    harness.unmount()
+    await settle()
+    ok('D4 E11 export preview/missing ack/host save flow')
+  }
+
+  // -- R06 lost responses, receipts and stale generations -----------------
+  {
+    const previewBodies = []
+    let receiptPath = ''
+    let previewCount = 0
+    const fetchImpl = async (url, init = {}) => {
+      const method = (init.method || 'GET').toUpperCase()
+      const path = String(url).split('?')[0]
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+      if (method === 'GET' && path === '/api/observations') {
+        return jsonResponse(200, {
+          items: [exportListItem('o1'), exportListItem('o2', '2026-09-16')],
+          total: 2,
+          offset: 0,
+          limit: 20,
+        })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/prepare') {
+        return jsonResponse(200, { records: [] })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/preview') {
+        previewBodies.push(body)
+        previewCount += 1
+        if (previewCount === 1) throw new TypeError('synthetic lost preview reply')
+        return jsonResponse(200, exportPreviewFor(body.observation_ids))
+      }
+      if (method === 'GET' && path.startsWith('/api/observation-exports/operations/')) {
+        receiptPath = path
+        return jsonResponse(200, {
+          operation_kind: 'observation_export_preview',
+          result: exportPreviewFor(['o1']),
+        })
+      }
+      return apiError(404, 'NOT_FOUND', `no route ${method} ${path}`)
+    }
+    const harness = new Harness({ fetchImpl })
+    const view = harness.setup('views/ObservationsView.vue', { context, frozen: false })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    hook.select('o1')
+    hook.openExport()
+    await settle()
+    assert.equal(hook.exportPhase(), 'preview_unknown')
+    assert.equal(previewBodies.length, 1)
+    await hook.queryPreview()
+    await settle()
+    assert.equal(hook.exportPhase(), 'preview_ready')
+    assert.ok(receiptPath.endsWith(previewBodies[0].request_id))
+    assert.equal(hook.exportPreview().snapshot_id, 'snap-o1')
+    // A retry after a lost reply keeps the same request id and body.
+    previewCount = 0
+    previewBodies.length = 0
+    const harness2 = new Harness({ fetchImpl })
+    const view2 = harness2.setup('views/ObservationsView.vue', { context, frozen: false })
+    harness2.runMounted()
+    await settle()
+    const hook2 = harness2.window.__d1Observations
+    hook2.select('o1')
+    hook2.openExport()
+    await settle()
+    const first = previewBodies[0].request_id
+    await hook2.retryPreview()
+    await settle()
+    assert.equal(hook2.exportPhase(), 'preview_ready')
+    assert.equal(previewBodies[1].request_id, first)
+    assert.deepEqual(plain(previewBodies[1].observation_ids), ['o1'])
+    harness.unmount()
+    harness2.unmount()
+    await settle()
+    ok('R06 lost preview reply is queried/retried with the same request id')
+  }
+
+  {
+    const createBodies = []
+    let createCount = 0
+    let hostCalls = 0
+    const fetchImpl = async (url, init = {}) => {
+      const method = (init.method || 'GET').toUpperCase()
+      const path = String(url).split('?')[0]
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+      if (method === 'GET' && path === '/api/observations') {
+        return jsonResponse(200, {
+          items: [exportListItem('o1')],
+          total: 1,
+          offset: 0,
+          limit: 20,
+        })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/prepare') {
+        return jsonResponse(200, { records: [] })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/preview') {
+        return jsonResponse(200, exportPreviewFor(body.observation_ids))
+      }
+      if (method === 'POST' && path === '/api/observation-exports') {
+        createBodies.push(body)
+        createCount += 1
+        if (createCount === 1) throw new TypeError('synthetic lost create reply')
+        return jsonResponse(201, {
+          export_id: 'export-lost',
+          snapshot_id: body.snapshot_id,
+          manifest_hash: 'a'.repeat(64),
+          expires_at: '2026-09-15T10:10:00',
+          filename: '游戏观察记录.docx',
+          byte_size: 1234,
+          content_hash: 'f'.repeat(64),
+          missing: [],
+          warnings: [],
+        })
+      }
+      return apiError(404, 'NOT_FOUND', `no route ${method} ${path}`)
+    }
+    const harness = new Harness({ fetchImpl })
+    harness.window.pywebview = {
+      api: {
+        save_observation_export: async (payload) => {
+          hostCalls += 1
+          return { status: 'saved', filename: payload.filename, bytes: 1234 }
+        },
+        get_observation_export_result: async () => ({ status: 'unknown' }),
+      },
+    }
+    const view = harness.setup('views/ObservationsView.vue', { context, frozen: false })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    hook.select('o1')
+    hook.openExport()
+    await settle()
+    await hook.confirmExport(false)
+    await settle()
+    assert.equal(hook.exportPhase(), 'create_unknown')
+    const firstRequest = createBodies[0].request_id
+    await hook.retryExportCreate()
+    await settle()
+    assert.equal(hook.exportPhase(), 'saved')
+    assert.equal(createBodies.length, 2)
+    assert.equal(createBodies[1].request_id, firstRequest)
+    assert.equal(hostCalls, 1)
+    harness.unmount()
+    await settle()
+    ok('R06 lost create reply retries the same request and delivers once')
+  }
+
+  {
+    const previewBodies = []
+    const fetchImpl = async (url, init = {}) => {
+      const method = (init.method || 'GET').toUpperCase()
+      const path = String(url).split('?')[0]
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+      if (method === 'GET' && path === '/api/observations') {
+        return jsonResponse(200, {
+          items: [exportListItem('o1'), exportListItem('o2', '2026-09-16')],
+          total: 2,
+          offset: 0,
+          limit: 20,
+        })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/prepare') {
+        return jsonResponse(200, { records: [] })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/preview') {
+        previewBodies.push(body)
+        return jsonResponse(
+          200,
+          exportPreviewFor(body.observation_ids, {
+            requires_ack: true,
+            missing: [{ observation_id: body.observation_ids[0], field: 'observation_date' }],
+          }),
+        )
+      }
+      return apiError(404, 'NOT_FOUND', `no route ${method} ${path}`)
+    }
+    const harness = new Harness({ fetchImpl })
+    const view = harness.setup('views/ObservationsView.vue', { context, frozen: false })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    hook.select('o1')
+    hook.openExport()
+    await settle()
+    hook.setExportAck(true)
+    hook.select('o2')
+    await settle()
+    assert.equal(previewBodies.length, 2)
+    assert.deepEqual(plain(previewBodies[1].observation_ids), ['o1', 'o2'])
+    assert.equal(hook.exportPreview().requires_ack, true)
+    assert.equal(view.state.exportAck.value, false)
+    harness.unmount()
+    await settle()
+    ok('R06 selection change clears ack and re-previews')
+  }
+
+  {
+    const firstPreview = deferred()
+    let previewCount = 0
+    const fetchImpl = async (url, init = {}) => {
+      const method = (init.method || 'GET').toUpperCase()
+      const path = String(url).split('?')[0]
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+      if (method === 'GET' && path === '/api/observations') {
+        return jsonResponse(200, {
+          items: [exportListItem('o1'), exportListItem('o2', '2026-09-16')],
+          total: 2,
+          offset: 0,
+          limit: 20,
+        })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/prepare') {
+        return jsonResponse(200, { records: [] })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/preview') {
+        previewCount += 1
+        if (previewCount === 1) return firstPreview.promise
+        return jsonResponse(200, exportPreviewFor(body.observation_ids))
+      }
+      return apiError(404, 'NOT_FOUND', `no route ${method} ${path}`)
+    }
+    const harness = new Harness({ fetchImpl })
+    const view = harness.setup('views/ObservationsView.vue', { context, frozen: false })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    hook.select('o1')
+    hook.openExport()
+    await settle(1)
+    hook.select('o2')
+    await settle()
+    firstPreview.resolve(
+      jsonResponse(200, exportPreviewFor(['o1'], { snapshot_id: 'stale-old' })),
+    )
+    await settle()
+    assert.equal(hook.exportPhase(), 'preview_ready')
+    assert.notEqual(hook.exportPreview().snapshot_id, 'stale-old')
+    assert.deepEqual(plain(hook.exportPreview().records.map((r) => r.observation_id)), ['o1', 'o2'])
+    harness.unmount()
+    await settle()
+    ok('R06 a late preview from an older selection is ignored')
+  }
+
+  {
+    const hostDeferred = deferred()
+    const fetchImpl = async (url, init = {}) => {
+      const method = (init.method || 'GET').toUpperCase()
+      const path = String(url).split('?')[0]
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+      if (method === 'GET' && path === '/api/observations') {
+        return jsonResponse(200, {
+          items: [exportListItem('o1')],
+          total: 1,
+          offset: 0,
+          limit: 20,
+        })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/prepare') {
+        return jsonResponse(200, { records: [] })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/preview') {
+        return jsonResponse(200, exportPreviewFor(body.observation_ids))
+      }
+      if (method === 'POST' && path === '/api/observation-exports') {
+        return jsonResponse(201, {
+          export_id: 'export-late-host',
+          snapshot_id: body.snapshot_id,
+          manifest_hash: 'a'.repeat(64),
+          expires_at: '2026-09-15T10:10:00',
+          filename: '游戏观察记录.docx',
+          byte_size: 1234,
+          content_hash: 'f'.repeat(64),
+          missing: [],
+          warnings: [],
+        })
+      }
+      return apiError(404, 'NOT_FOUND', `no route ${method} ${path}`)
+    }
+    const harness = new Harness({ fetchImpl })
+    harness.window.pywebview = {
+      api: {
+        save_observation_export: async () => hostDeferred.promise,
+        get_observation_export_result: async () => ({ status: 'unknown' }),
+      },
+    }
+    const view = harness.setup('views/ObservationsView.vue', { context, frozen: false })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    hook.select('o1')
+    hook.openExport()
+    await settle()
+    void hook.confirmExport(false)
+    await settle()
+    harness.unmount()
+    await settle()
+    hostDeferred.resolve({ status: 'saved', filename: '游戏观察记录.docx', bytes: 1234 })
+    await settle()
+    assert.notEqual(view.state.exportPhase.value, 'saved')
+    ok('R06 a late host reply after unmount never changes page state')
+  }
+
+  {
+    const fetchImpl = async (url, init = {}) => {
+      const method = (init.method || 'GET').toUpperCase()
+      const path = String(url).split('?')[0]
+      if (method === 'GET' && path === '/api/observations') {
+        return jsonResponse(200, {
+          items: [exportListItem('o1')],
+          total: 1,
+          offset: 0,
+          limit: 20,
+        })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/prepare') {
+        return jsonResponse(200, { records: [] })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/preview') {
+        return apiError(409, 'OBS_EXPORT_BAD_MATERIAL', '照片损坏', {
+          observation_id: 'o1',
+          asset_id: 'asset-1',
+          sort_order: 1,
+          reason: 'hash_mismatch',
+        })
+      }
+      return apiError(404, 'NOT_FOUND', `no route ${method} ${path}`)
+    }
+    const harness = new Harness({ fetchImpl })
+    const view = harness.setup('views/ObservationsView.vue', { context, frozen: false })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    hook.select('o1')
+    hook.openExport()
+    await settle()
+    assert.equal(hook.exportPhase(), 'failed')
+    const detail = hook.exportErrorDetail()
+    assert.ok(detail.includes('2026-09-15'))
+    assert.ok(detail.includes('第 2 张照片'))
+    assert.ok(detail.includes('asset-1'))
+    assert.ok(detail.includes('摘要不一致'))
+    harness.unmount()
+    await settle()
+    ok('R06 bad-material details identify the selected record and photo')
+  }
+
+  // -- editor: export pre_export save, IME, auto-retain and lost reply -----
+  {
+    const patches = []
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'PATCH /api/observations/o1': ({ body }) => {
+          patches.push(body)
+          return jsonResponse(200, savedFixture({ revision: 4 }))
+        },
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('observation_goal', '导出前的新目标')
+    await hook.exportCurrent()
+    await settle()
+    assert.equal(patches.length, 1)
+    assert.equal(patches[0].save_reason, 'pre_export')
+    assert.equal(patches[0].payload.observation_goal, '导出前的新目标')
+    const exported = view.emitted.find((entry) => entry[0] === 'request-export')
+    assert.ok(exported)
+    assert.equal(exported[1].observation_id, 'o1')
+    assert.equal(exported[1].subjects[0], '小明')
+    assert.equal(exported[1].created_at, '2026-09-10T08:00:00')
+    assert.equal(hook.exportBusy(), false)
+    harness.unmount()
+    ok('editor export settles and saves pre_export before requesting the dialog')
+  }
+
+  {
+    const patches = []
+    let saves = 0
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'PATCH /api/observations/o1': ({ body }) => {
+          patches.push(body)
+          saves += 1
+          return jsonResponse(
+            200,
+            saves === 1
+              ? savedFixture({
+                  revision: 4,
+                  payload_hash: 'b'.repeat(64),
+                  changed: true,
+                  history_created: false,
+                })
+              : savedFixture({
+                  revision: 5,
+                  payload_hash: 'b'.repeat(64),
+                  changed: false,
+                  history_created: true,
+                }),
+          )
+        },
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('observation_process', '自动保存后的新正文')
+    await hook.saveNow('auto')
+    assert.equal(hook.needsSave(), true)
+    await hook.exportCurrent()
+    await settle()
+    assert.equal(patches.length, 2)
+    assert.equal(patches[1].save_reason, 'pre_export')
+    assert.ok(view.emitted.some((entry) => entry[0] === 'request-export'))
+    harness.unmount()
+    ok('editor export retains a pre_export node after an auto aggregate change')
+  }
+
+  {
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'PATCH /api/observations/o1': () =>
+          Promise.reject(new TypeError('synthetic lost save')),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('observation_goal', '丢失响应的目标')
+    await hook.exportCurrent()
+    await settle()
+    assert.equal(hook.indeterminateActive(), true)
+    assert.equal(
+      view.emitted.some((entry) => entry[0] === 'request-export'),
+      false,
+    )
+    assert.equal(hook.exportBusy(), false)
+    harness.unmount()
+    ok('editor export stays on the page when the pre_export save reply is lost')
+  }
+
+  {
+    const patches = []
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'PATCH /api/observations/o1': ({ body }) => {
+          patches.push(body)
+          return jsonResponse(200, savedFixture({ revision: 4 }))
+        },
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('observation_goal', '输入法提交后的目标')
+    view.state.composing.value = true
+    const exporting = hook.exportCurrent()
+    await settle()
+    assert.equal(patches.length, 0)
+    view.state.composing.value = false
+    await exporting
+    await settle()
+    assert.equal(patches.length, 1)
+    assert.equal(patches[0].save_reason, 'pre_export')
+    assert.ok(view.emitted.some((entry) => entry[0] === 'request-export'))
+    harness.unmount()
+    ok('editor export waits for IME composition before saving/exporting')
+  }
+
+  {
+    const older = {
+      ...exportListItem('old', '2026-09-15', '10:00'),
+      created_at: '2026-09-01T08:00:00',
+      updated_at: '2026-09-20T08:00:00',
+    }
+    const newer = {
+      ...exportListItem('new', '2026-09-15', '10:00'),
+      created_at: '2026-09-10T08:00:00',
+      updated_at: '2026-09-10T08:00:00',
+    }
+    const fetchImpl = async (url, init = {}) => {
+      const method = (init.method || 'GET').toUpperCase()
+      const path = String(url).split('?')[0]
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+      if (method === 'GET' && path === '/api/observations') {
+        return jsonResponse(200, {
+          items: [older, newer],
+          total: 2,
+          offset: 0,
+          limit: 20,
+        })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/prepare') {
+        return jsonResponse(200, { records: [] })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/preview') {
+        return jsonResponse(200, exportPreviewFor(body.observation_ids))
+      }
+      return apiError(404, 'NOT_FOUND', `no route ${method} ${path}`)
+    }
+    const harness = new Harness({ fetchImpl })
+    const view = harness.setup('views/ObservationsView.vue', {
+      context,
+      frozen: false,
+      preselect: older,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    assert.deepEqual(plain(hook.selectedIds()), ['old'])
+    hook.select('new')
+    await settle()
+    assert.deepEqual(plain(hook.selectedIds()), ['old', 'new'])
+    harness.unmount()
+    await settle()
+    ok('preselected older-created/recently-edited record sorts by real creation key')
+  }
+
+  {
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'PATCH /api/observations/o1': () =>
+          apiError(409, 'OBS_REVISION_CONFLICT', '版本冲突'),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('observation_goal', '冲突时的目标')
+    await hook.exportCurrent()
+    await settle()
+    assert.equal(hook.conflictActive(), true)
+    assert.equal(
+      view.emitted.some((entry) => entry[0] === 'request-export'),
+      false,
+    )
+    harness.unmount()
+    ok('editor export stays on the page on a pre_export revision conflict')
+  }
+
+  {
+    let prepareBodies = []
+    let receiptPath = ''
+    let prepareCount = 0
+    const fetchImpl = async (url, init = {}) => {
+      const method = (init.method || 'GET').toUpperCase()
+      const path = String(url).split('?')[0]
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+      if (method === 'GET' && path === '/api/observations') {
+        return jsonResponse(200, {
+          items: [exportListItem('o1')],
+          total: 1,
+          offset: 0,
+          limit: 20,
+        })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/prepare') {
+        prepareBodies.push(body)
+        prepareCount += 1
+        if (prepareCount === 1) throw new TypeError('synthetic lost prepare reply')
+        return jsonResponse(200, { records: [] })
+      }
+      if (method === 'GET' && path.startsWith('/api/observation-exports/operations/')) {
+        receiptPath = path
+        return jsonResponse(200, {
+          operation_kind: 'observation_export_prepare',
+          result: { records: [] },
+        })
+      }
+      if (method === 'POST' && path === '/api/observation-exports/preview') {
+        return jsonResponse(200, exportPreviewFor(body.observation_ids))
+      }
+      return apiError(404, 'NOT_FOUND', `no route ${method} ${path}`)
+    }
+    const harness = new Harness({ fetchImpl })
+    const view = harness.setup('views/ObservationsView.vue', { context, frozen: false })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    hook.select('o1')
+    hook.openExport()
+    await settle()
+    assert.equal(hook.exportPhase(), 'prepare_unknown')
+    assert.equal(prepareBodies.length, 1)
+    await hook.queryPrepare()
+    await settle()
+    assert.equal(hook.exportPhase(), 'preview_ready')
+    assert.ok(receiptPath.endsWith(prepareBodies[0].request_id))
+    harness.unmount()
+    await settle()
+    ok('list export queries the pre_export receipt after a lost prepare reply')
+  }
+
+  {
+    const calls = []
+    let hostSaves = 0
+    let reconciled = 0
+    const routes = {
+      'GET /api/observations': () =>
+        jsonResponse(200, {
+          items: [exportListItem('o1')],
+          total: 1,
+          offset: 0,
+          limit: 20,
+        }),
+      'POST /api/observation-exports/prepare': () =>
+        jsonResponse(200, { records: [] }),
+      'POST /api/observation-exports/preview': ({ body }) => {
+        calls.push(['preview', body])
+        return jsonResponse(200, exportPreviewFor(body.observation_ids))
+      },
+      'POST /api/observation-exports': ({ body }) => {
+        calls.push(['create', body])
+        return jsonResponse(201, {
+          export_id: body.retry_existing ? 'export-retry' : 'export-first',
+          snapshot_id: body.snapshot_id,
+          manifest_hash: 'a'.repeat(64),
+          expires_at: '2026-09-15T10:10:00',
+          filename: '游戏观察记录.docx',
+          byte_size: 100,
+          content_hash: 'f'.repeat(64),
+          missing: [],
+          warnings: [],
+        })
+      },
+    }
+    const harness = new Harness({ fetchImpl: router(routes) })
+    harness.window.pywebview = {
+      api: {
+        save_observation_export: async (payload) => {
+          hostSaves += 1
+          if (hostSaves === 1) {
+            return {
+              status: 'canceled',
+              export_id: payload.export_id,
+              attempt_id: 'attempt-1',
+              receipt_pending: true,
+            }
+          }
+          return { status: 'saved', filename: payload.filename, bytes: 100 }
+        },
+        get_observation_export_result: async () => ({ status: 'unknown' }),
+        reconcile_observation_export_result: async () => {
+          reconciled += 1
+          return {
+            status: 'canceled',
+            export_id: 'export-first',
+            attempt_id: 'attempt-1',
+          }
+        },
+      },
+    }
+    const view = harness.setup('views/ObservationsView.vue', { context, frozen: false })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1Observations
+    hook.select('o1')
+    hook.openExport()
+    await settle()
+    await hook.confirmExport(false)
+    await settle()
+    assert.equal(hook.exportPhase(), 'canceled')
+    assert.equal(hook.receiptPending(), true)
+    await hook.retryExport()
+    await settle()
+    assert.equal(reconciled, 1)
+    assert.equal(hook.exportPhase(), 'saved')
+    const creates = calls.filter((call) => call[0] === 'create')
+    assert.equal(creates.length, 2)
+    assert.equal(creates[1][1].retry_existing, true)
+    harness.unmount()
+    await settle()
+    ok('R13 explicit retry re-reports a pending terminal receipt before new token')
+  }
 
   console.log(`\n${passed} observation page checks passed`)
 }

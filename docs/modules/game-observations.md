@@ -1,6 +1,6 @@
 # 游戏观察记录 Contract
 
-状态：Architecture v2有效业务Contract，E13设计扩展已核定。基础、E03、E05／E08及E06／E07图文执行／候选／采用服务层已通过限定工程核查，见[最新核查](../bootstrap/desktop-game-observation-ai-review.md)：独立718项全local、85项相关桌面、容量及真实DeepSeek合成资料闭环通过。页面／观察HTTP会话、Word／宿主、完整A01–A22与产品发行仍未验，按授权提交推送后停在本片。
+状态：Architecture v2有效业务Contract，E13设计扩展已核定。基础、E03、E05／E08、E06／E07图文服务及页面前片结果保持；2026-10-28接续批选／排序、三模板Word与E11／E12宿主交付限定工程核查通过，见[最新核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)。完整A01–A22、教师体验、冻结整包与产品发行未整体验收，按授权由原OpenCode正常提交推送后停在本片。
 
 产品依据为[游戏观察C1–C33](../specs/desktop-game-observation.md)，工程依据为[E01–E14](../specs/desktop-game-observation-engineering.md)。本文同时记录已实施数据基础与尚待实施的完整Contract；各项实际范围以独立核查报告为准，日计划原Contract及既有验收身份保持。
 
@@ -320,7 +320,7 @@ game_observation:
 - 产物释放后重试按冻结 snapshot 新建 token；snapshot 过期须重新预览，不能暗用新版本。
 - 不宣称外部保存“恰好一次”。旧 `save_docx` 及 30MiB 不变；观察不复用旧 Base64 桥。文件大小／分块／超时／占用／磁盘／关闭协同参数待验证。
 
-拟后端attempt回执至少含profile、snapshot_id、export_id_hash、filename指纹、started/终态、status/result hash／字节数／时间；由宿主经固定受限本机API报告，宿主不直连SQLite。宿主实际写入成功才可报告saved；若文件已写但回执丢失且无可核实证据，保持indeterminate，不自动再保存，不把下载完成当保存成功。文件名、token及真实保存路径不入诊断日志。
+后端attempt回执含profile、snapshot_id、export_id_hash、filename指纹、started/终态、status/result hash／字节数／时间；由宿主经固定受限本机API报告，宿主不直连SQLite。宿主实际写入成功才可报告saved；若文件已写但回执丢失且无可核实证据，保持indeterminate，不自动再保存，不把下载完成当保存成功。宿主仍保有实际IO证据而服务回报未确认时标receipt_pending，明确恢复只幂等补报该事实；只读查询不补报，同token重入不再次下载／弹窗／写入。文件名、token及真实保存路径不入诊断日志。接口、参数与临时生命周期见[工程§13.1](../specs/desktop-game-observation-engineering.md#131-本片实际协议与技术参数2026-10-28)。
 
 ### 7.3 Word
 
@@ -331,7 +331,7 @@ game_observation:
 - 缺项可确认后留空栏；只有表头资料、四栏均无实际正文且无有效照片才为空记录；有正文无图、只有有效图均非空可导出；任一坏图须处理，不静默跳过问题记录或漏图。
 - 混合公共／室内／户外选择；跨页勾选维护明确 ID 集合；默认日期升序、空日期末尾、同日时段升序、空时段当日末尾、同值创建先后；无日期用“未填日期”，不伪造今天。
 - 不新增任意业务份数额度；技术容量仍须验证。观察 Word 不使用日计划标红、AI 提示、候选标签或脚注。
-- 真实 Word 逐页仍未验；XML／PDF 不能替代。
+- 当前Windows 11／Word16.0 Build16.0.20527的7份合成产品输出及原生另存为文件已实际逐页核查，范围见[导出核查](../bootstrap/desktop-game-observation-export-review.md)；完整教师体验／其他环境仍未验，XML／COM／PDF不能替代真实页面。
 
 8行逐格标签、手选排序、默认文件名／长姓名安全转义及分页细节以[工程设计E10–E12](../specs/desktop-game-observation-engineering.md#12-e11三模板及固定导出)为准。单份与合并均可改建议文件名，正文姓名不截断；不新增必填内部标题、封面或目录。
 
@@ -348,7 +348,7 @@ game_observation:
 - **不记**原始 `export_id`／preview／adoption token／应用会话／认证材料；`filename` 可能含幼儿姓名，不入日志；业务 token 只在受限服务／回执，前端／宿主仅必要时持有，不作遥测。
 - 不记儿童姓名、照片／Base64、完整正文、提示词、密钥、认证头或真实路径。业务回执／审计同事务成功或回滚，不留下假成功；不新增日志服务／队列／遥测／查看界面。
 - 全局关闭／在途统计包含两类任务；旧日计划接口只返回 `daily_plan` 及原字段语义。
-- 页面接入仍固定旧 `/api/local/ai/tasks` 的 daily 来源与响应模型；观察全局关闭查 `/api/local/ai/observation-tasks`，单记录任务查 `/api/observations/{id}/ai-tasks`。不以开放旧接口任意 source 参数替代来源边界。页面准备／写 busy 与持久 AI 运行分开，页票据／序号及宿主关闭扩展见[保存握手规格 §11.4](../specs/desktop-manual-daily-plan.md)；观察 Word／原生另存为仍后置。
+- 页面接入仍固定旧 `/api/local/ai/tasks` 的 daily 来源与响应模型；观察全局关闭查 `/api/local/ai/observation-tasks`，单记录任务查 `/api/observations/{id}/ai-tasks`。不以开放旧接口任意 source 参数替代来源边界。页面准备／写 busy 与持久 AI 运行分开，页票据／序号及宿主关闭扩展见[保存握手规格 §11.4](../specs/desktop-manual-daily-plan.md)；观察Word、宿主保存及终态补报也纳入真实在途busy，不以页面切换留下旧busy。
 
 ## 9. 错误分类
 
@@ -397,12 +397,12 @@ game_observation:
 | E11 | §7 | A03、A10、A15–A20；R01、R05、R11–R13 |
 | E12 | §8 | A06、A16、A20–A22；R10–R11、R14 |
 | E13 | 本 Contract＋五份扩展 | A21–A22 及全部职责前提；R01–R14 |
-| E14 | §12 | A01–A22；R01–R14；全部未验 |
+| E14 | §12 | A01–A22；R01–R14；本片集成证据见导出核查，完整矩阵／整包未整体验收 |
 
 ## 12. 参数、ADR 与未验
 
-E03材料参数保持：源25MiB／40MP／单边8192，AI最长边2048／q85／目标2MiB／0.85缩放最多6次编码，导出预派生2400／q90；见[E03核查](../bootstrap/desktop-game-observation-assets-review.md)。本片E06视觉两帧36MiB／完整HTTP40MiB／最多600图／180秒attempt，旧文本1MiB／120秒、连接10秒；父／worker／完整原图解码者1024MiB是组合工程验证阈值，实际独立约786MiB，不是硬RSS或整应用承诺。采用token64个／600秒、定位metadata64片段／200字符／片段JSON64KiB；详见[工程§7–§8](../specs/desktop-game-observation-engineering.md)。E11 DOCX／分块／版面及整合并发／磁盘余量仍待对应切片核定。
+E03材料参数保持：源25MiB／40MP／单边8192，AI最长边2048／q85／目标2MiB／0.85缩放最多6次编码，导出预派生2400／q90；见[E03核查](../bootstrap/desktop-game-observation-assets-review.md)。本片E06视觉两帧36MiB／完整HTTP40MiB／最多600图／180秒attempt，旧文本1MiB／120秒、连接10秒；父／worker／完整原图解码者1024MiB是组合工程验证阈值，实际独立约786MiB，不是硬RSS或整应用承诺。采用token64个／600秒、定位metadata64片段／200字符／片段JSON64KiB；详见[工程§7–§8](../specs/desktop-game-observation-engineering.md)。E11选集2MiB／正文8MiB／照片64MiB／DOCX128MiB、preview15分钟／token10分钟、分块／网络deadline及实测边界见[工程§13.1](../specs/desktop-game-observation-engineering.md#131-本片实际协议与技术参数2026-10-28)和[导出核查](../bootstrap/desktop-game-observation-export-review.md)；不承诺全部并发／磁盘组合。
 
 预计不需 ADR：技术栈、依赖方向、SQLite／受管文件权威、本机 API 与 worker 通信未变；观察是 Feature 模块，`export_id` 是现有宿主保存桥的受限扩展。若改为新服务／新进程、外部网络交付、浏览器或远端成为内容权威、改变模块所有权或通信机制，先提 ADR，不暗改 `ARCHITECTURE.md`。
 
-未验：完整A01–A22尚未整项验收。服务层范围见[图文候选核查](../bootstrap/desktop-game-observation-ai-review.md)及前片材料／历史报告；当前 E09／E10 创建、编辑、查阅、本机 HTTP、IME／离开及宿主协调的限定核查范围与结果见[观察页核查](../bootstrap/desktop-game-observation-pages-review.md)，不据局部窗口或合成用例替代教师验收。复杂真实照片质量、MiMo真实调用、观察 Word 逐页／原生另存为、冻结资源／许可及新包仍后置；Win10、WPS、干净机器、其他DPI／显示器、签名发行和D2／D3既有未验保持。当前授权与停止边界以[唯一任务入口](../tasks/current.md)为准。
+未验：完整A01–A22尚未整项验收。服务层、材料／历史及[观察页核查](../bootstrap/desktop-game-observation-pages-review.md)保持各自身份；本片批选／排序、Word逐页及原生保存的限定范围见[导出核查](../bootstrap/desktop-game-observation-export-review.md)，不据局部窗口或合成用例替代教师验收。复杂真实照片质量、MiMo真实调用、冻结资源／许可及新包仍后置；Win10、WPS、干净机器、其他DPI／显示器、签名发行和D2／D3既有未验保持。当前授权与停止边界以[唯一任务入口](../tasks/current.md)为准。

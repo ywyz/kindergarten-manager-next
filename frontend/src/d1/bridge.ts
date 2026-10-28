@@ -19,6 +19,17 @@ export interface SaveDocxResult {
   bytes?: number
 }
 
+export interface SaveObservationExportResult {
+  status?: string
+  code?: string
+  message?: string
+  filename?: string
+  bytes?: number
+  export_id?: string
+  attempt_id?: string
+  receipt_pending?: boolean
+}
+
 export interface HostApi {
   get_bootstrap?: () => Promise<{
     bridge_protocol?: number
@@ -62,6 +73,18 @@ export interface HostApi {
   get_save_result?: (payload: {
     request_id: string
   }) => Promise<SaveDocxResult>
+  save_observation_export?: (payload: {
+    export_id: string
+    filename: string
+  }) => Promise<SaveObservationExportResult>
+  get_observation_export_result?: (payload: {
+    export_id: string
+    filename?: string
+  }) => Promise<SaveObservationExportResult>
+  reconcile_observation_export_result?: (payload: {
+    export_id: string
+    filename?: string
+  }) => Promise<SaveObservationExportResult>
   get_app_identity?: () => Promise<AppIdentity>
   check_for_update?: () => Promise<UpdateStatus>
   start_update_download?: () => Promise<UpdateStatus>

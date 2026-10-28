@@ -23,6 +23,7 @@ import {
 import { LeaveCoordinator, type BlockingDraft, type SaveOutcome } from './leave'
 import { isUpdateBusy, type UpdateStatus } from './update'
 import type { AiTaskList, LocalContext } from './types'
+import type { ObservationListItem } from './observation'
 import { isLiveTask } from './ai'
 import SetupView from './views/SetupView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
@@ -63,7 +64,14 @@ const settingsDraftActive = ref(false)
 const exportBusy = ref(false)
 /** Observation page writes (create/import/adopt/restore/AI submit). */
 const observationsBusy = ref(false)
+const observationsPreselect = ref<ObservationListItem | null>(null)
 const editorBusy = ref(false)
+function setEditorBusy(value: boolean): void {
+  // A late watcher from an unmounted editor must never mark the next page
+  // busy. The current view is the page identity for this handoff.
+  if (view.value.name !== 'observation-editor') return
+  editorBusy.value = value
+}
 const pageBusy = computed(
   () => observationsBusy.value || editorBusy.value || exportBusy.value,
 )
@@ -397,6 +405,19 @@ function openObservationsFromWorkbench(): void {
     return
   }
   observationsBusy.value = false
+  view.value = { name: 'observations' }
+}
+
+function requestObservationExport(item: ObservationListItem): void {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可导出')
+    return
+  }
+  observationsBusy.value = false
+  // The editor unmounts immediately after this request; clear its busy flag
+  // here so the host write barrier is released before the list export starts.
+  editorBusy.value = false
+  observationsPreselect.value = item
   view.value = { name: 'observations' }
 }
 
@@ -1087,6 +1108,7 @@ onMounted(() => {
     state: () => bootState.value,
     error: () => bootError.value,
     view: () => view.value.name,
+    busy: () => pageBusy.value,
     // Close-protocol introspection for the real-window verification phases
     // (R1 §15.3 / R17): observable page-side facts, no state mutation.
     closeState: () => ({
@@ -1156,9 +1178,11 @@ onMounted(() => {
         v-else-if="view.name === 'observations'"
         :context="context!"
         :frozen="closeLocked"
+        :preselect="observationsPreselect"
         @open-observation="openObservationFromList"
         @back="() => (view = { name: 'workbench' })"
         @busy="(value) => (observationsBusy = value)"
+        @preselect-consumed="observationsPreselect = null"
       />
       <ObservationEditorView
         v-else-if="view.name === 'observation-editor'"
@@ -1167,9 +1191,10 @@ onMounted(() => {
         :observation-id="view.observationId"
         :frozen="closeLocked"
         @register-editor="registerEditor"
+        @request-export="requestObservationExport"
         @leave="(kind, run) => void leaveForAction(kind, run)"
         @refresh-context="reloadContext"
-        @busy="(value) => (editorBusy = value)"
+        @busy="setEditorBusy"
       />
       <EditorView
         v-else-if="view.name === 'editor'"

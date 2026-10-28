@@ -891,6 +891,7 @@ def read_current(
             "photos": manifest,
             "current_version": record.current_version,
             "latest_version_hash": latest.payload_hash if latest is not None else None,
+            "created_at": record.created_at.isoformat(),
             "updated_at": record.updated_at.isoformat(),
         }
 

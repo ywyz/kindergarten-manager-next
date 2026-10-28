@@ -532,6 +532,7 @@ def build_runtime(args):
             update_manager=update_manager,
             install_coordinator=install_coordinator,
             ready_receipt=ready_receipt,
+            service_port=port,
         )
         _startup_log("build_runtime:done")
     except _ExecutorUnconfirmed:
@@ -1968,6 +1969,119 @@ def drive_observation_ui(driver, args, summary, checks, host_api, port) -> None:
 
     step("obs_conflict_and_leave", conflict_then_leave)
 
+    def export_from_editor():
+        save_dir = getattr(host_api, "_verify_save_dir", None)
+        assert save_dir is not None, "obs export needs a verification save directory"
+        driver.wait_until(
+            "Boolean(document.querySelector('[data-d1=\"obs-export\"]'))",
+            what="OBS 编辑器导出入口",
+            timeout=20,
+        )
+        driver.eval("document.querySelector('[data-d1=\"obs-export\"]').click()")
+        driver.wait_until(
+            "window.__d1App.view() === 'observations'"
+            " && Boolean(window.__d1Observations)",
+            what="OBS 导出进入列表预览",
+            timeout=40,
+        )
+        driver.wait_until(
+            "window.__d1Observations.exportPhase() === 'preview_ready'",
+            what="OBS 导出固定预览",
+            timeout=40,
+        )
+        summary["obs_export_preview"] = True
+        driver.eval("window.__d1Observations.setExportAck(true)")
+        driver.eval("window.__d1Observations.confirmExport(false)")
+        driver.wait_until(
+            "window.__d1Observations.exportPhase() === 'saved'",
+            what="OBS 导出保存",
+            timeout=60,
+        )
+        files = sorted(Path(save_dir).glob("*.docx"))
+        assert files, "obs export did not write a DOCX"
+        assert files[-1].stat().st_size > 0, "obs export DOCX is empty"
+        summary["obs_export_saved"] = str(files[-1].name)
+        summary["obs_export_bytes"] = files[-1].stat().st_size
+        driver.eval("window.__d1Observations.closeExport()")
+        driver.wait_until(
+            "window.__d1Observations.exportOpen() === false"
+            " && window.__d1Observations.exportBusy() === false",
+            what="OBS 导出对话框关闭",
+            timeout=20,
+        )
+        deadline = time.time() + 10
+        while time.time() < deadline and getattr(host_api, "_page_busy", False):
+            time.sleep(0.1)
+        summary["obs_export_host_busy_cleared"] = not bool(
+            getattr(host_api, "_page_busy", False)
+        )
+        checks["obs_export_host_busy_cleared"] = summary[
+            "obs_export_host_busy_cleared"
+        ]
+        checks["obs_export_app_busy_cleared"] = bool(
+            driver.eval("window.__d1App.busy() === false")
+        )
+
+    step("obs_export_from_editor", export_from_editor)
+
+    def cancel_from_editor():
+        observation_id = summary.get("obs_observation_id")
+        assert observation_id, "obs cancel: observation id missing"
+        driver.eval(
+            "window.__d1Observations.open(" + json.dumps(observation_id) + ")"
+        )
+        driver.wait_until(
+            "window.__d1App.view() === 'observation-editor'"
+            " && window.__d1ObservationEditor.phase() === 'ready'",
+            what="OBS 取消导出重新进入编辑器",
+            timeout=30,
+        )
+        original_dir = getattr(host_api, "_verify_save_dir", None)
+        original_dialog = driver.window.create_file_dialog
+        host_api._verify_save_dir = None
+        driver.window.create_file_dialog = lambda *args, **kwargs: None
+        try:
+            driver.eval("document.querySelector('[data-d1=\"obs-export\"]').click()")
+            driver.wait_until(
+                "window.__d1App.view() === 'observations'"
+                " && window.__d1Observations.exportPhase() === 'preview_ready'",
+                what="OBS 取消导出固定预览",
+                timeout=40,
+            )
+            driver.eval("window.__d1Observations.setExportAck(true)")
+            driver.eval("window.__d1Observations.confirmExport(false)")
+            driver.wait_until(
+                "window.__d1Observations.exportPhase() === 'canceled'",
+                what="OBS 导出取消",
+                timeout=40,
+            )
+            driver.eval("window.__d1Observations.closeExport()")
+            driver.wait_until(
+                "window.__d1Observations.exportOpen() === false"
+                " && window.__d1Observations.exportBusy() === false",
+                what="OBS 取消导出对话框关闭",
+                timeout=20,
+            )
+            deadline = time.time() + 10
+            while time.time() < deadline and getattr(host_api, "_page_busy", False):
+                time.sleep(0.1)
+            checks["obs_export_cancel_busy_cleared"] = not bool(
+                getattr(host_api, "_page_busy", False)
+            )
+            checks["obs_export_cancel"] = True
+        finally:
+            host_api._verify_save_dir = original_dir
+            driver.window.create_file_dialog = original_dialog
+
+    step("obs_export_cancel_from_editor", cancel_from_editor)
+
+    def multi_page_mixed_export():
+        from verify_observation_multi import run_multi_export
+
+        run_multi_export(driver, http, summary, checks, host_api, port)
+
+    step("obs_multi_page_mixed_export", multi_page_mixed_export)
+
     summary["obs_ok"] = all(
         checks.get(name) is True
         for name in (
@@ -1975,6 +2089,13 @@ def drive_observation_ui(driver, args, summary, checks, host_api, port) -> None:
             "obs_create_and_edit",
             "obs_history_restore",
             "obs_conflict_and_leave",
+            "obs_export_from_editor",
+            "obs_export_cancel_from_editor",
+            "obs_export_host_busy_cleared",
+            "obs_export_app_busy_cleared",
+            "obs_export_cancel_busy_cleared",
+            "obs_multi_page_mixed_export",
+            "obs_multi_export_busy_cleared",
         )
     )
 

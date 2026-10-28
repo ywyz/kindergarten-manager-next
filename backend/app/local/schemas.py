@@ -1003,6 +1003,7 @@ class LocalObservationCurrentOut(BaseModel):
     photos: list[LocalObservationPhotoOut]
     current_version: int | None
     latest_version_hash: str | None = None
+    created_at: datetime
     updated_at: datetime
 
 
@@ -1052,3 +1053,35 @@ class LocalObservationSaveOut(BaseModel):
     term_warnings: list[str]
     target_hashes: dict[str, str]
     saved_at: datetime
+
+
+class LocalObservationExportPreviewIn(BaseModel):
+    """Explicit cross-page selection: ordered, unique observation ids."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    observation_ids: list[str] = Field(..., min_length=1)
+
+
+class LocalObservationExportCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    snapshot_id: str
+    ack_missing: bool = False
+    retry_existing: bool = False
+
+
+class LocalObservationExportAttemptStartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str
+
+
+class LocalObservationExportAttemptResultIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["saved", "cancelled", "failed", "indeterminate"]
+    byte_size: int | None = Field(default=None, ge=0, strict=True)
+    result_hash: str | None = Field(default=None, min_length=64, max_length=64)

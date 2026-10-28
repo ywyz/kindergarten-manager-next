@@ -1,6 +1,6 @@
 # D4-G0：游戏观察记录完整产品规格与实施前核定清单
 
-更新：2026-10-28。**产品C1–C33及E01–E14／E13六份Contract设计保持；前片基础、材料、历史及图文服务层结果保持，E09／E10本机API、观察编辑与查阅列表限定工程核查通过。** [本片核查 §6](../bootstrap/desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)：全local728、桌面285、最终全前端（观察38）、HTTP37／WebView2 9项及实际勾选采用v14通过。本片应用真实AI调用0次；前片DeepSeek真实4次含1次unknown且不自动重发的结果独立保持。批选／排序、Word／原生另存为、整包、完整A01–A22、教师体验与发行仍后置或未整项验收，MiMo真实未验，后续切片不自动启动。
+更新：2026-10-28。**产品C1–C33及E01–E14／E13六份Contract设计保持；前片基础、材料、历史、图文服务层与页面结果保持，接续批选／排序、三模板Word及E11／E12宿主交付限定工程核查通过。** 最终范围见[导出核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)，[前片页面及采用v14证据](../bootstrap/desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)保持各自身份。本片应用真实AI调用0次；前片DeepSeek真实4次含1次unknown且不自动重发的结果独立保持。完整A01–A22、教师体验、冻结整包、安装与发行未整体验收，MiMo真实未验，后续切片不自动启动。
 
 依据：[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)、[当前架构](../../ARCHITECTURE.md)、[身份与班级](../modules/identity-and-class.md)、[AI Service](../modules/ai-service.md)、[提示词](../modules/prompts.md)、[Word导出](../modules/word-export.md)。旧版行为和模板只作经审查的参考，不自动成为新版需求。
 
@@ -13,7 +13,7 @@
 | C3 AI职责 | AI读图分析，撰写观察目标、观察过程、分析评价、支持策略四部分；不要求教师先写好完整观察过程再交AI整理 |
 | C4 模板 | 用户已提供三份Word模板及七份成品参考；栏目、表格、图片位置和本机Word分页已核对，见§1.1；样例内容不自动成为全部产品规则 |
 | C5 导出 | 单份或按需选取多份合并导出；选择、顺序、版式及文件名按C13、C16–C17、C28、C31、C33 |
-| C6 当前授权 | E09／E10本机API、观察编辑与查阅列表由原OpenCode Go Flash max会话实施并经Codex回修／独立核查通过，最后由原OpenCode正常提交推送后停本片；批选／排序与Word后置，本片应用真实AI调用0次；不自动开始后续切片、真实教师资料测试或发行 |
+| C6 当前授权 | 原OpenCode Go Flash max会话接续实施批选／排序、E11 Word与E12宿主交付，Codex交回修复并独立限定工程核查通过，最后原OpenCode正常提交推送后停本片；本片应用真实AI调用0次，不自动开始后续切片、冻结新包、真实教师资料测试或发行 |
 | C7 开发顺序 | 当前进入游戏观察规格，跨设备继续后置；其他后置模块不并入本片 |
 | C8 首期类型 | 用户确认先做公共、室内、户外三种表格观察记录；《游戏故事》仅作写作参考，叙事式输出后置 |
 | C9 评价分析 | 固定保留健康、语言、社会、科学、艺术五大领域；证据不足如实说明，不强凑评价 |
@@ -283,7 +283,7 @@ E01–E14已按[唯一工程设计](desktop-game-observation-engineering.md)核�
 
 ## 7. 验收条件与证据矩阵
 
-下列为完整验收条件，A01–A22尚未整项验收。基础、材料、保存历史及图文服务层的限定验证见前片报告；当前API／编辑／查阅及关闭协调的限定验证见[本片核查](../bootstrap/desktop-game-observation-pages-review.md)，不替代完整列表选集、Word／原生另存为、整包、复杂真实照片效果或教师确认。前片已按当时授权用独立合成资料完成DeepSeek真实闭环，当前页面片应用真实AI调用0次。
+下列为完整验收条件，A01–A22尚未整项验收。基础、材料、保存历史、图文服务及[页面限定验证](../bootstrap/desktop-game-observation-pages-review.md)见前片报告；本片列表选集／排序、Word及原生交付的合成实证见[导出核查](../bootstrap/desktop-game-observation-export-review.md)，不替代整包、复杂真实照片效果或教师确认。前片已按当时授权用独立合成资料完成DeepSeek真实闭环，当前导出片应用真实AI调用0次。
 
 | 编号 | 场景 | 通过条件 | 需要的证据 |
 | --- | --- | --- | --- |
@@ -335,10 +335,10 @@ E01–E14已按[唯一工程设计](desktop-game-observation-engineering.md)核�
 | R13 | 参考模板已有遮文／空末页与模板遵循 | 保留栏目与确认字体，排除原缺陷；A18–A19必须新版实际Word逐页验 |
 | R14 | 供应商支持视觉与现有文本链路 | §4已直接核对文本消息／1MiB与任务绑定；E06–E07必须整体设计，不称应用已支持图像 |
 
-ARCHITECTURE.md及日计划／周计划Contract不自动扩成观察实施授权；E13职责设计保持，当前只完成用户明确授权的E09／E10限定页面及支撑API，不改系统架构。后续系统级边界变化先ADR；新需求或无法满足确认规则时列影响交用户，不能静默降级。
+ARCHITECTURE.md及日计划／周计划Contract不自动扩成观察实施授权；E13职责设计保持，当前完成用户明确授权的页面、E10批选／排序及E11／E12导出与支撑API，不改系统架构。后续系统级边界变化先ADR；新需求或无法满足确认规则时列影响交用户，不能静默降级。
 
 ## 9. 当前授权与下一步
 
-完整产品规格、E01–E14及E13六份Contract保持。前片E01／E02／E04、E03、E05／E08及E06／E07服务层结果保持；本片E09与E10创建／编辑／查阅部分及其E12支撑API由原Go套餐DeepSeek V4.1 Flash max会话实施及回修，Codex独立核查通过，见[最新核查 §6](../bootstrap/desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)。按用户授权最后由原OpenCode正常提交推送并停在本片，批选／跨页选集／手调排序及Word后置，不宣布完整E10或A01–A22通过。唯一入口见[当前任务](../tasks/current.md)。
+完整产品规格、E01–E14及E13六份Contract保持。前片基础、材料、历史、图文服务及页面结果保持；本片E10明确跨页选集／手调排序、E11三模板Word与E12宿主交付由原Go套餐DeepSeek V4.1 Flash max会话实施及回修，Codex独立核查通过，见[最新核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)。按用户授权最后由原OpenCode正常提交推送并停在本片，E14仅归并本片实际集成证据，不宣布完整A01–A22通过。唯一入口见[当前任务](../tasks/current.md)。
 
-OpenCode仍是实现、测试、迁移、构建脚本唯一写入者，Codex负责设计／独立核查；沿用当前分支和原会话，最后Git由OpenCode执行。本片应用真实AI调用0次，不改原业务库／凭据。无后续批选／排序／Word／原生另存为、新冻结包、Skill／MCP安装、系统保护修改、WebDAV或发行；旧远程资源、数据及D2／D3既有未验保持。
+OpenCode仍是实现、测试、迁移、构建脚本唯一写入者，Codex负责设计／独立核查；沿用当前分支和原会话，最后Git由OpenCode执行。本片应用真实AI调用0次，不改原业务库／凭据；旧daily保存桥／30MiB保持。无新冻结包、安装／更新、Skill／MCP安装、系统保护修改、WebDAV或发行；旧远程资源、数据及D2／D3既有未验保持。Word／原生保存仅当前Windows 11合成环境限定通过，不替代教师完整体验或其他环境验证。
