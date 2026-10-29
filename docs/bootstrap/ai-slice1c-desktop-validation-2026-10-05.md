@@ -1,5 +1,7 @@
 # AI 1A＋1B＋1C 桌面远程产品验收（2026-10-05）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 **2026-10-07 补验及收尾完成：密码恢复、返回确认、退出与账号隔离均已通过。旧默认 accept target 与本轮验收预期不符仍保留失败；C5／V1 发布夹具及真实主密钥降级夹具仍受阻，不宣布全通过。**
 
 ## 2026-10-07 产品决定与审阅补记
@@ -14,10 +16,10 @@
 
 - 仓库 `git pull --ff-only` 成功，HEAD `7d91383ff02f2fa71c6e5591907ddbeb7e736a57`；已有未跟踪 `browser-capabilities-recheck-2026-10-03.md` 保留，未改业务代码、registry、数据库、部署或主密钥，未安装依赖／Skill／MCP，未 commit/push。
 - Windows 11 专业版，10.0.26200／build 26200／64 位；外置 Edge EXE `154.0.4258.53`。工具为现有 `mcp__cua_repl` 真实 DOM／浏览器与其 CDP；已安装 computer-use 技能仅用于核对桌面浏览器进程。日期／时间按 Asia/Shanghai；私密事件以 ISO UTC 保留，可加 8 小时对应本地时间。
-- 真实入口 https://kg-next-verify.ywyz.tech 。部署交接标称 release `ai1abc-20261005-b08234d51044`、迁移 `20261003_ai1a_config_prompts`；未为本轮浏览器验收 SSH 重读运行指针／库 migration，因此不声称本轮独立复核服务器文件哈希。已读部署结果、1C、1B、第五轮收口与源清单交接。
+- 真实入口 https://legacy-verify.example.invalid 。部署交接标称 release `ai1abc-20261005-b08234d51044`、迁移 `20261003_ai1a_config_prompts`；未为本轮浏览器验收 SSH 重读运行指针／库 migration，因此不声称本轮独立复核服务器文件哈希。已读部署结果、1C、1B、第五轮收口与源清单交接。
 - 初始外置 Edge 因 request-header policy 初始化失败；内置真实浏览器先执行首存／清除与七任务只读。用户随后明确要求修复代理；发现运行时更新覆盖旧补丁，按 [修复记录](browser-proxy-repair-2026-10-05.md)恢复最小补丁并重置会话，外置 Edge 真实新建／登录／点击／读页恢复。之后主要使用外置 Edge。两层分别记录，未使用本机 WSL/Vite/mock 或 requests 代替 DOM。
 - Edge 两普通页面用于同身份独立编辑基线；Edge 与内置浏览器是独立 cookie 会话，管理员退出后内置旧页得到 401，Edge 教师会话仍有效。未把两个普通标签称为隔离 cookie profile。
-- 私密根目录：`C:\Users\yw980\.codex\tmp\ai1abc-desktop-acceptance-20261005`；报告／备份／下载／截图均在 `logs`。只保留请求方法、路径、状态、版本、变更字段名与 secret 是否存在，不导出 Network 原始载荷／cookie。密码和临时交接仅私密文件。
+- 私密根目录：`<LOCAL_USERPROFILE>\.codex\tmp\ai1abc-desktop-acceptance-20261005`；报告／备份／下载／截图均在 `logs`。只保留请求方法、路径、状态、版本、变更字段名与 secret 是否存在，不导出 Network 原始载荷／cookie。密码和临时交接仅私密文件。
 - 未调用供应商、未测试连接、未启动 worker／材料／完整 W6；历史 648 后端、29＋356 离线脚本及部署 HTTP 冒烟保持其他证据层，本轮未重跑或拿来代替 DOM。
 
 ## 真实案例与实际结果

@@ -1,5 +1,7 @@
 # D3-U 应用更新：开工工程方案（Codex 核定后 U1 实施版）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-25。状态：**U1–U3在当前Windows 11限定源码／合成工程核查通过；真实冻结更新、发行源／安装和4551仍未验。** 最新证据见§19及独立核查§20；此前各节保留原轮次历史，不代表当前状态。
 未构建或运行新冻结包，未修改真实数据／凭据，未调用应用真实AI、未使用WebDAV、签名或发布；Git由Codex按既有授权收口，提交身份以Git历史与最终交接为准。
 
@@ -437,7 +439,7 @@ UPDATE_METADATA_PATH = /<channel>/windows-x64/manifest.json
 
 | 检查 | 命令 | 实际结果 |
 | --- | --- | --- |
-| U1 Python | `desktop/.venv-d1/Scripts/python.exe -m pytest tests/test_update_u1.py -q --basetemp=C:/Users/yw980/AppData/Local/Temp/kgmu-...` | exit 0，**26 passed**（13.47 秒，无 skip） |
+| U1 Python | `desktop/.venv-d1/Scripts/python.exe -m pytest tests/test_update_u1.py -q --basetemp=<LOCAL_USERPROFILE>/AppData/Local/Temp/kgmu-...` | exit 0，**26 passed**（13.47 秒，无 skip） |
 | U1 SFC | `node src/d1/d1.update.test.mjs` | exit 0，**8 passed** |
 | TypeScript | `npm run typecheck` | exit 0 |
 | 既有 D2 组件（App 集成定向） | `node src/d1/d1.w5.test.mjs` | exit 0，**94 passed** |
@@ -445,12 +447,12 @@ UPDATE_METADATA_PATH = /<channel>/windows-x64/manifest.json
 
 合成根／证据：
 
-- Python 临时根：`C:/Users/yw980/AppData/Local/Temp/kgmu-...`；每次测试使用独立短根数据／凭据／暂存根；未删除
+- Python 临时根：`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgmu-...`；每次测试使用独立短根数据／凭据／暂存根；未删除
   Codex 首轮反例根。
 - 前端构建：`%TEMP%/opencode/d3-u1-r04-fix-frontend-1792816522-9094/`；`d1.html`
   `5b822641a78a027a…`，`assets/index-B_7nL31g.css` `3105483303fa88a6…`，
   `assets/index-Cvvd1iFB.js` `64c8ee176c064aba…`。
-- 日志：`C:/Users/yw980/AppData/Local/Temp/kgm-update-codex-20261024-103957/u1-r04-fix2-pytest.log`、
+- 日志：`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-update-codex-20261024-103957/u1-r04-fix2-pytest.log`、
   `d3_u1_r04_fix_update.log`、`d3_u1_r04_fix_w5.log`、`d3_u1_r04_fix_typecheck.log`、
   `d3_u1_r04_fix_build.log`。
 - 受控 TLS 服务只使用临时 CA／leaf 和测试 Ed25519 身份；无真实发行源、正式公钥、教师数据或凭据。

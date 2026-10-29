@@ -1,5 +1,7 @@
 # D4：批选／排序、Word 导出与宿主交付独立核查
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-28。状态：**本片限定工程核查通过，R01–R13关闭；按用户授权由原OpenCode正常提交推送后停在本片。** 最终范围见§6，不宣布完整A01–A22、教师体验或发行通过。
 
 ## 1. 授权与基线
@@ -8,7 +10,7 @@
 
 开工工作区干净，分支`codex/desktop-v2-foundation`，HEAD与origin均为`b4b2f7706d681975e92131d388c6e277fa1cfe84`。原会话`ses_ead8af71dffeJphI1NOWg4jZgI`、build、`opencode-go/deepseek-v4.1-flash#max`；OpenCode是实现／测试／验证脚本唯一写入者，Codex维护计划及独立记录。不另起实现者、子代理或分支。
 
-本机CLI 2.1.4 standalone续跑；证据根`C:/Users/yw980/AppData/Local/Temp/kgm-observation-export-20261028-7e7fb3c6`，指针`%TEMP%/kgm-observation-export-current.txt`。派发前脱敏会话5800条消息，529个已跟踪相关文件SHA256基线；不宣称覆盖全盘或用户私有数据。实现者使用`opencode-evidence`／`opencode-temp`，独立执行使用`codex-independent`。
+本机CLI 2.1.4 standalone续跑；证据根`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-export-20261028-7e7fb3c6`，指针`%TEMP%/kgm-observation-export-current.txt`。派发前脱敏会话5800条消息，529个已跟踪相关文件SHA256基线；不宣称覆盖全盘或用户私有数据。实现者使用`opencode-evidence`／`opencode-temp`，独立执行使用`codex-independent`。
 
 范围及通过条件见[当前任务](../tasks/current.md)、[工程E10–E12／E14](../specs/desktop-game-observation-engineering.md#11-e10列表同日多份与选择)及[Contract§7](../modules/game-observations.md#7-导出与-word)。旧日计划语义及前片工程结果保持。
 

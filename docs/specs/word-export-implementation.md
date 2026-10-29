@@ -1,5 +1,7 @@
 # I5 Word 导出实施规格
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 > 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。固定模板、范围、版本和标红规则保留；本地身份、SQLite 读取及桌面文件保存需适配。v1 收口不代替新桌面实测，完整 W6 非空材料未通过状态保留。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
 
 2026-10-03最新状态：当前I5已实现链路已按[正式收口](../bootstrap/i5-final-closeout-2026-10-03.md)完成产品验收。按[用户明确阶段决定](../bootstrap/i5-evidence-closeout-and-scope-decision-2026-10-03.md)，W2当前纯文本阶段以首尾空白覆盖仅格式子例；完整W6非空材料保留为[材料切片](weekly-materials-implementation.md)必需补验，仍未通过。原完整标准和各时点历史记录不删除；本条优先用于当前阶段状态判断，不表示富文本或首版整体完成。
@@ -374,7 +376,7 @@ backend/app/services/word_export_docx.py     # 纯生成：模板包 + 视图模
 | 纯单元测试（无 DB、无 HTTP、无外部进程） | 单日/按周/按月/自选范围筛选与严格边界；周相交（周末上课、六/七教学日、假期、单日选整周、跨月跨学期、零教学日周、范围仅命中非上课日）；去重与升序（日期 / **实际周起始日期**；跨学期末周与首周同范围 → 按实际周起始日期升序（前学期末周在前、后学期首周在后）、不同学期相同周号不合并、同一实际起始日跨学期并存时按最小教学日排学期先后、整周不裁切）；无匹配判定；版本钉住与模式互斥；防伪造（伪造 `plan_id`/`confirmed_version`/夹带 `class_id` 的分支）；权限矩阵（mock 依赖）；409 ack 门与 `facts` 计算（跨请求绑定按已确认 §11.8 方案 B：对象未变可继续、版本/缺项/对象变化则再次 409）；缺项判定口径；确认快照 `effective` 输出（`no_plan`+非空 override 保留人工文本；`no_plan`+空 `effective` 留空且不标假期；`saved`+显式空字符串 override 留空且不被 `source` 补回）；§3.6 警示判定表五情形；表头起止与周次（**断言不从列数推算**；零上课日周表头=学期∩实际周区间）；字段映射 fixtures（W1/W6 型数据）；标红 diff 文字预期表（W2 型夹具：新增/替换/纯删除/纯移动/仅格式/无基准）；文件名生成 |
 | 后端集成测试（隔离 MySQL 8.4/InnoDB，需授权） | 真实 schema 上的导出查询与确认快照读取；角色 × 路由权限全矩阵；导出期间并发保存的一致快照（文件内容 = 钉住版本；范围选择、钉住版本、日历修订、列与表头同属一个一致性视图，§4.4——**MySQL 隔离语义只在本层验证，不据 mock 单测宣称**）；审计记录写入（§11.5 已决定 A）；只读流程不产生任何业务表写入 |
 | 实际生成 docx 结构检查（无桌面 Word） | zip/OOXML 完整；固定表格结构与栏目存在；红 run 内容与位置；份间分页符；渲染前字符多重集与夹具一致；单份 vs 合并同份内容一致 |
-| 远程产品运行与 Trae Work 浏览器下载（2026-10-02 已授权） | SSH 密钥连接 `root@bwh.ywyz.tech` 部署独立验收实例，Caddy HTTPS 提供构建产物与 API；Trae Work 经真实 UI 完成导出按钮、权限、缺项 409 → 明确确认 → 下载、对象变化再次 409、无匹配、警示、文件名与类型检查；记录服务器／Windows／浏览器版本，不用 API 直调替代核心 UI 下载 |
+| 远程产品运行与 Trae Work 浏览器下载（2026-10-02 已授权） | SSH 密钥连接 `<PRIVATE_CONTACT_OR_SSH_TARGET>` 部署独立验收实例，Caddy HTTPS 提供构建产物与 API；Trae Work 经真实 UI 完成导出按钮、权限、缺项 409 → 明确确认 → 下载、对象变化再次 409、无匹配、警示、文件名与类型检查；记录服务器／Windows／浏览器版本，不用 API 直调替代核心 UI 下载 |
 | 桌面 Word 或 WPS 文字（**片 4 当前完成门槛**） | Windows 10／11／Server 2022／Server 2025 与 Office 2010 及以上系列桌面 Word／WPS 文字任一组合打开实际下载的 W1–W6 文件，完成全部必需案例即满足环境门槛；逐页检查无修复提示、分页、越界、缺字、红字、假期／五至七列版式及单份／合并一致性；记录实际产品名、版本、build、位数与字体，详见 [当前环境口径](i5-validation-environment.md) |
 | LibreOffice 补充兼容性 | 旧 Ubuntu／LibreOfficeDev 原型作为历史证据保留；后续复跑可选、单列记录，不代替当前真实下载与 Office／WPS 桌面检查 |
 
@@ -457,11 +459,11 @@ backend/app/services/word_export_docx.py     # 纯生成：模板包 + 视图模
 
 ### 片 4：远程服务／Trae Work／Office 或 WPS 产品验收
 
-- **允许修改范围**：在用户指定 `root@bwh.ywyz.tech` 服务器部署独立 API／MySQL／前端构建产物／Caddy HTTPS，Trae Work 执行浏览器真实下载；在允许的 Windows 与 Word／WPS 组合执行 §10.2 逐页检查；写结果文档；失败时按最小范围修复并复核。2026-10-02 已授权本轮最小修复、部署与 commit/push。
+- **允许修改范围**：在用户指定 `<PRIVATE_CONTACT_OR_SSH_TARGET>` 服务器部署独立 API／MySQL／前端构建产物／Caddy HTTPS，Trae Work 执行浏览器真实下载；在允许的 Windows 与 Word／WPS 组合执行 §10.2 逐页检查；写结果文档；失败时按最小范围修复并复核。2026-10-02 已授权本轮最小修复、部署与 commit/push。
 - **不包含**：Office 365 其他应用、LibreOffice 强制复跑、环境全面审计、无关重构、实体打印。
 - **完成条件**：远程运行／自动测试／浏览器下载／桌面版式分别记录状态与环境；W1–W6 相关子例在任一允许组合中全部通过，失败项定向复核；资源去留明确。验收实例保留供 Trae Work 使用，不根据历史清理提示删除。缺少实际下载或 Word／WPS 逐页证据时片 4 不得记为完成。
 - **最小测试**：W1–W6 场景的产品级复跑 + 浏览器下载流程走查。
-- **外部资源**：指定 SSH 服务器、`ywyz.tech` 子域名与 HTTPS、独立 MySQL／API、Trae Work 浏览器、任一允许 Windows 与 Office／WPS 文字；实际版本在执行时记录。本机 WSL 不再是前提。
+- **外部资源**：指定 SSH 服务器、`example.invalid` 子域名与 HTTPS、独立 MySQL／API、Trae Work 浏览器、任一允许 Windows 与 Office／WPS 文字；实际版本在执行时记录。本机 WSL 不再是前提。
 - **授权状态（2026-10-02 更新）**：用户明确替代 2026-09-29 环境限制，授权远程部署、已知缺陷最小修复、commit/push；浏览器交给 Trae Work，任一允许 Windows 与 Office 2010 以上 Word／WPS 组合通过即可。[当前口径](i5-validation-environment.md)优先于旧执行提示词，历史结果保持原状态。
 - **自动检查结果（2026-10-01）**：锁依赖恢复后 I5 定向 170 项、后端全量 533 项单测通过；I5 隔离 MySQL 集成 30 项通过、0 skip（mysql:8.4.11 / InnoDB，head `20260924_i4_weekly_plans`，容器用后删除）；前端 typecheck／build 通过（既有主包体积告警，主包 1135.42 kB）；临时 API／Vite 启动与 `/api` 代理、登录、`no-store` 已核验；模板哈希与受控基线一致。Windows 浏览器下载与 Word 逐页验收仍待人工：结果矩阵与交接表见 [验证记录](../bootstrap/i5-slice4-validation-2026-10-01.md)。
 

@@ -1,5 +1,7 @@
 # G17 真实 AI 验收方案
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-22。状态：**应用仅使用DeepSeek官方API与MiMo标准API，不使用Token Plan或Go；用户已确认先DeepSeek `deepseek-flash`，再MiMo `mimo-v2.6-flash`。包身份、文档核对及两家独立数据根的正常表单保存／读回均已完成；离线材料已就绪；用户随后已在DeepSeek隔离应用保存配置，凭据记录1条，MiMo尚未配置。用户现已明确授权真实AI验收，实际进度以[G17结果](desktop-d2-g17-result.md)为准；尚未调用时仍不记通过。** 用户确认的实时思考展示已由OpenCode实现，设计见[流式规格](../specs/desktop-ai-streaming-progress.md)，合成工程结论与普通包身份见[独立核查§11](desktop-d2-streaming-review.md#11-最终交付限定合成工程核查通过)。用户明确不设计预算限额；此前自行假设的token／费用数字、最坏费用预留和供应商硬限额前置要求已撤回，不增加测试或生产预算功能，不因没有输出token上限参数追加实现任务。旧稿由Git保留。
 
 依据：[产品规格§11](../specs/desktop-ai-daily-plan.md#11-openai兼容接入边界)、[工程规格G17／G18](../specs/desktop-ai-engineering.md#6-e5验收矩阵与证据要求)、[普通包独立核查§6](desktop-d2-normal-package-review.md#6-最终独立核查与交付结论)。普通包修改2cafa49及前版方案a3e7062均已推送codex/desktop-v2-foundation；最新用户决定优先于前版方案。
@@ -55,7 +57,7 @@ Codex于2026-10-22重新核对两家官方公开文档，见[兼容性记录§7]
 
 - HEAD `3e1870036c5bda257e41fceaedd489968c2846a4`，分支`codex/desktop-v2-foundation`；进入本轮时已有`docs/tasks/current.md`未提交改动，原样保留。未修改实现／测试／迁移／构建脚本，未调用OpenCode、重建包或重复整套合成回归。
 - 包目录为仓库下`build/desktop-d2-streaming-r10-r11/package/KGNext-D2Verify/`，182/182文件逐项相同。EXE SHA-256 `d0e650e8b572a3a7ca8acf7822a47d1c0eeac607322777a7f79d7492d3cfad14`。报告所列清单`80f15a68f0eedfb82713ae9c74936056f2c8a9314e05afe5d1cc6dd391e0873f`是以Windows相对路径为键、文件SHA-256为值的映射，经Python `json.dumps(mapping, sort_keys=True)`（默认分隔符、无末尾换行）后的SHA-256，已重算吻合；它不是`package_hashes.json`原始文件SHA-256，后者为`7508f1d1ff31e3e9cdff3b6c1bc58cd7fd5176115d6df35ae44745ce5de3548e`。没有修改清单。
-- 隔离总根：`C:\Users\yw980\AppData\Local\KGNext-G17-20261022`。DeepSeek数据为`deepseek\data`，凭据所属LOCALAPPDATA为`deepseek\LocalAppData`；MiMo分别为`mimo\data`、`mimo\LocalAppData`。完整绝对路径、版本和bundle hash见该总根`readiness-20261022.json`；§4原样材料另存为`samples-20261022.txt`，仅作人工填表材料，不是已保存的计划。
+- 隔离总根：`<LOCAL_USERPROFILE>\AppData\Local\KGNext-G17-20261022`。DeepSeek数据为`deepseek\data`，凭据所属LOCALAPPDATA为`deepseek\LocalAppData`；MiMo分别为`mimo\data`、`mimo\LocalAppData`。完整绝对路径、版本和bundle hash见该总根`readiness-20261022.json`；§4原样材料另存为`samples-20261022.txt`，仅作人工填表材料，不是已保存的计划。
 - DeepSeek普通入口以显式`--data`及仅子进程的独立LOCALAPPDATA、`APP_DISABLE_DOTENV=1`启动。库迁移为`20261017_0004_local`，三类bundle均契约1／默认指导1；只读核对profile／class／term／plan／game revision／个人指导head／AI配置／凭据／input／task／execution／attempt／candidate／provenance均0。MiMo仅建立空目录，尚未启动或建库。
 - 本地日期核对为2026-10-22、星期四（Asia/Shanghai）；活动表单及学期日历尚未建立，周次／节假日尚不能从应用读回，不把系统星期核对写成日历已通过。
 - 首次PID16236继承隐藏窗口设置，已在确认档案／计划／任务均0后结束；同根以可见交互方式重开PID35884。前次结束不算正常退出或冷重启验证。后次到达首次设置表单，姓名填为“验收教师G17”，未提交。截图报`IGraphicsCaptureItemInterop.CreateForMonitor (0x80070057)`；无截图可访问树可读，但后续填班级报`failed to activate captured window`，重新选择并恢复焦点报`GetCursorPos failed: 拒绝访问 (0x80070005)`，按computer-use恢复规则停止输入。不能据此判为应用白屏／业务缺陷，未复开R02；交付时保留在首次设置页。
@@ -73,7 +75,7 @@ Codex于2026-10-22重新核对两家官方公开文档，见[兼容性记录§7]
 MiMo后续同根普通启动可在仓库根的PowerShell执行下列已有入口命令；只对子进程设置环境，窗口为交互窗口，不调用AI。两家现均已保存资料，重开会直接进入工作台；当前DeepSeek已打开，无需重复启动：
 
 ```powershell
-$g17MimoRoot = 'C:\Users\yw980\AppData\Local\KGNext-G17-20261022\mimo'
+$g17MimoRoot = '<LOCAL_USERPROFILE>\AppData\Local\KGNext-G17-20261022\mimo'
 $g17Launch = [System.Diagnostics.ProcessStartInfo]::new()
 $g17Launch.FileName = Join-Path (Get-Location) 'build/desktop-d2-streaming-r10-r11/package/KGNext-D2Verify/KGNext-D2Verify.exe'
 $g17Launch.UseShellExecute = $false
@@ -211,7 +213,7 @@ G17需三类各至少一个真实成功样本、协议／输入边界与候选�
 - 普通包修改2cafa49、前版G17方案a3e7062已推送。用户最新决定撤回预算设计，本版原位修正方案及索引，旧建议由Git保留，不增加归档副本。当前不再要求先落实供应商硬预算或增加输出token上限参数。
 - 前轮只核对官方文档；用户随后确定两家标准API并确认UI方式，OpenCode沿用原Go Flash完成实现，Codex独立结果见流式核查§11。
 - 2026-10-22已完成两家准确配置建议、公开文档复核和包身份核对；首次本地准备受工具限制未完成，后续用户授权重试电脑控制，现已按§3.3完成两家普通表单保存与读回。进入任务时已有的`docs/tasks/current.md`改动此前保留，其独有决定、停止规则与未验事项现已归并到本方案／兼容性记录／流式核查；完成后将同一入口更新为待真实调用授权，不另存旧提示词副本。
-- **已确认配置与待授权执行范围（本段不是调用授权）：** 先DeepSeek官方`https://api.deepseek.com`＋`deepseek-flash`，再MiMo标准`https://api.xiaomimimo.com/v1`＋`mimo-v2.6-flash`；分别使用`C:\Users\yw980\AppData\Local\KGNext-G17-20261022\deepseek\data`与`...\mimo\data`及各自独立LOCALAPPDATA。两家初始材料均为§4同一原文、中班表头、固定游戏配置及两份保留对照；每家按拆分→目标小班适龄→其他活动串行，每步审阅／采用／保存后才下一步，建议共6次业务触发（每家3次，不保证等于6次HTTP发送）。§3表单与版本读回已补齐，接下来仍须用户以后在各自应用中填标准API密钥并另行明确允许真实调用；密钥不发聊天。任何一家发生§6问题即停后续样本，未解释清楚前不转另一家试探、不补发或换型号。无预算设计，原10秒／120秒／1MiB保护保持。
+- **已确认配置与待授权执行范围（本段不是调用授权）：** 先DeepSeek官方`https://api.deepseek.com`＋`deepseek-flash`，再MiMo标准`https://api.xiaomimimo.com/v1`＋`mimo-v2.6-flash`；分别使用`<LOCAL_USERPROFILE>\AppData\Local\KGNext-G17-20261022\deepseek\data`与`...\mimo\data`及各自独立LOCALAPPDATA。两家初始材料均为§4同一原文、中班表头、固定游戏配置及两份保留对照；每家按拆分→目标小班适龄→其他活动串行，每步审阅／采用／保存后才下一步，建议共6次业务触发（每家3次，不保证等于6次HTTP发送）。§3表单与版本读回已补齐，接下来仍须用户以后在各自应用中填标准API密钥并另行明确允许真实调用；密钥不发聊天。任何一家发生§6问题即停后续样本，未解释清楚前不转另一家试探、不补发或换型号。无预算设计，原10秒／120秒／1MiB保护保持。
 - 同日后续用户明确确认型号及顺序按§1执行，并要求提供已打开隔离工作台的具体填表步骤；密钥以后在应用内填写，暂不调用真实AI或发布。只确认型号／顺序，不将其扩大为6次业务触发的实际调用授权。
 - 本轮应用真实AI调用**0次**，供应商连通／模型列表／余额API **0次**；未填写或读取真实密钥、未发布。两家真实结果仍“未执行”，不把目录／数据库初始化或文档支持写成G17／G18通过。
 - 既有三项事件按[W6收口](desktop-d2-w6-closeout.md)保持，不续跑G13／R02／R03；D3／WebDAV、观察记录及安装发行均未启动。

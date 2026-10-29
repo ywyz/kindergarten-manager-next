@@ -1,5 +1,7 @@
 # I5 当前验收环境与完成口径
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 > 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。本文远程实例与浏览器验收门槛适用于 v1 历史链路，不作为 v2 桌面默认环境；新桌面验收按具体切片定义，保留 Word／WPS 实际文件与逐页检查要求及旧未通过项。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
 
 2026-10-03最新状态：当前I5已实现链路已按[正式收口](../bootstrap/i5-final-closeout-2026-10-03.md)完成产品验收。按[用户明确阶段决定](../bootstrap/i5-evidence-closeout-and-scope-decision-2026-10-03.md)，W2当前纯文本阶段以首尾空白覆盖仅格式子例；完整W6非空材料保留为[材料切片](weekly-materials-implementation.md)必需补验，仍未通过。原完整标准和各时点历史记录不删除；本条优先用于当前阶段状态判断，不表示富文本或首版整体完成。
@@ -10,7 +12,7 @@
 
 | 层 | 当前口径 |
 | --- | --- |
-| 服务与自动检查 | SSH 密钥连接 `root@bwh.ywyz.tech`，在服务器部署独立验收实例；不再以本机 WSL 为验收服务器 |
+| 服务与自动检查 | SSH 密钥连接 `<PRIVATE_CONTACT_OR_SSH_TARGET>`，在服务器部署独立验收实例；不再以本机 WSL 为验收服务器 |
 | 浏览器 | Trae Work 已有执行记录；2026-10-03 由本机桌面 Codex 接续真实产品 UI、登录、交互和下载，逐轮记录执行者与下载证据 |
 | 桌面系统 | Windows 10、Windows 11、Windows Server 2022、Windows Server 2025，任选一个实际可用环境 |
 | DOCX 软件 | Microsoft Office 2010 及以上系列的桌面 Word，或 WPS 系列的文字应用，任选一个实际可用版本 |

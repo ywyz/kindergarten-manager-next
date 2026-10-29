@@ -1,5 +1,7 @@
 # D4：E06／E07 图文执行、视觉候选与原子采用独立核查
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-27。状态：E06／E07服务层限定工程核查通过，R01–R12关闭；R13误判撤回。
 
 ## 1. 授权、实现身份与范围
@@ -14,7 +16,7 @@
 
 ## 2. 冻结身份与核查方法
 
-证据根：C:/Users/yw980/AppData/Local/Temp/kgm-observation-e0607-20261027-aa633c2e，指针为%TEMP%/kgm-observation-e0607-current.txt。OpenCode使用opencode-evidence，独立证据在codex-independent；TEMP／pytest cache／pycache与持久证据分开。统一desktop/.venv-d1/Scripts/python.exe：CPython3.14.7、Windows x64、标准GIL；旧3.12保留。
+证据根：<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-e0607-20261027-aa633c2e，指针为%TEMP%/kgm-observation-e0607-current.txt。OpenCode使用opencode-evidence，独立证据在codex-independent；TEMP／pytest cache／pycache与持久证据分开。统一desktop/.venv-d1/Scripts/python.exe：CPython3.14.7、Windows x64、标准GIL；旧3.12保留。
 
 原会话基线4321消息／max seq37240，旧idle成功不算本片完成。最终本片新消息807／max seq44203，766条assistant全部为opencode-go/deepseek-v4.1-flash、max、build；三次CLI exit均0，最新finish=stop／idle=succeeded，child／fork0、inbox0、pending0，详见session-final.json。codebase-memory按项目身份、index_status、search_graph／trace_path及15路径coverage定位；metadata_changed时回读源码与diff，图谱不作为完整性证明，别名连边亦以实际import为准。
 

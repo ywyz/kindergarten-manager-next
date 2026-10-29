@@ -1,5 +1,7 @@
 # D4：E09／E10 本机 API、观察编辑与查阅列表独立核查
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-28。状态：**E09／E10 本机 API、观察编辑与查阅列表限定工程核查通过，R01–R15 关闭；按用户授权由原 OpenCode 正常提交推送后停在本片。** 最终结论见 §6。本文件由 Codex 维护；实现者自测与独立执行结果分开记录。
 
 ## 1. 授权与基线
@@ -8,7 +10,7 @@
 
 分支 `codex/desktop-v2-foundation`，基线 `62f1fc6f4a442e1fdc3038b52cb7203e796636dc`，开工前工作区干净。Codex 先更新唯一任务入口及工程 §10.1，再交原会话实施。原会话 `ses_ead8af71dffeJphI1NOWg4jZgI`，本机 CLI 2.1.4，standalone、build、显式 `opencode-go/deepseek-v4.1-flash#max`；未另建／fork 会话、实现者、子代理或分支。
 
-证据根：`C:/Users/yw980/AppData/Local/Temp/kgm-observation-e0910-20261027-a5fc7fa5`，指针 `%TEMP%/kgm-observation-e0910-current.txt`。派发前保存脱敏 session 导出（5142 条消息）和 517 个已跟踪文本路径 SHA256 基线。该 manifest 不含凭据路径，不宣称覆盖全盘／用户数据。OpenCode 使用 `opencode-evidence`／`opencode-temp`，独立审核使用 `codex-independent`；不将自测身份与独立证据混用。
+证据根：`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-e0910-20261027-a5fc7fa5`，指针 `%TEMP%/kgm-observation-e0910-current.txt`。派发前保存脱敏 session 导出（5142 条消息）和 517 个已跟踪文本路径 SHA256 基线。该 manifest 不含凭据路径，不宣称覆盖全盘／用户数据。OpenCode 使用 `opencode-evidence`／`opencode-temp`，独立审核使用 `codex-independent`；不将自测身份与独立证据混用。
 
 ## 2. 本片审核范围
 

@@ -1,5 +1,7 @@
 # D4：E03 图片材料切片实施结果
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-26。状态：OpenCode 实施及自测完成，**停写待 Codex 独立核查**；尚未提交、推送或合并。本记录不代表完整 A01–A22、真实教师图片、真实 AI、Word／宿主／页面、安装发行或桌面产品验收。
 
 接续（2026-10-27）：Codex最终独立630项全local、新统一hash锁环境31项材料及85项相关宿主通过；R01–R11与本次Git收口以[独立核查](desktop-game-observation-assets-review.md)为准。下文保留OpenCode实施／自测交付时点，不把当时未提交或待审表述当作当前结论。
@@ -47,7 +49,7 @@ cd backend
   --output <evidence-root>/capacity-final-r10.json
 ```
 
-证据根：`C:/Users/yw980/AppData/Local/Temp/kgm-observation-e03-20261026-2f7e5331`。实际入口为 `app.local.observation_assets._prepare_asset`；字节上限使用实际 `_write_staging`。生成进程不计入峰值。
+证据根：`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-e03-20261026-2f7e5331`。实际入口为 `app.local.observation_assets._prepare_asset`；字节上限使用实际 `_write_staging`。生成进程不计入峰值。
 
 | 用例 | 结果 | 峰值 MiB | 说明 |
 | --- | --- | ---: | --- |

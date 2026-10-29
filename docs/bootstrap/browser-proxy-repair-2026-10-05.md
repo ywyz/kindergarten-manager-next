@@ -1,10 +1,12 @@
 # 外置浏览器代理修复（2026-10-05）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 状态：外置 Edge 已恢复新建远程页面、DOM 读取、实际登录、点击系统设置与读取持久化配置。本记录不表示 AI C1–C7 全部通过。用户在验收过程中明确要求按以前修复记录检查代理并修复连接。
 
 初始外置 Edge 两次创建失败，错误为 `Unable to load browser request-header policy. Retry the browser command.`；清单同时报告 `Timed out waiting for Statsig values.`。内置真实浏览器可访问远程站，已经执行部分设置验收，其证据与外置修复后证据分开。
 
-旧运行时 `81ea4d5168ddd0a3` 路径已经不存在。实际运行 Node 和启动器位于 `C:\Users\yw980\AppData\Local\OpenAI\Codex\runtimes\cua_node\45309f9050f7314b\bin`。当前启动器原 SHA-256 为 `3E52A41F4DA41D35BE8CC3723FE97251711087A998C1ED7F2CFDF7E20B50FC2B`，与此前未补丁原件相同，且没有代理注入。应用更换运行时后原补丁不再存在是现场事实；不声称已经追踪具体更新过程。
+旧运行时 `81ea4d5168ddd0a3` 路径已经不存在。实际运行 Node 和启动器位于 `<LOCAL_USERPROFILE>\AppData\Local\OpenAI\Codex\runtimes\cua_node\45309f9050f7314b\bin`。当前启动器原 SHA-256 为 `3E52A41F4DA41D35BE8CC3723FE97251711087A998C1ED7F2CFDF7E20B50FC2B`，与此前未补丁原件相同，且没有代理注入。应用更换运行时后原补丁不再存在是现场事实；不声称已经追踪具体更新过程。
 
 `127.0.0.1:7890` 由既有 FlClashCore 监听。curl 经该代理访问 example.com 返回 200。先备份当前 launch.js，再在其原子进程 env 合并点恢复与 [10 月 2 日记录](browser-repair-and-i5-capabilities-2026-10-02.md)相同的最小代理字段：NODE_USE_ENV_PROXY=1，HTTP/HTTPS 大小写变量指向该回环代理，NO_PROXY 保留原条目并合并 localhost、127.0.0.1、::1。
 

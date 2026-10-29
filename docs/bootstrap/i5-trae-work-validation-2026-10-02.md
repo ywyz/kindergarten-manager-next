@@ -1,7 +1,9 @@
 # I5 Word 导出 Trae Work 浏览器验收报告
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 > 执行日期：2026-10-02
-> 服务入口：https://kg-next-verify.ywyz.tech
+> 服务入口：https://legacy-verify.example.invalid
 > 源提交：2cb8d81556f47936e236dadedcb37bf3cec5b3c8
 > 执行者：Trae Work（浏览器自动化 + 桌面 Word 抽样检查）
 
@@ -18,9 +20,9 @@
 
 ## 证据目录
 
-- 下载：`C:\Users\admin\.codex\visualizations\2026\10\02\01a0fb52-d101-73a2-85c8-f71c56b27c23\i5-work\trae-acceptance-2026-10-02\downloads`
-- 截图：`C:\Users\admin\.codex\visualizations\2026\10\02\01a0fb52-d101-73a2-85c8-f71c56b27c23\i5-work\trae-acceptance-2026-10-02\screenshots`
-- 日志：`C:\Users\admin\.codex\visualizations\2026\10\02\01a0fb52-d101-73a2-85c8-f71c56b27c23\i5-work\trae-acceptance-2026-10-02\logs\evidence-log.md`
+- 下载：`<LOCAL_USERPROFILE>\.codex\visualizations\2026\10\02\01a0fb52-d101-73a2-85c8-f71c56b27c23\i5-work\trae-acceptance-2026-10-02\downloads`
+- 截图：`<LOCAL_USERPROFILE>\.codex\visualizations\2026\10\02\01a0fb52-d101-73a2-85c8-f71c56b27c23\i5-work\trae-acceptance-2026-10-02\screenshots`
+- 日志：`<LOCAL_USERPROFILE>\.codex\visualizations\2026\10\02\01a0fb52-d101-73a2-85c8-f71c56b27c23\i5-work\trae-acceptance-2026-10-02\logs\evidence-log.md`
 
 私密账号文件仅在本机读取用于登录，未进入任何报告、截图、日志、聊天、Git 或网页。
 
@@ -58,12 +60,12 @@
 
 自动化无法可靠验证 GUI 渲染的下列项，按任务书记录精确人工步骤（预计 10 分钟内）：
 
-1. 资源管理器打开 `C:\Users\admin\Downloads`，右键 `小班甲_周计划_2026-09-30_2026-10-06 (1).docx` → 属性：常规页签底部应显示"此文件来自其他计算机"安全提示（MotW 存在佐证）。
+1. 资源管理器打开 `<LOCAL_USERPROFILE>\Downloads`，右键 `小班甲_周计划_2026-09-30_2026-10-06 (1).docx` → 属性：常规页签底部应显示"此文件来自其他计算机"安全提示（MotW 存在佐证）。
 2. 双击打开：Word 应先显示黄色 Protected View 横幅且页面以单列渲染；点击"启用编辑"后进入正常视图，无修复／转换对话框。
 3. 打印预览（Ctrl+P）逐页核对：第 1 页为第 9 周表（《验收第9周》，2026 年 9 月28日——10月2日，7 列）；第 2 页为第 10 周表（《验收第10周》，10 月5日——10月9日，含 R08晨谈1005／R08集体1005／R08晨谈1006／R08集体1006），新页起。
 4. 逐页检查符合 W1–W6 视觉标准：无遮挡、裁字、越界、异常空白页；标红文字可见（对照 R01/R04 已抽样基线）。
 5. 直接关闭 Word，提示保存时选择"不保存"。
-6. PowerShell 执行 `Get-FileHash 'C:\Users\admin\Downloads\小班甲_周计划_2026-09-30_2026-10-06 (1).docx' -Algorithm SHA256`，结果应仍为 `E5595323B4A28221FCAC9683B2AFDE69A1A6ABCE7124AC762E24C06A3965BC3C`。
+6. PowerShell 执行 `Get-FileHash '<LOCAL_USERPROFILE>\Downloads\小班甲_周计划_2026-09-30_2026-10-06 (1).docx' -Algorithm SHA256`，结果应仍为 `E5595323B4A28221FCAC9683B2AFDE69A1A6ABCE7124AC762E24C06A3965BC3C`。
 
 其余唯一哈希组文件的结构完整性已由 Word 自动化覆盖（打开无修复、页数／表格核对、关闭哈希不变）；如需扩展视觉抽查，按上述步骤 2–5 对任一文件重复即可。
 

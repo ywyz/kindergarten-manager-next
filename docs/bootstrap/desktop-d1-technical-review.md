@@ -1,5 +1,7 @@
 # D1 本地手工日计划技术核查
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 初次核查：2026-10-11；版本核查更新：2026-10-13；运行时准备方案更新：2026-10-14（§8）。核查者：Codex。基线为 `codex/desktop-v2-foundation`、HEAD `b3c5bbf` 及当前未提交工作区。D0 结论沿用[第三轮复审](desktop-d0-review.md)；初次完成 D1 五项工程契约核查，随后补充 §7 版本决定与 §8 准备方案，均没有写入实现、测试、迁移或构建脚本。
 
 §1–8保留设计、版本选择及运行时准备历史。2026-10-17当前状态：CPython3.14.7标准Windows x64环境／锁及28e3e60e…包已核对，业务26包保持；[最新审阅§17](desktop-d1-review.md#17-d1b-第八轮修复复审与工程收口2026-10-17)关闭R17，累计17项全部关闭，**D1B在当前Windows 11开发机工程复审通过**。独立133／108／146项、纯逻辑＋60组件及前端检查通过，真实设置窗口9/9；137文件包同源，55个二进制／扩展条目与来源相符。实际IME／教师体验、干净构建和发行再现性等仍未验。[实施结果](desktop-d1-result.md)§19及§19.12保留实施、首次失败和工程收口结论。规格见[本地手工日计划](../specs/desktop-manual-daily-plan.md)，[当前任务](../tasks/current.md)为教师流程与实际IME体验清单；其后准备D2规格。OpenCode唯一写实现／测试／迁移／构建，Codex核查、设计与验证。
@@ -194,7 +196,7 @@ Codex 在 `backend` 目录执行 `uv sync --locked --dry-run --offline --python 
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-$d1Repo = 'C:\Users\yw980\code\kindergarten-manager-next'
+$d1Repo = '<LOCAL_USERPROFILE>\code\kindergarten-manager-next'
 $d1BasePython = 'C:\Python314\python.exe'
 $d1Env = Join-Path $d1Repo 'desktop\.venv-d1'
 $d1Python = Join-Path $d1Env 'Scripts\python.exe'

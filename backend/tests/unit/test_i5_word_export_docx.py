@@ -417,7 +417,7 @@ class DailyDocxTests(unittest.TestCase):
         self.assertEqual(_text(header[1]), "中一 甲老师")
         self.assertNotIn("中班", text)
         # No template sample people / sample text survives.
-        for residue in ("南通市崇川区樾府幼儿园", "岳炜", "暑假趣事多", "蜜雪冰城"):
+        for residue in ("SYNTHETIC-SCHOOL-RESIDUE", "SYNTHETIC-TEACHER-RESIDUE", "暑假趣事多", "蜜雪冰城"):
             self.assertNotIn(residue, text, residue)
 
     def test_w1_empty_content_keeps_columns_without_sample(self):
@@ -437,7 +437,7 @@ class DailyDocxTests(unittest.TestCase):
             "支持策略：",
         ):
             self.assertIn(label, text, label)
-        for residue in ("跳圈圈", "蜜雪冰城", "暑假趣事多", "岳炜", "南通市崇川区樾府幼儿园"):
+        for residue in ("跳圈圈", "蜜雪冰城", "暑假趣事多", "SYNTHETIC-TEACHER-RESIDUE", "SYNTHETIC-SCHOOL-RESIDUE"):
             self.assertNotIn(residue, text, residue)
 
     def test_w1_reflection_label_once_with_body(self):
@@ -1029,7 +1029,7 @@ class WeeklyDocxTests(unittest.TestCase):
         for numeral in ("一", "二", "三"):
             self.assertIn(f"第（{numeral}）周", text)
         self.assertEqual(text.count("本周重点内容"), 3)
-        for residue in ("戚甦甦", "朱维维", "老狼老狼几点了"):
+        for residue in ("SYNTHETIC-TEACHER-RESIDUE-A", "SYNTHETIC-TEACHER-RESIDUE-B", "老狼老狼几点了"):
             self.assertNotIn(residue, text, residue)
 
     def test_w4_outside_term_placeholder_empty_not_holiday(self):
@@ -1078,7 +1078,7 @@ class WeeklyDocxTests(unittest.TestCase):
         self.assertIn("我是中班小朋友", _text(root))
         self.assertIn("甲老师", _text(root))
         self.assertIn("丙老师", _text(root))
-        for residue in ("戚甦甦", "朱维维", "老狼老狼几点了", "我是班级小主人", "国庆放假"):
+        for residue in ("SYNTHETIC-TEACHER-RESIDUE-A", "SYNTHETIC-TEACHER-RESIDUE-B", "老狼老狼几点了", "我是班级小主人", "国庆放假"):
             self.assertNotIn(residue, _text(root), residue)
 
     def test_w6_header_includes_grade_and_class(self):

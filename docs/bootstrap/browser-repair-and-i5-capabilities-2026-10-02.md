@@ -1,5 +1,7 @@
 # 外置浏览器修复与 I5 剩余能力复测（2026-10-02）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 状态：**外置 Chrome／Edge 的连接、读页和点击已通过；外置 Edge 的真实产品下载、Word 打开／缩放／翻页／关闭及原件哈希复核已通过单样例能力检查。请求暂停／拦截仍受阻，I5 全套产品验收仍待 Trae 记录收口。** 本文不将能力检查等同于 R01–R16 或 W1–W6 全部通过。
 
 用户授权按 GitHub issue 尝试修复、继续复测，并将修复过程记录在仓库；本文与证据先保留未提交，待 Trae 验证记录一并 commit／push。未修改业务代码、架构、验收规格或远程部署。本轮为 Codex 协调者实测，不能署名为 Trae Work 的执行结果。
@@ -31,7 +33,7 @@
 当前运行时标识：`81ea4d5168ddd0a3`。修改文件：
 
 ```text
-C:\Users\admin\AppData\Local\OpenAI\Codex\runtimes\cua_node\81ea4d5168ddd0a3\bin\node_modules\@oai\cua-repl\dist\lib\js\oai_js_cua_repl\src\launch.js
+<LOCAL_USERPROFILE>\AppData\Local\OpenAI\Codex\runtimes\cua_node\81ea4d5168ddd0a3\bin\node_modules\@oai\cua-repl\dist\lib\js\oai_js_cua_repl\src\launch.js
 ```
 
 在已有 `env:Object.assign(Object.assign({},i.env),{...})` 对象内新增以下字段；后续原有 `CUA_REPL_ENABLED_SURFACES` 等字段原样保留：
@@ -59,13 +61,13 @@ no_proxy: [i.env.no_proxy || i.env.NO_PROXY, "localhost", "127.0.0.1", "::1"].fi
 
 补丁在仓库外的已安装应用运行时中；Git 只记录本文及脱敏能力证据，不追踪应用运行时或私密账号。它属于临时绕行：应用更新可能覆盖文件或切换运行时目录。再次故障时应先核对实际启动路径与补丁是否仍存在，不能机械覆盖新版本文件。
 
-回滚仅适用于上表这一运行时及匹配的当前哈希：退出 Codex，将同目录匹配备份恢复为 `launch.js`，核对恢复后哈希等于原文件哈希，再完整启动 Codex。如果应用已更新或文件哈希不同，先重新审查，不覆盖未知版本。原备份与本地非凭据诊断记录 `C:\Users\admin\.codex\tmp\cua-browser-proxy-repair-20261002.json` 均保留；该旧诊断记录的下载状态仅截至连接复测，本轮下载／桌面状态以本文为准。
+回滚仅适用于上表这一运行时及匹配的当前哈希：退出 Codex，将同目录匹配备份恢复为 `launch.js`，核对恢复后哈希等于原文件哈希，再完整启动 Codex。如果应用已更新或文件哈希不同，先重新审查，不覆盖未知版本。原备份与本地非凭据诊断记录 `<LOCAL_USERPROFILE>\.codex\tmp\cua-browser-proxy-repair-20261002.json` 均保留；该旧诊断记录的下载状态仅截至连接复测，本轮下载／桌面状态以本文为准。
 
 ## 外置浏览器实际控制
 
 | 对象 | 实测结果 |
 | --- | --- |
-| Chrome | provider `3`，`type=extension`，profile `ywyz.tech`；程序版本 `154.0.8037.98` |
+| Chrome | provider `3`，`type=extension`，profile `example.invalid`；程序版本 `154.0.8037.98` |
 | Edge | provider `4`，`type=extension`，profile `Profile 1`；程序版本 `154.0.4258.48`；重复注册 provider `5` 未作为本轮控制对象 |
 | 内置浏览器 | provider `2`／`iab`，与以上外置扩展对象分别记录；本轮外置结论不来自它 |
 | Chrome 实际操作 | 新建 https://example.com，读取标题／正文，点击 “Learn more”，到达并读取 https://www.iana.org/help/example-domains；测试页关闭且确认不存在 |
@@ -95,8 +97,8 @@ no_proxy: [i.env.no_proxy || i.env.NO_PROXY, "localhost", "127.0.0.1", "::1"].fi
 
 ### 下载与桌面样例证据
 
-- 服务器：[独立 I5 验收实例](https://kg-next-verify.ywyz.tech)，使用既有合成夹具；页面选择小班甲、2026-09-01、内容 v1、导出范围“当前日期”。
-- 原文件：`C:\Users\admin\Downloads\小班甲_日计划_2026-09-01_2026-09-01 (2).docx`；落盘修改时间 `2026-10-02T16:46:28.2421982+08:00`。`(2)` 为本机同名下载后缀，不是产品版本号。
+- 服务器：[独立 I5 验收实例](https://legacy-verify.example.invalid)，使用既有合成夹具；页面选择小班甲、2026-09-01、内容 v1、导出范围“当前日期”。
+- 原文件：`<LOCAL_USERPROFILE>\Downloads\小班甲_日计划_2026-09-01_2026-09-01 (2).docx`；落盘修改时间 `2026-10-02T16:46:28.2421982+08:00`。`(2)` 为本机同名下载后缀，不是产品版本号。
 - 下载及关闭后 SHA-256：`C06E1A15AC1C9442A1EA4582C92105A870871DA1391E5FBC3543A6EE938B00CA`，14,490 字节。副本与原文件一致。
 - Word 实际环境：Windows Server 2025 Datacenter `10.0.26100`／build `26100`／x64；软件 UI 为 Word，EXE ProductName 为 Microsoft Office，ProductVersion／FileVersion 为 `16.0.20430.20092`；PE machine `0x8664`，x64。
 - 样例声明字体包含仿宋、仿宋_GB2312、宋体、楷体、Times New Roman、Liberation Sans、Noto Sans CJK SC。系统字体注册及文件核对见宋体、仿宋、楷体、Times New Roman、Liberation Sans；本轮未确认 Noto Sans CJK SC／仿宋_GB2312 的实际替代关系，不宣称字体兼容验收完成。
@@ -106,6 +108,8 @@ no_proxy: [i.env.no_proxy || i.env.NO_PROXY, "localhost", "127.0.0.1", "::1"].fi
 Protected View 的打印入口未执行，依据已读 `../../../../.codex/plugins/cache/openai-bundled/computer-use/26.930.21537/skills/computer-use/SKILL.md`（当时本机文件） 所要求读取的 `../../../../.codex/plugins/cache/openai-bundled/computer-use/26.930.21537/docs/guidance.md`（当时本机文件） 明文约束：**“Do not act on security or privacy permission requests.”** 将本文件的“启用打印”视为此类安全权限入口是本轮解释；页面查看、缩放、滚动与关闭已经完成，不要求用户解除全局 Protected View。
 
 本轮产生的文件与截图副本见 [证据清单](evidence/browser-capabilities-2026-10-02/manifest.json)。截图仅包含合成产品数据，保存为能力证据；35% 整页图用于确认页面整体可见，75% 图用于文字及第二页状态，不能以低倍率截图证明所有文字无缺字。浏览器产品页截图在收尾时采集，期间其他验收操作可能已改变夹具，不能拿它重建 16:46 的完整数据库快照。
+
+2026-10-30 公开副本说明：该目录中的 DOCX 已清除 Office 作者元数据，`word/document.xml` 及版式相关资源不变，4 张截图字节不变。清单保留原下载 hash／字节并另列当前清理副本 hash／字节；原始文件私下保留。下述当日“原件与副本一致”的结论属于 2026-10-02 原始字节，不能当作当前清理文件的 hash。
 
 记录收口检查通过：清单内 5 个证据文件的字节与 SHA-256 全部匹配，DOCX ZIP CRC 通过，本文本机相对链接均存在，下载原件前后及证据副本哈希一致；已跟踪文档的 `git diff --check` 通过。截图页码可能跟随光标所在页，单纯滚动后不立即更新；第二页 75% 图已经明确显示“第 2 页，共 2 页”。
 

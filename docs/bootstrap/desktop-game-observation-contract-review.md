@@ -1,5 +1,7 @@
 # D4-E13：游戏观察Contract独立核定
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-26。**结论：E13 Contract设计核定通过，已归并观察主模块及身份／班级、AI、提示词、Word、审计五份扩展。** 仅批准本文及有效Contract中的设计约束；观察未实施，A01–A22全部仍待运行验证，没有新增迁移、图片、AI、宿主、Word或打包通过结论。
 
 后续接续（2026-10-26）：用户另行授权的E01／E02／E04已进入实施与独立核查，见[数据基础核查](desktop-game-observation-foundation-review.md)。本文“仅设计／暂不实施”为本轮设计核定时点结论；后续授权仅覆盖上述切片，其余范围不变。
@@ -25,7 +27,7 @@
 
 继续原会话ses_ead8af71dffeJphI1NOWg4jZgI，历史标题“D2 W6 导出打包工程实施”；该标题不扩展本轮权限。使用现有OpenCode CLI 2.1.2、plan代理及固定opencode-go/deepseek-v4.1-flash#default；没有fork／另建会话。派发仅允许只读规划和回复草案，Codex写入规划文档，未代写实现。
 
-证据根：`C:/Users/yw980/AppData/Local/Temp/kgm-observation-contract-20261026-8a816ea1/`；本机指针`%TEMP%/kgm-observation-contract-current.txt`。Temp不是永久交付仓库，核定所需决定与修正已归并本文及Contract。
+证据根：`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-contract-20261026-8a816ea1/`；本机指针`%TEMP%/kgm-observation-contract-current.txt`。Temp不是永久交付仓库，核定所需决定与修正已归并本文及Contract。
 
 | 轮次 | 实际交付／审计 | 独立处理 |
 | --- | --- | --- |

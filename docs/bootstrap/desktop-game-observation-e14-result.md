@@ -1,8 +1,10 @@
 # D4 E14：整包、集成验证及教师体验包结果
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-28。**原OpenCode r03停写交接时：E14-R01–R06剩余可修项已修复；新候选及精简归档完成自测，等待Codex审核，尚未提交／推送／发布。** 本文保留实现者自测窗口；最终独立范围及Git收口见[核查§6–§7](desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)。冻结运行仍受SAC4551阻止，不能由自测／源码／静态结果替代。
 
-证据根：`C:/Users/yw980/AppData/Local/Temp/kgm-observation-e14-20261028-2f5a8ac1`。本片只写 `opencode-evidence/`；`codex-evidence/` 未改写。r01、r02 的包/证据及 r03 首次预构建保留；最终 r03 在独立 `build/desktop-e14-r03`。
+证据根：`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-e14-20261028-2f5a8ac1`。本片只写 `opencode-evidence/`；`codex-evidence/` 未改写。r01、r02 的包/证据及 r03 首次预构建保留；最终 r03 在独立 `build/desktop-e14-r03`。
 
 ## 1. 最新剩余点与修复对照
 

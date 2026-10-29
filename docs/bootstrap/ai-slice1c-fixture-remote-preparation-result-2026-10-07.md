@@ -1,12 +1,14 @@
 # AI 1C 独立远程夹具准备结果（2026-10-07）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 结论：**独立远程实例与正常 v1 基线已准备完成，B_contract 已实际恢复并核对通过；真实契约演进和缺／错主密钥的 Windows 子例尚未补验。** 用户在[远程执行清单](ai-slice1c-fixture-remote-preparation-plan-2026-10-07.md)交付后要求“请提交 推送 然后授权”；本轮先将夹具、验证及既有文档整理提交并推送 `176b5ed` 到 origin/main，再接续执行远程准备范围。最后核验时间为 **2026-10-07 16:40:38（Asia/Shanghai）**，原始 UTC 为 `2026-10-07T08:40:38.979195+00:00`。
 
 ## 实际身份与边界
 
 | 对象 | 实际结果 |
 | --- | --- |
-| HTTPS／SSH | https://kg-next-ai-fixture.ywyz.tech ／ root@bwh.ywyz.tech；A 与 AAAA 均与原服务器匹配，真实 HTTPS health 成功 |
+| HTTPS／SSH | https://legacy-ai-fixture.example.invalid ／ <PRIVATE_CONTACT_OR_SSH_TARGET>；A 与 AAAA 均与原服务器匹配，真实 HTTPS health 成功 |
 | release／current | `/opt/kindergarten-manager-next-ai-fixture/releases/ai1c-v1-20261007-176b5ed`；独立 current 指向该 release |
 | 服务／运行账号 | `kg-next-ai-fixture-api.service` enabled、active；低权限 `kg-next-ai-fixture` |
 | API 监听 | 仅 `127.0.0.1:18091`；无 worker |

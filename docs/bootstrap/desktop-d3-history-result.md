@@ -1,5 +1,7 @@
 # D3-A H1／H2 结果：本机日计划历史读取与整份恢复（R07／R08／R09／R10／R11 回修）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-23。范围包含 **H1 数据与本机 API** 和 **H2 桌面交互／源码窗口工程验证**；
 H3 冻结包与教师包体验仍未开始。未修改教师话语 r3、普通 save、D2 原历史读取、AI 生命周期、
 Word 模板或旧提示词 hash。
@@ -150,7 +152,7 @@ cleanup 抛错三种情况。R11 修复：`historyTimeText` 对无时区的本�
 `%TEMP%/opencode/d3_h2_verify_run_r10d.log` 与 `d3_h2_verify_report_r10d.json`（上一轮源码窗口）。
 最终根内另有 `first.json`、`verify.json`、`first-window.log`、`verify-window.log`、`startup.log`。
 
-最终合成根：`C:\Users\yw980\AppData\Local\Temp\kgm-d3-h2-window-a48e856b`。两相位均使用
+最终合成根：`<LOCAL_USERPROFILE>\AppData\Local\Temp\kgm-d3-h2-window-a48e856b`。两相位均使用
 `APP_DISABLE_DOTENV=1`、独立 `LOCALAPPDATA`、显式 `--data` 合成根；真实 KGNext-G17 两库、
 凭据根、旧包和 Word 未触碰。受控本机 TLS provider 只收到 1 次 split 请求，无外部网络或真实
 AI 凭据。

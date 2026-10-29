@@ -1,6 +1,8 @@
 # D4 E14：整包及集成独立核查
 
-更新：2026-10-28。状态：**E14-R01–R06源码／构建／静态分发可修项独立核查通过；冻结运行受Smart App Control阻止，E14整体及教师体验未通过，未发行。** 最新结论见§6；实现者停写自测另见[结果](desktop-game-observation-e14-result.md)，不相互冒充。Git按§7由原OpenCode正常提交推送已核查源码／文档，不能把Git收口写成冻结包运行通过。
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
+更新：2026-10-30。状态：**E14-R01–R06源码／构建／静态分发可修项独立核查通过；冻结运行受Smart App Control阻止，E14整体及教师体验未通过，未发行。** 工程结论见§6，用户10月30日决定暂按源码验证及Certum申请准备见§8；实现者停写自测另见[结果](desktop-game-observation-e14-result.md)，不相互冒充。Git按§7由原OpenCode正常提交推送已核查源码／文档，不能把Git收口写成冻结包运行通过。
 
 ## 1. 授权、基线与保护
 
@@ -8,7 +10,7 @@
 
 开工工作区干净，分支`codex/desktop-v2-foundation`，基线`5808078`，无新分支。原会话`ses_ead8af71dffeJphI1NOWg4jZgI`经CLI 2.1.4 `api --standalone GET /api/session/{id}`核对为idle／succeeded、build、`opencode-go/deepseek-v4.1-flash#max`；同一会话以显式相同模型及代理派发。未另起／fork会话、实现者或子代理。
 
-证据根`C:/Users/yw980/AppData/Local/Temp/kgm-observation-e14-20261028-2f5a8ac1/`。开工Git、会话及280个已跟踪产品／桌面路径hash保存在根目录；实现者仅写`opencode-evidence/`，Codex独立结果写`codex-evidence/`。CLI每轮JSONL、stderr和实际exit分开保留，最终核对新增assistant实际模型及代理元数据。开工脱敏会话导出为`session-opening-sanitized.json`，包含6452消息，略晚于派发；最终模型审计按开工会话时间／消息ID划定，不将该计数直接当派发前边界。
+证据根`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-e14-20261028-2f5a8ac1/`。开工Git、会话及280个已跟踪产品／桌面路径hash保存在根目录；实现者仅写`opencode-evidence/`，Codex独立结果写`codex-evidence/`。CLI每轮JSONL、stderr和实际exit分开保留，最终核对新增assistant实际模型及代理元数据。开工脱敏会话导出为`session-opening-sanitized.json`，包含6452消息，略晚于派发；最终模型审计按开工会话时间／消息ID划定，不将该计数直接当派发前边界。
 
 原体验库／配置／凭据、OneDrive原件、旧包及远程资源保留。自动验证只用独立合成库／图片或已授权只读副本；真实AI只传独立合成资料。凭据只经既有服务在内存中只读使用，不进入日志、代码或分发包。不安装／升级依赖、Skill或MCP，不改ARCHITECTURE.md，不启动WebDAV／跨设备或无关功能。Windows系统保护不更改，遇实际阻止保留证据，不重建试错绕过。
 
@@ -85,3 +87,18 @@ R06的r02交接还需校正：实际ZIP的`KGNext-E14/EVIDENCE/real-ai-source-ha
 Codex随后核对批准树、父提交5808078、HEAD与远端、clean工作区及最终实际模型／代理元数据，回执保存在本证据根`git-final-check.json`与`model-audit-final.json`，不为回填自身SHA制造额外提交。唯一下一入口为[当前任务](../tasks/current.md)，剩余主阻塞为签名后的整包运行验证，不能用源码或静态结果替代。
 
 Git前脱敏会话审计：开工时间边界后的303条assistant全部为原会话build／`opencode-go/deepseek-v4.1-flash#max`，最后finish=stop／succeeded；3次agent-switched均build→build，1次自动compaction同模型max、无agent字段，单列处理。三轮日志工具为shell／write／edit／read，task／子代理工具0，未发现嵌套OpenCode实施run。r01的199文件与r02的200文件分别再次逐项匹配其原manifest；最终原5个配置／DB／密文源hash保持。Git回执以随后独立文件为准，不在本段预写尚未发生的提交结果。
+
+## 8. 暂按源码验证与Certum申请准备（2026-10-30）
+
+本节保留当日证书选型阶段的记录；用户随后明确选择 MIT、授权开源准备，并确认模板由本人制作或已具备公开／MIT授权。MIT落地、当前文件隐私清理及源码复验结果另见[开源准备检查](open-source-readiness-review.md)。以下“未启动／未修改”等说明限选型研究时点，不作为后续开源准备仍未执行的判断。
+
+用户决定当前暂用源码验证，近日自行申请Certum官网证书；起初要求按是否开源比较，随后明确先做开源版本，未来如商业化再从开源版fork，现阶段暂无商业化目标。具体许可证与公开范围仍需落实，本轮未更改仓库可见性、添加许可证或提交身份／程序材料。该决定不改变§6的冻结包未验结论，也不改变系统保护；源码工作不再以取得证书为前置条件。未来如需实现变更，仍由原OpenCode、指定Go模型实施，Codex独立审核。
+
+本轮仅核对官方公开材料及本地声明。仓库已跟踪路径中未发现LICENSE／COPYING／NOTICE或项目开源许可声明；不能用npm的`private: true`判断远端仓库可见性，本轮没有据此作可见性结论，也未修改公开状态。
+
+- [Certum产品说明](https://www.certum.eu/en/code-signing-certificates/)明确Standard（OV）可签发给个人。按用户随后作出的开源决定，当前优先建议Open Source云版；项目须先具备官方可核验的公开开源资料，后续商业分发另用适用的Standard等通用证书。
+- [官方材料清单](https://support.certum.eu/en/code-signing-required-documents/)列明个人身份核验及本人抬头的水／电／燃气／电话等账单；开源款另需公开可查的项目网址及申请人与项目的明确关系，仅向个人签发，商业分发用途可导致撤销。中国大陆证件、中文账单、账单时效／替代材料及翻译公证是否需要，公开页面未具体闭合，应付款前向官方确认。
+- 官网当前起价：[Open Source云版](https://shop.certum.eu/open-source-code-signing-on-simplysign.html)€49，[Standard云版](https://shop.certum.eu/standard-code-signing-in-the-cloud.html)€209；均需SimplySign手机及桌面客户端／网络，说明上限5000次签名／月。不是整包次数承诺，逐文件计次、实际可购套餐、税费及大陆服务可用性待官方确认。[商品列表](https://shop.certum.eu/code-signing.html)中的€25／€139是已有兼容卡和读卡器的电子激活码，不能当作首次完整签名方案总价。
+- 证书用途与源码许可分开处理。[OSI说明](https://opensource.org/faq)中开源可用于商业用途，但copyleft可能对衍生分发有相同许可要求，另建fork不消除这些义务。[MIT许可](https://opensource.org/license/mit)可作为便于以后商业分支的候选，也允许其他人商业使用，仍须保留版权和许可声明；本轮只提出候选，未替用户确定许可证。后续还须核对第三方依赖／资源许可及贡献代码权利，不能只靠根目录LICENSE覆盖第三方材料。
+
+不替用户注册账号、联系供应商、购买、上传证件或改变仓库许可；未启动OpenCode、应用、新冻结EXE、真实AI、签名或发行。仅更新当前决定和申请研究，未新增验证结果，不重复运行无变化测试。

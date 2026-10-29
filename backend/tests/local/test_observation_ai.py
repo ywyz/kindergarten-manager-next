@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
+import tempfile
 import time
 import uuid
 from datetime import datetime
@@ -247,12 +248,21 @@ class ObservationAiCase(LocalTestCase):
             review_decision=review,
         )
 
+    def _evidence_root(self) -> Path:
+        """Lazy per-test evidence root; unique unless explicitly overridden."""
+        root = getattr(self, "_evidence_root_path", None)
+        if root is None:
+            override = os.environ.get("E0607_EVIDENCE_ROOT")
+            if override:
+                root = Path(override)
+            else:
+                root = Path(tempfile.mkdtemp(prefix="kgm-observation-e0607-"))
+            root.mkdir(parents=True, exist_ok=True)
+            self._evidence_root_path = root
+        return root
+
     def _preserve_evidence(self, name: str, summary: dict) -> None:
-        root = os.environ.get(
-            "E0607_EVIDENCE_ROOT",
-            r"C:/Users/yw980/AppData/Local/Temp/kgm-observation-e0607-20261027-aa633c2e/opencode-evidence",
-        )
-        target = Path(root) / name
+        target = self._evidence_root() / name
         target.mkdir(parents=True, exist_ok=True)
         source = sqlite3.connect(str(self.runtime.db_path))
         destination = sqlite3.connect(str(target / "kindergarten.db"))
@@ -1520,12 +1530,7 @@ class ObservationAiRealTransportTests(ObservationAiCase):
                 "reserved_by"
             ]
         )
-        evidence_root = Path(
-            os.environ.get(
-                "E0607_EVIDENCE_ROOT",
-                r"C:/Users/yw980/AppData/Local/Temp/kgm-observation-e0607-20261027-aa633c2e/opencode-evidence",
-            )
-        )
+        evidence_root = self._evidence_root()
         (evidence_root / "r09-adopt-late-marker.json").write_text(
             json.dumps(marker, ensure_ascii=False, indent=2), encoding="utf-8"
         )

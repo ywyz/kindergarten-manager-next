@@ -1,16 +1,18 @@
 # I5 最小修复、远程部署与验收交接（2026-10-02）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 > 本文保留该次执行的历史环境、源身份和证据，不是当前操作清单。已实现链路验收见 [I5 正式收口](i5-final-closeout-2026-10-03.md)，当前部署见 [1ABC 部署结果](ai-slice1abc-deployment-result-2026-10-05.md)。
 
 状态：**范围竞态已修复并提交；远程独立验收实例已部署，自动检查与公网 HTTPS/API 检查通过；Trae Work 浏览器落盘和 Office／WPS 逐页验收未执行。** 不宣布 I5 片4完成。
 
 ## 授权与基线
 
-用户本轮授权先修复遗留问题，随后 commit/push；要求 SSH 密钥连接 `root@bwh.ywyz.tech` 部署，替代本机 WSL 验收服务器，浏览器由 Trae Work 验证。Windows 10／11／Server 2022／Server 2025 与 Office 2010 以上桌面 Word／WPS 文字任一组合完成必需案例即可通过，权威口径见 [当前验收环境](../specs/i5-validation-environment.md)。
+用户本轮授权先修复遗留问题，随后 commit/push；要求 SSH 密钥连接 `<PRIVATE_CONTACT_OR_SSH_TARGET>` 部署，替代本机 WSL 验收服务器，浏览器由 Trae Work 验证。Windows 10／11／Server 2022／Server 2025 与 Office 2010 以上桌面 Word／WPS 文字任一组合完成必需案例即可通过，权威口径见 [当前验收环境](../specs/i5-validation-environment.md)。
 
 开始 HEAD 为 `0e473b2e4205cb6bec0e9f8ba07ccdf3f3307406`，分支 main；当时已有两份未跟踪协调者审阅／交接文档，执行时保留并标注新指令替代关系；现已随文档清理移除。用户明确答复“本轮允许你直接最小修复”，仅对两处导出竞态例外，后续默认业务由 OpenCode 写入不变。
 
-修复提交：`2cb8d81556f47936e236dadedcb37bf3cec5b3c8`。本机 Git 身份缺失，提交命令沿用仓库最近提交的 `ywyz <admin@ywyz.tech>`，未修改全局 Git 配置。部署归档由该提交生成，文档收口提交单独完成，不含运行时凭据。
+修复提交：`2cb8d81556f47936e236dadedcb37bf3cec5b3c8`。本机 Git 身份缺失，提交命令沿用仓库最近提交的 `ywyz <<PRIVATE_CONTACT_OR_SSH_TARGET>>`，未修改全局 Git 配置。部署归档由该提交生成，文档收口提交单独完成，不含运行时凭据。
 
 ## 修复与行为证据
 
@@ -28,7 +30,7 @@
 | Windows | Microsoft Windows Server 2025 Datacenter，10.0.26100，build 26100，64位；CIM只读采集 |
 | PowerShell | 7.6.6，`D:\Program Files\PowerShell\7\pwsh.exe`，本轮可直接调用 |
 | 本地代码运行时 | Node 24.19.0、npm 11.19.1、Python 3.14.7；npm与uv官方临时工具已校验integrity／SHA-256，不全局安装 |
-| 远程系统 | Ubuntu 24.04.5 LTS x86-64；服务器自报主机名cloud.ywyz.tech，SSH目标仍是用户指定bwh.ywyz.tech |
+| 远程系统 | Ubuntu 24.04.5 LTS x86-64；服务器自报主机名cloud.example.invalid，SSH目标仍是用户指定bwh.example.invalid |
 | 远程Python／uv | 系统Python 3.12.3、目录内uv 0.12.21；显式选择既有解释器，未下载Python |
 | MySQL | 已存在mysql:8.4.11镜像创建新容器，运行版本8.4.11／InnoDB；未复用旧业务库 |
 | 迁移 | 既有Alembic链应用至`20260924_i4_weekly_plans`；未新增revision |
@@ -53,7 +55,7 @@ Windows后端首次`--locked`安装受用户级包源配置影响而停止；显
 
 | 资源 | 身份／状态 |
 | --- | --- |
-| HTTPS入口 | [kg-next-verify.ywyz.tech](https://kg-next-verify.ywyz.tech)，Windows访问首页200与`/health`正常；入口为已构建资产，不是Vite开发服务器 |
+| HTTPS入口 | [legacy-verify.example.invalid](https://legacy-verify.example.invalid)，Windows访问首页200与`/health`正常；入口为已构建资产，不是Vite开发服务器 |
 | 目录 | `/opt/kindergarten-manager-next-i5/`；`current`指向`releases/2cb8d81556f47936e236dadedcb37bf3cec5b3c8` |
 | API | `kg-next-i5-api.service`，active且enabled，独立kg-next-i5系统账号，单uvicorn进程，仅127.0.0.1:18090 |
 | DB容器／volume | `kg-next-i5-mysql-20261002`／`kg-next-i5-data-20261002`，仅127.0.0.1:13386，restart unless-stopped，保留 |
@@ -67,7 +69,7 @@ Windows后端首次`--locked`安装受用户级包源配置影响而停止；显
 
 源码tar SHA-256 `6867bdb67c4a272affd8947473bdf195685eb7899a1666940c7fd0e019b5336f`；前端dist归档 `7d8fc2a94c5df5e2168dd2bc0d988d4ec4e88c855e680af08b24829ce7118825`，本地与服务器一致。固定模板哈希前后及服务器均一致：日`99008f92…`、周`24ccaa9e…`（完整值在10月1日记录与规格中）。
 
-部署工具与日志保留在该实例tools／incoming／evidence中；本机工具与API检查文件在仓库外`C:\Users\admin\.codex\visualizations\2026\10\02\01a0fb52-d101-73a2-85c8-f71c56b27c23\i5-work`。实例与夹具保留供Trae Work验收，不按旧记录清理。若需停用，先停止并disable准确的`kg-next-i5-api`，移除新Caddy snippet并验证reload；DB／volume／凭据保留待用户决定，不执行全局容器清理或删除旧应用。
+部署工具与日志保留在该实例tools／incoming／evidence中；本机工具与API检查文件在仓库外`<LOCAL_USERPROFILE>\.codex\visualizations\2026\10\02\01a0fb52-d101-73a2-85c8-f71c56b27c23\i5-work`。实例与夹具保留供Trae Work验收，不按旧记录清理。若需停用，先停止并disable准确的`kg-next-i5-api`，移除新Caddy snippet并验证reload；DB／volume／凭据保留待用户决定，不执行全局容器清理或删除旧应用。
 
 ## Trae Work交接与未执行项
 

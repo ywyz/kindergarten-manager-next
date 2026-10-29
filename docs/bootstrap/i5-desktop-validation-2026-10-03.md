@@ -1,6 +1,8 @@
 # I5 本机桌面产品验收 — 2026-10-03
 
-执行者：本机桌面 Codex。服务为 `https://kg-next-verify.ywyz.tech`；交接源提交 `2cb8d81556f47936e236dadedcb37bf3cec5b3c8`，本轮未重新核定服务器提交。历史 Trae R01–R15 保持历史执行者身份。
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
+执行者：本机桌面 Codex。服务为 `https://legacy-verify.example.invalid`；交接源提交 `2cb8d81556f47936e236dadedcb37bf3cec5b3c8`，本轮未重新核定服务器提交。历史 Trae R01–R15 保持历史执行者身份。
 
 本轮完成已就绪 D01–D13 的真实外置 Chrome UI 下载和桌面 Word 逐页检查，**不宣布 I5 全部通过**。W2 纯移动／仅格式变化和 W6 非空材料／改选来源仍缺必需夹具，另有年级显示及证据记录待复核。
 
@@ -12,7 +14,7 @@ Word 使用页面视图 100%，处于受保护视图，未启用编辑或修改�
 
 实际下载14个非空DOCX。按文件计103页，其中D08两份SHA-256相同，复用一页视觉证据；不同字节文件共102页均逐页观察。所有ZIP条目CRC通过，关闭不保存后的下载原件SHA-256均与专用证据副本一致。截图共110张，包括补拍、浏览器失败路径与退出截图。
 
-完整本机报告：`C:\Users\yw980\.codex\tmp\i5-desktop-acceptance-20261003\logs\i5-desktop-validation-2026-10-03.md`。
+完整本机报告：`<LOCAL_USERPROFILE>\.codex\tmp\i5-desktop-acceptance-20261003\logs\i5-desktop-validation-2026-10-03.md`。
 
 每文件路径、字节、SHA-256、CRC条目、实际Word页数、逐页归属／结论／截图：同目录 `evidence-manifest.json`。原件位于用户 Downloads，副本位于交接目录 downloads。完整计划正文、认证数据、DOCX及截图未写入Git。
 

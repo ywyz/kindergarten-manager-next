@@ -44,11 +44,11 @@ TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "assets" / "word_templat
 
 DAILY_TEMPLATE = TEMPLATE_DIR / "daily_plan.docx"
 DAILY_TEMPLATE_SHA256 = (
-    "99008f92ae42cc87da7e42e84009ffcd8bbefdf43602f09a59ae4027e5ddc9bd"
+    "606651551620982428bbfa56b3df5c43c8162b7f1452d42bf43758241b219fea"
 )
 WEEKLY_TEMPLATE = TEMPLATE_DIR / "weekly_plan.docx"
 WEEKLY_TEMPLATE_SHA256 = (
-    "24ccaa9e557522c40a653643381e31f319ea6ae5e9f3e30e9dfa41da21986aed"
+    "4cbfc3155fd6b717ed029d1c305f62f7ccd003435fd03423e25c529a8e2067a4"
 )
 
 _DOCUMENT_MEMBER = "word/document.xml"

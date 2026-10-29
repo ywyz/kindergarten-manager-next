@@ -1,5 +1,7 @@
 # D1 独立审阅与接续
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 首轮：2026-10-12；最新实施复审：2026-10-17。审阅者：Codex。基线：`codex/desktop-v2-foundation`、HEAD `b3c5bbf` 及当前未提交工作区。依据 [D1 规格](../specs/desktop-manual-daily-plan.md)、[实施结果](desktop-d1-result.md) 与 [技术核查](desktop-d1-technical-review.md)。
 
 **最新第八轮修复复审结论（2026-10-17，§17）：D1B在当前Windows 11开发机工程复审通过。** R17设置残留关闭，累计17项全部关闭；独立原组件反例及真实WebView2窗口验证草稿保留、显式取消后重试关闭。133本地／108回归／146桌面、纯逻辑＋60组件、类型检查与构建通过；28e3e60e…包137文件与源码／资产一致，真实对话框与同字节Word证据有效。下一步教师流程与实际IME体验；D1产品、干净机器及发行兼容性仍未验。D0／D1A、3.12异常与旧失败保留历史身份。
@@ -789,7 +791,7 @@ OpenCode真实窗口`source-run/save-dialog4.json`及`package-logs/save-dialog.j
 
 EXE为14,721,796字节，SHA-256 `167b352b9465a546f0a0c8ee964bb4996bae1b147d01058161eacde638ba5385`。身份相符说明审阅适用于该包，不代表没有上述缺陷。
 
-**包来源更正：** 增加的42个api-ms-win-*.dll及ucrtbase.dll共43文件，COLLECT-00.toc实际指向`C:\Users\yw980\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\libheif\libheif\bin\`，并非直接从System32或D1解释器目录取得。逐一与该来源散列一致，均AMD64、版本10.0.26100.4654。当前PyInstaller解析库名亦按PATH选择此目录；旧／新d1_main的ctypes扫描均无直接DLL结果，不能把“新增ctypes必然导致43文件”写成已证实因果。记录实际来源及PATH选择，保留为干净构建／发行可再现性边界；仅凭外部来源不新增本轮运行缺陷或阻塞，不据此清理环境或自行重建包。
+**包来源更正：** 增加的42个api-ms-win-*.dll及ucrtbase.dll共43文件，COLLECT-00.toc实际指向`<LOCAL_USERPROFILE>\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\libheif\libheif\bin\`，并非直接从System32或D1解释器目录取得。逐一与该来源散列一致，均AMD64、版本10.0.26100.4654。当前PyInstaller解析库名亦按PATH选择此目录；旧／新d1_main的ctypes扫描均无直接DLL结果，不能把“新增ctypes必然导致43文件”写成已证实因果。记录实际来源及PATH选择，保留为干净构建／发行可再现性边界；仅凭外部来源不新增本轮运行缺陷或阻塞，不据此清理环境或自行重建包。
 
 ### 14.6 补验证据的通过范围
 

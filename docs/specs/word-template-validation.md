@@ -1,5 +1,7 @@
 # 固定 Word 模板最小验证计划
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 > 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。模板与逐页版式标准继续作为验证依据；远程服务环境只约束 v1 历史链路，新桌面应用须实测本地保存与 Windows Word／WPS，完整 W6 非空材料仍须补验。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
 
 2026-10-03最新状态：当前I5已实现链路已按[正式收口](../bootstrap/i5-final-closeout-2026-10-03.md)完成产品验收。按[用户明确阶段决定](../bootstrap/i5-evidence-closeout-and-scope-decision-2026-10-03.md)，W2当前纯文本阶段以首尾空白覆盖仅格式子例；完整W6非空材料保留为[材料切片](weekly-materials-implementation.md)必需补验，仍未通过。原完整标准和各时点历史记录不删除；本条优先用于当前阶段状态判断，不表示富文本或首版整体完成。
@@ -25,7 +27,7 @@
 
 ## 已确认的目标环境
 
-用户于 2026-10-02 确认：服务与自动检查在 `root@bwh.ywyz.tech` 独立验收实例运行，不再以本机 WSL 为前提。
+用户于 2026-10-02 确认：服务与自动检查在 `<PRIVATE_CONTACT_OR_SSH_TARGET>` 独立验收实例运行，不再以本机 WSL 为前提。
 
 - 远程服务器：记录实际系统、部署版本、MySQL、Python 与服务状态；Caddy 提供 HTTPS 前端静态产物与 API 代理。
 - Windows 10／11／Server 2022／Server 2025 任一系统：Trae Work 执行真实浏览器登录、交互和下载；记录系统版本／OS build 与浏览器版本。

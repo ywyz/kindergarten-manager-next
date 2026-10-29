@@ -1,5 +1,7 @@
 # I5 年级修复只读审阅与验收实例更新（2026-10-03）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 > 本文保留该次执行的历史环境、源身份和证据，不是当前操作清单。已实现链路验收见 [I5 正式收口](i5-final-closeout-2026-10-03.md)，当前部署见 [1ABC 部署结果](ai-slice1abc-deployment-result-2026-10-05.md)。
 
 用户本轮授权只读审阅 OpenCode 修复，无阻塞问题后更新既有验收实例并记录实际源／模板哈希，检查桌面 Codex 提示词。协调者未修改业务代码、测试或模板，未 commit／push。原工作区修改及未跟踪交接文件保留。
@@ -14,7 +16,7 @@
 
 ## 实际部署源
 
-部署完成时间：2026-10-03 10:26:46（Asia/Shanghai，UTC+8）。SSH目标 `root@bwh.ywyz.tech`；入口 https://kg-next-verify.ywyz.tech。
+部署完成时间：2026-10-03 10:26:46（Asia/Shanghai，UTC+8）。SSH目标 `<PRIVATE_CONTACT_OR_SSH_TARGET>`；入口 https://legacy-verify.example.invalid。
 
 - 新release：`i5-grade-20261003-e6c15eaa0350`；`current`已指向 `/opt/kindergarten-manager-next-i5/releases/i5-grade-20261003-e6c15eaa0350`。
 - 源为Git基线 `2c44ac2b01af14d02f94c0f2cbcbcc9af49ab089` 的归档，覆盖OpenCode三份**未提交**修复文件。HEAD本身不含修复，不能将其单独当作运行版本。未把用户其他未提交文档混入源归档。

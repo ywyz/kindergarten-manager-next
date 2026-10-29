@@ -1,6 +1,8 @@
 # AI 1A＋1B＋1C 部署清单与远程验收方案
 
-2026-10-05 用户明确授权：整理完整部署源、连接 `root@bwh.ywyz.tech`、先清理旧测试系统、实际部署、生成桌面 Codex 测试方案、commit／push。业务代码仍由 OpenCode 唯一写入；本轮协调者只写部署配套与文档，不扩业务实现。
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
+2026-10-05 用户明确授权：整理完整部署源、连接 `<PRIVATE_CONTACT_OR_SSH_TARGET>`、先清理旧测试系统、实际部署、生成桌面 Codex 测试方案、commit／push。业务代码仍由 OpenCode 唯一写入；本轮协调者只写部署配套与文档，不扩业务实现。
 
 ## 门槛与部署范围
 
@@ -17,7 +19,7 @@
 
 ## 目标及旧系统清理
 
-继续使用 `https://kg-next-verify.ywyz.tech`、`kg-next-i5-api.service`、`127.0.0.1:18090`、Caddy 现有站点、`/opt/kindergarten-manager-next-i5` 和独立 MySQL 8.4.11。保留内部数据库 `kg_next_i5_acceptance`、低权限 `kg_next_i5_app`、现有五角色账号和 I5 合成数据；不清库重建，历史证据保留。
+继续使用 `https://legacy-verify.example.invalid`、`kg-next-i5-api.service`、`127.0.0.1:18090`、Caddy 现有站点、`/opt/kindergarten-manager-next-i5` 和独立 MySQL 8.4.11。保留内部数据库 `kg_next_i5_acceptance`、低权限 `kg_next_i5_app`、现有五角色账号和 I5 合成数据；不清库重建，历史证据保留。
 
 旧系统限定为 `kg-weekly-staging-app-1`／`kg-weekly-staging-db-1`／`kg-staging-registry`、四个已辨明归属的 kindergarten-staging／weekly 历史目录，以及旧 staging-manager Caddy 路由。先停止旧 app／DB／registry，再归档目录、容器配置与专用 DB 卷，验证归档可读及 SHA-256 后移除旧容器、专用卷及旧运行目录和路由。归档 root-only；不执行全局 docker prune，不动其他应用。新版旧 release 在新环境独立后归档移出运行目录；I5 数据库／凭证／证据仍保留。
 

@@ -1,5 +1,7 @@
 # D4-E：游戏观察记录工程方案独立核定
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-25。**最终结论：E01–E14工程设计核定通过，附实施准入与运行验证条件。** 有效方案为[工程设计](../specs/desktop-game-observation-engineering.md)，产品基线为[完整规格C1–C33](../specs/desktop-game-observation.md)。本结论仅批准设计方向及明确的协议约束；观察功能未实现，A01–A22没有新增通过结论，本轮未运行应用测试／迁移／探针／构建。
 
 后续接续（2026-10-26）：用户另行授权的E01／E02／E04已进入实施与独立核查，见[数据基础核查](desktop-game-observation-foundation-review.md)。本文“仅设计／暂不实施”为本轮设计核定时点结论；后续授权仅覆盖上述切片，其余范围不变。
@@ -16,7 +18,7 @@ Codex派发只读任务、限定源码核对并退回方案；未代写实现。
 
 ## 2. 原会话交付及独立审计
 
-证据根：`C:/Users/yw980/AppData/Local/Temp/kgm-observation-plan-20261025-04aabfa4/`。本机指针为`%TEMP%/kgm-observation-plan-current.txt`；temp并非永久交付仓库。可复用的结论／纠正已归并到本报告和唯一工程文档，原回复、失败证据及JSONL保留，不自动删除。
+证据根：`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-plan-20261025-04aabfa4/`。本机指针为`%TEMP%/kgm-observation-plan-current.txt`；temp并非永久交付仓库。可复用的结论／纠正已归并到本报告和唯一工程文档，原回复、失败证据及JSONL保留，不自动删除。
 
 | 轮次 | 交付及本轮实际结果 | Codex处理 |
 | --- | --- | --- |

@@ -17,7 +17,7 @@ import base64
 import hashlib
 import json
 import os
-import random
+import tempfile
 import shutil
 import sqlite3
 import subprocess
@@ -31,9 +31,7 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
 BACKEND = REPO_ROOT / "backend"
 PYTHON_DEFAULT = HERE / ".venv-d1" / "Scripts" / "python.exe"
-FRONTEND_DEFAULT = Path(
-    "C:/Users/yw980/AppData/Local/Temp/kgmu-u3fe-s0QCMt"
-)
+FRONTEND_DEFAULT = REPO_ROOT / "build" / "desktop-d1" / "frontend"
 sys.path.insert(0, str(BACKEND))
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "tests"))
@@ -270,9 +268,7 @@ def main() -> int:
     )
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
-    root = Path("C:/Users/yw980/AppData/Local/Temp") / (
-        f"kgmu-u3-chain-{random.randrange(16**8):08x}"
-    )
+    root = Path(tempfile.mkdtemp(prefix="kgmu-u3-chain-"))
     root.mkdir(parents=True, exist_ok=True)
     report: dict = {"ok": False, "root": str(root), "checks": {}, "commands": []}
     update_server = None

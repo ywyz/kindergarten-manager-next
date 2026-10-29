@@ -2,6 +2,12 @@
   "kind": "capability-check-not-full-i5-acceptance",
   "executor": "Codex coordinator",
   "recorded_at": "2026-10-02T17:17:48.4811674+08:00",
+  "public_copy": {
+    "sanitized_at": "2026-10-30",
+    "scope": "Office author metadata removed from the DOCX; document.xml and screenshots unchanged",
+    "original_docx_retained_privately": true,
+    "download_record_describes": "original historical download; files describes the current public copy"
+  },
   "download": {
     "browser": "external Edge extension provider 4",
     "filename": "小班甲_日计划_2026-09-01_2026-09-01 (2).docx",
@@ -35,8 +41,10 @@
   "files": [
     {
       "path": "小班甲_日计划_2026-09-01_2026-09-01 (2).docx",
-      "bytes": 14490,
-      "sha256": "C06E1A15AC1C9442A1EA4582C92105A870871DA1391E5FBC3543A6EE938B00CA"
+      "bytes": 14163,
+      "sha256": "EEF1CF68DB496FE0217F87F67FDBA001BBA72E919889F4C8FC942263D2F7FD06",
+      "original_bytes": 14490,
+      "original_sha256": "C06E1A15AC1C9442A1EA4582C92105A870871DA1391E5FBC3543A6EE938B00CA"
     },
     {
       "path": "edge-daily-ui.png",

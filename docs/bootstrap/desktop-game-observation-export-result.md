@@ -1,5 +1,7 @@
 # 游戏观察批选／排序、Word 导出与宿主交付结果（D4 E10–E12／E14）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-28。**原OpenCode停写交付时：本片实施与自测完成，等待Codex独立核查，尚未提交／推送／发布。** 本文保留实现者当时的自测与失败回修，不替代最终独立结论；接续核查及Git收口以[独立审阅§6–§7](desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)为准，不把教师体验、整包、安装、发行或真实AI记为通过。
 
 ## 1. 范围与边界
@@ -48,7 +50,7 @@
 
 ## 3. 自测证据与命令
 
-证据根：`C:/Users/yw980/AppData/Local/Temp/kgm-observation-export-20261028-7e7fb3c6/opencode-evidence`。本片自测子目录：`r02/logs`、`r02/obs-window-24`、`word-samples-4`、`capacity-2`、`capacity-service-3`。Codex 独立证据子目录未改动。
+证据根：`<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-export-20261028-7e7fb3c6/opencode-evidence`。本片自测子目录：`r02/logs`、`r02/obs-window-24`、`word-samples-4`、`capacity-2`、`capacity-service-3`。Codex 独立证据子目录未改动。
 
 | 项目 | 命令／入口 | 实际结果 |
 | --- | --- | --- |

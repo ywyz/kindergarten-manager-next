@@ -34,15 +34,15 @@ TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "assets" / "word_templat
 TEMPLATES = {
     "public": (
         "observation_public.docx",
-        "f3893b7427f7aac6b40706c7326ba8b1fce0104d8126a0c970c0fa98e6c04339",
+        "b2c17dd95f6bbea0acd5888695bb2b97813a32b4cb414456f1955f269f19ab46",
     ),
     "indoor": (
         "observation_indoor.docx",
-        "2295e7e1778e697221f06642c60df5424f51c994a6fefd1dd0e52fb2718d4a0c",
+        "32f396333f2a96e2eddf1880c0e02e5888c13b95f7f11f70b7b36a96ac722cb5",
     ),
     "outdoor": (
         "observation_outdoor.docx",
-        "fb37741ddbf1dd3a1f37f2196b13536026614161741d04427124d459659eef83",
+        "43b56ab506f56297689ed1edf21d29dfd810df41bfdc7719a3373d2a6c86c74d",
     ),
 }
 TYPE_LABELS = {"public": "公共", "indoor": "室内", "outdoor": "户外"}

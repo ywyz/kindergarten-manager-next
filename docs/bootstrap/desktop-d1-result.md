@@ -1,5 +1,7 @@
 # D1 本地手工日计划实施结果
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 实施记录更新：2026-10-17；独立复审注记更新：2026-10-17。实施者：OpenCode；复审注记：Codex。依据[D1 实施规格](../specs/desktop-manual-daily-plan.md)、[Codex D1 技术核查](desktop-d1-technical-review.md)；D0 依据见[D0 第三轮复审 §7](desktop-d0-review.md)。
 
 **当前结论（2026-10-17）：R18已关闭，T6-A／T6-B及T7本轮人工验证通过；当前Windows 11＋Word下本轮教师体验收口。** T6-B配置v4、新旧计划表头、两份单日文件及正常退出已独立核对，见[§20.8](#208-t6-b核对与本轮教师体验收口2026-10-17)。用户明确微软拼音验证正常、不需要复验或覆盖所有输入法，按此收口，不再安排IME细分补验。长样本逐页验收见[§21.10](#2110-长样本人工逐页验收与r18关闭2026-10-17)，T7保存路径与T6-A证据见§20.6–20.7。下一步进入D2规格准备，未启动实现、真实AI或发行；产品与发行未整体验收。下列交付记录及历史轮次的“待复审／待补验”保留其当时状态，以最新结论为准。
@@ -75,7 +77,7 @@
 
 > 本节为初次实施轮（2026-10-12 上午）记录，保留原事实；同日 R1–R6 修复轮的两套解释器复跑与新增测试见 §9.2（本地套件由 67 项增至 84 项）。
 
-全部命令在 `C:\Users\yw980\code\kindergarten-manager-next\backend` 下执行，`APP_DISABLE_DOTENV=1`、`PYTHONIOENCODING=utf-8`、`-X utf8`。
+全部命令在 `<LOCAL_USERPROFILE>\code\kindergarten-manager-next\backend` 下执行，`APP_DISABLE_DOTENV=1`、`PYTHONIOENCODING=utf-8`、`-X utf8`。
 
 | # | 命令 | 结果 |
 | --- | --- | --- |
@@ -1322,7 +1324,7 @@
 
 - 启动时间：2026-10-17T10:48:48.6205611+08:00；首次进程 PID 25904。
 - 包：`build/desktop-d1/package/KGNext-D1Verify/KGNext-D1Verify.exe`；SHA-256 `28e3e60e31615fde859526447b47e0bdbf3f51a56719429a2008510d4c5822a3`，14,741,133字节。启动前再次逐项比对fix8 manifest，137文件全部一致。
-- 本次证据／工作目录：`C:\Users\yw980\AppData\Local\Temp\kgm-d1-teacher-experience-20261017-104847`。全新合成库为其 `data\kindergarten.db`，人工导出目录准备为 `exports`。保留数据与日志用于重启和问题复现；临时目录不保证长期留存。
+- 本次证据／工作目录：`<LOCAL_USERPROFILE>\AppData\Local\Temp\kgm-d1-teacher-experience-20261017-104847`。全新合成库为其 `data\kindergarten.db`，人工导出目录准备为 `exports`。保留数据与日志用于重启和问题复现；临时目录不保证长期留存。
 - 启动清除继承的全部 `KGM_*`，设 `APP_DISABLE_DOTENV=1`、`PYTHONIOENCODING=utf-8`，显式 `--data` 与 `KGM_LOCAL_DATA_DIR` 指向上述新目录，`KGM_D1_STARTUP_LOG` 指向同级 `startup.log`。交互运行，无 `--selftest`、无 `KGM_D1_VERIFY_SAVE_DIR`；另存为由用户实际选择。
 - `session.json`记录包身份与启动参数，`package-manifest.json`保留核对清单，`startup.log`确认实际库路径及本次本机端口61064。重启时沿用此数据根，端口和PID可以改变。
 - 通过computer-use只读查看并激活目标窗口“幼儿园教师工作台（本地）”：显示“首次设置（一个本地教师档案）”，姓名／班级／学期／日期为空、年级默认中班，园所可留空。尚未由Codex填写或提交。
@@ -1365,7 +1367,7 @@ Codex确认首次进程已退出，原启动日志11:02:42有 `complete_close(..
 
 用户随后要求调整日计划Word：①园所名称＋一日活动计划整体居中；②署名为班级＋教师名称，不加入年级；③表格内所有文字不加粗，包括活动过程。三项作为2026-10-17用户明确的格式决定进入[D1规格§12.4](../specs/desktop-manual-daily-plan.md#124-日计划-word-格式2026-10-17-用户确认r18)及R18任务，不假称已有实现完成。
 
-**实际导出样本：** 用户提供 `C:\Users\yw980\Desktop\日计划_体验中四班_2026-10-19_2026-10-25.docx`。14,911字节，SHA-256 `6359e832530fc7c378e76a5c19300987e39649da5f5f8cc4f4df10b229d59720`，含2份日计划表格；其反思尚未含本轮v4追加句，此文件是已导出的时间点副本，不据此判定v4丢失。原件未修改；同字节副本保存为本体验目录 `word-before-r18.docx`，只读结构证据为 `word-format-before.json`。实际备课原文文件仍未读取。
+**实际导出样本：** 用户提供 `<LOCAL_USERPROFILE>\Desktop\日计划_体验中四班_2026-10-19_2026-10-25.docx`。14,911字节，SHA-256 `6359e832530fc7c378e76a5c19300987e39649da5f5f8cc4f4df10b229d59720`，含2份日计划表格；其反思尚未含本轮v4追加句，此文件是已导出的时间点副本，不据此判定v4丢失。原件未修改；同字节副本保存为本体验目录 `word-before-r18.docx`，只读结构证据为 `word-format-before.json`。实际备课原文文件仍未读取。
 
 | 项目 | Codex独立核对实际样本与当前源码 |
 | --- | --- |

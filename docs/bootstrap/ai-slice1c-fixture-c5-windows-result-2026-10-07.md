@@ -1,5 +1,7 @@
 # 最新接续结果：C5 v2 主流程通过（2026-10-07 20:50，Asia/Shanghai）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 浏览器恢复后已执行stage2的C5全部主流程及真实飞行窗口观察。最终tfr_i5／daily_lesson_split：个人revision4、based contract2、latest contract2、default9、accepted default9、adaptation_state=current；刷新GET200。此结论仅覆盖本次C5，不表示V1/U3、C7或1A–1C全体验收通过。首阶段原保存HTTP未捕获事实保持，不能回填推测状态。
 
 ## 本次连接检查
@@ -30,7 +32,7 @@ cua.getState可读取库存；绑定既有恢复页tab1378631875/browser4（exte
 ## 证据与交接
 
 证据文件均在以下既有私密logs根目录：
-C:\Users\yw980\.codex\tmp\ai1abc-desktop-acceptance-20261005\logs
+<LOCAL_USERPROFILE>\.codex\tmp\ai1abc-desktop-acceptance-20261005\logs
 
 - ai1c-c5-v2-pending-baseline-20261007.txt
 - ai1c-c5-v2-ordinary-saved-20261007.txt
@@ -54,7 +56,7 @@ C:\Users\yw980\.codex\tmp\ai1abc-desktop-acceptance-20261005\logs
 # C5 v2 Windows 执行结果（工具受阻）
 
 时间：2026-10-07（Asia/Shanghai），本轮操作约20:40–20:44。
-URL：https://kg-next-ai-fixture.ywyz.tech；目标账号tfr_i5、任务daily_lesson_split。
+URL：https://legacy-ai-fixture.example.invalid；目标账号tfr_i5、任务daily_lesson_split。
 
 结论：成功发布manifest已核对，C5 v2的Windows真实DOM验证受阻，未执行普通编辑／保存、草稿确认或适配提交，不宣称C5通过。保留服务器v2/r9现场，等待浏览器连接恢复，不能重建v1或重复发布。
 

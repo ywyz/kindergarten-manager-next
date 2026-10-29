@@ -1,6 +1,10 @@
 # 文档与报告索引
 
-更新：2026-10-28。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
+更新：2026-10-30。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
+
+## 当前工作：MIT 开源准备与源码验证
+
+用户确认采用 MIT，先做开源版本，并确认清理后的受控 Word 模板具备公开分发及 MIT 授权；当前继续源码验证。README、维护者、第三方说明和 [Certum 申请资料](../opensource/certum-application.md) 已按 [开源准备检查](open-source-readiness-review.md) 在当前文件范围独立核查：导出／模板117、桌面327、源码窗口17、证据根两种条件各1项及Word10份分页对比通过。仓库已经公开，当前文件清理不等于旧 Git 历史已移除；不自动改默认分支、可见性或重写历史。唯一执行入口仍为 [current.md](../tasks/current.md)。
 
 ## 当前阶段：E14源码／静态工程通过，冻结运行待签名
 

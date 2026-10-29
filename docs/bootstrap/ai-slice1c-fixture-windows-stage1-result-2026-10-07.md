@@ -1,10 +1,12 @@
 # AI 1C 独立夹具 Windows 首阶段结果（2026-10-07）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 结论：**C5-v1 已就绪，等待托管者发布 v2。** 本轮只完成 v1 个人状态准备，不宣称 C5 产品验收通过。v2/v3 发布、契约适配及缺／错主密钥案例尚未执行。
 
 ## 执行范围与实际状态
 
-按用户指定的 Windows 首阶段提示词及同目录最新交接执行，仅使用 https://kg-next-ai-fixture.ywyz.tech。账号为待分配合成教师 `tfr_i5`，任务为 `daily_lesson_split`。没有写业务代码、安装工具、发布契约、切换密钥或调用供应商。
+按用户指定的 Windows 首阶段提示词及同目录最新交接执行，仅使用 https://legacy-ai-fixture.example.invalid。账号为待分配合成教师 `tfr_i5`，任务为 `daily_lesson_split`。没有写业务代码、安装工具、发布契约、切换密钥或调用供应商。
 
 首次真实详情 GET200，个人 head 未初始化：`state=not_initialized`、`personal_revision=null`、`based_contract_version=null`、最新契约 v1、最新默认 r8。服务端字段顺序精确为 theme、objectives、preparation、key_points、difficult_points、process。
 
@@ -49,7 +51,7 @@
 
 完整就绪报告与去敏DOM／HTTP／截图保留在仓库外既有受限目录，不提交凭证、cookie、token、DSN、secret、完整请求正文或敏感响应：
 
-- `C:\Users\yw980\.codex\tmp\ai1abc-desktop-acceptance-20261005\logs\ai1c-c5-v1-ready-20261007.md`
+- `<LOCAL_USERPROFILE>\.codex\tmp\ai1abc-desktop-acceptance-20261005\logs\ai1c-c5-v1-ready-20261007.md`
 - 同目录 `ai1c-c5-v1-refreshed-dom-20261007.txt`、`ai1c-c5-v1-refreshed-http-20261007.json`、`ai1c-c5-v1-refreshed-20261007.png`
 - 同目录 `browser-proxy-repair-2026-10-07.md`
 

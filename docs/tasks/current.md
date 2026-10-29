@@ -1,13 +1,23 @@
-# D4 E14：源码／静态工程已核查，冻结运行待签名
+# MIT 开源准备：当前文件已核查，公开历史边界保留
 
-更新：2026-10-28。用户已授权E14整包／集成、必要真实AI、功能完成后的测试发行及最后由原OpenCode提交推送。原会话`ses_ead8af71dffeJphI1NOWg4jZgI`、build、`opencode-go/deepseek-v4.1-flash#max`保持；同一`codex/desktop-v2-foundation`分支，不另起／fork会话、实现者、子代理或分支。
+更新：2026-10-30。用户已选择 MIT，要求检查不适合公开的内容、整理 README 和维护者说明，方便自行申请 Certum Open Source 证书；继续使用源码验证。用户随后明确确认受控 Word 模板由本人制作，或已取得可公开分发及 MIT 授权。原始决定归并在 [开源准备检查](../bootstrap/open-source-readiness-review.md)，证书资料见 [申请说明](../opensource/certum-application.md)。
 
-E14-R01–R06在源码／构建／静态分发范围已独立核查关闭：local759、短根desktop327、完整前端、源码窗口17／旧库升级22、静态包26／便携归档15通过。实际命令、产物hash、历史失败和边界见[核查§6–§7](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)，实现者自测见[结果](../bootstrap/desktop-game-observation-e14-result.md)，规格和构建协议见[工程§15.1](../specs/desktop-game-observation-engineering.md#151-e14当前交付及待签名边界2026-10-28)。不将Git收口写成E14整体／教师体验或发行通过。
+## 当前工作
 
-按本次授权由原OpenCode按Codex逐文件Git blob OID白名单正常提交推送已核查源码／测试／文档；Codex核对批准树、父提交5808078、HEAD／远端／clean工作区及实际模型审计。不得amend／强推／空提交或夹带包、数据库、照片、凭据、日志、私有证据，不另开PR。
+本轮当前文件范围已独立通过：导出／模板117、桌面327、真实源码窗口17、证据根默认／新显式条件各1项、10份Word分页／逐页正文对比；422个源码／测试／资源路径及5个原业务／配置／密文源保持。实际结果与首轮失败见[核查§5](../bootstrap/open-source-readiness-review.md#5-独立验证与交接)，不重复无变化套件。现按最终文件白名单交原OpenCode作普通Git收口；历史隐私问题不自动改写或强推。
 
-候选完整目录`build/desktop-e14-r03/package/KGNext-E14/`（190文件）；便携ZIP／README／校验清单在`build/desktop-e14-r03/dist/`。**SAC4551仍阻止冻结运行，E14整体和教师体验未通过，当前不发行。** 用户暂无证书或其他测试电脑，准备申请证书；不重复试跑受阻EXE、不改系统保护，不用源码／静态结果替代冻结运行。证书具备后再签名、重算清单／归档，补普通入口、包内图片解码、空／旧库冷启动、AI、Word／原生保存及关闭／更新集成，再判断测试发行条件。
+1. 原 OpenCode 会话 `ses_ead8af71dffeJphI1NOWg4jZgI`、build、`opencode-go/deepseek-v4.1-flash#max`实施受控模板隐私清理、当前 hash 和必要回归、忽略规则及源码验证路径可移植性；不得另起／fork 会话、实现者或子代理。当前 CLI 安装版本 2.2.2 不改变项目依赖。
+2. Codex 独立审查已跟踪内容和远端分支可达历史，整理根 LICENSE／README／MAINTAINERS／第三方说明及申请资料；复核实际模板、源码验证和改动范围，不用实现者自测替代独立结论。不得把 Office 作者字段当证件姓名并自动公开。
+3. 当前仓库已公开、默认 main 仍是旧版；开源资料指向桌面开发分支。现有 3 个远端分支历史仍含未清理原件，不能只清理当前文件就声称全历史安全。本轮不自动重写历史、强推、删分支或改默认分支／可见性。普通 Git 交接仍须在独立通过后由原 OpenCode 按批准文件清单处理，不夹带私有证据或数据。
 
-本轮真实DeepSeek2次：整份生成unknown无候选且未自动重发，process单栏重写成功采用／重开；原5个DB／配置／密文源hash保持。MiMo、复杂照片／教师质量未验；7份Word／容量及前片原生交付按未变源码复用，不能当作r03冻结实证。长根WinError206、真实更新／发行源／信任身份、Win10／WPS／干净机器／其他DPI显示器及D2／D3未验保持。
+## 保持的工程与数据边界
 
-原体验库、配置／凭据、OneDrive原件、旧包及远程资源保持；验证只用独立合成资料或已授权副本。OpenCode唯一写实现／测试／迁移／构建脚本，Codex负责独立审核与文档／Git管理。不安装升级依赖、Skill／MCP，不改ARCHITECTURE.md，不启动WebDAV／跨设备或无关功能。原失败／候选保留，R06首次探针目录保留偏差已如实归并核查，不堆叠提示词副本。
+同一分支 `codex/desktop-v2-foundation`。OpenCode 唯一写实现／测试／迁移／构建脚本；Codex负责独立审核、文档与 Git／发布管理。原体验库、配置／凭据、OneDrive 原件、旧包和远程资源保持；自动验证使用独立合成目录，原始待脱敏文件私下备份，首次失败不删除或复用。本轮无需真实 AI；原 E14 必要真实 AI 和功能完成后测试发行的授权保留，不扩展为本轮自动调用／发行。
+
+不安装升级依赖、Skill／MCP，不改 ARCHITECTURE.md，不更改 Windows 保护，不启动 WebDAV／跨设备。原文件的历史工程 hash 不替换为新模板 hash；当前公开副本须标明脱敏身份，不能冒充原始字节。
+
+E14-R01–R06在2026-10-28源码／构建／静态范围关闭，原 OpenCode 已正常提交推送 `6b5770c`；local759、短根桌面327、完整前端、源码窗口17／旧库升级22、包静态26／归档15的结论保持原身份，见 [E14核查§6–§8](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)。新模板与源码清理须独立验证，不据此前结果直接宣称本轮通过。
+
+原 r03 候选190文件及 `build/desktop-e14-r03/dist/` 的便携归档保持；SAC4551仍阻止冻结运行，E14整体／教师体验未通过，当前不发行、不重复试跑受阻 EXE。以后具备签名身份再落实文件范围／时间戳、签名与归档，补冻结入口、图片解码、空／旧库冷启动、AI、Word／原生保存及关闭／更新集成。
+
+本轮开源准备不改变原 DeepSeek 请求结果：此前E14两次为整份生成unknown不重发、process重写采用成功；原5个DB／配置／密文源保护保持。MiMo、复杂照片／教师质量、D3长根WinError206、真实更新／发行源／信任身份、Win10／WPS／干净机器／其他DPI及D2／D3未验继续分列。

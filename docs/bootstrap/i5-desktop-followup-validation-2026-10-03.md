@@ -1,12 +1,14 @@
 # I5 定向补验与证据收口 — 2026-10-03
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 执行者：本机桌面 Codex，Windows native。本轮先执行 `git pull --ff-only`，main 从 `2c44ac2` 更新到 `dbb689e3993d99068835523da8137086492de0de`，再执行用户附件中的定向验收。用户本轮另行明确授权生成报告、commit／push；未修改业务代码、测试或模板，未部署或启动 AI 实现。已有未跟踪 `browser-capabilities-recheck-2026-10-03.md` 保留且不纳入本轮提交。
 
 **结论：新版小班年级代表导出、W2 纯移动／纯空白变化、W6 同名来源改选均通过本轮可执行产品检查；I5／片4仍未全部通过。** 非空材料没有合法 I4 输入链路，继续列为必需项阻塞；实际字体替代、远程审计总数和短暂警示 UI 证据的限制保留。
 
 ## 服务、环境与证据身份
 
-验收入口：`https://kg-next-verify.ywyz.tech`。按[部署记录](i5-grade-review-and-deployment-2026-10-03.md)及[源清单](i5-grade-deployment-source-2026-10-03.json)，交接运行 release 为 `i5-grade-20261003-e6c15eaa0350`，源身份为 `2c44ac2b01af14d02f94c0f2cbcbcc9af49ab089` 加当时三份未提交的 OpenCode 年级修复文件，归档 SHA-256 为 `efe5b92aed81f6e9a9bb0ae8a49cf26fdffff67955ef20faaeb1142fb0d83825`。不能将拉取后的仓库 HEAD 或旧 `2cb8d81` 当作本次实际部署源。本轮未能重新 SSH 核定 current，运行身份来源仍为交接记录；实际下载表头已观察为“小班”。
+验收入口：`https://legacy-verify.example.invalid`。按[部署记录](i5-grade-review-and-deployment-2026-10-03.md)及[源清单](i5-grade-deployment-source-2026-10-03.json)，交接运行 release 为 `i5-grade-20261003-e6c15eaa0350`，源身份为 `2c44ac2b01af14d02f94c0f2cbcbcc9af49ab089` 加当时三份未提交的 OpenCode 年级修复文件，归档 SHA-256 为 `efe5b92aed81f6e9a9bb0ae8a49cf26fdffff67955ef20faaeb1142fb0d83825`。不能将拉取后的仓库 HEAD 或旧 `2cb8d81` 当作本次实际部署源。本轮未能重新 SSH 核定 current，运行身份来源仍为交接记录；实际下载表头已观察为“小班”。
 
 Windows 11 专业版 25H2／build `26200.9457`／x64 沿用此前本机盘点。本轮通过外置 **Microsoft Edge extension** 实际点击下载，不能重新署名历史 Chrome 下载；本轮未采集 Edge 的精确版本。浏览器能力重置后已实际点击 example.com → IANA 验证并关闭测试页。
 
@@ -14,7 +16,7 @@ Windows 11 专业版 25H2／build `26200.9457`／x64 沿用此前本机盘点。
 
 Word 页面视图100%，深色模式下原色文字显示白色，差异显示红色。全部本轮文件处于受保护视图，未启用编辑，未见修复／转换提示，检查后关闭不保存。期间误触受保护视图的保存快捷键出现“保存禁用”提示，已取消，没有启用保存或改变安全设置。
 
-私密根目录：`C:\Users\yw980\.codex\tmp\i5-desktop-acceptance-20261003`。新增完整报告为 `logs/i5-desktop-followup-validation-2026-10-03.md`，独立 manifest 为 `logs/i5-desktop-followup-evidence-manifest-2026-10-03.json`；仓库提供[脱敏证据摘要](i5-desktop-followup-evidence-summary-2026-10-03.json)。DOCX、截图、完整计划备份／精确输入和认证资料留在私密目录及 Downloads，不进入 Git。
+私密根目录：`<LOCAL_USERPROFILE>\.codex\tmp\i5-desktop-acceptance-20261003`。新增完整报告为 `logs/i5-desktop-followup-validation-2026-10-03.md`，独立 manifest 为 `logs/i5-desktop-followup-evidence-manifest-2026-10-03.json`；仓库提供[脱敏证据摘要](i5-desktop-followup-evidence-summary-2026-10-03.json)。DOCX、截图、完整计划备份／精确输入和认证资料留在私密目录及 Downloads，不进入 Git。
 
 历史[桌面报告](i5-desktop-validation-2026-10-03.md)的14份／103页、110张截图与原 `logs/evidence-manifest.json` 原样保留。本轮复核全部原件、副本的字节／SHA-256／ZIP CRC及全部110张截图的字节／SHA-256，零不一致。原 manifest SHA-256 为 `0d99ddc9f165beb7efd7e7041cef955df483cceedb46dede9fb519bf808cda20`。此完整性复核不补写过去缺失的打开前哈希或 HTTP，也不重新署名 Trae R01–R15。
 
@@ -78,7 +80,7 @@ F01监听超时仅丢失响应记录，实际文件非空且逐页检查通过�
 
 F07／F09 HTTP明确捕获 `confirmed_not_latest` 的draft_ahead／superseded，浏览器当时显示当前确认V3、历史V2／v4、来源日期及缺项事实。短暂警示toast未成功捕获；`F09-history-warning.png`名称不能作为toast已显示的证据，它只是版本列表／草稿状态截图。F10捕获 `no_split_baseline`响应头，但实际短暂警示UI未保留，截图请求超时。以上只证明本轮响应，不冒充旧D11过去UI观察。
 
-只读SSH使用BatchMode和StrictHostKeyChecking，因Windows已有信任库缺少 `bwh.ywyz.tech` 的ED25519主机密钥而停止，未绕过主机校验。因此**本轮开始／最终成功export_word数据库实测数均未知**，不能预填82或将交接72冒充本轮重新实测。72仅是前次部署前后读表实测交接基线。
+只读SSH使用BatchMode和StrictHostKeyChecking，因Windows已有信任库缺少 `bwh.example.invalid` 的ED25519主机密钥而停止，未绕过主机校验。因此**本轮开始／最终成功export_word数据库实测数均未知**，不能预填82或将交接72冒充本轮重新实测。72仅是前次部署前后读表实测交接基线。
 
 本轮可直接核实：10次UI成功下载、9次已保存导出HTTP200（F01响应缺失）；日内容共追加7版本（W2三次，A/B准备／恢复四次），周草稿v2→v6共追加4版本，确认V1→V3追加2份；两次确认409不产生确认版本。这些是客户端动作／API版本记录，不能代替逐事件数据库审计。历史72与本轮动作的实际审计差额仍未追溯，不推算最终总数。
 

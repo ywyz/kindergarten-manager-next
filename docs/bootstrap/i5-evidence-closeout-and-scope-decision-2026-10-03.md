@@ -1,5 +1,7 @@
 # I5 警示像素补证与阶段口径记录（2026-10-03）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 执行者：Windows native桌面Codex。本轮承接用户“继续完成”授权，只做两次真实UI导出、警示截图、文件完整性、只读审计和文档收口。未修改业务代码、测试、模板、验收标准、部署或计划，未commit／push，未启动AI／材料实现。
 
 ## 用户本轮明确决定
@@ -24,7 +26,7 @@ H01现场09-01内容v3；H02现场第5周草稿v6、最新确认V3，选择历�
 
 点击前开启响应采集；真实警示定位器可见后读取文字、刷新AX状态、连续请求两张截图并采集脱敏DOM，全部在toast窗口内完成，再处理文件。**b图已实际逐图检查，警示像素证据补齐**。a图保留但不作为已核定警示图。没有注入文字、暂停页面或修改产品时序。G02／G03旧PNG仍为较早画面，继续排除警示截图用途，不替换、不回填。
 
-私密交接根目录：`C:\Users\yw980\.codex\tmp\i5-desktop-acceptance-20261003`。独立HTTP、DOM、现场状态、截图、审计见`logs/H01-http.json`、`logs/H02-http.json`、`logs/H01-warning-dom.txt`、`logs/H02-warning-dom.txt`、`logs/H02-before-state.txt`、`screenshots/H01-warning-b.png`、`screenshots/H02-warning-b.png`、`logs/H-readonly-audit.json`。
+私密交接根目录：`<LOCAL_USERPROFILE>\.codex\tmp\i5-desktop-acceptance-20261003`。独立HTTP、DOM、现场状态、截图、审计见`logs/H01-http.json`、`logs/H02-http.json`、`logs/H01-warning-dom.txt`、`logs/H02-warning-dom.txt`、`logs/H02-before-state.txt`、`screenshots/H01-warning-b.png`、`screenshots/H02-warning-b.png`、`logs/H-readonly-audit.json`。
 
 | 新下载原件（默认Downloads） | 字节 | SHA-256 | 完整性与视觉依据 |
 | --- | --- | --- | --- |

@@ -161,7 +161,7 @@
   "archive_sha256": "efe5b92aed81f6e9a9bb0ae8a49cf26fdffff67955ef20faaeb1142fb0d83825",
   "deployed_at_utc": "2026-10-03T02:26:46Z",
   "deployed_at_asia_shanghai": "2026-10-03T10:26:46+08:00",
-  "url": "https://kg-next-verify.ywyz.tech",
+  "url": "https://legacy-verify.example.invalid",
   "remote_release": "/opt/kindergarten-manager-next-i5/releases/i5-grade-20261003-e6c15eaa0350",
   "previous_release": "/opt/kindergarten-manager-next-i5/releases/2cb8d81556f47936e236dadedcb37bf3cec5b3c8",
   "frontend_dist_source_commit": "2cb8d81556f47936e236dadedcb37bf3cec5b3c8",

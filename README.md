@@ -1,39 +1,75 @@
 # kindergarten-manager-next
 
-面向幼儿园教师的本地教育工作支持应用。先完成每日活动计划，再做游戏观察记录。项目为全新设计，旧 kindergartenManager 仅作为行为、模板与历史经验参考。
+面向幼儿园教师的本地教育工作支持应用。先做好每日活动计划，再逐步完善游戏观察记录。项目目前由个人维护，原创内容采用 MIT 许可，暂无商业发行计划。
 
-## 当前状态（2026-10-20）
+**当前桌面版在 [`codex/desktop-v2-foundation`](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-v2-foundation) 分支开发。默认 `main` 保留旧版云端实现，不能按旧版部署说明启动当前桌面应用。**
 
-Architecture v2 已确认：保留 Vue 3／TypeScript／Vite／Element Plus 界面，本地业务使用 Python／FastAPI／SQLAlchemy 2.x／Alembic，数据改为 SQLite。优先验证 pywebview＋WebView2，PyInstaller 为打包候选。AI 从教师电脑调用；WebDAV 接续与备份在后续切片落实。
+English: A locally run Windows desktop application for kindergarten teachers, covering daily activity plans and game observation records. Maintained by [ywyz](https://github.com/ywyz). Original project code and documentation are MIT licensed. The desktop version is under active development and is currently verified from source; a stable signed desktop release is not available yet.
 
-首发保证 Windows 11。一个本地教师档案，首次填写姓名、班级和学期，之后进入工作台；首版不导入旧云端业务数据。
+## 当前可以做什么
 
-**D0、D1A工程通过；D1B原R1–R17在当前Windows 11开发机工程复审通过。R18日计划Word格式修复的代码、新包及页面验收通过；用户逐页确认长园所2页、合并7页正常，R18已关闭。** 当前分支 `codex/desktop-v2-foundation`，CPython3.14.7标准Windows x64环境／锁保持。[第八轮审阅§17](docs/bootstrap/desktop-d1-review.md#17-d1b-第八轮修复复审与工程收口2026-10-17)及28e3e60e…包历史保留；[R18独立复审§20.6](docs/bootstrap/desktop-d1-review.md#206-用户逐页验收与r18关闭2026-10-17)汇总独立121导出相关／146桌面检查、新c6dc1928…包137文件／12模块一致、3次真实窗口与人工页面验收。本轮教师体验已收口，产品与发行未整体验收，3.12异常保留。
+- 编写、保存和查阅每日活动计划，比较历史内容，导出 Word。
+- 按教师主动发起的操作，使用 AI 生成候选内容、重写并选择采用。
+- 整理游戏观察记录的文字、照片、保存历史和 Word 导出；这些能力仍在开发验证。
+- 使用本地教师档案、班级及学期配置，无需旧版账号注册和管理员分班。
 
-D0的92项测试、仓外三进程、原生保存／取消／占用重试和Word两页查看已有历史证据。D1B真实原生对话框自动化证据保持；用户确认同库读回一致、修改v4及微软拼音，详见[体验结果§20](docs/bootstrap/desktop-d1-result.md#20-d1-教师流程与实际-ime-体验2026-10-17)。R18新DOCX结构和Word属性已核对，新样本两页PDF完整目视通过；用户已确认新Word正常，Codex已补看v4完整两页；用户又逐页确认长园所2页、合并7页、三计划起始页1／4／6及署名和表格粗细正常。完整页面补验按用户人工反馈记录，不把38张局部截图写成38页完整目视通过。T7本轮人工取消／重试／Word打开已由用户反馈正常，实际两日导出文件已核对；T6-A／T6-B已通过，配置v4、新旧表头、两份单日文件和正常退出均已核对；微软拼音按用户反馈正常，不再复验或要求覆盖所有输入法，见[体验收口§20.8](docs/bootstrap/desktop-d1-result.md#208-t6-b核对与本轮教师体验收口2026-10-17)。干净机器、Win10、WPS、其他DPI和部分窗口分支仍未验。此前43个缓存来源DLL未再收集，55个二进制／扩展条目来源证据保持，干净构建／发行再现性仍未验。D1产品未整体验收。
+首发面向 Windows 11。当前采用 Vue 3、TypeScript、Element Plus，Python/FastAPI、SQLAlchemy/Alembic、SQLite，以及 pywebview/WebView2。系统架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-## 当前入口
+## 开发状态
 
-- [当前任务](docs/tasks/current.md)：W1–W6已完成当前Windows 11合成环境工程核查；[W6指定人工验收与三项后续事件](docs/bootstrap/desktop-d2-w6-closeout.md)按2026-10-20用户决定收口，Word单日2页／合并4页、候选采用／手改／重启与在途关闭等子项通过。跨120秒睡眠不再验证，白屏等复发，额外任务用户倾向误点、保留观察；真实AI与完整产品／发行仍未通过。下一步建议先把R01修复整合进新的普通运行验证包，再准备另获授权的G17真实AI验收；本次只提交／推送，不启动后续构建或调用。
-- [D1 实施规格](docs/specs/desktop-manual-daily-plan.md)、[Codex 技术核查](docs/bootstrap/desktop-d1-technical-review.md)。
-- [D0 独立审阅](docs/bootstrap/desktop-d0-review.md)、[实施结果](docs/bootstrap/desktop-d0-result.md)：缺陷、实际证据与未验边界。
-- [D0 规格与后续顺序](docs/specs/desktop-foundation-plan.md)：验证内容、验收门槛及 D1–D4 边界。
-- [实施状态与待办](docs/bootstrap/architecture-v2-readiness.md)、[文档与证据索引](docs/bootstrap/README.md)。
-- [有效架构](ARCHITECTURE.md)、[本地应用决策 ADR 0004](docs/adr/0004-local-desktop-architecture-proposal.md)。
-- [协作约束](AGENTS.md)：产品决定、角色分工、环境与文档规则。
+目前继续使用源码桌面环境验证。E14 已完成相应源码、构建和静态检查，最近一次新生成的未签名冻结包执行被 Windows Smart App Control 阻止，尚未完成后续整包运行验证。因此，源码验证通过不代表安装包、完整产品或教师体验已经验收通过。
 
-## 开发与协作
+完整状态、已知限制及后续工作见 [当前任务](docs/tasks/current.md) 和 [E14 独立核查](docs/bootstrap/desktop-game-observation-e14-review.md)。Windows 10、WPS、其他显示配置、干净机器及正式发行更新仍有未验范围。
 
-以 Windows 11 原生开发为主，在 Windows 本机 VS Code／终端运行 OpenCode，桌面 Codex 负责技术核查、规划设计、审阅、相关验证与 Git／发布管理；实现代码、测试、迁移和构建打包脚本由 OpenCode 唯一写入。操作范围以用户当前授权为准。
+## 数据和 AI
 
-WSL 可作独立辅助；不与 Windows 共用 `.venv`、`node_modules` 或运行中的数据库。`frontend/` 使用 npm 与 `package-lock.json`；D1采用独立 `desktop/.venv-d1` 和 `desktop/requirements-d1.lock.txt`，backend业务声明／锁保持，运行时记录见[实施结果 §11](docs/bootstrap/desktop-d1-result.md#11-d1b-实施记录2026-10-14-开始)。不能把 `requires-python>=3.12` 解释为任意较新版本均已通过。
+业务数据保存在使用者电脑上。启用 AI 后，应用会按使用者发起的操作，将相应文字和照片发送到其配置的供应商；AI 不是完全离线能力。当前应用供应商范围是 DeepSeek 官方 API 与 MiMo 标准 API。开发工具使用的 OpenCode 套餐不是应用内供应商接口。
 
-桌面验证命令见 [D0 实施结果](docs/bootstrap/desktop-d0-result.md)，须同时读取最新独立审阅：第三轮最新包已有当前开发机仓外运行证据，早期包策略拦截保留为历史；这些不是 D1 新包或已验收产品的运行说明。现有 v1 MySQL 连接、迁移、登录与远程服务器步骤不能直接作为本地版启动说明；不得仅更换连接串便宣称 SQLite 适配完成。
+不要将真实儿童资料、业务数据库、导出文件、API 密钥、证件或账单提交到仓库和 Issue。反馈问题时请使用合成资料，先删除个人信息。
 
-## 验收与历史证据
+## 从源码运行
 
-实现、自动测试与产品验收分开记录。D0 必须取得真实 Windows 窗口、关闭退出、SQLite 重启持久化、保存对话框及测试包运行证据；Word／WPS 实际打开和逐页检查不能由编译、单元测试或 OOXML 检查替代。
+以下命令用于 **Windows PowerShell 下的新克隆目录**。当前已验证的解释器是 **CPython 3.14.7、Windows x64、标准 GIL**；不要把版本声明理解为所有 Python 版本均已验证。需准备 WebView2 Runtime、满足 [frontend/package.json](frontend/package.json) 引擎要求的 Node.js，以及 uv。已有开发环境应复用原环境，避免覆盖既有验证包或数据目录。
 
-v1 的 I1–I4、I5 已实现 Word 链路与 AI 1A–1C 记录继续保留。[I5 收口](docs/bootstrap/i5-final-closeout-2026-10-03.md)不包含完整 W6 非空材料；[AI 1C C5 v2](docs/bootstrap/ai-slice1c-fixture-c5-windows-result-2026-10-07.md)于 2026-10-07 20:50 通过主流程和真实提交窗口检查，V1/U3、v3 与 C7 密钥故障场景仍未验。这些结果不等于桌面版通过，旧远程任务不自动续跑。
+```powershell
+git clone --branch codex/desktop-v2-foundation --single-branch https://github.com/ywyz/kindergarten-manager-next.git
+Set-Location kindergarten-manager-next
 
-任务完成或被替代后，将独有决定和剩余事项归并到规格或结果记录，清理旧提示词并修复引用，历史由 Git 保留。当前执行提示词只维护 `docs/tasks/current.md`。
+# 先确认所选解释器为 CPython 3.14.7 x64 标准 GIL，再创建新环境。
+py -3.14 --version
+py -3.14 -m venv desktop/.venv-d1
+$sourcePython = Join-Path $PWD 'desktop/.venv-d1/Scripts/python.exe'
+
+# 安装现有锁定集合；不重新求解或升级依赖。
+$wheelOnly = ((Get-Content desktop/requirements-d1.lock.txt |
+    Select-String '^([A-Za-z0-9][A-Za-z0-9_.-]*)==') |
+    ForEach-Object { $_.Matches[0].Groups[1].Value } |
+    Where-Object { $_ -notin @('proxy-tools', 'proxy_tools') }) -join ','
+if (-not $wheelOnly) { throw '未读到锁定包名，停止安装' }
+uv pip sync desktop/requirements-d1.lock.txt --python $sourcePython --require-hashes --build-constraints desktop/requirements-d1-build-constraints.txt --only-binary $wheelOnly --strict --default-index https://pypi.org/simple --no-python-downloads --no-managed-python
+if ($LASTEXITCODE -ne 0) { throw '依赖安装失败，保留环境和日志，不跳过校验' }
+
+npm --prefix frontend ci
+if ($LASTEXITCODE -ne 0) { throw '前端依赖安装失败' }
+npm --prefix frontend run build:d1 -- --outDir ../build/source-preview/frontend --emptyOutDir
+if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
+
+# 独立体验目录；不要指向原有业务库或旧包的数据目录。
+$previewData = Join-Path $env:LOCALAPPDATA 'KGNext-Source-Preview'
+& $sourcePython -X utf8 desktop/d1_main.py --frontend build/source-preview/frontend --data $previewData
+```
+
+首次启动填写本地教师档案。AI 密钥在应用设置中输入，先不配置 AI 也可以验证手工编写、保存和导出。源码更新后应先查看迁移说明，并继续使用明确指定的数据目录；不要同时开启多个实例操作同一份数据。
+
+以上是源码运行方式，不是已完成签名的发行包安装说明。当前开发机无需为了源码体验关闭 Windows 安全保护。
+
+## 维护、许可和项目资料
+
+- [维护者说明 / Maintainer statement](MAINTAINERS.md)
+- [MIT 许可证](LICENSE)
+- [第三方依赖与资源说明](THIRD_PARTY_NOTICES.md)
+- [Certum 开源证书申请资料](docs/opensource/certum-application.md)
+- [开源准备检查记录](docs/bootstrap/open-source-readiness-review.md)
+- [项目规格与阶段证据](docs/bootstrap/README.md)
+
+MIT 许可适用于本项目有权授权的原创内容；第三方依赖、运行时、商标及其他来源材料保留各自权利和许可。Word 模板的授权范围以资源说明及开源准备检查记录为准。未来若提供商业版本，需要分别处理源码许可、第三方许可及代码签名证书用途。

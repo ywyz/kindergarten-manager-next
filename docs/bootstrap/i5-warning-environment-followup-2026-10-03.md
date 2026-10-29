@@ -1,12 +1,14 @@
 # I5 警示与环境证据补验（2026-10-03）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 执行者：本轮 Windows native 桌面 Codex。仅补验警示与环境，未修改业务代码、测试、模板、验收标准、部署或计划；未 commit／push，未启动 AI／材料实现。历史 D、F 证据保持原执行者与原观察，不回填。
 
 先读取指定四份交接文档、当前环境及 W1–W6。Windows 缺少两份协调者未提交文档，通过现有 WSL 仓库 `/home/ywyz/code/kindergarten-manager-next/docs/bootstrap/` 只读读取，未复制覆盖工作区。
 
 ## 警示与新下载
 
-服务：`https://kg-next-verify.ywyz.tech`。角色：既有合成夹具负责人。现场日计划09-01为内容v3；第5周 `z9PHQKgOZV2uyaQqTaR1AA` 为草稿v6、最新确认V3，历史V2对应草稿v4。只读打开、选择导出，未刷新来源、改计划或追加确认。
+服务：`https://legacy-verify.example.invalid`。角色：既有合成夹具负责人。现场日计划09-01为内容v3；第5周 `z9PHQKgOZV2uyaQqTaR1AA` 为草稿v6、最新确认V3，历史V2对应草稿v4。只读打开、选择导出，未刷新来源、改计划或追加确认。
 
 | 案例 | 实际动作（北京时间） | HTTP／响应警示 | 实际可见警示 |
 | --- | --- | --- | --- |
@@ -16,7 +18,7 @@
 
 G02／G03点击实际导出前开启响应采集；实际toast出现后立即读取可见文字、请求截图及采集脱敏DOM，再处理文件。**最终逐图复查发现两张PNG仍是toast前画面，均不能作为警示像素证据**；保留文件但排除该用途。可见定位器waitFor／innerText成功，随后DOM有真实alert警示（G02第139–140行、G03第259–260行），证明本轮实际页面文字，像素截图仍有工具时序限制。没有注入提示、暂停页面或伪造文案。首次点击“导出 Word”只是打开范围对话框，监听超时没有产生导出；G01另有实际200下载。下载事件监听超时不代表未落盘。G02／G03直接核对真实默认下载目录。
 
-私密交接根目录为 `C:\Users\yw980\.codex\tmp\i5-desktop-acceptance-20261003`。独立响应、DOM、截图分别位于 `logs/G01-http.json`、`logs/G02-http.json`、`logs/G03-http.json`、`logs/G02-warning-dom.txt`、`logs/G03-warning-dom.txt`、`screenshots/G02-warning.png`、`screenshots/G03-warning.png`。无密码、cookie、认证头进入报告。
+私密交接根目录为 `<LOCAL_USERPROFILE>\.codex\tmp\i5-desktop-acceptance-20261003`。独立响应、DOM、截图分别位于 `logs/G01-http.json`、`logs/G02-http.json`、`logs/G03-http.json`、`logs/G02-warning-dom.txt`、`logs/G03-warning-dom.txt`、`screenshots/G02-warning.png`、`screenshots/G03-warning.png`。无密码、cookie、认证头进入报告。
 
 | 案例 | 默认Downloads原件 | 字节 | SHA-256 | CRC／副本／关闭后 |
 | --- | --- | --- | --- | --- |

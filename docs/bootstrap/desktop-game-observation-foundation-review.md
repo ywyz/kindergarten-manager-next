@@ -1,5 +1,7 @@
 # D4：E01／E02／E04模型、迁移与归属独立核查
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-26。**结论：E01／E02／E04模型、迁移与归属数据基础通过当前Windows 11隔离合成环境的限定工程核查。** 原会话完成R01–R08修订并停写，Codex最终599项全local通过、0失败／错误／跳过，210份后端源码／配置／测试hash前后一致。完整产品A01–A22未验收，停在本片，不启动后续切片、不调用应用真实AI、不提交推送。
 
 ## 1. 授权、实现者及范围
@@ -86,7 +88,7 @@ E04的snapshot参数只允许由未来服务从当前draft或可信历史加载�
 
 ## 6. 证据与最终交接
 
-本机证据根：C:/Users/yw980/AppData/Local/Temp/kgm-observation-e010204-20261026-2a32f2eb/，指针%TEMP%/kgm-observation-e010204-current.txt。临时根非永久归档；需保留的结论与接续约束归并本文及有效规格。
+本机证据根：<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-e010204-20261026-2a32f2eb/，指针%TEMP%/kgm-observation-e010204-current.txt。临时根非永久归档；需保留的结论与接续约束归并本文及有效规格。
 
 证据包括初始仓库／HEAD／diff基线、原会话各轮request／反馈与steer回执、JSONL／stderr／exit、脱敏session导出／模型审计、独立验证source-before/after、JUnit／stdout／stderr、保留的合成旧库／升级库／故障库／备份manifest及只读inspection。首次run进程恢复单独记录，不记为正常exit0交付。
 

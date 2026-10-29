@@ -1,20 +1,22 @@
 # 本机桌面验收准备（2026-10-03）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 > 本文保留该次执行的历史环境、源身份和证据，不是当前操作清单。已实现链路验收见 [I5 正式收口](i5-final-closeout-2026-10-03.md)，当前部署见 [1ABC 部署结果](ai-slice1abc-deployment-result-2026-10-05.md)。
 
 用户授权准备服务器、账号并撰写本机桌面 Codex 提示词。沿用已部署实例，不新增服务或子域名、不改旧应用；本轮无业务代码修改。上轮未提交文档保留。
 
 ## 服务与本机
 
-SSH 密钥已连接 `root@bwh.ywyz.tech`。本机此前尚无该主机名的 known_hosts 条目，首次使用 `StrictHostKeyChecking=accept-new` 加入新主机记录，未忽略已存在的变更警告。Caddy、`kg-next-i5-api` active；MySQL容器 `kg-next-i5-mysql-20261002` 运行，监听仅 `127.0.0.1:13386`。current 仍指向 `2cb8d81556f47936e236dadedcb37bf3cec5b3c8`，API内部端口18090。
+SSH 密钥已连接 `<PRIVATE_CONTACT_OR_SSH_TARGET>`。本机此前尚无该主机名的 known_hosts 条目，首次使用 `StrictHostKeyChecking=accept-new` 加入新主机记录，未忽略已存在的变更警告。Caddy、`kg-next-i5-api` active；MySQL容器 `kg-next-i5-mysql-20261002` 运行，监听仅 `127.0.0.1:13386`。current 仍指向 `2cb8d81556f47936e236dadedcb37bf3cec5b3c8`，API内部端口18090。
 
-本机验证 https://kg-next-verify.ywyz.tech/health 返回200与ok，现存Caddy同源静态／API路由无需更改。只读资源观察：根盘可用6.0GB、内存available约553MB；不作为容量验收。
+本机验证 https://legacy-verify.example.invalid/health 返回200与ok，现存Caddy同源静态／API路由无需更改。只读资源观察：根盘可用6.0GB、内存available约553MB；不作为容量验收。
 
 Windows 11 Pro `10.0.26200`，Word安装文件版本 `16.0.20430.20092`，Chrome `154.0.8037.98`、Edge `154.0.4258.48`。尚未执行本轮GUI或Word页面检查。
 
 ## 私密交接
 
-目录 `C:\Users\yw980\.codex\tmp\i5-desktop-acceptance-20261003`；Windows ACL去除父目录继承，仅当前用户 `yw980` 和 SYSTEM拥有访问权限，文件继承此受限ACL。复制现存服务器 `/etc/kindergarten-manager-next-i5/acceptance-accounts.json` 为 `private-acceptance-accounts.json`，不重置口令。创建downloads／screenshots／logs；凭据不进入仓库或工具输出。
+目录 `<LOCAL_USERPROFILE>\.codex\tmp\i5-desktop-acceptance-20261003`；Windows ACL去除父目录继承，仅当前用户 `yw980` 和 SYSTEM拥有访问权限，文件继承此受限ACL。复制现存服务器 `/etc/kindergarten-manager-next-i5/acceptance-accounts.json` 为 `private-acceptance-accounts.json`，不重置口令。创建downloads／screenshots／logs；凭据不进入仓库或工具输出。
 
 五个账号 `adm_i5`、`tow_i5`、`tsw_i5`、`tcr_i5`、`tfr_i5` 的Windows Node HTTPS登录与身份查询全部200，Secure／HttpOnly cookie检查通过。教师班级分别为clsi5／clsi5／clsi5b／未分配，管理员与未分配账号class-context为预期403。最终登出全部204。首次预检的登出请求遗漏JSON Content-Type而返回422，修正并重跑通过；已在精确时间窗口及五账户匹配断言后仅撤销首轮五个临时session，未改auth_version或其他session。
 

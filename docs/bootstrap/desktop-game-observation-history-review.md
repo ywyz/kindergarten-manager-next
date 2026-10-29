@@ -1,5 +1,7 @@
 # D4：E05／E08 保存、历史留存与恢复独立核查
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-27。**E05／E08在当前Windows 11源码／隔离合成环境的限定工程核查通过：独立663项全local、85项相关桌面回归、保留库复核及关键竞态探针全部通过，R01–R08关闭。** 本结论只覆盖保存、历史与恢复服务层，不代表完整A01–A22、页面教师体验或产品发行通过。
 
 ## 1. 授权、基线与实现身份
@@ -10,7 +12,7 @@
 
 本轮CLI实际exit0。最后assistant为msg_17a8519c4001H9jnpYiMahGajt，finish=stop，完成1793056911482、idle1793056911486、outcome=succeeded；不是据旧outcome推断完成。相对4034条基线消息新增270条assistant，全部为指定Go Flash max／build；工具仅edit/read/shell/write。证据为final-model-session-audit.json及session-final-sanitized.json。
 
-本机证据根：C:/Users/yw980/AppData/Local/Temp/kgm-observation-e0508-20261027-5135336c；指针%TEMP%/kgm-observation-e0508-current.txt。实现者使用opencode-evidence；Codex使用codex-independent，TEMP、pycache、合成库及持久证据分别隔离。必要结论归并本文，不把临时根当永久归档。
+本机证据根：<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-e0508-20261027-5135336c；指针%TEMP%/kgm-observation-e0508-current.txt。实现者使用opencode-evidence；Codex使用codex-independent，TEMP、pycache、合成库及持久证据分别隔离。必要结论归并本文，不把临时根当永久归档。
 
 统一解释器为desktop/.venv-d1/Scripts/python.exe，实核CPython3.14.7 x64、Py_GIL_DISABLED=0。最初任务误写desktop/.venv已纠正；该目录是保留的3.12.10旧环境，不用于本片通过门槛。未安装新解释器、依赖、Skill或MCP。
 

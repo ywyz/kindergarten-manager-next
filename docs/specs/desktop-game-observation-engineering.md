@@ -1,5 +1,7 @@
 # D4-E：游戏观察记录工程设计
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-28。**E01–E14及E13六份Contract设计保持；E14源码／构建／静态分发可修项已独立通过，冻结运行受SAC4551阻止，E14整体及教师体验未通过。** 最新[独立核查§6–§7](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)含local759、短根桌面327、完整前端、源码窗口17／旧库升级22、静态26／归档15和r03候选；已核查源码／文档由原OpenCode按白名单正常提交推送。前片[导出核查](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)、Word逐页／原生保存及容量保留原身份。当前授权与待签名补验见§15.1及唯一任务；不把源码／静态或Git写成冻结运行、完整A01–A22或发行通过。
 
 原OpenCode会话`ses_ead8af71dffeJphI1NOWg4jZgI`使用`opencode-go/deepseek-v4.1-flash#default`、`plan`代理交付方案。Codex退回两轮问题、补充冷迁移问题，并核定K01–K08修正；原会话最终逐项接受。本文由Codex归并为唯一有效工程方案，取代各轮回复中的冲突表述。原始回复及审计证据保留位置见核定记录，不另存提示词副本。
@@ -321,13 +323,13 @@ DOCX与sidecar位于受管`observations/export-temp`，读取除同句柄／父�
 完整后续矩阵命令示例（不作本轮执行清单；本轮实际命令、隔离目录、真实调用与结果见核查报告；导出专项由后续E11补充）：
 
 ```powershell
-# cwd: C:/Users/yw980/code/kindergarten-manager-next/backend
+# cwd: <LOCAL_USERPROFILE>/code/kindergarten-manager-next/backend
 ../desktop/.venv-d1/Scripts/python.exe -m pytest tests/local/test_migrations.py tests/local/test_d2_schema.py tests/local/test_d2_migration_safety.py tests/local/test_d3_history.py -q
 ../desktop/.venv-d1/Scripts/python.exe -m pytest tests/local/test_observation_models.py tests/local/test_observation_assets.py tests/local/test_observation_ai.py tests/local/test_observation_history.py tests/local/test_observation_ai_contracts.py tests/local/test_observation_prompt_contracts.py -q
 ../desktop/.venv-d1/Scripts/python.exe -m pytest tests/local -q
-# cwd: C:/Users/yw980/code/kindergarten-manager-next
+# cwd: <LOCAL_USERPROFILE>/code/kindergarten-manager-next
 desktop/.venv-d1/Scripts/python.exe -m pytest desktop/tests -q
-# cwd: C:/Users/yw980/code/kindergarten-manager-next/frontend
+# cwd: <LOCAL_USERPROFILE>/code/kindergarten-manager-next/frontend
 npm run typecheck
 npm run test:d1
 ```

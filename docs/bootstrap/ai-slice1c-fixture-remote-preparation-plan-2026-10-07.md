@@ -1,14 +1,16 @@
 # AI 1C 独立远程夹具准备执行清单（2026-10-07）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 状态：**隔离真库门槛已通过；用户在本清单交付后要求“请提交 推送 然后授权”，本轮提交／推送后已按授权完成远程准备及实际基线恢复，见[实际结果](ai-slice1c-fixture-remote-preparation-result-2026-10-07.md)。以下保留本轮授权范围，不重复创建资源。** 验证依据见[本轮复审](ai-slice1c-fixture-mysql-review-2026-10-07.md)；场景产品行为与恢复规则沿用[夹具方案](ai-slice1c-fixture-plan-2026-10-07.md)。本轮远程授权依据是上述最新用户指令，本机数据库授权本身不自动扩为远程授权。
 
 ## 拟执行对象与边界
 
 | 对象 | 具体范围 |
 | --- | --- |
-| 服务器 | SSH `root@bwh.ywyz.tech`；复用已有 MySQL 8.4、Caddy、systemd 与 Python 环境 |
+| 服务器 | SSH `<PRIVATE_CONTACT_OR_SSH_TARGET>`；复用已有 MySQL 8.4、Caddy、systemd 与 Python 环境 |
 | 新实例 | `/opt/kindergarten-manager-next-ai-fixture`、低权限系统账号 `kg-next-ai-fixture`、`kg-next-ai-fixture-api.service`、仅回环 `127.0.0.1:18091` |
-| HTTPS | 仅新增 `kg-next-ai-fixture.ywyz.tech` 同源站点及该域证书；先核验 DNS 指向与证书取得条件 |
+| HTTPS | 仅新增 `legacy-ai-fixture.example.invalid` 同源站点及该域证书；先核验 DNS 指向与证书取得条件 |
 | 新数据库 | 既有 127.0.0.1:13386 中精确 `kg_next_ai1c_fixture`；新 DML 账号 `kg_next_ai1c_app`、准备账号 `kg_next_ai1c_prepare`，仅本库权限 |
 | 私密配置 | 新目录 `private/` 0700、环境与账号文件 0600；DSN 和随机独立正常主密钥 K_good 不打印、不入 Git；APP_DISABLE_DOTENV=1 |
 | 原实例只读对照 | `/opt/kindergarten-manager-next-i5/current`、服务／18090、`kg_next_i5_acceptance`、原 HTTPS；读取身份、哈希和一致性合成快照，不改原服务、密码、主密钥或历史版本 |

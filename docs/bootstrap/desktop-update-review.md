@@ -1,5 +1,7 @@
 # D3-U 应用更新：Codex独立核查
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-25。最新状态：**U1–U3在当前Windows 11限定源码／合成环境工程通过，原R01–R07、U2-R01–R07及U3-R01–R03关闭，最终证据见§20。真实冻结更新、发行源／安装与4551仍未验。** 历轮状态按各节当时结论保留。
 
 ## 1. 授权、基线和保护边界
@@ -284,7 +286,7 @@ U2收口另将原开工快照中的453份非凭据保护文件逐一比较，cha
 
 原会话exit0、声明停止写入；实际idle／succeeded，脱敏导出exit0，以本轮user消息为边界取全113条assistant，均为指定Go Flash default、finish=stop。26份相关源码独立验证前后hash零变化。
 
-在仓库根执行`APP_DISABLE_DOTENV=1`、`desktop/.venv-d1/Scripts/python.exe desktop/verify_d3_u3_update.py --frontend C:/Users/yw980/AppData/Local/Temp/kgmu-u3fe-s0QCMt --out <本日证据根>/u3-r01-independent-chain-report.json`，`u3-r01-independent-chain.log`：exit0、现有脚本32项顶层检查全部true、无skip，新根`%TEMP%/kgmu-u3-chain-f04973ec/`。实际WebView2旧页面发现／下载／下载取消／重试／安装确认／关闭保存、真实helper切换合成程序目录、新源码Runtime／服务／Vue page_ready、版本／build／PID及Word文件内容等正向链通过。实现者相关118项Python回归通过作为其自测记录，不冒充本轮独立118项。
+在仓库根执行`APP_DISABLE_DOTENV=1`、`desktop/.venv-d1/Scripts/python.exe desktop/verify_d3_u3_update.py --frontend <LOCAL_USERPROFILE>/AppData/Local/Temp/kgmu-u3fe-s0QCMt --out <本日证据根>/u3-r01-independent-chain-report.json`，`u3-r01-independent-chain.log`：exit0、现有脚本32项顶层检查全部true、无skip，新根`%TEMP%/kgmu-u3-chain-f04973ec/`。实际WebView2旧页面发现／下载／下载取消／重试／安装确认／关闭保存、真实helper切换合成程序目录、新源码Runtime／服务／Vue page_ready、版本／build／PID及Word文件内容等正向链通过。实现者相关118项Python回归通过作为其自测记录，不冒充本轮独立118项。
 
 **入口探针更正**：§18及`u3-r01-independent-product-entry-guard.log`只调用内部`_validate_synthetic_entry`，未覆盖最终源码在`build_runtime`紧接着增加的U3参数守卫，不能据此断言最终产品入口接受U3配置。改用真实`build_runtime`并在LocalRuntime构造边界设置不可进入哨兵，`u3-r01-independent-runtime-entry-guard.log` exit0，新根`%TEMP%/kgmu-u3entry-dso37r2m/`：普通源码／模拟冻结普通／模拟冻结U3自检三例均在Runtime前拒绝。原探针文件保留并由本段限定其含义；未运行冻结包。
 
@@ -310,7 +312,7 @@ U2收口另将原开工快照中的453份非凭据保护文件逐一比较，cha
 
 | 检查 | 实际命令／结果 |
 | --- | --- |
-| 完整源码窗口链及关闭失败后再安装 | 仓库根`APP_DISABLE_DOTENV=1`，`desktop/.venv-d1/Scripts/python.exe desktop/verify_d3_u3_update.py --u3-close-cancel --frontend C:/Users/yw980/AppData/Local/Temp/kgmu-u3fe-s0QCMt --out <证据根>/u3-r02-independent-chain-report.json`；`u3-r02-independent-chain.log` exit0，42／42顶层检查通过，无skip，根`%TEMP%/kgmu-u3-chain-d2774482/` |
+| 完整源码窗口链及关闭失败后再安装 | 仓库根`APP_DISABLE_DOTENV=1`，`desktop/.venv-d1/Scripts/python.exe desktop/verify_d3_u3_update.py --u3-close-cancel --frontend <LOCAL_USERPROFILE>/AppData/Local/Temp/kgmu-u3fe-s0QCMt --out <证据根>/u3-r02-independent-chain-report.json`；`u3-r02-independent-chain.log` exit0，42／42顶层检查通过，无skip，根`%TEMP%/kgmu-u3-chain-d2774482/` |
 | U1／U2／U3与关闭保存回归 | desktop下`.venv-d1/Scripts/python.exe -m pytest tests/test_update_u3.py tests/test_update_u2.py tests/test_update_u1.py tests/test_d1_close.py tests/test_d1_host_save.py -q --basetemp=%TEMP%/kgmu-u3ind-867655de`；`u3-r02-independent-pytest.log` exit0，120 passed／46.14秒，无skip |
 | 真实SFC及类型检查 | frontend下`node src/d1/d1.update.test.mjs`，`u3-r02-independent-sfc.log` exit0，13项；`npm run typecheck`，`u3-r02-independent-typecheck.log` exit0。前端本轮未变，不重复构建 |
 | 保护文件 | 原开工快照453份非凭据文件全部hash一致，changed=0，`u3-final-protected-file-check.json`。不读取真实密钥，不扩大为未列文件或凭据内容审计 |

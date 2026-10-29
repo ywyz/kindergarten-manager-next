@@ -1,5 +1,7 @@
 # AI 1C 独立夹具历史状态与剩余事项（2026-10-07）
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 2026-10-09 文档整理：本文保留 v1 夹具的已知状态、授权记录、恢复边界和未验定义，不再作为当前桌面开发执行提示词。当前工作以 [Architecture v2 实施入口](architecture-v2-readiness.md)为准；本次整理未连接远程，也未重新核验服务或测试页面是否仍在运行。
 
 **最后一份 Windows 结果已确认 C5 v2 主流程通过。** 2026-10-07 20:50（Asia/Shanghai），`tfr_i5`／`daily_lesson_split` 的个人 revision4、based contract2、latest contract2、default9、accepted default9、adaptation_state=current。普通保存、完整适配、草稿保护、真实提交飞行窗口锁定和刷新持久化均有证据，详见 [C5 Windows 结果](ai-slice1c-fixture-c5-windows-result-2026-10-07.md)。V1/U3 四组及其变体、参考区处置和 C7 缺／错主密钥仍未验，不宣布 1A–1C 全通过。
@@ -17,10 +19,10 @@
 
 ## 历史资源与授权
 
-- 独立夹具域名为 `https://kg-next-ai-fixture.ywyz.tech`；原 `kg-next-verify` 域名不是契约／密钥故障目标。
+- 独立夹具域名为 `https://legacy-ai-fixture.example.invalid`；原 `kg-next-verify` 域名不是契约／密钥故障目标。
 - 准备期 release 为 `ai1c-v1-20261007-176b5ed`，工具哈希、170 文件源身份、端口和权限见远程准备结果。正常独立密钥称为 K_good；准备时七任务全 v1、daily 最新默认 r8，随后仅 daily 已发布 v2／r9。
 - `tfr_i5` 用于契约案例，`tow_i5` 用于手工链路定向验证。五个合成账号与原密码保留，凭据不得进入仓库或截图。
-- 服务器私密目录 `/opt/kindergarten-manager-next-ai-fixture/private` 保留 `acceptance-accounts.json`、`B_contract.sql`、`B_contract-app.env` 和发布 manifest；实际文件与权限记录见远程结果。Windows 私密证据位于 `C:\Users\yw980\.codex\tmp\ai1abc-desktop-acceptance-20261005\logs`。
+- 服务器私密目录 `/opt/kindergarten-manager-next-ai-fixture/private` 保留 `acceptance-accounts.json`、`B_contract.sql`、`B_contract-app.env` 和发布 manifest；实际文件与权限记录见远程结果。Windows 私密证据位于 `<LOCAL_USERPROFILE>\.codex\tmp\ai1abc-desktop-acceptance-20261005\logs`。
 - 用户在 2026-10-07 明确授权过该轮契约发布、故障密钥切换与 Windows 补验；首阶段就绪后才发布 v2，发布成功 manifest 后再进行 Windows 适配。该历史授权及执行范围保留，本轮文档整理不继续远程操作。
 - 当时协调会话在 WSL，无真实浏览器工具，因此采用 WSL 托管与 Windows DOM 验收分工。这是该轮环境记录，不是新桌面项目必须使用 WSL 的规则。
 

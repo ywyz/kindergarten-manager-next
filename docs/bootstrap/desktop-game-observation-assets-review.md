@@ -1,5 +1,7 @@
 # D4：E03 图片材料独立核查
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 更新：2026-10-27（本轮始于2026-10-26）。**E03图片材料在当前Windows 11源码／隔离合成环境的限定工程核查通过：独立630项全local、统一hash锁新环境31项材料、85项相关宿主及容量复测全部通过，R01–R11关闭。** 本片是当前Windows 11源码／隔离合成环境工程核查，不代表完整A01–A22或桌面产品验收。
 
 ## 1. 授权、基线与实现身份
@@ -10,7 +12,7 @@
 
 首轮实现及回修实际CLI exit0，最后assistant msg_178e01617001a3VHEknr01avA1、finish=stop，完成1793029322687、idle1793029322690。完整脱敏导出相对开工3163条消息新增829条assistant，全部指定Go Flash max；工具仅shell/read/write/edit，无子代理。R11由同会话追加10条assistant完成指定desktop测试适配，第二轮CLI亦exit0；最终累计839条assistant全部Go Flash max／build，工具仍仅shell/read/write/edit。末条msg_178eec2df001acdzYzb7K76H1C、finish=stop，完成1793030293475、idle1793030293478，outcome=succeeded；不是用旧outcome推断停写。
 
-证据根：C:/Users/yw980/AppData/Local/Temp/kgm-observation-e03-20261026-2f7e5331。Codex独立根为其下codex-independent-0ba6b8a9；实现者自测与独立验证不共用库。source-before.json固定381份backend／desktop／frontend源文件、配置与测试，容量后、全local前零变化；R11仅允许修改指定desktop测试，最终逐文件核对。R11后仅desktop/tests/test_d2_w6_degrade_host.py变化，backend及其他380份文件与630项／容量通过时一致；R11的新测试再次通过85项相关宿主。最终381份快照由source-final-before-host.json及后续Git审计固定。
+证据根：<LOCAL_USERPROFILE>/AppData/Local/Temp/kgm-observation-e03-20261026-2f7e5331。Codex独立根为其下codex-independent-0ba6b8a9；实现者自测与独立验证不共用库。source-before.json固定381份backend／desktop／frontend源文件、配置与测试，容量后、全local前零变化；R11仅允许修改指定desktop测试，最终逐文件核对。R11后仅desktop/tests/test_d2_w6_degrade_host.py变化，backend及其他380份文件与630项／容量通过时一致；R11的新测试再次通过85项相关宿主。最终381份快照由source-final-before-host.json及后续Git审计固定。
 
 codebase-memory已按项目规则使用；相关图谱coverage为metadata_changed／锁文件not_tracked，故回读本片准确源码、锁、测试与实际SQLite证据，不把无记录缺口当完整覆盖证明，不安装或重建MCP／Skill。
 

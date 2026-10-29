@@ -1,12 +1,14 @@
 # G17真实AI验收结果
 
+> 公开版隐私处理（2026-10-30）：本机用户路径、私有部署地址或联系标识已替换为占位符；原始记录由维护者私下保留，历史日期、结论和产物哈希不因此改变。
+
 日期：2026-10-22。最新状态：旧DeepSeek A／B／C及v5、本地导出／冷重启的技术证据保持。r03真实复验中，**新A已审阅采用保存v6；新B成功返回且技术审阅完成，教师确认小班难度适合，但反馈“缺少教师的话”，本轮按质量停止规则停在B，未采用B或发起新C，G17质量未整体通过**，接续见§7。教师话语r3源码整改及限定离线检查通过；新teacher-talk-r01包启动遭Windows策略拦截（4551），已停止，见§7.6。MiMo本轮不测。旧Word两页由用户确认正常，仅关闭该文件逐页子项；不代表新样本、完整G18或发行通过。方案与停止规则见[验收方案](desktop-d2-g17-acceptance-plan.md)。
 
 ## 1. 授权与配置
 
 用户原话：“允许，从现在开始允许调用真实AI进行验收”。按既定DeepSeek官方`https://api.deepseek.com`／`deepseek-flash`，再MiMo标准`https://api.xiaomimimo.com/v1`／`mimo-v2.6-flash`，每家A拆分→B目标小班适龄→C其他活动串行；每步审阅／采用／保存后才继续。每家3次业务触发是验收范围，不是预算或HTTP发送保证。失败或结果不明按方案§6停止，不自动补发或换型号。
 
-隔离总根`C:\Users\yw980\AppData\Local\KGNext-G17-20261022`，两家各用自己的data／LocalAppData。普通完整包182文件、EXE `d0e650e8…`沿原就绪记录，未重建；真实样本只用已保存的虚构材料。DeepSeek配置v1／凭据记录1，MiMo尚未配置；Codex不读取密钥内容。2026-10-22实际发起前重新读取DeepSeek官方首次调用与Chat Completions公开文档，地址、模型ID及流式子集未发现变更，不发探测API。
+隔离总根`<LOCAL_USERPROFILE>\AppData\Local\KGNext-G17-20261022`，两家各用自己的data／LocalAppData。普通完整包182文件、EXE `d0e650e8…`沿原就绪记录，未重建；真实样本只用已保存的虚构材料。DeepSeek配置v1／凭据记录1，MiMo尚未配置；Codex不读取密钥内容。2026-10-22实际发起前重新读取DeepSeek官方首次调用与Chat Completions公开文档，地址、模型ID及流式子集未发现变更，不发探测API。
 
 ## 2. 逐项结果
 
@@ -103,7 +105,7 @@ DeepSeek高峰为北京时间周一至周五（不含中国法定节假日）9:0
 
 ## 4. 教师评阅材料
 
-以下原样摘录已返回的教学文本，未为了评阅改写或再次生成。A按中班原文拆分，B仅本次目标为小班，C恢复中班；保存的计划表头始终为中班。完整采用结果及两页排版见[DeepSeek日计划Word](C:/Users/yw980/AppData/Local/KGNext-G17-20261022/deepseek/exports/G17-DeepSeek-v5-after-restart.docx)。
+以下原样摘录已返回的教学文本，未为了评阅改写或再次生成。A按中班原文拆分，B仅本次目标为小班，C恢复中班；保存的计划表头始终为中班。完整采用结果及两页排版见[DeepSeek日计划Word](<LOCAL_USERPROFILE>/AppData/Local/KGNext-G17-20261022/deepseek/exports/G17-DeepSeek-v5-after-restart.docx)。
 
 ### A：拆分六字段
 
