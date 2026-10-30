@@ -2,7 +2,11 @@
 
 更新：2026-10-30。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前工作：AI手动重试与GitHub更新（源码验证）
+## 当前工作：源码合并与完整本地备份／恢复
+
+2026-10-30用户已授权执行[唯一当前入口](../tasks/current.md)：先整理桌面源码并正常合入main，再集中确认关键产品行为并推进完整本地备份／恢复。源码合并的基线、独立审阅及实际回执见[源码整合核查](desktop-source-integration-review.md)；未回读远端前不记作已合并。继续原OpenCode同会话／Go套餐DeepSeek V4.1 Flash max实施，Codex独立审核回修；保持源码验证，不发行，WebDAV与公开历史改写不自动启动。
+
+## 已完成：AI手动重试与GitHub更新（源码验证）
 
 2026-10-30用户补充：AI生成可能不稳定，失败／结果不明应可由用户主动重试；更新通过本项目GitHub Releases最新正式版判断。原OpenCode同会话／指定Go模型实施及回修，Codex[独立核查§4](desktop-retry-github-review.md#4-最终独立结论与源码交付)限定源码／合成工程通过，RG-R01–R10关闭：全local761、最终桌面368、完整前端及最终观察62／typecheck、真实源码窗口17。实际GitHub当前无正式Release，源码仅检查、不下载或替换程序；不发行、不执行受阻冻结包、不接WebDAV。唯一执行入口仍为[current.md](../tasks/current.md)。
 

@@ -9,12 +9,12 @@
 | 用途 | 链接 |
 | --- | --- |
 | 项目仓库与所有者 | [ywyz/kindergarten-manager-next](https://github.com/ywyz/kindergarten-manager-next) |
-| 当前桌面版及 README | [桌面版开发分支](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-v2-foundation) |
-| 开源许可 | [MIT LICENSE](https://github.com/ywyz/kindergarten-manager-next/blob/codex/desktop-v2-foundation/LICENSE) |
-| 维护者与项目关系 | [MAINTAINERS.md](https://github.com/ywyz/kindergarten-manager-next/blob/codex/desktop-v2-foundation/MAINTAINERS.md) |
+| 当前桌面版及 README | 默认分支 [main](https://github.com/ywyz/kindergarten-manager-next/tree/main)（本文档为待集成版本） |
+| 开源许可 | [MIT LICENSE](https://github.com/ywyz/kindergarten-manager-next/blob/main/LICENSE) |
+| 维护者与项目关系 | [MAINTAINERS.md](https://github.com/ywyz/kindergarten-manager-next/blob/main/MAINTAINERS.md) |
 | 维护者 GitHub 账号 | [ywyz](https://github.com/ywyz) |
 
-默认 `main` 仍是旧版实现，申请时应说明当前桌面版分支，避免只提供默认分支的旧 README。公开账号不等于已核验实名；若申请姓名与公开账号不同，向 Certum 确认还需何种署名或项目关系证明，再由申请人提供适当信息。
+本页公开证据链接按合并后的 `main` 整理；截至本次文档提交，远端 `main` 合并尚未执行。合并完成前，申请材料应同时说明当前桌面源码仍在 [`codex/desktop-v2-foundation`](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-v2-foundation) 分支；合并完成后再以 `main` 为默认公开入口。公开账号不等于已核验实名；若申请姓名与公开账号不同，向 Certum 确认还需何种署名或项目关系证明，再由申请人提供适当信息。
 
 ## 申请人私下准备
 
@@ -34,6 +34,6 @@ MIT 允许商业用途，与 Certum 开源证书的用途限制分别处理。Ce
 
 ## 可用于申请表的项目简介
 
-> kindergarten-manager-next is a personal open-source Windows desktop project maintained by the GitHub account ywyz. It helps kindergarten teachers prepare daily activity plans and game observation records, with local storage, version history, Word export and optional user-configured AI services. Original project content is licensed under MIT. The desktop implementation is under active development on the codex/desktop-v2-foundation branch and is currently verified from source. The project has no commercial distribution plan at this stage.
+> kindergarten-manager-next is a personal open-source Windows desktop project maintained by the GitHub account ywyz. It helps kindergarten teachers prepare daily activity plans and game observation records, with local storage, version history, Word export and optional user-configured AI services. Original project content is licensed under MIT. The current desktop source is prepared for the default main branch and is currently verified from source; remote integration is pending review. The project has no commercial distribution plan at this stage.
 
 用户已确认清理后的受控模板具备公开分发及 MIT 授权。提交前仍以 [开源准备检查记录](../bootstrap/open-source-readiness-review.md) 中当前文件验证、公开 Git 历史和维护者实名关联的实际状态为准。

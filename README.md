@@ -2,9 +2,9 @@
 
 面向幼儿园教师的本地教育工作支持应用。先做好每日活动计划，再逐步完善游戏观察记录。项目目前由个人维护，原创内容采用 MIT 许可，暂无商业发行计划。
 
-**当前桌面版在 [`codex/desktop-v2-foundation`](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-v2-foundation) 分支开发。默认 `main` 保留旧版云端实现，不能按旧版部署说明启动当前桌面应用。**
+> 集成状态：本文档按当前桌面源码合入默认 [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) 的版本整理；截至本次文档提交，远端 `main` 合并尚未执行。合并完成前，当前桌面源码仍以 [`codex/desktop-v2-foundation`](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-v2-foundation) 为准；合并完成后，默认 `main` 将承载当前桌面开发源码。
 
-English: A locally run Windows desktop application for kindergarten teachers, covering daily activity plans and game observation records. Maintained by [ywyz](https://github.com/ywyz). Original project code and documentation are MIT licensed. The desktop version is under active development and is currently verified from source; a stable signed desktop release is not available yet.
+English: A locally run Windows desktop application for kindergarten teachers, covering daily activity plans and game observation records. Maintained by [ywyz](https://github.com/ywyz). Original project code and documentation are MIT licensed. The current desktop source is prepared for the default [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) branch and is currently verified from source; a stable signed desktop release is not available yet.
 
 ## 当前可以做什么
 
@@ -17,7 +17,7 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 
 ## 开发状态
 
-目前继续使用源码桌面环境验证。E14 已完成相应源码、构建和静态检查，最近一次新生成的未签名冻结包执行被 Windows Smart App Control 阻止，尚未完成后续整包运行验证。因此，源码验证通过不代表安装包、完整产品或教师体验已经验收通过。
+目前继续使用源码桌面环境验证。默认 `main` 是当前桌面开发源码的整合目标；在远端合并完成前，源码入口仍以桌面分支为准。E14 已完成相应源码、构建和静态检查，最近一次新生成的未签名冻结包执行被 Windows Smart App Control 阻止，尚未完成后续整包运行验证。因此，源码验证通过不代表安装包、完整产品或教师体验已经验收通过。
 
 完整状态、已知限制及后续工作见 [当前任务](docs/tasks/current.md) 和 [E14 独立核查](docs/bootstrap/desktop-game-observation-e14-review.md)。Windows 10、WPS、其他显示配置、干净机器及正式发行更新仍有未验范围。
 
@@ -34,7 +34,9 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 以下命令用于 **Windows PowerShell 下的新克隆目录**。当前已验证的解释器是 **CPython 3.14.7、Windows x64、标准 GIL**；不要把版本声明理解为所有 Python 版本均已验证。需准备 WebView2 Runtime、满足 [frontend/package.json](frontend/package.json) 引擎要求的 Node.js，以及 uv。已有开发环境应复用原环境，避免覆盖既有验证包或数据目录。
 
 ```powershell
-git clone --branch codex/desktop-v2-foundation --single-branch https://github.com/ywyz/kindergarten-manager-next.git
+# 以下命令以合并后的 main 为目标；远端合并完成前，请将 --branch main 改为
+# --branch codex/desktop-v2-foundation。
+git clone --branch main --single-branch https://github.com/ywyz/kindergarten-manager-next.git
 Set-Location kindergarten-manager-next
 
 # 先确认所选解释器为 CPython 3.14.7 x64 标准 GIL，再创建新环境。
