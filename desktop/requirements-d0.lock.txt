@@ -3,7 +3,7 @@ annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
 bottle==0.13.4
-certifi==2026.7.22
+certifi==2026.10.18
 cffi==2.1.1
 click==8.5.0
 clr-loader==0.3.1
@@ -27,11 +27,11 @@ pydantic-core==2.50.0
 pygments==2.21.0
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.8
-pytest==8.4.2
+pytest==9.0.3
 pythonnet==3.2.1
 pywebview==6.2.1
 pywin32-ctypes==0.2.3
-setuptools==84.0.0
+setuptools==84.1.0
 sqlalchemy==2.0.54
 starlette==1.7.0
 typing-extensions==4.16.0
