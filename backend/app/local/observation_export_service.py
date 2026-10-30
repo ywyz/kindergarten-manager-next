@@ -34,6 +34,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
+from app.local import backup_barrier
 from app.local.base import utc_now
 from app.local.errors import LocalError
 from app.local.models import (
@@ -563,7 +564,7 @@ def _write_managed_bytes(root: Path, path: Path, data: bytes) -> None:
             pass
 
 
-def _write_artifact(
+def _write_artifact_impl(
     runtime: Any,
     *,
     token_hash: str,
@@ -600,6 +601,30 @@ def _write_artifact(
         raise
 
 
+def _write_artifact(
+    runtime: Any,
+    *,
+    token_hash: str,
+    data: bytes,
+    digest: str,
+    expires_at: datetime,
+    snapshot_id: str,
+    manifest_hash: str,
+    now: datetime,
+) -> None:
+    with backup_barrier.file_scope(runtime.data_dir):
+        return _write_artifact_impl(
+            runtime,
+            token_hash=token_hash,
+            data=data,
+            digest=digest,
+            expires_at=expires_at,
+            snapshot_id=snapshot_id,
+            manifest_hash=manifest_hash,
+            now=now,
+        )
+
+
 def _safe_unlink_managed(root: Path, path: Path) -> bool:
     """Unlink only a regular, single-link, non-reparse file under root.
 
@@ -624,11 +649,16 @@ def _safe_unlink_managed(root: Path, path: Path) -> bool:
         return False
 
 
-def _delete_artifact_now(runtime: Any, token_hash: str) -> None:
+def _delete_artifact_now_impl(runtime: Any, token_hash: str) -> None:
     root = _export_temp_root(runtime)
     docx_path, meta_path = _artifact_paths(runtime, token_hash)
     for path in (docx_path, meta_path):
         _safe_unlink_managed(root, path)
+
+
+def _delete_artifact_now(runtime: Any, token_hash: str) -> None:
+    with backup_barrier.file_scope(runtime.data_dir):
+        return _delete_artifact_now_impl(runtime, token_hash)
 
 
 def _delete_artifact(runtime: Any, token_hash: str) -> None:

@@ -38,7 +38,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from app.local import ai_progress, ai_task_service, ai_transport
+from app.local import ai_progress, ai_task_service, ai_transport, backup_barrier
 from app.local.base import utc_now
 
 # ---------------------------------------------------------------------------
@@ -229,6 +229,7 @@ class AiExecutor:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._frozen = threading.Event()
+        self._freeze_owners: set[str] = set()
         self._draining = threading.Event()
         self._gate = threading.Lock()
         self._idle = threading.Event()
@@ -310,17 +311,33 @@ class AiExecutor:
     def is_frozen(self) -> bool:
         return self._frozen.is_set()
 
-    def freeze(self) -> None:
-        """Synchronously freeze new claims and the final SEND (short gate)."""
+    def freeze(self, owner: str = "close") -> None:
+        """Synchronously freeze new claims and the final SEND (short gate).
+
+        Freeze owners are independent: a snapshot ending must not clear a
+        close/restore intent that was already present (or arrived later).
+        """
         with self._gate:
+            self._freeze_owners.add(owner)
             self._frozen.set()
         self._wake.set()
 
-    def unfreeze(self) -> None:
+    def unfreeze(self, owner: str = "close") -> None:
         with self._gate:
-            self._frozen.clear()
-            self._draining.clear()
+            self._freeze_owners.discard(owner)
+            if not self._freeze_owners:
+                self._frozen.clear()
+                self._draining.clear()
         self._wake.set()
+
+    def is_snapshot_idle(self) -> bool:
+        """True when no active/pending result can still write persistence."""
+        return (
+            self._active is None
+            and not self._pending_results
+            and not self._unconfirmed_slots
+            and not self._unconfirmed
+        )
 
     def abort_execution(self, execution_id: str, mode: str) -> bool:
         active = self._active
@@ -386,6 +403,7 @@ class AiExecutor:
         """
         # Stage 1: pending-close barrier (freeze only; never kill yet).
         with self._gate:
+            self._freeze_owners.add("close")
             self._frozen.set()
             self._close_epoch += 1
         self._wake.set()
@@ -510,10 +528,11 @@ class AiExecutor:
             claim, result = entry["claim"], entry["result"]
             session = self._runtime.session()
             try:
-                if result.get("kind") == ai_transport.SUCCESS:
-                    ai_task_service.finalize_success(session, claim, result, utc_now())
-                else:
-                    ai_task_service.finalize_failure(session, claim, result, utc_now())
+                with backup_barrier.ai_write_scope():
+                    if result.get("kind") == ai_transport.SUCCESS:
+                        ai_task_service.finalize_success(session, claim, result, utc_now())
+                    else:
+                        ai_task_service.finalize_failure(session, claim, result, utc_now())
                 self._pending_results.pop(execution_id, None)
             except Exception:  # noqa: BLE001 - still local only
                 try:
@@ -550,12 +569,13 @@ class AiExecutor:
                 if profile is None:
                     return False
                 self._emit("before_claim", None, {})
-                claim = ai_task_service.claim_next(
-                    self._runtime,
-                    now=utc_now(),
-                    started_ticks=self._clock(),
-                    guard=lambda: self._close_epoch == epoch,
-                )
+                with backup_barrier.ai_write_scope():
+                    claim = ai_task_service.claim_next(
+                        self._runtime,
+                        now=utc_now(),
+                        started_ticks=self._clock(),
+                        guard=lambda: self._close_epoch == epoch,
+                    )
             finally:
                 session.close()
             if claim is None:
@@ -1076,7 +1096,8 @@ class AiExecutor:
     def _commit_mark(self, claim: ai_task_service.Claim) -> bool:
         session = self._runtime.session()
         try:
-            return ai_task_service.commit_dispatch_mark(session, claim, utc_now())
+            with backup_barrier.ai_write_scope():
+                return ai_task_service.commit_dispatch_mark(session, claim, utc_now())
         finally:
             session.close()
 
@@ -1090,10 +1111,11 @@ class AiExecutor:
         for _ in range(3):
             session = self._runtime.session()
             try:
-                if kind == ai_transport.SUCCESS:
-                    ai_task_service.finalize_success(session, claim, result, utc_now())
-                else:
-                    ai_task_service.finalize_failure(session, claim, result, utc_now())
+                with backup_barrier.ai_write_scope():
+                    if kind == ai_transport.SUCCESS:
+                        ai_task_service.finalize_success(session, claim, result, utc_now())
+                    else:
+                        ai_task_service.finalize_failure(session, claim, result, utc_now())
                 self._emit("persisted", claim)
                 return
             except Exception as exc:  # noqa: BLE001 - local only, never a resend

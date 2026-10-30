@@ -58,3 +58,12 @@ coverage.xml
 /evidence-local/
 /private-data/
 /local-data/
+
+# Complete local backup packages and private backup work areas
+*.[kK][gG][mM][bB][aA][cC][kK][uU][pP]
+[bB][aA][cC][kK][uU][pP]-[wW][oO][rR][kK]/
+.[bB][aA][cC][kK][uU][pP]-[wW][oO][rR][kK]/
+[kK][gG][mM]-[bB][aA][cC][kK][uU][pP]-[vV][eE][rR][iI][fF][yY]-*/
+[kK][iI][nN][dD][eE][rR][gG][aA][rR][tT][eE][nN][mM][aA][nN][aA][gG][eE][rR]-[bB][aA][cC][kK][uU][pP]-[wW][oO][rR][kK]/
+[kK][iI][nN][dD][eE][rR][gG][aA][rR][tT][eE][nN][mM][aA][nN][aA][gG][eE][rR]-[bB][aA][cC][kK][uU][pP]-[wW][oO][rR][kK]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]/
+.[kK][gG][mM]-[bB][aA][cC][kK][uU][pP]-*.tmp

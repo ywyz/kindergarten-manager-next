@@ -19,6 +19,7 @@ from typing import Iterator
 from sqlalchemy.exc import DatabaseError, IntegrityError
 from sqlalchemy.orm import Session
 
+from app.local import backup_barrier
 from app.local.errors import LocalDatabaseBusy, LocalError, LocalStorageError
 
 _BUSY_PRIMARY_CODES = {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
@@ -30,8 +31,27 @@ def begin_read(session: Session) -> None:
 
 
 def begin_immediate(session: Session) -> None:
-    """Open the final write transaction before any business read inside it."""
-    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    """Open the final write transaction before any business read inside it.
+
+    The snapshot barrier is entered before SQLite's write lock.  This makes the
+    writer count and the intent/exclusive decision one atomic protocol; an
+    already accepted writer finishes, while a new external writer is refused.
+    """
+    existing = session.info.get("_kgm_backup_barrier")
+    if existing is not None:
+        # Nested BEGIN is invalid, but it must not acquire a second writer
+        # slot or remove the outer slot when it fails.  The outer transaction
+        # keeps its original token until commit/rollback/close.
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        return
+    barrier = backup_barrier.begin_db_write(session)
+    try:
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    except BaseException:
+        backup_barrier.abort_db_write(session, barrier)
+        raise
+    if barrier is not None:
+        session.info["_kgm_backup_barrier"] = barrier
 
 
 def end_read(session: Session) -> None:

@@ -8,7 +8,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 本仓库是 kindergartenManager 的全新实现。
 
-2026-10-30当前：源码整理已独立通过，原OpenCode正常提交推送b0cc53b，默认main已快进为当前MIT桌面开发源码，记录见docs/bootstrap/desktop-source-integration-review.md。继续原桌面分支推进完整本地备份／恢复；用户已逐项确认P01–P05：手动完整受管业务、每次可选加密、预览后替换当前档案并保留完整保护副本、保留密文而排除DPAPI材料、先保存并等在途操作完成后暂停写入备份。规格见docs/specs/desktop-backup-restore.md，唯一入口docs/tasks/current.md；原OpenCode同会话／Go套餐DeepSeek V4.1 Flash max实施，Codex独立审核回修。继续源码验证，不发行、不启动WebDAV，不自动重写公开历史。
+2026-10-30当前：源码整理已独立通过，原OpenCode正常提交推送并快进main，说明收口至e836726，记录见docs/bootstrap/desktop-source-integration-review.md。继续原桌面分支推进完整本地备份／恢复；P01–P05已确认：手动完整受管业务、每次可选加密、预览后替换当前档案并保留完整保护副本、保留密文而排除DPAPI、先保护工作及排空在途后暂停写入备份。2026-10-31 B1 r04限定后端源码／合成工程独立通过：796全local、17反例、604原图／1812资源／约150MiB密码包及非空0005整包隔离升级通过，首失败与最终证据见docs/bootstrap/desktop-backup-restore-review.md§5–§8。待原会话按批准清单提交推送后接B2；P06首次入口已集中询问待答复，不阻塞恢复核心。B2／B3与教师体验未通过。规格见docs/specs/desktop-backup-restore.md，唯一入口docs/tasks/current.md；原OpenCode同会话／Go套餐DeepSeek V4.1 Flash max实施，Codex独立审核回修。不发行、不启动WebDAV，不自动重写公开历史。
 
 2026-10-30前项完成：AI手动重试与本项目GitHub Releases最新正式版检查已由原OpenCode同会话／指定Go模型实施，Codex限定源码／合成工程独立通过，RG-R01–R10关闭。源码可只读检查版本、不可下载安装；实际GitHub暂无正式Release。规格见desktop-game-observation.md§5.1、desktop-application-update.md§10，结果见docs/bootstrap/desktop-retry-github-review.md§4。AI失败作为可恢复结果，不自动重发或免除应用缺陷。
 
@@ -59,6 +59,8 @@ Architecture v2 已确认：
 产品行为由用户决定，Agent 不拥有产品需求最终解释权。不得自行增加需求、改变教师工作流程、为技术便利改变产品行为、重构无关功能、扩大任务范围或为“架构更先进”增加组件。不确定的产品行为须明确列出。
 
 **OpenCode 是实现代码、测试、迁移及构建打包脚本的唯一写入者；Codex 负责技术核查、规划设计文档、审阅、执行相关验证及 Git／发布管理。** 各项操作须匹配当前有效授权，不默认发布；已有授权范围内持续推进，不重复索要确认。协调或审阅不另起实现者，历史特定轮次的直接修复或部署授权不自动延续到本轮。
+
+2026-10-30本轮用户进一步允许多个OpenCode会话并行：均使用Go套餐DeepSeek V4.1 Flash max，按明确文件责任分工，共享核心与Git整合仍由原会话负责；Codex统一独立审核。不fork原会话、不由各会话另派子代理，不并行改同一文件；B1未通过前，其他会话只做不冲突的设计与验证材料准备，不提前接入B2。
 
 ## 当前开发环境
 

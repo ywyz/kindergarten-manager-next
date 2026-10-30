@@ -30,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
+from app.local import backup_barrier
 from app.local.base import utc_now
 from app.local.errors import LocalError, LocalStorageError, LocalValidationError
 from app.local.models import (
@@ -1051,7 +1052,9 @@ def _prepare_staged_asset(path: Path, root: Path) -> PreparedAsset:
         raise ObservationAssetStorage("读取图片临时文件失败") from exc
 
 
-def inspect_managed_asset(path: Path, root: Path) -> ManagedAssetInspection:
+def inspect_managed_asset(
+    path: Path, root: Path, *, max_bytes: int = MAX_SOURCE_BYTES
+) -> ManagedAssetInspection:
     """Hash and decode one managed asset through the same verified handle.
 
     This is a read-only inspection for restore/history verification.  It does
@@ -1064,7 +1067,7 @@ def inspect_managed_asset(path: Path, root: Path) -> ManagedAssetInspection:
                 info = _verify_handle_path(
                     fd, path, root, error_cls=ObservationMaterialCorrupt
                 )
-                if info.st_size > MAX_SOURCE_BYTES:
+                if info.st_size > max_bytes:
                     raise ObservationMaterialLimit("材料超过单图字节上限")
                 hasher = hashlib.sha256()
                 total = 0
@@ -1073,7 +1076,7 @@ def inspect_managed_asset(path: Path, root: Path) -> ManagedAssetInspection:
                     if not chunk:
                         break
                     total += len(chunk)
-                    if total > MAX_SOURCE_BYTES:
+                    if total > max_bytes:
                         raise ObservationMaterialLimit("材料超过单图字节上限")
                     hasher.update(chunk)
                 os.lseek(fd, 0, os.SEEK_SET)
@@ -1237,7 +1240,7 @@ def _move_file(
         raise ObservationAssetStorage("图片落盘失败") from exc
 
 
-def import_asset(
+def _import_asset_impl(
     session: Session,
     runtime: Any,
     *,
@@ -1471,6 +1474,40 @@ def import_asset(
     except Exception as exc:
         rollback(session)
         raise ObservationAssetStorage("图片数据库提交失败") from exc
+
+
+def import_asset(
+    session: Session,
+    runtime: Any,
+    *,
+    profile_id: str,
+    observation_id: str,
+    request_id: Any,
+    expected_revision: Any,
+    stream: BinaryIO,
+    display_name: Any,
+    caption: Any = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Import one image while the snapshot barrier covers the whole file phase.
+
+    The staging write and the later ``_move_file`` calls happen before the DB
+    transaction; the outer file scope therefore covers the entire operation,
+    not just ``begin_immediate``.
+    """
+    with backup_barrier.file_scope(runtime.data_dir):
+        return _import_asset_impl(
+            session,
+            runtime,
+            profile_id=profile_id,
+            observation_id=observation_id,
+            request_id=request_id,
+            expected_revision=expected_revision,
+            stream=stream,
+            display_name=display_name,
+            caption=caption,
+            now=now,
+        )
 
 
 def _write_bytes_staging(path: Path, data: bytes, root: Path) -> None:
