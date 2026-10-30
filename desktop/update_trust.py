@@ -21,6 +21,9 @@ _SCHEME = "https"
 _DEFAULT_METADATA_PATH = "/stable/windows-x64/manifest.json"
 _PATH_RE = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+_TEST_ONLY_FIELDS = frozenset(
+    {"test_only", "ca_pem", "connect_host", "connect_port", "server_hostname"}
+)
 
 
 class ReleaseConfigError(ValueError):
@@ -33,14 +36,21 @@ class ReleaseSource:
     metadata_path: str
     public_keys: dict[str, bytes] = field(default_factory=dict)
     channel: str = "stable"
+    provider: str = "fixed"
+    github_repo: str | None = None
+    github_tag: str | None = None
+    allowed_redirect_hosts: tuple[str, ...] = ()
     # Test-only fields; the product constructor never sets them.
     ca_pem: str | None = None
     connect_host: str | None = None
+    connect_port: int | None = None
     server_hostname: str | None = None
     test_only: bool = False
 
     @property
     def configured(self) -> bool:
+        if self.provider == "github":
+            return bool(self.origin)
         return bool(self.origin and self.public_keys)
 
     def validate(self) -> None:
@@ -70,24 +80,79 @@ class ReleaseSource:
                 raise ReleaseConfigError("产品更新源不得使用私网／回环地址")
         if host.lower() in ("localhost", "localhost.localdomain") and not self.test_only:
             raise ReleaseConfigError("产品更新源不得使用 localhost")
+        if self.provider not in ("fixed", "github"):
+            raise ReleaseConfigError("更新来源类型不合法")
+        if self.provider == "github":
+            if self.origin not in ("https://api.github.com", "https://github.com"):
+                raise ReleaseConfigError("GitHub 更新来源必须是固定官方 HTTPS 主机")
+            if self.github_repo != "ywyz/kindergarten-manager-next":
+                raise ReleaseConfigError("GitHub 仓库不是固定项目")
+            if self.origin == "https://github.com":
+                if not self.github_tag or not re.match(r"^v?[0-9]+\.[0-9]+\.[0-9]+$", self.github_tag):
+                    raise ReleaseConfigError("GitHub Release tag 不合法")
+                if tuple(self.allowed_redirect_hosts) != ("release-assets.githubusercontent.com",):
+                    raise ReleaseConfigError("GitHub 下载跳转域名不合法")
+                if not self.public_keys:
+                    raise ReleaseConfigError("GitHub 签名清单缺少发行公钥")
+            elif self.github_tag is not None:
+                raise ReleaseConfigError("GitHub API 来源不接受固定 tag")
         if not _PATH_RE.match(self.metadata_path):
             raise ReleaseConfigError("元数据路径不合法")
         if ".." in self.metadata_path.split("/"):
             raise ReleaseConfigError("元数据路径不得越界")
-        if not self.public_keys:
+        if not self.public_keys and self.provider != "github":
             raise ReleaseConfigError("更新信任表为空")
         for key_id, key in self.public_keys.items():
             if not isinstance(key_id, str) or not key_id:
                 raise ReleaseConfigError("信任表 key_id 不合法")
             if not isinstance(key, (bytes, bytearray)) or len(key) != 32:
                 raise ReleaseConfigError("Ed25519 公钥必须是 32 字节")
-        if not self.test_only and (self.ca_pem or self.connect_host or self.server_hostname):
+        if not self.test_only and (
+            self.ca_pem
+            or self.connect_host
+            or self.connect_port is not None
+            or self.server_hostname
+        ):
             raise ReleaseConfigError("测试 TLS 连接参数不得进入产品更新源")
         if self.test_only and self.connect_host is not None:
             try:
                 ipaddress.ip_address(self.connect_host)
             except ValueError:
                 raise ReleaseConfigError("测试 connect_host 必须是数值地址") from None
+        if self.connect_port is not None and (
+            not isinstance(self.connect_port, int)
+            or isinstance(self.connect_port, bool)
+            or not 1 <= self.connect_port <= 65535
+        ):
+            raise ReleaseConfigError("测试 connect_port 必须是有效端口")
+
+    def as_config(self) -> dict:
+        import base64
+
+        result = {
+            "origin": self.origin,
+            "metadata_path": self.metadata_path,
+            "channel": self.channel,
+            "public_keys": {
+                key_id: base64.b64encode(key).decode("ascii")
+                for key_id, key in self.public_keys.items()
+            },
+            "provider": self.provider,
+            "github_repo": self.github_repo,
+            "github_tag": self.github_tag,
+            "allowed_redirect_hosts": list(self.allowed_redirect_hosts),
+        }
+        if self.test_only:
+            result.update(
+                {
+                    "test_only": True,
+                    "ca_pem": self.ca_pem,
+                    "connect_host": self.connect_host,
+                    "connect_port": self.connect_port,
+                    "server_hostname": self.server_hostname,
+                }
+            )
+        return result
 
     def metadata_url(self) -> str:
         return self.origin.rstrip("/") + self.metadata_path
@@ -142,24 +207,38 @@ def load_release_source(path: str | Path | None = None) -> ReleaseSource | None:
         raise ReleaseConfigError("更新发行配置无法读取") from exc
     if not isinstance(data, dict):
         raise ReleaseConfigError("更新发行配置必须是对象")
+    if set(data) & _TEST_ONLY_FIELDS:
+        raise ReleaseConfigError("更新发行配置不得包含测试专用字段")
     origin = data.get("origin")
     metadata_path = data.get("metadata_path", _DEFAULT_METADATA_PATH)
     channel = data.get("channel", "stable")
     raw_keys = data.get("public_keys")
+    provider = data.get("provider", "fixed")
+    github_repo = data.get("github_repo")
+    github_tag = data.get("github_tag")
+    allowed_redirect_hosts = data.get("allowed_redirect_hosts", [])
     if not isinstance(origin, str) or not origin:
         return None
     if not isinstance(metadata_path, str) or not metadata_path:
         raise ReleaseConfigError("metadata_path 不合法")
     if not isinstance(channel, str) or not channel:
         raise ReleaseConfigError("channel 不合法")
-    if not isinstance(raw_keys, dict) or not raw_keys:
+    if not isinstance(raw_keys, dict):
+        raw_keys = {}
+    if provider == "fixed" and not raw_keys:
         return None
     keys = {str(key_id): _decode_key(value) for key_id, value in raw_keys.items()}
+    if not isinstance(allowed_redirect_hosts, list):
+        raise ReleaseConfigError("allowed_redirect_hosts 不合法")
     source = ReleaseSource(
         origin=origin,
         metadata_path=metadata_path,
         public_keys=keys,
         channel=channel,
+        provider=provider,
+        github_repo=github_repo,
+        github_tag=github_tag,
+        allowed_redirect_hosts=tuple(str(item) for item in allowed_redirect_hosts),
     )
     source.validate()
     return source

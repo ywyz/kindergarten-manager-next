@@ -137,6 +137,33 @@ interface PendingAdopt {
   hash: string
 }
 
+interface ObservationAiTask {
+  id: string
+  task_type: 'game_observation_generate' | 'game_observation_rewrite'
+  status: string
+  reason: string | null
+  candidate_id: string | null
+  retry_requires_ack?: boolean
+  execution?: { id: string; attempt_no?: number | null } | null
+}
+
+interface AiRetryState {
+  taskId: string
+  executionId: string
+  taskType: 'game_observation_generate' | 'game_observation_rewrite'
+  status: string
+  reason: string
+  requiresAck: boolean
+  candidateId: string | null
+}
+
+interface AiRetryPending {
+  requestId: string
+  taskId: string
+  executionId: string
+  ack: boolean
+}
+
 interface TermDialogState {
   visible: boolean
   options: { id: string; name: string; start_date: string; end_date: string }[]
@@ -276,6 +303,15 @@ const aiBusy = ref(false)
 const aiIntent = ref(false)
 const aiSubmitBusy = ref(false)
 const aiUnknown = ref<{ requestId: string } | null>(null)
+const aiThinking = ref('')
+const aiRetryState = ref<AiRetryState | null>(null)
+const aiRetryAck = ref(false)
+const aiRetryBusy = ref(false)
+const aiRetryIntent = ref(false)
+const aiRetryUnknown = ref<AiRetryPending | null>(null)
+const aiRetryNotice = ref('')
+const aiAwaitingNewExecution = ref(false)
+const aiPreviousExecutionId = ref('')
 const candidates = ref<{ id: string; task_type: string; created_at: string }[]>([])
 const candidateCursor = ref<string | null>(null)
 const candidateId = ref('')
@@ -355,7 +391,8 @@ const writeBlocked = computed(
     pendingMaterial.value !== null ||
     adoptUnknown.value !== null ||
     restoreUnknown.value ||
-    aiUnknown.value !== null,
+    aiUnknown.value !== null ||
+    aiRetryUnknown.value !== null,
 )
 const externalBusy = computed(
   () =>
@@ -363,6 +400,8 @@ const externalBusy = computed(
     writeBlocked.value ||
     aiIntent.value ||
     aiSubmitBusy.value ||
+    aiRetryIntent.value ||
+    aiRetryBusy.value ||
     exportBusy.value ||
     indeterminate.value !== null ||
     phase.value === 'saving',
@@ -394,6 +433,61 @@ const aiMinimumMissing = computed(() =>
   observationAiMinimumMissing(form.value, photos.value.length),
 )
 const aiMinimumReady = computed(() => aiMinimumMissing.value.length === 0)
+
+const AI_STATUS_LABELS: Record<string, string> = {
+  pending: '排队中',
+  claimed: '已领取',
+  dispatching: '正在请求',
+  retry_wait: '等待安全重试',
+  paused: '已暂停',
+  succeeded: '已完成',
+  failed: '失败',
+  outcome_unknown: '结果不明',
+  cancelled: '已取消',
+}
+const AI_REASON_LABELS: Record<string, string> = {
+  provider_error: '供应商请求失败',
+  source_changed: '输入资料已变化',
+  output_invalid: '模型输出无法使用',
+  input_invalid: '发送资料不符合要求',
+  timeout: '请求超时',
+  network: '网络不可用',
+  credential: 'AI 配置或凭据不可用',
+  material: '照片或正文材料不可用',
+  contract: '提示词或输出合同不可用',
+  cancelled: '任务已取消',
+  paused: '任务已暂停',
+  auth_rejected: 'AI 配置或凭据被拒绝',
+  rate_limited: '供应商限流',
+  endpoint_blocked: '端点被安全策略拒绝',
+  user_stop: '用户停止',
+}
+const aiTaskStatusLabel = computed(
+  () => AI_STATUS_LABELS[aiTaskStatus.value] ?? '状态未知',
+)
+const aiTaskReasonLabel = computed(
+  () => AI_REASON_LABELS[aiTaskReason.value] ?? '未识别原因',
+)
+const aiRetryBlockedBySource = computed(
+  () => aiRetryState.value?.reason === 'source_changed',
+)
+const aiRetryActionLabel = computed(() =>
+  aiRetryState.value?.taskType === 'game_observation_rewrite'
+    ? '重试本次单栏重写'
+    : '重试本次生成',
+)
+const aiRetryReasonLabel = computed(
+  () => AI_REASON_LABELS[aiRetryState.value?.reason ?? ''] ?? '未识别原因',
+)
+const aiRetryTitle = computed(() => {
+  const status = aiRetryState.value?.status
+  if (status === 'outcome_unknown') return 'AI 结果不明'
+  if (status === 'paused') return 'AI 任务已暂停'
+  return 'AI 任务失败'
+})
+const aiRetryAlertType = computed(() =>
+  aiRetryState.value?.status === 'failed' ? 'error' : 'warning',
+)
 
 function touchEpoch(): void {
   epoch.value += 1
@@ -523,12 +617,7 @@ async function load(): Promise<void> {
 async function restorePersistentState(): Promise<void> {
   const listSeq = ++taskListSeq
   try {
-    const items: {
-      id: string
-      status: string
-      reason: string | null
-      candidate_id: string | null
-    }[] = []
+    const items: ObservationAiTask[] = []
     let cursor: string | null = null
     let pages = 0
     do {
@@ -536,15 +625,10 @@ async function restorePersistentState(): Promise<void> {
         ? `&cursor=${encodeURIComponent(cursor)}`
         : ''
       const page: {
-        items: {
-          id: string
-          status: string
-          reason: string | null
-          candidate_id: string | null
-        }[]
+        items: ObservationAiTask[]
         next_cursor: string | null
       } = await apiGet<{
-        items: typeof items
+        items: ObservationAiTask[]
         next_cursor: string | null
       }>(
         `/api/observations/${pathSegment(props.observationId)}/ai-tasks?limit=100${suffix}`,
@@ -563,7 +647,18 @@ async function restorePersistentState(): Promise<void> {
       if (
         ['pending', 'claimed', 'dispatching'].includes(latest.status)
       ) {
+        if (latest.status === 'pending') {
+          // A retried task still points at its previous execution until the
+          // new claim commits. Do not show that old execution's progress.
+          beginAwaitingNewExecution(latest.execution?.id ?? '')
+        } else {
+          clearAwaitingNewExecution()
+          resetAiProgress()
+        }
+        aiRetryState.value = null
         void pollTask(latest.id)
+      } else if (['failed', 'outcome_unknown', 'paused'].includes(latest.status)) {
+        setAiRetryState(latest)
       }
     }
   } catch {
@@ -1502,6 +1597,7 @@ async function createAiTask(
     aiIntent.value ||
     aiBusy.value ||
     aiUnknown.value ||
+    aiRetryUnknown.value ||
     editDisabled.value ||
     !current.value
   ) {
@@ -1510,6 +1606,9 @@ async function createAiTask(
   // Claim the submit intent before the protective save await: two rapid
   // triggers share one save promise but must never mint two AI requests.
   aiIntent.value = true
+  aiRetryState.value = null
+  aiRetryAck.value = false
+  aiRetryNotice.value = ''
   let taskToPoll: string | null = null
   try {
     const outcome = await saveCurrent('manual')
@@ -1541,6 +1640,7 @@ async function createAiTask(
     )
     aiSubmitBusy.value = false
     taskListSeq += 1
+    clearAwaitingNewExecution()
     aiTaskId.value = task.id
     taskToPoll = task.id
   } catch (err) {
@@ -1606,16 +1706,55 @@ async function reconcileAiCreate(): Promise<void> {
   }
 }
 
+function resetAiProgress(): void {
+  aiTaskExecutionId.value = ''
+  aiTaskAttemptNo.value = null
+  aiTaskSeq.value = 0
+  aiTaskPhase.value = ''
+  aiTaskElapsedMs.value = 0
+  aiThinking.value = ''
+}
+
+function beginAwaitingNewExecution(previousExecutionId: string): void {
+  aiAwaitingNewExecution.value = true
+  aiPreviousExecutionId.value = previousExecutionId
+  resetAiProgress()
+}
+
+function clearAwaitingNewExecution(): void {
+  aiAwaitingNewExecution.value = false
+  aiPreviousExecutionId.value = ''
+}
+
+function setAiRetryState(task: ObservationAiTask): void {
+  const executionId = task.execution?.id ?? ''
+  if (!executionId) {
+    aiRetryState.value = null
+    aiRetryNotice.value = '无法确认本次执行，请用当前资料重新生成'
+    return
+  }
+  aiRetryState.value = {
+    taskId: task.id,
+    executionId,
+    taskType: task.task_type,
+    status: task.status,
+    reason: task.reason ?? '',
+    requiresAck:
+      Boolean(task.retry_requires_ack) || task.status === 'outcome_unknown',
+    candidateId: task.candidate_id ?? null,
+  }
+  aiRetryAck.value = false
+  aiRetryNotice.value =
+    task.reason === 'source_changed'
+      ? '输入资料已变化：请用当前资料重新生成'
+      : ''
+}
+
 async function pollTask(taskId: string): Promise<void> {
   while (editorAlive) {
     await sleep(700)
     try {
-      const task = await apiGet<{
-        status: string
-        reason: string | null
-        candidate_id: string | null
-        execution?: { id: string; attempt_no?: number | null } | null
-      }>(
+      const task = await apiGet<ObservationAiTask>(
         `/api/observations/${pathSegment(props.observationId)}/ai-tasks/${pathSegment(taskId)}`,
       )
       if (taskId !== aiTaskId.value) return
@@ -1623,7 +1762,17 @@ async function pollTask(taskId: string): Promise<void> {
       aiTaskReason.value = task.reason ?? ''
       const executionId = task.execution?.id ?? ''
       const attemptNo = task.execution?.attempt_no ?? null
+      if (aiAwaitingNewExecution.value) {
+        if (!executionId || executionId === aiPreviousExecutionId.value) {
+          // A pending retry keeps the old execution id as history. It must
+          // never become this pending activity's progress binding.
+          resetAiProgress()
+        } else {
+          clearAwaitingNewExecution()
+        }
+      }
       if (
+        !aiAwaitingNewExecution.value &&
         executionId &&
         (aiTaskExecutionId.value !== executionId ||
           aiTaskAttemptNo.value !== attemptNo)
@@ -1631,49 +1780,75 @@ async function pollTask(taskId: string): Promise<void> {
         aiTaskExecutionId.value = executionId
         aiTaskAttemptNo.value = attemptNo
         aiTaskSeq.value = 0
+        aiTaskPhase.value = ''
+        aiTaskElapsedMs.value = 0
+        aiThinking.value = ''
       }
-      try {
-        const progress = await apiGet<{
-          phase: string
-          reasoning: string
-          elapsed_ms?: number
-          execution_id?: string | null
-          attempt_no?: number | null
-          seq?: number
-        }>(
-          `/api/observations/${pathSegment(props.observationId)}/ai-tasks/${pathSegment(taskId)}/progress`,
-        )
-        if (taskId !== aiTaskId.value) return
-        const staleProgress =
-          (progress.execution_id != null &&
-            aiTaskExecutionId.value !== '' &&
-            progress.execution_id !== aiTaskExecutionId.value) ||
-          (progress.attempt_no != null &&
-            aiTaskAttemptNo.value != null &&
-            progress.attempt_no !== aiTaskAttemptNo.value) ||
-          (progress.seq ?? 0) < aiTaskSeq.value
-        if (!staleProgress) {
-          aiTaskSeq.value = progress.seq ?? 0
-          aiTaskPhase.value = progress.phase
-          aiTaskElapsedMs.value = progress.elapsed_ms ?? 0
-          if (progress.reasoning) aiTaskReason.value = progress.reasoning
+      // Pending has no current activity even when the backend still exposes
+      // the previous execution id. Only a claimed/dispatching attempt may
+      // project progress, and it must match the bound execution exactly.
+      const canReadProgress =
+        aiTaskExecutionId.value !== '' &&
+        ['claimed', 'dispatching', 'retry_wait'].includes(task.status)
+      if (canReadProgress) {
+        try {
+          const progress = await apiGet<{
+            phase: string
+            reasoning: string
+            elapsed_ms?: number
+            execution_id?: string | null
+            attempt_no?: number | null
+            seq?: number
+          }>(
+            `/api/observations/${pathSegment(props.observationId)}/ai-tasks/${pathSegment(taskId)}/progress`,
+          )
+          if (taskId !== aiTaskId.value) return
+          const staleProgress =
+            progress.execution_id !== aiTaskExecutionId.value ||
+            (progress.attempt_no != null &&
+              aiTaskAttemptNo.value != null &&
+              progress.attempt_no !== aiTaskAttemptNo.value) ||
+            (progress.seq ?? 0) < aiTaskSeq.value
+          if (!staleProgress) {
+            aiTaskSeq.value = progress.seq ?? 0
+            aiTaskPhase.value = progress.phase
+            aiTaskElapsedMs.value = progress.elapsed_ms ?? 0
+            // Persistent failure/unknown reason is never overwritten by the
+            // optional thinking text.
+            if (progress.reasoning) aiThinking.value = progress.reasoning
+          }
+        } catch {
+          // Display progress is optional; the persistent task status governs.
         }
-      } catch {
-        // Display progress is optional; the persistent task status governs.
       }
       if (taskId !== aiTaskId.value) return
       if (task.status === 'succeeded') {
         aiBusy.value = false
+        clearAwaitingNewExecution()
+        aiRetryState.value = null
+        aiRetryAck.value = false
+        aiRetryNotice.value = ''
         await loadCandidates(task.candidate_id, true)
         return
       }
-      if (['failed', 'outcome_unknown', 'cancelled', 'paused'].includes(task.status)) {
+      if (['failed', 'outcome_unknown', 'paused'].includes(task.status)) {
         aiBusy.value = false
+        clearAwaitingNewExecution()
+        setAiRetryState(task)
         ElMessage.warning(
           task.status === 'failed'
-            ? 'AI 任务失败：仍可手工编辑与保存'
-            : 'AI 任务未完成：请查看状态后重试',
+            ? 'AI 任务失败：原内容已保留，可主动重试'
+            : task.status === 'outcome_unknown'
+              ? 'AI 结果不明：请确认可能已处理后再重试'
+              : 'AI 任务已暂停：请查看原因后再决定是否重试',
         )
+        return
+      }
+      if (task.status === 'cancelled') {
+        aiBusy.value = false
+        clearAwaitingNewExecution()
+        aiRetryState.value = null
+        ElMessage.warning('AI 任务已取消：可重新生成')
         return
       }
     } catch (err) {
@@ -1684,6 +1859,134 @@ async function pollTask(taskId: string): Promise<void> {
       )
       return
     }
+  }
+}
+
+async function retryAiTask(): Promise<void> {
+  const state = aiRetryState.value
+  if (!state || aiRetryBusy.value || aiRetryIntent.value) return
+  if (aiRetryUnknown.value) {
+    ElMessage.warning('上一次重试回执未知：请先再次提交同一请求核对回执')
+    return
+  }
+  if (aiRetryBlockedBySource.value) {
+    ElMessage.warning('输入资料已变化：请用当前资料重新生成')
+    return
+  }
+  if (state.requiresAck && !aiRetryAck.value) {
+    ElMessage.warning('请先确认结果可能已处理／重复计费，再重试')
+    return
+  }
+  aiRetryIntent.value = true
+  try {
+    const outcome = await saveCurrent('manual')
+    if (outcome !== 'saved' && outcome !== 'unchanged') {
+      ElMessage.warning('正文未保存成功：请先处理保存结果再重试')
+      return
+    }
+    if (!editorAlive || props.frozen) return
+    if (!current.value || needsSave.value) {
+      ElMessage.warning('正文仍有未保存输入：请先保存后再重试')
+      return
+    }
+    const requestId = crypto.randomUUID()
+    const body = {
+      request_id: requestId,
+      expected_execution_id: state.executionId,
+      ack_duplicate_cost: state.requiresAck,
+    }
+    aiRetryBusy.value = true
+    try {
+      const task = await apiPost<ObservationAiTask>(
+        `/api/observations/${pathSegment(props.observationId)}/ai-tasks/${pathSegment(state.taskId)}/retry`,
+        body,
+      )
+      if (!editorAlive || props.frozen) return
+      aiRetryUnknown.value = null
+      aiRetryState.value = null
+      aiRetryAck.value = false
+      aiRetryNotice.value = ''
+      aiTaskId.value = task.id
+      aiTaskStatus.value = 'pending'
+      aiTaskReason.value = ''
+      beginAwaitingNewExecution(state.executionId)
+      taskListSeq += 1
+      aiBusy.value = true
+      void pollTask(task.id)
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 0) {
+        aiRetryUnknown.value = {
+          requestId,
+          taskId: state.taskId,
+          executionId: state.executionId,
+          ack: state.requiresAck,
+        }
+        ElMessage.warning('重试提交结果未知：请先核对回执，不要重复提交')
+        return
+      }
+      if (err instanceof ApiError && err.code === 'AI_RETRY_ACK_REQUIRED') {
+        state.requiresAck = true
+        aiRetryAck.value = false
+        ElMessage.warning('该重试可能重复处理／计费：请确认后再重试')
+        return
+      }
+      if (err instanceof ApiError && err.code === 'AI_SOURCE_CHANGED') {
+        state.reason = 'source_changed'
+        aiRetryNotice.value = '输入资料已变化：请用当前资料重新生成'
+        ElMessage.warning(aiRetryNotice.value)
+        return
+      }
+      if (err instanceof ApiError && err.code === 'AI_TASK_STATE_CONFLICT') {
+        aiRetryNotice.value = '任务状态已变化：请重新读取任务状态'
+        ElMessage.warning(aiRetryNotice.value)
+        return
+      }
+      ElMessage.error(
+        err instanceof ApiError ? err.message : `AI 重试提交失败：${String(err)}`,
+      )
+    } finally {
+      aiRetryBusy.value = false
+    }
+  } finally {
+    aiRetryIntent.value = false
+  }
+}
+
+async function resubmitAiRetry(): Promise<void> {
+  const pending = aiRetryUnknown.value
+  if (!pending || aiRetryBusy.value) return
+  aiRetryBusy.value = true
+  try {
+    const task = await apiPost<ObservationAiTask>(
+      `/api/observations/${pathSegment(props.observationId)}/ai-tasks/${pathSegment(pending.taskId)}/retry`,
+      {
+        request_id: pending.requestId,
+        expected_execution_id: pending.executionId,
+        ack_duplicate_cost: pending.ack,
+      },
+    )
+    if (!editorAlive || props.frozen) return
+    aiRetryUnknown.value = null
+    aiRetryState.value = null
+    aiRetryAck.value = false
+    aiRetryNotice.value = ''
+    aiTaskId.value = task.id
+    aiTaskStatus.value = 'pending'
+    aiTaskReason.value = ''
+    beginAwaitingNewExecution(pending.executionId)
+    taskListSeq += 1
+    aiBusy.value = true
+    void pollTask(task.id)
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 0) {
+      ElMessage.warning('回执仍未知：请稍后再次提交同一请求，不会创建新的收费执行')
+      return
+    }
+    ElMessage.error(
+      err instanceof ApiError ? err.message : `AI 重试回执读取失败：${String(err)}`,
+    )
+  } finally {
+    aiRetryBusy.value = false
   }
 }
 
@@ -2548,11 +2851,34 @@ onMounted(() => {
     externalBusy: () => externalBusy.value,
     aiTaskId: () => aiTaskId.value,
     aiTaskStatus: () => aiTaskStatus.value,
+    aiTaskStatusLabel: () => aiTaskStatusLabel.value,
     aiTaskPhase: () => aiTaskPhase.value,
     aiTaskReason: () => aiTaskReason.value,
+    aiTaskReasonLabel: () => aiTaskReasonLabel.value,
     aiTaskElapsedMs: () => aiTaskElapsedMs.value,
     aiTaskSeq: () => aiTaskSeq.value,
+    aiThinking: () => aiThinking.value,
     aiThinkingOpen: () => aiThinkingOpen.value,
+    aiRetryState: () =>
+      aiRetryState.value
+        ? {
+            task_id: aiRetryState.value.taskId,
+            execution_id: aiRetryState.value.executionId,
+            task_type: aiRetryState.value.taskType,
+            status: aiRetryState.value.status,
+            reason: aiRetryState.value.reason,
+            requires_ack: aiRetryState.value.requiresAck,
+          }
+        : null,
+    aiRetryTitle: () => aiRetryTitle.value,
+    aiRetryAck: () => aiRetryAck.value,
+    setAiRetryAck: (value: boolean) => {
+      aiRetryAck.value = value
+    },
+    retryAiTask: () => retryAiTask(),
+    resubmitAiRetry: () => resubmitAiRetry(),
+    aiRetryUnknownActive: () => aiRetryUnknown.value !== null,
+    aiRetryNotice: () => aiRetryNotice.value,
     createGenerateTask: () => createAiTask('game_observation_generate'),
     createRewriteTask: (target: ObservationTarget) =>
       createAiTask('game_observation_rewrite', target),
@@ -3153,15 +3479,85 @@ onBeforeUnmount(() => {
           </el-button>
         </div>
         <p v-if="aiTaskStatus" class="muted" data-d1="obs-task-status">
-          任务状态：{{ aiTaskStatus }}<template v-if="aiTaskPhase"> · {{ aiTaskPhase }}</template>
+          任务状态：{{ aiTaskStatusLabel }}<template v-if="aiTaskPhase"> · {{ aiTaskPhase }}</template>
           <template v-if="aiTaskElapsedMs"> · 已等待 {{ Math.round(aiTaskElapsedMs / 1000) }} 秒</template>
+        </p>
+        <p v-if="aiTaskStatus && ['failed','outcome_unknown','paused'].includes(aiTaskStatus)" class="muted" data-d1="obs-task-reason">
+          {{ aiTaskStatus === 'paused' ? '暂停原因' : '失败原因' }}：{{ aiTaskReasonLabel }}
         </p>
         <div v-if="aiTaskStatus" class="ai-thinking" data-d1="obs-thinking">
           <el-button size="small" text data-d1="obs-thinking-toggle" @click="aiThinkingOpen = !aiThinkingOpen">
             {{ aiThinkingOpen ? '收起思考' : '展开思考' }}
           </el-button>
-          <pre v-if="aiThinkingOpen">{{ aiTaskReason || '尚未收到思考文字；无文字不表示失败，请勿重复提交。' }}</pre>
+          <pre v-if="aiThinkingOpen">{{ aiThinking || '尚未收到思考文字；无文字不表示失败，请勿重复提交。' }}</pre>
         </div>
+        <el-alert
+          v-if="aiRetryNotice"
+          type="warning"
+          :closable="false"
+          class="block"
+          data-d1="obs-ai-retry-notice"
+          :title="aiRetryNotice"
+        />
+        <el-alert
+          v-if="aiRetryUnknown"
+          type="warning"
+          :closable="false"
+          class="block"
+          data-d1="obs-ai-retry-unknown"
+          title="AI 重试提交结果待核对"
+        >
+          <p class="muted">
+            该重试可能已提交；再次提交同一请求只会查回执／幂等重交，不会创建新的收费执行。
+          </p>
+          <el-button size="small" type="primary" data-d1="obs-ai-retry-resubmit" :loading="aiRetryBusy" @click="resubmitAiRetry">
+            再次提交同一重试请求
+          </el-button>
+        </el-alert>
+        <el-alert
+          v-if="aiRetryState"
+          :type="aiRetryAlertType"
+          :closable="false"
+          class="block"
+          data-d1="obs-ai-retry-state"
+          :title="aiRetryTitle"
+        >
+          <p class="muted">原因：{{ aiRetryReasonLabel }}</p>
+          <p v-if="aiRetryState.requiresAck" class="muted">
+            供应商可能已经处理了上一次请求，重试可能重复处理或计费；应用不会自动重发，也不会保证重试成功。
+          </p>
+          <p v-else-if="aiRetryState.status === 'paused'" class="muted">
+            任务已暂停，通常尚未发送或等待配置处理；请查看原因后再决定是否重试。
+          </p>
+          <p v-else class="muted">
+            重试会发起新的 AI 请求，可能产生费用；原正文、照片和历史会保留。
+          </p>
+          <p v-if="aiRetryBlockedBySource" class="muted">
+            输入资料已经变化，不能沿用旧输入重试；请用当前资料重新生成。
+          </p>
+          <el-checkbox
+            v-if="aiRetryState.requiresAck"
+            v-model="aiRetryAck"
+            data-d1="obs-ai-retry-ack"
+          >
+            我理解结果可能已处理，并接受可能重复计费
+          </el-checkbox>
+          <el-button
+            v-if="!aiRetryBlockedBySource"
+            type="primary"
+            size="small"
+            :loading="aiRetryBusy"
+            :disabled="
+              editDisabled ||
+              aiRetryUnknown !== null ||
+              (aiRetryState.requiresAck && !aiRetryAck)
+            "
+            data-d1="obs-ai-retry"
+            @click="retryAiTask"
+          >
+            {{ aiRetryActionLabel }}
+          </el-button>
+        </el-alert>
         <el-alert
           v-if="candidates.length"
           type="info"

@@ -419,6 +419,7 @@ def build_runtime(args):
         )
         _startup_log(f"build_runtime:app built port {port}")
         service = ServiceRun(app, port)
+        import update_github
         import update_identity
         import update_install
         import update_paths
@@ -451,10 +452,16 @@ def build_runtime(args):
             ):
                 raise RuntimeError("更新后的程序构建身份与安装计划不一致")
         source = None
-        update_enabled = bool(getattr(sys, "frozen", False))
+        frozen = bool(getattr(sys, "frozen", False))
+        # GitHub version discovery is useful in a source run too; product
+        # install/replacement remains disabled unless the frozen identity is
+        # present.
+        update_enabled = True
+        allow_install = frozen
         if u3_config is not None:
             source = update_u3_harness.release_source(u3_config)
             update_enabled = True
+            allow_install = True
         identity_unavailable = identity is None
         if identity is None:
             # A frozen package without a trustworthy build identity must not
@@ -465,11 +472,16 @@ def build_runtime(args):
                 require_packaged=False,
             )
             update_enabled = False
+            allow_install = False
         if update_enabled and u3_config is None:
             try:
-                source = update_trust.load_release_source()
+                source = update_github.load_github_source()
             except update_trust.ReleaseConfigError:
                 source = None
+        # The embedded package config is the trust authority. The helper reads
+        # its own fixed updater-directory copy; the check path never rewrites
+        # either trust file.
+        release_config_path = d1_paths.package_root() / "update_release.json"
         update_manager = update_service.UpdateManager(
             identity,
             source=source,
@@ -484,9 +496,10 @@ def build_runtime(args):
             staging_root=(
                 Path(u3_config["staging_root"]) if u3_config is not None else None
             ),
+            allow_install=allow_install,
         )
         install_coordinator = None
-        if update_enabled:
+        if allow_install:
             try:
                 if u3_config is not None:
                     install_coordinator = update_install.InstallCoordinator(
@@ -510,9 +523,7 @@ def build_runtime(args):
                         install_root=update_paths.install_root(),
                         app_dir=Path(sys.executable).parent,
                         helper_command=[str(update_paths.updater_exe())],
-                        release_config=(
-                            d1_paths.package_root() / "update_release.json"
-                        ),
+                        release_config=release_config_path,
                     )
             except Exception:
                 install_coordinator = None

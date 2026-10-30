@@ -42,6 +42,25 @@ const errorText = computed(() => updateErrorText(props.status))
 const progressText = computed(() => updateProgressText(props.status))
 const progressPercent = computed(() => props.status?.progress.percent ?? 0)
 const showError = computed(() => props.status?.state === 'failed')
+const showNoRelease = computed(() => props.status?.state === 'no_release')
+const downloadUnavailable = computed(
+  () =>
+    props.status?.state === 'available' &&
+    props.status?.target != null &&
+    props.status?.download_available === false,
+)
+const unavailableTitle = computed(() => {
+  if (props.status?.allow_install === false) {
+    return '当前为源码运行：只能检查 GitHub 版本，不能下载或安装替换'
+  }
+  if (props.status?.error_code === 'UPDATE_ASSETS_MISSING') {
+    return '发现新版，但该 Release 缺少固定更新清单或完整包'
+  }
+  if (props.status?.error_code === 'UPDATE_TRUST_UNCONFIGURED') {
+    return '发现新版，但尚未配置发行公钥'
+  }
+  return '发现新版，但当前暂不可安全下载'
+})
 const showUnconfigured = computed(
   () => props.status?.state === 'unconfigured' || props.status?.state === 'disabled',
 )
@@ -97,8 +116,8 @@ function onDialogValue(value: boolean): void {
     <template v-if="target">
       <div class="release-meta" data-d1="update-target">
         <p><strong>新版本：v{{ target.version }}</strong></p>
-        <p class="muted">构建 {{ target.build_id }} · 平台 {{ target.platform }}/{{ target.arch }}</p>
-        <p class="muted">包大小：{{ formatBytes(target.package_size) }}</p>
+        <p v-if="target.build_id" class="muted">构建 {{ target.build_id }} · 平台 {{ target.platform }}/{{ target.arch }}</p>
+        <p v-if="target.package_size" class="muted">包大小：{{ formatBytes(target.package_size) }}</p>
       </div>
       <div class="release-notes">
         <h4>更新说明</h4>
@@ -153,6 +172,24 @@ function onDialogValue(value: boolean): void {
       class="section"
       data-d1="update-up-to-date"
       title="当前已是最新版本"
+    />
+
+    <el-alert
+      v-if="showNoRelease"
+      type="info"
+      :closable="false"
+      class="section"
+      data-d1="update-no-release"
+      title="GitHub 尚无正式 Release；不影响本地使用"
+    />
+
+    <el-alert
+      v-if="downloadUnavailable"
+      type="warning"
+      :closable="false"
+      class="section"
+      data-d1="update-unavailable"
+      :title="unavailableTitle"
     />
 
     <template #footer>

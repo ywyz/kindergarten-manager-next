@@ -19,11 +19,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
+import update_github
 from update_identity import AppIdentity
 from update_fs import PathSafetyError, ensure_safe_path
 from update_manifest import (
+    MAX_METADATA_BYTES,
     MAX_PACKAGE_BYTES,
     ManifestError,
     UpdateManifest,
@@ -37,6 +39,7 @@ READ_TIMEOUT = 30.0
 TOTAL_DOWNLOAD_SECONDS = 30 * 60.0
 CHUNK = 64 * 1024
 MAX_REDIRECTS = 0
+MAX_GITHUB_REDIRECTS = update_github.MAX_GITHUB_REDIRECTS
 
 
 class UpdateError(RuntimeError):
@@ -157,9 +160,82 @@ def _request(
     conn.putheader("Accept", "application/json, application/octet-stream")
     conn.putheader("Accept-Encoding", "identity")
     conn.putheader("Connection", "close")
+    conn.putheader("User-Agent", "KindergartenManager/0.1.0")
     conn.endheaders()
     _set_socket_timeout(conn.sock, read_timeout, deadline)
     return conn
+
+
+def _github_connection(source: ReleaseSource, url: str, read_timeout: float, deadline: float | None):
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = parts.port or 443
+    context = ssl.create_default_context()
+    if source.test_only and source.ca_pem:
+        context.load_verify_locations(cadata=source.ca_pem)
+    if source.test_only and source.connect_host:
+        connect_host = source.connect_host
+        if source.connect_port is not None:
+            port = source.connect_port
+        server_hostname = host
+    else:
+        connect_host = update_github.public_ipv4_or_ipv6(host)
+        server_hostname = host
+    timeout = CONNECT_TIMEOUT
+    if deadline is not None:
+        timeout = max(0.05, min(timeout, deadline - time.monotonic()))
+    conn = _PinnedHTTPSConnection(
+        connect_host,
+        port,
+        server_hostname=server_hostname,
+        context=context,
+        timeout=timeout,
+    )
+    conn._update_read_timeout = read_timeout  # type: ignore[attr-defined]
+    return conn
+
+
+def _open_url(
+    source: ReleaseSource,
+    url: str,
+    read_timeout: float = READ_TIMEOUT,
+    *,
+    deadline: float | None = None,
+):
+    """Open one fixed GitHub URL, following only bounded allowed redirects."""
+    current = url
+    for redirect_no in range(MAX_GITHUB_REDIRECTS + 1):
+        try:
+            current = update_github.validate_github_url(source, current)
+        except ReleaseConfigError as exc:
+            raise UpdateError("UPDATE_DOWNLOAD_INVALID", str(exc)) from exc
+        parts = urlsplit(current)
+        path = parts.path + (f"?{parts.query}" if parts.query else "")
+        conn = _github_connection(source, current, read_timeout, deadline)
+        conn.putrequest("GET", path, skip_host=True, skip_accept_encoding=True)
+        conn.putheader("Host", parts.netloc)
+        conn.putheader("Accept", "application/json, application/octet-stream")
+        conn.putheader("Accept-Encoding", "identity")
+        conn.putheader("Connection", "close")
+        conn.putheader("User-Agent", "KindergartenManager/0.1.0")
+        conn.endheaders()
+        _set_socket_timeout(conn.sock, read_timeout, deadline)
+        response = conn.getresponse()
+        sock = _response_socket(response, conn)
+        if response.status in (301, 302, 303, 307, 308):
+            location = response.getheader("Location")
+            if not location:
+                _close_io(response=response, sock=sock, conn=conn)
+                raise UpdateError("UPDATE_DOWNLOAD_INVALID", "GitHub 跳转缺少 Location")
+            if redirect_no >= MAX_GITHUB_REDIRECTS:
+                _close_io(response=response, sock=sock, conn=conn)
+                raise UpdateError("UPDATE_DOWNLOAD_INVALID", "GitHub 跳转次数超限")
+            next_url = urljoin(current, location)
+            _close_io(response=response, sock=sock, conn=conn)
+            current = next_url
+            continue
+        return conn, response, sock
+    raise UpdateError("UPDATE_DOWNLOAD_INVALID", "GitHub 跳转次数超限")
 
 
 def _read_exact(
@@ -172,7 +248,27 @@ def _read_exact(
 ) -> bytes:
     length = response.getheader("Content-Length")
     if length is None:
-        raise UpdateError("UPDATE_DOWNLOAD_INVALID", "响应缺少 Content-Length")
+        # GitHub's REST/CDN responses may use chunked transfer encoding. Read
+        # through the same bounded path instead of trusting an absent length.
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise UpdateError("UPDATE_DOWNLOAD_TIMEOUT", "响应超过总期限")
+                if sock is not None:
+                    sock.settimeout(min(read_timeout or remaining, remaining))
+            chunk = response.read1(min(CHUNK, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise UpdateError("UPDATE_DOWNLOAD_INVALID", "响应超过大小上限")
+            if deadline is not None and time.monotonic() > deadline:
+                raise UpdateError("UPDATE_DOWNLOAD_TIMEOUT", "响应超过总期限")
+        return b"".join(chunks)
     try:
         size = int(length)
     except ValueError:
@@ -260,6 +356,7 @@ class UpdateManager:
         disabled_reason: str = "UPDATE_DISABLED_SOURCE_RUN",
         data_dir: str | Path | None = None,
         credential_root: str | Path | None = None,
+        allow_install: bool = True,
     ):
         self.identity = identity
         self.source = source
@@ -274,6 +371,9 @@ class UpdateManager:
         self.staging_root = (
             Path(staging_root) if staging_root is not None else _default_staging_root()
         )
+        self.allow_install = bool(allow_install)
+        self._release: update_github.GitHubRelease | None = None
+        self._manifest_source: ReleaseSource | None = None
         self._lock = threading.RLock()
         self._state = "idle"
         self._reason: str | None = None
@@ -338,6 +438,21 @@ class UpdateManager:
     def _snapshot(self) -> dict[str, Any]:
         with self._lock:
             target = self._manifest.as_public_dict() if self._manifest else None
+            if target is None and self._release is not None:
+                release = self._release
+                target = {
+                    "app_id": "kindergarten-manager-next",
+                    "channel": "stable",
+                    "version": release.version,
+                    "build_id": "",
+                    "platform": "windows",
+                    "arch": "x64",
+                    "package_format": "",
+                    "package_size": 0,
+                    "database_revision": "",
+                    "release_notes": release.release_notes,
+                    "published_at": release.published_at,
+                }
             total = self._progress_total
             downloaded = self._progress_downloaded
             percent = int(downloaded * 100 / total) if total > 0 else 0
@@ -355,6 +470,8 @@ class UpdateManager:
                 "error_code": self._error_code,
                 "error_message": self._error_message,
                 "install_available": False,
+                "download_available": bool(self._manifest and self.allow_install),
+                "allow_install": self.allow_install,
                 "download_id": self._download_id,
             }
 
@@ -455,6 +572,9 @@ class UpdateManager:
         return self._snapshot()
 
     def _check_worker(self, generation: int) -> None:
+        if self.source is not None and self.source.provider == "github":
+            self._check_github(generation, time.monotonic() + self.total_timeout)
+            return
         conn = None
         response = None
         sock = None
@@ -553,9 +673,191 @@ class UpdateManager:
                 if self._active_socket is sock:
                     self._active_socket = None
 
+    def _check_github(self, generation: int, deadline: float) -> None:
+        conn = response = sock = None
+        conn2 = response2 = sock2 = None
+        try:
+            assert self.source is not None
+            with self._lock:
+                if self._closed or generation != self._generation:
+                    return
+                # Discovery is not complete until the signed manifest is
+                # verified; never expose a half-checked "available" target.
+                self._release = None
+                self._manifest = None
+                self._manifest_source = None
+                self._metadata_raw = None
+                self._progress_downloaded = 0
+                self._progress_total = 0
+            conn, response, sock = _open_url(
+                self.source,
+                self.source.metadata_url(),
+                self.read_timeout,
+                deadline=deadline,
+            )
+            if response.status == 404:
+                self._publish(
+                    generation,
+                    "no_release",
+                    reason="UPDATE_NO_RELEASE",
+                )
+                return
+            if response.status in (403, 429):
+                self._publish(
+                    generation,
+                    "failed",
+                    error_code="UPDATE_RATE_LIMITED",
+                    error_message="GitHub API 限流或暂时拒绝请求，请稍后重试",
+                )
+                return
+            if response.status != 200:
+                raise UpdateError(
+                    "UPDATE_METADATA_UNAVAILABLE",
+                    f"GitHub Release HTTP {response.status}",
+                )
+            raw = _read_exact(
+                response,
+                update_github.MAX_API_BYTES,
+                sock=sock,
+                deadline=deadline,
+                read_timeout=self.read_timeout,
+            )
+            release = update_github.parse_latest_release(raw, self.identity.version)
+            if not release.assets_complete:
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        return
+                    self._release = release
+                    self._manifest = None
+                    self._state = "available"
+                    self._reason = "UPDATE_ASSETS_MISSING"
+                    self._error_code = "UPDATE_ASSETS_MISSING"
+                    self._error_message = "该 Release 缺少固定清单或完整包资产"
+                return
+            if not self.source.public_keys:
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        return
+                    self._release = release
+                    self._manifest = None
+                    self._state = "available"
+                    self._reason = "UPDATE_TRUST_UNCONFIGURED"
+                    self._error_code = "UPDATE_TRUST_UNCONFIGURED"
+                    self._error_message = "尚未配置发行公钥；发现新版但暂不可安全下载"
+                return
+            manifest_source = update_github.manifest_source(
+                release,
+                self.source.public_keys,
+                test_only=self.source.test_only,
+                ca_pem=self.source.ca_pem,
+                connect_host=self.source.connect_host,
+                connect_port=self.source.connect_port,
+                server_hostname=self.source.server_hostname,
+            )
+            conn2, response2, sock2 = _open_url(
+                manifest_source,
+                manifest_source.metadata_url(),
+                self.read_timeout,
+                deadline=deadline,
+            )
+            if response2.status == 404:
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        return
+                    self._release = release
+                    self._manifest = None
+                    self._state = "available"
+                    self._reason = "UPDATE_ASSETS_MISSING"
+                    self._error_code = "UPDATE_ASSETS_MISSING"
+                    self._error_message = "该 Release 的签名清单资产不可用；暂不可下载"
+                return
+            if response2.status != 200:
+                raise UpdateError(
+                    "UPDATE_METADATA_UNAVAILABLE",
+                    f"GitHub 签名清单 HTTP {response2.status}",
+                )
+            manifest_raw = _read_exact(
+                response2,
+                MAX_METADATA_BYTES,
+                sock=sock2,
+                deadline=deadline,
+                read_timeout=self.read_timeout,
+            )
+            manifest = parse_signed_manifest(
+                manifest_raw,
+                manifest_source,
+                self.identity.version,
+                self.identity.database_revision,
+            )
+            update_github.validate_manifest_binding(manifest, release)
+            with self._lock:
+                if self._closed or generation != self._generation:
+                    return
+                self._release = release
+                self._manifest = manifest
+                self._manifest_source = manifest_source
+                self._metadata_raw = manifest_raw
+                self._state = "available"
+                self._reason = None
+                self._error_code = None
+                self._error_message = None
+        except ManifestError as exc:
+            if exc.code == "UPDATE_NO_NEW_VERSION":
+                self._publish(generation, "up_to_date")
+            elif exc.code == "UPDATE_NO_RELEASE":
+                self._publish(
+                    generation,
+                    "no_release",
+                    reason="UPDATE_NO_RELEASE",
+                )
+            else:
+                self._publish(
+                    generation,
+                    "failed",
+                    error_code=exc.code,
+                    error_message=exc.message,
+                )
+        except (TimeoutError, socket.timeout):
+            self._publish(
+                generation,
+                "failed",
+                error_code="UPDATE_DOWNLOAD_TIMEOUT",
+                error_message="GitHub 检查响应超过总期限",
+            )
+        except UpdateError as exc:
+            self._publish(
+                generation,
+                "failed",
+                error_code=exc.code,
+                error_message=exc.message,
+            )
+        except Exception:  # noqa: BLE001 - bounded user-facing failure
+            if self._is_current(generation) and time.monotonic() > deadline:
+                self._publish(
+                    generation,
+                    "failed",
+                    error_code="UPDATE_DOWNLOAD_TIMEOUT",
+                    error_message="GitHub 检查响应超过总期限",
+                )
+            else:
+                self._publish(
+                    generation,
+                    "failed",
+                    error_code="UPDATE_CHECK_FAILED",
+                    error_message="检查 GitHub 更新失败",
+                )
+        finally:
+            _close_io(response=response2, sock=sock2, conn=conn2)
+            _close_io(response=response, sock=sock, conn=conn)
+
     def download(self) -> dict[str, Any]:
         with self._lock:
-            if self._closed or self._state != "available" or self._manifest is None:
+            if (
+                self._closed
+                or not self.allow_install
+                or self._state != "available"
+                or self._manifest is None
+            ):
                 return self._snapshot()
             self._download_id = secrets.token_hex(12)
             self._staging_dir = self.staging_root / self._download_id
@@ -613,20 +915,36 @@ class UpdateManager:
         try:
             assert self.source is not None
             deadline = time.monotonic() + self.total_timeout
-            conn = _request(
-                self.source,
-                manifest.package_url,
-                self.read_timeout,
-                deadline=deadline,
-            )
-            with self._lock:
-                if self._closed or generation != self._generation:
-                    conn.close()
-                    return
-                self._active_connection = conn
-            _set_socket_timeout(conn.sock, self.read_timeout, deadline)
-            response = conn.getresponse()
-            sock = _response_socket(response, conn)
+            if self.source.provider == "github":
+                assert self._manifest_source is not None
+                conn, response, sock = _open_url(
+                    self._manifest_source,
+                    self._manifest_source.package_url(manifest.package_url),
+                    self.read_timeout,
+                    deadline=deadline,
+                )
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        conn.close()
+                        return
+                    self._active_connection = conn
+                    self._active_response = response
+                    self._active_socket = sock
+            else:
+                conn = _request(
+                    self.source,
+                    manifest.package_url,
+                    self.read_timeout,
+                    deadline=deadline,
+                )
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        conn.close()
+                        return
+                    self._active_connection = conn
+                _set_socket_timeout(conn.sock, self.read_timeout, deadline)
+                response = conn.getresponse()
+                sock = _response_socket(response, conn)
             with self._lock:
                 if self._closed or generation != self._generation:
                     return

@@ -1,6 +1,6 @@
 # D3-U：应用版本更新
 
-更新：2026-10-25。**U1–U3已由原OpenCode Go套餐DeepSeek V4.1 Flash实施并通过Codex当前Windows 11限定源码／合成工程核查，最终证据见[核查§20](../bootstrap/desktop-update-review.md#20-最终独立核查u1u3限定源码合成工程通过)。真实冻结更新与发行仍未验。按既有授权提交推送，再准备下一步提示词待用户审核。** 本片不继续D3-B0跨设备摸底。依据[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)、[现有升级保护](desktop-ai-engineering.md#2-e1持久数据约束和升级)及[阶段顺序](desktop-foundation-plan.md#4-建议切片顺序)。
+更新：2026-10-30。**U1–U3的2026-10-25限定源码／合成工程结论保持，证据见[核查§20](../bootstrap/desktop-update-review.md#20-最终独立核查u1u3限定源码合成工程通过)。2026-10-30用户决定通过GitHub Releases检查最新正式版本，当前规则见§10，实施／回修与独立结果见[本轮核查](../bootstrap/desktop-retry-github-review.md)。真实冻结更新与发行仍未验。** 本片不继续D3-B0跨设备摸底。依据[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)、[现有升级保护](desktop-ai-engineering.md#2-e1持久数据约束和升级)及[阶段顺序](desktop-foundation-plan.md#4-建议切片顺序)。
 
 ## 1. 用户已确认的行为
 
@@ -9,6 +9,7 @@
 | 开发顺序 | 先应用更新，再游戏观察记录；跨设备同步后置，更新功能出来以后再安排 |
 | 检查时机 | 应用启动时检查并提示，由用户决定是否更新 |
 | 更新操作 | 应用内检查和下载，用户确认后关闭并安装 |
+| 更新来源（2026-10-30补充） | 判断本项目GitHub Releases是否有最新正式版本，与当前应用版本比较；按本文件§10接入 |
 | 当前不做 | 跨设备同步／换机接续；签名仍暂缓 |
 
 以上不是“只打开下载网页让教师自行安装”。更新入口、下载、确认与安装交接应形成完整功能；U1单独通过不等于整项更新完成。以下界面细节、分片和技术方案由Codex提出，不冒充用户逐项指定。
@@ -31,6 +32,8 @@
 当前基线为PyInstaller完整目录包；更新对象须包含其前端、Python运行资源、迁移和模板，不能只替换EXE。优先沿用现有技术栈和桌面宿主职责，不默认新增安装框架、常驻服务、数据库或全局管理员权限。
 
 发行源、版本元数据、包身份与来源认证方式尚未定案。U1开工先提出具体工程方案：固定受信任的来源、平台／架构和版本识别、完整包大小及摘要、重定向限制、元数据和包不一致时的拒绝规则。不能把包内自带SHA清单当作发行来源证明，不能把任意远端URL交给宿主任意下载或执行。真实下载源和正式发布安排另行落实；合成受控服务不冒充真实发行渠道。
+
+以上保留2026-10-24开工时的未定状态；2026-10-30已按§10选择固定项目GitHub来源，正式发行公钥／资产及真实冻结安装仍未完成。
 
 同一应用内的进程交接和文件切换先在现有桌面边界内设计，避免前端直接执行系统命令。若确实需要改变一级技术栈、既有模块边界或通信机制，先交Codex形成ADR草案，未经确认不实施该变更。不得为了实现更新顺带改变ARCHITECTURE.md。
 
@@ -103,3 +106,16 @@ teacher-talk-r01在本机被SAC以4551阻止启动，签名与微软提交未恢
 - 当前实际head为`20261023_0005_local_history`。合成应用0.1.0→0.2.0在同schema完整重启，另用真实0004→0005验证冷升级；不虚构0006，不将合成0.2.0当正式发布版本。网络中止的私有socket路径仅限定CPython3.14.7／当前Windows验证，未来运行时变更需复核。
 - 本轮U3使用合成形状目录包、当前仓库源码与独立前端构建；没有执行冻结载荷。真实发行URL／正式公钥、冻结包安装／资源、首次安装／快捷方式、4551及教师逐页Word仍未验。活动AI“停止等待并退出”UI分支未由本轮新增验证，既有D2范围保持。真实库、凭据、旧包、Word及首次失败材料全部保留，不读取真实密钥、不调用真实AI／WebDAV、不签名或发布。
 - 下一步仅准备游戏观察记录规格与待确认问题供用户审核，字段／图片／AI／导出不从旧v1推断；不自动派发游戏实现，跨设备继续后置。
+
+## 10. 2026-10-30：采用GitHub Releases检查新版
+
+用户决定更新采用判断GitHub有无最新版本的方式。此条替代前述“发行来源未选定”，来源固定为公开项目`ywyz/kindergarten-manager-next`；正式发行公钥、可安装产物与真实冻结更新仍须各自落实，不将来源选择写成发行已经可用。
+
+- 通过GitHub官方`GET /repos/ywyz/kindergarten-manager-next/releases/latest`读取最新正式Release；不以main提交、普通tag或Actions临时产物作为应用新版。拒绝draft／prerelease，版本沿用严格三段数字SemVer（Release tag可有单个`v`前缀），按数字比较，只允许升级；不存在正式Release与网络／限流／格式错误分别显示，不误报“已是最新”。
+- 保持启动后一次后台检查、手动检查、发现新版提示、用户主动下载／确认安装的流程。公共检查不要求教师GitHub登录或填写token，不内嵌维护者token。断网／限流不影响本地工作，不高频轮询；来源不能由页面／环境／CLI任意改写。
+- GitHub版本发现与可安装认证分开处理：即使尚未配置发行公钥，也能准确区分发现新版和暂不可安全下载；不得因只有版本号就允许执行程序。下载沿用Ed25519签名清单、完整ZIP大小／SHA-256、平台／schema／build身份及包内清单复核。缺少公钥／清单／平台包时说明该版本尚无可用更新包，不回退自动下载源码ZIP。
+- 发行清单资产建议固定为`update-manifest-windows-x64.json`，完整程序资产固定为`KindergartenManager-windows-x64.zip`，由实现记录最终契约；二者须属于已选Release，清单版本与tag、包地址与选中资产相符。签名公钥随构建嵌入，远端不能替换本地信任表。
+- GitHub资源可能跳转到下载CDN：仅允许必要的固定HTTPS GitHub域名／仓库路径与有界跳转，逐跳校验目标、DNS公网性、TLS、大小及总deadline；拒绝任意地址、user-info、降级HTTP、私网／回环和超限跳转。下载CDN带时效参数不得进入用户日志或持久化信任配置。原固定源合成验证仍可保留为受控测试，不扩展为任意产品下载源。
+- 源码运行允许只读检查版本，不下载、安装或替换仓库文件；本轮用源码及独立合成服务验证，允许只读核对公开Release接口。正式私钥不生成或进入仓库，不创建Release、不上传或执行冻结包，不改系统保护。第一次实际冻结安装、更新器、签名与SAC另行补验；数据／凭据分离、冷迁移备份、关闭握手与未知结果保护全部保持。
+
+依据：[GitHub最新Release](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)、[Release资产下载](https://docs.github.com/en/rest/releases/assets#get-a-release-asset)、[API限流与调用实践](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api)。本轮独立结果见[AI重试与GitHub更新核查](../bootstrap/desktop-retry-github-review.md)。

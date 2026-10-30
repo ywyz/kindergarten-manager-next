@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import update_github
 import update_install
 import update_paths
 import update_process
@@ -120,6 +121,13 @@ def _load_manifest(
         str(plan.current.get("version", "")),
         str(plan.current.get("database_revision", "")),
     )
+    if source.provider == "github":
+        # The embedded updater config is the authority; the selected tag is
+        # derived from the signature-verified manifest version, never from a
+        # mutable plan field or the data directory.
+        update_github.validate_github_manifest_for_version(
+            manifest, str(plan.target.get("version", ""))
+        )
     expected = plan.target
     for key, value in (
         ("app_id", manifest.app_id),
@@ -140,6 +148,31 @@ def _load_manifest(
                 "INSTALL_METADATA_MISMATCH", f"签名元数据与安装计划不一致：{key}"
             )
     return manifest
+
+
+def _verify_saved_package(plan: update_install.InstallPlan, manifest):
+    """Re-verify the saved ZIP against the signed manifest and package list."""
+    archive = Path(plan.package_zip)
+    if archive.stat().st_size != manifest.package_size:
+        raise update_install.InstallPlanError(
+            "INSTALL_PACKAGE_MISMATCH", "保存的完整包大小与签名元数据不一致"
+        )
+    import hashlib
+
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if digest != manifest.package_sha256:
+        raise update_install.InstallPlanError(
+            "INSTALL_PACKAGE_MISMATCH", "保存的完整包 SHA-256 与签名元数据不一致"
+        )
+    verify_dir = Path(plan.state_dir) / "verified"
+    if verify_dir.exists():
+        raise update_install.InstallPlanError(
+            "INSTALL_VERIFY_DIR_EXISTS", "校验目录已存在"
+        )
+    ensure_safe_path(verify_dir)
+    verified = verify_package_zip(archive, manifest, verify_dir)
+    ensure_safe_tree(verified.root)
+    return verified
 
 
 def _wait_for_authorization(
@@ -504,22 +537,14 @@ def run(
         except (update_install.InstallPlanError, ReleaseConfigError, ManifestError) as exc:
             code = getattr(exc, "code", "INSTALL_METADATA_INVALID")
             return _fail(plan, "failed", code)
-        archive = Path(plan.package_zip)
         try:
-            if archive.stat().st_size != manifest.package_size:
-                return _fail(plan, "failed", "INSTALL_PACKAGE_MISMATCH")
-            import hashlib
-
-            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-            if digest != manifest.package_sha256:
-                return _fail(plan, "failed", "INSTALL_PACKAGE_MISMATCH")
-            verify_dir = Path(plan.state_dir) / "verified"
-            if verify_dir.exists():
-                return _fail(plan, "failed", "INSTALL_VERIFY_DIR_EXISTS")
-            ensure_safe_path(verify_dir)
-            verified = verify_package_zip(archive, manifest, verify_dir)
-            ensure_safe_tree(verified.root)
-        except (OSError, PathSafetyError, ManifestError) as exc:
+            verified = _verify_saved_package(plan, manifest)
+        except (
+            OSError,
+            PathSafetyError,
+            ManifestError,
+            update_install.InstallPlanError,
+        ) as exc:
             return _fail(
                 plan,
                 "failed",

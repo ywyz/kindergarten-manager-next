@@ -354,3 +354,13 @@ def test_build_identity_and_package_info_are_portable(monkeypatch, tmp_path):
     payload = json.loads(identity_path.read_text(encoding="utf-8"))
     assert payload["app_id"] == update_identity.APP_ID
     assert payload["package_format"] == update_identity.PACKAGE_FORMAT
+
+
+def test_source_freeze_and_archive_cover_github_update_module():
+    assert "desktop/update_github.py" in build_e14.SOURCE_GROUPS["product"]
+    freeze = build_e14.source_freeze()
+    normalized = {item["path"].replace("\\", "/") for item in freeze["files"]}
+    assert "desktop/update_github.py" in normalized
+    import verify_e14_package
+
+    assert "update_github" in verify_e14_package.ARCHIVE_REQUIRED_MODULES

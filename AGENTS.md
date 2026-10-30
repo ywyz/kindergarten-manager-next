@@ -8,6 +8,8 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 本仓库是 kindergartenManager 的全新实现。
 
+2026-10-30当前：AI手动重试与本项目GitHub Releases最新正式版检查已由原OpenCode同会话／指定Go模型实施，Codex限定源码／合成工程独立通过，RG-R01–R10关闭。源码可只读检查版本、不可下载安装；实际GitHub暂无正式Release。继续源码体验、不发行，未启动WebDAV。规格见desktop-game-observation.md§5.1、desktop-application-update.md§10，结果见docs/bootstrap/desktop-retry-github-review.md§4及唯一入口docs/tasks/current.md。AI失败作为可恢复结果，不自动重发或免除应用缺陷。
+
 2026-10-30 MIT开源准备：用户确认采用MIT，先做开源版、未来如商业化再fork；受控Word模板由本人制作或已取得公开／MIT授权。当前继续源码验证，原OpenCode同会话Go套餐DeepSeek V4.1 Flash max做模板隐私及必要实现回修，Codex独立审查内容／公开历史并整理README、维护者和Certum资料。仓库已公开、默认main仍是旧版；只清理当前文件不等于历史安全，不自动改可见性／默认分支、重写历史或强推。见docs/bootstrap/open-source-readiness-review.md及唯一入口docs/tasks/current.md。2026-10-28 E14-R01–R06在源码／构建／静态范围已独立关闭并由原OpenCode正常提交推送6b5770c，local759／短根desktop327／完整前端／源码窗口17／旧库升级22／静态26／归档15及190文件r03候选保持各自源身份；SAC4551、E14整体与教师体验未通过，不发行。新模板不得复用旧包结论；旧包、原库／凭据及原始待脱敏证据私下保留，不改系统保护。历史Word／容量／原生保存及D3长根WinError206边界继续分列。
 
 阶段边界：D3-U已推送d52fa8a；D4产品C1–C33、E01–E14及E13六份Contract已核定。数据基础、E03材料、E05／E08保存历史及E06／E07视觉AI服务层限定工程通过；前片独立718项全local／85项相关桌面、容量及真实DeepSeek闭环保持，真实请求共4次含1次unknown且无自动重发，原R13换行误判处理已撤回。当前页面／关闭、Word／原生另存为仅按相应合成环境限定范围通过，完整A01–A22、整包及教师体验未整体通过，MiMo真实未验。后续切片、跨设备、真实冻结更新／安装、发行源、4551、签名／WebDAV／发行不自动启动，D3-A／D2既有边界保持。

@@ -111,8 +111,14 @@ def ca_key_for(ca_dir: Path):
     return key
 
 
-def create_leaf(ca_dir: Path, out_dir: Path, hostname: str = TEST_HOST) -> tuple[Path, Path]:
-    """A leaf signed by the test CA, valid for ``hostname`` under strict rules."""
+def create_leaf(
+    ca_dir: Path,
+    out_dir: Path,
+    hostname: str = TEST_HOST,
+    *,
+    hostnames: list[str] | None = None,
+) -> tuple[Path, Path]:
+    """A leaf signed by the test CA, valid for ``hostname``/``hostnames``."""
     ca_cert = x509.load_pem_x509_certificate((ca_dir / "ca.pem").read_bytes())
     key = _key()
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -154,7 +160,10 @@ def create_leaf(ca_dir: Path, out_dir: Path, hostname: str = TEST_HOST) -> tuple
             critical=False,
         )
         .add_extension(
-            x509.SubjectAlternativeName([x509.DNSName(hostname)]), critical=False
+            x509.SubjectAlternativeName(
+                [x509.DNSName(name) for name in (hostnames or [hostname])]
+            ),
+            critical=False,
         )
         .sign(ca_key_for(ca_dir), hashes.SHA256())
     )

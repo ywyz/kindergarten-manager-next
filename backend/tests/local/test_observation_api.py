@@ -19,7 +19,7 @@ from PIL import Image
 from sqlalchemy import select
 
 from app.local import ai_config_service, ai_executor, profile_service
-from app.local.models import LocalProfile
+from app.local.models import LocalAIExecution, LocalProfile
 from app.local.normalize import normalize_initialization
 from tests.local.obs_ai_workers import observation_worker_entry
 from tests.local.support import LocalTestCase, initialize_body, query_scalar
@@ -754,6 +754,207 @@ class ObservationApiCase(LocalTestCase):
         )
         self.assertEqual(status, 422, result)
         self.assertEqual(result["error"]["code"], "VALIDATION_ERROR")
+
+    def test_failed_retry_new_generation_success_and_adopt_preserves_record(self):
+        self.configure_ai()
+        observation_id, _asset = self.ready_observation()
+        before = self.current(observation_id)
+        before_payload = before["payload"]
+        before_photos = before["photos"]
+        status, history_before = self.client.get(
+            f"/api/observations/{observation_id}/history"
+        )
+        self.assertEqual(status, 200, history_before)
+        before_versions = {item["version"] for item in history_before}
+        counter = self.tmp_root / "fail-once-counter"
+        executor = ai_executor.AiExecutor(
+            self.runtime,
+            worker_target=observation_worker_entry,
+            synthetic_transport={
+                "obs_mode": "fail_once",
+                "counter_path": str(counter),
+            },
+        )
+        executor.start()
+        self.addCleanup(executor.dispose)
+        self.server.stop()
+        self.server = self.start_server(self.runtime, executor=executor)
+        self.client = self.server.client()
+        current = self.current(observation_id)
+        status, task = self.client.post(
+            f"/api/observations/{observation_id}/ai-tasks",
+            {
+                "request_id": str(uuid.uuid4()),
+                "task_type": "game_observation_generate",
+                "expected_revision": current["revision"],
+                "expected_hash": current["payload_hash"],
+            },
+        )
+        self.assertEqual(status, 202, task)
+        task_id = task["id"]
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status, task = self.client.get(
+                f"/api/observations/{observation_id}/ai-tasks/{task_id}"
+            )
+            self.assertEqual(status, 200, task)
+            if task["status"] in ("failed", "outcome_unknown"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(task["status"], "failed", task)
+        old_execution = task["execution"]["id"]
+        old_generation = task["execution"]["generation"]
+        status, retried = self.client.post(
+            f"/api/observations/{observation_id}/ai-tasks/{task_id}/retry",
+            {
+                "request_id": str(uuid.uuid4()),
+                "expected_execution_id": old_execution,
+                "ack_duplicate_cost": False,
+            },
+        )
+        self.assertEqual(status, 202, retried)
+        self.assertEqual(retried["status"], "pending")
+        self.assertEqual(retried["execution"]["id"], old_execution)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status, task = self.client.get(
+                f"/api/observations/{observation_id}/ai-tasks/{task_id}"
+            )
+            self.assertEqual(status, 200, task)
+            if task["status"] in ("succeeded", "failed", "outcome_unknown"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(task["status"], "succeeded", task)
+        new_execution = task["execution"]["id"]
+        self.assertNotEqual(new_execution, old_execution)
+        self.assertGreater(task["execution"]["generation"], old_generation)
+        self.session.expire_all()
+        old_row = self.session.get(LocalAIExecution, old_execution)
+        self.assertIsNotNone(old_row)
+        self.assertEqual(old_row.state, "failed")
+        status, candidates = self.client.get(
+            f"/api/observations/{observation_id}/ai-candidates"
+        )
+        self.assertEqual(status, 200, candidates)
+        candidate_id = candidates["items"][-1]["id"]
+        current = self.current(observation_id)
+        status, preview = self.client.post(
+            f"/api/observations/{observation_id}/ai-candidates/{candidate_id}/preview-adoption",
+            {
+                "request_id": str(uuid.uuid4()),
+                "expected_revision": current["revision"],
+                "expected_hash": current["payload_hash"],
+                "selected_targets": ["observation_goal"],
+            },
+        )
+        self.assertEqual(status, 200, preview)
+        status, adopted = self.client.post(
+            f"/api/observations/{observation_id}/ai-candidates/{candidate_id}/adopt",
+            {
+                "request_id": str(uuid.uuid4()),
+                "expected_revision": current["revision"],
+                "expected_hash": current["payload_hash"],
+                "selected_targets": ["observation_goal"],
+                "preview_token": preview["adoption_token"],
+            },
+        )
+        self.assertEqual(status, 200, adopted)
+        after = self.current(observation_id)
+        after_payload = dict(after["payload"])
+        self.assertNotEqual(after_payload["observation_goal"], before_payload["observation_goal"])
+        after_payload["observation_goal"] = before_payload["observation_goal"]
+        self.assertEqual(after_payload, before_payload)
+        self.assertEqual(after["photos"], before_photos)
+        status, history_after = self.client.get(
+            f"/api/observations/{observation_id}/history"
+        )
+        self.assertEqual(status, 200, history_after)
+        after_versions = {item["version"] for item in history_after}
+        self.assertTrue(before_versions.issubset(after_versions))
+        status, oldest = self.client.get(
+            f"/api/observations/{observation_id}/history/{min(before_versions)}"
+        )
+        self.assertEqual(status, 200, oldest)
+        self.assertEqual(oldest["payload"]["observation_process"], before_payload["observation_process"])
+
+    def test_retry_unknown_requires_ack_and_is_record_bound(self):
+        self.configure_ai()
+        observation_id, _asset = self.ready_observation()
+        executor = ai_executor.AiExecutor(
+            self.runtime,
+            worker_target=observation_worker_entry,
+            synthetic_transport={"obs_mode": "exit_after_send"},
+        )
+        executor.start()
+        self.addCleanup(executor.dispose)
+        self.server.stop()
+        self.server = self.start_server(self.runtime, executor=executor)
+        self.client = self.server.client()
+        current = self.current(observation_id)
+        status, task = self.client.post(
+            f"/api/observations/{observation_id}/ai-tasks",
+            {
+                "request_id": str(uuid.uuid4()),
+                "task_type": "game_observation_generate",
+                "expected_revision": current["revision"],
+                "expected_hash": current["payload_hash"],
+            },
+        )
+        self.assertEqual(status, 202, task)
+        task_id = task["id"]
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status, task = self.client.get(
+                f"/api/observations/{observation_id}/ai-tasks/{task_id}"
+            )
+            self.assertEqual(status, 200, task)
+            if task["status"] in ("outcome_unknown", "failed"):
+                break
+            time.sleep(0.1)
+        self.assertEqual(task["status"], "outcome_unknown", task)
+        execution_id = task["execution"]["id"]
+        other = self.create()
+        status, denied = self.client.post(
+            f"/api/observations/{other['observation_id']}/ai-tasks/{task_id}/retry",
+            {
+                "request_id": str(uuid.uuid4()),
+                "expected_execution_id": execution_id,
+                "ack_duplicate_cost": True,
+            },
+        )
+        self.assertEqual(status, 404, denied)
+        status, no_ack = self.client.post(
+            f"/api/observations/{observation_id}/ai-tasks/{task_id}/retry",
+            {
+                "request_id": str(uuid.uuid4()),
+                "expected_execution_id": execution_id,
+                "ack_duplicate_cost": False,
+            },
+        )
+        self.assertEqual(status, 409, no_ack)
+        self.assertEqual(no_ack["error"]["code"], "AI_RETRY_ACK_REQUIRED")
+        retry_request_id = str(uuid.uuid4())
+        status, retried = self.client.post(
+            f"/api/observations/{observation_id}/ai-tasks/{task_id}/retry",
+            {
+                "request_id": retry_request_id,
+                "expected_execution_id": execution_id,
+                "ack_duplicate_cost": True,
+            },
+        )
+        self.assertEqual(status, 202, retried)
+        self.assertEqual(retried["id"], task_id)
+        self.assertEqual(retried["status"], "pending")
+        status, replay = self.client.post(
+            f"/api/observations/{observation_id}/ai-tasks/{task_id}/retry",
+            {
+                "request_id": retry_request_id,
+                "expected_execution_id": execution_id,
+                "ack_duplicate_cost": True,
+            },
+        )
+        self.assertEqual(status, 202, replay)
+        self.assertEqual(replay["id"], task_id)
 
     def configure_ai(self):
         version = (

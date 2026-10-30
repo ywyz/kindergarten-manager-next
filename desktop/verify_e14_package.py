@@ -85,6 +85,7 @@ ARCHIVE_REQUIRED_MODULES = (
     "update_identity",
     "update_install",
     "update_service",
+    "update_github",
     "update_trust",
     "update_manifest",
     "d1_host_api",

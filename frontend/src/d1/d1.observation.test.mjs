@@ -1801,9 +1801,12 @@ async function main() {
               items: [
                 {
                   id: 't1',
+                  task_type: 'game_observation_generate',
                   status: 'outcome_unknown',
                   reason: 'unknown',
                   candidate_id: null,
+                  retry_requires_ack: true,
+                  execution: { id: 'e1', attempt_no: 1 },
                 },
               ],
               next_cursor: null,
@@ -1860,6 +1863,8 @@ async function main() {
     await settle()
     const hook = harness.window.__d1ObservationEditor
     assert.equal(hook.aiTaskStatus(), 'outcome_unknown')
+    assert.equal(hook.aiRetryState().execution_id, 'e1')
+    assert.equal(hook.aiRetryState().requires_ack, true)
     await hook.loadCandidates(undefined)
     await settle()
     assert.equal(hook.candidates().length, 1)
@@ -2732,7 +2737,8 @@ async function main() {
     const hook = harness.window.__d1ObservationEditor
     await new Promise((resolve) => setTimeout(resolve, 1700))
     await settle()
-    assert.equal(hook.aiTaskReason(), '当前执行思考')
+    assert.equal(hook.aiTaskReason(), '')
+    assert.equal(hook.aiThinking(), '当前执行思考')
     assert.equal(hook.aiTaskElapsedMs(), 2000)
     assert.equal(hook.aiTaskSeq(), 1)
     assert.equal(hook.aiThinkingOpen(), true)
@@ -4108,6 +4114,537 @@ async function main() {
     harness.unmount()
     await settle()
     ok('R13 explicit retry re-reports a pending terminal receipt before new token')
+  }
+
+  // -- R16: observation failed/unknown retry is explicit and single-shot ----
+  {
+    const posts = []
+    const task = {
+      id: 't1',
+      task_type: 'game_observation_generate',
+      status: 'outcome_unknown',
+      reason: 'provider_error',
+      candidate_id: null,
+      retry_requires_ack: true,
+      execution: { id: 'e1', attempt_no: 1 },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks': () =>
+          jsonResponse(200, { items: [task], next_cursor: null }),
+        'GET /api/observations/o1/ai-tasks/t1': () => jsonResponse(200, task),
+        'GET /api/observations/o1/ai-tasks/t1/progress': () =>
+          apiError(404, 'NOT_FOUND', '无进度'),
+        'POST /api/observations/o1/ai-tasks/t1/retry': ({ body }) => {
+          posts.push(body)
+          return jsonResponse(202, {
+            ...task,
+            status: 'pending',
+            reason: null,
+            retry_requires_ack: false,
+          })
+        },
+        'GET /api/observations/o1/ai-candidates*': () =>
+          jsonResponse(200, { items: [], next_cursor: null }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    assert.equal(hook.aiTaskStatusLabel(), '结果不明')
+    assert.ok(hook.aiRetryState())
+    assert.equal(hook.aiRetryState().requires_ack, true)
+    await hook.retryAiTask()
+    assert.equal(posts.length, 0, 'unacknowledged unknown never posts')
+    hook.setAiRetryAck(true)
+    await Promise.all([hook.retryAiTask(), hook.retryAiTask()])
+    await settle()
+    assert.equal(posts.length, 1, 'double confirmation creates one retry')
+    assert.equal(posts[0].ack_duplicate_cost, true)
+    assert.equal(posts[0].expected_execution_id, 'e1')
+    assert.equal(typeof posts[0].request_id, 'string')
+    assert.equal(hook.aiTaskStatus(), 'pending')
+    assert.equal(hook.aiThinking(), '')
+    harness.unmount()
+    await settle()
+    ok('R16 observation unknown requires ack and one manual retry only')
+  }
+
+  // -- R17: changed input rejects old retry and shows current-data guidance --
+  {
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks': () =>
+          jsonResponse(200, {
+            items: [
+              {
+                id: 't1',
+                task_type: 'game_observation_rewrite',
+                status: 'failed',
+                reason: 'source_changed',
+                candidate_id: null,
+                retry_requires_ack: false,
+                execution: { id: 'e1', attempt_no: 1 },
+              },
+            ],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-tasks/t1': () =>
+          jsonResponse(200, {
+            id: 't1',
+            task_type: 'game_observation_rewrite',
+            status: 'failed',
+            reason: 'source_changed',
+            candidate_id: null,
+            retry_requires_ack: false,
+            execution: { id: 'e1', attempt_no: 1 },
+          }),
+        'GET /api/observations/o1/ai-tasks/t1/progress': () =>
+          apiError(404, 'NOT_FOUND', '无进度'),
+        'GET /api/observations/o1/ai-candidates*': () =>
+          jsonResponse(200, { items: [], next_cursor: null }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    assert.equal(hook.aiRetryState().reason, 'source_changed')
+    assert.ok(hook.aiRetryNotice().includes('当前资料'))
+    harness.unmount()
+    await settle()
+    ok('R17 source-changed task is not retried with old input')
+  }
+
+  // -- R18: a lost retry reply is reconciled with the same request id --------
+  {
+    const posts = []
+    let failOnce = true
+    const task = {
+      id: 't1',
+      task_type: 'game_observation_generate',
+      status: 'failed',
+      reason: 'provider_error',
+      candidate_id: null,
+      retry_requires_ack: false,
+      execution: { id: 'e1', attempt_no: 1 },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks': () =>
+          jsonResponse(200, { items: [task], next_cursor: null }),
+        'GET /api/observations/o1/ai-tasks/t1': () => jsonResponse(200, task),
+        'GET /api/observations/o1/ai-tasks/t1/progress': () =>
+          apiError(404, 'NOT_FOUND', '无进度'),
+        'POST /api/observations/o1/ai-tasks/t1/retry': ({ body }) => {
+          posts.push(body)
+          if (failOnce) {
+            failOnce = false
+            throw new TypeError('network reset')
+          }
+          return jsonResponse(202, {
+            ...task,
+            status: 'pending',
+            reason: null,
+          })
+        },
+        'GET /api/observations/o1/ai-candidates*': () =>
+          jsonResponse(200, { items: [], next_cursor: null }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    await hook.retryAiTask()
+    await settle()
+    assert.equal(posts.length, 1)
+    assert.equal(hook.aiRetryUnknownActive(), true)
+    await hook.retryAiTask()
+    await settle()
+    assert.equal(posts.length, 1, 'a lost reply blocks a new charged request')
+    await hook.resubmitAiRetry()
+    await settle()
+    assert.equal(posts.length, 2)
+    assert.equal(posts[0].request_id, posts[1].request_id)
+    assert.equal(posts[0].expected_execution_id, posts[1].expected_execution_id)
+    assert.equal(hook.aiRetryUnknownActive(), false)
+    assert.equal(hook.aiTaskStatus(), 'pending')
+    harness.unmount()
+    await settle()
+    ok('R18 a lost retry reply is re-submitted with the same request id')
+  }
+
+  // -- R19: a pending retry never consumes the old execution's progress -----
+  {
+    let phase = 'outcome_unknown'
+    let execution = { id: 'old-e1', attempt_no: 1 }
+    let progress = {
+      phase: 'receiving_reasoning',
+      reasoning: 'OLD_EXECUTION_REASONING',
+      elapsed_ms: 999999,
+      execution_id: 'old-e1',
+      attempt_no: 1,
+      seq: 1,
+    }
+    const posts = []
+    const task = () => ({
+      id: 't1',
+      task_type: 'game_observation_generate',
+      status: phase,
+      reason: phase === 'outcome_unknown' ? 'provider_error' : null,
+      candidate_id: null,
+      retry_requires_ack: phase === 'outcome_unknown',
+      execution,
+    })
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks': () =>
+          jsonResponse(200, { items: [task()], next_cursor: null }),
+        'GET /api/observations/o1/ai-tasks/t1': () => jsonResponse(200, task()),
+        'GET /api/observations/o1/ai-tasks/t1/progress': () =>
+          jsonResponse(200, progress),
+        'POST /api/observations/o1/ai-tasks/t1/retry': ({ body }) => {
+          posts.push(body)
+          phase = 'pending'
+          return jsonResponse(202, { ...task(), retry_requires_ack: false })
+        },
+        'GET /api/observations/o1/ai-candidates*': () =>
+          jsonResponse(200, { items: [], next_cursor: null }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setAiRetryAck(true)
+    await hook.retryAiTask()
+    await new Promise((resolve) => setTimeout(resolve, 850))
+    await settle()
+    assert.equal(posts.length, 1)
+    assert.equal(hook.aiTaskStatus(), 'pending')
+    assert.equal(hook.aiThinking(), '')
+    assert.equal(hook.aiTaskElapsedMs(), 0)
+
+    // A claimed new execution still receives a late old progress frame.
+    phase = 'claimed'
+    execution = { id: 'new-e2', attempt_no: 2 }
+    await new Promise((resolve) => setTimeout(resolve, 850))
+    await settle()
+    assert.equal(hook.aiThinking(), '')
+    assert.equal(hook.aiTaskElapsedMs(), 0)
+
+    // A genuinely new progress frame is displayed.
+    progress = {
+      phase: 'thinking',
+      reasoning: 'NEW_EXECUTION_REASONING',
+      elapsed_ms: 1000,
+      execution_id: 'new-e2',
+      attempt_no: 2,
+      seq: 5,
+    }
+    await new Promise((resolve) => setTimeout(resolve, 850))
+    await settle()
+    assert.equal(hook.aiThinking(), 'NEW_EXECUTION_REASONING')
+    assert.equal(hook.aiTaskElapsedMs(), 1000)
+    assert.equal(hook.aiTaskSeq(), 5)
+
+    // A sequence regression and an attempt change are both rejected.
+    progress = { ...progress, reasoning: 'SEQ_REGRESSION', seq: 3 }
+    await new Promise((resolve) => setTimeout(resolve, 850))
+    await settle()
+    assert.equal(hook.aiThinking(), 'NEW_EXECUTION_REASONING')
+    execution = { id: 'new-e2', attempt_no: 3 }
+    progress = {
+      phase: 'thinking',
+      reasoning: 'OLD_ATTEMPT',
+      elapsed_ms: 2000,
+      execution_id: 'new-e2',
+      attempt_no: 2,
+      seq: 6,
+    }
+    await new Promise((resolve) => setTimeout(resolve, 850))
+    await settle()
+    assert.equal(hook.aiThinking(), '')
+    assert.equal(hook.aiTaskElapsedMs(), 0)
+
+    progress = {
+      phase: 'thinking',
+      reasoning: 'CURRENT_ATTEMPT',
+      elapsed_ms: 3000,
+      execution_id: 'new-e2',
+      attempt_no: 3,
+      seq: 7,
+    }
+    await new Promise((resolve) => setTimeout(resolve, 850))
+    await settle()
+    assert.equal(hook.aiThinking(), 'CURRENT_ATTEMPT')
+    assert.equal(hook.aiTaskElapsedMs(), 3000)
+    harness.unmount()
+    await settle()
+    ok('R19 pending/old progress is hidden and the new execution is bound strictly')
+  }
+
+
+  // -- R20: failed single-column rewrite retries once and keeps content -----
+  {
+    const posts = []
+    let phase = 'failed'
+    const photos = [
+      {
+        asset_id: 'a1',
+        content_hash: 'a'.repeat(64),
+        format: 'jpeg',
+        width: 10,
+        height: 10,
+        orientation: null,
+        sort_order: 0,
+        caption: '观察',
+      },
+    ]
+    const task = () => ({
+      id: 't1',
+      task_type: 'game_observation_rewrite',
+      status: phase,
+      reason: phase === 'failed' ? 'provider_error' : null,
+      candidate_id: phase === 'succeeded' ? 'c1' : null,
+      retry_requires_ack: false,
+      execution: { id: 'e1', attempt_no: 1 },
+    })
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () =>
+          jsonResponse(200, currentFixture({ photos })),
+        'GET /api/observations/o1/ai-tasks': () =>
+          jsonResponse(200, { items: [task()], next_cursor: null }),
+        'GET /api/observations/o1/ai-tasks/t1': () => {
+          if (phase === 'pending') phase = 'succeeded'
+          return jsonResponse(200, task())
+        },
+        'GET /api/observations/o1/ai-tasks/t1/progress': () =>
+          apiError(404, 'NOT_FOUND', '无进度'),
+        'POST /api/observations/o1/ai-tasks/t1/retry': ({ body }) => {
+          posts.push(body)
+          phase = 'pending'
+          return jsonResponse(202, { ...task(), status: 'pending', reason: null })
+        },
+        'GET /api/observations/o1/ai-candidates*': () =>
+          jsonResponse(200, {
+            items: [
+              {
+                id: 'c1',
+                task_type: 'game_observation_rewrite',
+                created_at: '2026-09-15T10:01:00',
+              },
+            ],
+            next_cursor: null,
+          }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    assert.equal(hook.aiRetryState().task_type, 'game_observation_rewrite')
+    assert.equal(hook.aiRetryState().requires_ack, false)
+    await hook.retryAiTask()
+    await new Promise((resolve) => setTimeout(resolve, 850))
+    await settle()
+    assert.equal(posts.length, 1)
+    assert.equal(posts[0].ack_duplicate_cost, false)
+    assert.equal(hook.aiTaskStatus(), 'succeeded')
+    assert.equal(hook.aiRetryState(), null)
+    assert.equal(hook.candidates().length, 1)
+    assert.equal(hook.form().observation_goal, '观察合作')
+    assert.equal(hook.photos().length, 1)
+    assert.equal(hook.photos()[0].caption, '观察')
+    harness.unmount()
+    await settle()
+    ok('R20 failed rewrite retries once, loads a candidate and keeps content/photos')
+  }
+
+  // -- R21: a late retry response after unmount never changes page state ----
+  {
+    const pendingRetry = deferred()
+    const posts = []
+    const task = {
+      id: 't1',
+      task_type: 'game_observation_generate',
+      status: 'failed',
+      reason: 'provider_error',
+      candidate_id: null,
+      retry_requires_ack: false,
+      execution: { id: 'e1', attempt_no: 1 },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks': () =>
+          jsonResponse(200, { items: [task], next_cursor: null }),
+        'GET /api/observations/o1/ai-tasks/t1': () => jsonResponse(200, task),
+        'GET /api/observations/o1/ai-tasks/t1/progress': () =>
+          apiError(404, 'NOT_FOUND', '无进度'),
+        'POST /api/observations/o1/ai-tasks/t1/retry': ({ body }) => {
+          posts.push(body)
+          return pendingRetry.promise
+        },
+        'GET /api/observations/o1/ai-candidates*': () =>
+          jsonResponse(200, { items: [], next_cursor: null }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    const request = hook.retryAiTask()
+    await settle()
+    assert.equal(posts.length, 1)
+    harness.unmount()
+    await settle()
+    pendingRetry.resolve(jsonResponse(202, { ...task, status: 'pending', reason: null }))
+    await request
+    await settle()
+    assert.equal(hook.aiTaskStatus(), 'failed')
+    assert.ok(hook.aiRetryState())
+    ok('R21 a late retry response after unmount is ignored')
+  }
+
+  // -- R22: retry deduplicates while the protective save is still pending ---
+  {
+    const saveReply = deferred()
+    const posts = []
+    const task = {
+      id: 't1',
+      task_type: 'game_observation_generate',
+      status: 'failed',
+      reason: 'provider_error',
+      candidate_id: null,
+      retry_requires_ack: false,
+      execution: { id: 'e1', attempt_no: 1 },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'PATCH /api/observations/o1': () => saveReply.promise,
+        'GET /api/observations/o1/ai-tasks': () =>
+          jsonResponse(200, { items: [task], next_cursor: null }),
+        'GET /api/observations/o1/ai-tasks/t1': () => jsonResponse(200, task),
+        'GET /api/observations/o1/ai-tasks/t1/progress': () =>
+          apiError(404, 'NOT_FOUND', '无进度'),
+        'POST /api/observations/o1/ai-tasks/t1/retry': ({ body }) => {
+          posts.push(body)
+          return jsonResponse(202, { ...task, status: 'pending', reason: null })
+        },
+        'GET /api/observations/o1/ai-candidates*': () =>
+          jsonResponse(200, { items: [], next_cursor: null }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('observation_goal', '保存中的重试目标')
+    await settle()
+    const first = hook.retryAiTask()
+    await settle()
+    await hook.retryAiTask()
+    assert.equal(posts.length, 0, 'no retry POST while the save is pending')
+    saveReply.resolve(jsonResponse(200, savedFixture()))
+    await first
+    await settle()
+    assert.equal(posts.length, 1)
+    harness.unmount()
+    await settle()
+    ok('R22 retry waits for the protective save and still posts once')
+  }
+
+  // -- R23: a paused task is described as paused, never as unknown ----------
+  {
+    const task = () => ({
+      id: 't1',
+      task_type: 'game_observation_generate',
+      status: 'paused',
+      reason: 'auth_rejected',
+      candidate_id: null,
+      retry_requires_ack: false,
+      execution: { id: 'e1', attempt_no: 1 },
+    })
+    const claimed = {
+      ...task(),
+      status: 'claimed',
+      reason: null,
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks': () =>
+          jsonResponse(200, { items: [claimed], next_cursor: null }),
+        'GET /api/observations/o1/ai-tasks/t1': () =>
+          jsonResponse(200, task()),
+        'GET /api/observations/o1/ai-tasks/t1/progress': () =>
+          apiError(404, 'NOT_FOUND', '无进度'),
+        'GET /api/observations/o1/ai-candidates*': () =>
+          jsonResponse(200, { items: [], next_cursor: null }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    await new Promise((resolve) => setTimeout(resolve, 850))
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    assert.equal(hook.aiTaskStatusLabel(), '已暂停')
+    assert.equal(hook.aiRetryState().status, 'paused')
+    assert.equal(hook.aiRetryState().requires_ack, false)
+    assert.equal(hook.aiRetryTitle(), 'AI 任务已暂停')
+    assert.equal(
+      harness.messages.some((message) => String(message).includes('结果不明')),
+      false,
+    )
+    assert.equal(
+      harness.messages.some((message) => String(message).includes('已暂停')),
+      true,
+    )
+    harness.unmount()
+    await settle()
+    ok('R23 paused tasks use pause guidance without an unknown-cost claim')
   }
 
   console.log(`\n${passed} observation page checks passed`)

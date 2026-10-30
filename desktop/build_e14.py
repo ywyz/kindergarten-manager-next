@@ -96,6 +96,7 @@ SOURCE_GROUPS: dict[str, tuple[str, ...]] = {
         "desktop/d1_paths.py",
         "desktop/d2_same_origin.py",
         "desktop/update_fs.py",
+        "desktop/update_github.py",
         "desktop/update_helper.py",
         "desktop/update_identity.py",
         "desktop/update_install.py",

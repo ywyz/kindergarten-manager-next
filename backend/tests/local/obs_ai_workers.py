@@ -48,7 +48,37 @@ def observation_worker_entry(conn):
         else:
             bootstrap = first
         request = bootstrap["request"]
-        mode = (bootstrap.get("synthetic") or {}).get("obs_mode")
+        synthetic = bootstrap.get("synthetic") or {}
+        mode = synthetic.get("obs_mode")
+        if mode == "fail_once":
+            # First synthetic attempt fails before SEND, the retry succeeds.
+            counter_path = synthetic.get("counter_path")
+            count = 0
+            if counter_path:
+                try:
+                    with open(counter_path, "r", encoding="ascii") as handle:
+                        count = int(handle.read().strip() or "0")
+                except (OSError, ValueError):
+                    count = 0
+                try:
+                    with open(counter_path, "w", encoding="ascii") as handle:
+                        handle.write(str(count + 1))
+                except OSError:
+                    pass
+            if count == 0:
+                _send(
+                    conn,
+                    {
+                        "type": "result",
+                        "result": {
+                            "kind": "not_sent",
+                            "reason": "connection_unavailable",
+                            "transient_not_sent": False,
+                            "sent": False,
+                        },
+                    },
+                )
+                return
         if mode == "result_not_sent":
             _send(
                 conn,

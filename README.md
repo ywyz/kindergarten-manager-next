@@ -9,7 +9,7 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 ## 当前可以做什么
 
 - 编写、保存和查阅每日活动计划，比较历史内容，导出 Word。
-- 按教师主动发起的操作，使用 AI 生成候选内容、重写并选择采用。
+- 按教师主动发起的操作，使用 AI 生成候选内容、重写并选择采用；生成失败或结果不明时可手动重试。
 - 整理游戏观察记录的文字、照片、保存历史和 Word 导出；这些能力仍在开发验证。
 - 使用本地教师档案、班级及学期配置，无需旧版账号注册和管理员分班。
 
@@ -20,6 +20,8 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 目前继续使用源码桌面环境验证。E14 已完成相应源码、构建和静态检查，最近一次新生成的未签名冻结包执行被 Windows Smart App Control 阻止，尚未完成后续整包运行验证。因此，源码验证通过不代表安装包、完整产品或教师体验已经验收通过。
 
 完整状态、已知限制及后续工作见 [当前任务](docs/tasks/current.md) 和 [E14 独立核查](docs/bootstrap/desktop-game-observation-e14-review.md)。Windows 10、WPS、其他显示配置、干净机器及正式发行更新仍有未验范围。
+
+应用更新通过本项目 GitHub Releases 的最新正式版本判断，普通代码提交不会触发更新提示。源码运行可检查版本，禁止下载／安装替换仓库程序；当前尚无正式 Release。AI 失败时保留原内容，结果不明的重试须确认可能重复处理／计费。两项实现及验证范围见 [本轮核查](docs/bootstrap/desktop-retry-github-review.md)。
 
 ## 数据和 AI
 

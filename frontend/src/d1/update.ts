@@ -19,6 +19,7 @@ export type UpdateState =
   | 'idle'
   | 'checking'
   | 'up_to_date'
+  | 'no_release'
   | 'available'
   | 'downloading'
   | 'verifying'
@@ -58,6 +59,8 @@ export interface UpdateStatus {
   error_message: string | null
   /** True only when the host has a verified package ready to install. */
   install_available: boolean
+  download_available?: boolean
+  allow_install?: boolean
   install_state?: string
   install_plan_id?: string | null
   install_reason?: string | null
@@ -91,6 +94,8 @@ export function updateStateLabel(status: UpdateStatus | null): string {
       return '正在检查更新…'
     case 'up_to_date':
       return '当前已是最新版本'
+    case 'no_release':
+      return '尚无正式 Release'
     case 'available':
       return '发现新版本'
     case 'downloading':
@@ -119,7 +124,7 @@ export function canCheckUpdate(status: UpdateStatus | null): boolean {
 }
 
 export function canDownloadUpdate(status: UpdateStatus | null): boolean {
-  return status?.state === 'available'
+  return status?.state === 'available' && status.download_available !== false
 }
 
 export function canCancelUpdate(status: UpdateStatus | null): boolean {
@@ -154,6 +159,16 @@ export function updateErrorText(status: UpdateStatus | null): string {
       return '更新渠道尚未配置；不影响当前手工使用'
     case 'UPDATE_CONFIG_INVALID':
       return '更新发行配置无效；未联网检查'
+    case 'UPDATE_NO_RELEASE':
+      return 'GitHub 尚无正式 Release；不影响本地使用'
+    case 'UPDATE_RATE_LIMITED':
+      return 'GitHub API 限流或暂时拒绝请求；请稍后重试'
+    case 'UPDATE_ASSETS_MISSING':
+      return '发现新版，但该 Release 缺少固定更新清单或完整包；暂不可下载'
+    case 'UPDATE_TRUST_UNCONFIGURED':
+      return '发现新版，但尚未配置发行公钥；暂不可安全下载'
+    case 'UPDATE_TRUST_CONFIG_WRITE':
+      return '无法写入更新器信任配置；暂不可安装'
     case 'UPDATE_METADATA_UNTRUSTED':
       return '发行信息签名不可验证；未下载'
     case 'UPDATE_METADATA_INVALID':

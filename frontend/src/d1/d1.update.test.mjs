@@ -720,11 +720,34 @@ async function testFailedAndUnconfiguredStates() {
   ok('update U1: failed and unconfigured states are explicit; no install appears')
 }
 
+
+async function testNoReleaseAndUnavailableDownload() {
+  const noRelease = await mountPanel({ status: status({ state: 'no_release' }) })
+  assert.ok(byD1(noRelease.mountEl, 'update-no-release'))
+  assert.equal(byButton(noRelease.mountEl, 'update-download'), null)
+
+  const unavailable = await mountPanel({
+    status: status({
+      state: 'available',
+      target,
+      download_available: false,
+      allow_install: false,
+      error_code: 'UPDATE_ASSETS_MISSING',
+      reason: 'UPDATE_ASSETS_MISSING',
+    }),
+  })
+  assert.ok(byD1(unavailable.mountEl, 'update-unavailable'))
+  assert.equal(byButton(unavailable.mountEl, 'update-download'), null)
+  assert.match(nodeText(unavailable.mountEl), /缺少固定更新清单|源码运行/)
+  ok('update GitHub: no formal Release and discovered-but-unavailable are distinct')
+}
+
 const tests = [
   testReadyInstallConfirmation,
   testAvailableShowsTargetAndDownload,
   testDownloadingProgressAndCancel,
   testFailedAndUnconfiguredStates,
+  testNoReleaseAndUnavailableDownload,
   testAppStartupCheckPromptsAvailable,
   testAppPanelCloseKeepsPollingInFlight,
   testAppUnmountIgnoresLateCheck,
