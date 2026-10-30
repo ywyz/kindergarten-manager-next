@@ -4,7 +4,7 @@
 
 ## 当前工作：源码合并与完整本地备份／恢复
 
-2026-10-30用户已授权执行[唯一当前入口](../tasks/current.md)：先整理桌面源码并正常合入main，再集中确认关键产品行为并推进完整本地备份／恢复。源码合并的基线、独立审阅及实际回执见[源码整合核查](desktop-source-integration-review.md)；未回读远端前不记作已合并。继续原OpenCode同会话／Go套餐DeepSeek V4.1 Flash max实施，Codex独立审核回修；保持源码验证，不发行，WebDAV与公开历史改写不自动启动。
+2026-10-30用户已授权执行[唯一当前入口](../tasks/current.md)。源码整理经[独立核查](desktop-source-integration-review.md)通过，原OpenCode正常提交推送`b0cc53b`，远端main已快进为当前MIT桌面开发源码，公开入口字节已核对。当前接续[完整本地备份／恢复](../specs/desktop-backup-restore.md)：用户已逐项确认P01–P05，存储盘点完成，继续B1快照与检查；每次备份可选择是否加密，不能误写成强制加密。原OpenCode同会话／Go套餐DeepSeek V4.1 Flash max实施，Codex[独立审核回修](desktop-backup-restore-review.md)，[实现记录](desktop-backup-restore-result.md)尚无通过结论。保持源码验证，不发行，WebDAV与公开历史改写不自动启动。
 
 ## 已完成：AI手动重试与GitHub更新（源码验证）
 

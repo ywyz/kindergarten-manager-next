@@ -8,7 +8,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 本仓库是 kindergartenManager 的全新实现。
 
-2026-10-30当前：用户已授权执行源码合并整理，再推进完整本地备份／恢复，见唯一入口docs/tasks/current.md。先独立审核桌面源码与公开入口，再由原OpenCode正常提交推送并合入main；备份先集中确认范围／恢复／加密等关键产品行为，再由原OpenCode同会话／Go套餐DeepSeek V4.1 Flash max实施，Codex独立审核回修。继续源码验证，不发行、不启动WebDAV，不自动重写公开历史。合并实际状态见docs/bootstrap/desktop-source-integration-review.md。
+2026-10-30当前：源码整理已独立通过，原OpenCode正常提交推送b0cc53b，默认main已快进为当前MIT桌面开发源码，记录见docs/bootstrap/desktop-source-integration-review.md。继续原桌面分支推进完整本地备份／恢复；用户已逐项确认P01–P05：手动完整受管业务、每次可选加密、预览后替换当前档案并保留完整保护副本、保留密文而排除DPAPI材料、先保存并等在途操作完成后暂停写入备份。规格见docs/specs/desktop-backup-restore.md，唯一入口docs/tasks/current.md；原OpenCode同会话／Go套餐DeepSeek V4.1 Flash max实施，Codex独立审核回修。继续源码验证，不发行、不启动WebDAV，不自动重写公开历史。
 
 2026-10-30前项完成：AI手动重试与本项目GitHub Releases最新正式版检查已由原OpenCode同会话／指定Go模型实施，Codex限定源码／合成工程独立通过，RG-R01–R10关闭。源码可只读检查版本、不可下载安装；实际GitHub暂无正式Release。规格见desktop-game-observation.md§5.1、desktop-application-update.md§10，结果见docs/bootstrap/desktop-retry-github-review.md§4。AI失败作为可恢复结果，不自动重发或免除应用缺陷。
 
