@@ -18,7 +18,7 @@ pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.8
 
 # Tests only.
-pytest==8.4.2
+pytest==9.0.3
 httpx==0.28.1
 
 # The one reviewed source-artifact exception: proxy-tools 0.1.0 publishes only
