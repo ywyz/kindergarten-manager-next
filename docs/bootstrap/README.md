@@ -4,7 +4,7 @@
 
 ## 当前工作：源码合并与完整本地备份／恢复
 
-2026-10-30用户已授权执行[唯一当前入口](../tasks/current.md)。源码整理经[独立核查](desktop-source-integration-review.md)通过，原OpenCode正常提交推送并快进main，说明收口至`e836726`。当前接续[完整本地备份／恢复](../specs/desktop-backup-restore.md)：用户已逐项确认P01–P05，每次备份可选择是否加密；2026-10-31 B1 r04经[最终独立核查§8](desktop-backup-restore-review.md#8-b1-r04-最终独立结论限定后端源码工程通过)限定后端源码／合成工程通过：796全local、17反例、604原图／1812资源／约150MiB密码包及非空0005完整容器隔离升级通过。待原会话按批准清单Git后接B2；P06首次入口已集中询问待答复。B2／B3与教师体验未通过。[实现记录](desktop-backup-restore-result.md)中的自测不等于独立通过。保持源码验证，不发行，WebDAV与公开历史改写不自动启动。
+2026-10-31：[唯一当前入口](../tasks/current.md)对应的源码整理已由原OpenCode正常推送并快进main至`e836726`，见[整合核查](desktop-source-integration-review.md)。[完整本地备份／恢复](../specs/desktop-backup-restore.md)的P01–P06均已确认，B1已推送`7d2759b`，后续核心、宿主及B3真实源码窗口限定工程独立通过，最终 **848 local／469 desktop**、完整前端类型／测试／构建及逐项实际窗口证据见[独立核查§38](desktop-backup-restore-review.md#38-b3-最终限定源码结论完整本地备份恢复通过)。[实现记录](desktop-backup-restore-result.md)保留实施者自测与各轮首失败，最终Git由原会话按核定清单正常提交推送，身份以桌面分支历史为准。源码工作收口；教师人工体验、冻结包与发行尚未通过，最早无guard轮次历史缺口与后续受控guard0证据分列，不启动WebDAV或公开历史改写。
 
 ## 已完成：AI手动重试与GitHub更新（源码验证）
 

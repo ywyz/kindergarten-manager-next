@@ -158,7 +158,6 @@ class SnapshotService:
         snapshot_id = uuid.uuid4().hex
         lease = None
         frozen = False
-        verified: VerifiedSnapshot | None = None
         committed = False
         primary: BaseException | None = None
         try:
@@ -183,6 +182,210 @@ class SnapshotService:
                     raise backup_barrier.SnapshotBusy("宿主保存未能静止，拒绝快照")
             self._check_cancel(cancel)
 
+            result = self._capture_container(
+                output=output,
+                password=password,
+                cancel=cancel,
+                progress=progress,
+                parent_guard=parent_guard,
+                work=work,
+                snapshot_id=snapshot_id,
+            )
+            committed = True
+            return result
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            if frozen and self.executor is not None:
+                try:
+                    self.executor.unfreeze(owner=snapshot_id)
+                except Exception as exc:  # noqa: BLE001 - lease release still runs
+                    warnings.warn(
+                        f"AI executor unfreeze failed: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+            if lease is not None:
+                lease.release()
+            cleanup_error: BaseException | None = None
+            try:
+                if work is not None:
+                    work.cleanup()
+            except Exception as exc:  # noqa: BLE001 - cleanup is reported
+                if cleanup_error is None:
+                    cleanup_error = exc
+                elif primary is not None:
+                    primary.add_note(f"snapshot staging cleanup failed: {exc}")
+            parent_guard.close()
+            if cleanup_error is not None:
+                if committed:
+                    warnings.warn(
+                        f"backup staging cleanup failed: {cleanup_error}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                elif primary is None:
+                    raise cleanup_error
+                else:
+                    primary.add_note(
+                        f"backup staging cleanup failed: {cleanup_error}"
+                    )
+
+    @staticmethod
+    def _validate_maintenance_output(output: Path) -> None:
+        if not output.is_absolute():
+            raise backup_format.BackupFormatError(
+                "BACKUP_TARGET_INVALID", "保护副本必须使用绝对路径"
+            )
+        if output.suffix.lower() != backup_format.EXTENSION:
+            raise backup_format.BackupFormatError(
+                "BACKUP_EXTENSION_INVALID", "保护副本必须使用 .kgmbackup 扩展名"
+            )
+        raw_output = str(output)
+        upper_output = raw_output.upper()
+        if raw_output.startswith("\\\\.\\") or upper_output.startswith(
+            ("\\\\?\\GLOBALROOT", "\\\\?\\VOLUME", "\\\\?\\PIPE\\")
+        ):
+            raise backup_format.BackupFormatError(
+                "BACKUP_TARGET_INVALID", "保护副本不得是设备路径"
+            )
+        if not output.name or output.name in (".", ".."):
+            raise backup_format.BackupFormatError(
+                "BACKUP_TARGET_INVALID", "保护副本文件名不合法"
+            )
+        if (
+            ":" in output.name
+            or output.name.endswith((".", " "))
+            or output.name.split(".", 1)[0].rstrip(" .").lower()
+            in _DEVICE_NAMES
+        ):
+            raise backup_format.BackupFormatError(
+                "BACKUP_TARGET_INVALID", "保护副本文件名不合法"
+            )
+
+    def _assert_capture_idle(self, cancel: threading.Event) -> None:
+        self._check_cancel(cancel)
+        if self.executor is not None:
+            is_frozen = getattr(self.executor, "is_frozen", None)
+            if not callable(is_frozen) or not is_frozen():
+                raise backup_barrier.SnapshotBusy(
+                    "AI 执行器尚未冻结，拒绝维护捕获"
+                )
+            is_idle = getattr(self.executor, "is_snapshot_idle", None)
+            if not callable(is_idle) or not is_idle():
+                raise backup_barrier.SnapshotBusy(
+                    "AI 执行器仍有活动或待持久化结果"
+                )
+        session = None
+        try:
+            session = self.runtime.session()
+            snapshot = ai_task_service.active_task_snapshot(session)
+        except Exception as exc:  # noqa: BLE001 - fail closed, do not wait
+            raise backup_barrier.SnapshotBusy(
+                "无法确认 AI 终态，拒绝维护捕获"
+            ) from exc
+        finally:
+            if session is not None:
+                session.close()
+        if int(snapshot.get("live") or 0) != 0:
+            raise backup_barrier.SnapshotBusy(
+                "维护独占下仍有未终结 AI 任务"
+            )
+
+    def capture_maintenance_protection(
+        self,
+        *,
+        lease: backup_barrier.SnapshotLease,
+        output: str | Path,
+        cancel: threading.Event,
+        progress: Callable[[SnapshotProgress], None] | None = None,
+    ) -> SnapshotResult:
+        """Capture a plaintext protection package under an existing lease.
+
+        The caller owns the exclusive maintenance lease and has already
+        drained/frozen its executor.  This method never begins, acquires,
+        releases or unfreezes a lease/owner, and never waits for AI writes.
+        """
+        output = Path(output)
+        self._validate_maintenance_output(output)
+        barrier = backup_barrier.get_barrier(self.runtime.data_dir)
+        barrier.validate_exclusive_lease(lease)
+        self._assert_capture_idle(cancel)
+
+        parent_guard = backup_fs.PrivateDirectoryGuard(output.parent)
+        parent_guard.__enter__()
+        work = None
+        try:
+            self._assert_output_safe(output, parent_guard)
+            work = backup_fs.PrivateWorkArea(
+                self._snapshot_work_root(), "maintenance-capture"
+            )
+            work.__enter__()
+        except BaseException:
+            parent_guard.close()
+            raise
+        snapshot_id = uuid.uuid4().hex
+        committed = False
+        primary: BaseException | None = None
+        try:
+            barrier.validate_exclusive_lease(lease)
+            result = self._capture_container(
+                output=output,
+                password=None,
+                cancel=cancel,
+                progress=progress,
+                parent_guard=parent_guard,
+                work=work,
+                snapshot_id=snapshot_id,
+                lease_guard=lambda: barrier.validate_exclusive_lease(lease),
+            )
+            committed = True
+            return result
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            cleanup_error: BaseException | None = None
+            try:
+                if work is not None:
+                    work.cleanup()
+            except Exception as exc:  # noqa: BLE001 - cleanup is reported
+                cleanup_error = exc
+            parent_guard.close()
+            if cleanup_error is not None:
+                if committed:
+                    warnings.warn(
+                        f"maintenance capture staging cleanup failed: {cleanup_error}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                elif primary is None:
+                    raise cleanup_error
+                else:
+                    primary.add_note(
+                        f"maintenance capture staging cleanup failed: {cleanup_error}"
+                    )
+
+    def _capture_container(
+        self,
+        *,
+        output: Path,
+        password: str | None,
+        cancel: threading.Event,
+        progress: Callable[[SnapshotProgress], None] | None,
+        parent_guard: backup_fs.DirectoryGuard,
+        work: backup_fs.PrivateWorkArea,
+        snapshot_id: str,
+        lease_guard: Callable[[], None] | None = None,
+    ) -> SnapshotResult:
+        """Capture/verify/publish one container without touching the barrier."""
+        self._check_cancel(cancel)
+        if lease_guard is not None:
+            lease_guard()
+        verified: VerifiedSnapshot | None = None
+        committed = False
+        try:
             schema_dir = work.subdir("schema")
             db_path = work.subdir("db") / "kindergarten.db"
             fd = work.create_file(db_path)
@@ -249,6 +452,8 @@ class SnapshotService:
             # No cancel check after the atomic publish.  The final bytes and
             # their hash were computed before this point.
             self._check_cancel(cancel)
+            if lease_guard is not None:
+                lease_guard()
             self._publish(container_path, output, parent_guard, size, digest, cancel)
             committed = True
             result = SnapshotResult(
@@ -268,49 +473,24 @@ class SnapshotService:
                     stacklevel=2,
                 )
             return result
-        except BaseException as exc:
-            primary = exc
-            raise
         finally:
-            if frozen and self.executor is not None:
-                try:
-                    self.executor.unfreeze(owner=snapshot_id)
-                except Exception as exc:  # noqa: BLE001 - lease release still runs
-                    warnings.warn(
-                        f"AI executor unfreeze failed: {exc}",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-            if lease is not None:
-                lease.release()
-            cleanup_error: BaseException | None = None
+            active = sys.exc_info()[1]
             if verified is not None:
                 try:
                     self.discard_verified(verified)
-                except Exception as exc:  # noqa: BLE001 - cleanup is reported
-                    cleanup_error = exc
-            try:
-                if work is not None:
-                    work.cleanup()
-            except Exception as exc:  # noqa: BLE001 - cleanup is reported
-                if cleanup_error is None:
-                    cleanup_error = exc
-                elif primary is not None:
-                    primary.add_note(f"snapshot staging cleanup failed: {exc}")
-            parent_guard.close()
-            if cleanup_error is not None:
-                if committed:
-                    warnings.warn(
-                        f"backup staging cleanup failed: {cleanup_error}",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                elif primary is None:
-                    raise cleanup_error
-                else:
-                    primary.add_note(
-                        f"backup staging cleanup failed: {cleanup_error}"
-                    )
+                except Exception as cleanup:  # noqa: BLE001 - preserve primary
+                    if committed:
+                        warnings.warn(
+                            f"backup verification staging cleanup failed: {cleanup}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                    elif active is not None:
+                        active.add_note(
+                            f"backup verification staging cleanup failed: {cleanup}"
+                        )
+                    else:
+                        raise
 
     def verify(
         self,

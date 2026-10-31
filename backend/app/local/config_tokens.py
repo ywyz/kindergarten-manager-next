@@ -33,6 +33,18 @@ def _key() -> bytes:
     return _signing_key
 
 
+def rotate_key() -> None:
+    """Retire every outstanding config preview token.
+
+    The key is memory-only, but a full-data restore happens in the same
+    process: without an explicit rotation, a token minted before the restore
+    would still verify against the pre-restore signing key.  The next signed
+    token lazily creates the new key.
+    """
+    global _signing_key
+    _signing_key = secrets.token_bytes(32)
+
+
 def _canonical(value) -> str:
     return json.dumps(
         value,

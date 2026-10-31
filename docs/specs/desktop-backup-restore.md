@@ -1,6 +1,6 @@
 # 完整本地备份与恢复
 
-更新：2026-10-31。状态：**用户已逐项确认 P01–P05**，源码整合完成；B1 r04在当前 Windows 11 后端源码／合成工程范围独立通过，见[最终核查 §8](../bootstrap/desktop-backup-restore-review.md#8-b1-r04-最终独立结论限定后端源码工程通过)。恢复合同和完整夹具已准备；待原会话按批准清单 Git 后接 B2，B2／B3与教师体验尚未通过。P06首次入口已集中询问、待答复。源码整理与 main 快进见[整合核查](../bootstrap/desktop-source-integration-review.md)，唯一执行入口仍为[current.md](../tasks/current.md)。
+更新：2026-10-31。状态：**P01–P06 全部已由用户确认**。源码整合完成，B1 已推送 `7d2759b`；B1、B2-S1、恢复核心、宿主及 B3 真实源码窗口已在当前 Windows 11／独立合成环境范围完成独立核查，逐项源身份和首失败见[核查报告](../bootstrap/desktop-backup-restore-review.md)。教师人工体验、冻结包与发行仍未通过。源码整理及 main 快进见[整合核查](../bootstrap/desktop-source-integration-review.md)，唯一执行入口仍为[current.md](../tasks/current.md)。
 
 本文明确区分用户决定、当前源码事实和待核定方案。当前授权为源码开发与合成验证；由 OpenCode、build、Go 套餐 DeepSeek V4.1 Flash max 实施，用户进一步允许按文件责任并行会话，原会话继续负责共享核心及最终 Git。Codex 统一独立审核、交回修复并复验，通过后由原 OpenCode 正常提交推送。不发行、不执行受阻 EXE、不改系统保护、不调用应用真实 AI，不启动 WebDAV，不新增或升级依赖。
 
@@ -16,7 +16,7 @@
 
 P01–P05 来自用户对 5 项集中问题的逐项直接答复，均已归入本表；不重复询问，不把 P03 改回“必须密码加密”。
 
-2026-10-31 补充入口问题 P06 已集中提出、待用户答复：首次启动尚无教师档案时，是否同时提供“从本地备份恢复”，以便不先填写临时档案；或只在完成首次填写后的设置页提供。无论入口如何，仍先校验预览、确认后替换并保留恢复前完整保护副本。此问题不阻塞 B1 独立验证与恢复核心设计；未答复前不把建议写成已确认行为。
+**P06 用户已于 2026-10-31 确认：首次启动和设置页都提供“从本地备份恢复”。** 尚未填写教师档案时无需先建临时档案；两处使用同一校验、预览、确认替换流程，仍自动保留恢复前完整保护副本（首次启动时为空业务档案）。该决定来自本轮集中问题的直接答复，不重复询问，不扩展多档案切换。
 
 以下既有决定继续有效：单个本地教师档案；离开／关闭前保护正文、设置及候选编辑，保存失败留页；未知结果不自动重发 AI；不自动清理业务历史或被历史引用的照片。整库恢复与日计划／观察记录的“从历史建立新业务版本”是不同操作，不能混用后者制造整库恢复版本。
 
@@ -37,7 +37,7 @@ P01–P05 来自用户对 5 项集中问题的逐项直接答复，均已归入�
 
 Codex 先使用 codebase-memory 查询模型、运行时、凭据和图片链。索引代次 `2026-10-30T11:47:56Z` 的 18 个候选路径均返回 metadata_changed，已对材料所依赖的相关函数、字段及调用点回读实际源码；范围中的缓存／虚拟环境为明确排除，不作为业务源码证据。图谱仅提供定位，不能据其调用者列表宣称全部写入口已覆盖。
 
-当前 AST 独立盘点为 **41 个本地业务模型表**，另有独立 `local_alembic_version`；当前已知 head 为 `20261025_0006_local_game_observations`。模型盘点不等于已实际构造或验证完整备份库，后续以真实合成 SQLite 核对。
+初始 AST 独立盘点为 **41 个本地业务模型表**，另有独立 `local_alembic_version`；已知 head 为 `20261025_0006_local_game_observations`。后续真实合成 SQLite／完整包及窗口 full41 证据见核查报告，不以模型盘点单独替代完整备份验证。
 
 | 数据组 | 必须保留的表／关系 |
 | --- | --- |
@@ -112,7 +112,7 @@ Codex 先使用 codebase-memory 查询模型、运行时、凭据和图片链。
 
 ## 7. 分片、责任与独立验证
 
-P01–P05 已归入规格，继续核定 B1 的详细工程合同并实施，再依次接续。OpenCode 唯一写实现、测试、迁移及构建支持；Codex 审源码、独立执行反例及必要回归，不直接修实现。
+P01–P06 已归入规格，按 B1→B2→B3 先后独立核查。OpenCode 写实现、迁移及构建支持，用户另授权 Command Code 使用同一 DeepSeek Flash max 参与明确独占的互补测试；Codex 审源码、独立执行反例及必要回归，不直接修实现。各片实际结果与初始门槛分列。
 
 | 分片 | 交付与门槛 |
 | --- | --- |
@@ -196,9 +196,11 @@ D3 长根 WinError206、SAC4551、正式签名及发行、最新冻结入口／�
 - **恢复保留运行锁。** 沿用原 Runtime 和运行锁，只退役旧 engine／会话再重开；不能先 dispose 再用第二 Runtime 绕过锁。API 旧 token 为闭包值，须重建 app／session_scope；新 executor 使用新 launch 身份。服务停止须确认线程已退出，不能只调用带超时的 join 就切换文件。
 - **临时授权与业务历史。** 轮换配置预览 HMAC，清空现有三类内存 token store；旧观察恢复预览须失效，旧导出按 launch／scope 失效。可以改变这些临时授权状态及已有安全启动分类，不删除业务历史／候选／回执、不制造新业务版本；独立比较应逐字段列出这些预期变化。`recover_on_start()` 会写库分类，不发网络，不能称为只读检查；独占仍在时不得让普通 writer 绕过屏障。
 - **Windows 落盘证据。** journal 与逐项改名共同形成可接续协议，不构成多文件原子事务。以实际文件身份和完整组 hash 处理“改名已发生、日志尚未更新”的窗口；落盘失败保留两组。核对实际 `FlushFileBuffers` 写权限与同卷移动调用，受控失败／真实进程终止分别测试，不由单一 flag 宣称真实断电或硬件缓存安全。参考 [FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)、[MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw) 及 [Moving Directories](https://learn.microsoft.com/en-us/windows/win32/fileio/moving-directories)。
+- **物理身份时点与日志退役。** 旧组的物理 hash／WAL／SHM 身份在旧服务、执行器、会话和 engine 均关闭、检查点已稳定后固定，不能把在线保护包的 DB 物理 hash 当作关闭后旧组 hash。安装核对完成后，在任何新 engine 启动写、HTTP／UI 开放之前，须将切换中的 active journal 安全退役为操作回执或等价关闭状态；其后不得按安装时 DB hash 把正常提示词同步、AI 启动分类或教师新写入误判为损坏并自动回滚旧档案。必须验证恢复后新写、再启动两次仍保留新工作。文件组提交与 UI 重载分别记录终态，不能把重开失败说成资料未恢复。
+- **已退役连接不可复活。** SQLAlchemy `engine.dispose()` 不禁止旧 engine／Session 对象重新取连接；恢复接缝须显式使旧代次不可重新连接或写入，并在旧连接全部退出后检查 DB 家族占用。不得仅靠宿主线程已停止推断旧对象失效；合成验证持有旧 Session，恢复后再次尝试读写应受控拒绝，新代次正常工作。
 - **互斥与分工。** 备份／恢复与关闭、原生保存及更新安装共用明确的维护互斥；本轮保持源码只检查更新，不新增下载／安装行为，不丢弃既存更新材料。B1 通过后先冻结共享接口，再划分恢复核心／Runtime 与宿主／API／前端文件责任；共同文件不并行写。辅助完整夹具只读复用，源码、合成故障、窗口与未验范围分别报告。
 
-### 10.1 B2-S1 共享捕获接口核定（待实施及独立验证）
+### 10.1 B2-S1 共享捕获接口核定（限定源码独立通过）
 
 采用现有结果／进度类型，新增内部 `SnapshotService.capture_maintenance_protection(*, lease, output, cancel, progress=None) -> SnapshotResult` 及 `SnapshotBarrier.validate_exclusive_lease(lease)`。保护包固定 Format 1 明文；输出为数据根、凭据根和 B1 工作根外的绝对路径，由调用者创建私有父目录，捕获入口以实际句柄核对当前用户受限 DACL。该接口不向页面／HTTP 暴露 lease 或文件路径。
 
@@ -207,3 +209,29 @@ D3 长根 WinError206、SAC4551、正式签名及发行、最新冻结入口／�
 捕获入口再次只读核对同一 barrier 实例、有效 owner/token、exclusive／未 release、DB／文件计数为零、执行器 idle 及数据库中无 live／queued AI。失败受控拒绝，不在 exclusive 下等待需要写库的 AI，不重新取 lease、不释放调用者 lease、不调用 freeze／unfreeze。复用同一捕获引擎、正常 verify 和 no-replace 发布，保持提交前取消／提交后完成的终态。
 
 独立验证至少包括：同一 lease 捕获后仍拒绝其他 writer／文件操作／新 intent；错误根、失效／未独占及不合类型的 lease 拒绝；执行器 idle 但 DB 仍有 queued AI 时拒绝；缺图／坏图／同名输出／取消失败不释放调用者或其他 owner；普通 create／verify、旧包及密码包保持。接口通过并固定后才交恢复核心使用。
+
+
+### 10.2 宿主接续与异常退出的固定边界
+
+- 旧 host 在 core 重开新 engine 前退役；重开使用新的 app／token／scope／launch／Window／host，窗口回调绑定自己的 bundle。新窗口存在、读取业务并显示实际页面后，再收口旧窗；通知与连接／错误／首次／正常页面条件链分开。
+- 面板维护锁与排空既有操作的 pageBusy 分开，关闭探针另行覆盖在途维护，避免维护操作等待自己。开始／确认以 requestId 和操作代次幂等登记，丢回包先查询同一请求；页面仅传原生选择的 opaque ID。
+- 新服务在 ready 之前已有生命周期所有者；失败创建或未确认停止也必须由最终清理追踪。仅在实际相关服务／执行器退出确认后释放原 Runtime 锁；错误页的退出仍使用最新 bundle。
+- 需要重启的已终结维护错误可安全结束窗口；特殊退出由已退役 host 或已确认 transport 停止等实际状态支持。仅 recovery_required 旗标不绕过普通 AI 在途、未保存工作或正在切换／重开的保护。
+- 预览、错误口令重试、准备和取消按核心操作身份收口自有暂存；被替代请求保持可查询并退役其活动能力。成功发布结果优先于迟到取消；未知安装状态提示核查，不进入成功重开。保护副本的嵌套校验进度仍可取消，不以通用 verify key 推断已开始切换。
+- 进度用教师可读文案；恢复后的新页面保留保护副本位置和保留方式的可复制文本。显示位置不承担路径／命令授权，密码不入状态、通知或日志。
+
+本节落实既有 P02／P05／P06 与 §6 的显示、隔离和安全接续要求；实际源码窗口、原生实际点选、教师体验及发行各自取证。
+
+
+## 11. 源码体验入口与已验范围
+
+本轮自动窗口实测使用实际 Vue／WebView2／本机 API／原生桥及备份恢复核心，文件选择／另存为由限定自有合成路径的替身返回；不等于教师已经实际点选原生对话框或完成 Word 逐页验收。源码身份及全表／资源对比、恢复后新工作／新进程、首次页、保护包再恢复、迟到权限、故障及取消边界分别见核查报告。普通 AI 冷启动的单任务分类与实际完整包恢复分列；取消闸门位于真实 verify 返回边界，不冒称资源 I/O 任意时间点。
+
+后续需要手动源码体验时，在仓库根使用现有 Windows 环境和已核对的前端构建，并创建新的独立合成目录：
+
+```powershell
+$reviewRoot = Join-Path $env:TEMP ('kgm-manual-review-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+& .\desktop\.venv-d1\Scripts\python.exe .\desktop\d1_main.py --frontend .\build\desktop-d1\frontend --data "$reviewRoot\data" --credential-root "$reviewRoot\credentials"
+```
+
+这是普通首次页／工作台入口，不是 b3-source-window 自动化相位。可从首次页恢复自己的合成包，或填写合成档案后在设置页创建／恢复；预览确认后替换档案，保护包位置留在新页面。保留测试根和保护文件供核对，不复用既有真实体验库或旧包目录。本轮仅提供上述人工入口说明，尚未执行教师人工验收，不新增真实 AI、打包或发行授权。

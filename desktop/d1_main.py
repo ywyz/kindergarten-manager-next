@@ -84,6 +84,7 @@ _DEDICATED_SYNTHETIC_PHASES = (
     "u3-update",
     "u3-verify",
     "obs-ui",
+    "b3-source-window",
 )
 # Phases that must run with a controlled provider (they exercise the real
 # executor/worker/TLS).
@@ -217,6 +218,11 @@ def _validate_synthetic_entry(args) -> None:
         args, "credential_root", None
     ):
         raise RuntimeError(f"{phase} 自检必须显式提供 --credential-root 合成凭据根")
+    if phase == "b3-source-window":
+        if not getattr(args, "credential_root", None):
+            raise RuntimeError("b3-source-window 自检必须显式提供 --credential-root 合成凭据根")
+        if not getattr(args, "b3_config", None):
+            raise RuntimeError("b3-source-window 自检必须提供 --b3-config")
     if phase == "u3-update" and not getattr(args, "u3_config", None):
         raise RuntimeError("u3-update 自检必须提供 --u3-config")
     if phase == "u3-verify" and not getattr(args, "u3_source_identity", None):
@@ -7320,7 +7326,8 @@ def _install_close_handlers(window, host_api, runtime=None) -> None:
         # The host never destroys the window while a native Word save (dialog
         # or atomic write) is still in flight (spec §12.3 / R11).
         busy_probe=lambda: host_api._save_in_progress()
-        or host_api._page_busy_probe(),
+        or host_api._page_busy_probe()
+        or host_api._maintenance_busy_probe(),
         # D2 §4.3: freeze AI on the close intent and require an explicit task
         # choice before releasing the window.
         task_snapshot=task_snapshot,
@@ -7334,10 +7341,211 @@ def _install_close_handlers(window, host_api, runtime=None) -> None:
     host_api._close_coordinator = coordinator
 
     def on_closing():
+        # The restore retire path destroys this exact old window without
+        # starting a normal close-and-exit handshake.  The flag is bound to
+        # this host/window instance only; the new window is untouched.
+        if host_api._consume_retire_destroy():
+            return True
+        retired_exit = bool(getattr(host_api, "_retired", False))
+        recovery_exit = (
+            host_api._recovery_required_probe()
+            and bool(getattr(host_api, "_native_io_blocked", False))
+        )
+        if (retired_exit or recovery_exit) and not host_api._maintenance_busy_probe():
+            # A retired old window after a successful install, or a
+            # recovery_required window whose transport was actually confirmed
+            # stopped (the switch guard is set only after stop_transport), may
+            # exit safely.  recovery_required alone is NOT enough: an open
+            # engine with a real AI task in flight must still use the normal
+            # close choice/refusal.  The process-level latest-bundle cleanup
+            # still owns the shared runtime; an active switch/reopen is
+            # refused by the probe above.
+            return True
         # Never wait for JS/database in the synchronous closing callback.
         return coordinator.handle_closing()
 
     window.events.closing += on_closing
+
+
+# ---------------------------------------------------------------------------
+# B2 host maintenance wiring (backup / restore)
+# ---------------------------------------------------------------------------
+
+
+def _maintenance_labels(runtime) -> tuple[str, dict]:
+    """Safe manifest labels for a snapshot; never a path or credential."""
+    try:
+        import update_identity
+
+        identity = update_identity.load_app_identity(
+            database_revision=runtime.current_revision or "",
+            require_packaged=False,
+        )
+    except Exception:  # noqa: BLE001 - identity is optional metadata
+        identity = None
+    if identity is None:
+        return "", {}
+    return str(identity.version or ""), dict(identity.as_dict())
+
+
+def _maintenance_busy(bundle) -> bool:
+    """Accepted host work that must drain before a restore switch.
+
+    The panel's own maintenance busy flag is deliberately absent: waiting on
+    it would make the panel wait for itself.  The close path separately
+    refuses while a maintenance operation is active.
+    """
+    host = bundle.host_api
+    return bool(
+        host._save_in_progress()
+        or host._page_busy_probe()
+        or host._update_busy_probe()
+    )
+
+
+def _build_maintenance_host(args, runtime, lifecycle, bundle):
+    import maintenance_host
+    import maintenance_lifecycle
+    from app.local.backup_snapshot import SnapshotService
+    from app.local.restore_service import RestoreCore
+
+    version, source = _maintenance_labels(runtime)
+    hooks = maintenance_lifecycle.HostMaintenanceHooks(
+        manager=lifecycle,
+        # Bound to this exact bundle: a late callback from an old host can
+        # never resolve to a newer server/runtime.
+        bundle_getter=lambda: bundle,
+        busy_probe=_maintenance_busy,
+        timeout=60.0,
+        log=_startup_log,
+        on_switch=lambda: bundle.host_api._block_native_io(),
+    )
+    backup_service = SnapshotService(
+        runtime,
+        app_version=version,
+        source_identity=source,
+        external_quiesce=hooks.wait_host_idle,
+    )
+
+    def reopen_host():
+        return _run_reopen_sequence(args, lifecycle, bundle, runtime)
+
+    def before_reopen():
+        # Retire the old host BEFORE core.reopen() opens the new engine.  Its
+        # own maintenance status query stays read-only available for the old
+        # page while the new window is being created.
+        bundle.host_api._retire()
+
+    restore_core = RestoreCore(
+        runtime, app_version=version, source_identity=source
+    )
+    return maintenance_host.MaintenanceHost(
+        backup_service=backup_service,
+        restore_core=restore_core,
+        hooks=hooks,
+        app_version=version,
+        source_identity=source,
+        reopen_host=reopen_host,
+        before_reopen=before_reopen,
+    )
+
+
+def _retire_destroy_window(bundle) -> None:
+    """Close this exact old window without the normal close-and-exit path."""
+    bundle.host_api._request_retire_destroy()
+    bundle.window.destroy()
+
+
+def _run_reopen_sequence(args, lifecycle, old_bundle, runtime) -> dict:
+    """Host-side continuation after the restore core reopened the engine."""
+    import d1_host_api
+    import d1_server
+    import maintenance_lifecycle
+
+    notice = None
+    maintenance = getattr(old_bundle.host_api, "_maintenance_host", None)
+    getter = getattr(maintenance, "completion_notice", None)
+    if callable(getter):
+        try:
+            notice = getter()
+        except Exception:  # noqa: BLE001 - display-only notice
+            notice = None
+
+    def build_bundle(_old):
+        generation = lifecycle.next_generation()
+        port = free_loopback_port()
+        token = secrets.token_urlsafe(32)
+        executor, reason, unconfirmed = _start_ai_executor(runtime, args)
+        if unconfirmed:
+            # Keep the unconfirmed worker owned by the runtime; the old
+            # window stays and final cleanup retries dispose.
+            runtime.ai_executor = executor
+            try:
+                executor.dispose()
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError("新的 AI 执行器未能确认退出")
+        if executor is None:
+            _startup_log(f"reopen:AI executor unavailable ({reason})")
+        runtime.ai_executor = executor
+        app = d1_server.build_d1_app(
+            runtime=runtime,
+            port=port,
+            session_token=token,
+            frontend_dir=args.frontend,
+            executor=executor,
+        )
+        host_api = d1_host_api.D1HostApi(
+            launch_token=token,
+            service_port=port,
+            document_generation=generation,
+            # Version discovery survives; a new install plan does not belong
+            # to the restored document.
+            update_manager=getattr(old_bundle.host_api, "_update_manager", None),
+            install_coordinator=None,
+            maintenance_notice=notice,
+        )
+        return maintenance_lifecycle.LifecycleBundle(
+            generation=generation,
+            service=ServiceRun(app, port),
+            host_api=host_api,
+            runtime=runtime,
+            executor=executor,
+        )
+
+    def create_window(bundle) -> None:
+        import webview
+
+        window = webview.create_window(
+            "幼儿园教师工作台（本地）",
+            url=f"http://127.0.0.1:{bundle.service.port}/",
+            js_api=bundle.host_api,
+            width=1180,
+            height=820,
+            min_size=(760, 560),
+            text_select=True,
+        )
+        bundle.window = window
+        bundle.host_api._bind_window(window)
+        _install_close_handlers(window, bundle.host_api, bundle.runtime)
+        bundle.retire_destroy = lambda: _retire_destroy_window(bundle)
+        bundle.host_api._bind_maintenance(
+            _build_maintenance_host(args, runtime, lifecycle, bundle)
+        )
+
+    def wait_business_ready(bundle, timeout: float) -> bool:
+        return bundle.host_api._wait_business_ready(timeout)
+
+    sequencer = maintenance_lifecycle.ReopenSequencer(
+        manager=lifecycle,
+        old_bundle=old_bundle,
+        build_bundle=build_bundle,
+        create_window=create_window,
+        wait_business_ready=wait_business_ready,
+        timeout=60.0,
+        log=_startup_log,
+    )
+    return sequencer.run()
 
 
 def _stop_service(service) -> None:
@@ -7358,6 +7566,9 @@ def run_interactive(args) -> int:
             "请先安装 Microsoft Edge WebView2 Runtime。",
         )
         return 2
+    import maintenance_lifecycle
+
+    lifecycle = maintenance_lifecycle.LifecycleManager()
     service = None
     runtime = None
     try:
@@ -7382,34 +7593,67 @@ def run_interactive(args) -> int:
             min_size=(760, 560),
             text_select=True,
         )
+        host_api._bind_window(window)
         _install_close_handlers(window, host_api, runtime)
+        bundle = maintenance_lifecycle.LifecycleBundle(
+            generation=lifecycle.next_generation(),
+            service=service,
+            host_api=host_api,
+            runtime=runtime,
+            window=window,
+        )
+        lifecycle.install(bundle)
+        bundle.retire_destroy = lambda: _retire_destroy_window(bundle)
+        host_api._bind_maintenance(
+            _build_maintenance_host(args, runtime, lifecycle, bundle)
+        )
         try:
             webview.start(gui="edgechromium")
         except Exception as exc:
             _stop_service(service)
             show_error("窗口失败", f"窗口启动失败：\n{exc}")
             return 2
-        _stop_service(service)
         try:
-            if getattr(host_api, "_update_manager", None) is not None:
-                host_api._update_shutdown_confirmed = bool(
-                    host_api._update_manager.shutdown()
+            latest = lifecycle.current()
+            manager = (
+                getattr(latest.host_api, "_update_manager", None)
+                if latest is not None
+                else None
+            )
+            if manager is not None:
+                latest.host_api._update_shutdown_confirmed = bool(
+                    manager.shutdown()
                 )
-                if not host_api._update_shutdown_confirmed:
+                if not latest.host_api._update_shutdown_confirmed:
                     _startup_log("update manager shutdown not confirmed")
-            install_coordinator = getattr(host_api, "_install_coordinator", None)
+            install_coordinator = (
+                getattr(latest.host_api, "_install_coordinator", None)
+                if latest is not None
+                else None
+            )
             if install_coordinator is not None:
                 install_coordinator.shutdown()
         except Exception:
-            host_api._update_shutdown_confirmed = False
+            target_host = latest.host_api if latest is not None else host_api
+            target_host._update_shutdown_confirmed = False
         return 0
     finally:
-        _stop_service(service)
-        if runtime is not None:
-            if _dispose_executor(runtime) or getattr(
-                runtime, "ai_executor", None
-            ) is None:
-                runtime.dispose()
+        # Always close the newest bundle (a restore may have replaced the
+        # initial server).  Never release the runtime lock while the latest
+        # service thread is still alive.
+        if lifecycle.current() is not None:
+            if not lifecycle.close_latest(timeout=10.0):
+                _startup_log(
+                    "close_latest: latest service stop not confirmed; "
+                    "runtime lock retained"
+                )
+        else:
+            _stop_service(service)
+            if runtime is not None:
+                if _dispose_executor(runtime) or getattr(
+                    runtime, "ai_executor", None
+                ) is None:
+                    runtime.dispose()
 
 
 def main() -> int:
@@ -7436,6 +7680,7 @@ def main() -> int:
         default=None,
         help="验证专用：d3-h2-verify 导出的 DOCX 目标文件",
     )
+    parser.add_argument("--b3-config", default=None, help="验证专用：B3 源码窗口合成配置")
     parser.add_argument("--u3-config", default=None, help="验证专用：U3 源码合成更新配置")
     parser.add_argument("--u3-source-identity", default=None, help="验证专用：新版源码构建身份文件")
     parser.add_argument("--u3-verify-stop", default=None, help="验证专用：u3-verify 等待外部收口文件")
@@ -7469,6 +7714,7 @@ def main() -> int:
             "u3-update",
             "u3-verify",
             "obs-ui",
+            "b3-source-window",
         ],
         default="first",
     )
@@ -7548,6 +7794,10 @@ def main() -> int:
         if args.selftest:
             if args.phase == "w6-resources":
                 return run_w6_resources(args)
+            if args.phase == "b3-source-window":
+                import maintenance_source_verify
+
+                return maintenance_source_verify.run_source_verify(args)
             return run_selftest(args)
         return run_interactive(args)
     finally:

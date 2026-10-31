@@ -173,6 +173,38 @@ class DirectoryGuard:
         self.close()
 
 
+class PrivateDirectoryGuard(DirectoryGuard):
+    """Directory guard that also verifies the current-user restricted DACL.
+
+    ``DirectoryGuard`` protects path identity and renames; this subclass opens
+    the same directory again through the credential helper so the actual held
+    handle must have the protected owner/DACL used for private backup work.
+    """
+
+    def __init__(self, path: Path):
+        super().__init__(path)
+        self.private_handle = None
+
+    def __enter__(self) -> "PrivateDirectoryGuard":
+        super().__enter__()
+        try:
+            self.private_handle = credentials._open_managed_dir(  # noqa: SLF001
+                Path(os.path.abspath(str(self.path))),
+                credentials._current_user_sid(),  # noqa: SLF001
+            )
+        except BaseException as exc:
+            super().close()
+            raise BackupPathError(
+                "BACKUP_TARGET_INVALID", "备份目标目录不是当前用户受限私有目录"
+            ) from exc
+        return self
+
+    def close(self) -> None:
+        _close_handle(self.private_handle)
+        self.private_handle = None
+        super().close()
+
+
 class FileLease:
     """Open one regular file for reading and keep its identity verified.
 

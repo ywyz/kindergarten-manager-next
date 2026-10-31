@@ -34,9 +34,12 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -373,6 +376,21 @@ def _release_os_lock(handle: wtypes.HANDLE) -> None:
             pass
 
 
+def _refuse_retired_connection(_dbapi_connection, _record) -> None:
+    """Deny a retired SQLAlchemy engine any new DBAPI connection.
+
+    ``Engine.dispose()`` closes the pool but does not make the engine object
+    permanently unusable: an old Session can ask it for a new connection.
+    The restore boundary therefore retires the old generation explicitly.
+    """
+    raise RuntimeError("retired local runtime engine cannot reconnect")
+
+
+def _refuse_retired_creator():
+    """Pool creator guard: runs *before* sqlite3 opens/creates any file."""
+    raise RuntimeError("retired local runtime engine cannot reconnect")
+
+
 class LocalRuntime:
     """Owns one data directory and its SQLite engine."""
 
@@ -420,9 +438,16 @@ class LocalRuntime:
         self._lock_handle: wtypes.HANDLE | None = None
         self._lock_path: Path | None = None
         self._owns_lock = False
+        # Sessions created through this runtime are tracked only so an
+        # explicit engine retirement can close them before the DB family is
+        # moved.  They never carry business state into the new generation.
+        self._session_lock = threading.RLock()
+        self._live_sessions: weakref.WeakSet[Session] = weakref.WeakSet()
         # Set when the package prompt-bundle sync fails at startup: only the AI
         # prompt endpoints consult it, so the manual path stays fully usable.
         self.prompt_sync_error: str | None = None
+        # Set by the startup restore resolver before migrations/prompt sync.
+        self.restore_notice: dict | None = None
 
     @property
     def prepared(self) -> bool:
@@ -767,6 +792,11 @@ class LocalRuntime:
             # second handle, so a second instance still reports
             # LOCAL_APP_ALREADY_RUNNING rather than a path error.
             self._validate_lock_handle()
+            # Restore repair runs while the data-root lock is held, before any
+            # schema migration, prompt sync, AI executor, HTTP or UI.
+            from app.local.restore_recovery import resolve_startup_restore
+
+            self.restore_notice = resolve_startup_restore(self)
             config = alembic_config(self.db_path)
             inspection = inspect_database(self.db_path, config)
 
@@ -860,25 +890,120 @@ class LocalRuntime:
             session.close()
 
     def session(self) -> Session:
-        if self._session_factory is None:
-            raise RuntimeError("LocalRuntime.prepare() has not been called")
-        return self._session_factory()
+        with self._session_lock:
+            if self._session_factory is None:
+                raise RuntimeError("LocalRuntime.prepare() has not been called")
+            session = self._session_factory()
+            self._live_sessions.add(session)
+            return session
+
+    def _retire_engine(self, engine: Engine | None) -> None:
+        """Close live sessions and permanently invalidate one engine generation.
+
+        ``Engine.dispose()`` alone is not enough: an already held Session can
+        obtain a fresh connection afterwards and write to whatever path the
+        old engine still names.  The pool creator is replaced *before* any
+        DBAPI connect, so an old generation cannot even create an empty SQLite
+        file during the move gap.  A failure to install that guard is fatal to
+        the retirement, never silently ignored.
+        """
+        if engine is None:
+            return
+        pool = getattr(engine, "pool", None)
+        if pool is None or not hasattr(pool, "_creator"):
+            raise RuntimeError("cannot install retired engine connection guard")
+        pool._creator = _refuse_retired_creator  # noqa: SLF001 - mandatory guard
+        try:
+            event.listen(engine, "connect", _refuse_retired_connection)
+        except Exception as exc:  # noqa: BLE001 - creator guard is primary
+            raise RuntimeError("cannot install retired engine connect guard") from exc
+        with self._session_lock:
+            sessions = list(self._live_sessions)
+            self._live_sessions.clear()
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:  # noqa: BLE001 - retirement must not be masked
+                pass
+        engine.dispose()
+
+    def close_engine_keep_lock(self) -> None:
+        """Retire the current engine while retaining the data-root lock.
+
+        Used by B2 restore before the DB family is moved.  The runtime object
+        and ``.app-runtime.lock`` handle stay alive; only the engine family is
+        invalidated.  ``reopen_after_restore()`` creates the next generation.
+        """
+        with self._session_lock:
+            engine = self._engine
+        if engine is None:
+            return
+        self._retire_engine(engine)
+        with self._session_lock:
+            self._engine = None
+            self._session_factory = None
+            self._inspection = None
+
+    def reopen_after_restore(self) -> DatabaseInspection:
+        """Create a new engine generation after a committed restore.
+
+        The caller must still own the same runtime lock.  This is a normal
+        local startup inspection on the installed database: no restore
+        rollback authority remains, and prompt-bundle sync is the ordinary
+        startup write.  A non-current schema is refused rather than silently
+        migrated after a committed switch.
+        """
+        if not self._owns_lock:
+            raise RuntimeError("runtime lock is not held by this instance")
+        if self._engine is not None:
+            raise RuntimeError("runtime engine must be closed before reopen")
+        self._check_managed_paths()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        config = alembic_config(self.db_path)
+        inspection = inspect_database(self.db_path, config)
+        if inspection.state != "current":
+            raise LocalDatabaseStateError(
+                "LOCAL_RESTORE_REOPEN_FAILED",
+                "恢复后的数据库缺失、为空或不是当前受管版本，拒绝打开",
+            )
+        engine = create_local_engine(self.db_path)
+        try:
+            session_factory = sessionmaker(
+                bind=engine,
+                autocommit=False,
+                autoflush=False,
+                expire_on_commit=False,
+            )
+            self._session_factory = session_factory
+            self._engine = engine
+            self._inspection = inspection
+            # A new executor must build a new launch identity; never inherit
+            # the old generation's launch_id.
+            self.launch_id = None
+            self._sync_prompt_bundles_best_effort()
+            return inspection
+        except BaseException:
+            self._session_factory = None
+            self._engine = None
+            self._inspection = None
+            self._retire_engine(engine)
+            raise
 
     def dispose(self) -> None:
-        """Close the engine and release this runtime's own lock.
+        """Close the engine generation and release this runtime's own lock.
 
         Safe to call repeatedly and on an unprepared instance (which never owns
         the lock, so another holder is unaffected). The lock is released even
-        when ``engine.dispose()`` raises, so the exclusive handle is never
+        when engine retirement raises, so the exclusive handle is never
         leaked; a real dispose error still propagates.
         """
-        engine = self._engine
-        self._engine = None
-        self._session_factory = None
-        self._inspection = None
+        with self._session_lock:
+            engine = self._engine
+            self._engine = None
+            self._session_factory = None
+            self._inspection = None
         try:
-            if engine is not None:
-                engine.dispose()
+            self._retire_engine(engine)
         finally:
             if self._owns_lock:
                 self._release_lock()

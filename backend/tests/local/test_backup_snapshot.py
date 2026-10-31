@@ -226,6 +226,14 @@ class BackupSnapshotCase(LocalTestCase):
         self.session.commit()
         return asset_id, path
 
+    def private_dir(self, name: str) -> Path:
+        path = self.tmp_root / name
+        handle = credentials._ensure_managed_dir(  # noqa: SLF001
+            path, credentials._current_user_sid()  # noqa: SLF001
+        )
+        credentials._kernel32.CloseHandle(handle)  # noqa: SLF001
+        return path
+
     def service(self, **kwargs):
         from app.local.backup_snapshot import SnapshotService
 
@@ -1712,5 +1720,393 @@ def test_private_cleanup_refuses_junction_and_preserves_external_marker():
             except Exception:
                 pass
         assert marker.read_bytes() == b"keep"
+    finally:
+        case.tearDown()
+
+
+class _CaptureExecutor:
+    def __init__(self, *, frozen=True, idle=True):
+        self.frozen = frozen
+        self.idle = idle
+        self.freeze_owners = {"restore:test", "close"}
+        self.freeze_calls = 0
+        self.unfreeze_calls = 0
+
+    def is_frozen(self):
+        return self.frozen
+
+    def is_snapshot_idle(self):
+        return self.idle
+
+    def freeze(self, owner="close"):
+        self.freeze_calls += 1
+        self.freeze_owners.add(owner)
+
+    def unfreeze(self, owner="close"):
+        self.unfreeze_calls += 1
+        self.freeze_owners.discard(owner)
+
+
+def _acquire_maintenance(case, owner="restore:test"):
+    barrier = backup_barrier.get_barrier(case.runtime.data_dir)
+    lease = barrier.begin_intent(owner)
+    barrier.wait_idle(lease, timeout=5)
+    barrier.acquire_exclusive(lease)
+    return barrier, lease
+
+
+def _capture_target(case, name="protection"):
+    return case.private_dir(name) / "protect.kgmbackup"
+
+
+def test_capture_maintenance_same_lease_keeps_barrier_and_verifies():
+    case = BackupSnapshotCase()
+    case.setUp()
+    try:
+        case.import_photo(case.create_observation())
+        fake = _CaptureExecutor()
+        service = case.service(executor=fake)
+        barrier, lease = _acquire_maintenance(case)
+        target = _capture_target(case)
+        try:
+            result = service.capture_maintenance_protection(
+                lease=lease,
+                output=target,
+                cancel=threading.Event(),
+            )
+            assert result.verified is True
+            assert result.path == target
+            assert result.sha256 and result.size > 0
+            header, _raw = backup_format.read_header(target)
+            assert header.mode == backup_format.MODE_PLAINTEXT
+            assert barrier.exclusive_owner == "restore:test"
+            assert lease.released is False
+            assert fake.freeze_calls == 0
+            assert fake.unfreeze_calls == 0
+            assert fake.freeze_owners == {"restore:test", "close"}
+
+            with pytest.raises(backup_barrier.SnapshotBusy):
+                begin_immediate(case.session)
+            with pytest.raises(backup_barrier.SnapshotBusy):
+                with backup_barrier.file_scope(case.runtime.data_dir):
+                    pass
+            with pytest.raises(backup_barrier.SnapshotBusy):
+                barrier.begin_intent("other-owner")
+
+            verified = service.verify(
+                target, password=None, cancel=threading.Event()
+            )
+            try:
+                assert verified.manifest["snapshot_id"] == result.snapshot_id
+                assert verified.manifest["resources"]
+            finally:
+                service.discard_verified(verified)
+        finally:
+            lease.release()
+    finally:
+        case.tearDown()
+
+
+def test_capture_maintenance_rejects_wrong_root_stale_nonexclusive_and_type():
+    case = BackupSnapshotCase()
+    case.setUp()
+    try:
+        service = case.service()
+        target = _capture_target(case)
+        barrier = backup_barrier.get_barrier(case.runtime.data_dir)
+
+        other_barrier = backup_barrier.get_barrier(case.tmp_root / "other-root")
+        other_lease = other_barrier.begin_intent("restore:test")
+        other_barrier.wait_idle(other_lease, timeout=5)
+        other_barrier.acquire_exclusive(other_lease)
+        try:
+            with pytest.raises(backup_barrier.MaintenanceLeaseError):
+                service.capture_maintenance_protection(
+                    lease=other_lease,
+                    output=target,
+                    cancel=threading.Event(),
+                )
+        finally:
+            other_lease.release()
+
+        intent_only = barrier.begin_intent("restore:test")
+        try:
+            with pytest.raises(backup_barrier.MaintenanceLeaseError):
+                service.capture_maintenance_protection(
+                    lease=intent_only,
+                    output=target,
+                    cancel=threading.Event(),
+                )
+        finally:
+            intent_only.release()
+
+        stale = barrier.begin_intent("restore:test")
+        barrier.wait_idle(stale, timeout=5)
+        barrier.acquire_exclusive(stale)
+        stale.release()
+        with pytest.raises(backup_barrier.MaintenanceLeaseError):
+            service.capture_maintenance_protection(
+                lease=stale,
+                output=target,
+                cancel=threading.Event(),
+            )
+
+        with pytest.raises(backup_barrier.MaintenanceLeaseError):
+            service.capture_maintenance_protection(
+                lease=object(),
+                output=target,
+                cancel=threading.Event(),
+            )
+        assert not target.exists()
+    finally:
+        case.tearDown()
+
+
+def test_capture_maintenance_rejects_queued_ai_even_if_executor_idle():
+    case = BackupSnapshotCase()
+    case.setUp()
+    try:
+        _seed_ai_material(case)
+        task_id = case.session.execute(
+            text("SELECT id FROM local_ai_tasks ORDER BY created_at LIMIT 1")
+        ).scalar()
+        case.session.execute(
+            text(
+                "UPDATE local_ai_tasks SET status = 'pending', "
+                "current_execution_id = NULL, updated_at = :now WHERE id = :id"
+            ),
+            {"now": utc_now(), "id": task_id},
+        )
+        case.session.commit()
+        fake = _CaptureExecutor()
+        service = case.service(executor=fake)
+        barrier, lease = _acquire_maintenance(case)
+        target = _capture_target(case)
+        try:
+            with pytest.raises(backup_barrier.SnapshotBusy):
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=target,
+                    cancel=threading.Event(),
+                )
+            assert barrier.exclusive_owner == "restore:test"
+            assert lease.released is False
+            assert fake.freeze_owners == {"restore:test", "close"}
+            assert not target.exists()
+        finally:
+            lease.release()
+    finally:
+        case.tearDown()
+
+
+def test_capture_maintenance_requires_private_output_outside_roots():
+    case = BackupSnapshotCase()
+    case.setUp()
+    try:
+        service = case.service()
+        barrier, lease = _acquire_maintenance(case)
+        try:
+            public = case.tmp_root / "public-output"
+            public.mkdir()
+            with pytest.raises(backup_fs.BackupPathError):
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=public / "protect.kgmbackup",
+                    cancel=threading.Event(),
+                )
+
+            inside_data = case.runtime.data_dir / "protection"
+            handle = credentials._ensure_managed_dir(  # noqa: SLF001
+                inside_data, credentials._current_user_sid()  # noqa: SLF001
+            )
+            credentials._kernel32.CloseHandle(handle)  # noqa: SLF001
+            with pytest.raises(backup_format.BackupFormatError):
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=inside_data / "protect.kgmbackup",
+                    cancel=threading.Event(),
+                )
+
+            with pytest.raises(backup_format.BackupFormatError):
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=Path("relative.kgmbackup"),
+                    cancel=threading.Event(),
+                )
+            assert barrier.exclusive_owner == "restore:test"
+            assert lease.released is False
+        finally:
+            lease.release()
+    finally:
+        case.tearDown()
+
+
+def test_capture_maintenance_failure_does_not_release_caller_or_owners():
+    case = BackupSnapshotCase()
+    case.setUp()
+    try:
+        observation_id = case.create_observation()
+        asset_id = case.import_photo(observation_id)
+        row = case.session.execute(
+            text(
+                "SELECT relative_path FROM local_observation_assets WHERE id = :id"
+            ),
+            {"id": asset_id},
+        ).one()
+        case.runtime.data_dir.joinpath(*row[0].split("/")).unlink()
+        fake = _CaptureExecutor()
+        service = case.service(executor=fake)
+        barrier, lease = _acquire_maintenance(case)
+        target = _capture_target(case)
+        try:
+            with pytest.raises(
+                (backup_format.BackupFormatError, backup_fs.BackupPathError)
+            ):
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=target,
+                    cancel=threading.Event(),
+                )
+            assert barrier.exclusive_owner == "restore:test"
+            assert lease.released is False
+            assert fake.freeze_owners == {"restore:test", "close"}
+            assert fake.freeze_calls == 0
+            assert fake.unfreeze_calls == 0
+            assert not target.exists()
+        finally:
+            lease.release()
+    finally:
+        case.tearDown()
+
+
+def test_capture_maintenance_existing_target_cancel_and_progress_failures():
+    case = BackupSnapshotCase()
+    case.setUp()
+    try:
+        case.import_photo(case.create_observation())
+        service = case.service()
+        barrier, lease = _acquire_maintenance(case)
+        target = _capture_target(case)
+        try:
+            target.write_bytes(b"existing-protection-bytes")
+            with pytest.raises(backup_fs.BackupPathError) as error:
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=target,
+                    cancel=threading.Event(),
+                )
+            assert error.value.code == "BACKUP_TARGET_EXISTS"
+            assert target.read_bytes() == b"existing-protection-bytes"
+
+            cancelled = case.private_dir("cancelled-output") / "cancelled.kgmbackup"
+            cancel = threading.Event()
+            cancel.set()
+            with pytest.raises(backup_barrier.SnapshotCancelled):
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=cancelled,
+                    cancel=cancel,
+                )
+            assert not cancelled.exists()
+
+            progress_output = case.private_dir("progress-output") / "progress.kgmbackup"
+
+            def raising_progress(item):
+                if item.stage == "db":
+                    raise RuntimeError("synthetic progress failure")
+
+            with pytest.raises(RuntimeError):
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=progress_output,
+                    cancel=threading.Event(),
+                    progress=raising_progress,
+                )
+            assert not progress_output.exists()
+            assert barrier.exclusive_owner == "restore:test"
+            assert lease.released is False
+        finally:
+            lease.release()
+    finally:
+        case.tearDown()
+
+
+def test_capture_maintenance_bad_image_does_not_release_lease():
+    case = BackupSnapshotCase()
+    case.setUp()
+    try:
+        observation_id = case.create_observation()
+        asset_id = case.import_photo(observation_id)
+        row = case.session.execute(
+            text(
+                "SELECT relative_path FROM local_observation_assets WHERE id = :id"
+            ),
+            {"id": asset_id},
+        ).one()
+        path = case.runtime.data_dir.joinpath(*row[0].split("/"))
+        bad = b"not a real jpeg"
+        path.write_bytes(bad)
+        case.session.execute(
+            text(
+                "UPDATE local_observation_assets SET content_hash = :hash, "
+                "byte_size = :size WHERE id = :id"
+            ),
+            {
+                "hash": hashlib.sha256(bad).hexdigest(),
+                "size": len(bad),
+                "id": asset_id,
+            },
+        )
+        case.session.execute(
+            text(
+                "UPDATE local_observation_drafts SET payload_hash = :hash "
+                "WHERE observation_id = :observation_id"
+            ),
+            {"hash": "f" * 64, "observation_id": observation_id},
+        )
+        case.session.commit()
+        fake = _CaptureExecutor()
+        service = case.service(executor=fake)
+        barrier, lease = _acquire_maintenance(case)
+        target = _capture_target(case)
+        try:
+            with pytest.raises(
+                (backup_format.BackupFormatError, backup_validate.BackupValidationError)
+            ):
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=target,
+                    cancel=threading.Event(),
+                )
+            assert barrier.exclusive_owner == "restore:test"
+            assert lease.released is False
+            assert fake.freeze_owners == {"restore:test", "close"}
+            assert not target.exists()
+            assert path.read_bytes() == bad
+        finally:
+            lease.release()
+    finally:
+        case.tearDown()
+
+
+def test_capture_maintenance_requires_frozen_idle_executor():
+    case = BackupSnapshotCase()
+    case.setUp()
+    try:
+        service = case.service(executor=_CaptureExecutor(frozen=False))
+        barrier, lease = _acquire_maintenance(case)
+        target = _capture_target(case)
+        try:
+            with pytest.raises(backup_barrier.SnapshotBusy):
+                service.capture_maintenance_protection(
+                    lease=lease,
+                    output=target,
+                    cancel=threading.Event(),
+                )
+            assert barrier.exclusive_owner == "restore:test"
+            assert lease.released is False
+            assert not target.exists()
+        finally:
+            lease.release()
     finally:
         case.tearDown()

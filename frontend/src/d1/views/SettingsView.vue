@@ -24,6 +24,7 @@ const emit = defineEmits<{
   (e: 'reload-context'): Promise<LocalContext>
   (e: 'draft-active', active: boolean): void
   (e: 'leave', run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed'): void
+  (e: 'open-maintenance'): void
 }>()
 
 const GRADE_LABELS: Record<string, string> = { small: '小班', middle: '中班', large: '大班' }
@@ -604,6 +605,16 @@ function cancelDraft(): void {
         </el-button>
       </div>
     </div>
+
+    <el-card class="section" shadow="never" data-d1="backup-restore">
+      <template #header>备份与恢复</template>
+      <p class="muted">
+        创建完整本地备份，或从本地备份校验、预览并恢复。恢复前会自动保留完整保护副本。
+      </p>
+      <el-button data-d1="open-backup-restore" :disabled="frozen" @click="emit('open-maintenance')">
+        创建备份 / 从备份恢复
+      </el-button>
+    </el-card>
 
     <el-alert
       type="info"

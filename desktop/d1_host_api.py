@@ -77,7 +77,16 @@ BRIDGE_ALLOWED_ENDPOINTS = frozenset(
         "install_update",
         "get_update_state",
         "page_ready",
+        "page_business_ready",
         "set_page_busy",
+        "get_startup_maintenance_state",
+        "choose_backup_target",
+        "choose_restore_source",
+        "start_backup",
+        "start_restore_verify",
+        "confirm_restore",
+        "query_maintenance",
+        "cancel_maintenance",
         "complete_close",
         "get_close_state",
         "save_docx",
@@ -107,6 +116,9 @@ _XML_ROOTS = {
 }
 _SAVE_DIALOG = getattr(
     getattr(webview, "FileDialog", None), "SAVE", getattr(webview, "SAVE_DIALOG", 2)
+)
+_OPEN_DIALOG = getattr(
+    getattr(webview, "FileDialog", None), "OPEN", getattr(webview, "OPEN_DIALOG", 1)
 )
 _WORD_TYPES = ("Word 文档 (*.docx)",)
 _ALLOWED_SUFFIX = ".docx"
@@ -919,6 +931,9 @@ class D1HostApi:
         install_coordinator=None,
         ready_receipt=None,
         service_port: int | None = None,
+        maintenance_host=None,
+        document_generation: int = 1,
+        maintenance_notice: str | None = None,
     ):
         self._launch_token = launch_token
         self._window_getter = window_getter or self._default_window
@@ -943,12 +958,132 @@ class D1HostApi:
         self._page_ticket_mode = False
         self._page_lock = threading.RLock()
         self._close_coordinator: CloseCoordinator | None = None
+        self._maintenance_host = maintenance_host
+        self._retired = False
+        # This instance belongs to exactly one document generation.  The page
+        # receives the number in bootstrap and a new window always gets a new
+        # host instance, so an old page/native callback cannot write the new
+        # database even when both windows briefly coexist.
+        self._document_generation = int(document_generation)
+        # Display-only restore completion/protection text for the new page.
+        # Never a path capability, command, URL or credential.
+        self._maintenance_notice = str(maintenance_notice or "").strip() or None
+        self._business_ready = threading.Event()
+        self._retire_destroy = False
+        # Set when the restore core has confirmed the old transport dead and
+        # is about to switch live files.  New native writes must not start or
+        # commit after this point.
+        self._native_io_blocked = False
+
+    # -- window / document identity ---------------------------------------
+    def _bind_window(self, window) -> None:
+        """Bind this host instance to exactly one pywebview window.
+
+        Never fall back to ``webview.windows[0]``: after a restore the old
+        host and the new host may coexist while the old window is closing.
+        """
+        self._window_getter = lambda: window
+
+    def _bind_maintenance(self, maintenance_host) -> None:
+        self._maintenance_host = maintenance_host
+
+    def _retire(self) -> None:
+        """Retire this host instance before a new engine/page is exposed."""
+        self._retired = True
+        self._page_ready = False
+        host = self._maintenance_host
+        if host is not None:
+            try:
+                host.retire()
+            except Exception:
+                pass
+
+    # -- document generation / retire path --------------------------------
+    def _block_native_io(self) -> None:
+        self._native_io_blocked = True
+
+    def _native_io_refusal(self) -> dict | None:
+        if self._retired or self._native_io_blocked:
+            return {
+                "status": "failed",
+                "code": "HOST_SWITCHING",
+                "message": "正在切换档案，已拒绝新的文件保存",
+            }
+        return None
+
+    def _request_retire_destroy(self) -> None:
+        """Allow exactly one destroy from the host's own restore retire path.
+
+        The normal close handshake stays untouched: the synchronous closing
+        callback consumes this flag before the coordinator can start a
+        close-and-exit request (which would freeze AI or close the new
+        window).
+        """
+        self._retire_destroy = True
+
+    def _consume_retire_destroy(self) -> bool:
+        if self._retire_destroy:
+            self._retire_destroy = False
+            return True
+        return False
+
+    def page_business_ready(self, payload: object = None) -> dict:
+        """Resolve the reopen waiter only after the page loaded real business.
+
+        ``page_ready`` runs before ``reloadContext``; treating it as business
+        readiness would let the host destroy the old window before the new
+        page can read the restored profile.  This method is bound to the same
+        page ticket as ``page_ready``.
+        """
+        if self._retired:
+            return {"accepted": False, "document_generation": self._document_generation}
+        ticket = None
+        if isinstance(payload, dict):
+            raw_ticket = payload.get("page_ticket")
+            if isinstance(raw_ticket, str) and raw_ticket:
+                ticket = raw_ticket
+        with self._page_lock:
+            if not self._page_ready or not self._page_ticket_bound:
+                return {
+                    "accepted": False,
+                    "document_generation": self._document_generation,
+                }
+            if ticket is None or ticket != self._page_ticket:
+                return {
+                    "accepted": False,
+                    "document_generation": self._document_generation,
+                }
+            self._business_ready.set()
+            return {
+                "accepted": True,
+                "document_generation": self._document_generation,
+            }
+
+    def _wait_business_ready(self, timeout: float) -> bool:
+        return bool(self._business_ready.wait(max(0.0, float(timeout))))
+
+    def _maintenance_guard(self) -> dict | None:
+        if self._retired:
+            return {"error": {"code": "HOST_RETIRED", "message": "宿主已退休，请重新打开应用"}}
+        if self._native_io_blocked:
+            return {"error": {"code": "HOST_SWITCHING", "message": "正在切换档案，已拒绝新的维护操作"}}
+        if not self._page_ready:
+            return {"error": {"code": "BRIDGE_NOT_READY", "message": "页面尚未完成桥接握手"}}
+        return None
+
+    def _maintenance_error(self, exc: BaseException) -> dict:
+        code = str(getattr(exc, "code", "MAINTENANCE_FAILED"))
+        message = str(getattr(exc, "message", "") or "维护操作失败")
+        return {"error": {"code": code, "message": message}}
 
     # -- window plumbing ---------------------------------------------------
     @staticmethod
     def _default_window():
-        windows = list(getattr(webview, "windows", []) or [])
-        return windows[0] if windows else None
+        # Never guess ``webview.windows[0]``: after a restore the old host and
+        # the new host coexist while the old window is closing, and a guessed
+        # window would deliver old callbacks to the new page.  Production
+        # windows call ``_bind_window`` immediately after creation.
+        return None
 
     def _window(self):
         window = self._window_getter()
@@ -956,23 +1091,178 @@ class D1HostApi:
             raise RuntimeError("no active window")
         return window
 
+    # -- maintenance (backup / restore) ----------------------------------
+    def get_startup_maintenance_state(self) -> dict:
+        if self._retired:
+            return {"state": "ready"}
+        host = self._maintenance_host
+        if host is None:
+            return {"state": "ready"}
+        try:
+            return dict(host.startup_state())
+        except Exception:
+            return {
+                "state": "recovery_required",
+                "detail": "无法确认上次恢复状态，请重启应用",
+            }
+
+    def choose_backup_target(self) -> dict:
+        guard = self._maintenance_guard()
+        if guard is not None:
+            return guard
+        host = self._maintenance_host
+        if host is None:
+            return {"error": {"code": "HOST_CORE_UNAVAILABLE", "message": "维护服务尚未就绪"}}
+        try:
+            chosen = self._window().create_file_dialog(
+                _SAVE_DIALOG,
+                save_filename="kindergarten-backup.kgmbackup",
+                file_types=("备份文件 (*.kgmbackup)",),
+            )
+        except Exception:
+            return {"error": {"code": "DIALOG_FAILED", "message": "无法打开保存位置，请重试"}}
+        if self._retired or not self._page_ready:
+            return {"error": {"code": "HOST_RETIRED", "message": "宿主已退休，请重新打开应用"}}
+        if not chosen:
+            return {"ok": False, "canceled": True}
+        path = Path(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
+        target = host.register_target(path, path.name)
+        return {"ok": True, "target": target}
+
+    def choose_restore_source(self) -> dict:
+        guard = self._maintenance_guard()
+        if guard is not None:
+            return guard
+        host = self._maintenance_host
+        if host is None:
+            return {"error": {"code": "HOST_CORE_UNAVAILABLE", "message": "维护服务尚未就绪"}}
+        try:
+            chosen = self._window().create_file_dialog(
+                _OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=("备份文件 (*.kgmbackup)", "所有文件 (*.*)"),
+            )
+        except Exception:
+            return {"error": {"code": "DIALOG_FAILED", "message": "无法打开备份文件，请重试"}}
+        if self._retired or not self._page_ready:
+            return {"error": {"code": "HOST_RETIRED", "message": "宿主已退休，请重新打开应用"}}
+        if not chosen:
+            return {"ok": False, "canceled": True}
+        path = Path(chosen[0] if isinstance(chosen, (list, tuple)) else chosen)
+        encrypted = True
+        try:
+            with path.open("rb") as handle:
+                head = handle.read(11)
+            encrypted = not (len(head) >= 11 and head[:8] == b"KGMBKP1\0" and head[10] == 1)
+        except OSError:
+            pass
+        selection = host.register_selection(path, path.name, encrypted)
+        return {"ok": True, "selection": selection}
+
+    def start_backup(self, payload: object = None) -> dict:
+        guard = self._maintenance_guard()
+        if guard is not None:
+            return guard
+        host = self._maintenance_host
+        if host is None:
+            return {"error": {"code": "HOST_CORE_UNAVAILABLE", "message": "维护服务尚未就绪"}}
+        body = payload if isinstance(payload, dict) else {}
+        try:
+            return host.start_backup(
+                request_id=str(body.get("request_id") or ""),
+                target_id=str(body.get("target_id") or ""),
+                password=body.get("password"),
+                explicit_plaintext=body.get("explicit_plaintext") is True,
+            )
+        except Exception as exc:
+            return self._maintenance_error(exc)
+
+    def start_restore_verify(self, payload: object = None) -> dict:
+        guard = self._maintenance_guard()
+        if guard is not None:
+            return guard
+        host = self._maintenance_host
+        if host is None:
+            return {"error": {"code": "HOST_CORE_UNAVAILABLE", "message": "维护服务尚未就绪"}}
+        body = payload if isinstance(payload, dict) else {}
+        try:
+            return host.start_restore_verify(
+                request_id=str(body.get("request_id") or ""),
+                selection_id=str(body.get("selection_id") or ""),
+                password=body.get("password"),
+            )
+        except Exception as exc:
+            return self._maintenance_error(exc)
+
+    def confirm_restore(self, payload: object = None) -> dict:
+        guard = self._maintenance_guard()
+        if guard is not None:
+            return guard
+        host = self._maintenance_host
+        if host is None:
+            return {"error": {"code": "HOST_CORE_UNAVAILABLE", "message": "维护服务尚未就绪"}}
+        body = payload if isinstance(payload, dict) else {}
+        try:
+            return host.confirm_restore(
+                request_id=str(body.get("request_id") or ""),
+                operation_id=str(body.get("operation_id") or ""),
+                generation=int(body.get("generation") or 0),
+                confirmation_token=str(body.get("confirmation_token") or ""),
+            )
+        except Exception as exc:
+            return self._maintenance_error(exc)
+
+    def query_maintenance(self, payload: object = None) -> dict:
+        host = self._maintenance_host
+        if host is None:
+            return {"state": "unavailable"}
+        try:
+            return host.query(payload if isinstance(payload, dict) else {})
+        except Exception:
+            return {"state": "unavailable"}
+
+    def cancel_maintenance(self, payload: object = None) -> dict:
+        if self._retired:
+            # Only the old operation's read-only status query survives
+            # retirement; a new cancel is not a new side effect on the new
+            # document.
+            return {"accepted": False, "state": "unknown"}
+        host = self._maintenance_host
+        if host is None:
+            return {"accepted": False, "state": "unknown"}
+        try:
+            return host.cancel(payload if isinstance(payload, dict) else {})
+        except Exception:
+            return {"accepted": False, "state": "unknown"}
+
     # -- session / bridge --------------------------------------------------
     def get_bootstrap(self) -> dict:
+        if self._retired:
+            return {"bridge_protocol": BRIDGE_PROTOCOL, "retired": True}
         with self._page_lock:
             # A fresh bootstrap ticket identifies this page instance. The
             # previous ticket is retired; a late ready/busy from it is refused.
             self._page_ticket = secrets.token_urlsafe(24)
             self._page_ticket_bound = False
+            # A fresh page must load business again: an old page's ack can
+            # never satisfy the new page's reopen waiter.
+            self._business_ready.clear()
             result = {
                 "bridge_protocol": BRIDGE_PROTOCOL,
                 "launch_token": self._launch_token,
                 "page_ticket": self._page_ticket,
+                "document_generation": self._document_generation,
+                "retired": False,
             }
+            if self._maintenance_notice:
+                result["maintenance_notice"] = self._maintenance_notice
         if self._ready_receipt is not None:
             result["update_install"] = self._ready_receipt.public_bootstrap()
         return result
 
     def page_ready(self, payload: object = None) -> dict:
+        if self._retired:
+            return {"accepted": False, "host_protocol": BRIDGE_PROTOCOL}
         protocol = None
         if isinstance(payload, dict):
             protocol = payload.get("bridge_protocol")
@@ -1084,6 +1374,56 @@ class D1HostApi:
     def _page_busy_probe(self) -> bool:
         with self._page_lock:
             return bool(self._page_busy)
+
+    def _recovery_required_probe(self) -> bool:
+        """Core reports an unresolved journal/closed engine needing restart.
+
+        This is a terminal maintenance state, not an AI-in-flight bypass.  The
+        native close may proceed only when no maintenance operation is active.
+        """
+        host = self._maintenance_host
+        if host is None:
+            return False
+        probe = getattr(host, "recovery_required", None)
+        if callable(probe):
+            try:
+                if bool(probe()):
+                    return True
+            except Exception:  # noqa: BLE001 - unknown is not a safe bypass
+                return False
+        return bool(getattr(host, "_recovery_required", False))
+
+    def _maintenance_busy_probe(self) -> bool:
+        """Close-path probe: never destroy a window during backup/restore."""
+        host = self._maintenance_host
+        if host is None:
+            return False
+        probe = getattr(host, "has_active_operation", None)
+        if not callable(probe):
+            return False
+        try:
+            return bool(probe())
+        except Exception:  # noqa: BLE001 - unknown work is not idle
+            return True
+
+    def _update_busy_probe(self) -> bool:
+        """True while a source update check/download is still running.
+
+        A probe that cannot answer fails safe (busy): the restore must not
+        switch files while an update task may still touch the data directory.
+        """
+        manager = self._update_manager
+        if manager is None:
+            return False
+        try:
+            state = manager.state()
+        except Exception:  # noqa: BLE001
+            return True
+        return str(state.get("state") or "") in {
+            "checking",
+            "downloading",
+            "verifying",
+        }
 
     # -- update discovery/download/install --------------------------------
     def _merge_install_state(self, value: dict) -> dict:
@@ -1233,6 +1573,9 @@ class D1HostApi:
 
     # -- restricted Word save ----------------------------------------------
     def save_docx(self, payload: object = None) -> dict:
+        refusal = self._native_io_refusal()
+        if refusal is not None:
+            return refusal
         if not self._page_ready:
             # Business bridge entries only accept calls from the trusted page
             # that completed the protocol handshake (spec §12.3).
@@ -1388,6 +1731,11 @@ class D1HostApi:
             }
         if target is None:
             return {"status": "canceled"}
+        refusal = self._native_io_refusal()
+        if refusal is not None:
+            # The blocking dialog may have returned after the switch guard or
+            # retirement.  Never commit a new native write.
+            return refusal
         result = write_docx_atomic(target, data)
         if result.get("status") == "saved":
             result["filename"] = Path(target).name
@@ -1447,6 +1795,9 @@ class D1HostApi:
 
     # -- restricted observation export host channel -----------------------
     def save_observation_export(self, payload: object = None) -> dict:
+        refusal = self._native_io_refusal()
+        if refusal is not None:
+            return refusal
         if not self._page_ready:
             return {
                 "status": "failed",
@@ -1714,6 +2065,14 @@ class D1HostApi:
                         "export_id": export_id,
                         "attempt_id": attempt_id,
                         "receipt_pending": not confirmed,
+                    }
+                refusal = self._native_io_refusal()
+                if refusal is not None:
+                    return {
+                        **refusal,
+                        "export_id": export_id,
+                        "attempt_id": attempt_id,
+                        "receipt_pending": True,
                     }
                 write_result = write_stream_atomic(
                     target,

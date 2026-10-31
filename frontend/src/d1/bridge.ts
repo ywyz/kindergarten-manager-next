@@ -8,6 +8,17 @@
  */
 
 import type { AppIdentity, UpdateStatus } from './update'
+import type {
+  BackupRestoreHost,
+  BackupTargetSelection,
+  CancelAck,
+  MaintenanceLookupRef,
+  MaintenanceOperationRef,
+  MaintenanceQuery,
+  MaintenanceStatus,
+  RestorePreviewView,
+  RestoreSelection,
+} from './backupMaintenance'
 
 export const BRIDGE_PROTOCOL = 1
 
@@ -35,6 +46,12 @@ export interface HostApi {
     bridge_protocol?: number
     launch_token?: string
     page_ticket?: string
+    /** This host instance belongs to exactly one document generation. */
+    document_generation?: number
+    /** An old host after a restore: never issues a new launch token. */
+    retired?: boolean
+    /** Display-only restore completion/protection text; never a path capability. */
+    maintenance_notice?: string
     update_install?: {
       plan_id: string
       nonce: string
@@ -55,6 +72,12 @@ export interface HostApi {
     accepted?: boolean
     host_protocol?: number
     update_install_error?: string
+  }>
+  page_business_ready?: (payload: {
+    page_ticket?: string
+  }) => Promise<{
+    accepted?: boolean
+    document_generation?: number
   }>
   complete_close?: (payload: {
     close_request_id: string
@@ -98,6 +121,46 @@ export interface HostApi {
     update_state?: UpdateStatus
   }>
   get_update_state?: () => Promise<UpdateStatus>
+  get_startup_maintenance_state?: () => Promise<{
+    state: 'ready' | 'recovery_required'
+    detail?: string
+  }>
+  choose_backup_target?: () => Promise<
+    | { ok: true; target: { target_id: string; display_name: string } }
+    | { ok: false; canceled: true }
+    | { error: { code: string; message: string } }
+  >
+  choose_restore_source?: () => Promise<
+    | {
+        ok: true
+        selection: { selection_id: string; display_name: string; encrypted: boolean }
+      }
+    | { ok: false; canceled: true }
+    | { error: { code: string; message: string } }
+  >
+  start_backup?: (payload: {
+    request_id: string
+    target_id: string
+    password: string | null
+    explicit_plaintext: boolean
+  }) => Promise<MaintenanceOperationRef | { error: { code: string; message: string } }>
+  start_restore_verify?: (payload: {
+    request_id: string
+    selection_id: string
+    password: string | null
+  }) => Promise<MaintenanceOperationRef | { error: { code: string; message: string } }>
+  confirm_restore?: (payload: {
+    request_id: string
+    operation_id: string
+    generation: number
+    confirmation_token: string
+  }) => Promise<MaintenanceOperationRef | { error: { code: string; message: string } }>
+  query_maintenance?: (
+    payload: Record<string, unknown>,
+  ) => Promise<MaintenanceQuery | { state: 'unavailable' }>
+  cancel_maintenance?: (
+    payload: Record<string, unknown>,
+  ) => Promise<CancelAck>
   /** Page-side write barrier for close/update (observation create/import/…). */
   set_page_busy?: (payload: {
     busy: boolean
@@ -376,4 +439,205 @@ export interface CloseCallbacks {
 export function registerPageHandlers(callbacks: CloseCallbacks): void {
   const target = window as unknown as { __kgmHandlers?: CloseCallbacks }
   target.__kgmHandlers = callbacks
+}
+
+// ---------------------------------------------------------------------------
+// Typed backup/restore host adapter
+// ---------------------------------------------------------------------------
+
+function maintenanceApi() {
+  const api = hostGlobal()?.api
+  if (!api) throw new Error('HOST_UNAVAILABLE')
+  return api
+}
+
+function hostError(value: unknown): never {
+  const error = (value as { error?: { code?: string; message?: string } })?.error
+  throw new Error(error?.code || error?.message || 'HOST_MAINTENANCE_FAILED')
+}
+
+function toOperationRef(value: unknown): MaintenanceOperationRef {
+  const raw = value as {
+    request_id?: string
+    operation_id?: string
+    generation?: number
+  }
+  if (!raw?.request_id || !raw.operation_id || typeof raw.generation !== 'number') {
+    hostError(value)
+  }
+  return {
+    requestId: raw.request_id,
+    operationId: raw.operation_id,
+    generation: raw.generation,
+  }
+}
+
+function toPreview(raw: Record<string, unknown>): RestorePreviewView {
+  const counts = (raw.counts as Record<string, number> | undefined) ?? {}
+  const configured = raw.credential_configured === true
+  const ready = raw.credential_ready === true
+  return {
+    displayName: String(raw.package_name ?? ''),
+    createdAt: String(raw.created_at ?? ''),
+    appVersion: String(raw.app_version ?? ''),
+    formatVersion: 1,
+    dbRevision: String(raw.source_revision ?? ''),
+    confirmationToken: String(raw.preview_id ?? ''),
+    profileLabel: raw.profile_name ? String(raw.profile_name) : undefined,
+    classLabel: raw.class_name ? String(raw.class_name) : undefined,
+    termLabel: Array.isArray(raw.term_names)
+      ? raw.term_names.map(String).join('、') || undefined
+      : undefined,
+    counts: {
+      plans: Number(counts.daily_plans ?? 0),
+      observations: Number(counts.observations ?? 0),
+      photos: Number(counts.assets ?? 0),
+      others: 0,
+    },
+    credentialAvailability: ready
+      ? 'available'
+      : configured
+        ? 'needs_reentry'
+        : 'unknown',
+  }
+}
+
+function toStatus(raw: Record<string, unknown>): MaintenanceStatus {
+  const progress = raw.progress as Record<string, unknown> | undefined
+  const preview = raw.preview as Record<string, unknown> | undefined
+  const protection = raw.protection as { display_text?: string } | undefined
+  const error = raw.error as Record<string, unknown> | undefined
+  return {
+    requestId: String(raw.request_id ?? ''),
+    operationId: raw.operation_id ? String(raw.operation_id) : null,
+    generation: Number(raw.generation ?? 0),
+    kind: raw.kind === 'restore' ? 'restore' : 'backup',
+    phase: String(raw.phase ?? 'idle') as MaintenanceStatus['phase'],
+    progress: progress
+      ? {
+          stage: String(progress.stage ?? ''),
+          message: progress.message ? String(progress.message) : undefined,
+          done: typeof progress.done === 'number' ? progress.done : undefined,
+          total: typeof progress.total === 'number' ? progress.total : undefined,
+          indeterminate: progress.indeterminate === true,
+        }
+      : undefined,
+    preview: preview ? toPreview(preview) : undefined,
+    protection: protection?.display_text
+      ? { displayText: String(protection.display_text) }
+      : undefined,
+    error: error
+      ? {
+          code: String(error.code ?? 'MAINTENANCE_FAILED'),
+          message: String(error.message ?? '维护操作失败'),
+          committed: error.committed === true,
+          nextAction: String(error.next_action ?? 'retry') as never,
+        }
+      : undefined,
+    cancelRequested: raw.cancel_requested === true,
+    stale: raw.stale === true,
+    reopened: raw.reopened === true,
+  }
+}
+
+function lookupPayload(ref: MaintenanceLookupRef): Record<string, unknown> {
+  return 'operationId' in ref
+    ? { operation_id: ref.operationId, generation: ref.generation }
+    : { request_id: ref.requestId }
+}
+
+export function createBackupRestoreHost(): BackupRestoreHost {
+  return {
+    async getStartupMaintenanceState() {
+      const api = hostGlobal()?.api
+      if (!api || typeof api.get_startup_maintenance_state !== 'function') {
+        return { state: 'ready' as const }
+      }
+      return api.get_startup_maintenance_state()
+    },
+    async chooseBackupTarget() {
+      const api = maintenanceApi()
+      if (typeof api.choose_backup_target !== 'function') {
+        throw new Error('HOST_MAINTENANCE_UNAVAILABLE')
+      }
+      const result = await api.choose_backup_target()
+      if ('error' in result) hostError(result)
+      if (result.ok === false) return { ok: false, canceled: true }
+      const target: BackupTargetSelection = {
+        targetId: result.target.target_id,
+        displayName: result.target.display_name,
+      }
+      return { ok: true, target }
+    },
+    async chooseRestoreSource() {
+      const api = maintenanceApi()
+      if (typeof api.choose_restore_source !== 'function') {
+        throw new Error('HOST_MAINTENANCE_UNAVAILABLE')
+      }
+      const result = await api.choose_restore_source()
+      if ('error' in result) hostError(result)
+      if (result.ok === false) return { ok: false, canceled: true }
+      const selection: RestoreSelection = {
+        selectionId: result.selection.selection_id,
+        displayName: result.selection.display_name,
+        encrypted: result.selection.encrypted,
+      }
+      return { ok: true, selection }
+    },
+    async startBackup(input) {
+      const api = maintenanceApi()
+      if (typeof api.start_backup !== 'function') throw new Error('HOST_MAINTENANCE_UNAVAILABLE')
+      const result = await api.start_backup({
+        request_id: input.requestId,
+        target_id: input.targetId,
+        password: input.password,
+        explicit_plaintext: input.explicitPlaintext,
+      })
+      return toOperationRef(result)
+    },
+    async startRestoreVerify(input) {
+      const api = maintenanceApi()
+      if (typeof api.start_restore_verify !== 'function') throw new Error('HOST_MAINTENANCE_UNAVAILABLE')
+      const result = await api.start_restore_verify({
+        request_id: input.requestId,
+        selection_id: input.selectionId,
+        password: input.password,
+      })
+      return toOperationRef(result)
+    },
+    async confirmRestore(input) {
+      const api = maintenanceApi()
+      if (typeof api.confirm_restore !== 'function') throw new Error('HOST_MAINTENANCE_UNAVAILABLE')
+      const result = await api.confirm_restore({
+        request_id: input.requestId,
+        operation_id: input.operationId,
+        generation: input.generation,
+        confirmation_token: input.confirmationToken,
+      })
+      return toOperationRef(result)
+    },
+    async queryMaintenance(input) {
+      const api = hostGlobal()?.api
+      if (!api || typeof api.query_maintenance !== 'function') {
+        return { state: 'unavailable' }
+      }
+      const result = await api.query_maintenance(lookupPayload(input))
+      if (result.state === 'found') {
+        return {
+          state: 'found',
+          status: toStatus(result.status as unknown as Record<string, unknown>),
+        }
+      }
+      return result.state === 'unknown'
+        ? { state: 'unknown' }
+        : { state: 'unavailable' }
+    },
+    async cancelMaintenance(input) {
+      const api = hostGlobal()?.api
+      if (!api || typeof api.cancel_maintenance !== 'function') {
+        return { accepted: false, state: 'unknown' }
+      }
+      return api.cancel_maintenance(lookupPayload(input))
+    },
+  }
 }

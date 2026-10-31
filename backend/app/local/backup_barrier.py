@@ -46,6 +46,14 @@ class SnapshotCancelled(LocalError):
     message = "备份已取消"
 
 
+class MaintenanceLeaseError(LocalError):
+    """The supplied maintenance lease is not the current exclusive lease."""
+
+    code = "LOCAL_BACKUP_MAINTENANCE_LEASE"
+    status_code = 409
+    message = "维护 lease 无效或不属于当前数据根"
+
+
 _AI_WRITE_ALLOWED: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "kgm_backup_ai_write_allowed", default=False
 )
@@ -189,6 +197,28 @@ class SnapshotBarrier:
                 raise SnapshotBusy("仍有在途保存/文件操作，拒绝独占")
             self._exclusive_owner = lease.owner
             lease.exclusive = True
+
+    def validate_exclusive_lease(self, lease: SnapshotLease) -> None:
+        """Read-only validation of an externally held maintenance lease.
+
+        The caller must already own the current intent and exclusive state.
+        This method never begins, acquires, releases or mutates a lease.
+        """
+        if not isinstance(lease, SnapshotLease):
+            raise MaintenanceLeaseError("维护 lease 类型不合法")
+        if lease.barrier is not self:
+            raise MaintenanceLeaseError("维护 lease 不属于当前数据根")
+        with self._cond:
+            if lease.released or not lease.exclusive:
+                raise MaintenanceLeaseError("维护 lease 已释放或未独占")
+            if (
+                self._intent_owner != lease.owner
+                or self._intent_token != lease.token
+                or self._exclusive_owner != lease.owner
+            ):
+                raise MaintenanceLeaseError("维护 lease owner/token 已失效")
+            if self._db_writers or self._file_ops:
+                raise MaintenanceLeaseError("维护 lease 仍有在途写入或文件操作")
 
     def release(self, lease: SnapshotLease) -> None:
         with self._cond:

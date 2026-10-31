@@ -67,3 +67,17 @@ coverage.xml
 [kK][iI][nN][dD][eE][rR][gG][aA][rR][tT][eE][nN][mM][aA][nN][aA][gG][eE][rR]-[bB][aA][cC][kK][uU][pP]-[wW][oO][rR][kK]/
 [kK][iI][nN][dD][eE][rR][gG][aA][rR][tT][eE][nN][mM][aA][nN][aA][gG][eE][rR]-[bB][aA][cC][kK][uU][pP]-[wW][oO][rR][kK]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]/
 .[kK][gG][mM]-[bB][aA][cC][kK][uU][pP]-*.tmp
+
+# Restore private work areas, guard copies, journals and receipts.
+# The core derives the work/guard roots as siblings of the data root named
+# "<data-root>.restore-work" / "<data-root>.restore-guard"; the journal and
+# receipts live inside the data root.  Public templates, LICENSE and lock
+# files are never matched.
+*.[rR][eE][sS][tT][oO][rR][eE]-[wW][oO][rR][kK]/
+*.[rR][eE][sS][tT][oO][rR][eE]-[gG][uU][aA][rR][dD]/
+.[rR][eE][sS][tT][oO][rR][eE]-[jJ][oO][uU][rR][nN][aA][lL].[jJ][sS][oO][nN]
+.*.[rR][eE][sS][tT][oO][rR][eE]-[jJ][oO][uU][rR][nN][aA][lL].[jJ][sS][oO][nN].[tT][mM][pP]-*
+.[rR][eE][sS][tT][oO][rR][eE]-[rR][eE][cC][eE][iI][pP][tT][sS]/
+
+# Command Code local tool cache (never product source)
+/.commandcode/taste/

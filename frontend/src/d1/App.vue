@@ -14,6 +14,7 @@ import {
   BRIDGE_PROTOCOL,
   completeCloseWithFallback,
   confirmCurrentCloseRequest,
+  createBackupRestoreHost,
   hostGlobal,
   isBootstrapApiReady,
   registerPageHandlers,
@@ -32,6 +33,7 @@ import ObservationsView from './views/ObservationsView.vue'
 import ObservationEditorView from './views/ObservationEditorView.vue'
 import SettingsView from './views/SettingsView.vue'
 import UpdatePanel from './views/UpdatePanel.vue'
+import BackupRestorePanel from './views/BackupRestorePanel.vue'
 
 type View =
   | { name: 'setup' }
@@ -60,6 +62,19 @@ const closeLocked = ref(false)
 const closeFinalAllowed = ref(false)
 /** The settings draft guard (unconfirmed preview/edit). */
 const settingsDraftActive = ref(false)
+/** B2 maintenance panel: independent from pageBusy/close lock. */
+const maintenanceHost = createBackupRestoreHost()
+const maintenanceOpen = ref(false)
+/** Display-only restore completion/protection text from the new host. */
+const maintenanceNotice = ref('')
+const maintenanceBusy = ref(false)
+const maintenanceBlocking = ref(false)
+const maintenanceLocked = computed(
+  () => maintenanceBusy.value || maintenanceBlocking.value,
+)
+const maintenanceMode = computed<'setup' | 'settings'>(() =>
+  bootState.value === 'uninitialized' ? 'setup' : 'settings',
+)
 /** Native Word save in flight (the close request must wait for it). */
 const exportBusy = ref(false)
 /** Observation page writes (create/import/adopt/restore/AI submit). */
@@ -329,6 +344,33 @@ async function reloadContext(): Promise<LocalContext> {
   return next
 }
 
+async function onMaintenanceRecovered(): Promise<void> {
+  try {
+    await reloadContext()
+    maintenanceOpen.value = false
+    ElMessage.success('恢复完成，已重新读取本地资料')
+  } catch (err) {
+    ElMessage.error(`恢复后读取资料失败：${String(err)}`)
+  }
+}
+
+function onMaintenanceCompleted(completion: { kind: string }): void {
+  if (completion.kind === 'backup') {
+    ElMessage.success('完整本地备份已创建')
+  }
+}
+
+/** Open the panel only from a stable page: an unconfirmed draft blocks it. */
+function openMaintenance(): void {
+  if (maintenanceLocked.value) return
+  const draft = currentBlockingDraft()
+  if (draft) {
+    ElMessage.warning(draft.message)
+    return
+  }
+  maintenanceOpen.value = true
+}
+
 function isSettingsDraftBlocking(): boolean {
   return view.value.name === 'settings' && settingsDraftActive.value
 }
@@ -346,6 +388,10 @@ async function requestLeave(
     // The close-specific freeze covers every page's navigation: the window
     // may be destroyed as soon as the host honors the allow (R1).
     ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可离开当前页面')
+    return 'stayed'
+  }
+  if (maintenanceLocked.value) {
+    ElMessage.warning('备份/恢复操作进行中：请先完成或取消当前维护面板')
     return 'stayed'
   }
   // Candidate / settings drafts are checked inside the single leave
@@ -1026,6 +1072,7 @@ async function bootstrap(): Promise<void> {
   // pywebview injects ``window.pywebview`` (and fills ``api``) after the
   // page starts: never treat "not injected yet" as a fatal error — wait for
   // the actual function we need before deciding the host is missing.
+  let bootstrapNotice = ''
   const ready = await waitForApi(() => isBootstrapApiReady(hostGlobal()))
   const host = hostGlobal()
   if (!ready || !host?.api?.get_bootstrap) {
@@ -1046,6 +1093,10 @@ async function bootstrap(): Promise<void> {
     pageTicket =
       typeof bootstrapInfo.page_ticket === 'string'
         ? bootstrapInfo.page_ticket
+        : ''
+    bootstrapNotice =
+      typeof bootstrapInfo.maintenance_notice === 'string'
+        ? bootstrapInfo.maintenance_notice
         : ''
     const readyResult = await host.api.page_ready?.({
       bridge_protocol: BRIDGE_PROTOCOL,
@@ -1069,6 +1120,18 @@ async function bootstrap(): Promise<void> {
   }
   try {
     await reloadContext()
+    // The new host only exposes a display-safe completion/protection notice;
+    // show it after the restored business loaded, before the old window is
+    // allowed to be destroyed by page_business_ready.
+    maintenanceNotice.value = bootstrapNotice
+    // page_ready runs before reloadContext: only now has this page loaded the
+    // restored profile/business.  The host waits for this ack before it
+    // destroys the old window during a restore.
+    void host.api
+      .page_business_ready?.({
+        page_ticket: pageTicket || undefined,
+      })
+      ?.catch(() => undefined)
     // Startup check is non-blocking; a missing/unconfigured channel or a
     // network failure never prevents opening the workbench.
     void checkForUpdate(false)
@@ -1148,6 +1211,15 @@ onMounted(() => {
 
 <template>
   <div class="d1-page">
+    <el-alert
+      v-if="maintenanceNotice && bootState !== 'connecting' && bootState !== 'error'"
+      type="success"
+      :closable="false"
+      show-icon
+      class="maintenance-notice"
+      data-d1="restore-notice"
+      :title="maintenanceNotice"
+    />
     <div v-if="bootState === 'connecting'" class="centered" data-d1="connecting">
       正在连接本地服务…
     </div>
@@ -1162,6 +1234,7 @@ onMounted(() => {
       v-else-if="bootState === 'uninitialized'"
       :context="context"
       @initialized="updateContext"
+      @open-maintenance="openMaintenance"
     />
     <template v-else>
       <WorkbenchView
@@ -1217,8 +1290,22 @@ onMounted(() => {
         @reload-context="reloadContext"
         @draft-active="(active) => settingsDraftActive = active"
         @leave="onSettingsLeave"
+        @open-maintenance="openMaintenance"
       />
     </template>
+
+    <BackupRestorePanel
+      v-if="maintenanceOpen && (bootState === 'uninitialized' || view.name === 'settings')"
+      :open="maintenanceOpen"
+      :mode="maintenanceMode"
+      :host="maintenanceHost"
+      :frozen="closeLocked"
+      @update:open="maintenanceOpen = $event"
+      @busy="maintenanceBusy = $event"
+      @blocking="maintenanceBlocking = $event"
+      @recovered="onMaintenanceRecovered"
+      @completed="onMaintenanceCompleted"
+    />
 
     <el-dialog
       :model-value="closeChoiceVisible"
@@ -1279,5 +1366,9 @@ body {
 .muted {
   color: #909399;
   font-size: 0.85rem;
+}
+.maintenance-notice {
+  margin-bottom: 12px;
+  user-select: text;
 }
 </style>

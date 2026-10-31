@@ -11,7 +11,10 @@ import { apiGet, apiPost, ApiError } from '../client'
 import type { LocalContext } from '../types'
 
 defineProps<{ context: LocalContext | null }>()
-const emit = defineEmits<{ (e: 'initialized', context: LocalContext): void }>()
+const emit = defineEmits<{
+  (e: 'initialized', context: LocalContext): void
+  (e: 'open-maintenance'): void
+}>()
 
 const form = ref({
   display_name: '',
@@ -123,6 +126,7 @@ async function submit(): Promise<void> {
       <template #header><span>首次设置（一个本地教师档案）</span></template>
       <p class="muted">
         资料仅保存在本机。填写后将直接进入工作台；园所名称可留空后补。
+        也可先从本地备份恢复，无需先填写临时档案。
       </p>
       <el-form label-width="96px" @submit.prevent>
         <el-form-item label="姓名" required>
@@ -164,6 +168,9 @@ async function submit(): Promise<void> {
       <div class="actions">
         <el-button type="primary" :loading="submitting" data-d1="initialize" @click="submit">
           完成设置并进入工作台
+        </el-button>
+        <el-button data-d1="setup-restore" @click="emit('open-maintenance')">
+          从本地备份恢复
         </el-button>
       </div>
     </el-card>

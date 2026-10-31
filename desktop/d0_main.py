@@ -212,6 +212,15 @@ class ServiceRun:
         if self.thread is not None and self.thread.is_alive():
             self.thread.join(timeout)
 
+    def stop_and_confirm(self, timeout: float = 10.0) -> bool:
+        """Stop the server and report only confirmed thread death.
+
+        A timed-out ``join`` is not success: the caller must keep the old
+        data group and must not switch files while this returns False.
+        """
+        self.stop(timeout)
+        return self.thread is None or not self.thread.is_alive()
+
 
 def build_runtime(args) -> tuple[ServiceRun, object, object]:
     """Create (service, host api, probe) for a window run.
