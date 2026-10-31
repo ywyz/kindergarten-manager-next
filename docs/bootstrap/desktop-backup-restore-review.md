@@ -496,3 +496,12 @@ Codex 统一固定本轮相对 B1 `7d2759b76a16528e3e42d720a9203be40b6383a1` 的
 最终卫生核查：候选文件 UTF-8、无 trailing whitespace／替换字符／个人绝对路径，文档本地链接目标有效，git diff --check 通过。实际 ignore 探针八项保护备份／恢复暂存、保护包、journal／receipt 及本地工具缓存；七个源码／LICENSE／依赖锁／公开模板控制项未被忽略。原五保护源及两旧包仅复核已有指纹且保持，不读取真实 secret。最后完整代码／资源 461 路径与已测身份保持。
 
 原 OpenCode 最后只按 Codex 固定的路径、Git blob、父提交和预期 tree 清单暂存，普通提交推送 **codex/desktop-v2-foundation**；提交后、推送前再次核对实际 tree／父提交及工作区，Codex 再独立核对本地与远端实际身份。不得 add-all、夹带其它改动、amend／rebase／force、改 main／默认分支或创建 tag／Release。此记录是提交内放行合同；实际提交身份以桌面分支 Git 历史及最终独立 Git 回执为准，不把“已授权”写成“已核对推送”。
+
+
+## 40. Git 实际收口与下一阶段基线
+
+2026-10-31 原 OpenCode 已普通提交推送 **`91e6a553db6d25a1603849f139f22e9d9097537b`**，唯一父提交为 `7d2759b76a16528e3e42d720a9203be40b6383a1`，tree 为 `0155d62918c6cbab90546662ae7f5715b82ee392`。Codex 随后独立核对：56 个批准路径、mode、Git blob 及工作区 SHA 全部一致；实际远端桌面分支等于本地提交，索引／工作区 clean，461 代码／资源路径及七项原保护源指纹保持。
+
+该次回执中，远端 main 保持 `e836726f008676fc603a7b4cb058e5d96cafe60b`，本地 main 保持 `b3c5bbf71008f34ae0da1df92f90e03994d3742f`；二者是不同引用，未为了回填状态改动本地 main。默认分支仍为 main，本地／远端 tag 均为 0。原会话实际 idle；Git 阶段新增 21 条 assistant 元数据仍为 build／Go DeepSeek Flash max，当前任务累计原会话 1697 条，两个辅助原会话 541／647 条，同模型配置；Command Code 188 次请求的范围见 §39。私有 `b2-b3-final-independent-git-receipt.json` 的 passed 为 true，不公开原始日志或受保护路径。
+
+本次后续写提示词前，当前 HEAD 再次确认仍为上述 `91e6a553…`，工作区 clean。备份恢复没有剩余源码回修／Git 任务；最早无 guard 历史缺口、教师／冻结／跨机及发行未验均保持。用户随后要求规划下一步，并补充目标电脑为 Windows 11、签名证书尚未取得／正在申请；新工作计划见[Windows 11 内部便携候选与验收准备](desktop-windows11-portable-plan.md)，唯一提示词仍为 [current.md](../tasks/current.md)。本节是前轮实际回执归并，不表示新候选已经构建或已在另一台电脑运行。

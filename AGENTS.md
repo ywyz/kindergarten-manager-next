@@ -8,7 +8,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 本仓库是 kindergartenManager 的全新实现。
 
-2026-10-31当前：源码整理已独立通过，由原OpenCode正常推送并快进main至e836726；完整本地备份／恢复的B1、共享捕获、恢复核心、宿主及B3真实源码窗口已在当前Windows 11合成环境独立通过。全local848、最终完整桌面469、完整前端类型／测试／构建，以及604原图／1812资源密码包、非空0005完整恢复、首次页／保护包再恢复／新进程工作／权限／故障／取消证据见docs/bootstrap/desktop-backup-restore-review.md§38，首失败和最早无guard历史缺口分列保留。P01–P06全部已确认，规格见docs/specs/desktop-backup-restore.md。B1已推送7d2759b，后续由原OpenCode按Codex核定blob清单正常提交推送，实际Git身份以桌面分支历史为准。源码实现已收口，唯一入口docs/tasks/current.md；继续指定Go套餐DeepSeek V4.1 Flash max，Command Code只参与已分配互补测试，Codex独立审核。教师人工体验、冻结包与发行未通过；不发行、不启动WebDAV、不自动重写公开历史。
+2026-10-31当前：完整备份／恢复的源码范围结论及91e6a553前轮回执保持。用户随后授权两OpenCode／两Command Code原生会话（DeepSeek V4.1 Flash max）实施完整未签名Win11内部便携候选，Codex独立审核：最终493 desktop、r03实际目录54／ZIP59静态及本机PS7只读预检49通过；实际根build/desktop-e14-win11-r03，逻辑ZIP文件名仍含r01，身份以结果／SHA为准。首候选失败、旧包、原资料及历史边界保留。见docs/bootstrap/desktop-windows11-portable-result.md及desktop-windows11-portable-review.md；唯一下一步入口docs/tasks/current.md，目标手册desktop-windows11-portable-manual.md。另一台Windows 11尚未操作，普通运行／Word／教师体验未验，PS5.1仅解析通过且文件执行受策略阻止，签名证书申请中。不在已知4551电脑执行候选，不降低保护、不自动签名／真实AI／WebDAV／远控或公开发行；原OpenCode仅按Codex具体Git清单普通提交推送。
 
 2026-10-30前项完成：AI手动重试与本项目GitHub Releases最新正式版检查已由原OpenCode同会话／指定Go模型实施，Codex限定源码／合成工程独立通过，RG-R01–R10关闭。源码可只读检查版本、不可下载安装；实际GitHub暂无正式Release。规格见desktop-game-observation.md§5.1、desktop-application-update.md§10，结果见docs/bootstrap/desktop-retry-github-review.md§4。AI失败作为可恢复结果，不自动重发或免除应用缺陷。
 

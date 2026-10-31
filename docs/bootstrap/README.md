@@ -1,10 +1,16 @@
 # 文档与报告索引
 
-更新：2026-10-30。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
+更新：2026-10-31。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前工作：源码合并与完整本地备份／恢复
+## 当前：内部候选静态通过，待另一台 Windows 11 使用验收
 
-2026-10-31：[唯一当前入口](../tasks/current.md)对应的源码整理已由原OpenCode正常推送并快进main至`e836726`，见[整合核查](desktop-source-integration-review.md)。[完整本地备份／恢复](../specs/desktop-backup-restore.md)的P01–P06均已确认，B1已推送`7d2759b`，后续核心、宿主及B3真实源码窗口限定工程独立通过，最终 **848 local／469 desktop**、完整前端类型／测试／构建及逐项实际窗口证据见[独立核查§38](desktop-backup-restore-review.md#38-b3-最终限定源码结论完整本地备份恢复通过)。[实现记录](desktop-backup-restore-result.md)保留实施者自测与各轮首失败，最终Git由原会话按核定清单正常提交推送，身份以桌面分支历史为准。源码工作收口；教师人工体验、冻结包与发行尚未通过，最早无guard轮次历史缺口与后续受控guard0证据分列，不启动WebDAV或公开历史改写。
+2026-10-31 用户授权两 OpenCode／两 Command Code 原生会话（DeepSeek V4.1 Flash max）按互斥文件责任实施并由 Codex 独立审核。[新候选结果](desktop-windows11-portable-result.md)与[独立核查](desktop-windows11-portable-review.md)记录最终 **493 desktop、实际目录 54／ZIP 59 静态通过**；当前开发机 PS7 对新解压副本的只读预检 49 项通过，主 EXE 未签名。首候选静态失败及修正另列，实际 r03 物理根与 r01 逻辑 ZIP 名称按 build_id／SHA 区分。没有启动候选，没有操作目标电脑。
+
+[下一步唯一提示词](../tasks/current.md)已改为另一台 Win11 的只读预检、合成普通使用／备份恢复／原生保存和八份 Word 验收；[中文手册](desktop-windows11-portable-manual.md)给出精确身份与回执。[原计划与责任合同](desktop-windows11-portable-plan.md)保留本轮范围。目标运行、Word、教师体验及签名／发行仍未验；PS5.1 只解析通过，实际脚本执行受策略阻止。不运行已知 4551 机器上的候选或降低保护，不自动真实 AI、WebDAV、签名、远控或公开发行。
+
+## 已完成：源码合并与完整本地备份／恢复
+
+2026-10-31：[唯一当前入口](../tasks/current.md)对应的源码整理已由原OpenCode正常推送并快进main至`e836726`，见[整合核查](desktop-source-integration-review.md)。[完整本地备份／恢复](../specs/desktop-backup-restore.md)的P01–P06均已确认，B1已推送`7d2759b`，后续核心、宿主及B3真实源码窗口限定工程独立通过，最终 **848 local／469 desktop**、完整前端类型／测试／构建及逐项实际窗口证据见[独立核查§38](desktop-backup-restore-review.md#38-b3-最终限定源码结论完整本地备份恢复通过)。[实现记录](desktop-backup-restore-result.md)保留实施者自测与各轮首失败；原会话已按56文件核定清单普通推送`91e6a553`，实际树／远端／clean及保护源复核见[核查§40](desktop-backup-restore-review.md#40-git-实际收口与下一阶段基线)。源码工作收口；教师人工体验、冻结包与发行尚未通过，最早无guard轮次历史缺口与后续受控guard0证据分列，不启动WebDAV或公开历史改写。
 
 ## 已完成：AI手动重试与GitHub更新（源码验证）
 
