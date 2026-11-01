@@ -32,7 +32,6 @@ jobs:
       PYTHONUTF8: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      EVIDENCE_ROOT: ${{ runner.temp }}/kgm-weekly-win11-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout trusted branch
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -75,6 +74,8 @@ jobs:
 
       - name: Build, verify, and assemble handoff
         shell: pwsh
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/kgm-weekly-win11-ci-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           $ErrorActionPreference = 'Stop'
           & "$env:GITHUB_WORKSPACE/.github/scripts/build-windows11-validation.ps1" `

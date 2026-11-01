@@ -64,10 +64,16 @@ Codex按实际MZ枚举107个PE，只读签名为76 Valid／31 NotSigned，主EXE
 
 B从最终脚本提取真实守卫，读取本次真实本机目录及ZIP：54／59全部通过，两个实际attempt报告均0且completed；PowerShell报告读取器也实际读取这两份结果exit0，并拒绝非布尔／缺数组和被阻止的合成进程／socket反例。未执行整套CI脚本或在本机安装依赖。YAML及既有PS5.1／PS7解析通过仅作为语法证据，不冒称远端运行。
 
-实际GitHub运行及制品身份待首次推送后填写。本机与GitHub build_id及ZIP分别记录，不要求字节相同。此工作不改main、默认分支、可见性、tag或Release，不签名，不公开稳定发行。
+首次推送`47e408f7bbecd1f9bbbdae9228ccc4050fe140d7`触发[运行41359835746](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41359835746)，平台在创建runner前判工作流无效，jobs为空、无制品：第35行第22列job env使用了此处不可用的`runner.temp`。普通YAML解析没有证明GitHub表达式上下文有效；首失败保持，不填作安装或构建失败，也不重跑旧包。后续仅由B移动该变量到允许runner上下文的构建step env，经新提交实际验证。
+
+B r03实际仅移动上述定义，workflow为2增／1删；原CI helper raw SHA仍为`1bdb342c7dbffaa88049d940024b0fdf9cdaf163d17b2ab87b3c63018e97929a`，其余源码保持。语法／位置核查exit0，原54／59未机械重跑；新平台运行另记。
+
+实际成功GitHub运行及制品身份待后续填写。本机与GitHub build_id及ZIP分别记录，不要求字节相同。此工作不改main、默认分支、可见性、tag或Release，不签名，不公开稳定发行。
 
 ## Git与未验
 
 原A仅按Codex具体路径／raw SHA／规范blob／parent清单暂存；Codex核cached集合和tree后，才批准该parent／tree普通提交推送。候选及私有数据不入Git，不add-all、amend、rebase／force；提交身份以包含本文件的提交及远端为准，不为回填自身SHA循环提交。
+
+首次11路径实际提交`47e408f7bbecd1f9bbbdae9228ccc4050fe140d7`，唯一parent为`796028b5dd90e53ce49fc9a0086bf464678789a0`，tree为`4f94c54b3e300ed74cecfd204bb470cf651a1a3b`；Codex独立核索引每项blob／raw SHA及cached --check0后才放行，实际远端相同、当时clean。后续工作流修正及最终文档继续按新parent／精确路径／tree门禁，不amend首提交掩盖失败。
 
 另一台电脑预检／普通启动、保存重开、周旧确认保稿导出、完整备份接续、新周Word逐页及教师反馈尚未执行。当前4551机不启动候选EXE/helper，不改名／换路径或降低系统保护。微软拼音不重测，跨120秒睡眠不追测；旧无guard缺口、长根206、Win10／WPS／其它显示／干净机保持原未验。真实应用AI、WebDAV、签名、安装更新、远控和正式发行不在本轮；跨Windows用户凭据恢复不自动扩大。
