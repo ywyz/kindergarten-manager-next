@@ -760,7 +760,7 @@ function Main {
             if ($idOk) {
                 $idOk = ($ident.app_id -is [string]) -and ($ident.app_id -ceq 'kindergarten-manager-next') -and ($ident.app_name -is [string]) -and ($ident.app_name -ceq 'KindergartenManager') -and ($ident.channel -is [string]) -and ($ident.channel -ceq 'stable') -and
                     ($ident.version -is [string]) -and ($ident.version -match '^[0-9]+\.[0-9]+\.[0-9]+$') -and ($ident.build_id -is [string]) -and ($ident.package_format -is [string]) -and ($ident.package_format -ceq 'pyinstaller-onedir-zip-v1') -and
-                    ($ident.platform -is [string]) -and ($ident.platform -ceq 'windows') -and ($ident.arch -is [string]) -and ($ident.arch -ceq 'x64') -and ($ident.python -is [string]) -and ($ident.python -ceq '3.14.7') -and
+                    ($ident.platform -is [string]) -and ($ident.platform -ceq 'windows') -and ($ident.arch -is [string]) -and ($ident.arch -ceq 'x64') -and ($ident.python -is [string]) -and ($ident.python -ceq '3.14.10') -and
                     ($ident.database_revision -is [string]) -and ($ident.database_revision -match '^[0-9]{8}_[0-9]{4}_[A-Za-z0-9_]+$')
             }
             if ($idOk) { $idSchemaOk = $true; Ck 'build_identity_schema' $true 'pass' 'ok' } else { Ck 'build_identity_schema' $true 'fail' 'field_or_type' }

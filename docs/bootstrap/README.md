@@ -1,6 +1,10 @@
 # 文档与报告索引
 
-更新：2026-11-01。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
+更新：2026-11-02。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
+
+## 当前：新周计划Windows候选与GitHub构建
+
+用户已授权包含周计划Q1–Q4的新Windows11包、GitHub生成EXE供测试及文档更新。继续桌面分支，原生OpenCode／Command Go固定Flash/max按本轮互斥职责执行，由Codex最终审核及精确Git门禁收口；范围、首失败、构建身份与实际结果见[本轮核查](desktop-weekly-windows11-review.md)，下载／另一台电脑操作与新周Word回执见[新手册](desktop-weekly-windows11-manual.md)。静态通过不等于目标运行或教师确认；旧r03结果保持原身份。
 
 ## 固定r03：目标1与指定Word教师确认已收口
 
@@ -10,7 +14,7 @@
 
 [唯一入口](../tasks/current.md)承接本轮周计划源码收口及下一片新身份候选安排；[中文手册](desktop-windows11-portable-manual.md)保留可重复步骤，[原计划与责任合同](desktop-windows11-portable-plan.md)保留当轮范围。新包须另行核定身份和验证，不能沿用本轮 r03 结论。不运行已知 4551 机器上的候选或降低保护，不自动真实 AI、WebDAV、签名、远控或公开发行。
 
-## 当前：周计划首片源码工程收口
+## 已完成：周计划首片源码工程收口
 
 Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／C17完整前端exit0；C18两处历史文案的typecheck／UI13及最后正常重开通过。真实保存确认、旧确认保稿导出、W01五页／W02三页Word、明文／加密备份及保护包接续已有实际结果，详见[实施核查](desktop-weekly-plan-review.md)。[唯一入口](../tasks/current.md)承接精确Git收口与下一片候选安排；[产品](../specs/desktop-weekly-plan.md)及[工程](../specs/desktop-weekly-plan-engineering.md)保持权威，Q5/Q6不提前实现。
 

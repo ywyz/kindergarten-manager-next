@@ -6,11 +6,11 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-01：周计划Q1–Q6与明暗模式已确认；Q1–Q4首片实现及限定源码回归、真实保存确认／旧确认导出、Word逐页、明文／加密备份和保护包恢复已核，详见[实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。最后文案正常重开已核；新候选、目标环境及本轮新Word教师体验另验。固定r03目标1与W1–W8指定教师确认保持原制品身份。
+2026-11-02：周计划Q1–Q4及明暗／备份首片源码已收口，详见[实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。用户已授权制作新Windows11周候选、GitHub构建供测试及更新文档，原生Flash/max分工与实际结果归[本轮核查](docs/bootstrap/desktop-weekly-windows11-review.md)，另机步骤见[手册](docs/bootstrap/desktop-weekly-windows11-manual.md)。固定r03目标1与W1–W8教师确认保持原制品身份；新目标／新Word教师体验另验。
 
-继续分支 `codex/desktop-v2-foundation`；本轮开工HEAD `d6de14cb`，原业务源码基线 `2a469489`。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；产品 [desktop-weekly-plan.md](docs/specs/desktop-weekly-plan.md)、工程 [desktop-weekly-plan-engineering.md](docs/specs/desktop-weekly-plan-engineering.md)，状态 [v2实施入口](docs/bootstrap/architecture-v2-readiness.md)，实际实施与未验 [实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。
+继续分支 `codex/desktop-v2-foundation`；新候选开工HEAD `796028b5`。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；产品 [desktop-weekly-plan.md](docs/specs/desktop-weekly-plan.md)、工程 [desktop-weekly-plan-engineering.md](docs/specs/desktop-weekly-plan-engineering.md)，状态 [v2实施入口](docs/bootstrap/architecture-v2-readiness.md)。
 
-本片源码工程收口，按精确文件／blob／parent／tree门禁普通提交推送。下一步先验证包含周计划的新身份候选，再评估既定Q5/Q6的AI与材料切片；本次不自动启动新候选构建或后片。通用保存、恢复、关闭缺陷优先，实际范围与未验以唯一入口及核查记录为准。
+本轮按精确文件／blob／parent／tree门禁普通提交推送；构建与静态通过不等于目标运行。先验证新身份周候选，再评估既定Q5/Q6，不启动后片。通用保存、恢复、关闭缺陷优先，实际范围与未验以唯一入口及核查记录为准。
 
 ## 产品与架构原则
 

@@ -1,10 +1,10 @@
 # Windows 11 内部便携候选：目标预检与使用验收
 
-更新：2026-11-01。**本手册保留复验步骤和预期；目标 1 的实际操作与结果见[独立测试记录](desktop-windows11-target-review.md)，不将其通过复制给其他设备。** D 起草的英文说明已保留为私有审核证据；D 停写后由 Codex 中文审校，本文件现归 Codex，预检脚本仍归 D。
+适用范围：固定r03旧候选，2026-11-01目标1与指定Word教师确认。**新周计划候选使用[新手册](desktop-weekly-windows11-manual.md)及其实际构建身份，不能套本页SHA／schema。** 本手册保留旧包复验步骤和预期；目标1实际结果见[独立测试记录](desktop-windows11-target-review.md)，不复制给其他设备。D英文原稿私有保留；本文件归Codex，预检脚本改动另按当前责任派发。
 
 ## 1. 本次使用的文件
 
-完整目录包和 ZIP 的实际身份以[构建结果](desktop-windows11-portable-result.md)及[独立核查](desktop-windows11-portable-review.md)为准。只使用本轮新候选，不拿旧 r03 或单个 EXE 代替。
+下表仅为旧固定r03完整目录包和ZIP身份，来源见[构建结果](desktop-windows11-portable-result.md)及[独立核查](desktop-windows11-portable-review.md)。保留完整目录，不用单个EXE代替；新周计划包不使用本表值。
 
 | 项目 | 本轮值 |
 | --- | --- |

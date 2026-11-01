@@ -1,0 +1,98 @@
+name: Windows 11 weekly validation build
+
+# Builds and statically verifies the complete weekly-plan Windows package.
+# This is a windows-2022 x64 build, not a Windows 11 runtime/target test.
+"on":
+  push:
+    branches:
+      - codex/desktop-v2-foundation
+    paths:
+      - "backend/**"
+      - "desktop/**"
+      - "frontend/**"
+      - "docs/bootstrap/desktop-weekly-windows11-manual.md"
+      - ".github/workflows/windows11-weekly-validation.yml"
+      - ".github/scripts/build-windows11-validation.ps1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows11-weekly-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and statically verify Windows x64 package
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      APP_DISABLE_DOTENV: "1"
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      EVIDENCE_ROOT: ${{ runner.temp }}/kgm-weekly-win11-ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout trusted branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up exact CPython
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14.10"
+          architecture: "x64"
+          check-latest: false
+
+      - name: Set up exact Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "26.12.1"
+          check-latest: false
+
+      - name: Record toolchain versions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pythonVersion = (& python --version 2>&1 | Out-String).Trim()
+          $nodeVersion = (& node --version 2>&1 | Out-String).Trim()
+          $npmVersion = (& npm --version 2>&1 | Out-String).Trim()
+          if ($pythonVersion -ne 'Python 3.14.10') {
+            throw "Expected Python 3.14.10, got: $pythonVersion"
+          }
+          & python -c "import struct, sys, sysconfig; assert sys.implementation.name == 'cpython'; assert sys.version_info[:3] == (3, 14, 10); assert struct.calcsize('P') * 8 == 64; assert sysconfig.get_platform().lower() == 'win-amd64'; assert getattr(sys, '_is_gil_enabled', lambda: True)()"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python is not the required CPython 3.14.10 x64 standard-GIL build"
+          }
+          if ($nodeVersion -ne 'v26.12.1') {
+            throw "Expected Node v26.12.1, got: $nodeVersion"
+          }
+          Write-Host "Python: $pythonVersion"
+          Write-Host "Node: $nodeVersion"
+          Write-Host "npm: $npmVersion"
+
+      - name: Build, verify, and assemble handoff
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:GITHUB_WORKSPACE/.github/scripts/build-windows11-validation.ps1" `
+            -RepoRoot $env:GITHUB_WORKSPACE `
+            -EvidenceRoot $env:EVIDENCE_ROOT `
+            -RunId "${{ github.run_id }}" `
+            -RunAttempt "${{ github.run_attempt }}" `
+            -Repository "${{ github.repository }}" `
+            -CommitSha "${{ github.sha }}" `
+            -ServerUrl "${{ github.server_url }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "build-windows11-validation.ps1 failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload minimal handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows11-weekly-validation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kgm-weekly-win11-ci-${{ github.run_id }}-${{ github.run_attempt }}/handoff
+          if-no-files-found: error
+          retention-days: 14

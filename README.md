@@ -21,7 +21,7 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 
 固定r03未签名内部候选已完成另一台Windows11的目标1实测，以及指定W1–W8 Word逐页核查和用户逐项教师确认，详见[目标记录](docs/bootstrap/desktop-windows11-target-review.md)。这些结果保持原制品身份，不能替代本轮新周代码或新候选的验收。当前开发机的SAC4551限制保持，未降低系统保护。
 
-桌面周计划Q1–Q6已确认，手工／本人来源／保存／确认／Word及明暗首片已实现，完成限定源码回归、真实Word逐页与明文／加密备份及保护包恢复核查，最后正常重开已核。分项及Git身份见[当前任务](docs/tasks/current.md)和[实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。新候选／目标／教师体验另验，下一步先新身份候选验证，再推进既定Q5/Q6。Windows10、WPS、其它显示配置、干净机器、真实冻结更新和正式发行等未验保持，旧[候选核查](docs/bootstrap/desktop-windows11-portable-review.md)及[E14核查](docs/bootstrap/desktop-game-observation-e14-review.md)保留原身份。
+桌面周计划Q1–Q6已确认，手工／本人来源／保存／确认／Word及明暗首片已实现，限定源码回归、真实Word逐页及完整备份／保护包接续见[实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。2026-11-02新周计划Windows候选及GitHub构建的实际身份／静态结果见[本轮核查](docs/bootstrap/desktop-weekly-windows11-review.md)；[下载与另一台电脑测试步骤](docs/bootstrap/desktop-weekly-windows11-manual.md)单列目标运行和新Word教师回执。新包不复用旧r03通过，不是稳定签名发行。下一步先新身份候选验证，再评估既定Q5/Q6。Windows10、WPS、其它显示配置、干净机及真实冻结更新等未验保持；[当前任务](docs/tasks/current.md)是唯一执行入口。
 
 应用更新通过本项目 GitHub Releases 的最新正式版本判断，普通代码提交不会触发更新提示。源码运行可检查版本，禁止下载／安装替换仓库程序；当前尚无正式 Release。AI 失败时保留原内容，结果不明的重试须确认可能重复处理／计费。两项实现及验证范围见 [本轮核查](docs/bootstrap/desktop-retry-github-review.md)。
 

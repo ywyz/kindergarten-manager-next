@@ -1,11 +1,12 @@
 # Architecture v2 实施状态与验证门槛
 
-更新：2026-11-01。当前架构仍按 [ARCHITECTURE.md](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)，唯一执行入口是 [current.md](../tasks/current.md)。历史授权、旧“当前任务”和旧测试数字不自动适用于本轮。
+更新：2026-11-02。当前架构仍按 [ARCHITECTURE.md](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)，唯一执行入口是 [current.md](../tasks/current.md)。历史授权、旧“当前任务”和旧测试数字不自动适用于本轮。
 
 ## 最新状态与下一步
 
 | 范围 | 当前结论与直接入口 |
 | --- | --- |
+| 新周计划Windows候选／GitHub构建 | 用户已授权完整新包、GitHub生成EXE供测试及文档更新；原生Flash/max分工、构建／静态／实际运行和制品身份归[本轮核查](desktop-weekly-windows11-review.md)，另机测试见[手册](desktop-weekly-windows11-manual.md)。旧r03目标及教师通过不跨身份复用。 |
 | 周计划与明暗 | Q1–Q6已确认；Q1–Q4首片完整源码回归、真实保存确认／旧确认保稿导出、Word全页及完整备份／保护包接续通过限定工程核查，最后文案重开已核。新候选／目标／教师未验。[产品](../specs/desktop-weekly-plan.md)、[工程](../specs/desktop-weekly-plan-engineering.md)、[实施核查](desktop-weekly-plan-review.md)。 |
 | 分支 | 继续codex/desktop-v2-foundation；本片按精确Git门禁普通提交推送，实际身份以包含实施核查的提交及远端为准。main保持已合并基线，开工及r03两提交身份见实施核查。 |
 | 用户目标测试 | 固定r03目标1普通业务、完整备份／恢复、保护包及W1–W8工程页检已有[实际回执](desktop-windows11-target-review.md)，用户已逐项确认八份Word通过；指定Word教师体验收口，未扩大为产品／发行整体验收。[手册](desktop-windows11-portable-manual.md)及原build_id／SHA保持，不迁移新代码结果。 |
