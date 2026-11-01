@@ -425,6 +425,9 @@ def build_runtime(args):
         )
         _startup_log(f"build_runtime:app built port {port}")
         service = ServiceRun(app, port)
+        service.weekly_export_manager = getattr(
+            app.state, "weekly_export_manager", None
+        )
         import update_github
         import update_identity
         import update_install
@@ -550,6 +553,9 @@ def build_runtime(args):
             install_coordinator=install_coordinator,
             ready_receipt=ready_receipt,
             service_port=port,
+            weekly_export_manager=getattr(
+                app.state, "weekly_export_manager", None
+            ),
         )
         _startup_log("build_runtime:done")
     except _ExecutorUnconfirmed:
@@ -7114,7 +7120,14 @@ def run_selftest(args) -> int:
             min_size=(760, 560),
             text_select=True,
         )
-        _install_close_handlers(window, host_api, runtime)
+        _install_close_handlers(
+            window,
+            host_api,
+            runtime,
+            weekly_export_manager=getattr(
+                service, "weekly_export_manager", None
+            ),
+        )
         _startup_log("run_selftest:window created")
 
         def driver_task():
@@ -7260,11 +7273,43 @@ def _dispose_executor(runtime, summary: dict | None = None) -> bool:
     return confirmed
 
 
-def _install_close_handlers(window, host_api, runtime=None) -> None:
+def _install_close_handlers(
+    window, host_api, runtime=None, *, weekly_export_manager=None
+) -> None:
     import d1_host_api
 
     executor = getattr(runtime, "ai_executor", None) if runtime is not None else None
     install_coordinator = getattr(host_api, "_install_coordinator", None)
+    # Capture the app's fixed manager instance now.  Never read the runtime's
+    # current field later: after a restore reopen that field points at the
+    # new generation, which this old window must not pause or resume.
+    weekly_manager = weekly_export_manager
+    coordinator_holder: dict[str, object] = {}
+    close_owner_lock = threading.Lock()
+    close_owners: set[str] = set()
+
+    def close_weekly_owner() -> str | None:
+        coordinator = coordinator_holder.get("coordinator")
+        request_id = getattr(coordinator, "_current_id", None)
+        return f"close:{request_id}" if request_id else None
+
+    def release_close_owner(owner: str | None) -> None:
+        if weekly_manager is None or owner is None:
+            return
+        try:
+            weekly_manager.resume(owner=owner)
+        except Exception:  # noqa: BLE001 - preserve close cancellation
+            pass
+        with close_owner_lock:
+            close_owners.discard(owner)
+
+    def weekly_busy() -> bool:
+        if weekly_manager is None:
+            return False
+        try:
+            return not bool(weekly_manager.wait_idle(timeout=0.0))
+        except Exception:  # noqa: BLE001 - unknown work is not idle
+            return True
 
     def notify_page(close_request_id: str, generation: int | None = None) -> None:
         host_api._notify_request_close(close_request_id, generation)
@@ -7294,10 +7339,26 @@ def _install_close_handlers(window, host_api, runtime=None) -> None:
         return {"live": counts["live"], "in_flight": False}
 
     def on_close_intent() -> None:
+        owner = close_weekly_owner()
+        if weekly_manager is not None and owner is not None:
+            # A timeout/denial can race a new close request: the coordinator
+            # then skips the stale cancel callback.  Release those superseded
+            # owners on the next intent so a canceled close cannot leave the
+            # manager paused forever.
+            with close_owner_lock:
+                stale = [item for item in close_owners if item != owner]
+                close_owners.add(owner)
+            for item in stale:
+                release_close_owner(item)
+            try:
+                weekly_manager.pause(owner=owner)
+            except Exception:  # noqa: BLE001 - close still uses the busy probe
+                pass
         if executor is not None:
             executor.freeze()
 
     def on_close_canceled() -> None:
+        release_close_owner(close_weekly_owner())
         if executor is not None:
             executor.unfreeze()
             executor.notify()
@@ -7327,7 +7388,8 @@ def _install_close_handlers(window, host_api, runtime=None) -> None:
         # or atomic write) is still in flight (spec §12.3 / R11).
         busy_probe=lambda: host_api._save_in_progress()
         or host_api._page_busy_probe()
-        or host_api._maintenance_busy_probe(),
+        or host_api._maintenance_busy_probe()
+        or weekly_busy(),
         # D2 §4.3: freeze AI on the close intent and require an explicit task
         # choice before releasing the window.
         task_snapshot=task_snapshot,
@@ -7338,6 +7400,7 @@ def _install_close_handlers(window, host_api, runtime=None) -> None:
         on_install_final=on_install_final,
         drain_tasks=drain_tasks,
     )
+    coordinator_holder["coordinator"] = coordinator
     host_api._close_coordinator = coordinator
 
     def on_closing():
@@ -7396,10 +7459,18 @@ def _maintenance_busy(bundle) -> bool:
     refuses while a maintenance operation is active.
     """
     host = bundle.host_api
+    weekly_manager = getattr(bundle.service, "weekly_export_manager", None)
+    weekly_busy = False
+    if weekly_manager is not None:
+        try:
+            weekly_busy = not bool(weekly_manager.wait_idle(timeout=0.0))
+        except Exception:  # noqa: BLE001 - unknown work is not idle
+            weekly_busy = True
     return bool(
         host._save_in_progress()
         or host._page_busy_probe()
         or host._update_busy_probe()
+        or weekly_busy
     )
 
 
@@ -7410,6 +7481,9 @@ def _build_maintenance_host(args, runtime, lifecycle, bundle):
     from app.local.restore_service import RestoreCore
 
     version, source = _maintenance_labels(runtime)
+    weekly_export_manager = getattr(
+        bundle.service, "weekly_export_manager", None
+    )
     hooks = maintenance_lifecycle.HostMaintenanceHooks(
         manager=lifecycle,
         # Bound to this exact bundle: a late callback from an old host can
@@ -7425,6 +7499,7 @@ def _build_maintenance_host(args, runtime, lifecycle, bundle):
         app_version=version,
         source_identity=source,
         external_quiesce=hooks.wait_host_idle,
+        weekly_export_manager=weekly_export_manager,
     )
 
     def reopen_host():
@@ -7437,7 +7512,10 @@ def _build_maintenance_host(args, runtime, lifecycle, bundle):
         bundle.host_api._retire()
 
     restore_core = RestoreCore(
-        runtime, app_version=version, source_identity=source
+        runtime,
+        app_version=version,
+        source_identity=source,
+        weekly_export_manager=weekly_export_manager,
     )
     return maintenance_host.MaintenanceHost(
         backup_service=backup_service,
@@ -7447,6 +7525,7 @@ def _build_maintenance_host(args, runtime, lifecycle, bundle):
         source_identity=source,
         reopen_host=reopen_host,
         before_reopen=before_reopen,
+        weekly_export_manager=weekly_export_manager,
     )
 
 
@@ -7504,10 +7583,17 @@ def _run_reopen_sequence(args, lifecycle, old_bundle, runtime) -> dict:
             update_manager=getattr(old_bundle.host_api, "_update_manager", None),
             install_coordinator=None,
             maintenance_notice=notice,
+            weekly_export_manager=getattr(
+                app.state, "weekly_export_manager", None
+            ),
+        )
+        service_run = ServiceRun(app, port)
+        service_run.weekly_export_manager = getattr(
+            app.state, "weekly_export_manager", None
         )
         return maintenance_lifecycle.LifecycleBundle(
             generation=generation,
-            service=ServiceRun(app, port),
+            service=service_run,
             host_api=host_api,
             runtime=runtime,
             executor=executor,
@@ -7527,7 +7613,14 @@ def _run_reopen_sequence(args, lifecycle, old_bundle, runtime) -> dict:
         )
         bundle.window = window
         bundle.host_api._bind_window(window)
-        _install_close_handlers(window, bundle.host_api, bundle.runtime)
+        _install_close_handlers(
+            window,
+            bundle.host_api,
+            bundle.runtime,
+            weekly_export_manager=getattr(
+                bundle.service, "weekly_export_manager", None
+            ),
+        )
         bundle.retire_destroy = lambda: _retire_destroy_window(bundle)
         bundle.host_api._bind_maintenance(
             _build_maintenance_host(args, runtime, lifecycle, bundle)
@@ -7594,7 +7687,14 @@ def run_interactive(args) -> int:
             text_select=True,
         )
         host_api._bind_window(window)
-        _install_close_handlers(window, host_api, runtime)
+        _install_close_handlers(
+            window,
+            host_api,
+            runtime,
+            weekly_export_manager=getattr(
+                service, "weekly_export_manager", None
+            ),
+        )
         bundle = maintenance_lifecycle.LifecycleBundle(
             generation=lifecycle.next_generation(),
             service=service,

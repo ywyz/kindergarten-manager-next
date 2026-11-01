@@ -1317,7 +1317,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 20px;
-  color: #606266;
+  color: var(--kgm-text);
   font-size: 0.9rem;
   align-items: center;
 }
@@ -1325,11 +1325,11 @@ onBeforeUnmount(() => {
   margin: 0 0 12px;
 }
 .group-block {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   padding: 12px;
   margin-bottom: 12px;
-  background: #fafbfc;
+  background: var(--kgm-bg);
 }
 .group-head {
   display: flex;
@@ -1356,7 +1356,7 @@ onBeforeUnmount(() => {
 .field label {
   display: block;
   margin-bottom: 4px;
-  color: #606266;
+  color: var(--kgm-text);
   font-size: 0.85rem;
 }
 .context-select {
@@ -1373,14 +1373,14 @@ onBeforeUnmount(() => {
 }
 .conflict-body .label {
   margin: 8px 0 4px;
-  color: #606266;
+  color: var(--kgm-text);
   font-size: 0.85rem;
 }
 .server-block {
   margin: 0;
   padding: 8px 10px;
-  background: #f5f7fa;
-  border: 1px solid #ebeef5;
+  background: var(--kgm-bg);
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   white-space: pre-wrap;
   word-break: break-word;

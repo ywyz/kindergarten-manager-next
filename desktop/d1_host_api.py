@@ -33,7 +33,9 @@ import hmac
 import http.client
 import io
 import json
+import ntpath
 import os
+import re
 import secrets
 import socket
 import tempfile
@@ -44,6 +46,7 @@ import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
+from datetime import datetime, timezone
 
 import webview
 
@@ -55,6 +58,11 @@ MAX_DOCX_BYTES = 30 * 1024 * 1024
 # Observation export uses a separate restricted channel: the page never
 # sends Base64 bytes, and the host streams from the fixed loopback endpoint.
 MAX_OBSERVATION_EXPORT_BYTES = 128 * 1024 * 1024
+WEEKLY_EXPORT_MAX_BYTES = 128 * 1024 * 1024
+WEEKLY_EXPORT_MIME = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+WEEKLY_EXPORT_TIMEOUT_SECONDS = 120.0
 OBSERVATION_EXPORT_CHUNK = 256 * 1024
 # Per-socket wait and the whole-transfer deadline are distinct: a trickle of
 # small chunks can satisfy the former forever, so both channels also enforce
@@ -94,6 +102,8 @@ BRIDGE_ALLOWED_ENDPOINTS = frozenset(
         "save_observation_export",
         "get_observation_export_result",
         "reconcile_observation_export_result",
+        "save_weekly_export",
+        "get_weekly_export_result",
     }
 )
 
@@ -918,6 +928,143 @@ def write_stream_atomic(
                 pass
 
 
+_WEEKLY_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)],
+     *[f"LPT{i}" for i in range(1, 10)]}
+)
+_WEEKLY_CONTROL = {chr(i) for i in range(32)} | {"\x7f"}
+_WEEKLY_INVALID = set('<>:"/\\|?*')
+_WEEKLY_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_WEEKLY_EXPIRY = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{6})?Z$")
+
+
+def _weekly_filename(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("filename")
+    name = value
+    if (
+        not name or name != name.strip() or len(name) > 200 or name in (".", "..")
+        or any(char in _WEEKLY_CONTROL or char in _WEEKLY_INVALID for char in name)
+        or name.endswith(" ") or name.endswith(".")
+        or ntpath.isreserved(name)
+        or not name.lower().endswith(".docx")
+    ):
+        raise ValueError("filename")
+    return name
+
+
+def _weekly_export_id(value: object) -> str:
+    if not isinstance(value, str) or not _WEEKLY_ID.fullmatch(value):
+        raise ValueError("export_id")
+    return value
+
+
+def _weekly_expiry(value: object) -> datetime:
+    if not isinstance(value, str) or _WEEKLY_EXPIRY.fullmatch(value) is None:
+        raise ValueError("expiry")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        raise ValueError("expiry") from None
+    if parsed.tzinfo is None:
+        raise ValueError("expiry")
+    utc = parsed.astimezone(timezone.utc)
+    expected = utc.strftime("%Y-%m-%dT%H:%M:%S")
+    if utc.microsecond:
+        expected += f".{utc.microsecond:06d}"
+    expected += "Z"
+    if value != expected:
+        raise ValueError("expiry")
+    return utc
+
+
+def _validate_weekly_docx_reader(reader) -> str | None:
+    try:
+        reader.seek(0)
+        with zipfile.ZipFile(reader) as archive:
+            names = set(archive.namelist())
+            for part in _DOCX_REQUIRED_PARTS:
+                if part not in names:
+                    return "下载的 Word 文件缺少必要部件"
+            for part in _DOCX_REQUIRED_PARTS:
+                problem = _validate_docx_part(part, archive.read(part))
+                if problem is not None:
+                    return problem
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError, NotImplementedError):
+        return "下载的 Word 文件结构无效"
+    return None
+def _write_weekly_atomic(
+    target: str, reader, *, expected_hash: str, expected_size: int
+) -> dict:
+    if (
+        not isinstance(expected_size, int)
+        or expected_size <= 0
+        or expected_size > WEEKLY_EXPORT_MAX_BYTES
+        or not isinstance(expected_hash, str)
+        or len(expected_hash) != 64
+    ):
+        return {"status": "failed", "code": "EXPORT_DOWNLOAD_INVALID",
+                "message": "导出文件大小或摘要不合法"}
+    suffix_ok, reason = validate_docx_target(target)
+    if not suffix_ok:
+        return {"status": "failed", "code": "INVALID_TARGET", "message": reason}
+    file_path = Path(target)
+    tmp_path = None
+    try:
+        directory = file_path.parent
+        if not directory.is_dir():
+            raise FileNotFoundError("目标目录不存在")
+        reader.seek(0)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{file_path.name}.", suffix=".tmp", dir=str(directory)
+        )
+        tmp_path = Path(tmp_name)
+        digest = hashlib.sha256()
+        total = 0
+        with os.fdopen(fd, "wb") as handle:
+            while True:
+                chunk = reader.read(OBSERVATION_EXPORT_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > expected_size:
+                    raise OSError("周导出流超过声明大小")
+                digest.update(chunk)
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if total != expected_size or digest.hexdigest() != expected_hash:
+            raise OSError("周导出流大小或摘要不一致")
+        if tmp_path.stat().st_size != expected_size:
+            raise OSError("临时文件字节数不符")
+        os.replace(str(tmp_path), str(file_path))
+        tmp_path = None
+        try:
+            final_hash = hashlib.sha256()
+            final_size = 0
+            with open(file_path, "rb") as handle:
+                while True:
+                    chunk = handle.read(OBSERVATION_EXPORT_CHUNK)
+                    if not chunk:
+                        break
+                    final_size += len(chunk)
+                    final_hash.update(chunk)
+            if final_size != expected_size or final_hash.hexdigest() != expected_hash:
+                raise OSError("替换后大小或摘要不一致")
+        except OSError:
+            return {"status": "unknown", "code": "SAVE_RESULT_UNKNOWN",
+                    "message": "替换已执行但结果无法确认：文件可能已写入，请核对保存位置后再决定下一步"}
+        return {"status": "saved", "bytes": expected_size}
+    except OSError as exc:
+        code, message = _classify_write_failure(exc, file_path)
+        return {"status": "failed", "code": code, "message": message}
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
 class D1HostApi:
     """Object exposed to the window as ``window.pywebview.api``."""
 
@@ -934,6 +1081,7 @@ class D1HostApi:
         maintenance_host=None,
         document_generation: int = 1,
         maintenance_notice: str | None = None,
+        weekly_export_manager=None,
     ):
         self._launch_token = launch_token
         self._window_getter = window_getter or self._default_window
@@ -959,6 +1107,18 @@ class D1HostApi:
         self._page_lock = threading.RLock()
         self._close_coordinator: CloseCoordinator | None = None
         self._maintenance_host = maintenance_host
+        self._weekly_export_manager = weekly_export_manager
+        self._weekly_export_launch_id = (
+            str(getattr(weekly_export_manager, "launch_id", "") or "")
+            if weekly_export_manager is not None
+            else ""
+        )
+        self._weekly_export_session_scope = (
+            str(getattr(weekly_export_manager, "session_scope", "") or "")
+            if weekly_export_manager is not None
+            else ""
+        )
+        self._weekly_save_records: dict[str, dict] = {}
         self._retired = False
         # This instance belongs to exactly one document generation.  The page
         # receives the number in bootstrap and a new window always gets a new
@@ -2192,6 +2352,503 @@ class D1HostApi:
             )
             return False
         return True
+
+    def _weekly_manager_ready(self):
+        manager = self._weekly_export_manager
+        if manager is None or bool(getattr(manager, "is_closed", False)):
+            return None
+        return manager
+
+    def _weekly_cached_result(self, payload: object) -> dict | None:
+        if not isinstance(payload, dict) or set(payload) != {"export_id", "filename"}:
+            return None
+        try:
+            export_id = _weekly_export_id(payload.get("export_id"))
+            filename = _weekly_filename(payload.get("filename"))
+        except ValueError:
+            return None
+        with self._save_lock:
+            existing = self._weekly_save_records.get(export_id)
+            if existing is None:
+                return None
+            if existing.get("filename") != filename:
+                return {"status": "failed", "code": "WEEKLY_EXPORT_ATTEMPT_CONFLICT",
+                        "message": "同一导出凭证已用于不同文件名"}
+            if existing.get("in_flight"):
+                return {"status": "pending", "code": "SAVE_IN_PROGRESS",
+                        "message": "周计划导出保存仍在进行中",
+                        "export_id": export_id, "filename": filename}
+            return dict(existing.get("result") or {
+                "status": "unknown", "export_id": export_id, "filename": filename})
+
+    def save_weekly_export(self, payload: object = None) -> dict:
+        cached = self._weekly_cached_result(payload)
+        if cached is not None:
+            return cached
+        if not self._page_ready:
+            return {"status": "failed", "code": "BRIDGE_NOT_READY",
+                    "message": "页面尚未完成桥接握手，已拒绝保存"}
+        refusal = self._native_io_refusal()
+        if refusal is not None:
+            return refusal
+        try:
+            return self._save_weekly_export_inner(payload)
+        except Exception as exc:
+            _host_log(f"weekly export outer failure: {type(exc).__name__}")
+            return {"status": "failed", "code": "WEEKLY_EXPORT_SAVE_FAILED",
+                    "message": "周计划导出保存失败，请重试"}
+    def _save_weekly_export_inner(self, payload: object) -> dict:
+        if not isinstance(payload, dict) or set(payload) != {"export_id", "filename"}:
+            return {"status": "failed", "code": "INVALID_PAYLOAD",
+                    "message": "周计划导出参数不正确"}
+        try:
+            export_id = _weekly_export_id(payload.get("export_id"))
+            filename = _weekly_filename(payload.get("filename"))
+        except ValueError:
+            return {"status": "failed", "code": "INVALID_PAYLOAD",
+                    "message": "周计划导出凭证或文件名校验失败"}
+        manager = self._weekly_manager_ready()
+        if manager is None:
+            return {"status": "failed", "code": "WEEKLY_EXPORT_UNAVAILABLE",
+                    "message": "周计划导出暂时不可用",
+                    "export_id": export_id, "filename": filename}
+        with self._save_lock:
+            existing = self._weekly_save_records.get(export_id)
+            if existing is not None:
+                if existing.get("filename") != filename:
+                    return {"status": "failed", "code": "WEEKLY_EXPORT_ATTEMPT_CONFLICT",
+                            "message": "同一导出凭证已用于不同文件名"}
+                if existing.get("in_flight"):
+                    return {"status": "pending", "code": "SAVE_IN_PROGRESS",
+                            "message": "周计划导出保存仍在进行中",
+                            "export_id": export_id, "filename": filename}
+                return dict(existing.get("result") or {
+                    "status": "unknown", "export_id": export_id, "filename": filename})
+            self._weekly_save_records[export_id] = {
+                "filename": filename, "result": None, "in_flight": True,
+            }
+            self._save_inflight += 1
+        try:
+            with manager.activity(
+                kind="native",
+                launch_id=self._weekly_export_launch_id,
+                session_scope=self._weekly_export_session_scope,
+            ) as epoch:
+                result = self._perform_weekly_export(
+                    manager, epoch, export_id, filename
+                )
+        except Exception as exc:
+            _host_log(f"weekly export failure: {type(exc).__name__}")
+            result = {"status": "failed", "code": "WEEKLY_EXPORT_SAVE_FAILED",
+                      "message": "周计划导出保存失败，请重试",
+                      "export_id": export_id, "filename": filename}
+        receipt_hash = result.pop("_receipt_hash", None)
+        terminal_payload = result.pop("_terminal_payload", None)
+        with self._save_lock:
+            self._save_inflight -= 1
+            record = self._weekly_save_records.get(export_id) or {}
+            record["in_flight"] = False
+            record["result"] = dict(result)
+            record["filename"] = filename
+            record["receipt_hash"] = receipt_hash
+            record["terminal_payload"] = terminal_payload
+            self._weekly_save_records[export_id] = record
+        return result
+    def _perform_weekly_export(
+        self, manager, epoch: int, export_id: str, filename: str
+    ) -> dict:
+        quoted = urllib.parse.quote(export_id, safe="")
+        try:
+            attempt = self._local_json(
+                "POST",
+                f"/api/weekly-exports/{quoted}/attempts",
+                {"filename": filename},
+            )
+        except _LocalApiError as exc:
+            return {"status": "unknown", "code": "WEEKLY_EXPORT_ATTEMPT_UNKNOWN",
+                    "message": exc.message, "export_id": export_id,
+                    "filename": filename}
+        if not isinstance(attempt, dict):
+            return {"status": "unknown", "code": "WEEKLY_EXPORT_ATTEMPT_UNKNOWN",
+                    "message": "周计划导出尝试结果无法确认",
+                    "export_id": export_id, "filename": filename}
+        if attempt.get("should_prompt") is False:
+            return self._map_weekly_attempt(attempt, export_id, filename)
+        if attempt.get("should_prompt") is not True:
+            return {"status": "failed", "code": "WEEKLY_EXPORT_ATTEMPT_INVALID",
+                    "message": "周计划导出尝试无效",
+                    "export_id": export_id, "filename": filename}
+        attempt_id = attempt.get("attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id:
+            return {"status": "failed", "code": "WEEKLY_EXPORT_ATTEMPT_INVALID",
+                    "message": "周计划导出尝试无效",
+                    "export_id": export_id, "filename": filename}
+        try:
+            download = self._download_weekly_export(manager, export_id)
+        except _ExportDownloadError as exc:
+            confirmed = self._report_weekly_attempt(
+                export_id, attempt_id, "failed", filename=filename
+            )
+            return {"status": "failed", "code": exc.code, "message": exc.message,
+                    "export_id": export_id, "attempt_id": attempt_id,
+                    "filename": filename, "receipt_pending": not confirmed}
+        except Exception as exc:
+            _host_log(f"weekly download manager failure: {type(exc).__name__}")
+            confirmed = self._report_weekly_attempt(
+                export_id, attempt_id, "failed", filename=filename
+            )
+            return {"status": "failed", "code": "WEEKLY_EXPORT_DOWNLOAD_FAILED",
+                    "message": "周计划导出下载或临时文件不可用",
+                    "export_id": export_id, "attempt_id": attempt_id,
+                    "filename": filename, "receipt_pending": not confirmed}
+        reader = download["reader"]
+        temp = download["temp"]
+        digest = download["digest"]
+        size = download["size"]
+        expires_at = download["expires_at"]
+        try:
+            with self._save_mutex:
+                refusal = self._native_io_refusal()
+                if refusal is not None:
+                    return {**refusal, "export_id": export_id,
+                            "attempt_id": attempt_id, "filename": filename,
+                            "receipt_pending": True}
+                if manager.is_closed:
+                    return {"status": "failed", "code": "WEEKLY_EXPORT_UNAVAILABLE",
+                            "message": "周计划导出暂时不可用",
+                            "export_id": export_id, "attempt_id": attempt_id,
+                            "filename": filename, "receipt_pending": True}
+                if datetime.now(timezone.utc) >= expires_at:
+                    confirmed = self._report_weekly_attempt(
+                        export_id, attempt_id, "failed", filename=filename
+                    )
+                    return {"status": "failed", "code": "WEEKLY_EXPORT_EXPIRED",
+                            "message": "周计划导出已过有效期，未打开保存对话框",
+                            "export_id": export_id, "attempt_id": attempt_id,
+                            "filename": filename, "receipt_pending": not confirmed}
+                try:
+                    with manager.publish(
+                        epoch=epoch,
+                        launch_id=self._weekly_export_launch_id,
+                        session_scope=self._weekly_export_session_scope,
+                    ):
+                        pass
+                except Exception as exc:
+                    _host_log(f"weekly pre-dialog publish failed: {type(exc).__name__}")
+                    confirmed = self._report_weekly_attempt(
+                        export_id, attempt_id, "failed", filename=filename
+                    )
+                    return {"status": "failed", "code": "WEEKLY_EXPORT_UNAVAILABLE",
+                            "message": "周计划导出生命周期已变化",
+                            "export_id": export_id, "attempt_id": attempt_id,
+                            "filename": filename, "receipt_pending": not confirmed}
+                try:
+                    target = self._choose_target(filename)
+                except _SaveDialogError:
+                    confirmed = self._report_weekly_attempt(
+                        export_id, attempt_id, "failed", filename=filename
+                    )
+                    return {"status": "failed", "code": "SAVE_DIALOG_FAILED",
+                            "message": "无法打开保存对话框，请重试",
+                            "export_id": export_id, "attempt_id": attempt_id,
+                            "filename": filename, "receipt_pending": not confirmed}
+                if target is None:
+                    confirmed = self._report_weekly_attempt(
+                        export_id, attempt_id, "cancelled", filename=filename
+                    )
+                    return {"status": "canceled", "export_id": export_id,
+                            "attempt_id": attempt_id, "filename": filename,
+                            "receipt_pending": not confirmed}
+                refusal = self._native_io_refusal()
+                if refusal is not None:
+                    return {**refusal, "export_id": export_id,
+                            "attempt_id": attempt_id, "filename": filename,
+                            "receipt_pending": True}
+                try:
+                    with manager.publish(
+                        epoch=epoch,
+                        launch_id=self._weekly_export_launch_id,
+                        session_scope=self._weekly_export_session_scope,
+                    ):
+                        writer = _write_weekly_atomic(
+                            target, reader, expected_hash=digest, expected_size=size
+                        )
+                except Exception as exc:
+                    _host_log(f"weekly export publish failed: {type(exc).__name__}")
+                    return {"status": "failed", "code": "WEEKLY_EXPORT_UNAVAILABLE",
+                            "message": "周计划导出写入被生命周期限制",
+                            "export_id": export_id, "attempt_id": attempt_id,
+                            "filename": filename, "receipt_pending": True}
+            if writer.get("status") == "saved":
+                confirmed = self._report_weekly_attempt(
+                    export_id, attempt_id, "saved", filename=filename,
+                    byte_size=size, result_hash=digest,
+                )
+                result = {"status": "saved", "bytes": size,
+                          "export_id": export_id, "attempt_id": attempt_id,
+                          "filename": filename, "_receipt_hash": digest}
+                if not confirmed:
+                    result["receipt_pending"] = True
+                return result
+            if writer.get("status") == "unknown":
+                confirmed = self._report_weekly_attempt(
+                    export_id, attempt_id, "indeterminate", filename=filename
+                )
+                return {"status": "unknown", "code": "SAVE_RESULT_UNKNOWN",
+                        "message": "替换已执行但结果无法确认，请核对目标文件",
+                        "export_id": export_id, "attempt_id": attempt_id,
+                        "filename": filename, "receipt_pending": not confirmed,
+                        "_terminal_payload": {"attempt_id": attempt_id,
+                                              "filename": filename,
+                                              "status": "indeterminate",
+                                              "byte_size": 0, "result_hash": None}}
+            confirmed = self._report_weekly_attempt(
+                export_id, attempt_id, "failed", filename=filename
+            )
+            return {"status": "failed", "code": writer.get("code") or "SAVE_FAILED",
+                    "message": writer.get("message") or "文件写入失败",
+                    "export_id": export_id, "attempt_id": attempt_id,
+                    "filename": filename, "receipt_pending": not confirmed}
+        finally:
+            self._release_weekly_resources(reader, temp)
+
+    def _release_weekly_resources(self, reader, temp) -> None:
+        for label, action in (("reader", reader.close), ("temp", temp.abort)):
+            for attempt in range(2):
+                try:
+                    action()
+                    break
+                except Exception as exc:
+                    _host_log(f"weekly cleanup {label} failed: {type(exc).__name__}")
+                    if attempt == 1:
+                        break
+    def _download_weekly_export(self, manager, export_id: str) -> dict:
+        path = f"/api/weekly-exports/{urllib.parse.quote(export_id, safe='')}/content"
+        headers = self._local_headers()
+        headers["Accept"] = WEEKLY_EXPORT_MIME
+        temp = manager.create_owned_temp(owner="host:weekly", suffix=".docx")
+        reader = None
+        connection = None
+        guard = None
+        try:
+            connection = self._local_connection(timeout=WEEKLY_EXPORT_TIMEOUT_SECONDS)
+            guard = _DeadlineGuard(connection, WEEKLY_EXPORT_TIMEOUT_SECONDS)
+            deadline = time.monotonic() + WEEKLY_EXPORT_TIMEOUT_SECONDS
+            per_socket = WEEKLY_EXPORT_TIMEOUT_SECONDS
+            self._set_remaining_timeout(connection, deadline, per_socket)
+            connection.request("GET", path, headers=headers)
+            self._set_remaining_timeout(connection, deadline, per_socket)
+            response = connection.getresponse()
+            guard.attach_response(response)
+            status = response.status
+            if 300 <= status < 400:
+                raise _ExportDownloadError("EXPORT_LOCAL_API_REDIRECT",
+                                           "本地导出服务返回了不允许的重定向")
+            if status != 200:
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_FAILED",
+                                           "下载周计划导出文件失败")
+            if response.getheader("Content-Type") != WEEKLY_EXPORT_MIME:
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                           "周计划导出文件类型无效")
+            if response.getheader("Cache-Control") != "no-store":
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                           "周计划导出缓存策略无效")
+            disposition = str(response.getheader("Content-Disposition") or "")
+            if disposition.split(";", 1)[0].strip().lower() != "attachment":
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                           "周计划导出响应不是附件")
+            length_header = response.getheader("Content-Length")
+            if not isinstance(length_header, str) or not length_header.isdigit():
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                           "周计划导出缺少有效长度")
+            expected_size = int(length_header)
+            if expected_size <= 0 or expected_size > WEEKLY_EXPORT_MAX_BYTES:
+                raise _ExportDownloadError("EXPORT_TOO_LARGE",
+                                           "周计划导出文件超过技术上限")
+            expected_digest = str(response.getheader("X-Content-SHA256") or "")
+            if re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None:
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                           "周计划导出缺少有效摘要")
+            expires_at = _weekly_expiry(response.getheader("X-Export-Expires-At"))
+            hasher = hashlib.sha256()
+            total = 0
+            read1 = getattr(response, "read1", None)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("weekly export download deadline")
+                if connection.sock is not None:
+                    connection.sock.settimeout(min(per_socket, remaining))
+                want = min(OBSERVATION_EXPORT_CHUNK, expected_size + 1 - total)
+                chunk = read1(want) if read1 is not None else response.read(want)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > expected_size:
+                    raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                               "周计划导出长度不一致")
+                hasher.update(chunk)
+                temp.handle.write(chunk)
+            temp.handle.flush()
+            if total != expected_size or hasher.hexdigest() != expected_digest:
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                           "周计划导出长度或摘要不一致")
+            if guard.expired.is_set():
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_TIMEOUT",
+                                           "下载周计划导出文件超时")
+            reader = manager.finish_owned_temp(temp.token)
+            if reader.size != expected_size:
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                           "周计划导出文件大小不一致")
+            problem = _validate_weekly_docx_reader(reader)
+            if problem is not None:
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                           "下载的 Word 文件结构无效")
+            reader.seek(0)
+            completed = True
+            return {"reader": reader, "temp": temp, "digest": expected_digest,
+                    "size": expected_size, "expires_at": expires_at}
+        except _ExportDownloadError:
+            raise
+        except ValueError as exc:
+            raise _ExportDownloadError("EXPORT_DOWNLOAD_INVALID",
+                                       "周计划导出响应无效") from exc
+        except TimeoutError as exc:
+            raise _ExportDownloadError("EXPORT_DOWNLOAD_TIMEOUT",
+                                       "下载周计划导出文件超时") from exc
+        except (OSError, http.client.HTTPException) as exc:
+            if guard is not None and guard.expired.is_set():
+                raise _ExportDownloadError("EXPORT_DOWNLOAD_TIMEOUT",
+                                           "下载周计划导出文件超时") from exc
+            raise _ExportDownloadError("EXPORT_TEMP_WRITE_FAILED",
+                                       "写入周计划导出临时文件失败") from exc
+        finally:
+            if guard is not None:
+                guard.cancel()
+            if connection is not None:
+                connection.close()
+            if not locals().get("completed", False):
+                if reader is not None:
+                    try:
+                        reader.close()
+                    except Exception:
+                        pass
+                try:
+                    temp.abort()
+                except Exception:
+                    pass
+    def _report_weekly_attempt(
+        self, export_id: str, attempt_id: str, status: str, *,
+        filename: str, byte_size: int | None = None,
+        result_hash: str | None = None,
+    ) -> bool:
+        body = {
+            "attempt_id": attempt_id,
+            "filename": filename,
+            "status": status,
+            "byte_size": byte_size if byte_size is not None else 0,
+            "result_hash": result_hash,
+        }
+        try:
+            self._local_json(
+                "POST",
+                f"/api/weekly-exports/{urllib.parse.quote(export_id, safe='')}"
+                f"/attempts/result",
+                body,
+            )
+        except Exception as exc:
+            _host_log(f"weekly export receipt failed: {type(exc).__name__}")
+            return False
+        return True
+
+    def _map_weekly_attempt(self, attempt: dict, export_id: str, filename: str) -> dict:
+        status = attempt.get("status")
+        attempt_id = attempt.get("attempt_id")
+        base = {"export_id": export_id, "filename": filename}
+        if isinstance(attempt_id, str):
+            base["attempt_id"] = attempt_id
+        if status == "saved":
+            return {**base, "status": "saved", "bytes": attempt.get("byte_size")}
+        if status == "cancelled":
+            return {**base, "status": "canceled"}
+        if status == "failed":
+            return {**base, "status": "failed", "code": "WEEKLY_EXPORT_ATTEMPT_FAILED",
+                    "message": "上一次周计划导出保存失败"}
+        if status == "indeterminate":
+            return {**base, "status": "unknown", "code": "SAVE_RESULT_UNKNOWN",
+                    "message": "周计划导出保存结果无法确认"}
+        return {**base, "status": "pending", "code": "SAVE_IN_PROGRESS",
+                "message": "周计划导出保存仍在进行中"}
+    def get_weekly_export_result(self, payload: object = None) -> dict:
+        if not isinstance(payload, dict) or set(payload) != {"export_id", "filename"}:
+            return {"status": "unknown", "code": "INVALID_PAYLOAD"}
+        try:
+            export_id = _weekly_export_id(payload.get("export_id"))
+            filename = _weekly_filename(payload.get("filename"))
+        except ValueError:
+            return {"status": "unknown", "code": "INVALID_PAYLOAD"}
+        record = None
+        local = None
+        with self._save_lock:
+            record = self._weekly_save_records.get(export_id)
+            if record is not None:
+                if record.get("filename") != filename:
+                    return {"status": "failed", "code": "WEEKLY_EXPORT_ATTEMPT_CONFLICT",
+                            "message": "同一导出凭证已用于不同文件名"}
+                if record.get("in_flight"):
+                    return {"status": "pending", "code": "SAVE_IN_PROGRESS",
+                            "export_id": export_id, "filename": filename}
+                local = dict(record.get("result") or {})
+                status = local.get("status")
+                terminal = record.get("terminal_payload")
+                if status in ("saved", "failed", "canceled") or (
+                    status == "unknown" and isinstance(terminal, dict)
+                ):
+                    if local.get("receipt_pending") and self._page_ready and not self._retired and not self._native_io_blocked:
+                        manager = self._weekly_manager_ready()
+                        attempt_id = local.get("attempt_id")
+                        backend_status = {"saved": "saved", "failed": "failed",
+                                          "canceled": "cancelled",
+                                          "unknown": "indeterminate"}.get(status)
+                        if manager is not None and isinstance(attempt_id, str) and backend_status:
+                            local["_receipt_retry"] = backend_status
+                    if not local.get("_receipt_retry"):
+                        return local
+        if record is not None and local is not None and local.get("_receipt_retry"):
+            retry_status = local.pop("_receipt_retry")
+            confirmed = self._report_weekly_attempt(
+                export_id, str(local.get("attempt_id")), retry_status,
+                filename=filename,
+                byte_size=local.get("bytes") if local.get("status") == "saved" else 0,
+                result_hash=record.get("receipt_hash") if local.get("status") == "saved" else None,
+            )
+            with self._save_lock:
+                current = self._weekly_save_records.get(export_id) or {}
+                if confirmed:
+                    local.pop("receipt_pending", None)
+                    current["result"] = dict(local)
+                    current["receipt_hash"] = record.get("receipt_hash")
+                self._weekly_save_records[export_id] = current
+            return local
+        if record is not None and local is not None and local.get("status") in ("unknown", "pending"):
+            if not self._page_ready or self._retired or self._native_io_blocked:
+                return local
+        if not self._page_ready or self._retired or self._native_io_blocked:
+            return {"status": "unknown", "code": "BRIDGE_NOT_READY",
+                    "export_id": export_id, "filename": filename}
+        try:
+            latest = self._local_json(
+                "GET",
+                f"/api/weekly-exports/{urllib.parse.quote(export_id, safe='')}"
+                f"/attempts/latest?filename={urllib.parse.quote(filename, safe='')}",
+            )
+        except _LocalApiError as exc:
+            if exc.code == "EXPORT_NOT_FOUND":
+                return {"status": "unknown", "code": "WEEKLY_EXPORT_NOT_FOUND",
+                        "export_id": export_id, "filename": filename}
+            return {"status": "unknown", "code": exc.code,
+                    "export_id": export_id, "filename": filename}
+        return self._map_weekly_attempt(latest, export_id, filename)
 
     def _local_connection(
         self, *, timeout: float = 30.0

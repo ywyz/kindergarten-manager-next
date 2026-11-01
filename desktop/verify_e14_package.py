@@ -35,12 +35,12 @@ FRONTEND = REPO / "build" / "desktop-e14-win11-r01" / "frontend"
 TEMPLATES = BACKEND / "app" / "assets" / "word_templates"
 MIGRATIONS = BACKEND / "migrations_local"
 ALEMBIC = BACKEND / "alembic-local.ini"
-DATABASE_REVISION = "20261025_0006_local_game_observations"
+DATABASE_REVISION = "20261101_0007_local_weekly"
 APP_VERSION = "0.1.0"
 PACKAGE_FORMAT = "pyinstaller-onedir-zip-v1"
 PLATFORM = "windows"
 ARCH = "x64"
-PYTHON_VERSION = "3.14.7"
+PYTHON_VERSION = "3.14.10"
 APP_ID = "kindergarten-manager-next"
 APP_NAME = "KindergartenManager"
 SOURCE_BUILD_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{APP_ID}:{APP_VERSION}:source"))
@@ -53,6 +53,16 @@ REQUIRED_PILLOW_PLUGINS = (
     "_avif.cp314-win_amd64.pyd",
 )
 ARCHIVE_REQUIRED_MODULES = (
+    "app.local.appearance_service",
+    "app.local.weekly_plan_api",
+    "app.local.weekly_plan_service",
+    "app.local.weekly_plan_sources",
+    "app.local.weekly_plan_content",
+    "app.local.weekly_plan_tokens",
+    "app.local.weekly_plan_operations",
+    "app.local.weekly_plan_snapshot",
+    "app.local.weekly_plan_export_service",
+    "app.local.weekly_plan_export_api",
     "app.local.observation_service",
     "app.local.observation_export_service",
     "app.local.observation_export_api",
@@ -159,7 +169,18 @@ REQUIRED_FREEZE_PATHS = (
     "backend/app/local/credentials.py",
     "backend/app/local/config_tokens.py",
     "backend/app/assets/word_templates/daily_plan.docx",
-    "backend/migrations_local/versions/20261025_0006_local_game_observations.py",
+    "backend/app/assets/word_templates/weekly_plan.docx",
+    "backend/app/local/appearance_service.py",
+    "backend/app/local/weekly_plan_api.py",
+    "backend/app/local/weekly_plan_service.py",
+    "backend/app/local/weekly_plan_sources.py",
+    "backend/app/local/weekly_plan_content.py",
+    "backend/app/local/weekly_plan_tokens.py",
+    "backend/app/local/weekly_plan_operations.py",
+    "backend/app/local/weekly_plan_snapshot.py",
+    "backend/app/local/weekly_plan_export_service.py",
+    "backend/app/local/weekly_plan_export_api.py",
+    "backend/migrations_local/versions/20261101_0007_local_weekly_plans.py",
 )
 REQUIRED_STATIC_CHECKS = (
     "static_no_execution",
@@ -641,6 +662,7 @@ def _package_info_checks(data: Any, expected_product: str) -> dict:
                 "20261017_0004_local.py",
                 "20261023_0005_local_history.py",
                 "20261025_0006_local_game_observations.py",
+                "20261101_0007_local_weekly_plans.py",
             )
         )
     templates = data.get("templates")
@@ -875,9 +897,78 @@ def _code_filenames(code: types.CodeType) -> list[str]:
     return names
 
 
+def _pyinstaller_reader_paths() -> tuple[Path, Path]:
+    """Locate the installed PyInstaller leaf files without importing it.
+
+    Importing ``PyInstaller`` or ``PyInstaller.archive.readers`` executes the
+    top-level package/compat platform probe, which may call WMI and even
+    spawn ``ver``.  Static verification must not launch processes.  The
+    distribution metadata gives us the files directly.
+    """
+    from importlib import metadata
+
+    try:
+        distribution = metadata.distribution("pyinstaller")
+    except metadata.PackageNotFoundError as exc:
+        raise RuntimeError("PyInstaller distribution unavailable") from exc
+    package_root = Path(distribution.locate_file("PyInstaller"))
+    leaf = package_root / "loader" / "pyimod01_archive.py"
+    reader = package_root / "archive" / "readers.py"
+    if not leaf.is_file() or not reader.is_file():
+        raise RuntimeError("PyInstaller archive reader files unavailable")
+    return leaf, reader
+
+
+def _load_carchive_reader():
+    """Load the real installed CArchiveReader with a local leaf dependency.
+
+    ``archive/readers.py`` imports exactly two names from
+    ``PyInstaller.loader.pyimod01_archive``.  That loader leaf is pure stdlib.
+    Bind those names directly in the reader module and execute the installed
+    source, so the real parser is used without importing the PyInstaller
+    parent package or faking its ``sys.modules`` entries.
+    """
+    import importlib.util
+
+    leaf_path, reader_path = _pyinstaller_reader_paths()
+    leaf_source = leaf_path.read_text(encoding="utf-8")
+    if (
+        "class ArchiveReadError" not in leaf_source
+        or "class ZlibArchiveReader" not in leaf_source
+    ):
+        raise RuntimeError("PyInstaller archive leaf incompatible")
+    leaf_spec = importlib.util.spec_from_file_location(
+        "_kgm_pyinstaller_archive_leaf", leaf_path
+    )
+    if leaf_spec is None or leaf_spec.loader is None:
+        raise RuntimeError("PyInstaller archive leaf cannot be loaded")
+    leaf_module = importlib.util.module_from_spec(leaf_spec)
+    leaf_spec.loader.exec_module(leaf_module)
+
+    reader_source = reader_path.read_text(encoding="utf-8")
+    import_line = (
+        "from PyInstaller.loader.pyimod01_archive import "
+        "ZlibArchiveReader, ArchiveReadError"
+    )
+    if reader_source.count(import_line) != 1:
+        raise RuntimeError("PyInstaller archive reader dependency shape incompatible")
+    reader_module = types.ModuleType("_kgm_pyinstaller_archive_reader")
+    reader_module.__file__ = str(reader_path)
+    reader_module.__dict__["ZlibArchiveReader"] = leaf_module.ZlibArchiveReader
+    reader_module.__dict__["ArchiveReadError"] = leaf_module.ArchiveReadError
+    exec(
+        compile(reader_source.replace(import_line, ""), str(reader_path), "exec"),
+        reader_module.__dict__,
+    )
+    reader_class = getattr(reader_module, "CArchiveReader", None)
+    if not isinstance(reader_class, type):
+        raise RuntimeError("PyInstaller CArchiveReader missing")
+    return reader_class
+
+
 def _archive_static_report(package_root: Path, freeze: Mapping[str, Any]) -> dict:
     import d2_same_origin
-    from PyInstaller.archive.readers import CArchiveReader
+    CArchiveReader = _load_carchive_reader()
 
     exe = package_root / f"{package_root.name}.exe"
     result = {
@@ -1631,7 +1722,17 @@ def _source_fingerprints(modules_file: Path) -> dict[str, dict]:  # pragma: no c
         "app.local.restore_service", "app.local.restore_recovery",
         "app.local.restore_group", "app.local.restore_fs",
         "app.local.restore_journal", "app.local.restore_types",
-        "app.local.observation_service", "app.local.observation_export_service",
+        "app.local.appearance_service",
+    "app.local.weekly_plan_api",
+    "app.local.weekly_plan_service",
+    "app.local.weekly_plan_sources",
+    "app.local.weekly_plan_content",
+    "app.local.weekly_plan_tokens",
+    "app.local.weekly_plan_operations",
+    "app.local.weekly_plan_snapshot",
+    "app.local.weekly_plan_export_service",
+    "app.local.weekly_plan_export_api",
+    "app.local.observation_service", "app.local.observation_export_service",
         "app.local.observation_export_api", "app.local.observation_assets",
         "app.local.observation_history_service", "app.local.observation_ai_service",
         "app.services.word_export_observation", "app.local.ai_executor",

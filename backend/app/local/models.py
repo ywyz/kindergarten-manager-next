@@ -68,12 +68,22 @@ class LocalClass(LocalBase):
         CheckConstraint(
             "length(name) BETWEEN 1 AND 80", name="ck_local_classes_name"
         ),
+        CheckConstraint(
+            "caregiver_name IS NULL OR length(caregiver_name) BETWEEN 1 AND 80",
+            name="ck_local_classes_caregiver_name",
+        ),
         UniqueConstraint("name", name="uq_local_classes_name"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     grade: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Ordered, duplicate-preserving header names; service validation enforces
+    # at most 100 items, 1..80 characters each and 32 KiB canonical JSON.
+    header_teacher_names: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    caregiver_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=utc_now, nullable=False
     )
@@ -342,6 +352,13 @@ class LocalSettings(LocalBase):
         CheckConstraint(
             "config_version >= 1", name="ck_local_settings_config_version"
         ),
+        CheckConstraint(
+            "ui_theme IN ('light', 'dark')", name="ck_local_settings_ui_theme"
+        ),
+        CheckConstraint(
+            "typeof(ui_theme_version) = 'integer' AND ui_theme_version >= 1",
+            name="ck_local_settings_ui_theme_version",
+        ),
         UniqueConstraint("singleton", name="uq_local_settings_singleton"),
     )
 
@@ -357,6 +374,14 @@ class LocalSettings(LocalBase):
     # configuration change (never by plan content saves).
     config_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1
+    )
+    # Appearance preference: updated only by the appearance service; it never
+    # changes config_version, calendar/game revisions or business settings.
+    ui_theme: Mapped[str] = mapped_column(
+        String(5), nullable=False, default="light", server_default="light"
+    )
+    ui_theme_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=utc_now, nullable=False
@@ -2246,6 +2271,577 @@ class LocalObservationExportAttempt(LocalBase):
     result_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     byte_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# Desktop weekly plans (engineering spec §2.2)
+# ---------------------------------------------------------------------------
+
+
+class LocalWeeklyPlan(LocalBase):
+    """Immutable weekly-plan identity plus current draft/confirmation pointers."""
+
+    __tablename__ = "local_weekly_plans"
+    __table_args__ = (
+        CheckConstraint(
+            "strftime('%w', week_anchor_date) = '1'",
+            name="ck_local_weekly_plans_anchor_monday",
+        ),
+        CheckConstraint(
+            "typeof(week_number_snapshot) = 'integer' "
+            "AND week_number_snapshot >= 1",
+            name="ck_local_weekly_plans_week_number",
+        ),
+        CheckConstraint(
+            "typeof(current_draft_version) = 'integer' "
+            "AND current_draft_version >= 1",
+            name="ck_local_weekly_plans_draft_version",
+        ),
+        CheckConstraint(
+            "current_confirmed_version IS NULL OR "
+            "(typeof(current_confirmed_version) = 'integer' "
+            "AND current_confirmed_version >= 1)",
+            name="ck_local_weekly_plans_confirmed_version",
+        ),
+        CheckConstraint(
+            "(current_confirmed_id IS NULL AND current_confirmed_version IS NULL) "
+            "OR (current_confirmed_id IS NOT NULL "
+            "AND current_confirmed_version IS NOT NULL)",
+            name="ck_local_weekly_plans_confirmed_pair",
+        ),
+        CheckConstraint(
+            "term_start_date <= term_end_date",
+            name="ck_local_weekly_plans_term_order",
+        ),
+        CheckConstraint(
+            "length(header_hash) = 64",
+            name="ck_local_weekly_plans_header_hash",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id"],
+            ["local_profile.id"],
+            name="fk_local_weekly_plans_profile",
+        ),
+        ForeignKeyConstraint(
+            ["class_id"],
+            ["local_classes.id"],
+            name="fk_local_weekly_plans_class",
+        ),
+        ForeignKeyConstraint(
+            ["term_id"],
+            ["local_terms.id"],
+            name="fk_local_weekly_plans_term",
+        ),
+        ForeignKeyConstraint(
+            ["term_id", "calendar_revision_id"],
+            ["local_calendar_revisions.term_id", "local_calendar_revisions.id"],
+            name="fk_local_weekly_plans_term_revision",
+        ),
+        UniqueConstraint(
+            "class_id", "term_id", "week_anchor_date",
+            name="uq_local_weekly_plans_class_term_week",
+        ),
+        UniqueConstraint(
+            "profile_id", "id", name="uq_local_weekly_plans_profile_id"
+        ),
+        ForeignKeyConstraint(
+            ["id", "current_draft_id", "current_draft_version"],
+            [
+                "local_weekly_plan_contents.weekly_plan_id",
+                "local_weekly_plan_contents.id",
+                "local_weekly_plan_contents.version",
+            ],
+            name="fk_local_weekly_plans_current_draft",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ["id", "current_confirmed_id", "current_confirmed_version"],
+            [
+                "local_weekly_plan_confirmations.weekly_plan_id",
+                "local_weekly_plan_confirmations.id",
+                "local_weekly_plan_confirmations.version",
+            ],
+            name="fk_local_weekly_plans_current_confirmed",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    class_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    term_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    week_anchor_date: Mapped[date] = mapped_column(Date, nullable=False)
+    week_number_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
+    term_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    term_end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    calendar_revision_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    header_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    header_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_draft_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    current_draft_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    current_confirmed_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    current_confirmed_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalWeeklyPlanContent(LocalBase):
+    """Append-only weekly draft content version."""
+
+    __tablename__ = "local_weekly_plan_contents"
+    __table_args__ = (
+        CheckConstraint(
+            "typeof(version) = 'integer' AND version >= 1",
+            name="ck_local_weekly_plan_contents_version",
+        ),
+        CheckConstraint(
+            "schema_version = 1",
+            name="ck_local_weekly_plan_contents_schema_version",
+        ),
+        CheckConstraint(
+            "length(content_hash) = 64",
+            name="ck_local_weekly_plan_contents_hash",
+        ),
+        ForeignKeyConstraint(
+            ["weekly_plan_id"],
+            ["local_weekly_plans.id"],
+            name="fk_local_weekly_plan_contents_plan",
+        ),
+        ForeignKeyConstraint(
+            ["editor_profile_id"],
+            ["local_profile.id"],
+            name="fk_local_weekly_plan_contents_editor",
+        ),
+        UniqueConstraint(
+            "weekly_plan_id", "version",
+            name="uq_local_weekly_plan_contents_plan_version",
+        ),
+        UniqueConstraint(
+            "weekly_plan_id", "id", "version",
+            name="uq_local_weekly_plan_contents_plan_id_version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    weekly_plan_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    editor_profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalWeeklyPlanConfirmation(LocalBase):
+    """Immutable confirmation snapshot of one exact draft version."""
+
+    __tablename__ = "local_weekly_plan_confirmations"
+    __table_args__ = (
+        CheckConstraint(
+            "typeof(version) = 'integer' AND version >= 1",
+            name="ck_local_weekly_plan_confirmations_version",
+        ),
+        CheckConstraint(
+            "typeof(draft_version) = 'integer' AND draft_version >= 1",
+            name="ck_local_weekly_plan_confirmations_draft_version",
+        ),
+        CheckConstraint(
+            "schema_version = 1",
+            name="ck_local_weekly_plan_confirmations_schema_version",
+        ),
+        CheckConstraint(
+            "length(snapshot_hash) = 64",
+            name="ck_local_weekly_plan_confirmations_snapshot_hash",
+        ),
+        CheckConstraint(
+            "length(facts_hash) = 64",
+            name="ck_local_weekly_plan_confirmations_facts_hash",
+        ),
+        ForeignKeyConstraint(
+            ["weekly_plan_id"],
+            ["local_weekly_plans.id"],
+            name="fk_local_weekly_plan_confirmations_plan",
+        ),
+        ForeignKeyConstraint(
+            ["confirmed_by"],
+            ["local_profile.id"],
+            name="fk_local_weekly_plan_confirmations_profile",
+        ),
+        ForeignKeyConstraint(
+            ["weekly_plan_id", "draft_id", "draft_version"],
+            [
+                "local_weekly_plan_contents.weekly_plan_id",
+                "local_weekly_plan_contents.id",
+                "local_weekly_plan_contents.version",
+            ],
+            name="fk_local_weekly_plan_confirmations_draft",
+        ),
+        UniqueConstraint(
+            "weekly_plan_id", "version",
+            name="uq_local_weekly_plan_confirmations_plan_version",
+        ),
+        UniqueConstraint(
+            "weekly_plan_id", "id", "version",
+            name="uq_local_weekly_plan_confirmations_plan_id_version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    weekly_plan_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    draft_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    draft_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    facts_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    facts_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirmed_by: Mapped[str] = mapped_column(String(32), nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalWeeklyPlanOperation(LocalBase):
+    """Business/export idempotency receipt; never a content authority."""
+
+    __tablename__ = "local_weekly_plan_operations"
+    __table_args__ = (
+        CheckConstraint(
+            "length(request_id) BETWEEN 1 AND 36",
+            name="ck_local_weekly_plan_operations_request_id",
+        ),
+        CheckConstraint(
+            "length(input_fingerprint) = 64",
+            name="ck_local_weekly_plan_operations_fingerprint",
+        ),
+        CheckConstraint(
+            "action IN ('create', 'save', 'refresh', 'confirm', "
+            "'export_create', 'export_retry')",
+            name="ck_local_weekly_plan_operations_action",
+        ),
+        CheckConstraint(
+            "result_draft_version IS NULL OR "
+            "(typeof(result_draft_version) = 'integer' "
+            "AND result_draft_version >= 1)",
+            name="ck_local_weekly_plan_operations_draft_version",
+        ),
+        CheckConstraint(
+            "result_confirmed_version IS NULL OR "
+            "(typeof(result_confirmed_version) = 'integer' "
+            "AND result_confirmed_version >= 1)",
+            name="ck_local_weekly_plan_operations_confirmed_version",
+        ),
+        CheckConstraint(
+            "(action IN ('create', 'save', 'refresh') "
+            "AND weekly_plan_id IS NOT NULL "
+            "AND result_draft_id IS NOT NULL "
+            "AND result_draft_version IS NOT NULL "
+            "AND result_confirmed_id IS NULL "
+            "AND result_confirmed_version IS NULL "
+            "AND result_snapshot_id IS NULL AND result_token_id IS NULL) "
+            "OR (action = 'confirm' "
+            "AND weekly_plan_id IS NOT NULL "
+            "AND result_draft_id IS NOT NULL "
+            "AND result_draft_version IS NOT NULL "
+            "AND result_confirmed_id IS NOT NULL "
+            "AND result_confirmed_version IS NOT NULL "
+            "AND result_snapshot_id IS NULL AND result_token_id IS NULL) "
+            "OR (action IN ('export_create', 'export_retry') "
+            "AND weekly_plan_id IS NULL "
+            "AND result_draft_id IS NULL AND result_draft_version IS NULL "
+            "AND result_confirmed_id IS NULL "
+            "AND result_confirmed_version IS NULL "
+            "AND result_snapshot_id IS NOT NULL "
+            "AND result_token_id IS NOT NULL "
+            "AND launch_id IS NOT NULL "
+            "AND session_scope_hash IS NOT NULL "
+            "AND length(session_scope_hash) = 64)",
+            name="ck_local_weekly_plan_operations_result_shape",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id"],
+            ["local_profile.id"],
+            name="fk_local_weekly_plan_operations_profile",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "weekly_plan_id"],
+            ["local_weekly_plans.profile_id", "local_weekly_plans.id"],
+            name="fk_local_weekly_plan_operations_plan",
+        ),
+        ForeignKeyConstraint(
+            ["weekly_plan_id", "result_draft_id", "result_draft_version"],
+            [
+                "local_weekly_plan_contents.weekly_plan_id",
+                "local_weekly_plan_contents.id",
+                "local_weekly_plan_contents.version",
+            ],
+            name="fk_local_weekly_plan_operations_draft",
+        ),
+        ForeignKeyConstraint(
+            ["weekly_plan_id", "result_confirmed_id",
+             "result_confirmed_version"],
+            [
+                "local_weekly_plan_confirmations.weekly_plan_id",
+                "local_weekly_plan_confirmations.id",
+                "local_weekly_plan_confirmations.version",
+            ],
+            name="fk_local_weekly_plan_operations_confirmed",
+        ),
+        ForeignKeyConstraint(
+            ["result_snapshot_id", "profile_id"],
+            [
+                "local_weekly_export_snapshots.id",
+                "local_weekly_export_snapshots.profile_id",
+            ],
+            name="fk_local_weekly_plan_operations_snapshot",
+        ),
+        ForeignKeyConstraint(
+            ["result_token_id", "profile_id"],
+            [
+                "local_weekly_export_tokens.id",
+                "local_weekly_export_tokens.profile_id",
+            ],
+            name="fk_local_weekly_plan_operations_token",
+        ),
+        ForeignKeyConstraint(
+            ["result_token_id", "profile_id", "result_snapshot_id"],
+            [
+                "local_weekly_export_tokens.id",
+                "local_weekly_export_tokens.profile_id",
+                "local_weekly_export_tokens.snapshot_id",
+            ],
+            name="fk_local_weekly_plan_operations_token_snapshot",
+        ),
+        UniqueConstraint(
+            "profile_id", "request_id",
+            name="uq_local_weekly_plan_operations_profile_request",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    weekly_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_draft_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    result_draft_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    result_confirmed_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    result_confirmed_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    result_snapshot_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    result_token_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    launch_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    session_scope_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalWeeklyExportSnapshot(LocalBase):
+    """Frozen weekly export manifest; the id alone is not a credential."""
+
+    __tablename__ = "local_weekly_export_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "length(manifest_hash) = 64",
+            name="ck_local_weekly_export_snapshots_hash",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id"],
+            ["local_profile.id"],
+            name="fk_local_weekly_export_snapshots_profile",
+        ),
+        UniqueConstraint(
+            "id", "profile_id",
+            name="uq_local_weekly_export_snapshots_id_profile",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    launch_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    session_scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), nullable=False
+    )
+
+
+class LocalWeeklyExportToken(LocalBase):
+    """Restricted export bearer token stored only as a digest."""
+
+    __tablename__ = "local_weekly_export_tokens"
+    __table_args__ = (
+        CheckConstraint(
+            "length(token_hash) = 64",
+            name="ck_local_weekly_export_tokens_hash",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "profile_id"],
+            [
+                "local_weekly_export_snapshots.id",
+                "local_weekly_export_snapshots.profile_id",
+            ],
+            name="fk_local_weekly_export_tokens_snapshot",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "snapshot_id", "parent_attempt_id"],
+            [
+                "local_weekly_export_attempts.profile_id",
+                "local_weekly_export_attempts.snapshot_id",
+                "local_weekly_export_attempts.id",
+            ],
+            name="fk_local_weekly_export_tokens_parent_attempt",
+        ),
+        UniqueConstraint(
+            "token_hash", name="uq_local_weekly_export_tokens_hash"
+        ),
+        UniqueConstraint(
+            "id", "profile_id",
+            name="uq_local_weekly_export_tokens_id_profile",
+        ),
+        UniqueConstraint(
+            "id", "profile_id", "snapshot_id",
+            name="uq_local_weekly_export_tokens_id_profile_snapshot",
+        ),
+        Index(
+            "uq_local_weekly_export_tokens_parent",
+            "profile_id", "snapshot_id", "parent_attempt_id",
+            unique=True,
+            sqlite_where=text("parent_attempt_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    snapshot_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), nullable=False
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
+    )
+    parent_attempt_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalWeeklyExportAttempt(LocalBase):
+    """Host-reported native save attempt for one weekly export."""
+
+    __tablename__ = "local_weekly_export_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('in_progress', 'saved', 'cancelled', 'failed', "
+            "'indeterminate')",
+            name="ck_local_weekly_export_attempts_status",
+        ),
+        CheckConstraint(
+            "byte_size IS NOT NULL AND "
+            "(typeof(byte_size) = 'integer' AND byte_size >= 0)",
+            name="ck_local_weekly_export_attempts_size",
+        ),
+        CheckConstraint(
+            "(status = 'saved' AND byte_size > 0 "
+            "AND result_hash IS NOT NULL AND length(result_hash) = 64) "
+            "OR (status <> 'saved' AND byte_size = 0 "
+            "AND result_hash IS NULL)",
+            name="ck_local_weekly_export_attempts_result_shape",
+        ),
+        CheckConstraint(
+            "length(export_id_hash) = 64",
+            name="ck_local_weekly_export_attempts_export_hash",
+        ),
+        CheckConstraint(
+            "length(filename_fingerprint) = 64",
+            name="ck_local_weekly_export_attempts_filename",
+        ),
+        CheckConstraint(
+            "result_hash IS NULL OR length(result_hash) = 64",
+            name="ck_local_weekly_export_attempts_result_hash",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "profile_id"],
+            [
+                "local_weekly_export_snapshots.id",
+                "local_weekly_export_snapshots.profile_id",
+            ],
+            name="fk_local_weekly_export_attempts_snapshot",
+        ),
+        ForeignKeyConstraint(
+            ["token_id", "profile_id", "snapshot_id"],
+            [
+                "local_weekly_export_tokens.id",
+                "local_weekly_export_tokens.profile_id",
+                "local_weekly_export_tokens.snapshot_id",
+            ],
+            name="fk_local_weekly_export_attempts_token",
+        ),
+        UniqueConstraint(
+            "profile_id", "export_id_hash",
+            name="uq_local_weekly_export_attempts_profile_export",
+        ),
+        UniqueConstraint(
+            "profile_id", "snapshot_id", "id",
+            name="uq_local_weekly_export_attempts_profile_snapshot_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    snapshot_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    export_id_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    filename_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    result_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    byte_size: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), nullable=False
+    )
     ended_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
     )

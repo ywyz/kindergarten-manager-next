@@ -96,6 +96,7 @@ class SnapshotService:
         source_identity: dict[str, Any],
         executor=None,
         external_quiesce: Callable[[threading.Event], bool] | None = None,
+        weekly_export_manager: Any = None,
     ):
         self.runtime = runtime
         self.app_version = str(app_version)
@@ -104,6 +105,7 @@ class SnapshotService:
             executor if executor is not None else getattr(runtime, "ai_executor", None)
         )
         self.external_quiesce = external_quiesce
+        self.weekly_export_manager = weekly_export_manager
 
     # -- public API ------------------------------------------------------
     def create(
@@ -156,11 +158,14 @@ class SnapshotService:
             parent_guard.close()
             raise
         snapshot_id = uuid.uuid4().hex
+        weekly_owner = f"snapshot:{snapshot_id}"
         lease = None
         frozen = False
         committed = False
         primary: BaseException | None = None
         try:
+            if self.weekly_export_manager is not None:
+                self.weekly_export_manager.pause(owner=weekly_owner)
             self._assert_output_safe(output, parent_guard)
             barrier = backup_barrier.get_barrier(self.runtime.data_dir)
             lease = barrier.begin_intent(snapshot_id, cancel=cancel)
@@ -208,6 +213,11 @@ class SnapshotService:
                     )
             if lease is not None:
                 lease.release()
+            if self.weekly_export_manager is not None:
+                try:
+                    self.weekly_export_manager.resume(owner=weekly_owner)
+                except Exception:  # noqa: BLE001 - preserve primary
+                    pass
             cleanup_error: BaseException | None = None
             try:
                 if work is not None:
@@ -565,18 +575,24 @@ class SnapshotService:
                 out.flush()
                 os.fsync(out.fileno())
             schema_dir = work.subdir("schema")
-            facts = backup_validate.validate_database(
-                db_path,
-                migrate_old=True,
-                require_current=False,
-                scratch_dir=schema_dir,
+            # Validate the original revision/schema/hash/resources before any
+            # migration of the isolated copy.  A bad package is refused here,
+            # not after it has already been upgraded.
+            source_facts = backup_validate.inspect_source_database(
+                db_path, scratch_dir=schema_dir
             )
             backup_validate.validate_manifest(
                 manifest,
                 source_db_path=source_path,
                 resources_root=extracted,
-                facts=facts,
+                facts=source_facts,
                 cancel=cancel,
+            )
+            facts = backup_validate.validate_database(
+                db_path,
+                migrate_old=True,
+                require_current=False,
+                scratch_dir=schema_dir,
             )
             self._progress(progress, "verify", 1, 1, "校验完成")
             result = VerifiedSnapshot(

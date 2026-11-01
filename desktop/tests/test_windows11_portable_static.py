@@ -322,7 +322,7 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         "package": "KGNext-E14",
         "version": "0.1.0",
         "build_id": build_id,
-        "database_revision": "20261025_0006_local_game_observations",
+        "database_revision": "20261101_0007_local_weekly",
         "unsigned_internal_test": True,
         "source_commit": "b" * 40,
         "frontend_digest": "c" * 64,
@@ -342,7 +342,7 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         "schema_version": 1,
         "package": "KGNext-E14",
         "build_id": build_id,
-        "database_revision": "20261025_0006_local_game_observations",
+        "database_revision": "20261101_0007_local_weekly",
         "source_freeze_digest": freeze_digest,
         "generated_at": "2026-10-31T01:00:00+00:00",
         "files": [
@@ -725,6 +725,155 @@ def test_static_package_fresh_harness_no_process_and_fail_closed(tmp_path):
     assert checks["migration_0006"] is False
     assert report["missing_checks"] or report["failed_checks"]
 
+
+
+def _synthetic_pyz(modules: dict[str, bytes]) -> bytes:
+    import importlib.util
+    import marshal
+    import struct
+    import zlib
+
+    header = b"PYZ\0" + importlib.util.MAGIC_NUMBER + b"\0\0\0\0"
+    body = bytearray()
+    toc: dict[str, tuple[int, int, int]] = {}
+    for name, marshalled in modules.items():
+        payload = zlib.compress(marshalled)
+        offset = len(header) + len(body)
+        body.extend(payload)
+        toc[name] = (0, offset, len(payload))
+    toc_offset = len(header) + len(body)
+    body.extend(marshal.dumps(toc))
+    return header[:8] + struct.pack("!i", toc_offset) + bytes(body)
+
+
+def _synthetic_carchive(path: Path) -> None:
+    import marshal
+    import struct
+
+    d1_code = compile("value = 1\n", "synthetic_d1.py", "exec")
+    module_code = compile("answer = 42\n", "synthetic_module.py", "exec")
+    pyz = _synthetic_pyz({"synthetic.module": marshal.dumps(module_code)})
+    entries = [
+        ("d1_main", marshal.dumps(d1_code), "m"),
+        ("PYZ.pyz", pyz, "z"),
+    ]
+    payload = bytearray()
+    toc_entries = []
+    for name, data, typecode in entries:
+        offset = len(payload)
+        payload.extend(data)
+        encoded_name = name.encode("utf-8")
+        encoded_name += b"\0" * ((-len(encoded_name)) % 16)
+        toc_entries.append(
+            struct.pack(
+                "!IIIIBc",
+                struct.calcsize("!IIIIBc") + len(encoded_name),
+                offset,
+                len(data),
+                len(data),
+                0,
+                typecode.encode("ascii"),
+            )
+            + encoded_name
+        )
+    toc = b"".join(toc_entries)
+    toc_offset = len(payload)
+    payload.extend(toc)
+    cookie_format = "!8sIIII64s"
+    cookie_length = struct.calcsize(cookie_format)
+    path.write_bytes(
+        bytes(payload)
+        + struct.pack(
+            cookie_format,
+            b"MEI\014\013\012\013\016",
+            len(payload) + cookie_length,
+            toc_offset,
+            len(toc),
+            314,
+            b"python314.dll".ljust(64, b"\0"),
+        )
+    )
+
+
+def test_archive_reader_uses_locked_leaf_without_host_probe_or_process(
+    monkeypatch, tmp_path
+):
+    import marshal
+    import os
+    import platform
+    import subprocess
+
+    import verify_e14_package as package_verifier
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("host platform probe or process launch forbidden")
+
+    for name in (
+        "win32_ver",
+        "system",
+        "release",
+        "version",
+        "machine",
+        "platform",
+        "uname",
+    ):
+        if hasattr(platform, name):
+            monkeypatch.setattr(platform, name, forbidden)
+    if hasattr(os, "system"):
+        monkeypatch.setattr(os, "system", forbidden)
+    if hasattr(os, "startfile"):
+        monkeypatch.setattr(os, "startfile", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    if hasattr(sys, "getwindowsversion"):
+        monkeypatch.setattr(sys, "getwindowsversion", forbidden)
+
+    reader_class = package_verifier._load_carchive_reader()
+    assert reader_class.__module__ == "_kgm_pyinstaller_archive_reader"
+    archive_path = tmp_path / "synthetic.exe"
+    _synthetic_carchive(archive_path)
+    reader = reader_class(str(archive_path))
+    assert {"d1_main", "PYZ.pyz"} <= set(reader.toc)
+    entry = marshal.loads(reader.extract("d1_main"))
+    assert entry.co_filename == "synthetic_d1.py"
+    pyz = reader.open_embedded_archive("PYZ.pyz")
+    assert "synthetic.module" in pyz.toc
+    module = pyz.extract("synthetic.module")
+    assert module.co_filename == "synthetic_module.py"
+
+    package = tmp_path / "KGNext-E14"
+    package.mkdir()
+    (package / "KGNext-E14.exe").write_bytes(b"MZ")
+    report = package_verifier._archive_static_report(package, {})
+    assert report["readable"] is False
+    assert report["error"]
+
+
+def test_archive_reader_fails_closed_without_distribution(monkeypatch):
+    from importlib import metadata
+
+    import verify_e14_package as package_verifier
+
+    def missing(name):
+        raise metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(metadata, "distribution", missing)
+    with pytest.raises(RuntimeError, match="distribution unavailable"):
+        package_verifier._load_carchive_reader()
+
+
+def test_archive_reader_fails_closed_on_incompatible_leaf(monkeypatch, tmp_path):
+    import verify_e14_package as package_verifier
+
+    leaf = tmp_path / "pyimod01_archive.py"
+    reader = tmp_path / "readers.py"
+    leaf.write_text("VALUE = 1\n", encoding="utf-8")
+    reader.write_text("VALUE = 2\n", encoding="utf-8")
+    monkeypatch.setattr(
+        package_verifier, "_pyinstaller_reader_paths", lambda: (leaf, reader)
+    )
+    with pytest.raises(RuntimeError, match="leaf incompatible"):
+        package_verifier._load_carchive_reader()
 
 
 def _wrong_manifest_sha(values):

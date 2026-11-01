@@ -166,6 +166,10 @@ def context_payload(context: LocalContext) -> dict:
             "id": context.school_class.id,
             "name": context.school_class.name,
             "grade": context.school_class.grade,
+            "header_teacher_names": list(
+                context.school_class.header_teacher_names or ()
+            ),
+            "caregiver_name": context.school_class.caregiver_name,
         },
         "config_version": context.settings.config_version,
         "as_of_date": context.as_of_date.isoformat(),

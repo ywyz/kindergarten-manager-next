@@ -28,8 +28,9 @@ for override-only changes and effective state is always override or base.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
@@ -60,6 +61,7 @@ from app.local.models import (
     LocalProfile,
     LocalSettings,
     LocalTerm,
+    LocalWeeklyPlan,
 )
 from app.local.normalize import normalize_display_name, normalize_request_id
 from app.local.profile_service import _term_revision, require_context
@@ -82,6 +84,50 @@ MAX_LOCATIONS_PER_KIND = 30
 MAX_GAME_NAME_CHARS = 80
 MAX_LOCATION_GUIDANCE_CHARS = 2000
 MAX_GAME_TEXT_CHARS = 8000
+MAX_HEADER_TEACHER_NAMES = 100
+MAX_HEADER_TEACHER_NAME_CHARS = 80
+MAX_HEADER_TEACHER_NAMES_BYTES = 32 * 1024
+
+# Distinguishes an omitted optional field from an explicit clear.
+_OMITTED = object()
+
+
+def _normalize_header_teacher_names(value: object) -> list[str]:
+    if not isinstance(value, list):
+        raise LocalValidationError("header_teacher_names 必须是数组")
+    if len(value) > MAX_HEADER_TEACHER_NAMES:
+        raise LocalValidationError(
+            f"header_teacher_names 最多 {MAX_HEADER_TEACHER_NAMES} 项"
+        )
+    names: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise LocalValidationError("header_teacher_names 每项必须是字符串")
+        name = item.strip()
+        if not (1 <= len(name) <= MAX_HEADER_TEACHER_NAME_CHARS):
+            raise LocalValidationError("教师姓名长度应为 1–80 个字符")
+        if "\x00" in name:
+            raise LocalValidationError("教师姓名不得包含 NUL")
+        names.append(name)
+    encoded = json.dumps(
+        names, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    if len(encoded) > MAX_HEADER_TEACHER_NAMES_BYTES:
+        raise LocalValidationError("header_teacher_names 超过 32KiB 上限")
+    return names
+
+
+def _normalize_caregiver_name(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise LocalValidationError("caregiver_name 必须是字符串或 null")
+    name = value.strip()
+    if name == "":
+        return None
+    if len(name) > 80:
+        raise LocalValidationError("保育员姓名不能超过 80 个字符")
+    return name
 
 _REASON_ORDER = (
     "header_retained",
@@ -149,7 +195,16 @@ def normalize_change(change: object) -> dict:
             grade = cfg.normalize_grade(change.get("grade"))
         except ValidationError as exc:
             raise LocalValidationError(str(exc)) from None
-        return {"kind": "current_class", "name": name, "grade": grade}
+        normalized: dict = {"kind": "current_class", "name": name, "grade": grade}
+        header = change.get("header_teacher_names", _OMITTED)
+        if header is not _OMITTED:
+            normalized["header_teacher_names"] = _normalize_header_teacher_names(
+                header
+            )
+        caregiver = change.get("caregiver_name", _OMITTED)
+        if caregiver is not _OMITTED:
+            normalized["caregiver_name"] = _normalize_caregiver_name(caregiver)
+        return normalized
     if kind == "term_create":
         return _normalize_term_fields({"kind": "term_create"}, change)
     if kind == "term_update":
@@ -306,6 +361,19 @@ class PlanSnapshot:
 
 
 @dataclass(frozen=True)
+class WeeklyPlanSnapshot:
+    id: str
+    week_anchor_date: date
+    term_id: str
+    week_number_snapshot: int
+    term_start_date: date
+    term_end_date: date
+    header_json: dict
+    current_draft_version: int
+    current_confirmed_version: int | None
+
+
+@dataclass(frozen=True)
 class ConfigSnapshot:
     config_version: int
     profile_id: str
@@ -314,6 +382,8 @@ class ConfigSnapshot:
     class_id: str
     class_name: str
     grade: str
+    header_teacher_names: tuple[str, ...]
+    caregiver_name: str | None
     terms: tuple[TermSnapshot, ...]
     target_term: TermSnapshot | None
     # Materialized day maps, keyed by term id, loaded only where the change
@@ -322,6 +392,8 @@ class ConfigSnapshot:
     days_by_term: dict[str, tuple[DaySnapshot, ...]]
     plans: tuple[PlanSnapshot, ...]
     total_plan_count: int
+    weekly_plans: tuple[WeeklyPlanSnapshot, ...]
+    total_weekly_plan_count: int
     # Current class game payload, materialized only for a ``class_games``
     # change (None keeps every other change's premise digest unchanged).
     game_payload: dict | None = None
@@ -403,6 +475,24 @@ def _plan_window(
     return day, day
 
 
+def _weekly_plan_window(
+    normalized: dict, target: TermSnapshot | None
+) -> tuple[date, date] | None:
+    kind = normalized["kind"]
+    if kind in ("profile", "current_class", "class_games"):
+        return None
+    if kind == "term_create":
+        return (
+            date.fromisoformat(normalized["start_date"]),
+            date.fromisoformat(normalized["end_date"]),
+        )
+    if kind == "term_update":
+        assert target is not None
+        return _term_update_window(normalized, target)
+    day = date.fromisoformat(normalized["date"])
+    return day, day
+
+
 def load_snapshot(session: Session, normalized: dict) -> ConfigSnapshot:
     """Materialize the configuration premises (caller holds a read scope)."""
     context = require_context(session, date.today())
@@ -473,6 +563,43 @@ def load_snapshot(session: Session, normalized: dict) -> ConfigSnapshot:
         )
         or 0
     )
+    weekly_conditions = [
+        LocalWeeklyPlan.class_id == context.school_class.id,
+    ]
+    weekly_window = _weekly_plan_window(normalized, target)
+    if weekly_window is not None:
+        weekly_start, weekly_end = weekly_window
+        weekly_conditions.append(
+            LocalWeeklyPlan.week_anchor_date >= weekly_start - timedelta(days=6)
+        )
+        weekly_conditions.append(LocalWeeklyPlan.week_anchor_date <= weekly_end)
+    weekly_rows = session.scalars(
+        select(LocalWeeklyPlan)
+        .where(*weekly_conditions)
+        .order_by(LocalWeeklyPlan.week_anchor_date, LocalWeeklyPlan.id)
+    ).all()
+    weekly_plans = tuple(
+        WeeklyPlanSnapshot(
+            id=row.id,
+            week_anchor_date=row.week_anchor_date,
+            term_id=row.term_id,
+            week_number_snapshot=row.week_number_snapshot,
+            term_start_date=row.term_start_date,
+            term_end_date=row.term_end_date,
+            header_json=dict(row.header_json),
+            current_draft_version=row.current_draft_version,
+            current_confirmed_version=row.current_confirmed_version,
+        )
+        for row in weekly_rows
+    )
+    total_weekly = (
+        session.scalar(
+            select(func.count())
+            .select_from(LocalWeeklyPlan)
+            .where(LocalWeeklyPlan.class_id == context.school_class.id)
+        )
+        or 0
+    )
     game_payload: dict | None = None
     if kind == "class_games":
         game_head = session.get(LocalClassGameHead, context.school_class.id)
@@ -492,11 +619,17 @@ def load_snapshot(session: Session, normalized: dict) -> ConfigSnapshot:
         class_id=context.school_class.id,
         class_name=context.school_class.name,
         grade=context.school_class.grade,
+        header_teacher_names=tuple(
+            context.school_class.header_teacher_names or ()
+        ),
+        caregiver_name=context.school_class.caregiver_name,
         terms=terms,
         target_term=target,
         days_by_term=days_by_term,
         plans=plans,
         total_plan_count=int(total),
+        weekly_plans=weekly_plans,
+        total_weekly_plan_count=int(total_weekly),
         game_payload=game_payload,
     )
 
@@ -545,10 +678,23 @@ def is_changed(snapshot: ConfigSnapshot, normalized: dict) -> bool:
             or normalized["school_name"] != snapshot.school_name
         )
     if kind == "current_class":
-        return (
+        if (
             normalized["name"] != snapshot.class_name
             or normalized["grade"] != snapshot.grade
-        )
+        ):
+            return True
+        if (
+            "header_teacher_names" in normalized
+            and tuple(normalized["header_teacher_names"])
+            != snapshot.header_teacher_names
+        ):
+            return True
+        if (
+            "caregiver_name" in normalized
+            and normalized["caregiver_name"] != snapshot.caregiver_name
+        ):
+            return True
+        return False
     if kind == "term_create":
         return True
     if kind == "term_update":
@@ -760,6 +906,8 @@ def _snapshot_payload(snapshot: ConfigSnapshot) -> dict:
             "id": snapshot.class_id,
             "name": snapshot.class_name,
             "grade": snapshot.grade,
+            "header_teacher_names": list(snapshot.header_teacher_names),
+            "caregiver_name": snapshot.caregiver_name,
         },
         "terms": [
             {
@@ -786,6 +934,21 @@ def _snapshot_payload(snapshot: ConfigSnapshot) -> dict:
                 "content_version": plan.content_version,
             }
             for plan in snapshot.plans
+        ],
+        "weekly_plan_total_count": snapshot.total_weekly_plan_count,
+        "weekly_plans": [
+            {
+                "id": plan.id,
+                "week_anchor_date": plan.week_anchor_date,
+                "term_id": plan.term_id,
+                "week_number_snapshot": plan.week_number_snapshot,
+                "term_start_date": plan.term_start_date,
+                "term_end_date": plan.term_end_date,
+                "header": plan.header_json,
+                "current_draft_version": plan.current_draft_version,
+                "current_confirmed_version": plan.current_confirmed_version,
+            }
+            for plan in snapshot.weekly_plans
         ],
     }
     if snapshot.game_payload is not None:
@@ -929,10 +1092,25 @@ def _before_after(
             },
         )
     if kind == "current_class":
-        return (
-            {"name": snapshot.class_name, "grade": snapshot.grade},
-            {"name": normalized["name"], "grade": normalized["grade"]},
-        )
+        before = {
+            "name": snapshot.class_name,
+            "grade": snapshot.grade,
+            "header_teacher_names": list(snapshot.header_teacher_names),
+            "caregiver_name": snapshot.caregiver_name,
+        }
+        after = {
+            "name": normalized["name"],
+            "grade": normalized["grade"],
+            "header_teacher_names": list(
+                normalized.get(
+                    "header_teacher_names", snapshot.header_teacher_names
+                )
+            ),
+            "caregiver_name": normalized.get(
+                "caregiver_name", snapshot.caregiver_name
+            ),
+        }
+        return before, after
     if kind == "term_create":
         return (
             None,
@@ -1029,6 +1207,72 @@ def _calendar_diff(
     return [_diff_item(target_date, before, after)]
 
 
+def _weekly_impact_view(
+    snapshot: ConfigSnapshot, normalized: dict
+) -> list[dict]:
+    kind = normalized["kind"]
+    target_id = normalized.get("term_id") if kind == "term_update" else None
+    result: list[dict] = []
+    for plan in snapshot.weekly_plans:
+        reasons: list[str] = []
+        term_start: date | None = None
+        term_end: date | None = None
+        for term in snapshot.terms:
+            if term.id != plan.term_id:
+                continue
+            if kind == "term_update" and term.id == target_id:
+                term_start = date.fromisoformat(normalized["start_date"])
+                term_end = date.fromisoformat(normalized["end_date"])
+            else:
+                term_start = term.start_date
+                term_end = term.end_date
+            break
+        eligible = False
+        if term_start is not None and term_end is not None:
+            eligible = (
+                plan.week_anchor_date >= cal.week_anchor(term_start)
+                and plan.week_anchor_date <= term_end
+                and plan.week_anchor_date + timedelta(days=6) >= term_start
+            )
+        if kind in ("profile", "current_class"):
+            reasons = ["weekly_header_retained"]
+        elif kind == "term_update":
+            reasons = ["weekly_creation_context_retained"]
+            if not eligible:
+                reasons.append("weekly_anchor_outside_new_term")
+        elif kind == "term_create":
+            # The new term has no existing plans; an old week belongs to its
+            # own term and must never inherit the new term's range.
+            reasons = ["weekly_creation_context_retained"]
+            if not eligible:
+                reasons.append("weekly_anchor_outside_own_term")
+        elif kind == "calendar_override":
+            day = date.fromisoformat(normalized["date"])
+            if (
+                plan.term_id == normalized.get("term_id")
+                and plan.week_anchor_date
+                <= day
+                <= plan.week_anchor_date + timedelta(days=6)
+            ):
+                reasons = ["weekly_calendar_override_in_week"]
+        result.append(
+            {
+                "id": plan.id,
+                "week_anchor_date": plan.week_anchor_date.isoformat(),
+                "term_id": plan.term_id,
+                "week_number_snapshot": plan.week_number_snapshot,
+                "term_start_date": plan.term_start_date.isoformat(),
+                "term_end_date": plan.term_end_date.isoformat(),
+                "current_draft_version": plan.current_draft_version,
+                "current_confirmed_version": plan.current_confirmed_version,
+                "header_retained": True,
+                "creation_context_retained": True,
+                "creation_eligible_after": eligible,
+                "reasons": reasons,
+            }
+        )
+    return result
+
 def _impact_view(
     snapshot: ConfigSnapshot, normalized: dict, candidate: ConfigCandidate
 ) -> dict:
@@ -1038,10 +1282,15 @@ def _impact_view(
         return {
             "retained_header_count": snapshot.total_plan_count,
             "affected_plans": [],
+            "weekly_plans": [],
+            "weekly_retained_header_count": snapshot.total_weekly_plan_count,
             "counts": {
                 "existing_plan_count": snapshot.total_plan_count,
                 "affected_plan_count": 0,
                 "by_reason": {},
+                "weekly_plan_count": snapshot.total_weekly_plan_count,
+                "affected_weekly_plan_count": 0,
+                "weekly_by_reason": {},
             },
         }
     maps = _day_maps(snapshot)
@@ -1078,13 +1327,20 @@ def _impact_view(
                 "reasons": reasons,
             }
         )
+    weekly_affected = _weekly_impact_view(snapshot, normalized)
     by_reason: dict[str, int] = {}
     for item in affected:
         for reason in item["reasons"]:
             by_reason[reason] = by_reason.get(reason, 0) + 1
+    weekly_by_reason: dict[str, int] = {}
+    for item in weekly_affected:
+        for reason in item["reasons"]:
+            weekly_by_reason[reason] = weekly_by_reason.get(reason, 0) + 1
     return {
         "retained_header_count": snapshot.total_plan_count,
         "affected_plans": affected,
+        "weekly_plans": weekly_affected,
+        "weekly_retained_header_count": snapshot.total_weekly_plan_count,
         "counts": {
             "existing_plan_count": (
                 snapshot.total_plan_count
@@ -1093,6 +1349,11 @@ def _impact_view(
             ),
             "affected_plan_count": len(affected),
             "by_reason": by_reason,
+            "weekly_plan_count": snapshot.total_weekly_plan_count,
+            "affected_weekly_plan_count": sum(
+                1 for item in weekly_affected if item["reasons"]
+            ),
+            "weekly_by_reason": weekly_by_reason,
         },
     }
 
@@ -1400,6 +1661,12 @@ def _apply_change(
             raise LocalStorageError("当前班级缺失")
         school_class.name = normalized["name"]
         school_class.grade = normalized["grade"]
+        if "header_teacher_names" in normalized:
+            school_class.header_teacher_names = list(
+                normalized["header_teacher_names"]
+            )
+        if "caregiver_name" in normalized:
+            school_class.caregiver_name = normalized["caregiver_name"]
         school_class.updated_at = now
         target_id = school_class.id
     elif kind == "term_create":

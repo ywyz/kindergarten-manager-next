@@ -15,6 +15,8 @@ export interface LocalClassInfo {
   id: string
   name: string
   grade: 'small' | 'middle' | 'large'
+  header_teacher_names: string[]
+  caregiver_name: string | null
 }
 
 export interface LocalTerm {
@@ -142,7 +144,13 @@ export interface GameLocation {
 
 export type ConfigChange =
   | { kind: 'profile'; display_name: string; school_name: string | null }
-  | { kind: 'current_class'; name: string; grade: 'small' | 'middle' | 'large' }
+  | {
+      kind: 'current_class'
+      name: string
+      grade: 'small' | 'middle' | 'large'
+      header_teacher_names: string[]
+      caregiver_name: string | null
+    }
   | { kind: 'term_create'; name: string; start_date: string; end_date: string }
   | {
       kind: 'term_update'
@@ -186,13 +194,33 @@ export interface ConfigAffectedPlan {
   reasons: string[]
 }
 
+export interface ConfigAffectedWeeklyPlan {
+  id: string
+  week_anchor_date: string
+  term_id: string
+  week_number_snapshot: number
+  term_start_date: string
+  term_end_date: string
+  current_draft_version: number
+  current_confirmed_version: number | null
+  header_retained: boolean
+  creation_context_retained: boolean
+  creation_eligible_after: boolean
+  reasons: string[]
+}
+
 export interface ConfigImpact {
   retained_header_count: number
   affected_plans: ConfigAffectedPlan[]
+  weekly_plans: ConfigAffectedWeeklyPlan[]
+  weekly_retained_header_count: number
   counts: {
     existing_plan_count?: number
     affected_plan_count?: number
     by_reason?: Record<string, number>
+    weekly_plan_count?: number
+    affected_weekly_plan_count?: number
+    weekly_by_reason?: Record<string, number>
   }
 }
 

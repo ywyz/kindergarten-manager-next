@@ -1111,3 +1111,175 @@ def test_unknown_query_and_foreign_generation_do_not_match(host):
     assert host.query({"operation_id": "not-an-op", "generation": ref["generation"]}) == {
         "state": "unknown"
     }
+
+
+class FakeWeeklyManager:
+    """Trusted A-wiring fake; never evidence that D's manager is integrated."""
+
+    def __init__(self, *, block_resume_suffix: str | None = None):
+        self.owners: set[str] = set()
+        self.pause_calls: list[str] = []
+        self.resume_calls: list[str] = []
+        self.wait_calls: list[float] = []
+        self.block_resume_suffix = block_resume_suffix
+        self.resume_entered = threading.Event()
+        self.resume_release = threading.Event()
+        self.resume_release.set()
+        self._lock = threading.Lock()
+
+    def pause(self, *, owner: str) -> None:
+        self.pause_calls.append(owner)
+        with self._lock:
+            self.owners.add(owner)
+
+    def resume(self, *, owner: str) -> None:
+        self.resume_calls.append(owner)
+        if self.block_resume_suffix and owner.endswith(self.block_resume_suffix):
+            self.resume_entered.set()
+            assert self.resume_release.wait(3.0)
+        with self._lock:
+            self.owners.discard(owner)
+
+    def wait_idle(self, *, timeout: float = 60.0, cancel=None) -> bool:
+        self.wait_calls.append(timeout)
+        return True
+
+    def owner_snapshot(self) -> set[str]:
+        with self._lock:
+            return set(self.owners)
+
+
+def wait_owners(manager: FakeWeeklyManager, expected: set[str], timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if manager.owner_snapshot() == expected:
+            return
+        time.sleep(0.01)
+    raise AssertionError(
+        f"owners {manager.owner_snapshot()} != {expected}"
+    )
+
+
+class BrokenThread:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def start(self) -> None:
+        raise RuntimeError("synthetic thread start failure")
+
+
+def test_backup_thread_start_failure_releases_owner_and_terminalizes(monkeypatch):
+    manager = FakeWeeklyManager()
+    host = mh.MaintenanceHost(
+        backup_service=FakeBackup(), weekly_export_manager=manager
+    )
+    target = host.register_target(
+        Path("C:/synthetic/backup.kgmbackup"), "backup.kgmbackup"
+    )
+    monkeypatch.setattr(mh.threading, "Thread", BrokenThread)
+    with pytest.raises(mh.MaintenanceHostError) as exc:
+        host.start_backup(
+            request_id="start-fail-backup",
+            target_id=target["target_id"],
+            password=None,
+            explicit_plaintext=True,
+        )
+    assert exc.value.code == "HOST_WORKER_START_FAILED"
+    assert manager.owner_snapshot() == set()
+    assert host.has_active_operation() is False
+    status = host.query({"request_id": "start-fail-backup"})["status"]
+    assert status["phase"] == "error"
+    assert status["error"]["code"] == "HOST_WORKER_START_FAILED"
+
+
+def test_preview_thread_start_failure_releases_owner_and_terminalizes(monkeypatch):
+    manager = FakeWeeklyManager()
+    host = mh.MaintenanceHost(
+        backup_service=FakeBackup(),
+        restore_core=FakeCore(),
+        weekly_export_manager=manager,
+    )
+    selection = _selection(host)
+    monkeypatch.setattr(mh.threading, "Thread", BrokenThread)
+    with pytest.raises(mh.MaintenanceHostError) as exc:
+        host.start_restore_verify(
+            request_id="start-fail-verify",
+            selection_id=selection["selection_id"],
+            password=None,
+        )
+    assert exc.value.code == "HOST_WORKER_START_FAILED"
+    assert manager.owner_snapshot() == set()
+    assert host.has_active_operation() is False
+    status = host.query({"request_id": "start-fail-verify"})["status"]
+    assert status["phase"] == "error"
+    assert status["error"]["code"] == "HOST_WORKER_START_FAILED"
+
+
+def test_install_thread_start_failure_releases_owner_and_terminalizes(monkeypatch):
+    manager = FakeWeeklyManager()
+    host = mh.MaintenanceHost(
+        backup_service=FakeBackup(),
+        restore_core=FakeCore(),
+        weekly_export_manager=manager,
+    )
+    selection = _selection(host)
+    ref = host.start_restore_verify(
+        request_id="verify-before-install-start-fail",
+        selection_id=selection["selection_id"],
+        password=None,
+    )
+    wait_phase(host, "verify-before-install-start-fail", {"preview"})
+    wait_owners(manager, set())
+    monkeypatch.setattr(mh.threading, "Thread", BrokenThread)
+    with pytest.raises(mh.MaintenanceHostError) as exc:
+        host.confirm_restore(
+            request_id="start-fail-install",
+            operation_id=ref["operation_id"],
+            generation=ref["generation"],
+            confirmation_token="preview-1",
+        )
+    assert exc.value.code == "HOST_WORKER_START_FAILED"
+    assert manager.owner_snapshot() == set()
+    assert host.has_active_operation() is False
+    status = host.query({"request_id": "start-fail-install"})["status"]
+    assert status["phase"] == "error"
+    assert status["error"]["code"] == "HOST_WORKER_START_FAILED"
+
+
+def test_preview_finally_cannot_release_new_install_owner():
+    manager = FakeWeeklyManager(block_resume_suffix=":verify")
+    manager.resume_release.clear()
+    core = FakeCore()
+    host = mh.MaintenanceHost(
+        backup_service=FakeBackup(),
+        restore_core=core,
+        weekly_export_manager=manager,
+    )
+    selection = _selection(host)
+    ref = host.start_restore_verify(
+        request_id="verify-owner-race",
+        selection_id=selection["selection_id"],
+        password=None,
+    )
+    wait_phase(host, "verify-owner-race", {"preview"})
+    assert manager.resume_entered.wait(3.0)
+    verify_owner = f"host:{ref['operation_id']}:verify"
+    install_owner = f"host:{ref['operation_id']}:install"
+    assert manager.owner_snapshot() == {verify_owner}
+
+    core.install_gate.clear()
+    host.confirm_restore(
+        request_id="confirm-owner-race",
+        operation_id=ref["operation_id"],
+        generation=ref["generation"],
+        confirmation_token="preview-1",
+    )
+    assert install_owner in manager.owner_snapshot()
+
+    # The old preview worker now leaves its finally.  It may release only its
+    # own verify owner; the install stage must stay paused.
+    manager.resume_release.set()
+    wait_owners(manager, {install_owner})
+    core.install_gate.set()
+    wait_phase(host, "confirm-owner-race", {"completed", "error"})
+    wait_owners(manager, set())

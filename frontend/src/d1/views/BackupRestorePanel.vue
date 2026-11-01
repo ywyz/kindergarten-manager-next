@@ -1096,13 +1096,13 @@ function onDialogValue(value: boolean): void {
   flex-wrap: wrap;
 }
 .muted {
-  color: #606266;
+  color: var(--kgm-text);
   font-size: 0.9rem;
   white-space: pre-wrap;
 }
 .preview {
   padding: 10px 12px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--kgm-border);
   border-radius: 6px;
   white-space: pre-wrap;
 }

@@ -22,14 +22,21 @@ from sqlalchemy import select, text
 from app.local import (
     ai_config_service,
     backup_fs,
+    config_service,
     config_tokens,
     observation_service,
     restore_group,
+    weekly_plan_service,
     restore_journal,
 )
 from app.local.backup_snapshot import SnapshotService
 from app.local.errors import LocalDatabaseStateError, LocalValidationError
-from app.local.models import LocalProfile
+from app.local.models import (
+    LocalProfile,
+    LocalSettings,
+    LocalWeeklyPlan,
+    LocalWeeklyPlanConfirmation,
+)
 from app.local.restore_fs import atomic_write_json, operation_paths
 from app.local.restore_recovery import resolve_startup_restore
 from app.local.restore_service import RestoreCore
@@ -41,6 +48,7 @@ from tests.local.backup_fixture_support import (
     seed_existing_runtime,
     validate_fixture,
 )
+from app.local.weekly_plan_tokens import scope_hash
 from tests.local.support import LocalTestCase
 
 
@@ -73,6 +81,118 @@ class RestoreCoreCase(LocalTestCase):
             cancel=threading.Event(),
         )
         return target
+
+    def test_refreshed_weekly_basis_survives_full_restore(self):
+        source, _evidence = self._source()
+        session = source.session()
+        try:
+            settings = session.get(LocalSettings, "singleton")
+            plan = session.scalars(select(LocalWeeklyPlan)).one()
+            term_id = plan.term_id
+            change = {
+                "kind": "term_update",
+                "term_id": term_id,
+                "name": "冬季学期",
+                "start_date": "2026-11-01",
+                "end_date": "2026-11-30",
+            }
+            preview = config_service.preview(
+                session,
+                expected_config_version=settings.config_version,
+                change=change,
+            )
+            config_service.apply(
+                session,
+                request_id=str(uuid.uuid4()),
+                expected_config_version=settings.config_version,
+                change=change,
+                preview_token=preview["preview_token"],
+            )
+            session.expire_all()
+            saved = weekly_plan_service.save_draft(
+                session,
+                profile_id=plan.profile_id,
+                request_id=str(uuid.uuid4()),
+                plan_id=plan.id,
+                expected_draft_version=plan.current_draft_version,
+                patch={"theme": "恢复后保留"},
+            )
+            refresh = weekly_plan_service.refresh_preview(
+                session,
+                runtime=source,
+                profile_id=plan.profile_id,
+                launch_id="restore-r03",
+                session_scope_hash=scope_hash("restore-r03"),
+                plan_id=plan.id,
+                expected_draft_version=saved["draft"]["version"],
+            )
+            refreshed = weekly_plan_service.refresh_sources(
+                session,
+                runtime=source,
+                profile_id=plan.profile_id,
+                launch_id="restore-r03",
+                session_scope_hash=scope_hash("restore-r03"),
+                request_id=str(uuid.uuid4()),
+                plan_id=plan.id,
+                expected_draft_version=saved["draft"]["version"],
+                preview_token=refresh["preview_token"],
+            )
+            target = weekly_plan_service.confirmation_preview(
+                session,
+                runtime=source,
+                profile_id=plan.profile_id,
+                launch_id="restore-r03",
+                session_scope_hash=scope_hash("restore-r03"),
+                plan_id=plan.id,
+                expected_draft_version=refreshed["draft"]["version"],
+            )
+            weekly_plan_service.confirm(
+                session,
+                runtime=source,
+                profile_id=plan.profile_id,
+                launch_id="restore-r03",
+                session_scope_hash=scope_hash("restore-r03"),
+                request_id=str(uuid.uuid4()),
+                plan_id=plan.id,
+                expected_draft_version=refreshed["draft"]["version"],
+                context_token=target["preview_token"],
+                ack_missing=True,
+                ack_stale=True,
+                note=None,
+            )
+        finally:
+            session.close()
+        package = self._package(source, "refreshed-weekly")
+        target_runtime = self.make_runtime(data_dir=self.tmp_root / "refreshed-target")
+        core = RestoreCore(target_runtime, app_version="restore-test")
+        operation_id = uuid.uuid4().hex
+        restored_preview = core.preview(
+            package,
+            None,
+            operation_id=operation_id,
+            cancel=threading.Event(),
+        )
+        prepared = core.prepare(restored_preview, cancel=threading.Event())
+        result = core.install(
+            prepared, hooks=_Hooks(), cancel=threading.Event()
+        )
+        assert result.state == "installed_retired", result
+        assert core.reopen().state == "reopened"
+        session = target_runtime.session()
+        try:
+            confirmation = session.scalars(
+                select(LocalWeeklyPlanConfirmation).order_by(
+                    LocalWeeklyPlanConfirmation.version.desc()
+                )
+            ).first()
+            snapshot = confirmation.snapshot_json
+            assert snapshot["content"]["theme"] == "恢复后保留"
+            assert snapshot["date_range"] == {
+                "start": "2026-09-01",
+                "end": "2026-09-06",
+            }
+        finally:
+            session.close()
 
     def test_preview_prepare_install_reopen_preserves_business(self):
         source, evidence = self._source()

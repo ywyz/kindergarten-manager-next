@@ -350,7 +350,7 @@ def test_build_identity_and_package_info_are_portable(monkeypatch, tmp_path):
     assert identity is not None
     assert identity.build_id == build_id
     assert identity.build_id != update_identity.SOURCE_BUILD_ID
-    assert identity.database_revision == "20261025_0006_local_game_observations"
+    assert identity.database_revision == "20261101_0007_local_weekly"
     payload = json.loads(identity_path.read_text(encoding="utf-8"))
     assert payload["app_id"] == update_identity.APP_ID
     assert payload["package_format"] == update_identity.PACKAGE_FORMAT

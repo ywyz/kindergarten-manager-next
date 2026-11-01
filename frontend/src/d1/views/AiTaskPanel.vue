@@ -1131,7 +1131,7 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
 }
 .type-row {
-  border-top: 1px dashed #ebeef5;
+  border-top: 1px dashed var(--kgm-border);
   padding-top: 8px;
   margin-bottom: 6px;
 }
@@ -1143,7 +1143,7 @@ onBeforeUnmount(() => {
 }
 .grade-label {
   font-size: 0.85rem;
-  color: #606266;
+  color: var(--kgm-text);
 }
 .hint {
   margin: 0;
@@ -1153,14 +1153,14 @@ onBeforeUnmount(() => {
 }
 .task-card {
   margin-top: 10px;
-  background: #fafbfc;
+  background: var(--kgm-bg);
 }
 .progress-block {
   margin: 8px 0;
   padding: 8px 10px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
-  background: #f5f7fa;
+  background: var(--kgm-bg);
 }
 .progress-head {
   display: flex;
@@ -1178,8 +1178,8 @@ onBeforeUnmount(() => {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  background: #fff;
-  border: 1px solid #ebeef5;
+  background: var(--kgm-surface);
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   font-size: 0.8rem;
 }
@@ -1191,7 +1191,7 @@ onBeforeUnmount(() => {
 }
 .reason {
   margin: 8px 0 0;
-  color: #b88230;
+  color: var(--kgm-warning);
 }
 .actions {
   display: flex;
@@ -1200,7 +1200,7 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 .muted {
-  color: #909399;
+  color: var(--kgm-muted);
   font-size: 0.85rem;
 }
 </style>

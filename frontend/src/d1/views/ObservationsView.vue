@@ -1823,8 +1823,8 @@ defineExpose({ reload: load })
 }
 .selected-panel {
   margin: 8px 0 12px;
-  border-color: #b3e19d;
-  background: #f0f9eb;
+  border-color: var(--kgm-success);
+  background: color-mix(in srgb, var(--kgm-success) 12%, var(--kgm-surface));
 }
 .selected-head {
   display: flex;
@@ -1846,7 +1846,7 @@ defineExpose({ reload: load })
 .selected-index {
   width: 24px;
   text-align: right;
-  color: #909399;
+  color: var(--kgm-muted);
 }
 .selected-label {
   flex: 1;
@@ -1874,7 +1874,7 @@ defineExpose({ reload: load })
   margin-top: 10px;
   padding: 8px 10px;
   border-radius: 4px;
-  background: #f4f4f5;
+  background: var(--kgm-bg);
   overflow-wrap: anywhere;
 }
 </style>

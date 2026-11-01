@@ -980,7 +980,7 @@ def test_known_old_database_is_migrated_only_in_isolated_copy(tmp_path):
         )
         try:
             assert verified.source_revision == "20261023_0005_local_history"
-            assert verified.target_revision == "20261025_0006_local_game_observations"
+            assert verified.target_revision == "20261101_0007_local_weekly"
             assert verified.source_sha256 == original_hash
             assert verified.manifest["database"]["sha256"] == original_hash
             assert hashlib.sha256(old.read_bytes()).hexdigest() == original_hash

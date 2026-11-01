@@ -23,11 +23,17 @@ export type LeaveKind =
   | 'calendar'
   | 'observations'
   | 'settings'
+  | 'weekly'
 
 export interface LeaveAction {
   kind: LeaveKind
   /** For close actions: the host-issued close request id. */
   closeRequestId?: string
+  /**
+   * Stable navigation target (e.g. weekly plan id + anchor). Two different
+   * weeks must never be treated as one in-flight action.
+   */
+  target_key?: string
   /** Runs only after the leave is confirmed (navigation / close ack). */
   run: () => Promise<LeaveOutcome> | LeaveOutcome
 }
@@ -59,7 +65,7 @@ export interface LeaveEditor {
 }
 
 export interface BlockingDraft {
-  kind: 'candidate' | 'settings' | 'history' | 'material'
+  kind: 'candidate' | 'settings' | 'history' | 'material' | 'weekly'
   message: string
 }
 
@@ -82,11 +88,11 @@ interface ActiveLeave {
   promise: Promise<LeaveOutcome>
 }
 
-function actionKey(action: Pick<LeaveAction, 'kind' | 'closeRequestId'>): string {
+function actionKey(action: Pick<LeaveAction, 'kind' | 'closeRequestId' | 'target_key'>): string {
   if (action.kind === 'close') {
     return `close:${action.closeRequestId ?? 'current'}`
   }
-  return action.kind
+  return action.target_key ? `${action.kind}:${action.target_key}` : action.kind
 }
 
 export class LeaveCoordinator {

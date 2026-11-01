@@ -42,7 +42,7 @@ OLD_FIXTURE = DESKTOP / "tests" / "update_old_app_fixture.py"
 NEW_FIXTURE = DESKTOP / "tests" / "update_new_app_fixture.py"
 HELPER = DESKTOP / "update_helper.py"
 OLD_REV = "20261017_0004_local"
-HEAD_REV = "20261025_0006_local_game_observations"
+HEAD_REV = "20261101_0007_local_weekly"
 
 
 def _identity(revision: str = HEAD_REV) -> AppIdentity:
@@ -55,7 +55,7 @@ def _identity(revision: str = HEAD_REV) -> AppIdentity:
         package_format="pyinstaller-onedir-zip-v1",
         platform="windows",
         arch="x64",
-        python="3.14.7",
+        python="3.14.10",
         database_revision=revision,
     )
 
@@ -89,7 +89,7 @@ def _make_package(
             "package_format": "pyinstaller-onedir-zip-v1",
             "platform": "windows",
             "arch": "x64",
-            "python": "3.14.7",
+            "python": "3.14.10",
             "database_revision": target_revision,
         }
     ).encode("utf-8")
@@ -1212,7 +1212,7 @@ def _target_identity(plan: update_install.InstallPlan) -> AppIdentity:
         package_format=plan.target["package_format"],
         platform=plan.target["platform"],
         arch=plan.target["arch"],
-        python="3.14.7",
+        python="3.14.10",
         database_revision=plan.target["database_revision"],
     )
 

@@ -34,6 +34,25 @@ const STATE_LABELS: Record<string, string> = {
   unknown: '未备年份',
   outside_term: '学期外',
 }
+const DAILY_IMPACT_REASON_LABELS: Record<string, string> = {
+  header_retained: '保留旧表头',
+  outside_new_range: '日期不在新学期范围内',
+  date_state_changed: '日期状态变化',
+  week_changed: '周次变化',
+}
+const WEEKLY_IMPACT_REASON_LABELS: Record<string, string> = {
+  weekly_header_retained: '保留旧表头',
+  weekly_creation_context_retained: '保留创建学期、周次与日历',
+  weekly_anchor_outside_new_term: '周锚点不在调整后的学期内',
+  weekly_anchor_outside_own_term: '周锚点不在所属学期的当前范围内',
+  weekly_calendar_override_in_week: '本周内有日历例外',
+}
+function impactReasonTextList(
+  reasons: string[],
+  labels: Record<string, string>,
+): string {
+  return reasons.map((reason) => labels[reason] ?? '其他影响').join('、')
+}
 
 const profileName = ref(props.context.profile?.display_name ?? '')
 const schoolName = ref(props.context.school_name ?? '')
@@ -41,6 +60,18 @@ const className = ref(props.context.class?.name ?? '')
 const classGrade = ref<'small' | 'middle' | 'large'>(
   props.context.class?.grade ?? 'middle',
 )
+const headerTeacherNamesText = ref(
+  (props.context.class?.header_teacher_names ?? []).join('\n'),
+)
+const caregiverName = ref(props.context.class?.caregiver_name ?? '')
+
+/** One name per line; empty lines are ignored and order/duplicates are kept. */
+function parsedHeaderTeacherNames(value: string): string[] {
+  return value
+    .split('\n')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+}
 
 interface TermForm {
   id: string
@@ -106,6 +137,18 @@ const draftActive = computed(() => {
   if (schoolName.value !== (confirmed.school_name ?? '')) return true
   if (className.value !== (confirmed.class?.name ?? '')) return true
   if (classGrade.value !== (confirmed.class?.grade ?? 'middle')) return true
+  if (
+    parsedHeaderTeacherNames(headerTeacherNamesText.value).join('\n') !==
+    (confirmed.class?.header_teacher_names ?? []).join('\n')
+  ) {
+    return true
+  }
+  if (
+    (caregiverName.value.trim() || '') !==
+    (confirmed.class?.caregiver_name ?? '')
+  ) {
+    return true
+  }
   const forms = termForms.value
   if (forms.length !== confirmed.terms.length) return true
   for (let i = 0; i < forms.length; i += 1) {
@@ -141,6 +184,10 @@ function syncFormsFrom(context: LocalContext): void {
   schoolName.value = context.school_name ?? ''
   className.value = context.class?.name ?? ''
   classGrade.value = context.class?.grade ?? 'middle'
+  headerTeacherNamesText.value = (
+    context.class?.header_teacher_names ?? []
+  ).join('\n')
+  caregiverName.value = context.class?.caregiver_name ?? ''
   termForms.value = context.terms.map((term) => ({
     id: term.id,
     name: term.name,
@@ -208,9 +255,11 @@ function changeStillBound(normalizedChange: ConfigChange): boolean {
     ...Object.keys(normalizedChange),
   ])
   for (const key of keys) {
-    const left = pageNormalize((current as Record<string, unknown>)[key])
-    const right = pageNormalize(
-      (normalizedChange as Record<string, unknown>)[key],
+    const left = JSON.stringify(
+      pageNormalize((current as Record<string, unknown>)[key]),
+    )
+    const right = JSON.stringify(
+      pageNormalize((normalizedChange as Record<string, unknown>)[key]),
     )
     if (left !== right) return false
   }
@@ -260,6 +309,20 @@ function mergeAppliedBaseline(
     }
     if (still('grade', classGrade.value)) {
       classGrade.value = fresh.class?.grade ?? 'middle'
+    }
+    const submittedNames = Array.isArray(submitted.header_teacher_names)
+      ? (submitted.header_teacher_names as string[])
+      : []
+    if (
+      parsedHeaderTeacherNames(headerTeacherNamesText.value).join('\n') ===
+      submittedNames.join('\n')
+    ) {
+      headerTeacherNamesText.value = (
+        fresh.class?.header_teacher_names ?? []
+      ).join('\n')
+    }
+    if (still('caregiver_name', caregiverName.value.trim() || null)) {
+      caregiverName.value = fresh.class?.caregiver_name ?? ''
     }
     return
   }
@@ -318,7 +381,10 @@ onBeforeUnmount(() => {
   previewBinding = null
 })
 
-watch([profileName, schoolName, className, classGrade], () => clearPreview())
+watch(
+  [profileName, schoolName, className, classGrade, headerTeacherNamesText, caregiverName],
+  () => clearPreview(),
+)
 watch(termForms, () => clearPreview(), { deep: true })
 watch([newTermName, newTermRange], () => clearPreview())
 watch([overrideTermId, overrideDate, overrideState, overrideReason], () => clearPreview())
@@ -340,6 +406,10 @@ function changeClass(): ConfigChange {
     kind: 'current_class',
     name: className.value,
     grade: classGrade.value,
+    header_teacher_names: parsedHeaderTeacherNames(
+      headerTeacherNamesText.value,
+    ),
+    caregiver_name: caregiverName.value.trim() || null,
   }
 }
 
@@ -577,6 +647,10 @@ function cancelDraft(): void {
   schoolName.value = confirmedContext.value.school_name ?? ''
   className.value = confirmedContext.value.class?.name ?? ''
   classGrade.value = confirmedContext.value.class?.grade ?? 'middle'
+  headerTeacherNamesText.value = (
+    confirmedContext.value.class?.header_teacher_names ?? []
+  ).join('\n')
+  caregiverName.value = confirmedContext.value.class?.caregiver_name ?? ''
   termForms.value = confirmedContext.value.terms.map((term) => ({
     id: term.id,
     name: term.name,
@@ -656,6 +730,25 @@ function cancelDraft(): void {
             <el-option label="中班" value="middle" />
             <el-option label="大班" value="large" />
           </el-select>
+        </div>
+        <div class="field field-wide">
+          <label>班级教师姓名（每行一个，可留空；顺序和同名保留）</label>
+          <el-input
+            v-model="headerTeacherNamesText"
+            type="textarea"
+            :rows="3"
+            :disabled="frozen"
+            data-d1="settings-class-teachers"
+          />
+        </div>
+        <div class="field">
+          <label>保育员姓名（可清空）</label>
+          <el-input
+            v-model="caregiverName"
+            maxlength="80"
+            :disabled="frozen"
+            data-d1="settings-class-caregiver"
+          />
         </div>
         <el-button data-d1="preview-class" :loading="previewing" :disabled="frozen" @click="previewChange(changeClass())">
           预览修改
@@ -789,7 +882,7 @@ function cancelDraft(): void {
       </div>
       <div class="impact-block">
         <h4>
-          已有计划影响：保留旧表头 {{ previewData.impact.retained_header_count }} 条；本次涉及变化
+          已有日计划影响：保留旧表头 {{ previewData.impact.retained_header_count }} 条；本次涉及变化
           {{ previewData.impact.affected_plans.length }} 条
         </h4>
         <el-table
@@ -806,7 +899,9 @@ function cancelDraft(): void {
             </template>
           </el-table-column>
           <el-table-column label="原因">
-            <template #default="{ row }">{{ row.reasons.join('、') }}</template>
+            <template #default="{ row }">
+              {{ impactReasonTextList(row.reasons, DAILY_IMPACT_REASON_LABELS) }}
+            </template>
           </el-table-column>
           <el-table-column label="之后可否新建" width="110">
             <template #default="{ row }">
@@ -814,9 +909,45 @@ function cancelDraft(): void {
             </template>
           </el-table-column>
         </el-table>
-        <p v-else class="muted">本条修改不影响任何已保存记录的日期解释。</p>
+        <p v-else class="muted">本条修改不影响任何已保存日计划的日期解释。</p>
+        <h4 class="weekly-impact-head">
+          已有周计划影响：保留旧表头 {{ previewData.impact.weekly_retained_header_count }} 条；相关周
+          {{ previewData.impact.weekly_plans.length }} 条
+        </h4>
+        <el-table
+          v-if="previewData.impact.weekly_plans.length"
+          :data="previewData.impact.weekly_plans"
+          size="small"
+          data-d1="impact-weekly-plans"
+        >
+          <el-table-column prop="week_anchor_date" label="固定周锚点" width="120" />
+          <el-table-column prop="week_number_snapshot" label="创建周次" width="90" />
+          <el-table-column label="创建学期" width="220">
+            <template #default="{ row }">
+              {{ row.term_start_date }} ~ {{ row.term_end_date }}
+            </template>
+          </el-table-column>
+          <el-table-column label="版本" width="130">
+            <template #default="{ row }">
+              草稿 v{{ row.current_draft_version }} / 确认
+              {{ row.current_confirmed_version ?? '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="之后可否新建该周" width="140">
+            <template #default="{ row }">
+              {{ row.creation_eligible_after ? '可以' : '不可以' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="原因">
+            <template #default="{ row }">
+              {{ impactReasonTextList(row.reasons, WEEKLY_IMPACT_REASON_LABELS) }}
+            </template>
+          </el-table-column>
+        </el-table>
+        <p v-else class="muted">本条修改不涉及已保存的周计划。</p>
         <p class="muted">
-          已保存计划仍可编辑与导出；其归属、周次、创建日历修订与表头不会被改写。
+          已保存计划仍可查看、编辑、确认与导出；日计划保留归属、周次、创建日历修订与表头，
+          周计划保留固定周锚点、创建学期／周次／日历与表头，不会按当前学期重排。
         </p>
       </div>
       <div class="row">
@@ -869,7 +1000,7 @@ function cancelDraft(): void {
 }
 .field label {
   font-size: 0.85rem;
-  color: #606266;
+  color: var(--kgm-muted);
 }
 .term-row {
   display: flex;
@@ -885,7 +1016,7 @@ function cancelDraft(): void {
   width: 160px;
 }
 .new-term {
-  border-top: 1px dashed #ebeef5;
+  border-top: 1px dashed var(--kgm-border);
   padding-top: 12px;
 }
 .preview-head {
@@ -897,13 +1028,16 @@ function cancelDraft(): void {
 .impact-block {
   margin-top: 12px;
 }
+.weekly-impact-head {
+  margin-top: 16px;
+}
 .row {
   display: flex;
   gap: 12px;
   margin-top: 12px;
 }
 .muted {
-  color: #909399;
+  color: var(--kgm-muted);
   font-size: 0.85rem;
 }
 </style>

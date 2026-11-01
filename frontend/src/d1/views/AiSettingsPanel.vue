@@ -726,7 +726,7 @@ onBeforeUnmount(() => {
 }
 .field label {
   font-size: 0.85rem;
-  color: #606266;
+  color: var(--kgm-text);
 }
 .row {
   display: flex;
@@ -736,7 +736,7 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 .prompt-block {
-  border-top: 1px dashed #ebeef5;
+  border-top: 1px dashed var(--kgm-border);
   padding-top: 10px;
   margin-top: 10px;
 }
@@ -751,25 +751,25 @@ onBeforeUnmount(() => {
 }
 .orphan-item {
   margin-right: 10px;
-  color: #909399;
+  color: var(--kgm-muted);
   font-size: 0.85rem;
 }
 .default-block {
-  background: #fafbfc;
-  border: 1px solid #ebeef5;
+  background: var(--kgm-bg);
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   padding: 10px;
   margin-top: 10px;
 }
 .pending-card {
   margin-top: 10px;
-  background: #fdf6ec;
+  background: color-mix(in srgb, var(--kgm-warning) 12%, var(--kgm-surface));
 }
 .block {
   margin: 4px 0 0;
   padding: 6px 8px;
-  background: #fff;
-  border: 1px solid #ebeef5;
+  background: var(--kgm-surface);
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -778,7 +778,7 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 .muted {
-  color: #909399;
+  color: var(--kgm-muted);
   font-size: 0.85rem;
 }
 </style>

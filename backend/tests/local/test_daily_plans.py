@@ -724,7 +724,19 @@ class DailyPlanApiTests(LocalTestCase):
                 self.db, "SELECT name FROM sqlite_master WHERE type='table'"
             )
         ]
-        self.assertFalse([name for name in names if "weekly" in name.lower()], names)
+        self.assertEqual(
+            {name for name in names if "weekly" in name.lower()},
+            {
+                "local_weekly_plans",
+                "local_weekly_plan_contents",
+                "local_weekly_plan_confirmations",
+                "local_weekly_plan_operations",
+                "local_weekly_export_snapshots",
+                "local_weekly_export_tokens",
+                "local_weekly_export_attempts",
+            },
+            names,
+        )
         status, plan = self.create()
         self.assertEqual(status, 201)
         self.assertNotIn("weekly_sync_state", plan)

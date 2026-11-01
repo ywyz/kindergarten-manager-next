@@ -1,0 +1,76 @@
+/*
+ * Application theme tokens. A imports Element Plus light CSS, the official
+ * Element Plus dark css-vars and this file in that order in main.ts.
+ *
+ * Only colour tokens are defined here. Photos, canvases and Word paper
+ * previews keep their own colours; no filter/invert is used.
+ */
+
+:root {
+  color-scheme: light;
+  --kgm-bg: #f5f7fa;
+  --kgm-surface: #ffffff;
+  --kgm-text: #303133;
+  --kgm-muted: #909399;
+  --kgm-border: #ebeef5;
+  --kgm-overlay: rgba(0, 0, 0, 0.5);
+  --kgm-accent: #409eff;
+  --kgm-success: #67c23a;
+  --kgm-warning: #e6a23c;
+  --kgm-danger: #f56c6c;
+  --kgm-diff-add: #f0f9eb;
+  --kgm-diff-remove: #fef0f0;
+  --kgm-disabled: #c0c4cc;
+  --kgm-focus: #409eff;
+}
+
+html.dark {
+  color-scheme: dark;
+  --kgm-bg: #141414;
+  --kgm-surface: #1d1e1f;
+  --kgm-text: #e5eaf3;
+  --kgm-muted: #a3a6ad;
+  --kgm-border: #414243;
+  --kgm-overlay: rgba(0, 0, 0, 0.72);
+  --kgm-accent: #79bbff;
+  --kgm-success: #95d475;
+  --kgm-warning: #eebe77;
+  --kgm-danger: #f89898;
+  --kgm-diff-add: #1d2b1f;
+  --kgm-diff-remove: #2b1d1f;
+  --kgm-disabled: #6c6e72;
+  --kgm-focus: #79bbff;
+}
+
+html,
+body {
+  background: var(--kgm-bg);
+  color: var(--kgm-text);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--kgm-accent) 30%, transparent);
+  color: var(--kgm-text);
+}
+
+:focus-visible {
+  outline-color: var(--kgm-focus);
+}
+
+/* Shared semantic helpers available to the authorized views. */
+.kgm-muted {
+  color: var(--kgm-muted);
+}
+
+.kgm-surface {
+  background: var(--kgm-surface);
+  border-color: var(--kgm-border);
+}
+
+.kgm-diff-add {
+  background: var(--kgm-diff-add);
+}
+
+.kgm-diff-remove {
+  background: var(--kgm-diff-remove);
+}

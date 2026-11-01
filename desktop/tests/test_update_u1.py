@@ -806,7 +806,7 @@ def test_frozen_identity_missing_or_damaged_is_not_source_fallback(tmp_path):
         "package_format": "pyinstaller-onedir-zip-v1",
         "platform": "windows",
         "arch": "x64",
-        "python": "3.14.7",
+        "python": "3.14.10",
         "database_revision": CURRENT.database_revision,
     }
     variants = [

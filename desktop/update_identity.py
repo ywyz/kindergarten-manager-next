@@ -23,7 +23,7 @@ APP_VERSION = "0.1.0"
 PACKAGE_FORMAT = "pyinstaller-onedir-zip-v1"
 PLATFORM = "windows"
 ARCH = "x64"
-PYTHON_VERSION = "3.14.7"
+PYTHON_VERSION = "3.14.10"
 
 # Source runs are not updatable. A UUID keeps the type/format identical to a
 # release build without pretending this checkout is a released package.

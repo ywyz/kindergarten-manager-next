@@ -32,6 +32,7 @@ const emit = defineEmits<{
     termId?: string,
   ): void
   (e: 'open-observations'): void
+  (e: 'open-weekly-plans'): void
   (e: 'open-settings'): void
   (e: 'check-update'): void
   (e: 'reload-context'): Promise<LocalContext>
@@ -298,6 +299,9 @@ defineExpose({ reload: load })
         <el-button data-d1="open-observations" :disabled="frozen" @click="emit('open-observations')">
           游戏观察
         </el-button>
+        <el-button data-d1="open-weekly-plans" :disabled="frozen" @click="emit('open-weekly-plans')">
+          周计划
+        </el-button>
         <el-button data-d1="check-update" :disabled="frozen" @click="emit('check-update')">
           检查更新
         </el-button>
@@ -457,35 +461,36 @@ defineExpose({ reload: load })
   margin-top: 12px;
 }
 .day {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   padding: 8px;
   font-size: 12px;
-  background: #fff;
+  background: var(--kgm-surface);
 }
 .day.clickable {
   cursor: pointer;
 }
 .day.clickable:hover {
-  border-color: #409eff;
+  border-color: var(--kgm-accent);
 }
 .day.has-plan {
-  background: #f0f9eb;
+  background: var(--kgm-surface);
+  border-color: var(--kgm-success);
 }
 .day.not-eligible {
-  background: #fafafa;
-  color: #909399;
+  background: var(--kgm-bg);
+  color: var(--kgm-muted);
 }
 .day-date {
   font-weight: 600;
   font-size: 12px;
 }
 .day-state {
-  color: #606266;
+  color: var(--kgm-text);
   margin-top: 2px;
 }
 .day-note {
-  color: #b88230;
+  color: var(--kgm-warning);
   margin-top: 2px;
   min-height: 14px;
 }

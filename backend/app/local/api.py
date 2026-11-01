@@ -35,6 +35,7 @@ from app.local import (
     ai_candidates,
     ai_progress,
     ai_task_service,
+    appearance_service,
     calendar_read,
     config_service,
     daily_plan_history_service,
@@ -81,6 +82,8 @@ from app.local.schemas import (
     LocalAITaskOut,
     LocalAITaskRetryIn,
     LocalAIProgressOut,
+    LocalAppearanceOut,
+    LocalAppearancePatchIn,
     LocalCalendarOut,
     LocalClassGamesOut,
     LocalConfigApplyIn,
@@ -232,7 +235,7 @@ def config_preview(
         return config_service.preview(
             session,
             expected_config_version=data.expected_config_version,
-            change=data.change.model_dump(),
+            change=data.change.model_dump(exclude_unset=True),
         )
 
 
@@ -246,7 +249,7 @@ def config_apply(
             session,
             request_id=data.request_id,
             expected_config_version=data.expected_config_version,
-            change=data.change.model_dump(),
+            change=data.change.model_dump(exclude_unset=True),
             preview_token=data.preview_token,
         )
 
@@ -268,6 +271,30 @@ def config_class_games_read(
 ):
     with storage_errors():
         return config_service.read_class_games(session)
+
+
+# ---------------------------------------------------------------------------
+# Appearance preference (desktop appearance spec §2)
+# ---------------------------------------------------------------------------
+
+
+@local_router.get("/appearance", response_model=LocalAppearanceOut)
+def appearance_get(session: Session = Depends(get_session)):
+    with storage_errors():
+        return appearance_service.read_appearance(session)
+
+
+@local_router.patch("/appearance", response_model=LocalAppearanceOut)
+def appearance_patch(
+    data: LocalAppearancePatchIn,
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        return appearance_service.update_appearance(
+            session,
+            mode=data.mode,
+            expected_version=data.expected_version,
+        )
 
 
 # ---------------------------------------------------------------------------

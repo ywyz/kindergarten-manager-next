@@ -6,10 +6,10 @@
 
 | 范围 | 当前结论与直接入口 |
 | --- | --- |
-| 周计划 | 用户Q1–Q6全部确认，[产品规格](../specs/desktop-weekly-plan.md)与[工程设计](../specs/desktop-weekly-plan-engineering.md)及四会话提示词已准备；尚未编码。先手工／本人来源／确认／Word及备份配套，后AI／材料。 |
-| 分支 | 继续codex/desktop-v2-foundation，源码HEAD2a469489；main是已合并基线，不是最新桌面分支。当前规划文档未提交，不能写成远端已包含。 |
-| 用户目标测试 | 另一台Win11正在验证固定r03，未收到实际回执。[手册](desktop-windows11-portable-manual.md)与[构建结果](desktop-windows11-portable-result.md)给出精确build_id／SHA，不换包、不回填新代码结果。 |
-| 完整内部候选 | [独立核查](desktop-windows11-portable-review.md)源码493 desktop、实际目录54／ZIP59静态、本机PS7只读预检49通过；主EXE未签名，目标普通运行／Word／教师体验尚未验。PS5.1只解析通过，文件执行受策略阻止。 |
+| 周计划与明暗 | Q1–Q6已确认；Q1–Q4首片完整源码回归、真实保存确认／旧确认保稿导出、Word全页及完整备份／保护包接续通过限定工程核查，最后文案重开已核。新候选／目标／教师未验。[产品](../specs/desktop-weekly-plan.md)、[工程](../specs/desktop-weekly-plan-engineering.md)、[实施核查](desktop-weekly-plan-review.md)。 |
+| 分支 | 继续codex/desktop-v2-foundation；本片按精确Git门禁普通提交推送，实际身份以包含实施核查的提交及远端为准。main保持已合并基线，开工及r03两提交身份见实施核查。 |
+| 用户目标测试 | 固定r03目标1普通业务、完整备份／恢复、保护包及W1–W8工程页检已有[实际回执](desktop-windows11-target-review.md)，用户已逐项确认八份Word通过；指定Word教师体验收口，未扩大为产品／发行整体验收。[手册](desktop-windows11-portable-manual.md)及原build_id／SHA保持，不迁移新代码结果。 |
+| 完整内部候选 | [独立核查](desktop-windows11-portable-review.md)源码493 desktop、实际目录54／ZIP59静态、本机PS7只读预检49通过；固定r03的目标1与指定Word教师结论见上行，不迁移为本轮新周源码通过。主EXE未签名；PS5.1只解析通过，文件执行受策略阻止。 |
 | 完整本地备份／恢复 | [核查§38–§40](desktop-backup-restore-review.md)848 local／469 desktop及源码窗口限定范围通过，前轮推送91e6a553；不能等同新包／跨机恢复已通过。 |
 | 日计划／AI／本机历史 | D1、D2、D3-A保持各自实际工程及指定教师收口；[D1](desktop-d1-review.md)、[D2](../specs/desktop-ai-engineering.md)、[历史](desktop-d3-history-review.md)。旧未验与不再追测事项分别保留，不重问已决产品规则。 |
 | 观察与Word | [页面](desktop-game-observation-pages-review.md)、[导出](desktop-game-observation-export-review.md)、[E14](desktop-game-observation-e14-review.md)已完成相应源码／静态范围；不是仍未设计／未接页面，也不是完整A01–A22／新包教师验收通过。 |
@@ -18,7 +18,7 @@
 
 D2当前工程规格在 [docs/specs](../specs/desktop-ai-engineering.md)，各轮独立范围仍按其中链接的实际结果，不复用旧v1 MySQL结论。
 
-建议受控并行：后续明确执行入口时先G0合同核对、G1由A/B做数据与纯内容；C/D准备不冲突材料。G1通过后，结合目标启动／保存重开／备份恢复反馈进入G2；Word逐页可继续并行。通用保存／恢复／关闭缺陷先修相交文件；仅签名／系统策略受阻时可继续源码工程。不把这段安排写成已经启动实施。
+本片源码工程与最后普通重开已核，分项身份及未验统一见实施核查。沿用用户确认的CPython3.14.10／x64／标准GIL及锁定依赖。下一步先新身份候选验证与反馈评估，再按既定Q5/Q6切片；G0–G4保留为本轮实施合同，不继续按旧在途提示派发。
 
 ## 历史内容的适用范围
 

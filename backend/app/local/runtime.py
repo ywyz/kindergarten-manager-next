@@ -448,6 +448,10 @@ class LocalRuntime:
         self.prompt_sync_error: str | None = None
         # Set by the startup restore resolver before migrations/prompt sync.
         self.restore_notice: dict | None = None
+        # Fixed per-app weekly export manager and its (launch, scope) binding.
+        self.weekly_export_manager: object | None = None
+        self._weekly_export_binding: tuple[str, str] | None = None
+        self._weekly_export_bind_lock = threading.RLock()
 
     @property
     def prepared(self) -> bool:
@@ -461,6 +465,97 @@ class LocalRuntime:
             if self._inspection is not None
             else None
         )
+
+    @property
+    def weekly_export_work_root(self) -> Path:
+        return self.data_dir / ".weekly-export-work"
+
+    def bind_weekly_exports(self, *, launch_id: str, session_scope: str):
+        """Bind one fixed manager generation; serialized same-runtime handover."""
+        if not self.prepared:
+            raise RuntimeError("runtime must be prepared before weekly export binding")
+        from app.local.weekly_plan_export_service import WeeklyExportManager
+        from app.local.errors import LocalWeeklyExportUnavailable
+
+        requested = (str(launch_id), str(session_scope))
+        with self._weekly_export_bind_lock:
+            current = self.weekly_export_manager
+            binding = self._weekly_export_binding
+            if current is not None and binding == requested:
+                # A closed manager for this exact launch/scope is never
+                # re-opened: that would revive authority the scope already
+                # retired.
+                if bool(getattr(current, "is_closed", False)):
+                    raise LocalWeeklyExportUnavailable(
+                        details={"reason": "weekly_export_closed"}
+                    )
+                return current
+            if current is not None:
+                # Refuse an active old generation BEFORE pause: pause clears
+                # previews and advances the epoch, so an active handover must
+                # not mutate the old manager at all.
+                if not bool(current.wait_idle(timeout=0.0)):
+                    raise LocalWeeklyExportUnavailable(
+                        details={"reason": "weekly_export_busy"}
+                    )
+                if not bool(getattr(current, "is_closed", False)):
+                    owner = f"factory:{requested[0]}:{requested[1]}"
+                    current.pause(owner=owner)
+                    try:
+                        # Re-check after pause: an activity that entered just
+                        # before pause still owns its preview/artifact and
+                        # must not be closed underneath.
+                        if not bool(current.wait_idle(timeout=0.0)):
+                            raise LocalWeeklyExportUnavailable(
+                                details={"reason": "weekly_export_busy"}
+                            )
+                        current.close()
+                    except BaseException:
+                        try:
+                            current.resume(owner=owner)
+                        except Exception:  # noqa: BLE001 - preserve primary
+                            pass
+                        raise
+                if not bool(getattr(current, "is_closed", False)) or not bool(
+                    current.wait_idle(timeout=0.0)
+                ):
+                    raise LocalWeeklyExportUnavailable(
+                        details={"reason": "weekly_export_not_idle"}
+                    )
+            manager = WeeklyExportManager(
+                self, launch_id=requested[0], session_scope=requested[1]
+            )
+            self.weekly_export_manager = manager
+            self._weekly_export_binding = requested
+            return manager
+
+    def _pause_weekly_exports_for_retire(self) -> None:
+        manager = self.weekly_export_manager
+        if manager is None:
+            return
+        from app.local.errors import LocalWeeklyExportUnavailable
+
+        owner = f"runtime:{id(self)}"
+        manager.pause(owner=owner)
+        closed = False
+        try:
+            if not manager.wait_idle(timeout=60.0):
+                manager.resume(owner=owner)
+                raise LocalWeeklyExportUnavailable(
+                    details={"reason": "weekly_export_busy"}
+                )
+            manager.close()
+            closed = True
+        except BaseException:
+            try:
+                manager.resume(owner=owner)
+            except Exception:  # noqa: BLE001 - preserve primary
+                pass
+            raise
+        finally:
+            if closed:
+                self.weekly_export_manager = None
+                self._weekly_export_binding = None
 
     @property
     def engine(self) -> Engine:
@@ -782,6 +877,8 @@ class LocalRuntime:
         # Re-validate the raw managed paths before the first SQLite check:
         # they may have been replaced with a junction/hardlink alias after
         # construction.
+        self.weekly_export_manager = None
+        self._weekly_export_binding = None
         self._check_managed_paths()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._acquire_lock()
@@ -850,6 +947,7 @@ class LocalRuntime:
             )
             self._engine = engine
             self._inspection = inspection
+            self._invalidate_weekly_attempts()
             self._sync_prompt_bundles_best_effort()
             return inspection
         except BaseException:
@@ -865,6 +963,22 @@ class LocalRuntime:
             self._inspection = None
             self._release_lock()
             raise
+
+    def _invalidate_weekly_attempts(self) -> None:
+        """New launch: interrupted native attempts become indeterminate."""
+        from app.local import weekly_plan_operations
+
+        session = self.session()
+        try:
+            weekly_plan_operations.invalidate_in_progress(session)
+            session.commit()
+        finally:
+            session.close()
+
+    def _rotate_weekly_tokens(self) -> None:
+        from app.local import weekly_plan_tokens
+
+        weekly_plan_tokens.rotate_key(self)
 
     def _sync_prompt_bundles_best_effort(self) -> None:
         """Register this build's prompt bundles without blocking the app.
@@ -934,10 +1048,12 @@ class LocalRuntime:
         and ``.app-runtime.lock`` handle stay alive; only the engine family is
         invalidated.  ``reopen_after_restore()`` creates the next generation.
         """
+        self._pause_weekly_exports_for_retire()
         with self._session_lock:
             engine = self._engine
         if engine is None:
             return
+        self._rotate_weekly_tokens()
         self._retire_engine(engine)
         with self._session_lock:
             self._engine = None
@@ -957,6 +1073,8 @@ class LocalRuntime:
             raise RuntimeError("runtime lock is not held by this instance")
         if self._engine is not None:
             raise RuntimeError("runtime engine must be closed before reopen")
+        self.weekly_export_manager = None
+        self._weekly_export_binding = None
         self._check_managed_paths()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         config = alembic_config(self.db_path)
@@ -980,6 +1098,8 @@ class LocalRuntime:
             # A new executor must build a new launch identity; never inherit
             # the old generation's launch_id.
             self.launch_id = None
+            self._rotate_weekly_tokens()
+            self._invalidate_weekly_attempts()
             self._sync_prompt_bundles_best_effort()
             return inspection
         except BaseException:
@@ -997,11 +1117,13 @@ class LocalRuntime:
         when engine retirement raises, so the exclusive handle is never
         leaked; a real dispose error still propagates.
         """
+        self._pause_weekly_exports_for_retire()
         with self._session_lock:
             engine = self._engine
             self._engine = None
             self._session_factory = None
             self._inspection = None
+        self._rotate_weekly_tokens()
         try:
             self._retire_engine(engine)
         finally:

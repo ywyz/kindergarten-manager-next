@@ -452,7 +452,7 @@ onBeforeUnmount(() => {
   display: block;
   margin-bottom: 4px;
   font-size: 0.85rem;
-  color: #606266;
+  color: var(--kgm-text);
 }
 .row {
   display: flex;
@@ -461,8 +461,8 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
 }
 .pending-block {
-  background: #fdf6ec;
-  border: 1px solid #faecd8;
+  background: color-mix(in srgb, var(--kgm-warning) 12%, var(--kgm-surface));
+  border: 1px solid var(--kgm-warning);
   border-radius: 4px;
   padding: 8px 10px;
   margin-top: 10px;
@@ -471,7 +471,7 @@ onBeforeUnmount(() => {
   margin-top: 12px;
 }
 .muted {
-  color: #909399;
+  color: var(--kgm-muted);
   font-size: 0.85rem;
 }
 </style>

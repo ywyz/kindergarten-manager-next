@@ -3925,7 +3925,7 @@ label {
   flex-direction: column;
   gap: 4px;
   font-size: 0.85rem;
-  color: #606266;
+  color: var(--kgm-text);
 }
 label.full {
   margin-top: 12px;
@@ -3935,7 +3935,7 @@ label.full {
 }
 .label {
   font-size: 0.85rem;
-  color: #606266;
+  color: var(--kgm-text);
 }
 .subject-row {
   display: flex;
@@ -3967,7 +3967,7 @@ label.full {
   margin-top: 12px;
 }
 .photo-item {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   padding: 8px;
   display: flex;
@@ -3978,15 +3978,15 @@ label.full {
   width: 100%;
   height: 140px;
   object-fit: contain;
-  background: #fafafa;
+  background: var(--kgm-bg);
 }
 .photo-placeholder {
   height: 140px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #909399;
-  background: #fafafa;
+  color: var(--kgm-muted);
+  background: var(--kgm-bg);
   font-size: 0.8rem;
 }
 .photo-tools {
@@ -3998,7 +3998,7 @@ label.full {
   word-break: break-word;
   font-family: inherit;
   font-size: 0.8rem;
-  background: #fafafa;
+  background: var(--kgm-bg);
   padding: 8px;
   border-radius: 4px;
   max-height: 180px;
@@ -4018,7 +4018,7 @@ label.full {
 .candidate-block pre {
   white-space: pre-wrap;
   word-break: break-word;
-  background: #fafafa;
+  background: var(--kgm-bg);
   padding: 8px;
   border-radius: 4px;
   font-family: inherit;
@@ -4035,7 +4035,7 @@ label.full {
 .history-list {
   max-height: 480px;
   overflow: auto;
-  border-right: 1px solid #ebeef5;
+  border-right: 1px solid var(--kgm-border);
 }
 .history-item {
   padding: 8px;
@@ -4047,10 +4047,10 @@ label.full {
   font-size: 0.85rem;
 }
 .history-item:hover {
-  background: #f5f7fa;
+  background: var(--kgm-bg);
 }
 .history-item.current {
-  background: #ecf5ff;
+  background: color-mix(in srgb, var(--kgm-accent) 12%, var(--kgm-surface));
 }
 .history-text {
   white-space: pre-wrap;
@@ -4059,7 +4059,7 @@ label.full {
   font-size: 0.85rem;
   max-height: 220px;
   overflow: auto;
-  background: #fafafa;
+  background: var(--kgm-bg);
   padding: 8px;
 }
 .history-meta p {
@@ -4084,7 +4084,7 @@ label.full {
   width: 120px;
   height: 90px;
   object-fit: contain;
-  background: #fafafa;
+  background: var(--kgm-bg);
 }
 .restore-controls {
   display: flex;

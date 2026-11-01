@@ -7,9 +7,11 @@ a worker that is still alive.
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -361,3 +363,294 @@ def test_service_run_stop_and_confirm_accepts_dead_thread():
     service.thread.start()
     service.thread.join(1.0)
     assert service.stop_and_confirm(timeout=0.01) is True
+
+
+# ---------------------------------------------------------------------------
+# A G2a r02: runtime binding and close-path weekly manager wiring
+# ---------------------------------------------------------------------------
+
+
+class FakeExportManager:
+    """Trusted A-wiring fake; not evidence that D's manager is integrated."""
+
+    instances: list["FakeExportManager"] = []
+
+    def __init__(self, runtime=None, *, launch_id="", session_scope=""):
+        self.runtime = runtime
+        self.launch_id = launch_id
+        self.session_scope = session_scope
+        self.is_closed = False
+        self.active = 0
+        self.owners: set[str] = set()
+        self.pause_calls: list[str] = []
+        self.resume_calls: list[str] = []
+        self.wait_calls: list[float] = []
+        self.close_calls = 0
+        self.preview_clears = 0
+        self.wait_idle_results: list[bool] = []
+        FakeExportManager.instances.append(self)
+
+    def pause(self, *, owner: str) -> None:
+        self.pause_calls.append(owner)
+        if self.is_closed:
+            return
+        self.owners.add(owner)
+        self.preview_clears += 1
+
+    def resume(self, *, owner: str) -> None:
+        self.resume_calls.append(owner)
+        self.owners.discard(owner)
+
+    def wait_idle(self, *, timeout: float = 60.0, cancel=None) -> bool:
+        self.wait_calls.append(timeout)
+        if self.wait_idle_results:
+            return self.wait_idle_results.pop(0)
+        return self.active == 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.is_closed = True
+
+
+def _install_fake_export_module(monkeypatch):
+    module = types.ModuleType("app.local.weekly_plan_export_service")
+    module.WeeklyExportManager = FakeExportManager
+    monkeypatch.setitem(sys.modules, "app.local.weekly_plan_export_service", module)
+    FakeExportManager.instances.clear()
+
+
+def _fake_runtime(manager=None, binding=None):
+    from app.local.runtime import LocalRuntime
+
+    runtime = object.__new__(LocalRuntime)
+    runtime._engine = object()
+    runtime.data_dir = Path("C:/synthetic/weekly-data")
+    runtime.weekly_export_manager = manager
+    runtime._weekly_export_binding = binding
+    runtime._weekly_export_bind_lock = threading.RLock()
+    return runtime
+
+
+def test_runtime_bind_rejects_active_before_pause(monkeypatch):
+    from app.local.errors import LocalWeeklyExportUnavailable
+
+    _install_fake_export_module(monkeypatch)
+    old = FakeExportManager(launch_id="launch-1", session_scope="scope-1")
+    old.active = 1
+    runtime = _fake_runtime(old, ("launch-1", "scope-1"))
+
+    with pytest.raises(LocalWeeklyExportUnavailable) as exc:
+        runtime.bind_weekly_exports(launch_id="launch-2", session_scope="scope-2")
+
+    assert exc.value.details == {"reason": "weekly_export_busy"}
+    assert old.pause_calls == []
+    assert old.preview_clears == 0
+    assert old.close_calls == 0
+    assert old.wait_calls == [0.0]
+    assert FakeExportManager.instances == [old]
+    assert runtime.weekly_export_manager is old
+
+
+def test_runtime_bind_refuses_closed_same_binding_without_reviving(monkeypatch):
+    from app.local.errors import LocalWeeklyExportUnavailable
+
+    _install_fake_export_module(monkeypatch)
+    old = FakeExportManager(launch_id="launch-1", session_scope="scope-1")
+    old.is_closed = True
+    runtime = _fake_runtime(old, ("launch-1", "scope-1"))
+
+    with pytest.raises(LocalWeeklyExportUnavailable) as exc:
+        runtime.bind_weekly_exports(launch_id="launch-1", session_scope="scope-1")
+
+    assert exc.value.details == {"reason": "weekly_export_closed"}
+    assert old.pause_calls == []
+    assert old.close_calls == 0
+    assert old.wait_calls == []
+    assert FakeExportManager.instances == [old]
+    assert runtime.weekly_export_manager is old
+
+
+def test_runtime_bind_reuses_open_same_binding(monkeypatch):
+    _install_fake_export_module(monkeypatch)
+    old = FakeExportManager(launch_id="launch-1", session_scope="scope-1")
+    runtime = _fake_runtime(old, ("launch-1", "scope-1"))
+
+    assert runtime.bind_weekly_exports(
+        launch_id="launch-1", session_scope="scope-1"
+    ) is old
+    assert old.pause_calls == []
+    assert old.close_calls == 0
+    assert old.wait_calls == []
+
+
+def test_runtime_bind_idle_handover_pauses_closes_then_binds(monkeypatch):
+    _install_fake_export_module(monkeypatch)
+    old = FakeExportManager(launch_id="launch-1", session_scope="scope-1")
+    runtime = _fake_runtime(old, ("launch-1", "scope-1"))
+
+    new = runtime.bind_weekly_exports(launch_id="launch-2", session_scope="scope-2")
+
+    assert new is not old
+    assert new is FakeExportManager.instances[-1]
+    assert old.pause_calls == ["factory:launch-2:scope-2"]
+    assert old.resume_calls == []
+    assert old.close_calls == 1
+    assert old.is_closed is True
+    assert old.wait_calls == [0.0, 0.0, 0.0]
+    assert runtime.weekly_export_manager is new
+    assert runtime._weekly_export_binding == ("launch-2", "scope-2")
+
+
+def test_runtime_bind_post_pause_activity_resumes_and_refuses(monkeypatch):
+    from app.local.errors import LocalWeeklyExportUnavailable
+
+    _install_fake_export_module(monkeypatch)
+    old = FakeExportManager(launch_id="launch-1", session_scope="scope-1")
+    old.wait_idle_results = [True, False]
+    runtime = _fake_runtime(old, ("launch-1", "scope-1"))
+
+    with pytest.raises(LocalWeeklyExportUnavailable) as exc:
+        runtime.bind_weekly_exports(launch_id="launch-2", session_scope="scope-2")
+
+    assert exc.value.details == {"reason": "weekly_export_busy"}
+    assert old.pause_calls == ["factory:launch-2:scope-2"]
+    assert old.preview_clears == 1
+    assert old.resume_calls == ["factory:launch-2:scope-2"]
+    assert old.close_calls == 0
+    assert old.is_closed is False
+    assert FakeExportManager.instances == [old]
+    assert runtime.weekly_export_manager is old
+
+
+class CloseSignal:
+    def __init__(self):
+        self.handlers = []
+
+    def __iadd__(self, handler):
+        self.handlers.append(handler)
+        return self
+
+    def __call__(self):
+        result = None
+        for handler in self.handlers:
+            result = handler()
+        return result
+
+
+class CloseWindow:
+    def __init__(self):
+        self.events = types.SimpleNamespace(closing=CloseSignal())
+        self.destroyed = 0
+
+    def destroy(self):
+        self.destroyed += 1
+
+
+class CloseHost:
+    def __init__(self):
+        self._install_coordinator = None
+        self._close_coordinator = None
+        self._retired = False
+        self._native_io_blocked = False
+
+    def _notify_request_close(self, close_request_id, generation=None):
+        return None
+
+    def _notify_close_aborted(self, close_request_id, reason):
+        return None
+
+    def _save_in_progress(self):
+        return False
+
+    def _page_busy_probe(self):
+        return False
+
+    def _maintenance_busy_probe(self):
+        return False
+
+    def _consume_retire_destroy(self):
+        return False
+
+    def _recovery_required_probe(self):
+        return False
+
+
+def test_close_busy_includes_weekly_activity_and_cancel_releases_owner():
+    import d1_main
+
+    manager = FakeExportManager()
+    manager.active = 1
+    host = CloseHost()
+    window = CloseWindow()
+    d1_main._install_close_handlers(
+        window, host, None, weekly_export_manager=manager
+    )
+    coordinator = host._close_coordinator
+
+    assert window.events.closing() is False
+    close_id = coordinator._current_id
+    owner = f"close:{close_id}"
+    assert owner in manager.owners
+
+    refused = coordinator.complete(close_id, allow=True)
+    assert refused == {"accepted": False, "state": "canceled"}
+    assert manager.owners == set()
+    assert window.destroyed == 0
+
+    manager.active = 0
+    assert window.events.closing() is False
+    clean_id = coordinator._current_id
+    assert f"close:{clean_id}" in manager.owners
+    allowed = coordinator.complete(clean_id, allow=True)
+    assert allowed == {"accepted": True, "state": "closing"}
+    assert window.destroyed == 1
+    coordinator._cancel_timer()
+
+
+def test_stale_close_answer_does_not_release_current_owner():
+    import d1_main
+
+    manager = FakeExportManager()
+    host = CloseHost()
+    window = CloseWindow()
+    d1_main._install_close_handlers(
+        window, host, None, weekly_export_manager=manager
+    )
+    coordinator = host._close_coordinator
+
+    assert window.events.closing() is False
+    first_id = coordinator._current_id
+    coordinator.complete(first_id, allow=False)
+    assert manager.owners == set()
+
+    assert window.events.closing() is False
+    second_id = coordinator._current_id
+    second_owner = f"close:{second_id}"
+    assert second_owner in manager.owners
+
+    stale = coordinator.complete(first_id, allow=False)
+    assert stale["accepted"] is False
+    assert second_owner in manager.owners
+
+    coordinator.complete(second_id, allow=False)
+    assert manager.owners == set()
+    coordinator._cancel_timer()
+
+
+def test_maintenance_busy_probe_includes_fixed_weekly_manager():
+    import d1_main
+
+    manager = FakeExportManager()
+    host = types.SimpleNamespace(
+        _save_in_progress=lambda: False,
+        _page_busy_probe=lambda: False,
+        _update_busy_probe=lambda: False,
+    )
+    bundle = types.SimpleNamespace(
+        host_api=host,
+        service=types.SimpleNamespace(weekly_export_manager=manager),
+    )
+    manager.active = 1
+    assert d1_main._maintenance_busy(bundle) is True
+    manager.active = 0
+    assert d1_main._maintenance_busy(bundle) is False

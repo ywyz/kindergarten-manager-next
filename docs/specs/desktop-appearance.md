@@ -1,6 +1,6 @@
 # 桌面明暗模式切换规格与工程合同
 
-更新：2026-11-01。用户新增要求“加一个黑暗模式切换的功能”，并要求记录、更新下一步提示词、提交推送，为并行开发做准备。**本轮只交规格／分工并执行文档Git，不启动主题或周计划代码实现。** 唯一入口 [current.md](../tasks/current.md)，并行责任接[周计划工程§8](desktop-weekly-plan-engineering.md)。
+更新：2026-11-01。明暗模式已确认并实施；独立主题／偏好／共享接线、完整回归、真实源码重开和备份恢复已核：明文恢复light，保护包及加密恢复dark，最后正常重开偏好保持。具体身份与未验见[实施核查](../bootstrap/desktop-weekly-plan-review.md)；新候选／目标条件／教师体验另验。唯一入口[current](../tasks/current.md)，责任与接口仍按[周计划工程](desktop-weekly-plan-engineering.md)。
 
 ## 1. 功能与默认选择
 
@@ -62,4 +62,4 @@ G0四方核定新增appearance DTO／表字段、色值token和唯一责任后�
 | 备份／恢复／维护 | 新字段往返保留，恢复／retire丢弃旧队列，维护拒写不绕过；旧0006升级默认light，不改旧值摘要。 |
 | 回归 | 实际源码窗口覆盖日／观察／周、AI进度、历史、原生另存为与恢复弹窗；自动断言不能代替视觉检查。新包实证另按当时范围，r03不改。 |
 
-本轮未实现或运行这些新检查。官方依据：[Element Plus Dark Mode](https://element-plus.org/en-US/guide/dark-mode.html)说明html.dark与CSS变量入口；实际锁定依赖与源读在本轮核对，未安装／升级。codebase-memory覆盖代次2026-11-01T01:59:32Z，六路径metadata_changed，已作源码fallback；动态端口定位及更多范围按只读复核，不据图谱无缺口断言完整兼容。
+上表是验收要求，实际通过范围另见实施核查。设计依据：[Element Plus Dark Mode](https://element-plus.org/en-US/guide/dark-mode.html)说明html.dark与CSS变量入口；锁定依赖已源读核对，未安装／升级。原设计codebase-memory代次2026-11-01T01:59:32Z，六路径metadata_changed并作源fallback；不据图谱无缺口断言完整兼容。

@@ -49,15 +49,14 @@ README_NAME = "README-KGNext-E14-win11-r01.txt"
 MANIFEST_NAME = "package-files.json"
 SUMS_NAME = "SHA256SUMS.txt"
 MANIFEST_SCHEMA_VERSION = 1
-DATABASE_REVISION = "20261025_0006_local_game_observations"
+DATABASE_REVISION = "20261101_0007_local_weekly"
+MIGRATION_FILENAME = "20261101_0007_local_weekly_plans.py"
 PILLOW_VERSION = "13.0.0"
 
 TEMPLATE_DIR = d0_paths.BACKEND_ROOT / "app" / "assets" / "word_templates"
 ALEMBIC_INI = d0_paths.BACKEND_ROOT / "alembic-local.ini"
 MIGRATIONS_DIR = d0_paths.BACKEND_ROOT / "migrations_local"
-MIGRATION_FILE = (
-    MIGRATIONS_DIR / "versions" / f"{DATABASE_REVISION}.py"
-)
+MIGRATION_FILE = MIGRATIONS_DIR / "versions" / MIGRATION_FILENAME
 PILLOW_LICENSE = (
     d0_paths.REPO_ROOT
     / "desktop"
@@ -1229,7 +1228,7 @@ def main() -> int:
 
     require_pillow_license()
     if not MIGRATION_FILE.is_file():
-        raise SystemExit(f"拒绝构建：缺少 0006 迁移 {MIGRATION_FILE}")
+        raise SystemExit(f"拒绝构建：缺少 0007 迁移 {MIGRATION_FILE}")
     if not ALEMBIC_INI.is_file():
         raise SystemExit(f"拒绝构建：缺少本地 Alembic 配置 {ALEMBIC_INI}")
     if not TEMPLATE_DIR.is_dir():

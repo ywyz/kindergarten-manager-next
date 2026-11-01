@@ -62,7 +62,7 @@ import os
 import random
 import sqlite3
 from dataclasses import asdict, dataclass, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -74,6 +74,7 @@ from app.local import (
     ai_adoption,
     ai_config_service,
     ai_task_service,
+    appearance_service,
     config_service,
     daily_plan_history_service,
     daily_plan_service,
@@ -83,7 +84,9 @@ from app.local import (
     observation_service,
     profile_service,
     prompt_service,
+    weekly_plan_service,
 )
+from app.local.weekly_plan_tokens import scope_hash
 from app.local.base import LocalBase, utc_now
 from app.local.models import (
     LocalAIAttempt,
@@ -678,6 +681,8 @@ def seed_existing_runtime(
                 "kind": "current_class",
                 "name": FIXTURE_CLASS_NAME,
                 "grade": FIXTURE_CLASS_GRADE,
+                "header_teacher_names": ["王老师", "李老师", "王老师"],
+                "caregiver_name": "张阿姨",
             },
         )
         _apply_config_change(
@@ -704,6 +709,11 @@ def seed_existing_runtime(
                 "state": "teaching",
                 "reason": "园庆调课（合成夹具）",
             },
+        )
+
+        # Appearance preference is independent of config_version.
+        appearance_service.update_appearance(
+            session, mode="dark", expected_version=1
         )
 
         # --- old AI configuration parameters ---------------------------
@@ -794,6 +804,74 @@ def seed_existing_runtime(
         )
         if restored_plan["content_version"] != 4:
             raise FixtureError("daily plan restore did not create version 4")
+
+        # --- weekly plan: draft + manual save + confirmation -------------
+        weekly_anchor = FIXTURE_TERM_START - timedelta(
+            days=FIXTURE_TERM_START.isoweekday() - 1
+        )
+        weekly_scope = scope_hash("fixture-page-scope")
+        weekly_preview = weekly_plan_service.create_preview(
+            session,
+            runtime=runtime,
+            profile_id=profile_id,
+            launch_id="fixture-launch",
+            session_scope_hash=weekly_scope,
+            term_id=term_id,
+            week_anchor_date=weekly_anchor,
+        )
+        weekly_result, _weekly_created = weekly_plan_service.create_or_open(
+            session,
+            runtime=runtime,
+            profile_id=profile_id,
+            launch_id="fixture-launch",
+            session_scope_hash=weekly_scope,
+            request_id=_request_id(),
+            term_id=term_id,
+            week_anchor_date=weekly_anchor,
+            expected_config_version=int(settings.config_version),
+            context_token=weekly_preview["create_token"],
+        )
+        weekly_plan_id = weekly_result["weekly_plan_id"]
+        weekly_saved = weekly_plan_service.save_draft(
+            session,
+            profile_id=profile_id,
+            request_id=_request_id(),
+            plan_id=weekly_plan_id,
+            expected_draft_version=weekly_result["draft"]["version"],
+            patch={
+                "theme": "秋天的树叶",
+                "weekly_columns": {"key_week_focus": "观察树叶变化"},
+                "deterministic_overrides": {
+                    FIXTURE_PLAN_DATE.isoformat(): {
+                        "morning_talk_topic": "手填晨谈"
+                    }
+                },
+            },
+        )
+        weekly_facts = weekly_plan_service.confirmation_preview(
+            session,
+            runtime=runtime,
+            profile_id=profile_id,
+            launch_id="fixture-launch",
+            session_scope_hash=weekly_scope,
+            plan_id=weekly_plan_id,
+            expected_draft_version=weekly_saved["draft"]["version"],
+        )
+        weekly_plan_service.confirm(
+            session,
+            runtime=runtime,
+            profile_id=profile_id,
+            launch_id="fixture-launch",
+            session_scope_hash=weekly_scope,
+            request_id=_request_id(),
+            plan_id=weekly_plan_id,
+            expected_draft_version=weekly_saved["draft"]["version"],
+            context_token=weekly_facts["preview_token"],
+            ack_missing=True,
+            ack_stale=True,
+            note="合成周计划确认",
+        )
+        session.expire_all()
 
         # --- an old personal prompt revision stays in history ----------
         # Only the daily-plan prompt service edits personal prompts; the

@@ -9,7 +9,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { apiGet, ApiError, setSessionToken } from './client'
+import { apiGet, ApiError, apiPatch, setSessionToken } from './client'
 import {
   BRIDGE_PROTOCOL,
   completeCloseWithFallback,
@@ -20,12 +20,27 @@ import {
   registerPageHandlers,
   waitForApi,
   type CloseAuthority,
+  type HostApi,
 } from './bridge'
-import { LeaveCoordinator, type BlockingDraft, type SaveOutcome } from './leave'
+import {
+  LeaveCoordinator,
+  type BlockingDraft,
+  type LeaveEditor,
+  type SaveOutcome,
+} from './leave'
 import { isUpdateBusy, type UpdateStatus } from './update'
 import type { AiTaskList, LocalContext } from './types'
 import type { ObservationListItem } from './observation'
 import { isLiveTask } from './ai'
+import {
+  applyThemeMode,
+  createThemeController,
+  type AppearanceDTO,
+  type AppearancePatch,
+  type ThemeMode,
+  type ThemeStatus,
+} from './theme'
+import ThemeToggle from './components/ThemeToggle.vue'
 import SetupView from './views/SetupView.vue'
 import WorkbenchView from './views/WorkbenchView.vue'
 import EditorView from './views/EditorView.vue'
@@ -34,6 +49,8 @@ import ObservationEditorView from './views/ObservationEditorView.vue'
 import SettingsView from './views/SettingsView.vue'
 import UpdatePanel from './views/UpdatePanel.vue'
 import BackupRestorePanel from './views/BackupRestorePanel.vue'
+import WeeklyPlansView from './views/WeeklyPlansView.vue'
+import WeeklyPlanEditorView from './views/WeeklyPlanEditorView.vue'
 
 type View =
   | { name: 'setup' }
@@ -47,6 +64,8 @@ type View =
     }
   | { name: 'observations' }
   | { name: 'observation-editor'; observationId: string }
+  | { name: 'weekly-plans' }
+  | { name: 'weekly-editor'; planId: string }
   | { name: 'settings' }
 
 let pageTicket = ''
@@ -54,6 +73,8 @@ const bootState = ref<'connecting' | 'uninitialized' | 'ready' | 'error'>(
   'connecting',
 )
 const bootError = ref('')
+/** The one host instance captured by this page realm; never a later global. */
+const pageHost = ref<HostApi | null>(null)
 const context = ref<LocalContext | null>(null)
 const view = ref<View>({ name: 'workbench' })
 /** Close-specific freeze: input stops before the allow leaves the page. */
@@ -75,6 +96,54 @@ const maintenanceLocked = computed(
 const maintenanceMode = computed<'setup' | 'settings'>(() =>
   bootState.value === 'uninitialized' ? 'setup' : 'settings',
 )
+
+/**
+ * Appearance lifecycle. The profile epoch changes only on a new profile or a
+ * restore/profile replacement; repeated context updates in the same epoch
+ * keep the first-page last choice and never re-apply an old queued write.
+ */
+const profileEpoch = ref(0)
+let activeProfileId: string | null = null
+const themeController = createThemeController({
+  api: {
+    get: () => apiGet<AppearanceDTO>('/api/local/appearance'),
+    patch: (body: AppearancePatch) =>
+      apiPatch<AppearanceDTO>('/api/local/appearance', body),
+  },
+  apply: (mode) => applyThemeMode(document.documentElement, mode),
+  notify: (status: ThemeStatus) => {
+    if (status === 'unsaved') {
+      ElMessage.warning('主题选择未保存，请重试')
+    } else if (status === 'conflict') {
+      ElMessage.warning('主题选择已被其他操作更新，已读取最新选择')
+    } else if (status === 'unknown') {
+      ElMessage.warning('主题偏好读取失败，请重试')
+    }
+  },
+})
+const themeMode = computed<ThemeMode>(() => themeController.mode.value)
+const themeStatus = computed<ThemeStatus>(() => themeController.status.value)
+const themeDisabled = computed(
+  () => bootState.value === 'connecting' || bootState.value === 'error',
+)
+
+function initializeTheme(next: LocalContext): void {
+  const nextProfileId = next.profile?.id ?? null
+  if (activeProfileId !== null && nextProfileId !== activeProfileId) {
+    profileEpoch.value += 1
+  }
+  activeProfileId = nextProfileId
+  void themeController.initialize({
+    context: next.status === 'ready' ? 'ready' : 'uninitialized',
+    profileEpoch: profileEpoch.value,
+  })
+}
+
+function resetTheme(reason: 'restore' | 'profile-replace' | 'retire'): void {
+  activeProfileId = null
+  profileEpoch.value += 1
+  themeController.reset({ reason, profileEpoch: profileEpoch.value })
+}
 /** Native Word save in flight (the close request must wait for it). */
 const exportBusy = ref(false)
 /** Observation page writes (create/import/adopt/restore/AI submit). */
@@ -87,8 +156,20 @@ function setEditorBusy(value: boolean): void {
   if (view.value.name !== 'observation-editor') return
   editorBusy.value = value
 }
+/** Weekly list create/unknown barrier; only the mounted list may set it. */
+const weeklyListBusy = ref(false)
+/** Weekly editor write/unknown barrier, accepted only for the current bridge. */
+const weeklyEditorBusy = ref(false)
+const weeklyEditorRef = ref<{ resetForContext: () => void } | null>(null)
+let weeklyBridge: LeaveEditor | null = null
+let weeklyBridgePlanId: string | null = null
 const pageBusy = computed(
-  () => observationsBusy.value || editorBusy.value || exportBusy.value,
+  () =>
+    observationsBusy.value ||
+    editorBusy.value ||
+    weeklyListBusy.value ||
+    weeklyEditorBusy.value ||
+    exportBusy.value,
 )
 
 let pageBusySeq = 0
@@ -270,22 +351,26 @@ async function probeLiveTasks(): Promise<LiveProbe> {
   return 'none'
 }
 
-interface EditorBridge {
-  isDirty: () => boolean
-  identity: () => string
-  settle: () => Promise<void>
-  saveCurrent: () => Promise<SaveOutcome>
-  blockingDraft?: () => BlockingDraft | null
-}
+let editorBridge: LeaveEditor | null = null
 
-let editorBridge: EditorBridge | null = null
-
-/** The settings / candidate draft currently blocking every leave. */
+/** The settings / candidate / weekly draft currently blocking every leave. */
 function currentBlockingDraft(): BlockingDraft | null {
   if (observationsBusy.value) {
     return {
       kind: 'material',
       message: '观察记录正在提交：请等待结果后再离开当前页面',
+    }
+  }
+  if (weeklyListBusy.value) {
+    return {
+      kind: 'weekly',
+      message: '周计划创建仍在进行：请等待结果后再离开当前页面',
+    }
+  }
+  if (weeklyEditorBusy.value) {
+    return {
+      kind: 'weekly',
+      message: '周计划保存、确认或导出仍在进行：请等待结果后再离开当前页面',
     }
   }
   if (isSettingsDraftBlocking()) {
@@ -327,8 +412,103 @@ const coordinator = new LeaveCoordinator(
   },
 )
 
-function registerEditor(bridge: EditorBridge | null): void {
-  editorBridge = bridge
+let editorBridgeOwner: string | null = null
+
+function registerEditorFor(owner: string | null, bridge: LeaveEditor | null): void {
+  if (bridge) {
+    editorBridge = bridge
+    editorBridgeOwner = owner
+    return
+  }
+  // A late null from an unmounted page may only clear the bridge it still
+  // owns. A newer page's bridge is never removed by an old unmount.
+  if (owner !== null && editorBridgeOwner === owner) {
+    editorBridge = null
+    editorBridgeOwner = null
+  }
+}
+
+function registerEditor(bridge: LeaveEditor | null): void {
+  // Existing daily/observation pages and the Node harnesses call this one
+  // entry. The current view supplies the instance identity so a late null
+  // cannot clear another page's bridge.
+  if (view.value.name === 'observation-editor') {
+    registerEditorFor(`observation:${view.value.observationId}`, bridge)
+    return
+  }
+  if (view.value.name === 'editor') {
+    registerEditorFor(
+      `daily:${view.value.planDate}:${view.value.planId ?? ''}`,
+      bridge,
+    )
+    return
+  }
+  if (view.value.name === 'weekly-editor') {
+    registerWeeklyEditor(bridge)
+    return
+  }
+  if (bridge) {
+    editorBridge = bridge
+    editorBridgeOwner = null
+  }
+}
+
+function registerWeeklyEditor(bridge: LeaveEditor | null): void {
+  if (bridge) {
+    weeklyBridge = bridge
+    weeklyBridgePlanId =
+      view.value.name === 'weekly-editor' ? view.value.planId : null
+    editorBridge = bridge
+    editorBridgeOwner = weeklyBridgePlanId
+      ? `weekly:${weeklyBridgePlanId}`
+      : null
+    return
+  }
+  // The weekly editor emits null on reset/unmount. Only the same plan may
+  // clear the currently registered bridge; an old plan's late null is inert.
+  if (
+    view.value.name !== 'weekly-editor' ||
+    view.value.planId !== weeklyBridgePlanId
+  ) {
+    return
+  }
+  if (editorBridge === weeklyBridge) {
+    editorBridge = null
+    editorBridgeOwner = null
+  }
+  weeklyBridge = null
+  weeklyBridgePlanId = null
+  weeklyEditorBusy.value = false
+}
+
+function onWeeklyEditorBusy(payload: {
+  identity: string
+  busy: boolean
+}): void {
+  if (view.value.name !== 'weekly-editor') return
+  const current = weeklyBridge?.identity()
+  // Only the currently registered editor may change the weekly barrier.
+  // A message with no current bridge has no owner (for example after reset
+  // or a failed reload); accepting it would let an old identity block
+  // navigation/close forever. Real unknown state stays busy through the
+  // registered controller's own blockingDraft.
+  if (current === undefined || payload.identity !== current) return
+  weeklyEditorBusy.value = payload.busy
+}
+
+function onWeeklyListBusy(value: boolean): void {
+  if (view.value.name !== 'weekly-plans') return
+  weeklyListBusy.value = value
+}
+
+function clearWeeklyState(): void {
+  if (editorBridge === weeklyBridge) {
+    editorBridge = null
+    editorBridgeOwner = null
+  }
+  weeklyBridge = null
+  weeklyBridgePlanId = null
+  weeklyEditorBusy.value = false
 }
 
 function updateContext(next: LocalContext): void {
@@ -336,6 +516,7 @@ function updateContext(next: LocalContext): void {
   bootState.value = next.status === 'ready' ? 'ready' : 'uninitialized'
   if (next.status === 'uninitialized') view.value = { name: 'setup' }
   else if (view.value.name === 'setup') view.value = { name: 'workbench' }
+  initializeTheme(next)
 }
 
 async function reloadContext(): Promise<LocalContext> {
@@ -346,6 +527,11 @@ async function reloadContext(): Promise<LocalContext> {
 
 async function onMaintenanceRecovered(): Promise<void> {
   try {
+    // A restore discards the old profile's theme intent/queue and weekly
+    // editor requests; the reload below reads the restored profile in a new
+    // epoch. resetForContext itself never reads the retired runtime.
+    weeklyEditorRef.value?.resetForContext()
+    resetTheme('restore')
     await reloadContext()
     maintenanceOpen.value = false
     ElMessage.success('恢复完成，已重新读取本地资料')
@@ -378,7 +564,8 @@ function isSettingsDraftBlocking(): boolean {
 async function requestLeave(
   action:
     | { kind: 'calendar' | 'date' | 'term' | 'observations' | 'settings' }
-    | { kind: 'close'; closeRequestId: string },
+    | { kind: 'close'; closeRequestId: string }
+    | { kind: 'weekly'; target_key: string },
   run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed',
 ): Promise<'left' | 'stayed' | 'busy'> {
   if (
@@ -405,6 +592,9 @@ async function requestLeave(
 
 async function goWorkbench(): Promise<'left' | 'stayed'> {
   editorBridge = null
+  editorBridgeOwner = null
+  weeklyListBusy.value = false
+  clearWeeklyState()
   view.value = { name: 'workbench' }
   return 'left'
 }
@@ -445,12 +635,72 @@ function openEditorFromWorkbench(
   view.value = { name: 'editor', planDate: date, mode, planId, fromTermId: termId }
 }
 
+async function leaveForWeekly(
+  targetKey: string,
+  run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed',
+): Promise<'left' | 'stayed' | 'busy'> {
+  if (exportBusy.value) {
+    ElMessage.warning('原生保存进行中：请等待保存结果后再离开当前页面')
+    return 'stayed'
+  }
+  return requestLeave(
+    { kind: 'weekly', target_key: targetKey },
+    async () => {
+      const result = await run()
+      return result ?? 'left'
+    },
+  )
+}
+
+/** Workbench → weekly list through the unified leave coordinator. */
+async function openWeeklyPlansFromWorkbench(): Promise<void> {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return
+  }
+  await leaveForWeekly('weekly-list', async (): Promise<'left'> => {
+    weeklyListBusy.value = false
+    clearWeeklyState()
+    view.value = { name: 'weekly-plans' }
+    return 'left'
+  })
+}
+
+/** Weekly list → editor. The target key includes the concrete plan id. */
+async function openWeeklyEditorFromList(planId: string): Promise<void> {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return
+  }
+  // The list emits open only after a real create/existing-plan resolution;
+  // its busy watcher may not have delivered false yet. Do not let the list's
+  // own completed operation block the transition it just requested.
+  weeklyListBusy.value = false
+  await leaveForWeekly(`weekly-editor:${planId}`, async (): Promise<'left'> => {
+    clearWeeklyState()
+    view.value = { name: 'weekly-editor', planId }
+    return 'left'
+  })
+}
+
+/** Weekly editor → list; a failed save/conflict/unknown keeps the editor. */
+async function backFromWeeklyEditor(): Promise<void> {
+  await leaveForWeekly('weekly-list', async (): Promise<'left'> => {
+    clearWeeklyState()
+    weeklyListBusy.value = false
+    view.value = { name: 'weekly-plans' }
+    return 'left'
+  })
+}
+
 function openObservationsFromWorkbench(): void {
   if (closeLocked.value || closeFinalAllowed.value) {
     ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
     return
   }
   observationsBusy.value = false
+  weeklyListBusy.value = false
+  clearWeeklyState()
   view.value = { name: 'observations' }
 }
 
@@ -493,11 +743,19 @@ async function leaveForAction(
   const execute = async (): Promise<'left' | 'stayed'> => {
     if (kind === 'calendar') {
       editorBridge = null
+      editorBridgeOwner = null
+      weeklyListBusy.value = false
+      clearWeeklyState()
       view.value = { name: 'workbench' }
     } else if (kind === 'observations') {
       editorBridge = null
+      editorBridgeOwner = null
+      weeklyListBusy.value = false
+      clearWeeklyState()
       view.value = { name: 'observations' }
     } else if (kind === 'settings') {
+      weeklyListBusy.value = false
+      clearWeeklyState()
       view.value = { name: 'settings' }
     }
     const result = await run()
@@ -584,9 +842,14 @@ async function finishClose(closeRequestId: string): Promise<'left' | 'stayed'> {
   // candidate preview edit lives on the editor bridge): a new unconfirmed
   // draft (or an open preview) created during the wait keeps the page — the
   // close never applies, posts or discards it (spec §11.3 / D2 §5.4).
-  if (observationsBusy.value || editorBusy.value) {
+  if (
+    observationsBusy.value ||
+    editorBusy.value ||
+    weeklyListBusy.value ||
+    weeklyEditorBusy.value
+  ) {
     ElMessage.warning(
-      '观察记录写操作仍在提交：已取消本次关闭并保留现场，请等待结果后重试',
+      '页面写操作仍在提交：已取消本次关闭并保留现场，请等待结果后重试',
     )
     return 'stayed'
   }
@@ -1080,6 +1343,7 @@ async function bootstrap(): Promise<void> {
     bootError.value = '未检测到桌面宿主：请在本地桌面应用中打开本页面。'
     return
   }
+  pageHost.value = host.api
   try {
     const bootstrapInfo = await host.api.get_bootstrap!()
     if (bootstrapInfo?.bridge_protocol !== BRIDGE_PROTOCOL) {
@@ -1149,6 +1413,7 @@ onBeforeUnmount(() => {
   updateSeq += 1
   clearUpdatePoll()
   pageBusyAlive = false
+  themeController.dispose()
   if (pageBusyRetry !== null) {
     clearTimeout(pageBusyRetry)
     pageBusyRetry = null
@@ -1211,6 +1476,27 @@ onMounted(() => {
 
 <template>
   <div class="d1-page">
+    <div
+      v-if="bootState !== 'connecting' && bootState !== 'error'"
+      class="d1-theme-bar"
+      data-d1="theme-bar"
+    >
+      <ThemeToggle
+        :mode="themeMode"
+        :disabled="themeDisabled"
+        :pending="themeStatus === 'saving'"
+        @change="(mode) => themeController.setMode(mode)"
+      />
+      <el-button
+        v-if="themeStatus === 'unsaved' || themeStatus === 'conflict' || themeStatus === 'unknown'"
+        size="small"
+        text
+        data-d1="theme-retry"
+        @click="() => void themeController.retry()"
+      >
+        重试保存主题
+      </el-button>
+    </div>
     <el-alert
       v-if="maintenanceNotice && bootState !== 'connecting' && bootState !== 'error'"
       type="success"
@@ -1242,6 +1528,7 @@ onMounted(() => {
         :context="context!"
         :frozen="closeLocked"
         @open-editor="openEditorFromWorkbench"
+        @open-weekly-plans="() => void openWeeklyPlansFromWorkbench()"
         @open-observations="openObservationsFromWorkbench"
         @open-settings="() => void leaveForAction('settings', goSettings)"
         @check-update="openUpdateManual"
@@ -1268,6 +1555,32 @@ onMounted(() => {
         @leave="(kind, run) => void leaveForAction(kind, run)"
         @refresh-context="reloadContext"
         @busy="setEditorBusy"
+      />
+      <div v-else-if="view.name === 'weekly-plans'" class="weekly-plans-page">
+        <el-button
+          data-d1="weekly-back"
+          :disabled="closeLocked || maintenanceLocked"
+          @click="() => void leaveForAction('calendar', goWorkbench)"
+        >
+          返回工作台
+        </el-button>
+        <WeeklyPlansView
+          :disabled="closeLocked || maintenanceLocked"
+          @open="(planId) => void openWeeklyEditorFromList(planId)"
+          @busy="onWeeklyListBusy"
+        />
+      </div>
+      <WeeklyPlanEditorView
+        v-else-if="view.name === 'weekly-editor'"
+        :key="view.planId"
+        ref="weeklyEditorRef"
+        :plan-id="view.planId"
+        :disabled="closeLocked || maintenanceLocked"
+        :profile-epoch="profileEpoch"
+        :host="pageHost"
+        @register-editor="registerWeeklyEditor"
+        @busy="onWeeklyEditorBusy"
+        @back="() => void backFromWeeklyEditor()"
       />
       <EditorView
         v-else-if="view.name === 'editor'"
@@ -1350,7 +1663,8 @@ onMounted(() => {
 <style>
 body {
   margin: 0;
-  background: #f5f7fa;
+  background: var(--kgm-bg);
+  color: var(--kgm-text);
   font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
 }
 .d1-page {
@@ -1358,13 +1672,20 @@ body {
   margin: 0 auto;
   padding: 20px 16px 64px;
 }
+.d1-theme-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 8px;
+}
 .centered {
   padding: 80px 0;
   text-align: center;
-  color: #667085;
+  color: var(--kgm-muted);
 }
 .muted {
-  color: #909399;
+  color: var(--kgm-muted);
   font-size: 0.85rem;
 }
 .maintenance-notice {

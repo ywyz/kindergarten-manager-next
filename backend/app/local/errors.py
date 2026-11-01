@@ -165,6 +165,72 @@ class LocalConfigOperationNotFound(LocalError):
     message = "未找到该配置操作回执"
 
 
+class LocalAppearanceVersionConflict(LocalError):
+    code = "APPEARANCE_VERSION_CONFLICT"
+    status_code = 409
+    message = "外观偏好已被其他操作更新，请重新读取后重试"
+
+
+class LocalWeeklyPlanNotFound(LocalError):
+    code = "WEEKLY_PLAN_NOT_FOUND"
+    status_code = 404
+    message = "未找到该周计划"
+
+
+class LocalWeeklyVersionConflict(LocalError):
+    code = "WEEKLY_VERSION_CONFLICT"
+    status_code = 409
+    message = "周计划草稿已被其他保存更新，请刷新后重试"
+
+
+class LocalWeeklyPreviewStale(LocalError):
+    code = "WEEKLY_PREVIEW_STALE"
+    status_code = 409
+    message = "周计划预览对象已变化，请重新预览"
+
+
+class LocalWeeklyPreviewExpired(LocalError):
+    code = "WEEKLY_PREVIEW_EXPIRED"
+    status_code = 409
+    message = "周计划预览已过期，请重新预览"
+
+
+class LocalWeeklySourceChanged(LocalError):
+    code = "WEEKLY_SOURCE_CHANGED"
+    status_code = 409
+    message = "所选日计划来源已变化，请重新选择"
+
+
+class LocalWeeklyAckRequired(LocalError):
+    code = "WEEKLY_ACK_REQUIRED"
+    status_code = 409
+    message = "确认前需要处理缺项或来源变化"
+
+
+class LocalWeeklyInvalid(LocalError):
+    code = "WEEKLY_INVALID"
+    status_code = 422
+    message = "周计划内容不合法"
+
+
+class LocalWeeklyOperationConflict(LocalError):
+    code = "WEEKLY_OPERATION_CONFLICT"
+    status_code = 409
+    message = "同一请求 ID 已用于不同周计划操作"
+
+
+class LocalWeeklyOperationNotFound(LocalError):
+    code = "WEEKLY_OPERATION_NOT_FOUND"
+    status_code = 404
+    message = "未找到该周计划操作回执"
+
+
+class LocalWeeklyConfirmationNotFound(LocalError):
+    code = "WEEKLY_CONFIRMATION_NOT_FOUND"
+    status_code = 404
+    message = "未找到该周计划确认版本"
+
+
 class LocalPromptVersionConflict(LocalError):
     code = "PROMPT_VERSION_CONFLICT"
     status_code = 409
@@ -361,3 +427,21 @@ class LocalDatabaseStateError(Exception):
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+
+
+class LocalWeeklyExportNotFound(LocalError):
+    code = "WEEKLY_EXPORT_NOT_FOUND"
+    status_code = 404
+    message = "未找到该周计划导出记录"
+
+
+class LocalWeeklyExportUnavailable(LocalError):
+    code = "WEEKLY_EXPORT_UNAVAILABLE"
+    status_code = 503
+    message = "周计划导出暂时不可用，请稍后重试"
+
+
+class LocalWeeklyExportConflict(LocalError):
+    code = "WEEKLY_EXPORT_CONFLICT"
+    status_code = 409
+    message = "周计划导出状态已变化，请重新核对"

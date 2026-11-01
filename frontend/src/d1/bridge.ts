@@ -41,6 +41,22 @@ export interface SaveObservationExportResult {
   receipt_pending?: boolean
 }
 
+/**
+ * Weekly native delivery result. This is deliberately strict: generation is
+ * never reported as ``saved``; a lost reply is ``unknown`` and a durable
+ * receipt still pending is ``pending``.
+ */
+export interface SaveWeeklyExportResult {
+  status: 'saved' | 'canceled' | 'failed' | 'pending' | 'unknown'
+  code?: string
+  message?: string
+  filename?: string
+  export_id?: string
+  attempt_id?: string
+  bytes?: number
+  receipt_pending?: boolean
+}
+
 export interface HostApi {
   get_bootstrap?: () => Promise<{
     bridge_protocol?: number
@@ -108,6 +124,14 @@ export interface HostApi {
     export_id: string
     filename?: string
   }) => Promise<SaveObservationExportResult>
+  save_weekly_export?: (payload: {
+    export_id: string
+    filename: string
+  }) => Promise<SaveWeeklyExportResult>
+  get_weekly_export_result?: (payload: {
+    export_id: string
+    filename: string
+  }) => Promise<SaveWeeklyExportResult>
   get_app_identity?: () => Promise<AppIdentity>
   check_for_update?: () => Promise<UpdateStatus>
   start_update_download?: () => Promise<UpdateStatus>

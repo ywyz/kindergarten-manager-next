@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hmac
 import secrets
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -28,6 +29,8 @@ from app.local.observation_api import observations_router
 from app.local.observation_export_api import observation_exports_router
 from app.local.runtime import LocalRuntime
 from app.local.schemas import LocalHealthOut
+from app.local.weekly_plan_api import weekly_plans_router
+from app.local.weekly_plan_export_api import weekly_exports_router
 
 SESSION_HEADER = "X-App-Session"
 LOCAL_HEALTH_PATH = "/api/local/health"
@@ -96,6 +99,14 @@ def create_local_app(
     # one app session is refused by another, even on the same runtime; it is
     # not the session token and is never persisted.
     app.state.session_scope = secrets.token_urlsafe(16)
+    if not getattr(runtime, "launch_id", None):
+        runtime.launch_id = str(uuid.uuid4())
+    # Bind the one fixed manager for this app generation before any API can
+    # serve; D's manager is constructed from the runtime/launch/scope only.
+    app.state.weekly_export_manager = runtime.bind_weekly_exports(
+        launch_id=str(runtime.launch_id),
+        session_scope=app.state.session_scope,
+    )
     expected_host = f"{host}:{port}"
     expected_origin = f"http://{host}:{port}"
     token_ref = session_token  # compared only; never returned, logged or stored
@@ -154,4 +165,6 @@ def create_local_app(
     app.include_router(exports_router)
     app.include_router(observations_router)
     app.include_router(observation_exports_router)
+    app.include_router(weekly_plans_router)
+    app.include_router(weekly_exports_router)
     return app

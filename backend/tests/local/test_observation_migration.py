@@ -150,7 +150,7 @@ class ObservationMigrationTests(LocalTestCase):
         db = runtime.db_path
         self.assertEqual(
             query_scalar(db, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261025_0006_local_game_observations",
+            "20261101_0007_local_weekly",
         )
         self.assertEqual(query_rows(db, "PRAGMA foreign_key_check"), [])
         tables = {
@@ -205,7 +205,9 @@ class ObservationMigrationTests(LocalTestCase):
 
         upgraded = self.tmp_root / "upgraded-0006.db"
         shutil.copy2(source, upgraded)
-        ensure_local_schema(upgraded)
+        command.upgrade(
+            alembic_config(upgraded), "20261025_0006_local_game_observations"
+        )
         _retain("success-0006.db", upgraded)
         connection = sqlite3.connect(str(upgraded))
         try:
@@ -269,7 +271,7 @@ class ObservationMigrationTests(LocalTestCase):
         self.assertEqual(query_rows(db, "PRAGMA foreign_key_check"), [])
         self.assertEqual(
             query_scalar(db, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261025_0006_local_game_observations",
+            "20261101_0007_local_weekly",
         )
         new_daily_prompt_rows = query_rows(
             db,
@@ -575,7 +577,7 @@ class ObservationMigrationTests(LocalTestCase):
         db = data_dir / "kindergarten.db"
         self.assertEqual(
             query_scalar(db, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261025_0006_local_game_observations",
+            "20261101_0007_local_weekly",
         )
         self.assertEqual(
             query_scalar(
@@ -628,7 +630,7 @@ class ObservationMigrationTests(LocalTestCase):
         ensure_local_schema(restored)
         self.assertEqual(
             query_scalar(restored, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261025_0006_local_game_observations",
+            "20261101_0007_local_weekly",
         )
         self.assertEqual(query_rows(restored, "PRAGMA foreign_key_check"), [])
 

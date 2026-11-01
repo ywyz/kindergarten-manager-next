@@ -19,14 +19,14 @@ import sys
 import tempfile
 import threading
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
 
 from alembic import command
 
 from app.local import backup_format, backup_fs, observation_assets
-from app.local.errors import LocalError
+from app.local.errors import LocalError, LocalWeeklyInvalid
 from app.local.migrate import alembic_config, head_revision
 from app.local.sqlite import LOCAL_VERSION_TABLE
 
@@ -499,6 +499,519 @@ def _logical_checks(connection: sqlite3.Connection) -> None:
             )
 
 
+_WEEKLY_MAX_CONTENT_BYTES = 1_048_576
+
+
+def _weekly_canonical(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _weekly_hash(value: Any) -> str:
+    return hashlib.sha256(_weekly_canonical(value).encode("utf-8")).hexdigest()
+
+
+def _weekly_json(value: Any, label: str) -> Any:
+    if isinstance(value, (str, bytes, bytearray)):
+        try:
+            return json.loads(value)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID", f"备份数据库周计划 JSON 损坏：{label}"
+            ) from exc
+    return value
+
+
+def _weekly_require(condition: bool, label: str) -> None:
+    if not condition:
+        raise BackupValidationError(
+            "BACKUP_DB_LOGICAL_INVALID", f"备份数据库周计划校验失败：{label}"
+        )
+
+
+def _weekly_content(value: Any, expected_hash: str, label: str) -> dict:
+    from app.local import weekly_plan_content
+
+    content = _weekly_json(value, label)
+    try:
+        content = weekly_plan_content.validate_content(content)
+        actual = weekly_plan_content.content_hash(content)
+    except weekly_plan_content.WeeklyContentError as exc:
+        raise BackupValidationError(
+            "BACKUP_DB_LOGICAL_INVALID",
+            f"备份数据库周计划内容不合法：{label}",
+        ) from exc
+    _weekly_require(actual == expected_hash, f"{label} content hash")
+    _weekly_require(
+        len(_weekly_canonical(content).encode("utf-8"))
+        <= _WEEKLY_MAX_CONTENT_BYTES,
+        f"{label} size",
+    )
+    return content
+
+
+def _daily_contents(connection: sqlite3.Connection) -> dict[tuple[str, str], dict]:
+    from app.services.daily_plan_content import (
+        ContentValidationError,
+        parse_adopted_content,
+    )
+
+    result: dict[tuple[str, str], dict] = {}
+    rows = connection.execute(
+        "SELECT c.daily_plan_id, c.id, c.version, c.adopted_content, "
+        "p.creator_id, p.class_id, p.term_id, p.plan_date, p.deleted_at "
+        "FROM local_daily_plan_contents c "
+        "JOIN local_daily_plans p ON p.id = c.daily_plan_id"
+    ).fetchall()
+    for row in rows:
+        try:
+            adopted = parse_adopted_content(
+                _weekly_json(row[3], f"daily content {row[1]}")
+            ).model_dump(exclude_none=True)
+        except (ContentValidationError, ValueError, TypeError) as exc:
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID", "备份数据库日计划内容损坏"
+            ) from exc
+        result[(row[0], row[1])] = {
+            "version": row[2],
+            "adopted": adopted,
+            "hash": _weekly_hash(adopted),
+            "profile_id": row[4],
+            "class_id": row[5],
+            "term_id": row[6],
+            "plan_date": row[7],
+        }
+    return result
+
+
+def _weekly_source_row(
+    daily_contents: dict[tuple[str, str], dict],
+    source: dict,
+    *,
+    plan: dict,
+    day_date: str,
+    label: str,
+    check_text: bool,
+) -> dict:
+    row = daily_contents.get(
+        (source.get("daily_plan_id"), source.get("content_id"))
+    )
+    _weekly_require(row is not None, f"{label} missing daily content")
+    _weekly_require(row["version"] == source.get("content_version"), label)
+    _weekly_require(row["hash"] == source.get("content_hash"), label)
+    _weekly_require(
+        row["profile_id"] == plan["profile_id"]
+        and row["class_id"] == plan["class_id"]
+        and row["term_id"] == plan["term_id"]
+        and row["plan_date"] == day_date,
+        f"{label} daily ownership/date",
+    )
+    adopted = row["adopted"]
+    if check_text:
+        talk = adopted.get("morning_talk") or {}
+        activity = adopted.get("group_activity") or {}
+        _weekly_require(
+            (source.get("morning_talk_topic") or "") == (talk.get("topic") or "")
+            and (source.get("group_activity_theme") or "")
+            == (activity.get("theme") or ""),
+            f"{label} deterministic text",
+        )
+    return adopted
+
+
+def _weekly_game_name(group: dict, game_id: str) -> str | None:
+    for game in group.get("games") or []:
+        if game.get("game_id") == game_id:
+            return game.get("name")
+    return None
+
+
+def _weekly_slot_source_date(
+    slot: dict,
+    daily_contents: dict[tuple[str, str], dict],
+    week_dates: set[str],
+) -> str | None:
+    row = daily_contents.get(
+        (slot.get("daily_plan_id"), slot.get("content_id"))
+    )
+    if row is None:
+        return None
+    day = row["plan_date"]
+    return day if day in week_dates else None
+
+
+def _weekly_validate_sources(
+    content: dict,
+    plan: dict,
+    daily_contents: dict[tuple[str, str], dict],
+) -> None:
+    week_dates = {
+        (date.fromisoformat(plan["anchor"]) + timedelta(days=offset)).isoformat()
+        for offset in range(7)
+    }
+    manifest = content["source_manifest"]
+    for item in manifest.get("sources") or []:
+        if not isinstance(item, dict) or item.get("daily_plan_id") is None:
+            continue
+        _weekly_source_row(
+            daily_contents,
+            item,
+            plan=plan,
+            day_date=item["date"],
+            label="manifest source",
+            check_text=False,
+        )
+    for row in content["deterministic"]:
+        source = row.get("source")
+        if source is not None:
+            _weekly_source_row(
+                daily_contents,
+                source,
+                plan=plan,
+                day_date=row["date"],
+                label="deterministic source",
+                check_text=True,
+            )
+    for key, slot in content["outdoor_game_slots"].items():
+        if slot is None or slot.get("source_kind") != "daily_plan":
+            continue
+        source_date = _weekly_slot_source_date(slot, daily_contents, week_dates)
+        _weekly_require(source_date is not None, f"outdoor slot {key} source date")
+        adopted = _weekly_source_row(
+            daily_contents,
+            slot,
+            plan=plan,
+            day_date=source_date,
+            label=f"outdoor slot {key}",
+            check_text=False,
+        )
+        group = next(
+            (
+                item
+                for item in adopted.get("morning_games") or []
+                if item.get("group_id") == slot.get("group_id")
+            ),
+            None,
+        )
+        _weekly_require(group is not None, f"outdoor slot {key} group")
+        name = _weekly_game_name(group, slot.get("game_id"))
+        _weekly_require(name is not None, f"outdoor slot {key} game")
+        _weekly_require(slot.get("name") == name, f"outdoor slot {key} text")
+        for field in ("shared_objectives", "guidance_points", "focus_guidance"):
+            _weekly_require(
+                (slot.get(field) or "") == (group.get(field) or ""),
+                f"outdoor slot {key} {field}",
+            )
+    focus = content.get("focus_area")
+    if focus is not None and focus.get("source_kind") == "daily_plan":
+        source_date = _weekly_slot_source_date(focus, daily_contents, week_dates)
+        _weekly_require(source_date is not None, "focus area source date")
+        adopted = _weekly_source_row(
+            daily_contents,
+            focus,
+            plan=plan,
+            day_date=source_date,
+            label="focus area",
+            check_text=False,
+        )
+        group = next(
+            (
+                item
+                for item in adopted.get("post_group_games") or []
+                if item.get("group_id") == focus.get("group_id")
+            ),
+            None,
+        )
+        _weekly_require(group is not None, "focus area group")
+        name = _weekly_game_name(group, focus.get("game_id"))
+        _weekly_require(name is not None, "focus area game")
+        _weekly_require(focus.get("name") == name, "focus area text")
+        _weekly_require(
+            focus.get("context_kind") == group.get("context_kind"),
+            "focus area context_kind",
+        )
+        for field in ("area", "objectives", "guidance", "support_strategy"):
+            _weekly_require(
+                (focus.get(field) or "") == (group.get(field) or ""),
+                f"focus area {field}",
+            )
+
+
+def _weekly_validate_export_manifest(
+    manifest: Any,
+    *,
+    contents: dict[tuple[str, str], dict],
+    confirmation_rows: dict[tuple[str, str], dict],
+) -> dict:
+    from app.local import weekly_plan_snapshot
+
+    try:
+        manifest = weekly_plan_snapshot.validate_export_manifest(manifest)
+    except LocalWeeklyInvalid as exc:
+        raise BackupValidationError(
+            "BACKUP_DB_LOGICAL_INVALID", "备份数据库导出 manifest 不合法"
+        ) from exc
+    for item in manifest["items"]:
+        plan_id = item["weekly_plan_id"]
+        draft_id = item["draft_id"]
+        confirmation_id = item["confirmation_id"]
+        row = confirmation_rows.get((plan_id, confirmation_id))
+        snapshot = row.get("snapshot") if row else None
+        if (
+            row is None
+            or row.get("version") != item["confirmation_version"]
+            or row.get("hash") != item["confirmation_hash"]
+            or snapshot is None
+            or snapshot.get("draft_id") != draft_id
+            or snapshot.get("draft_version") != item["draft_version"]
+            or snapshot.get("content_hash") != item["content_hash"]
+            or snapshot.get("weekly_plan_id") != plan_id
+        ):
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID", "备份数据库导出确认引用不合法"
+            )
+        projection = {
+            key: item[key]
+            for key in weekly_plan_snapshot.SNAPSHOT_KEYS
+        }
+        if projection != snapshot:
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID", "备份数据库导出 item 快照投影不匹配"
+            )
+        content = contents.get((plan_id, draft_id))
+        if content is None or content["hash"] != item["content_hash"]:
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID", "备份数据库导出草稿引用不合法"
+            )
+    return manifest
+
+
+def _weekly_checks(connection: sqlite3.Connection) -> None:
+    """Strict historical weekly validation, including real daily history."""
+    daily_contents = _daily_contents(connection)
+    try:
+        rows = connection.execute(
+            "SELECT id, week_anchor_date, term_start_date, term_end_date, "
+            "calendar_revision_id, header_json, header_hash, current_draft_id, "
+            "current_draft_version, current_confirmed_id, "
+            "current_confirmed_version, profile_id, class_id, term_id, "
+            "week_number_snapshot FROM local_weekly_plans"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise BackupValidationError(
+            "BACKUP_DB_LOGICAL_INVALID", "备份数据库周计划无法读取"
+        ) from exc
+    plans: dict[str, dict] = {}
+    for row in rows:
+        plan_id = row[0]
+        header = _weekly_json(row[5], f"plan {plan_id} header")
+        _weekly_require(isinstance(header, dict), "plan header")
+        _weekly_require(_weekly_hash(header) == row[6], "plan header hash")
+        plans[plan_id] = {
+            "anchor": row[1],
+            "term_start": row[2],
+            "term_end": row[3],
+            "revision": row[4],
+            "draft_id": row[7],
+            "draft_version": row[8],
+            "confirmed_id": row[9],
+            "confirmed_version": row[10],
+            "profile_id": row[11],
+            "class_id": row[12],
+            "term_id": row[13],
+            "week_number": row[14],
+            "header": header,
+        }
+    contents: dict[tuple[str, str], dict] = {}
+    for row in connection.execute(
+        "SELECT id, weekly_plan_id, version, schema_version, content_json, "
+        "content_hash FROM local_weekly_plan_contents"
+    ).fetchall():
+        plan_id, content_id, version = row[1], row[0], row[2]
+        _weekly_require(plan_id in plans, "content plan")
+        plan = plans[plan_id]
+        _weekly_require(row[3] == 1, "content schema_version")
+        content = _weekly_content(row[4], row[5], f"content {content_id}")
+        manifest = content["source_manifest"]
+        _weekly_require(
+            manifest.get("profile_id") == plan["profile_id"]
+            and manifest.get("class_id") == plan["class_id"]
+            and manifest.get("term_id") == plan["term_id"]
+            and manifest.get("week_anchor_date") == plan["anchor"]
+            and manifest.get("week_number") == plan["week_number"]
+            and manifest.get("header") == plan["header"],
+            "source manifest identity",
+        )
+        _weekly_validate_sources(content, plan, daily_contents)
+        contents[(plan_id, content_id)] = {
+            "version": version,
+            "hash": row[5],
+            "content": content,
+        }
+    for plan_id, plan in plans.items():
+        _weekly_require(
+            (plan_id, plan["draft_id"]) in contents, "current draft pointer"
+        )
+        _weekly_require(
+            contents[(plan_id, plan["draft_id"])]["version"]
+            == plan["draft_version"],
+            "current draft version",
+        )
+    confirmations: dict[tuple[str, str], int] = {}
+    confirmation_hashes: dict[tuple[str, str], str] = {}
+    confirmation_rows: dict[tuple[str, str], dict] = {}
+    for row in connection.execute(
+        "SELECT id, weekly_plan_id, version, draft_id, draft_version, "
+        "schema_version, snapshot_json, snapshot_hash, facts_json, facts_hash "
+        "FROM local_weekly_plan_confirmations"
+    ).fetchall():
+        confirmation_id, plan_id, draft_id, draft_version = (
+            row[0], row[1], row[3], row[4]
+        )
+        _weekly_require(plan_id in plans, "confirmation plan")
+        _weekly_require((plan_id, draft_id) in contents, "confirmation draft")
+        draft = contents[(plan_id, draft_id)]
+        _weekly_require(draft["version"] == draft_version, "confirmation version")
+        _weekly_require(row[5] == 1, "confirmation schema_version")
+        snapshot = _weekly_json(row[6], f"confirmation {confirmation_id}")
+        facts = _weekly_json(row[8], f"confirmation {confirmation_id} facts")
+        from app.local import weekly_plan_snapshot
+
+        try:
+            snapshot = weekly_plan_snapshot.validate_confirmation_snapshot(snapshot)
+        except LocalWeeklyInvalid as exc:
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID",
+                f"备份数据库确认快照不合法：{confirmation_id}",
+            ) from exc
+        _weekly_require(
+            snapshot.get("weekly_plan_id") == plan_id
+            and snapshot.get("profile_id") == plans[plan_id]["profile_id"]
+            and snapshot.get("class_id") == plans[plan_id]["class_id"]
+            and snapshot.get("term_id") == plans[plan_id]["term_id"]
+            and snapshot.get("draft_id") == draft_id
+            and snapshot.get("draft_version") == draft_version
+            and snapshot.get("content") == draft["content"]
+            and snapshot.get("content_hash") == draft["hash"]
+            and snapshot.get("header") == plans[plan_id]["header"]
+            and snapshot.get("creation_context")
+            == {
+                "week_anchor_date": plans[plan_id]["anchor"],
+                "week_number_snapshot": plans[plan_id]["week_number"],
+                "term_start": plans[plan_id]["term_start"],
+                "term_end": plans[plan_id]["term_end"],
+                "calendar_revision_id": plans[plan_id]["revision"],
+            },
+            "confirmation snapshot identity",
+        )
+        _weekly_require(snapshot.get("facts") == facts, "confirmation facts copy")
+        _weekly_require(_weekly_hash(snapshot) == row[7], "snapshot hash")
+        _weekly_require(_weekly_hash(facts) == row[9], "facts hash")
+        confirmations[(plan_id, confirmation_id)] = row[2]
+        confirmation_hashes[(plan_id, confirmation_id)] = row[7]
+        confirmation_rows[(plan_id, confirmation_id)] = {
+            "version": row[2],
+            "hash": row[7],
+            "snapshot": snapshot,
+        }
+    for plan_id, plan in plans.items():
+        if plan["confirmed_id"] is not None:
+            _weekly_require(
+                (plan_id, plan["confirmed_id"]) in confirmations,
+                "current confirmed pointer",
+            )
+            _weekly_require(
+                confirmations[(plan_id, plan["confirmed_id"])]
+                == plan["confirmed_version"],
+                "current confirmed version",
+            )
+    from app.local import weekly_plan_operations
+
+    for row in connection.execute(
+        "SELECT id, profile_id, weekly_plan_id, action, result_draft_id, "
+        "result_draft_version, result_confirmed_id, result_confirmed_version, "
+        "result_snapshot_id, result_token_id, result_json FROM "
+        "local_weekly_plan_operations"
+    ).fetchall():
+        operation_id = row[0]
+        result = _weekly_json(row[10], f"operation {operation_id}")
+        try:
+            metadata = weekly_plan_operations.validate_metadata(
+                result,
+                weekly_plan_id=row[2],
+                draft_id=row[4],
+                draft_version=row[5],
+                confirmation_id=row[6],
+                confirmation_version=row[7],
+                snapshot_id=row[8],
+                token_id=row[9],
+            )
+        except LocalWeeklyInvalid as exc:
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID",
+                f"备份数据库回执 metadata 不合法：{operation_id}",
+            ) from exc
+        if metadata["weekly_plan_id"] is not None:
+            _weekly_require(row[2] in plans, "operation plan")
+            plan = plans[row[2]]
+            _weekly_require(plan["profile_id"] == row[1], "operation profile")
+            if metadata["draft_id"] is not None:
+                _weekly_require(
+                    (row[2], metadata["draft_id"]) in contents
+                    and contents[(row[2], metadata["draft_id"])]["version"]
+                    == metadata["draft_version"],
+                    "operation draft reference",
+                )
+            if metadata["confirmation_id"] is not None:
+                _weekly_require(
+                    (row[2], metadata["confirmation_id"]) in confirmations
+                    and confirmations[(row[2], metadata["confirmation_id"])]
+                    == metadata["confirmation_version"],
+                    "operation confirmation reference",
+                )
+    for row in connection.execute(
+        "SELECT id, profile_id, manifest_json, manifest_hash FROM "
+        "local_weekly_export_snapshots"
+    ).fetchall():
+        manifest = _weekly_json(row[2], f"export snapshot {row[0]}")
+        manifest = _weekly_validate_export_manifest(
+            manifest,
+            contents=contents,
+            confirmation_rows=confirmation_rows,
+        )
+        _weekly_require(manifest.get("profile_id") == row[1], "export profile")
+        _weekly_require(_weekly_hash(manifest) == row[3], "export manifest hash")
+    for row in connection.execute(
+        "SELECT t.id, t.snapshot_id, t.profile_id, s.profile_id "
+        "FROM local_weekly_export_tokens t "
+        "LEFT JOIN local_weekly_export_snapshots s ON s.id = t.snapshot_id"
+    ).fetchall():
+        _weekly_require(
+            row[3] is not None and row[2] == row[3], "export token profile"
+        )
+    for row in connection.execute(
+        "SELECT a.id, a.snapshot_id, a.profile_id, a.token_id, a.status, "
+        "a.byte_size, a.result_hash, t.snapshot_id, t.profile_id "
+        "FROM local_weekly_export_attempts a "
+        "LEFT JOIN local_weekly_export_tokens t ON t.id = a.token_id"
+    ).fetchall():
+        _weekly_require(
+            row[7] == row[1] and row[8] == row[2], "export attempt token"
+        )
+        if row[4] == "saved":
+            _weekly_require(
+                row[5] > 0 and row[6] is not None, "export saved result"
+            )
+        else:
+            _weekly_require(
+                row[5] == 0 and row[6] is None, "export non-saved result"
+            )
+
 def _inspect_source_database(
     path: Path, *, scratch_dir: Path | None
 ) -> dict[str, Any]:
@@ -596,6 +1109,7 @@ def validate_database(
             )
         _validate_schema(connection, head, scratch_dir)
         _logical_checks(connection)
+        _weekly_checks(connection)
     finally:
         connection.close()
     target_size, target_digest = _file_hash(

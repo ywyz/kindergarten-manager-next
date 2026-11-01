@@ -771,7 +771,7 @@ onBeforeUnmount(() => {
   font-size: 0.875rem;
 }
 .muted {
-  color: #909399;
+  color: var(--kgm-muted);
   font-size: 0.85rem;
 }
 </style>

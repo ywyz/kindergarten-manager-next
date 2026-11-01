@@ -843,14 +843,14 @@ onBeforeUnmount(() => {
 }
 .label {
   margin: 0 0 4px;
-  color: #606266;
+  color: var(--kgm-text);
   font-size: 0.85rem;
 }
 .block {
   margin: 0;
   padding: 8px 10px;
-  background: #f5f7fa;
-  border: 1px solid #ebeef5;
+  background: var(--kgm-bg);
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -862,13 +862,13 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 .board-block {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   padding: 12px;
   margin-bottom: 12px;
 }
 .sub-block {
-  border: 1px dashed #ebeef5;
+  border: 1px dashed var(--kgm-border);
   border-radius: 4px;
   padding: 8px;
   margin-bottom: 10px;
@@ -879,7 +879,7 @@ onBeforeUnmount(() => {
 .field label {
   display: block;
   margin-bottom: 4px;
-  color: #606266;
+  color: var(--kgm-text);
   font-size: 0.85rem;
 }
 .field-grid {
@@ -906,7 +906,7 @@ onBeforeUnmount(() => {
 }
 .compare-label {
   font-size: 0.85rem;
-  color: #606266;
+  color: var(--kgm-text);
   display: flex;
   gap: 8px;
   align-items: center;
@@ -917,10 +917,10 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 .warn {
-  color: #b88230;
+  color: var(--kgm-warning);
 }
 .muted {
-  color: #909399;
+  color: var(--kgm-muted);
   font-size: 0.85rem;
 }
 .footer {

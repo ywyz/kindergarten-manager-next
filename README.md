@@ -9,6 +9,7 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 ## 当前可以做什么
 
 - 编写、保存和查阅每日活动计划，比较历史内容，导出 Word。
+- 制作本人来源与手填周计划，保存、明确确认并导出指定确认版本的 Word；验证范围见[实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。
 - 按教师主动发起的操作，使用 AI 生成候选内容、重写并选择采用；生成失败或结果不明时可手动重试。
 - 整理游戏观察记录的文字、照片、保存历史和 Word 导出；这些能力仍在开发验证。
 - 使用本地教师档案、班级及学期配置，无需旧版账号注册和管理员分班。
@@ -18,9 +19,9 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 
 ## 开发状态
 
-当前桌面分支已完成完整本地备份／恢复的限定源码验证，以及新的Windows11未签名内部候选构建／静态核查。另一台Win11由用户测试，目标运行、Word和教师体验尚无通过回执；源码／静态通过不能替代整包实际验收。当前开发机的SAC4551限制保持，未降低系统保护。
+固定r03未签名内部候选已完成另一台Windows11的目标1实测，以及指定W1–W8 Word逐页核查和用户逐项教师确认，详见[目标记录](docs/bootstrap/desktop-windows11-target-review.md)。这些结果保持原制品身份，不能替代本轮新周代码或新候选的验收。当前开发机的SAC4551限制保持，未降低系统保护。
 
-桌面周计划产品Q1–Q6及首片工程设计已定稿、实施提示词已准备，尚未编码。先手工／本人来源／确认／Word，再AI与材料；用户现有候选测试保持独立。完整入口见[文档索引](docs/bootstrap/README.md)、[当前任务](docs/tasks/current.md)和[内部候选核查](docs/bootstrap/desktop-windows11-portable-review.md)；旧[E14核查](docs/bootstrap/desktop-game-observation-e14-review.md)保留原时点证据。Windows10、WPS、其它显示配置、干净机器及真实冻结更新／正式发行仍有未验范围。
+桌面周计划Q1–Q6已确认，手工／本人来源／保存／确认／Word及明暗首片已实现，完成限定源码回归、真实Word逐页与明文／加密备份及保护包恢复核查，最后正常重开已核。分项及Git身份见[当前任务](docs/tasks/current.md)和[实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。新候选／目标／教师体验另验，下一步先新身份候选验证，再推进既定Q5/Q6。Windows10、WPS、其它显示配置、干净机器、真实冻结更新和正式发行等未验保持，旧[候选核查](docs/bootstrap/desktop-windows11-portable-review.md)及[E14核查](docs/bootstrap/desktop-game-observation-e14-review.md)保留原身份。
 
 应用更新通过本项目 GitHub Releases 的最新正式版本判断，普通代码提交不会触发更新提示。源码运行可检查版本，禁止下载／安装替换仓库程序；当前尚无正式 Release。AI 失败时保留原内容，结果不明的重试须确认可能重复处理／计费。两项实现及验证范围见 [本轮核查](docs/bootstrap/desktop-retry-github-review.md)。
 
@@ -32,13 +33,13 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 
 ## 从源码运行
 
-以下命令用于 **Windows PowerShell 下的新克隆目录**。当前已验证的解释器是 **CPython 3.14.7、Windows x64、标准 GIL**；不要把版本声明理解为所有 Python 版本均已验证。需准备 WebView2 Runtime、满足 [frontend/package.json](frontend/package.json) 引擎要求的 Node.js，以及 uv。已有开发环境应复用原环境，避免覆盖既有验证包或数据目录。
+以下命令用于 **Windows PowerShell 下的新克隆目录**。本轮经用户确认沿用 **CPython 3.14.10、Windows x64、标准 GIL**，依赖锁保持不变；旧3.14.7结果保留原身份，不代表所有Python版本均已验证。需准备 WebView2 Runtime、满足 [frontend/package.json](frontend/package.json) 引擎要求的 Node.js，以及 uv。已有开发环境应复用原环境，避免覆盖既有验证包或数据目录。
 
 ```powershell
 git clone --branch codex/desktop-v2-foundation --single-branch https://github.com/ywyz/kindergarten-manager-next.git
 Set-Location kindergarten-manager-next
 
-# 先确认所选解释器为 CPython 3.14.7 x64 标准 GIL，再创建新环境。
+# 先确认所选解释器为 CPython 3.14.10 x64 标准 GIL，再创建新环境。
 py -3.14 --version
 py -3.14 -m venv desktop/.venv-d1
 $sourcePython = Join-Path $PWD 'desktop/.venv-d1/Scripts/python.exe'

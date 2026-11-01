@@ -29,6 +29,7 @@ from app.local import (
     credentials,
     daily_plan_history_service,
     observation_ai_service,
+    weekly_plan_tokens,
 )
 from app.local.backup_snapshot import SnapshotService, VerifiedSnapshot
 from app.local.restore_fs import (
@@ -210,11 +211,13 @@ class RestoreCore:
         app_version: str = "",
         source_identity: dict[str, Any] | None = None,
         fault_injector: Callable[[str], None] | None = None,
+        weekly_export_manager: Any = None,
     ):
         self.runtime = runtime
         self.app_version = str(app_version or "")
         self.source_identity = dict(source_identity or {})
         self._fault_injector = fault_injector
+        self.weekly_export_manager = weekly_export_manager
         self._lock = threading.RLock()
         self._previews: dict[str, _PreviewRecord] = {}
         self._prepared: dict[str, _PreparedRecord] = {}
@@ -372,6 +375,7 @@ class RestoreCore:
 
     def _reset_authorizations(self) -> None:
         config_tokens.rotate_key()
+        weekly_plan_tokens.rotate_key(self.runtime)
         for module in (
             ai_adoption,
             daily_plan_history_service,
@@ -773,6 +777,12 @@ class RestoreCore:
             )
         operation_id = prepared.operation_id
         owner = f"restore:{operation_id}"
+        if self.weekly_export_manager is not None:
+            try:
+                self.weekly_export_manager.pause(owner=owner)
+            except BaseException:
+                self._install_lock.release()
+                raise
         paths = record.paths
         new_group = record.new_group
         journal: dict[str, Any] | None = None
@@ -1181,6 +1191,11 @@ class RestoreCore:
                 lease.release()
                 released = True
             self._install_lock.release()
+            if self.weekly_export_manager is not None:
+                try:
+                    self.weekly_export_manager.resume(owner=owner)
+                except Exception:  # noqa: BLE001 - preserve primary
+                    pass
         if isinstance(failure, InstallResult):
             return failure
         if failure is not None:

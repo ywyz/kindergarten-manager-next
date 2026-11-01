@@ -276,8 +276,8 @@ function onDialogValue(value: boolean): void {
 .release-notes pre {
   margin: 0;
   padding: 8px 10px;
-  background: #f5f7fa;
-  border: 1px solid #ebeef5;
+  background: var(--kgm-bg);
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -289,7 +289,7 @@ function onDialogValue(value: boolean): void {
   margin-top: 12px;
 }
 .muted {
-  color: #909399;
+  color: var(--kgm-muted);
   font-size: 0.85rem;
 }
 .footer {

@@ -132,10 +132,12 @@ class MaintenanceHost:
         source_identity: dict[str, Any] | None = None,
         reopen_host: Callable[[], dict[str, Any] | None] | None = None,
         before_reopen: Callable[[], None] | None = None,
+        weekly_export_manager: Any = None,
     ):
         self.backup_service = backup_service
         self.restore_core = restore_core
         self._base_hooks = hooks
+        self.weekly_export_manager = weekly_export_manager
         self.hooks = _MaintenanceHooks(self, hooks)
         self.app_version = app_version
         self.source_identity = dict(source_identity or {})
@@ -207,6 +209,55 @@ class MaintenanceHost:
     def retire(self) -> None:
         with self._lock:
             self._retired = True
+
+    def _pause_weekly(self, owner: str) -> None:
+        manager = self.weekly_export_manager
+        if manager is None:
+            return
+        try:
+            manager.pause(owner=owner)
+        except Exception as exc:  # noqa: BLE001 - manager boundary
+            code = str(getattr(exc, "code", "WEEKLY_EXPORT_UNAVAILABLE"))
+            raise MaintenanceHostError(code, "周计划导出暂时不可用，请稍后重试") from exc
+
+    def _resume_weekly(self, owner: str | None) -> None:
+        if not owner:
+            return
+        manager = self.weekly_export_manager
+        if manager is None:
+            return
+        try:
+            manager.resume(owner=owner)
+        except Exception:  # noqa: BLE001 - shutdown/finally must not mask primary
+            pass
+
+    def _start_worker(
+        self,
+        op: dict[str, Any],
+        thread: threading.Thread,
+        weekly_owner: str | None,
+    ) -> None:
+        """Start one paused worker or terminalize the operation.
+
+        ``Thread.start`` failure means the worker's outer ``finally`` will
+        never run.  Release this stage's own weekly owner, mark the operation
+        failed and keep it queryable, so a retry is not blocked by a phantom
+        active operation.
+        """
+        try:
+            thread.start()
+        except Exception as exc:  # noqa: BLE001 - host boundary
+            self._resume_weekly(weekly_owner)
+            with self._lock:
+                if op["phase"] not in _TERMINAL:
+                    op["phase"] = "error"
+                    op["error"] = self._error(
+                        "HOST_WORKER_START_FAILED",
+                        "维护任务启动失败，请重试",
+                    )
+            raise MaintenanceHostError(
+                "HOST_WORKER_START_FAILED", "维护任务启动失败，请重试"
+            ) from exc
 
     def _require_operable(self) -> None:
         if self._recovery_required:
@@ -497,16 +548,30 @@ class MaintenanceHost:
                 self._record_rejection(request_id, "backup", fingerprint, exc)
                 raise
             op = self._new_op(request_id, "backup", "creating", fingerprint)
+            owner = f"host:{op['operation_id']}:backup"
+            try:
+                self._pause_weekly(owner)
+            except MaintenanceHostError as exc:
+                with self._lock:
+                    op["phase"] = "error"
+                    op["error"] = self._error(exc.code, exc.message)
+                raise
             thread = threading.Thread(
                 target=self._run_backup,
-                args=(op, target, password),
+                args=(op, target, password, owner),
                 name=f"maintenance-backup-{op['operation_id'][:8]}",
                 daemon=True,
             )
-            thread.start()
+            self._start_worker(op, thread, owner)
             return self._ref(op)
 
-    def _run_backup(self, op: dict[str, Any], target: Path, password: str | None) -> None:
+    def _run_backup(
+        self,
+        op: dict[str, Any],
+        target: Path,
+        password: str | None,
+        weekly_owner: str,
+    ) -> None:
         try:
             result = self.backup_service.create(
                 target,
@@ -539,6 +604,8 @@ class MaintenanceHost:
                 op["error"] = self._error(
                     code or "BACKUP_FAILED", "备份失败，当前档案未更改"
                 )
+        finally:
+            self._resume_weekly(weekly_owner)
 
     def start_restore_verify(
         self,
@@ -577,16 +644,30 @@ class MaintenanceHost:
             op = self._new_op(
                 request_id, "restore", "verifying", fingerprint
             )
+            owner = f"host:{op['operation_id']}:verify"
+            try:
+                self._pause_weekly(owner)
+            except MaintenanceHostError as exc:
+                with self._lock:
+                    op["phase"] = "error"
+                    op["error"] = self._error(exc.code, exc.message)
+                raise
             thread = threading.Thread(
                 target=self._run_preview,
-                args=(op, selection, password),
+                args=(op, selection, password, owner),
                 name=f"maintenance-verify-{op['operation_id'][:8]}",
                 daemon=True,
             )
-            thread.start()
+            self._start_worker(op, thread, owner)
             return self._ref(op)
 
-    def _run_preview(self, op: dict[str, Any], path: Path, password: str | None) -> None:
+    def _run_preview(
+        self,
+        op: dict[str, Any],
+        path: Path,
+        password: str | None,
+        weekly_owner: str,
+    ) -> None:
         try:
             preview = self.restore_core.preview(
                 path,
@@ -676,6 +757,8 @@ class MaintenanceHost:
                 if state == "canceled" and accepted:
                     with self._lock:
                         op["_core_retired"] = True
+        finally:
+            self._resume_weekly(weekly_owner)
 
     def confirm_restore(
         self,
@@ -727,16 +810,24 @@ class MaintenanceHost:
             op["_fingerprint"] = fingerprint
             self._by_request[request_id] = op
             op["phase"] = "waiting"
+            owner = f"host:{op['operation_id']}:install"
+            try:
+                self._pause_weekly(owner)
+            except MaintenanceHostError as exc:
+                with self._lock:
+                    op["phase"] = "error"
+                    op["error"] = self._error(exc.code, exc.message)
+                raise
             thread = threading.Thread(
                 target=self._run_install,
-                args=(op,),
+                args=(op, owner),
                 name=f"maintenance-install-{op['operation_id'][:8]}",
                 daemon=True,
             )
-            thread.start()
+            self._start_worker(op, thread, owner)
             return self._ref(op)
 
-    def _run_install(self, op: dict[str, Any]) -> None:
+    def _run_install(self, op: dict[str, Any], weekly_owner: str) -> None:
         installed = False
         install_started = False
         with self._lock:
@@ -1004,6 +1095,8 @@ class MaintenanceHost:
                     code, "恢复未完成，请重启应用核对当前档案", committed=True
                 ),
             )
+        finally:
+            self._resume_weekly(weekly_owner)
 
     # -- query / cancel --------------------------------------------------
     def _find(self, payload: dict[str, Any]) -> dict[str, Any] | None:

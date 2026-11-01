@@ -9,7 +9,14 @@ v1 daily-plan shape minus the legacy weekly projection summary.
 from datetime import date, datetime
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 
 class LocalInitializeIn(BaseModel):
@@ -234,6 +241,8 @@ class LocalClassOut(BaseModel):
     id: str
     name: str
     grade: str
+    header_teacher_names: list[str] = Field(default_factory=list)
+    caregiver_name: str | None = None
 
 
 class LocalTermOut(BaseModel):
@@ -327,6 +336,10 @@ class ConfigCurrentClassChangeIn(BaseModel):
     kind: Literal["current_class"]
     name: str
     grade: Literal["small", "middle", "large"]
+    # Omitted keeps the stored value; an explicit [] / null clears.  The API
+    # passes ``model_dump(exclude_unset=True)`` so omission stays visible.
+    header_teacher_names: list[str] | None = None
+    caregiver_name: str | None = None
 
 
 class ConfigTermCreateIn(BaseModel):
@@ -438,11 +451,30 @@ class ConfigAffectedPlanOut(BaseModel):
     reasons: list[str]
 
 
+class ConfigAffectedWeeklyPlanOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    week_anchor_date: date
+    term_id: str
+    week_number_snapshot: int
+    term_start_date: date
+    term_end_date: date
+    current_draft_version: int
+    current_confirmed_version: int | None
+    header_retained: bool
+    creation_context_retained: bool
+    creation_eligible_after: bool
+    reasons: list[str]
+
+
 class ConfigImpactOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     retained_header_count: int
     affected_plans: list[ConfigAffectedPlanOut]
+    weekly_plans: list[ConfigAffectedWeeklyPlanOut] = Field(default_factory=list)
+    weekly_retained_header_count: int = 0
     counts: dict[str, Any]
 
 
@@ -462,7 +494,6 @@ class LocalConfigPreviewOut(BaseModel):
 
 class LocalConfigApplyOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     status: Literal["applied", "unchanged"]
     request_id: str
     config_version: int
@@ -487,6 +518,103 @@ class LocalClassGamesOut(BaseModel):
     revision_no: int
     # Apply-ready flat change: kind/locations/game_scope/guidance.
     change: dict[str, Any]
+
+
+class LocalAppearanceOut(BaseModel):
+    """Appearance preference; version is independent of config_version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["light", "dark"]
+    version: int
+
+
+class LocalAppearancePatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["light", "dark"]
+    expected_version: int = Field(..., ge=1, strict=True)
+
+
+# ---------------------------------------------------------------------------
+# Desktop weekly plans (engineering spec §4)
+# ---------------------------------------------------------------------------
+
+
+def _strict_iso_date(value: object) -> date:
+    if not isinstance(value, str) or len(value) != 10:
+        raise ValueError("必须是规范 ISO 日期")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("必须是规范 ISO 日期") from None
+    if parsed.isoformat() != value:
+        raise ValueError("必须是规范 ISO 日期")
+    return parsed
+
+
+class WeeklyCreatePreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    term_id: str
+    week_anchor_date: date
+
+    _date = field_validator("week_anchor_date", mode="before")(
+        lambda value: _strict_iso_date(value)
+    )
+
+
+class WeeklyCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    term_id: str
+    week_anchor_date: date
+    expected_config_version: int = Field(..., ge=1, strict=True)
+    context_token: str
+
+    _date = field_validator("week_anchor_date", mode="before")(
+        lambda value: _strict_iso_date(value)
+    )
+
+
+class WeeklySaveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+    patch: dict[str, Any]
+
+
+class WeeklyRefreshPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+
+
+class WeeklyRefreshIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+    preview_token: str
+
+
+class WeeklyConfirmPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+
+
+class WeeklyConfirmIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+    context_token: str
+    ack_missing: StrictBool = False
+    ack_stale: StrictBool = False
+    note: str | None = None
 
 
 class LocalDailyExportIn(BaseModel):

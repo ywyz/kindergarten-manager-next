@@ -6,11 +6,11 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-01：周计划产品Q1–Q6已全部确认，首片工程设计与四原生会话提示词已准备，另新增明暗模式切换（docs/specs/desktop-appearance.md），G1由A处理唯一0007／偏好／共享接线、C处理独立主题与色值文件；尚未启动编码。用户本次明确授权汇总文档正常提交推送，不自动启动源码实施。用户另一台Windows 11正在验证固定r03候选，尚无实际回执；不把开始测试或静态通过写成目标运行／Word／教师验收通过。
+2026-11-01：周计划Q1–Q6与明暗模式已确认；Q1–Q4首片实现及限定源码回归、真实保存确认／旧确认导出、Word逐页、明文／加密备份和保护包恢复已核，详见[实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。最后文案正常重开已核；新候选、目标环境及本轮新Word教师体验另验。固定r03目标1与W1–W8指定教师确认保持原制品身份。
 
-继续分支 `codex/desktop-v2-foundation`，当前代码HEAD `2a469489`。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；产品 [desktop-weekly-plan.md](docs/specs/desktop-weekly-plan.md)、工程 [desktop-weekly-plan-engineering.md](docs/specs/desktop-weekly-plan-engineering.md)，状态 [v2实施入口](docs/bootstrap/architecture-v2-readiness.md)，历史及此次文档归并 [维护核查](docs/bootstrap/documentation-maintenance-review.md)。
+继续分支 `codex/desktop-v2-foundation`；本轮开工HEAD `d6de14cb`，原业务源码基线 `2a469489`。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；产品 [desktop-weekly-plan.md](docs/specs/desktop-weekly-plan.md)、工程 [desktop-weekly-plan-engineering.md](docs/specs/desktop-weekly-plan-engineering.md)，状态 [v2实施入口](docs/bootstrap/architecture-v2-readiness.md)，实际实施与未验 [实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。
 
-建议受控并行G0/G1与用户r03测试；G2前评估启动／保存重开／备份恢复反馈，Word逐页可继续并行。通用保存、恢复、关闭缺陷优先，暂停相交文件；签名／系统策略受阻不等于源码不可继续。此为后续安排，不代表已经调用实施会话。
+本片源码工程收口，按精确文件／blob／parent／tree门禁普通提交推送。下一步先验证包含周计划的新身份候选，再评估既定Q5/Q6的AI与材料切片；本次不自动启动新候选构建或后片。通用保存、恢复、关闭缺陷优先，实际范围与未验以唯一入口及核查记录为准。
 
 ## 产品与架构原则
 
@@ -32,7 +32,7 @@ OpenCode是实现、测试、迁移及构建脚本写入者；Command Code仅在
 
 ## 环境、数据与验证
 
-Windows11原生开发；沿既有CPython3.14.7／Windows x64／标准GIL及锁定依赖。WSL只作独立辅助，不共享venv、node_modules或运行库。不装新工具／Skill／MCP，不升级依赖或做无关全面环境审计。Skills/MCP先审计再决定KEEP／DISABLE／REMOVE-CANDIDATE；不因全局存在某Skill/MCP就认定项目必须使用，普通Git、文件搜索、测试不要求图谱。
+Windows11原生开发；2026-11-01用户确认沿用本机现有CPython3.14.10／Windows x64／标准GIL，更新当前基线而不改锁定依赖。旧3.14.7证据保留其身份，不迁移通过结论。WSL只作独立辅助，不共享venv、node_modules或运行库。不装新工具／Skill／MCP，不升级依赖或做无关全面环境审计。Skills/MCP先审计再决定KEEP／DISABLE／REMOVE-CANDIDATE；不因全局存在某Skill/MCP就认定项目必须使用，普通Git、文件搜索、测试不要求图谱。
 
 验证使用新合成库／图片／凭据／导出根或授权副本；真实原业务库、密钥／DPAPI、原件、旧包与首失败现场保留，只复核已有保护指纹。写入／递归清理前验证绝对路径及源／目标／旧根边界，不删未知文件、不全局kill。网络守卫与APP_DISABLE_DOTENV按相应验证合同执行，不读真实secret或自动重发未知AI任务。
 
