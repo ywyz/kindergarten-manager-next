@@ -1,25 +1,19 @@
-# 当前：包含周计划的 Windows 11 新候选
+# 当前：新周计划 Windows 11 包待用户另机验证
 
-更新：2026-11-02。用户已授权制作包含周计划的新 Windows 11 验证包，继续调用原生 OpenCode／Command Go 的 DeepSeek V4.1 Flash max，可并行，Codex 最终审核；完成构建和静态核查后普通提交推送，并交付另一台电脑测试步骤。随后追加GitHub生成EXE供测试与更新文档，已纳入本轮。本次授权取代上一轮“本次不自动构建”的阶段限制，不扩大为真实 AI、签名或发行。分工／实际证据归[本轮核查](../bootstrap/desktop-weekly-windows11-review.md)，目标步骤见[新手册](../bootstrap/desktop-weekly-windows11-manual.md)。
+更新：2026-11-02。本轮用户授权的包含周计划新Windows包、GitHub生成EXE供测试及文档已完成构建和限定静态核查；原生OpenCode／Command Go固定DeepSeek V4.1 Flash max，Codex已最终审核，按精确Git门禁普通提交推送。实际分工、首失败／修正、本机与CI独立身份、下载复核及Git回执见[本轮核查](../bootstrap/desktop-weekly-windows11-review.md)。
 
-## 基线与责任
+## 现在使用的候选
 
-继续 `codex/desktop-v2-foundation`；本轮开工 HEAD `796028b5dd90e53ce49fc9a0086bf464678789a0`，工作区干净。周计划 Q1–Q4、明暗模式及备份配套源码已收口，依据[实施核查](../bootstrap/desktop-weekly-plan-review.md)、[周产品](../specs/desktop-weekly-plan.md)、[工程](../specs/desktop-weekly-plan-engineering.md)。现有 CPython3.14.10／Windows x64／标准 GIL及锁定依赖保持。
+继续 `codex/desktop-v2-foundation`。交给用户测试的是[GitHub制品13104229266](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41360367631/artifacts/13104229266)，来源提交`57806b2a8d23639fdb7e371b7928d948c82a96ea`、成功run41360367631／attempt1，build_id `0b56217d-026a-428e-a5d8-1b9f36960326`、schema0007。其ZIP与PS1 SHA以核查表／该次成功运行摘要为准，不能使用本机包或旧r03值。最终文档收口不改变该制品来源，也不为回填自身提交SHA循环构建。
 
-原 OpenCode A 续 `ses_ead8af71dffeJphI1NOWg4jZgI`，负责现有脚本构建与最终 Git；B续`ses_e72ecd5f9ffeYJaLRNypsdu5Pi`，仅写新`.github/workflows/windows11-weekly-validation.yml`及必要`.github/scripts/build-windows11-validation.ps1`；Command Go C续`8cf528de-8773-4a06-9cc5-31e96fab515f`做只读静态反例与交接审阅；D续`16cf76b5-ea0b-47f5-bc94-26147c9d3689`仅修`desktop/check_windows11_target.ps1`当前正向Python3.14.7为3.14.10，已停写。固定原模型／max，不fork／子代理。除此不获生产源码写权；新缺陷先固定证据再分配精确文件。Codex负责文档、独立核查和Git门禁，不另起业务实现者。参与者不是唯一写入者，不还原他方修改。本轮白名单取代工程§8上一源码片的在途分工。
+本机完整新包54／59静态、49只读预检通过；GitHub实际构建／54／59静态／上传成功，下载字节／代码受限复核50项通过。CI原始freeze／完整报告未交付下载侧，CI冻结依据为成功job记录；不把受限复核写成重新执行全部来源冻结。源码／静态／目标／Word／教师结论分栏，旧r03目标1与八份指定教师确认保持原身份。
 
-## 构建与核查
+## 用户下一步
 
-1. 新物理根 `build/desktop-e14-weekly-win11-r01`；保留所有旧包／首失败／保护指纹，不复用旧 r03。沿用完整 onedir／windowed＋ZIP；私有报告与 freeze 在独立 TEMP 根，不进入程序分发目录。
-2. 构建前确认路径合法、源码停写、0007迁移及周模块／模板／前端已入现有来源合同。冻结覆盖 Vite／PyInstaller／ZIP 全链，前后逐项相同，实际 build_id／SHA 与来源 commit 分开记录。
-3. 只执行源码静态核查，不运行本机4551受阻候选 EXE／helper。真实读取 CArchive／PYZ、前端／模板／迁移、清单／ZIP和隐私，检查器必需项必须明确通过；旧源码／旧包／旧Word结果不移给新包。
-4. 目标预检脚本以本轮交接副本完整字节 SHA 绑定；目标普通运行、保存重开、周确认／旧确认导出、备份恢复、新周Word逐页和教师反馈另列待验。新包身份及结果归本轮结果文档，步骤归本轮目标手册，旧 r03 记录保持历史身份。
-5. GitHub工作流在现有桌面分支push触发新构建，使用Windows x64 runner及精确当前Python／Node；仅临时runner安装现有哈希锁和构建约束，不改本机／依赖。完整静态全部通过后上传最小交接制品，核实际运行与下载；不建tag／Release、不改main。GitHub与本机构建各自身份，不混用通过。若远端失败保留首失败，按原责任会话最小修复并重新审核提交。
+按[另一台Windows11测试手册](../bootstrap/desktop-weekly-windows11-manual.md)核双层ZIP／原字节脚本，普通权限只读预检，再在新合成data／credential根验证普通启动、明暗、周本人来源／手工／保存／确认／历史、旧确认保留dirty稿导出、原生另存为与明确重试、明文／加密／保护包恢复及新进程接续、新周Word逐页和教师反馈。保留首失败及最小回执；目前尚无该新包的目标机运行或教师确认。
 
-## Git 门禁
-
-仅原 OpenCode A按Codex核定具体路径／raw SHA／规范index blob／准确parent暂存后停下；Codex核cached集合、blob和write-tree后，才授予该parent／tree普通commit及既有分支push。不得add-all、amend、rebase／force、改main／默认分支／可见性、tag或Release；候选／数据／凭据／私有日志不入Git。
+发现目标缺陷先固定实际build_id／SHA／阶段和现场，暂停相交文件后交原唯一责任会话，按实际授权最小修复。保存、恢复、关闭缺陷优先；不能复用本轮某次parent／tree Git批准。评估目标反馈后再按既定Q5/Q6切周AI／材料，本轮不启动后片。
 
 ## 保持边界
 
-另一台电脑尚未操作，目标结果和教师体验不能预填通过。微软拼音不重测，W6跨120秒睡眠不追测；旧无guard缺口、长根206、Win10／WPS／其它显示／干净机等保持原未验。不安装工具、升级依赖、运行真实AI／WebDAV、签名、安装更新、远控或公开发行；Q5/Q6周AI／材料不在本轮。
+原构建／实施会话已自然停写，旧在途提示不重放；独有责任与证据已归核查。现有CPython3.14.10／Windows x64／标准GIL与锁定依赖保持，本机未安装／升级依赖。候选未签名；4551机不运行候选EXE/helper，不改名／换路径或降低保护。微软拼音不重测，W6跨120秒睡眠不追测；旧无guard缺口、长根206、Win10／WPS／其它显示／干净机等保留原未验。跨Windows用户凭据恢复不扩大；真实应用AI、WebDAV、签名、安装更新、远控和公开稳定发行均未启动。

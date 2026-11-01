@@ -68,12 +68,41 @@ B从最终脚本提取真实守卫，读取本次真实本机目录及ZIP：54�
 
 B r03实际仅移动上述定义，workflow为2增／1删；原CI helper raw SHA仍为`1bdb342c7dbffaa88049d940024b0fdf9cdaf163d17b2ab87b3c63018e97929a`，其余源码保持。语法／位置核查exit0，原54／59未机械重跑；新平台运行另记。
 
-实际成功GitHub运行及制品身份待后续填写。本机与GitHub build_id及ZIP分别记录，不要求字节相同。此工作不改main、默认分支、可见性、tag或Release，不签名，不公开稳定发行。
+修正提交`57806b2a8d23639fdb7e371b7928d948c82a96ea`触发[成功运行41360367631／attempt1](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41360367631)，job `125009248013`的工具链、锁定安装、完整构建、静态核查及上传全部success。实际CPython3.14.10／pip26.2.2／Node26.12.1／npm11.20.0；Windows Server 2022 x64仅作构建／静态runner。原始日志私有保留，非Windows11目标运行。
+
+### 本轮交给用户测试的GitHub制品
+
+[直接下载制品13104229266](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41360367631/artifacts/13104229266)。制品名为`windows11-weekly-validation-57806b2a8d23639fdb7e371b7928d948c82a96ea-41360367631-1`，保留14天；API当前到期时间折合Asia/Shanghai为2026-11-16 07:08。登录GitHub后下载，先解外层，再按[手册](desktop-weekly-windows11-manual.md)核内层程序ZIP和PS1。
+
+| 项目 | GitHub本次实际值；不得替换成本机值 |
+| --- | --- |
+| source commit／tree | `57806b2a8d23639fdb7e371b7928d948c82a96ea`／`de4279f8abb5d87869445930c7b133b610af979a` |
+| build_id／数据库 | `0b56217d-026a-428e-a5d8-1b9f36960326`／`20261101_0007_local_weekly` |
+| 外层制品 | 44,053,546 bytes；SHA `0509c25903d8687286d31cb04be5fef30c5322f44045b63a22562e809a35afa8` |
+| 内层程序ZIP | `KGNext-E14-win11-r01.zip`，44,088,552 bytes／194 entries |
+| 内层ZIP SHA | `5a8fea89cc8b61ffa70477acc13e9c76d166b07f2b1116cf58544a248d835c06` |
+| 原字节预检PS1 SHA | `aef1c2021a0767d66ab4ccf53c72fbb0caa5c00d35910888036fe40539faeefd` |
+| 手册SHA | `692132d29bf6a2a76125b6875b31eeb5a7d8b4e259aa70f7c22abbaabf9175ab` |
+| EXE SHA | `d87db18f36ffd5b7517a096d670df3e173f30891d2e7a16bf8f178bb1724d9c5` |
+| 产品 | 191 files／80,592,426 bytes；tree `ab3df4147c3a9165226234b07bcfa21d3296e9f3da50d73f1408ea538452f4a5` |
+| CI freeze摘要 | 272 files，stable true，digest `d21fab4cf86fc4c14cba861c1bb562efa2a6bc066173402270150a185849e635` |
+| 前端 | 3 files，digest `56bb8530008a03db2faa8711bddae7a9b877681805a9e46612e0bae526ff6dd8` |
+| manifest／内层SUMS SHA | `a2703205209fb70dd140a3a31305c3bca372bd8c169ac71095db43ced6b7093b`／`6669dcb5fc5f50add8cdfd8f9c442ffd85aaf211d4c209d77d34c56fb06000fe` |
+
+远端真实目录54／ZIP59均通过，两个Python外层守卫完成且attempt0；107个PE为76 Valid／31 NotSigned，主EXE NotSigned，未签名或改策略。workflow／CI script另以本次Git blob／tree及raw前后稳定摘要绑定。GitHub包和本机包分别保留身份，不要求字节相同。
+
+Codex实际下载外层，SHA与GitHub插件API及上传日志一致；先核五文件安全清单再解包。下载侧独立受限核验**50/50／exit0**，errors／unknown／进程与socket attempts0：内层每成员实际字节、manifest／SUMS、身份、PS1／手册原字节、CI入口的Git规范blob与CI raw摘要均核对；115个项目PYZ模块及全部12个CArchive代码入口逐字段匹配当前源码／参考来源。未运行候选或应用代码。最终私有报告SHA `1c7a16bbc7c04f70982c60ce4b89132ff284717020cb6887399e1e81d95f1231`。
+
+两份私有探针首失败保持：迁移目录8个raw差异逐文件证实仅CRLF/LF，7个Python文件编译全部字段相等，mako仅文本行尾；另一次把Git规范LF blob与CI CRLF raw误当同一字节身份，现分别核对。PS1和手册与本机也仅行尾等价，但交接SHA必须使用上表CI原字节值。未改交付制品来通过检查。
+
+下载核验结论为PASS_LIMITED_SCOPE：CI原始freeze／完整报告未上传，未在下载侧独立重算其272文件digest；CI来源冻结证明仍来自成功job及其记录。前端只核本次CI身份／包内自洽，不借本机bundle。最小摘要的pip描述含公开GitHub runner安装位置，不声称完全没有绝对路径。静态、目标运行、Word、教师确认分栏；此工作不改main、默认分支、可见性、tag或Release，不签名、不作稳定发行。
 
 ## Git与未验
 
 原A仅按Codex具体路径／raw SHA／规范blob／parent清单暂存；Codex核cached集合和tree后，才批准该parent／tree普通提交推送。候选及私有数据不入Git，不add-all、amend、rebase／force；提交身份以包含本文件的提交及远端为准，不为回填自身SHA循环提交。
 
 首次11路径实际提交`47e408f7bbecd1f9bbbdae9228ccc4050fe140d7`，唯一parent为`796028b5dd90e53ce49fc9a0086bf464678789a0`，tree为`4f94c54b3e300ed74cecfd204bb470cf651a1a3b`；Codex独立核索引每项blob／raw SHA及cached --check0后才放行，实际远端相同、当时clean。后续工作流修正及最终文档继续按新parent／精确路径／tree门禁，不amend首提交掩盖失败。
+
+第二次精确两路径提交`57806b2a8d23639fdb7e371b7928d948c82a96ea`，parent为首次提交，tree为`de4279f8abb5d87869445930c7b133b610af979a`；同样经独立cached blob／raw SHA／tree及--check0门禁后，由原A普通推送，远端相同、clean。最终只收口文档，包及工作流／CI helper／目标PS1／随包手册不变；可下载制品仍绑定该构建提交，不为最终文档提交重新造包或回填自身SHA。
 
 另一台电脑预检／普通启动、保存重开、周旧确认保稿导出、完整备份接续、新周Word逐页及教师反馈尚未执行。当前4551机不启动候选EXE/helper，不改名／换路径或降低系统保护。微软拼音不重测，跨120秒睡眠不追测；旧无guard缺口、长根206、Win10／WPS／其它显示／干净机保持原未验。真实应用AI、WebDAV、签名、安装更新、远控和正式发行不在本轮；跨Windows用户凭据恢复不自动扩大。

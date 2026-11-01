@@ -6,7 +6,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-02：周计划Q1–Q4及明暗／备份首片源码已收口，详见[实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。用户已授权制作新Windows11周候选、GitHub构建供测试及更新文档，原生Flash/max分工与实际结果归[本轮核查](docs/bootstrap/desktop-weekly-windows11-review.md)，另机步骤见[手册](docs/bootstrap/desktop-weekly-windows11-manual.md)。固定r03目标1与W1–W8教师确认保持原制品身份；新目标／新Word教师体验另验。
+2026-11-02：周计划Q1–Q4及明暗／备份首片源码已收口；新Windows周候选的本机构建／静态／只读预检、GitHub实际构建／静态／制品下载复核已完成，分项身份、首失败及边界见[本轮核查](docs/bootstrap/desktop-weekly-windows11-review.md)。下一步由用户按[手册](docs/bootstrap/desktop-weekly-windows11-manual.md)在另一台Windows11测试。固定r03目标1与W1–W8教师确认保持原身份；新目标／新Word教师体验尚未验证。
 
 继续分支 `codex/desktop-v2-foundation`；新候选开工HEAD `796028b5`。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；产品 [desktop-weekly-plan.md](docs/specs/desktop-weekly-plan.md)、工程 [desktop-weekly-plan-engineering.md](docs/specs/desktop-weekly-plan-engineering.md)，状态 [v2实施入口](docs/bootstrap/architecture-v2-readiness.md)。
 
@@ -26,7 +26,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 OpenCode是实现、测试、迁移及构建脚本写入者；Command Code仅在当轮明确授权和互斥文件责任内参与。Codex负责规划／规格、技术审核、执行验证、文档及Git／发布管理，不另起业务实现者。已有授权内持续推进，不重复索要确认；历史某轮的修复、真AI、部署或签名授权不自动延续。
 
-当前四原生会话按current与工程§8的A/B/C/D白名单、G0–G4门槛执行，固定DeepSeek V4.1 Flash max；原生会话不fork／另派子代理，不并行改同一文件，不接管在途任务或还原他方修改。原OpenCode负责共享整合和最终Git；按Codex具体文件/blob/parent/tree门禁普通提交推送，不add-all、amend、rebase／force或改main／默认分支／可见性、tag、Release。
+原生会话按current所指当轮A/B/C/D互斥白名单及G0–G4门槛执行，固定DeepSeek V4.1 Flash max；不fork／另派子代理，不并行改同一文件，不接管在途任务或还原他方修改。已完成责任归结果记录，不重放旧在途白名单。原OpenCode负责共享整合和最终Git；按Codex具体文件/blob/parent/tree门禁普通提交推送，不add-all、amend、rebase／force或改main／默认分支／可见性、tag、Release。
 
 代码与迁移／候选构建、付费AI、远程操作、签名、发行各按当前实际范围，不从架构确认、提示词准备或历史结论推导自动启动。
 

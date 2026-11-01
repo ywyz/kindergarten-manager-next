@@ -23,6 +23,8 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 
 桌面周计划Q1–Q6已确认，手工／本人来源／保存／确认／Word及明暗首片已实现，限定源码回归、真实Word逐页及完整备份／保护包接续见[实施核查](docs/bootstrap/desktop-weekly-plan-review.md)。2026-11-02新周计划Windows候选及GitHub构建的实际身份／静态结果见[本轮核查](docs/bootstrap/desktop-weekly-windows11-review.md)；[下载与另一台电脑测试步骤](docs/bootstrap/desktop-weekly-windows11-manual.md)单列目标运行和新Word教师回执。新包不复用旧r03通过，不是稳定签名发行。下一步先新身份候选验证，再评估既定Q5/Q6。Windows10、WPS、其它显示配置、干净机及真实冻结更新等未验保持；[当前任务](docs/tasks/current.md)是唯一执行入口。
 
+本轮[GitHub验证包可下载](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41360367631/artifacts/13104229266)，源提交`57806b2`，完整构建及54／59静态检查通过，下载后字节／代码受限复核50项通过。先解外层交接ZIP，再按手册核内层程序ZIP及原字节预检脚本；保留完整`KGNext-E14`目录。制品保留14天，新Windows11目标运行和教师新Word确认待实际测试。
+
 应用更新通过本项目 GitHub Releases 的最新正式版本判断，普通代码提交不会触发更新提示。源码运行可检查版本，禁止下载／安装替换仓库程序；当前尚无正式 Release。AI 失败时保留原内容，结果不明的重试须确认可能重复处理／计费。两项实现及验证范围见 [本轮核查](docs/bootstrap/desktop-retry-github-review.md)。
 
 ## 数据和 AI

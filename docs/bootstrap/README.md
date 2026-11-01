@@ -4,7 +4,7 @@
 
 ## 当前：新周计划Windows候选与GitHub构建
 
-用户已授权包含周计划Q1–Q4的新Windows11包、GitHub生成EXE供测试及文档更新。继续桌面分支，原生OpenCode／Command Go固定Flash/max按本轮互斥职责执行，由Codex最终审核及精确Git门禁收口；范围、首失败、构建身份与实际结果见[本轮核查](desktop-weekly-windows11-review.md)，下载／另一台电脑操作与新周Word回执见[新手册](desktop-weekly-windows11-manual.md)。静态通过不等于目标运行或教师确认；旧r03结果保持原身份。
+本轮已完成包含周计划Q1–Q4的本机新包、54／59静态及49只读预检，GitHub源提交`57806b2`实际完整构建／54／59静态／上传成功，下载制品另经50项受限复核；[下载验证包](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41360367631/artifacts/13104229266)。原生Flash/max分工、首失败与修正、独立复核边界和精确Git身份归[本轮核查](desktop-weekly-windows11-review.md)，另一台电脑操作与新周Word回执见[新手册](desktop-weekly-windows11-manual.md)。下一步为用户实测；静态通过不等于目标运行或教师确认，旧r03结果保持原身份。
 
 ## 固定r03：目标1与指定Word教师确认已收口
 
@@ -20,7 +20,7 @@ Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／
 
 ## 明暗模式与受控并行实施
 
-[外观规格](../specs/desktop-appearance.md)的两态手动、档案偏好及保持Word／照片边界已实施；独立专项、共享接线及实际light／dark备份恢复、正常重开已核。实际范围见实施核查，新候选、目标条件与本轮教师体验另验，不以自动测试代替未做的视觉检查。
+[外观规格](../specs/desktop-appearance.md)的两态手动、档案偏好及保持Word／照片边界已实施；独立专项、共享接线及实际light／dark备份恢复、正常重开已核。新候选静态见顶部；目标视觉条件与本轮教师体验仍另验，不以自动测试代替未做的视觉检查。
 
 ## 文档适用范围与分支
 
