@@ -1,8 +1,8 @@
 # AI 与既有实施规格适用索引
 
-当前状态：2026-10-08，Architecture v2 已确认，见 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)与 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)。当前任务是桌面适配规格与实施准备，先完整交付每日活动计划，再做游戏观察记录。下方 v1 记录保留原结果，不作为按原云端顺序继续实现的授权。
+当前状态：2026-11-01，Architecture v2已确认。日计划AI、观察及完整备份保持各自实际源码／静态结果，见[v2实施状态](../bootstrap/architecture-v2-readiness.md)和[文档索引](../bootstrap/README.md)。桌面周计划Q1–Q6全部确认，[产品](desktop-weekly-plan.md)及[工程](desktop-weekly-plan-engineering.md)已定稿，当前未编码，唯一派发入口[current.md](../tasks/current.md)。以下v1规则与早期v2路线只作适用映射，不按旧云端顺序继续实现。
 
-2026-10-17接续：[D2每日活动计划AI需求草案](desktop-ai-daily-plan.md)已形成，D1本轮教师体验已收口。D2 Q1–Q6已按推荐确认，Q7按可配置OpenAI兼容收敛，[E1–E5工程规格及实施清单](desktop-ai-engineering.md)已完成；G01–G18全部待验，用户明确暂不实现。产品决定与OpenCode工作包以该草案及[当前任务](../tasks/current.md)为入口。下方v2早期阶段状态和v1成果保留其时点身份。
+2026-10-17的D2准备状态已被后续W1–W6、G17指定实测及其它切片报告接续；不再把“G01–G18全部待验／用户暂不实现”作为当前结论，也不把限定通过升级为完整产品／教师验收。
 
 ## v2 当前适用规则
 
@@ -14,8 +14,8 @@ Vue／TypeScript、Python／FastAPI、SQLAlchemy／Alembic 保留；本地 SQLit
 | [手工计划与导出](manual-plans-and-word-export.md)、[日计划保存](manual-daily-plan-save.md) | 内容版本、拆分基准、手工编辑与失败保护、日期和导出范围 | SQLite 事务与迁移、本人身份、原同班周投影与权限 |
 | [AI Service](ai-service-implementation.md)、[提示词](prompts-implementation.md) | 结构契约、个人指导、配置版本、候选校验、公网 HTTPS 防护、失败分类 | 本地凭据与运行、更新分发；中央管理员与离线云端执行语义失效 |
 | [设置 API 1B](ai-settings-api-1b.md)、[设置 UI 1C](ai-settings-ui-1c.md) | 既有设置交互、字段适配和版本保护，含已确认的默认修订处理 | 本地会话、身份、存储及桌面容器；旧 Windows 浏览器验收不等于桌面程序验收 |
-| [持久任务](persistent-ai-tasks-implementation.md) | 未发送可恢复、已发送结果不明不自动重发、候选与人工内容分离 | MySQL 领取／租约、worker 拓扑、程序退出／休眠／恢复；周自动触发方式待定 |
-| [周计划](manual-weekly-plan-confirmation.md)、[材料](weekly-materials-implementation.md) | 候选采用、确认快照、材料人工编辑与来源陈旧保护 | 只用本人游戏来源、另一位教师两类信息手填、其余 AI 输入与触发；当前不启动周材料实施 |
+| [持久任务](persistent-ai-tasks-implementation.md) | 未发送可恢复、已发送结果不明不自动重发、候选与人工内容分离 | MySQL 领取／租约、worker 拓扑、程序退出／休眠／恢复；周操作触发按已确认Q5，三个操作独立点击 |
+| [周计划](manual-weekly-plan-confirmation.md)、[材料](weekly-materials-implementation.md) | 候选采用、确认快照、材料人工编辑与来源陈旧保护 | 本人游戏来源及搭班两类手填；其它AI输入按Q6、三个操作按Q5。手工首片先行，周AI／材料后片尚未实施 |
 | [Word 导出](word-export-implementation.md)、[模板验证](word-template-validation.md) | 固定模板、选定版本、日期范围与原文标红、实际版式检查 | 桌面文件保存、SQLite 读取、本地身份与新产品实测 |
 | [I5 旧验收环境](i5-validation-environment.md)、[模板原型结果](word-template-prototype-results.md) | v1 各时点的事实、证据和未通过项 | 远程部署门槛不延续为桌面默认环境；新 Windows 应用须单独验收 |
 
@@ -27,7 +27,7 @@ P1 管理员本人入口属于 v1 历史决定，不在 v2 引入集中管理员
 
 ## v2 实施与验收顺序
 
-2026-10-08 已创建桌面分支并完成限定源码复用审查，具体首片与交接见 [桌面首片规格](desktop-foundation-plan.md)。Windows 11、单档案直接进入及全新本地数据已确认；D0 技术验证之后再进入以下业务适配，尚未执行桌面原型。
+**以下三步是2026-10-08的早期路线，保留当时状态，不作为当前派发顺序。** 当时已创建桌面分支并完成限定源码复用审查，具体首片与交接见 [桌面首片规格](desktop-foundation-plan.md)。Windows 11、单档案直接进入及全新本地数据已确认；D0 技术验证之后再进入以下业务适配，尚未执行桌面原型。
 
 1. 先形成桌面运行、SQLite 数据与迁移、本地身份配置、AI 调用与任务生命周期的适配规格，列实际改造文件、复用范围和验收案例。
 2. 由 OpenCode 按具体授权实施每日活动计划闭环：配置与日期、拆分、适龄调整、其他活动、采用与人工编辑、保存、比较和 Word 导出。安装、WebDAV、历史恢复、更新与遥测按基础配套另列交付切片，不全部塞入首个编码切片。
@@ -35,7 +35,7 @@ P1 管理员本人入口属于 v1 历史决定，不在 v2 引入集中管理员
 
 实现、自动测试、真实供应商调用、桌面运行、导出与 Word／WPS 逐页验收分别登记。按切片验证 SQLite 持久化、候选版本保护、退出／休眠／断网、已发送结果不明不重发，以及同步恢复。真实 API 用量须有对应授权；本次架构确认不授权调用、安装、迁移、远程操作、部署或 commit／push。
 
-v1 夹具与完整 W6 未通过项保留其状态，既不宣称已通过，也不自动成为桌面方向的总阻塞。2026-10-07 20:50 的 [C5 Windows 结果](../bootstrap/ai-slice1c-fixture-c5-windows-result-2026-10-07.md)已确认 v2 契约主流程通过；V1/U3 及 C7 缺／错主密钥仍未验。已使用或被 v2 取代的旧 OpenCode 提示词已清理，新切片按[桌面首片规格](desktop-foundation-plan.md)和当次任务交接执行。
+v1 夹具与完整 W6 未通过项保留其状态，既不宣称已通过，也不自动成为桌面方向的总阻塞。2026-10-07 20:50 的 [C5 Windows 结果](../bootstrap/ai-slice1c-fixture-c5-windows-result-2026-10-07.md)已确认 v2 契约主流程通过；V1/U3 及 C7 缺／错主密钥仍未验。已使用或被 v2 取代的旧 OpenCode 提示词已清理，新切片按已定稿的周产品／工程与唯一current执行，桌面首片规格仅作历史基础。
 
 ---
 

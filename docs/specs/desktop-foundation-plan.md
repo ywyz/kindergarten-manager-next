@@ -1,4 +1,6 @@
-# Windows 本地应用：首片规格与后续实施顺序
+# Windows 本地应用：首片规格与历史实施顺序
+
+> **历史基础规格，当前执行已接续到周计划。** 2026-11-01：D0／D1／D2及观察等后续范围以实际报告为准，本文旧“当前D1A／仅E03／G项全待验”是当时状态，不能当新任务。当前入口为[current.md](../tasks/current.md)和[v2实施状态](../bootstrap/architecture-v2-readiness.md)，周计划见[产品](desktop-weekly-plan.md)／[工程](desktop-weekly-plan-engineering.md)。旧设计理由、D0验收矩阵及D3-B后置边界保留，不重复派发已完成切片。
 
 2026-10-27最新接续（本轮授权始于2026-10-26）：游戏观察产品、工程设计及E13六份Contract保持；E01／E02／E04数据基础独立599项通过并已推送，见[基础核查](../bootstrap/desktop-game-observation-foundation-review.md)。用户另授权E03图片材料，原Go套餐Flash max会话实施及回修后已停写，已通过[独立限定工程核查](../bootstrap/desktop-game-observation-assets-review.md)，通过后正常提交推送。[当前任务](../tasks/current.md)仅E03，完整A01–A22及后续保存历史、视觉候选、页面、Word／宿主未验，不自动进入后续。D3-U已推送d52fa8a，跨设备与真实安装更新／发行源／4551及教师体验等既有未验保持。
 

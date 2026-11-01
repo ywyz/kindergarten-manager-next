@@ -2,9 +2,9 @@
 
 面向幼儿园教师的本地教育工作支持应用。先做好每日活动计划，再逐步完善游戏观察记录。项目目前由个人维护，原创内容采用 MIT 许可，暂无商业发行计划。
 
-当前桌面开发源码位于默认 [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main)。`main` 仍处于源码验证阶段，尚无稳定签名发行包；后续开发继续使用 [`codex/desktop-v2-foundation`](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-v2-foundation) 分支。
+默认 [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) 保留已合并的桌面源码基线；最新桌面开发与内部候选工作继续在 [`codex/desktop-v2-foundation`](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-v2-foundation)。两者不是同一版本，尚无稳定签名发行包。
 
-English: A locally run Windows desktop application for kindergarten teachers, covering daily activity plans and game observation records. Maintained by [ywyz](https://github.com/ywyz). Original project code and documentation are MIT licensed. The current desktop source is on the default [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) branch and is currently verified from source; a stable signed desktop release is not available yet.
+English: A locally run Windows desktop application for kindergarten teachers, covering daily activity plans and game observation records. Maintained by [ywyz](https://github.com/ywyz). Original project code and documentation are MIT licensed. The default [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) branch contains the merged desktop baseline; latest desktop development continues on [`codex/desktop-v2-foundation`](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-v2-foundation). A stable signed desktop release is not available yet.
 
 ## 当前可以做什么
 
@@ -12,14 +12,15 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 - 按教师主动发起的操作，使用 AI 生成候选内容、重写并选择采用；生成失败或结果不明时可手动重试。
 - 整理游戏观察记录的文字、照片、保存历史和 Word 导出；这些能力仍在开发验证。
 - 使用本地教师档案、班级及学期配置，无需旧版账号注册和管理员分班。
+- 从应用创建完整本地备份、校验预览并明确恢复；源码验证、内部包静态与目标机实际恢复的结果分别记录。
 
 首发面向 Windows 11。当前采用 Vue 3、TypeScript、Element Plus，Python/FastAPI、SQLAlchemy/Alembic、SQLite，以及 pywebview/WebView2。系统架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 开发状态
 
-目前继续使用源码桌面环境验证。默认 `main` 承载当前桌面开发源码，后续开发继续在桌面分支进行。E14 已完成相应源码、构建和静态检查，最近一次新生成的未签名冻结包执行被 Windows Smart App Control 阻止，尚未完成后续整包运行验证。因此，源码验证通过不代表安装包、完整产品或教师体验已经验收通过。
+当前桌面分支已完成完整本地备份／恢复的限定源码验证，以及新的Windows11未签名内部候选构建／静态核查。另一台Win11由用户测试，目标运行、Word和教师体验尚无通过回执；源码／静态通过不能替代整包实际验收。当前开发机的SAC4551限制保持，未降低系统保护。
 
-完整状态、已知限制及后续工作见 [当前任务](docs/tasks/current.md) 和 [E14 独立核查](docs/bootstrap/desktop-game-observation-e14-review.md)。Windows 10、WPS、其他显示配置、干净机器及正式发行更新仍有未验范围。
+桌面周计划产品Q1–Q6及首片工程设计已定稿、实施提示词已准备，尚未编码。先手工／本人来源／确认／Word，再AI与材料；用户现有候选测试保持独立。完整入口见[文档索引](docs/bootstrap/README.md)、[当前任务](docs/tasks/current.md)和[内部候选核查](docs/bootstrap/desktop-windows11-portable-review.md)；旧[E14核查](docs/bootstrap/desktop-game-observation-e14-review.md)保留原时点证据。Windows10、WPS、其它显示配置、干净机器及真实冻结更新／正式发行仍有未验范围。
 
 应用更新通过本项目 GitHub Releases 的最新正式版本判断，普通代码提交不会触发更新提示。源码运行可检查版本，禁止下载／安装替换仓库程序；当前尚无正式 Release。AI 失败时保留原内容，结果不明的重试须确认可能重复处理／计费。两项实现及验证范围见 [本轮核查](docs/bootstrap/desktop-retry-github-review.md)。
 
@@ -34,7 +35,7 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 以下命令用于 **Windows PowerShell 下的新克隆目录**。当前已验证的解释器是 **CPython 3.14.7、Windows x64、标准 GIL**；不要把版本声明理解为所有 Python 版本均已验证。需准备 WebView2 Runtime、满足 [frontend/package.json](frontend/package.json) 引擎要求的 Node.js，以及 uv。已有开发环境应复用原环境，避免覆盖既有验证包或数据目录。
 
 ```powershell
-git clone --branch main --single-branch https://github.com/ywyz/kindergarten-manager-next.git
+git clone --branch codex/desktop-v2-foundation --single-branch https://github.com/ywyz/kindergarten-manager-next.git
 Set-Location kindergarten-manager-next
 
 # 先确认所选解释器为 CPython 3.14.7 x64 标准 GIL，再创建新环境。

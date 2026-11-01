@@ -2,7 +2,7 @@
 
 > 适用范围更新（2026-10-08）：当前架构已切换至 [Architecture v2](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。本文只记录原型时点的事实，既不等于 v1 产品验收，也不等于 v2 桌面验收；不因架构调整改写原始结果。 以下原规格的状态、环境与执行顺序保留为 v1 记录；仅非冲突规则可继承。实施前先按 [适用索引](ai-capabilities-implementation.md)和 [v2 实施入口](../bootstrap/architecture-v2-readiness.md)完成映射，本文件不授权新增实现或部署。
 
-> 当前验收环境已于2026-10-02再次更新，见 [当前口径](i5-validation-environment.md)。本文继续保留2026-09-20历史结果，不能代替远程产品真实下载与选定Word／WPS逐页证据。
+> v1当时验收环境曾于2026-10-02更新，见[历史口径](i5-validation-environment.md)；当前桌面执行见[current.md](../tasks/current.md)。本文继续保留2026-09-20历史结果，不能代替远程产品真实下载与选定Word／WPS逐页证据。
 
 2026-09-20。依据：[验证计划](word-template-validation.md)、[实施规格](manual-plans-and-word-export.md)。本文件记录当时的 Ubuntu + LibreOffice 隔离原型事实。**2026-09-29 用户已将现行开发与验收基线改为 Windows 11 Pro + WSL2 Ubuntu + Office 365／Microsoft 365 随附的 Windows 桌面版 Microsoft Word；本历史结果继续保留，但不能替代当前产品 Word 验收。**
 
@@ -47,10 +47,10 @@ W2 预期红字为“缓慢”及“新增提醒：先检查纸杯边缘，再�
 
 原型目录：`/home/ywyz/code/kindergarten-word-prototype-20260920-4A2LoW`，位于产品仓库之外。
 
-- [11 份 Word 测试样例压缩包](/home/ywyz/code/kindergarten-word-prototype-20260920-4A2LoW/word-prototype-samples.zip)。
-- [夹具及来源记录](/home/ywyz/code/kindergarten-word-prototype-20260920-4A2LoW/fixtures.json)。
-- [输出清单及哈希](/home/ywyz/code/kindergarten-word-prototype-20260920-4A2LoW/manifest.json)。
-- [机器检查结果](/home/ywyz/code/kindergarten-word-prototype-20260920-4A2LoW/verification-results.json)。
+- 11 份 Word 测试样例压缩包（历史环境位置：`/home/ywyz/code/kindergarten-word-prototype-20260920-4A2LoW/word-prototype-samples.zip`；本仓库不提供此下载）。
+- 夹具及来源记录（历史环境位置：`/home/ywyz/code/kindergarten-word-prototype-20260920-4A2LoW/fixtures.json`；本仓库不提供此下载）。
+- 输出清单及哈希（历史环境位置：`/home/ywyz/code/kindergarten-word-prototype-20260920-4A2LoW/manifest.json`；本仓库不提供此下载）。
+- 机器检查结果（历史环境位置：`/home/ywyz/code/kindergarten-word-prototype-20260920-4A2LoW/verification-results.json`；本仓库不提供此下载）。
 
 日计划最终渲染在 `rendered/`，周计划最终渲染在 `rendered-final/`；具体路径见机器检查结果。原始 Word 哈希与验证计划记录一致，原文件未变。以上为本机证据路径，不是可跨机器使用的仓库附件。
 

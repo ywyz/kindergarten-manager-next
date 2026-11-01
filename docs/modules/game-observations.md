@@ -1,6 +1,6 @@
 # 游戏观察记录 Contract
 
-状态：Architecture v2有效业务Contract，E13设计扩展已核定。基础、E03、E05／E08、E06／E07图文服务及页面前片结果保持；2026-10-28接续批选／排序、三模板Word与E11／E12宿主交付限定工程核查通过，见[最新核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)。完整A01–A22、教师体验、冻结整包与产品发行未整体验收，按授权由原OpenCode正常提交推送后停在本片。
+状态：Architecture v2有效业务Contract，E13设计扩展已核定。基础、E03、E05／E08、E06／E07图文服务及页面前片结果保持；2026-10-28接续批选／排序、三模板Word与E11／E12宿主交付限定工程核查通过，见[最新核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)。完整A01–A22、教师体验、冻结整包与产品发行未整体验收，当轮Git与停止范围保留；2026-10-31的新候选静态及后续目标测试见[便携核查](../bootstrap/desktop-windows11-portable-review.md)，当前任务已接续周计划设计，不重启旧切片。
 
 产品依据为[游戏观察C1–C33](../specs/desktop-game-observation.md)，工程依据为[E01–E14](../specs/desktop-game-observation-engineering.md)。本文同时记录已实施数据基础与尚待实施的完整Contract；各项实际范围以独立核查报告为准，日计划原Contract及既有验收身份保持。
 
@@ -40,7 +40,7 @@ Word 导出 → 观察：读取固定导出快照
 
 ## 2. Canonical payload 与校验
 
-E01纯校验与hash函数已实施。canonical原图manifest按业务顺序排列，sort_order为0至N−1并等于数组下标；E03材料服务已从数据库当前关联生成该形式，并将导入／顺序／说明／移除与draft revision、唯一aggregate hash、record计数及回执／审计同事务处理。无变化顺序／说明不增revision；移除只解除当前关联。E05／E08完整保存／历史／恢复服务层已接入同一hash并通过限定工程核查；页面教师操作仍待后续接入。
+E01纯校验与hash函数已实施。canonical原图manifest按业务顺序排列，sort_order为0至N−1并等于数组下标；E03材料服务已从数据库当前关联生成该形式，并将导入／顺序／说明／移除与draft revision、唯一aggregate hash、record计数及回执／审计同事务处理。无变化顺序／说明不增revision；移除只解除当前关联。E05／E08完整保存／历史／恢复服务层已接入同一hash并通过限定工程核查；页面接入已在[页面核查](../bootstrap/desktop-game-observation-pages-review.md)取得限定源码实证，教师整体体验仍未验。
 
 | 字段 | 类型／可空 | 语义 |
 | --- | --- | --- |
@@ -405,4 +405,4 @@ E03材料参数保持：源25MiB／40MP／单边8192，AI最长边2048／q85／�
 
 预计不需 ADR：技术栈、依赖方向、SQLite／受管文件权威、本机 API 与 worker 通信未变；观察是 Feature 模块，`export_id` 是现有宿主保存桥的受限扩展。若改为新服务／新进程、外部网络交付、浏览器或远端成为内容权威、改变模块所有权或通信机制，先提 ADR，不暗改 `ARCHITECTURE.md`。
 
-未验：完整A01–A22尚未整项验收。服务层、材料／历史及[观察页核查](../bootstrap/desktop-game-observation-pages-review.md)保持各自身份；本片批选／排序、Word逐页及原生保存的限定范围见[导出核查](../bootstrap/desktop-game-observation-export-review.md)，不据局部窗口或合成用例替代教师验收。复杂真实照片质量、MiMo真实调用、冻结资源／许可及新包仍后置；Win10、WPS、干净机器、其他DPI／显示器、签名发行和D2／D3既有未验保持。当前授权与停止边界以[唯一任务入口](../tasks/current.md)为准。
+未验：完整A01–A22尚未整项验收。服务层、材料／历史及[观察页核查](../bootstrap/desktop-game-observation-pages-review.md)保持各自身份；本片批选／排序、Word逐页及原生保存的限定范围见[导出核查](../bootstrap/desktop-game-observation-export-review.md)，不据局部窗口或合成用例替代教师验收。复杂真实照片质量及MiMo真实调用未验；新r03完整包资源／许可／同源已通过[实际静态核查](../bootstrap/desktop-windows11-portable-review.md)，冻结普通运行／Word／教师整体尚无目标回执；Win10、WPS、干净机器、其他DPI／显示器、签名发行和D2／D3既有未验保持。当前授权与停止边界以[唯一任务入口](../tasks/current.md)为准。

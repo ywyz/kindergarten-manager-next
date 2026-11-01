@@ -105,7 +105,7 @@ DeepSeek高峰为北京时间周一至周五（不含中国法定节假日）9:0
 
 ## 4. 教师评阅材料
 
-以下原样摘录已返回的教学文本，未为了评阅改写或再次生成。A按中班原文拆分，B仅本次目标为小班，C恢复中班；保存的计划表头始终为中班。完整采用结果及两页排版见[DeepSeek日计划Word](<LOCAL_USERPROFILE>/AppData/Local/KGNext-G17-20261022/deepseek/exports/G17-DeepSeek-v5-after-restart.docx)。
+以下原样摘录已返回的教学文本，未为了评阅改写或再次生成。A按中班原文拆分，B仅本次目标为小班，C恢复中班；保存的计划表头始终为中班。完整采用结果及两页排版见当时私下保留的DeepSeek日计划Word（历史位置：`<LOCAL_USERPROFILE>/AppData/Local/KGNext-G17-20261022/deepseek/exports/G17-DeepSeek-v5-after-restart.docx`；不是本仓库下载链接）。
 
 ### A：拆分六字段
 

@@ -1,8 +1,68 @@
-# 下一步：另一台 Windows 11 的只读预检与普通使用验收
+# 当前：桌面周计划＋明暗模式并行实施交接
 
-更新：2026-10-31。**上一轮完整候选制作与独立源码／静态审核已完成；本提示词用于下一轮目标机验收，不重复派发已完成的构建与验证器实施。** 另一台电脑已确认 Windows 11，原生架构、策略及实际可运行性尚未核对；证书申请中。没有目标机访问或真实回执时，仅整理交接与已有证据，不远控、不预填通过。
+更新：2026-11-01。**用户已明确 Q1–Q6 全部按推荐，产品规格定稿；用户新增黑暗模式切换并要求更新提示词、提交推送，为即将并行开工作准备；本轮只交文档并执行Git，尚未启动原生编码会话。** 后续按本入口正式执行时，依 G0→G4 开工；不重新问六项产品问题。当前 r03 测试由用户在另一台 Win11 开展，尚无回执，不预填通过。
 
-## 先读与实际交付
+## 唯一依据与当前范围
+
+必须读 [AGENTS](../../AGENTS.md)、[已定稿产品规格](../specs/desktop-weekly-plan.md)、[工程设计](../specs/desktop-weekly-plan-engineering.md)、[明暗模式规格](../specs/desktop-appearance.md)及本文件相应角色。[阶段计划](../bootstrap/desktop-next-development-plan.md)记录交付顺序；旧 I4／I5 只按新规格的非冲突映射使用，不照搬账号／MySQL／全班投影。
+
+首片是本人来源／手工编辑／保存／确认／历史查看与导出／Word／表头设置／完整备份配套。材料无候选仍空；三个周AI操作和四栏输入虽已确认，当前不提前注册任务或开放按钮。继续 Windows原生现有依赖和 `codex/desktop-v2-foundation`，业务源码基线2a469489；文档提交后的开工HEAD以实际Git记录为准，不自填提交SHA。已有规划／规格改动保留整合，不 reset／清理／覆盖。不与 WSL 共享环境，不安装新工具／Skill／MCP。
+
+## 分支与并行安排
+
+继续codex/desktop-v2-foundation；main为已合并基线，不为用户r03固定包测试切分支。建议后续受控并行G0/G1与用户测试，当前尚未启动。G2前由Codex结合目标启动、保存重开、备份恢复的实际反馈评估；Word逐页可并行。只有签名／系统策略受阻可继续源码工程；通用保存／恢复／关闭缺陷优先暂停相交文件并返修，不等所有人工样例完成才整理技术工作。
+
+## 共同开工与交回合同
+
+- 各原生会话先记录本轮起点／真实模型 metadata、Git HEAD、dirty路径和负责文件；实际源码／schema已变化先报 Codex，不能照旧指纹继续。不 fork 或另派子代理，不接管他方在途文件，不还原别人修改。
+- 源码和UI文字保持UTF-8；工具对大段中文／长命令有编码或长度限制时拆成小patch并核字节，不交乱码占位。原始日志／metadata私下保留，只输出必要字段；达到会话回合限制保留实际退出，再按同一会话／固定模型续接，不把派发参数当真实模型证据。
+- **G0 先只读接口核对**：A 给七表、唯一0007（含ui_theme/version）、外观API、DTO／来源／回执；B 给纯内容输入输出；C 给稳定identity／busy／Q3双分支及独立主题controller／CSS token；D 给固定确认 manifest／token／宿主方法。以工程设计为共同合同，交 Codex 核定矛盾后才实施。后续授权执行本入口时在此完成技术核对，无须用户再确认已决产品规则。
+- G1 仅 A/B 数据与纯内容；C在G1独占主题模块及其色值文件，A统一外观API／0007和共享接线，D准备不冲突材料。A/B核心停写、Codex独立专项通过后才G2接周页面／导出；主题不提前依赖未冻结周API。共享模型和迁移始终A一人写，接口需变先暂停受影响方更新合同。
+- 只用新的合成 data／credential／导出／备份根或明确授权副本；守卫在 app imports／Runtime 前安装，子进程同样受控。首失败和源身份保留，不读真实密钥、不自动重发未知任务，不删除未知文件。当前真实原件、旧库／凭据和已交付候选只保留，不用于试迁移。
+- 各轮交真实命令／退出、改动与 source hash、首失败和复验、已验／未验，完成后自然停写交 Codex。Codex 独立读源／核关键反例和受影响回归，失败交原唯一责任方；不吞异常或为了通过改断言。
+- 当前已知4551机不运行候选EXE／helper、不改名换目录绕过。工程源码验证不冒称冻结／目标运行。真实AI、WebDAV、签名、下载／安装／升级、公开发行、目标机远控不在本次设计或首片自动执行范围。新构建／Git按具体门禁安排，不能用旧 r03 结果代新包。
+
+## 提示词 A：原 OpenCode，核心与共享整合
+
+续 `ses_ead8af71dffeJphI1NOWg4jZgI`，build／`opencode-go/deepseek-v4.1-flash#max`。你不是唯一写入者；你的准确文件白名单为工程设计 §8 A 行，不改 B/C/D 文件。
+
+G0 先核模型／0007／JSON／API与回执、B纯内容边界和D导出模型字段，交 Codex。核定后 G1 实施：真实SQLite约束和七表、班级两表头字段preview/apply、独立外观偏好（不增config_version）及appearance API、周来源与稳定实际周唯一、create/save/refresh/confirm／持久回执、备份源revision先验后隔离升级／全历史逻辑校验。新内容函数消费 B 交付，不再自行建一套结构。操作回放的是原结果，不能回放最新稿。
+
+G1可等C主题模块停写后做自己的main／App／Settings／Workbench主题接线；周核心独立通过后再做App／leave／bridge／router／runtime的周功能整合；C给专属周页面，D给导出服务／host，不能代写其文件。稳定 editor identity 不含保存会变的草稿版本，切周 actionKey须含目标。Q3旧确认导出不保存 dirty 稿。注册周临时work的排除、退役和恢复失效，已有日／观察不受影响。
+
+测试含并发唯一、复合FK、同键异载荷／冷重启回执、源新增／恢复／当前game缺失、合法旧历史与伪造源、0006升级／007备份与保护包再恢复、表头与原资料保持。新增测试优先独立文件，旧fixture改动仅你的白名单。每片停写等核查；未得到Codex精确源清单与新根前不打包；最终Git只按核定文件/blob/parent/tree普通提交推送，不add-all／amend／force或改main/tag/Release。
+
+## 提示词 B：辅助 OpenCode，纯内容与反例
+
+续 `ses_e72ecd5f9ffeYJaLRNypsdu5Pi`，build／`opencode-go/deepseek-v4.1-flash#max`。你不是唯一写入者；只写新 `backend/app/local/weekly_plan_content.py`、`backend/tests/local/test_weekly_plan_content.py`，不改旧 services同名文件或A模型／API。
+
+G0 按工程§3和A受信快照定义固定 schema、正规化／hash／facts／完整刷新目标。核定后 G1 实施纯函数，不 import Session/models/runtime，不自己查DB／鉴权；手工ID由A注入。覆盖 Q1有效手填与明确空／null；真实同名不同来源及共用内容；材料null／非法ai拒绝；保留旧引用并明确missing；草稿与确认快照不变性及canonical顺序。反例要区分实际失败原因，不用相同坏路径掩盖另一个限额。交源hash／真实测试／首失败并停写；不碰共享fixture、前端、宿主、构建或Git。
+
+## 提示词 C：Command Code，专属周页面
+
+续 `8cf528de-8773-4a06-9cc5-31e96fab515f`，`deepseek/deepseek-v4.1-flash`／effort max。你不是唯一写入者；只写工程§8 C行的周新文件，以及明暗规格§4明确新增的theme模块／11个既有视图颜色样式白名单；App、main、leave、bridge、Settings、Workbench、shared types均由A接线。既有视图仅换语义色值，不改业务流程。
+
+G0 先交 DTO消费、EditorBridge／稳定identity、busy和Q3两条状态链；G0核定主题DTO／CSS语义变量及样式责任后，G1可独立做theme.ts/theme.css/ThemeToggle和主题测试，按明暗规格处理快速切换／迟到响应／初始化及恢复重载；不依赖浏览器origin存跨重启偏好。A挂接API／共享入口，B/D不接主题。周核心G1通过后才G2实现列表／编辑／历史／导出UI。Q1单组最终格；Q2自动存草稿再离开，不自动确认；Q3当前链保存后如又输入／切周就停止，旧确认链完全不存不清dirty。确认目标必须完整显示来源日期／版本／目标指导而非只看名称。显示已存／已确认／缺项／源旧／进行中多个维度；无周AI空按钮。
+
+主题另交亮／暗实际可读性、不同端口重启记忆、首次页到初始化、快速切换、维护／恢复及不改dirty/Word/照片的反例；交周页面的日常、IME settle、提交后又输入、切两不同周、旧响应、确认失败／unknown、dirty旧版导出与close／维护busy专项。需要A接线用明确接口清单交回，不越界改共享文件；不改生产模型、migration、host、模板或Git。
+
+## 提示词 D：Command Code，周Word及受限交付
+
+续 `16cf76b5-ea0b-47f5-bc94-26147c9d3689`，`deepseek/deepseek-v4.1-flash`／effort max。你不是唯一写入者；只写工程§8 D行的新周export服务／API、d1_host_api.py和独立专项测试。七表／迁移／router挂载／shared TS由A写。
+
+G0给固定manifest／token／attempt字段、API和两个原生方法与A/C对齐；G1前不接未冻结模型。G2按工程§6实现确认快照导出，预览不自动保存稿；明确旧确认不受当前草稿／新确认指针变化拒绝。只用确认钉住日历／表头／列，旧mapper不得实时重算日期。既有30MiB save_docx和观察协议不变，新weekly128MiB通道固定地址，token10分钟、同名幂等／异名拒绝；create/retry带request_id、持久回执，同launch可取回同一token，跨launch仅失效元数据；retry须旧failed/cancelled attempt且唯一后继，query不新发保存。共享_save_mutex／_save_inflight，原生返回后再校验retire／维护，回执丢失不重写。
+
+先自动验证token用途／scope／跨profile／过期／并发、完整Word／版本／日历，真原生取消／成功／占用与明确重试及Word全页按Codex安排一次一个执行者；不运行受阻EXE。所有Word须由本轮源码真实UI导出，不能拿静态夹具或旧文件冒充。需要models字段或work清理先交A，不自己改归属文件。交真实证据和未验、停写，不构建／Git。
+
+## 本次文档Git与后续开工
+
+用户已授权本次汇总文档提交推送；Codex核定准确文件/blob/parent/tree后，原OpenCode只做普通Git，当前不得顺带启动G0/G1源码实施。提交内容包括此前产品／工程／文档审计积累及新增主题规格；先独立核查，再交下一轮按本入口启动。文档内不回填自己的提交SHA形成循环。
+
+## 目标测试与缺陷插队
+
+下方保留用户目标测试的完整身份和步骤。若收到保存／恢复／导出缺陷，Codex先登记真实触发及最小影响，暂停相交的周片文件写入并固定当前源身份，再给唯一责任会话；不得同时向同一原生会话派两个在途任务，或让缺陷修复和周片并行写同文件。修复后的新包不能改写用户正在测试的旧ZIP通过状态。
+
+## 既有 r03 交付身份（用户目标测试）
 
 先读 [AGENTS](../../AGENTS.md)、[最终独立核查](../bootstrap/desktop-windows11-portable-review.md)、[实际构建结果](../bootstrap/desktop-windows11-portable-result.md)及[中文操作手册](../bootstrap/desktop-windows11-portable-manual.md)。业务依据保持[备份 P01–P06](../specs/desktop-backup-restore.md#1-产品决定与集中确认)、[日计划](../specs/desktop-manual-daily-plan.md)及[观察 A01–A22](../specs/desktop-game-observation.md#7-验收条件与证据矩阵)，不重问既有产品决定。
 

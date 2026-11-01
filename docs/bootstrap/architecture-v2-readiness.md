@@ -1,8 +1,30 @@
-# Architecture v2 当前待办与验证门槛
+# Architecture v2 实施状态与验证门槛
 
-更新：2026-10-27。用户已接受 [ADR 0004 教师本地应用架构](../adr/0004-local-desktop-architecture-proposal.md)。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，报告入口见 [文档索引](README.md)。本文记录实施状态与验收边界，操作范围以用户当前授权为准。
+更新：2026-11-01。当前架构仍按 [ARCHITECTURE.md](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)，唯一执行入口是 [current.md](../tasks/current.md)。历史授权、旧“当前任务”和旧测试数字不自动适用于本轮。
 
-## 已确认方向与当前状态
+## 最新状态与下一步
+
+| 范围 | 当前结论与直接入口 |
+| --- | --- |
+| 周计划 | 用户Q1–Q6全部确认，[产品规格](../specs/desktop-weekly-plan.md)与[工程设计](../specs/desktop-weekly-plan-engineering.md)及四会话提示词已准备；尚未编码。先手工／本人来源／确认／Word及备份配套，后AI／材料。 |
+| 分支 | 继续codex/desktop-v2-foundation，源码HEAD2a469489；main是已合并基线，不是最新桌面分支。当前规划文档未提交，不能写成远端已包含。 |
+| 用户目标测试 | 另一台Win11正在验证固定r03，未收到实际回执。[手册](desktop-windows11-portable-manual.md)与[构建结果](desktop-windows11-portable-result.md)给出精确build_id／SHA，不换包、不回填新代码结果。 |
+| 完整内部候选 | [独立核查](desktop-windows11-portable-review.md)源码493 desktop、实际目录54／ZIP59静态、本机PS7只读预检49通过；主EXE未签名，目标普通运行／Word／教师体验尚未验。PS5.1只解析通过，文件执行受策略阻止。 |
+| 完整本地备份／恢复 | [核查§38–§40](desktop-backup-restore-review.md)848 local／469 desktop及源码窗口限定范围通过，前轮推送91e6a553；不能等同新包／跨机恢复已通过。 |
+| 日计划／AI／本机历史 | D1、D2、D3-A保持各自实际工程及指定教师收口；[D1](desktop-d1-review.md)、[D2](../specs/desktop-ai-engineering.md)、[历史](desktop-d3-history-review.md)。旧未验与不再追测事项分别保留，不重问已决产品规则。 |
+| 观察与Word | [页面](desktop-game-observation-pages-review.md)、[导出](desktop-game-observation-export-review.md)、[E14](desktop-game-observation-e14-review.md)已完成相应源码／静态范围；不是仍未设计／未接页面，也不是完整A01–A22／新包教师验收通过。 |
+| 更新／开源 | [重试及GitHub版本检查](desktop-retry-github-review.md)、[MIT准备](open-source-readiness-review.md)限定范围保持；Git提交不等同Release，签名／真实冻结更新／公开发行未验。 |
+| 后置 | WebDAV自动接续协议、Win10／WPS／其它显示条件、遥测等按独立范围；不自动启动真AI、签名、安装更新或远程操作。 |
+
+D2当前工程规格在 [docs/specs](../specs/desktop-ai-engineering.md)，各轮独立范围仍按其中链接的实际结果，不复用旧v1 MySQL结论。
+
+建议受控并行：后续明确执行入口时先G0合同核对、G1由A/B做数据与纯内容；C/D准备不冲突材料。G1通过后，结合目标启动／保存重开／备份恢复反馈进入G2；Word逐页可继续并行。通用保存／恢复／关闭缺陷先修相交文件；仅签名／系统策略受阻时可继续源码工程。不把这段安排写成已经启动实施。
+
+## 历史内容的适用范围
+
+以下是此前阶段计划与验证边界的原记录，保留当时状态、未验及复用理由；其中“当前／下一步／未实现／未授权”均按段落日期解释。它们不覆盖上表和current，不重放旧任务。后续结果的原始证据也不因本次文档整理改成全通过。
+
+## 历史阶段摘要（截至2026-10-27）
 
 2026-10-27本轮收口：E06／E07图文执行、视觉候选及原子采用服务层由原Go套餐DeepSeek V4.1 Flash max会话实施并回修，Codex[独立核查](desktop-game-observation-ai-review.md)通过：718项冻结全local、85项相关桌面、容量及真实DeepSeek合成资料闭环，R01–R12关闭；Codex误判R13已撤回并恢复已验hash。真实请求共4次，含1次unknown且无自动重放，原配置／凭据及旧数据保持。按授权提交推送后停在本片；[唯一入口](../tasks/current.md)，不自动启动后续页面／Word／宿主或发行。
 
