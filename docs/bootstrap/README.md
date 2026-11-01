@@ -2,11 +2,11 @@
 
 更新：2026-11-01。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前：r03 目标 1 工程回执已完成，待教师确认
+## 当前：r03 目标 1 工程回执与指定 Word 教师确认已完成
 
 2026-10-31 用户授权两 OpenCode／两 Command Code 原生会话（DeepSeek V4.1 Flash max）按互斥文件责任实施并由 Codex 独立审核。[新候选结果](desktop-windows11-portable-result.md)与[独立核查](desktop-windows11-portable-review.md)记录最终 **493 desktop、实际目录 54／ZIP 59 静态通过**；当时开发机 PS7 对新解压副本的只读预检 49 项通过，主 EXE 未签名。首候选静态失败及修正另列，实际 r03 物理根与 r01 逻辑 ZIP 名称按 build_id／SHA 区分。该开发机阶段未启动候选或操作目标电脑，后续目标机实测另列。
 
-[目标机独立测试记录](desktop-windows11-target-review.md)新增 2026-11-01 目标 1 的实际预检、普通业务、完整备份／恢复、原生保存与 W1–W8 Word 工程页检；SQLite 写锁保存失败时保留当前稿并阻止旧稿导出的实测只覆盖该分支。首失败与复验、权限受阻及跳过均保留，不能称所有测试单轮全通过。八份 Word 已交付教师，确认待收；用户本轮不做跨 Windows 用户恢复测试，该项未验且不列本轮追测。教师体验、签名／发行未整体通过，原开发机 PS5.1 执行受阻历史保持。
+[目标机独立测试记录](desktop-windows11-target-review.md)新增 2026-11-01 目标 1 的实际预检、普通业务、完整备份／恢复、原生保存与 W1–W8 Word 工程页检；SQLite 写锁保存失败时保留当前稿并阻止旧稿导出的实测只覆盖该分支。首失败与复验、权限受阻及跳过均保留，不能称所有测试单轮全通过。用户已于 2026-11-01 逐项确认八份 Word 通过，本轮指定 Word 教师体验收口；用户本轮不做跨 Windows 用户恢复测试，该项未验且不列本轮追测。产品及签名／发行未整体验收，原开发机 PS5.1 执行受阻历史保持。
 
 [唯一提示词](../tasks/current.md)继续承接周计划开发与固定 r03 测试交付；[中文手册](desktop-windows11-portable-manual.md)保留可重复步骤，[原计划与责任合同](desktop-windows11-portable-plan.md)保留当轮范围。新包须另行核定身份和验证，不能沿用本轮 r03 结论。不运行已知 4551 机器上的候选或降低保护，不自动真实 AI、WebDAV、签名、远控或公开发行。
 
