@@ -6,11 +6,11 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-02：本轮另一台Windows11目标测试、指定13份独立Word／43页工程逐页检查及39项教师清单已整体接受收口。用户明确：“目前全部通过，有问题届时再通过小补丁或者更新的方式修改，请提交并推送”。这是本轮范围的整体接受，不补造逐项教师实际查看日志，也不扩大为全部环境或正式发行通过。实际身份、两项最小修复、首失败、限定结论与Git回执见[目标测试收口](docs/bootstrap/desktop-weekly-target-test-closeout.md)。
+2026-11-03同步：另机测试、两项最小修复、指定13份独立Word／43页工程检查及39项教师清单整体接受已收口，见[目标测试收口](docs/bootstrap/desktop-weekly-target-test-closeout.md)；不重复索取本轮确认，不外推跨环境或正式发行。Q5/Q6[工程合同与分工](docs/specs/desktop-weekly-ai-engineering.md)、[46项假供应商矩阵](docs/specs/desktop-weekly-ai-validation.md)也已准备，矩阵／业务实现／真实应用AI未启动。
 
-继续分支 `codex/desktop-v2-foundation`；唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)。原GitHub候选来源57806b2／build_id `0b56217d-026a-428e-a5d8-1b9f36960326`保持[原核查身份](docs/bootstrap/desktop-weekly-windows11-review.md)；本机修复包build_id `763706b0-c9c0-4064-96b4-f2b8c0b43843`使用CPython3.14.10，构建输入为基础d6ff4b7＋5文件补丁。build_id不是提交；推送如触发新CI制品，须另核身份，不承接本机运行／Word验收或自动发行。产品与工程规格仍见[周计划产品](docs/specs/desktop-weekly-plan.md)、[工程](docs/specs/desktop-weekly-plan-engineering.md)，状态见[v2实施入口](docs/bootstrap/architecture-v2-readiness.md)。
+继续 `codex/desktop-v2-foundation`，已拉取测试收口提交 `0285a7c`。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；产品 [周计划](docs/specs/desktop-weekly-plan.md)、[首片工程](docs/specs/desktop-weekly-plan-engineering.md)，状态 [v2入口](docs/bootstrap/architecture-v2-readiness.md)，准备历史见[准备核查](docs/bootstrap/desktop-weekly-ai-preparation-review.md)。原GitHub包与修复后本机包身份分别按结果记录，新CI制品不继承本机运行／Word结论。
 
-用户已授权本轮最小修复及收口文档提交推送；复核当前实际文件／blob／parent／tree后普通提交推送，不重放旧Git批准或在途任务。后续问题按用户反馈通过小补丁／更新处理，不再次索要本轮逐项教师确认；既定Q5/Q6仍不得自动启动，跨环境、真实AI、WebDAV、签名和发行等边界保持。
+本轮拉取仅合并文档状态，既有本地准备文档保留待提交；旧Git门禁与已完成会话白名单不重放。后续问题按反馈作小补丁／更新；通用保存、恢复、关闭缺陷优先。Q5/Q6可在后续明确授权后进入新G0，暂不启动实现、真实AI、WebDAV、签名或发行。
 
 ## 产品与架构原则
 

@@ -2,6 +2,8 @@
 
 更新：2026-11-01。产品[Q1–Q6全部确认](desktop-weekly-plan.md)，本文件给出首片合同和分工。用户已授权按G0→G4实施、Codex审核后提交推送；开工文档提交d6de14c，业务源码基线仍为下述2a469489。本轮核定补充见§11，实际进度以[current.md](../tasks/current.md)及实施核查为准。固定r03的目标1实测和指定八份Word教师确认已归[目标记录](../bootstrap/desktop-windows11-target-review.md)，不迁移到本轮新源码。
 
+2026-11-02适用范围补充：本文件保留Q1–Q4已执行合同，§8／§11旧文件白名单不重新生效。Q5/Q6另见[工程合同](desktop-weekly-ai-engineering.md)与[假供应商矩阵](desktop-weekly-ai-validation.md)；当前只准备文档，不注册周任务、不写实现或测试、不调用真实应用AI。2026-11-03已同步[另机目标反馈与收口](../bootstrap/desktop-weekly-target-test-closeout.md)；Q5/Q6后续实施放行仍按[current](../tasks/current.md)。
+
 ## 1. 基线、范围与准入
 
 沿 `codex/desktop-v2-foundation`，原业务源码基线 `2a4694893a083e32ba6203bfee6dbd83f890f02e`；本轮开工HEAD为 `d6de14cb85040e5e68e3eab36b6d34fd5c927f8b`，开工前迁移head为 `20261025_0006_local_game_observations`。当前实施状态见核查；既有规划／规格文档保留整合。各阶段核对实际head、文件变化及在途会话，不能reset或沿旧指纹自报同源。

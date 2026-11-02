@@ -1,6 +1,6 @@
 # 桌面版周计划产品规格
 
-更新：2026-11-01。Q1–Q6已定稿（§12）；Q1–Q4手工／本人来源／保存／确认／Word及明暗首片已实现，通过限定源码回归、真实Word全页及完整备份恢复核查，最后文案正常重开已核。新身份候选、目标环境和本轮新Word教师体验另验；分项身份及Git状态见[实施核查](../bootstrap/desktop-weekly-plan-review.md)。Q5/Q6沿既定规则后续切片，先候选验证与反馈评估。唯一入口[current](../tasks/current.md)，接口见[工程设计](desktop-weekly-plan-engineering.md)。
+更新：2026-11-02。Q1–Q6已定稿（§12）；Q1–Q4手工／本人来源／保存／确认／Word及明暗首片已实现，通过限定源码回归、真实Word全页及完整备份恢复核查，最后文案正常重开已核。2026-11-03同步：另机限定运行、两项最小修复、指定13份／43页Word工程检查及39项教师清单整体接受已收口，包身份分别见[目标收口](../bootstrap/desktop-weekly-target-test-closeout.md)；不外推其它环境或发行。本轮[Q5/Q6工程合同与分工](desktop-weekly-ai-engineering.md)、[假供应商验证矩阵](desktop-weekly-ai-validation.md)已并行准备并经Codex审核，未启动业务实现或真实应用AI；目标反馈已取得，实现仍须另行放行。唯一入口[current](../tasks/current.md)，首片接口见[工程设计](desktop-weekly-plan-engineering.md)。
 
 本规格接续[阶段计划](../bootstrap/desktop-next-development-plan.md)、[周计划 Contract](../modules/weekly-plans.md)、[身份与班级 Contract](../modules/identity-and-class.md)、[Word Contract](../modules/word-export.md)及 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。旧 [I4](manual-weekly-plan-confirmation.md)、[I5](word-export-implementation.md)及[材料规格](weekly-materials-implementation.md)只按下述映射继承；旧实施／验收不转换为桌面周计划通过。唯一任务入口为 [current.md](../tasks/current.md)。
 
@@ -236,7 +236,7 @@ OpenCode负责实现；共享models、迁移、API、App.vue、宿主和备份�
 | Q5 | 选周游戏、生成所选周栏目、生成材料三个明确操作，互不自动连发；四栏可勾选，候选先预览后采用，改选不自动重生成材料。 | 一键顺序生成游戏→栏目→材料。 |
 | Q6 | 四栏严格使用 §9.2 输入；搭班手填名称仅供本周重点／家园合作背景，不成为游戏或材料日来源；本栏人工文字可作为要求。 | 不使用“汇总全班／所有资料”或未经要求的外部输入。 |
 
-首片落实 Q1–Q4；Q5–Q6 是已确定的后续产品规则，当前不提前实现 AI／材料，也不重新提问。需要新取舍时列明影响，不能把技术实现选择转交用户重复确认。
+首片落实 Q1–Q4；Q5–Q6 是已确定的后续产品规则。2026-11-02用户授权并行准备工程合同、假供应商矩阵和文件分工，当前不提前实现 AI／材料，也不重新提问。需要新取舍时列明影响，不能把技术实现选择转交用户重复确认。
 
 ## 13. 本轮依据与后续文档维护
 
@@ -244,4 +244,4 @@ OpenCode负责实现；共享models、迁移、API、App.vue、宿主和备份�
 
 原设计阶段确认的缺口是班级表头名单／保育员、local／d1周闭环及新schema完整备份校验；旧服务账号／MySQL／全班投影不照搬。本轮实施与验证另见核查。受控模板设计时仅核结构及SHA，不借旧Word结论。
 
-本次六项回答已在本规格、Contract 与唯一任务归并；独有阶段建议保留于阶段计划，工程细节归工程设计。新的产品变更须列出影响；不另建 prompt-final-v2/v3 或复制旧提示词归档。固定r03目标1与指定Word教师确认已收口，保留原制品身份；本片源码工程与普通Git收口见实施核查和唯一入口。下一步先新身份候选验证，后Q5/Q6，真实AI／WebDAV／签名／发行各按当时明确范围。
+本次六项回答已在本规格、Contract 与唯一任务归并；独有阶段建议保留于阶段计划，工程细节归工程设计。新的产品变更须列出影响；不另建 prompt-final-v2/v3 或复制旧提示词归档。固定r03目标1与指定Word教师确认已收口，保留原制品身份；本片源码工程与普通Git收口见实施核查和唯一入口。本轮目标反馈与Q5/Q6文档准备均已取得；业务实现仍须新G0并另行放行，真实AI／WebDAV／签名／发行各按当时明确范围。
