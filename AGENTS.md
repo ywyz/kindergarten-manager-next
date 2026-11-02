@@ -6,11 +6,11 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-02：周计划Q1–Q4及明暗／备份首片源码已收口；新Windows周候选的本机构建／静态／只读预检、GitHub实际构建／静态／制品下载复核已完成，分项身份、首失败及边界见[本轮核查](docs/bootstrap/desktop-weekly-windows11-review.md)。下一步由用户按[手册](docs/bootstrap/desktop-weekly-windows11-manual.md)在另一台Windows11测试。固定r03目标1与W1–W8教师确认保持原身份；新目标／新Word教师体验尚未验证。
+2026-11-02：本轮另一台Windows11目标测试、指定13份独立Word／43页工程逐页检查及39项教师清单已整体接受收口。用户明确：“目前全部通过，有问题届时再通过小补丁或者更新的方式修改，请提交并推送”。这是本轮范围的整体接受，不补造逐项教师实际查看日志，也不扩大为全部环境或正式发行通过。实际身份、两项最小修复、首失败、限定结论与Git回执见[目标测试收口](docs/bootstrap/desktop-weekly-target-test-closeout.md)。
 
-继续分支 `codex/desktop-v2-foundation`；新候选开工HEAD `796028b5`。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；产品 [desktop-weekly-plan.md](docs/specs/desktop-weekly-plan.md)、工程 [desktop-weekly-plan-engineering.md](docs/specs/desktop-weekly-plan-engineering.md)，状态 [v2实施入口](docs/bootstrap/architecture-v2-readiness.md)。
+继续分支 `codex/desktop-v2-foundation`；唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)。原GitHub候选来源57806b2／build_id `0b56217d-026a-428e-a5d8-1b9f36960326`保持[原核查身份](docs/bootstrap/desktop-weekly-windows11-review.md)；本机修复包build_id `763706b0-c9c0-4064-96b4-f2b8c0b43843`使用CPython3.14.10，构建输入为基础d6ff4b7＋5文件补丁。build_id不是提交；推送如触发新CI制品，须另核身份，不承接本机运行／Word验收或自动发行。产品与工程规格仍见[周计划产品](docs/specs/desktop-weekly-plan.md)、[工程](docs/specs/desktop-weekly-plan-engineering.md)，状态见[v2实施入口](docs/bootstrap/architecture-v2-readiness.md)。
 
-本轮按精确文件／blob／parent／tree门禁普通提交推送；构建与静态通过不等于目标运行。先验证新身份周候选，再评估既定Q5/Q6，不启动后片。通用保存、恢复、关闭缺陷优先，实际范围与未验以唯一入口及核查记录为准。
+用户已授权本轮最小修复及收口文档提交推送；复核当前实际文件／blob／parent／tree后普通提交推送，不重放旧Git批准或在途任务。后续问题按用户反馈通过小补丁／更新处理，不再次索要本轮逐项教师确认；既定Q5/Q6仍不得自动启动，跨环境、真实AI、WebDAV、签名和发行等边界保持。
 
 ## 产品与架构原则
 
@@ -26,13 +26,13 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 OpenCode是实现、测试、迁移及构建脚本写入者；Command Code仅在当轮明确授权和互斥文件责任内参与。Codex负责规划／规格、技术审核、执行验证、文档及Git／发布管理，不另起业务实现者。已有授权内持续推进，不重复索要确认；历史某轮的修复、真AI、部署或签名授权不自动延续。
 
-原生会话按current所指当轮A/B/C/D互斥白名单及G0–G4门槛执行，固定DeepSeek V4.1 Flash max；不fork／另派子代理，不并行改同一文件，不接管在途任务或还原他方修改。已完成责任归结果记录，不重放旧在途白名单。原OpenCode负责共享整合和最终Git；按Codex具体文件/blob/parent/tree门禁普通提交推送，不add-all、amend、rebase／force或改main／默认分支／可见性、tag、Release。
+原生会话的当轮A/B/C/D互斥白名单及G0–G4门槛按相应结果记录保留，固定DeepSeek V4.1 Flash max；不fork／另派子代理，不并行改同一文件，不接管在途任务或还原他方修改。已完成责任归结果记录，不重放旧在途白名单。原OpenCode负责共享整合和最终Git；按Codex具体文件/blob/parent/tree门禁普通提交推送，不add-all、amend、rebase／force或改main／默认分支／可见性、tag、Release。
 
 代码与迁移／候选构建、付费AI、远程操作、签名、发行各按当前实际范围，不从架构确认、提示词准备或历史结论推导自动启动。
 
 ## 环境、数据与验证
 
-Windows11原生开发；2026-11-01用户确认沿用本机现有CPython3.14.10／Windows x64／标准GIL，更新当前基线而不改锁定依赖。旧3.14.7证据保留其身份，不迁移通过结论。WSL只作独立辅助，不共享venv、node_modules或运行库。不装新工具／Skill／MCP，不升级依赖或做无关全面环境审计。Skills/MCP先审计再决定KEEP／DISABLE／REMOVE-CANDIDATE；不因全局存在某Skill/MCP就认定项目必须使用，普通Git、文件搜索、测试不要求图谱。
+Windows11原生开发；当前基线为CPython3.14.10／Windows x64／标准GIL，锁定依赖保持。本轮另机按用户明确授权补齐3.14.10并使用独立环境构建，原3.14.7环境及临时构建链接已复位；旧3.14.7证据保留其身份，不迁移通过结论。WSL只作独立辅助，不共享venv、node_modules或运行库。不擅装新工具／Skill／MCP，不升级依赖或做无关全面环境审计。Skills/MCP先审计再决定KEEP／DISABLE／REMOVE-CANDIDATE；不因全局存在某Skill/MCP就认定项目必须使用，普通Git、文件搜索、测试不要求图谱。
 
 验证使用新合成库／图片／凭据／导出根或授权副本；真实原业务库、密钥／DPAPI、原件、旧包与首失败现场保留，只复核已有保护指纹。写入／递归清理前验证绝对路径及源／目标／旧根边界，不删未知文件、不全局kill。网络守卫与APP_DISABLE_DOTENV按相应验证合同执行，不读真实secret或自动重发未知AI任务。
 

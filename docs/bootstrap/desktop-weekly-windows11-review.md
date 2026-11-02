@@ -2,6 +2,8 @@
 
 更新：2026-11-02。本轮用户授权新 Windows 11 周计划验证包，原生 OpenCode／Command Go 的 DeepSeek V4.1 Flash max可并行，Codex最终审核，构建及静态核查后提交推送；随后追加“在GitHub上生成exe供测试”和更新文档。目标电脑实际操作由用户执行，[测试手册](desktop-weekly-windows11-manual.md)列步骤和空白回执。
 
+后续状态：另机实际测试、两项最小回修、新包13份／43页Word补测及用户对39项教师清单的整体确认已收口，见[另机测试收口](desktop-weekly-target-test-closeout.md)。本文保留原构建／GitHub制品的历史时点身份；下文当时“目标未验”不再作为当前任务状态，也不把新包结论倒填给原制品。
+
 ## 范围、来源与责任
 
 开工 `codex/desktop-v2-foundation`／`796028b5dd90e53ce49fc9a0086bf464678789a0`，工作区干净。沿用本机 CPython3.14.10／Windows x64／标准GIL、Node26.12.1和既有锁定依赖；不修改业务实现或Q5/Q6。Q1–Q4及外观／备份源码的既有回归和GUI结果保留[原身份](desktop-weekly-plan-review.md)，不倒填成本次冻结包结果。

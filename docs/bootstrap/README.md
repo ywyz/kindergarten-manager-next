@@ -2,9 +2,11 @@
 
 更新：2026-11-02。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前：新周计划Windows候选与GitHub构建
+## 当前：周计划另机补测与教师确认已收口
 
-本轮已完成包含周计划Q1–Q4的本机新包、54／59静态及49只读预检，GitHub源提交`57806b2`实际完整构建／54／59静态／上传成功，下载制品另经50项受限复核；[下载验证包](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41360367631/artifacts/13104229266)。原生Flash/max分工、首失败与修正、独立复核边界和精确Git身份归[本轮核查](desktop-weekly-windows11-review.md)，另一台电脑操作与新周Word回执见[新手册](desktop-weekly-windows11-manual.md)。下一步为用户实测；静态通过不等于目标运行或教师确认，旧r03结果保持原身份。
+本轮另机Windows11测试、两项最小回修和新包补测已完成：最终Python3.14.10下90项后端、前端、54／59静态及49只读预检通过，13份独立Word共43页已逐页检查。用户明确“目前全部通过，有问题届时再通过小补丁或者更新的方式修改，请提交并推送”，按本次整体确认收口所列39项教师清单。准确身份、原候选备份恢复与新包补测的范围、首失败和未验边界归[另机测试收口](desktop-weekly-target-test-closeout.md)。本机修复包build_id为`763706b0-c9c0-4064-96b4-f2b8c0b43843`，不能与原GitHub制品或旧r03混用结论；不自动进入Q5/Q6或公开发行。
+
+原GitHub源提交`57806b2`的完整构建／54／59静态／上传及下载侧50项受限复核仍归[原构建核查](desktop-weekly-windows11-review.md)，可重复步骤见[测试手册](desktop-weekly-windows11-manual.md)。旧制品不含本次修复，不能以其下载链接替代修复包身份；后续自动CI制品如有生成，须按各自来源和静态结果另核，不继承本机实际Word／教师结论。
 
 ## 固定r03：目标1与指定Word教师确认已收口
 

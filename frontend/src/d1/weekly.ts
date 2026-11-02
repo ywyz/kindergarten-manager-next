@@ -765,6 +765,16 @@ export function projectWeeklyError(error: unknown): WeeklyUiError {
         retry: 'query',
       }
     }
+    if (
+      error.code === 'WEEKLY_EXPORT_NOT_FOUND' &&
+      error.details?.reason === 'no_matching_confirmed_weeks'
+    ) {
+      return {
+        code: 'WEEKLY_EXPORT_NOT_FOUND',
+        message: '所选日期范围没有与教学日相交的已确认周计划；零教学日周请单份导出。',
+        retry: 'none',
+      }
+    }
     const known = error.code ? ERROR_MESSAGES[error.code] : undefined
     if (known) return { ...known, details: error.details }
     return {

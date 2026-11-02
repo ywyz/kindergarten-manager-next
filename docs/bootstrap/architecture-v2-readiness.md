@@ -6,20 +6,21 @@
 
 | 范围 | 当前结论与直接入口 |
 | --- | --- |
-| 新周计划Windows候选／GitHub构建 | 本机新包54／59静态及49只读预检通过；GitHub源57806b2实际构建／54／59静态／上传成功，实际下载50项受限复核通过。[核查／下载](desktop-weekly-windows11-review.md)分列本机、CI、首失败与边界；[另机手册](desktop-weekly-windows11-manual.md)待用户执行。旧r03目标及教师通过不跨身份复用。 |
-| 周计划与明暗 | Q1–Q6已确认；Q1–Q4源码回归、真实保存确认／旧确认保稿导出、Word全页及完整备份／保护包接续已核，最后文案重开通过。新候选构建／静态见上行；新目标／教师未验。[产品](../specs/desktop-weekly-plan.md)、[工程](../specs/desktop-weekly-plan-engineering.md)、[实施核查](desktop-weekly-plan-review.md)。 |
-| 分支 | 继续codex/desktop-v2-foundation；本片按精确Git门禁普通提交推送，实际身份以包含实施核查的提交及远端为准。main保持已合并基线，开工及r03两提交身份见实施核查。 |
-| 用户目标测试 | 固定r03目标1普通业务、完整备份／恢复、保护包及W1–W8工程页检已有[实际回执](desktop-windows11-target-review.md)，用户已逐项确认八份Word通过；指定Word教师体验收口，未扩大为产品／发行整体验收。[手册](desktop-windows11-portable-manual.md)及原build_id／SHA保持，不迁移新代码结果。 |
-| 完整内部候选 | [独立核查](desktop-windows11-portable-review.md)源码493 desktop、实际目录54／ZIP59静态、本机PS7只读预检49通过；固定r03的目标1与指定Word教师结论见上行，不迁移为本轮新周源码通过。主EXE未签名；PS5.1只解析通过，文件执行受策略阻止。 |
-| 完整本地备份／恢复 | [核查§38–§40](desktop-backup-restore-review.md)848 local／469 desktop及源码窗口限定范围通过，前轮推送91e6a553；不能等同新包／跨机恢复已通过。 |
+| 本轮另机目标与教师收口 | 另一台Windows11实际业务及指定13份独立Word／43页工程逐页检查完成，39项教师清单由用户整体接受。用户明确：“目前全部通过，有问题届时再通过小补丁或者更新的方式修改，请提交并推送”。本轮范围收口，不补造逐项教师查看日志；分层证据与后续反馈方式见[目标测试收口](desktop-weekly-target-test-closeout.md)。 |
+| 新周计划候选与GitHub身份 | 原GitHub源57806b2／build0b56217d…的实际构建、下载与初始目标证据保持[原核查身份](desktop-weekly-windows11-review.md)。本机修复包build_id `763706b0-c9c0-4064-96b4-f2b8c0b43843`使用Python3.14.10，构建时基础d6ff4b7＋5文件补丁；90项相关后端、前端、54／59静态、49预检及实际Word分别记账。本机收口时尚无修复的新GitHub制品；推送触发的自动CI如产生新制品，另核身份及静态结果，不继承本机验收。 |
+| 周计划与明暗 | Q1–Q6已确认；Q1–Q4及明暗／备份配套按实际包身份完成本轮目标／指定教师收口。[产品](../specs/desktop-weekly-plan.md)、[工程](../specs/desktop-weekly-plan-engineering.md)、[实施核查](desktop-weekly-plan-review.md)保持，最新限定结果见[收口](desktop-weekly-target-test-closeout.md)；既定Q5/Q6未因此自动实施。 |
+| 分支与当前Git操作 | 继续codex/desktop-v2-foundation；本轮最小修复／文档按用户授权及精确门禁普通提交推送，实际身份以收口记录所在提交及远端一致核对回执为准，不循环回填自身SHA。不重放历史parent／tree批准；main保持已合并基线。 |
+| 历史r03用户目标测试 | 固定r03目标1普通业务、完整备份／恢复、保护包及W1–W8工程页检已有[实际回执](desktop-windows11-target-review.md)，用户已逐项确认八份Word通过；指定Word教师体验收口，未扩大为产品／发行整体验收。[手册](desktop-windows11-portable-manual.md)及原build_id／SHA保持，不迁移新代码结果。 |
+| 历史完整内部候选 | [独立核查](desktop-windows11-portable-review.md)源码493 desktop、实际目录54／ZIP59静态、本机PS7只读预检49通过；固定r03的目标1与指定Word教师结论见上行，不迁移为本轮新周源码通过。主EXE未签名；PS5.1只解析通过，文件执行受策略阻止。 |
+| 完整本地备份／恢复 | [核查§38–§40](desktop-backup-restore-review.md)848 local／469 desktop及源码窗口限定范围、前轮推送91e6a553保持。本轮另机明文／加密、A/B保护包、首次页／空保护包及新进程接续实际证据按各包身份列于[目标收口](desktop-weekly-target-test-closeout.md)，不外推跨Windows用户、真实断电或其它环境。 |
 | 日计划／AI／本机历史 | D1、D2、D3-A保持各自实际工程及指定教师收口；[D1](desktop-d1-review.md)、[D2](../specs/desktop-ai-engineering.md)、[历史](desktop-d3-history-review.md)。旧未验与不再追测事项分别保留，不重问已决产品规则。 |
-| 观察与Word | [页面](desktop-game-observation-pages-review.md)、[导出](desktop-game-observation-export-review.md)、[E14](desktop-game-observation-e14-review.md)已完成相应源码／静态范围；不是仍未设计／未接页面，也不是完整A01–A22／新包教师验收通过。 |
+| 观察与Word | [页面](desktop-game-observation-pages-review.md)、[导出](desktop-game-observation-export-review.md)、[E14](desktop-game-observation-e14-review.md)的历史源码／静态范围保持；本轮三类型、0／1／2／3／5图、混合／横竖／长文／顺序等指定新文件已工程逐页检查并获用户整体接受，见[收口](desktop-weekly-target-test-closeout.md)。不据此倒填历史完整A01–A22或未运行的真实AI／跨环境结论。 |
 | 更新／开源 | [重试及GitHub版本检查](desktop-retry-github-review.md)、[MIT准备](open-source-readiness-review.md)限定范围保持；Git提交不等同Release，签名／真实冻结更新／公开发行未验。 |
 | 后置 | WebDAV自动接续协议、Win10／WPS／其它显示条件、遥测等按独立范围；不自动启动真AI、签名、安装更新或远程操作。 |
 
 D2当前工程规格在 [docs/specs](../specs/desktop-ai-engineering.md)，各轮独立范围仍按其中链接的实际结果，不复用旧v1 MySQL结论。
 
-本片源码工程与最后普通重开已核，分项身份及未验统一见实施核查。沿用用户确认的CPython3.14.10／x64／标准GIL及锁定依赖。下一步先新身份候选验证与反馈评估，再按既定Q5/Q6切片；G0–G4保留为本轮实施合同，不继续按旧在途提示派发。
+本轮源码／静态、另机实际运行、指定Word及教师整体接受已分层归[目标测试收口](desktop-weekly-target-test-closeout.md)。本机修复包使用用户授权补齐的CPython3.14.10／x64／标准GIL及锁定依赖，原3.14.7环境与临时链接已复位。当前完成已授权的普通提交推送并记录实际回执，后续问题按反馈作小补丁／更新；既定Q5/Q6仍不自动启动。G0–G4与旧在途责任按历史结果保留，不重新派发；Win10／WPS／其它显示条件、真实AI、WebDAV、签名及发行等未验边界不因本次收口关闭。
 
 ## 历史内容的适用范围
 

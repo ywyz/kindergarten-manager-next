@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
+import xml.etree.ElementTree as ET
 import zipfile
 from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
@@ -53,11 +54,26 @@ from app.local.models import (
     LocalWeeklyPlanOperation,
 )
 from app.local.normalize import normalize_initialization
+from app.services import word_export_docx as word_docx
 from starlette.requests import Request
 from tests.local.support import LocalTestCase
 
 ANCHOR = date(2026, 9, 7)
 PLAN_DATE = date(2026, 9, 8)
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _weekly_table(document: bytes):
+    with zipfile.ZipFile(io.BytesIO(document)) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))
+    table = root.find(f".//{_W}tbl")
+    if table is None:
+        raise AssertionError("weekly table missing from generated docx")
+    return root, table
+
+
+def _xml_text(root) -> str:
+    return "".join(node.text or "" for node in root.iter(f"{_W}t"))
 
 
 def _adopted(topic: str = "秋天的树叶") -> dict:
@@ -180,6 +196,37 @@ class WeeklyExportTests(LocalTestCase):
             ack_stale=True,
         )
         return plan_id, confirmed["confirmation"]["id"], version
+    def _export_weekly_docx(self, plan_id: str, confirmation_id: str) -> bytes:
+        preview = export_service.preview_export(
+            self.session,
+            self.manager,
+            profile_id=self.profile.id,
+            mode="single",
+            weekly_plan_id=plan_id,
+            confirmation_id=confirmation_id,
+        )
+        created, _ = export_service.create_export(
+            self.session,
+            self.manager,
+            profile_id=self.profile.id,
+            request_id=str(uuid.uuid4()),
+            context_token=preview["context_token"],
+            ack_missing=True,
+            launch_id=self.manager.launch_id,
+            session_scope=self.manager.session_scope,
+        )
+        artifact = export_service.read_export_content(
+            self.session,
+            self.manager,
+            profile_id=self.profile.id,
+            export_id=created["export_id"],
+            launch_id=self.manager.launch_id,
+            session_scope=self.manager.session_scope,
+        )
+        try:
+            return artifact.handle.read()
+        finally:
+            artifact.close()
     def test_preview_is_ephemeral_and_uses_strict_shapes(self) -> None:
         plan_id, confirmation_id, _version = self._make_confirmation()
         self.assertFalse(self.work_root.exists())
@@ -445,6 +492,60 @@ class WeeklyExportTests(LocalTestCase):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             document = archive.read("word/document.xml")
         self.assertGreaterEqual(document.count(b'w:type="page"'), 1)
+    def test_range_without_matching_teaching_week_is_explicit(self) -> None:
+        plan_id, confirmation_id, _ = self._make_confirmation()
+        self._rewrite_states(plan_id, confirmation_id, ["rest"] * 7)
+        models = (
+            LocalWeeklyExportSnapshot,
+            LocalWeeklyExportToken,
+            LocalWeeklyPlanOperation,
+            LocalWeeklyExportAttempt,
+        )
+        before = {
+            model: self.session.scalar(select(func.count()).select_from(model))
+            for model in models
+        }
+        with self.assertRaises(LocalWeeklyExportNotFound) as raised:
+            export_service.preview_export(
+                self.session,
+                self.manager,
+                profile_id=self.profile.id,
+                mode="range",
+                start_date=ANCHOR,
+                end_date=ANCHOR + timedelta(days=6),
+            )
+        self.assertEqual(raised.exception.code, "WEEKLY_EXPORT_NOT_FOUND")
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertEqual(
+            raised.exception.details,
+            {"reason": "no_matching_confirmed_weeks"},
+        )
+        after = {
+            model: self.session.scalar(select(func.count()).select_from(model))
+            for model in models
+        }
+        self.assertEqual(before, after)
+        self.assertFalse(self.work_root.exists())
+        # The same zero-teaching-day week remains exportable as a single plan.
+        single = export_service.preview_export(
+            self.session,
+            self.manager,
+            profile_id=self.profile.id,
+            mode="single",
+            weekly_plan_id=plan_id,
+            confirmation_id=confirmation_id,
+        )
+        self.assertEqual(len(single["items"][0]["columns"]), 5)
+        # Ordinary not-found paths must not inherit the range-specific reason.
+        with self.assertRaises(LocalWeeklyExportNotFound) as missing:
+            export_service.preview_export(
+                self.session,
+                self.manager,
+                profile_id=self.profile.id,
+                mode="single",
+                weekly_plan_id="missing-plan",
+            )
+        self.assertIsNone(missing.exception.details)
     def test_pause_expiry_purpose_and_scope(self) -> None:
         plan_id, confirmation_id, _ = self._make_confirmation()
         self.manager.pause(owner="test-pause")
@@ -901,6 +1002,128 @@ class WeeklyExportTests(LocalTestCase):
             seven["selection"][0]["date_range"],
             {"start": ANCHOR.isoformat(), "end": (ANCHOR + timedelta(days=6)).isoformat()},
         )
+    def test_weekly_table_widths_match_grid_for_five_six_seven_and_zero(self) -> None:
+        # The controlled template stays a frozen asset; this regression only
+        # constrains the generated tcW declarations.
+        self.assertEqual(
+            hashlib.sha256(word_docx.WEEKLY_TEMPLATE.read_bytes()).hexdigest(),
+            word_docx.WEEKLY_TEMPLATE_SHA256,
+        )
+        plan_id, confirmation_id, _ = self._make_confirmation()
+        cases = (
+            ("five-teaching-day", ["teaching"] * 5 + ["rest"] * 2, 5),
+            ("six-teaching-day", ["teaching"] * 6 + ["rest"], 6),
+            ("seven-teaching-day", ["teaching"] * 7, 7),
+            ("zero-teaching-day", ["rest"] * 7, 5),
+        )
+        for label, states, expected_columns in cases:
+            with self.subTest(case=label):
+                self._rewrite_states(plan_id, confirmation_id, states)
+                data = self._export_weekly_docx(plan_id, confirmation_id)
+                root, table = _weekly_table(data)
+                grid = table.find(f"{_W}tblGrid")
+                self.assertIsNotNone(grid)
+                grid_widths = [
+                    int(column.get(f"{_W}w"))
+                    for column in grid.findall(f"{_W}gridCol")
+                ]
+                self.assertEqual(len(grid_widths), expected_columns + 2, label)
+                grid_total = sum(grid_widths)
+                self.assertEqual(grid_total, 11052, label)
+                table_properties = table.find(f"{_W}tblPr")
+                self.assertEqual(
+                    table_properties.find(f"{_W}tblW").get(f"{_W}w"),
+                    "11052",
+                    label,
+                )
+                self.assertEqual(
+                    table_properties.find(f"{_W}tblW").get(f"{_W}type"),
+                    "dxa",
+                    label,
+                )
+                self.assertEqual(
+                    table_properties.find(f"{_W}jc").get(f"{_W}val"),
+                    "center",
+                    label,
+                )
+                self.assertEqual(
+                    table_properties.find(f"{_W}tblLayout").get(f"{_W}type"),
+                    "fixed",
+                    label,
+                )
+                rows = table.findall(f"{_W}tr")
+                self.assertEqual(len(rows), 9, label)
+                for row_index, row in enumerate(rows):
+                    covered = 0
+                    row_total = 0
+                    for cell in row.findall(f"{_W}tc"):
+                        cell_properties = cell.find(f"{_W}tcPr")
+                        self.assertIsNotNone(cell_properties, label)
+                        tc_w = cell_properties.find(f"{_W}tcW")
+                        self.assertIsNotNone(tc_w, label)
+                        span_node = cell_properties.find(f"{_W}gridSpan")
+                        span = (
+                            int(span_node.get(f"{_W}val"))
+                            if span_node is not None
+                            else 1
+                        )
+                        width = int(tc_w.get(f"{_W}w"))
+                        self.assertEqual(
+                            width,
+                            sum(grid_widths[covered:covered + span]),
+                            f"{label} row {row_index}: tcW {width} does not "
+                            f"match its {span} covered grid column(s)",
+                        )
+                        covered += span
+                        row_total += width
+                    self.assertEqual(covered, expected_columns + 2, label)
+                    self.assertEqual(
+                        row_total,
+                        grid_total,
+                        f"{label} row {row_index}: row tcW total {row_total} "
+                        f"!= grid total {grid_total}",
+                    )
+                # The four fixed weekly-label rows keep the 933 label cell and
+                # one merged cell covering the 920 label plus all data columns.
+                for row_index in range(5, 9):
+                    cells = rows[row_index].findall(f"{_W}tc")
+                    self.assertEqual(len(cells), 2, label)
+                    label_properties = cells[0].find(f"{_W}tcPr")
+                    self.assertEqual(
+                        int(label_properties.find(f"{_W}tcW").get(f"{_W}w")),
+                        933,
+                        label,
+                    )
+                    merged_properties = cells[1].find(f"{_W}tcPr")
+                    merged_span = merged_properties.find(f"{_W}gridSpan")
+                    self.assertEqual(
+                        int(merged_span.get(f"{_W}val")),
+                        expected_columns + 1,
+                        label,
+                    )
+                    self.assertEqual(
+                        int(merged_properties.find(f"{_W}tcW").get(f"{_W}w")),
+                        920 + sum(grid_widths[2:]),
+                        label,
+                    )
+                # Template borders and frozen source text remain intact.
+                for row in rows:
+                    right = row.findall(f"{_W}tc")[-1].find(
+                        f"{_W}tcPr/{_W}tcBorders/{_W}right"
+                    )
+                    self.assertIsNotNone(right, label)
+                    self.assertEqual(right.get(f"{_W}val"), "single", label)
+                    self.assertEqual(right.get(f"{_W}sz"), "4", label)
+                    self.assertEqual(right.get(f"{_W}color"), "000000", label)
+                text = _xml_text(root)
+                for marker in (
+                    "主题",
+                    "本周重点",
+                    "环境创设",
+                    "生活习惯培养",
+                    "家园共育",
+                ):
+                    self.assertIn(marker, text, label)
     def test_attempt_payload_validation_and_size_limit(self) -> None:
         plan_id, confirmation_id, _ = self._make_confirmation()
         preview = export_service.preview_export(

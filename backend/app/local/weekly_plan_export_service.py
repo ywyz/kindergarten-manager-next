@@ -1194,7 +1194,9 @@ def _resolve_range(
         )
     )
     if not found:
-        raise LocalWeeklyExportNotFound()
+        raise LocalWeeklyExportNotFound(
+            details={"reason": "no_matching_confirmed_weeks"}
+        )
     if len(found) > MAX_SELECTION:
         raise LocalWeeklyInvalid("周导出最多 8 份")
     return found

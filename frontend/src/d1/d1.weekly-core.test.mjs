@@ -529,6 +529,53 @@ function q3Generated() {
   )
   assert.equal(conflict.retry, 'reload')
   assert.equal(conflict.message.includes('WEEKLY_VERSION_CONFLICT'), false)
+
+  const noMatch = weekly.projectWeeklyError(
+    new clientStub.ApiError(404, 'raw backend message', 'WEEKLY_EXPORT_NOT_FOUND', {
+      reason: 'no_matching_confirmed_weeks',
+    }),
+  )
+  assert.equal(noMatch.code, 'WEEKLY_EXPORT_NOT_FOUND')
+  assert.equal(noMatch.retry, 'none')
+  assert.equal(
+    noMatch.message,
+    '所选日期范围没有与教学日相交的已确认周计划；零教学日周请单份导出。',
+  )
+  assert.equal(noMatch.message.includes('raw backend message'), false)
+
+  const plainNotFound = weekly.projectWeeklyError(
+    new clientStub.ApiError(404, 'raw backend message', 'WEEKLY_EXPORT_NOT_FOUND'),
+  )
+  assert.equal(plainNotFound.message, '周计划请求未完成，请核对后重试')
+  assert.equal(plainNotFound.retry, 'retry')
+  assert.notEqual(plainNotFound.message, noMatch.message)
+
+  const otherReason = weekly.projectWeeklyError(
+    new clientStub.ApiError(404, 'raw', 'WEEKLY_EXPORT_NOT_FOUND', {
+      reason: 'snapshot_mismatch',
+    }),
+  )
+  assert.equal(otherReason.message, '周计划请求未完成，请核对后重试')
+  assert.equal(otherReason.retry, 'retry')
+
+  const unknown = weekly.projectWeeklyError(
+    new clientStub.ApiError(404, 'raw', 'SOMETHING_UNKNOWN', {
+      reason: 'no_matching_confirmed_weeks',
+    }),
+  )
+  assert.equal(unknown.code, 'SOMETHING_UNKNOWN')
+  assert.equal(unknown.message, '周计划请求未完成，请核对后重试')
+  assert.equal(unknown.retry, 'retry')
+
+  const network = weekly.projectWeeklyError(
+    new clientStub.ApiError(0, 'raw', 'WEEKLY_EXPORT_NOT_FOUND', {
+      reason: 'no_matching_confirmed_weeks',
+    }),
+  )
+  assert.equal(network.code, 'WEEKLY_UNKNOWN')
+  assert.equal(network.retry, 'query')
+  assert.equal(network.message, '提交结果未确认，请先核对原请求')
+  ok('range no-match projects a precise message without raw backend text')
   ok('errors project to Chinese semantic messages without raw JSON')
 }
 

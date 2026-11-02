@@ -831,7 +831,9 @@ def _build_weekly_table(canonical_table, view):
         "home_cooperation",
     )
     weekly_columns = view.get("weekly_columns") or {}
-    label_width = 933 + 920
+    # The merged cell starts at the second label column; the first 933-wide
+    # label cell is already a separate cell in the same row.
+    label_width = 920
     for row, key in zip(rows[5:9], column_keys):
         _fill_weekly_column(
             _cells(row)[1],
