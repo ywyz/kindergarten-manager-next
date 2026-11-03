@@ -6,7 +6,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-03：另机测试及指定Word／39项教师清单整体接受已收口，见[目标结果](docs/bootstrap/desktop-weekly-target-test-closeout.md)，不重复追验。9份文档已先提交51ec4d3。用户本轮授权的Q5/Q6已完成G0、旧档案／备份先行、页面实现及限定独立审核；真实游戏／材料生成采用成功，新候选构建及54／59静态检查通过。材料页面后半流程仍受远程桌面捕获／输入影响，未记通过；下一步补该流程及新包增量目标运行，见[实施结果](docs/bootstrap/desktop-weekly-ai-review.md)。本轮普通提交，不自动推送、签名或发行。
+2026-11-03：另机测试及指定Word／39项教师清单整体接受已[收口](docs/bootstrap/desktop-weekly-target-test-closeout.md)，不重复追验。文档先提交51ec4d3，Q5/Q6实现及限定审核已提交cd88d9d；旧档案／备份先行、真实游戏／材料生成采用、新候选54／59静态通过。本地桌面恢复后已补过材料采用／手改／保存／重进／确认、无执行器手工闭环及两次正常源码退出，见[实施结果§16](docs/bootstrap/desktop-weekly-ai-review.md)。下一步新包增量目标运行；本轮普通提交，不自动推送、签名或发行。
 
 继续 `codex/desktop-v2-foundation`，业务源码基线0285a7c。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；Q5/Q6见[工程合同](docs/specs/desktop-weekly-ai-engineering.md)及[矩阵](docs/specs/desktop-weekly-ai-validation.md)，产品见[周计划](docs/specs/desktop-weekly-plan.md)，状态见[v2入口](docs/bootstrap/architecture-v2-readiness.md)。原包保持各自身份，新构建不继承旧运行／Word结论。
 

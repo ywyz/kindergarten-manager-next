@@ -1,8 +1,8 @@
-# 当前：Q5/Q6实现及候选静态收束，接续增量目标验证
+# 当前：Q5/Q6源码窗口补验收束，接续新包增量目标验证
 
-更新：2026-11-03。本轮已按用户授权先提交文档基线51ec4d3，再按新HEAD核定G0、明确放行G1旧档案／假供应商／备份兼容，最后接页面、构建及真实应用AI。Codex负责限定审核、结果归并和精确Git门禁，由原OpenCode A普通提交；不自动推送。
+更新：2026-11-03。文档基线51ec4d3、Q5/Q6实现及限定审核cd88d9d已按用户授权普通提交。本地桌面恢复后已完成剩余材料及无执行器源码窗口片，结果见实施核查§16；本次仅补文档与精确提交，不改代码或重建候选，不自动推送。
 
-继续`codex/desktop-v2-foundation`。唯一当前入口为本文件；正式结果及来源见[实施核查§12–15](../bootstrap/desktop-weekly-ai-review.md)，实际接口／DTO／迁移／文件责任见[工程§9](../specs/desktop-weekly-ai-engineering.md)，案例分层见[46项矩阵§8](../specs/desktop-weekly-ai-validation.md)。不重放已结束的在途白名单或旧Git门禁，不新增提示词副本。
+继续`codex/desktop-v2-foundation`。唯一当前入口为本文件；最终来源及本地桌面补验见[实施核查§12–16](../bootstrap/desktop-weekly-ai-review.md)，实际接口／DTO／迁移／文件责任见[工程§9](../specs/desktop-weekly-ai-engineering.md)，案例分层见[46项矩阵§8](../specs/desktop-weekly-ai-validation.md)。不重放已结束的在途白名单或旧Git门禁，不新增提示词副本。
 
 ## 本轮已取得的结果
 
@@ -16,13 +16,13 @@ G0完成；G1独立门通过。真实0007旧档案48表原值、日计划、观�
 
 原D在新根`build/desktop-e14-q56-r01`实际完整Vite／PyInstaller／portable构建，Root独立目录54／归档59静态通过。build_id `e1b727c8-6ba9-4b39-82bf-a6b4fe81cdc3`，CPython3.14.10／Windows x64／标准GIL，数据库0008。来源是构建时HEAD51ec4d3＋285文件freeze `ee38fabd35a74b31e13b85a865ab3a8aa1e52dab5c0e23ec4f1486e22eb30e56`，不回填其后提交SHA。ZIP SHA-256 `7a47e3cf74829461c594da042d37c74042e28501d2eddaf912897b76f1d2652f`，完整EXE／ZIP身份见实施核查§14。
 
-## 当前未验与下一步
+## 最新源码窗口结果与下一步
 
-源码真实窗口已完成游戏及四栏目生成／预览／采用。材料后半遇捕获0x80070057／输入0x80070005；按用户要求恢复并从远程桌面再次重试后，截图调用返回全黑，UIA仍可读，点击／Tab未产生可观察变化。新r03合成窗口仍v2、0任务／发送，不能记材料采用／手改／leave／重进／确认或无执行器503窗口通过，也不能据黑色捕获裁定应用白屏。此项与真实服务链、SFC挂载及包静态分别记账。
+前轮源码窗口游戏／四栏目结果保持。工具受阻后，用户已恢复本地桌面；新r03实际走通游戏准备、材料空候选预览／明确采用→v4、两行手改、返回列表自动保存→v5、重进、确认v1及历史查看。无执行器新进程使用本次E14实际前端，生成材料显示安全不可用提示且0新任务／发送；仍可手工追加第三行、保存v6、确认v2并重进，两个源码进程均正常Alt+F4退出且exit0。最终真实SQLite副本全链校验通过：6内容／2确认／2采用，task／execution／attempt／candidate各2，模拟发送总2，本次0真实AI。早前工具失败及未验记录保留，不改成当时已过。
 
-下一步先在能实际观察操作的桌面补材料后半及无执行器手工闭环，再对本次新build_id在适合运行的Windows11目标环境做Q5/Q6增量包运行、升级／恢复和持久历史核查。只验新功能及实际受影响流程；[已接受](../bootstrap/desktop-weekly-target-test-closeout.md)的39项教师清单、13份／43页Word、微软拼音及W6不重追。未宣布全46项、G4目标／教师验收或正式发行通过。
+下一步对本次新build_id在适合运行的Windows11目标环境做Q5/Q6增量包运行、升级／恢复和持久历史核查。源码Python／WebView2、正常服务链和目录／归档静态不替代冻结包目标运行；只验新功能及实际受影响流程。[已接受](../bootstrap/desktop-weekly-target-test-closeout.md)的39项教师清单、13份／43页Word、微软拼音及W6不重追。未宣布全46项、G4目标／教师验收或正式发行通过。
 
-原生A/B/C/D责任已按结果收束，固定原会话Flash max，不fork／另派子代理。只有最终Git沿原A本轮新准确68文件／raw SHA／blob／parent／tree门禁普通提交；不add-all、amend、rebase、reset／force、改main、tag／Release或推送。其后若需修复，先定位具体文件并重新激活原owner互斥责任；Codex不接管业务／测试／迁移／构建代码。
+原生A/B/C/D实现责任已收束，固定原会话Flash max，不fork／另派子代理。本次原B仅只读审核固定窗口回执，Codex独立最终核查并归结果；原A仅按新parent cd88d9d及实际文档文件／raw SHA／blob／tree门禁普通提交，不重放旧68文件门禁。不add-all、amend、rebase、reset／force、改main、tag／Release或推送。其后若需修复，先定位具体文件并重新激活原owner互斥责任；Codex不接管业务／测试／迁移／构建代码。
 
 ## 环境与保留边界
 
