@@ -35,7 +35,7 @@ FRONTEND = REPO / "build" / "desktop-e14-win11-r01" / "frontend"
 TEMPLATES = BACKEND / "app" / "assets" / "word_templates"
 MIGRATIONS = BACKEND / "migrations_local"
 ALEMBIC = BACKEND / "alembic-local.ini"
-DATABASE_REVISION = "20261101_0007_local_weekly"
+DATABASE_REVISION = "20261102_0008_local_weekly_ai"
 APP_VERSION = "0.1.0"
 PACKAGE_FORMAT = "pyinstaller-onedir-zip-v1"
 PLATFORM = "windows"
@@ -63,6 +63,14 @@ ARCHIVE_REQUIRED_MODULES = (
     "app.local.weekly_plan_snapshot",
     "app.local.weekly_plan_export_service",
     "app.local.weekly_plan_export_api",
+    "app.local.weekly_ai_adoption",
+    "app.local.weekly_ai_api",
+    "app.local.weekly_ai_candidates",
+    "app.local.weekly_ai_contracts",
+    "app.local.weekly_ai_inputs",
+    "app.local.weekly_ai_service",
+    "app.local.weekly_ai_sources",
+    "app.local.weekly_materials",
     "app.local.observation_service",
     "app.local.observation_export_service",
     "app.local.observation_export_api",
@@ -180,7 +188,16 @@ REQUIRED_FREEZE_PATHS = (
     "backend/app/local/weekly_plan_snapshot.py",
     "backend/app/local/weekly_plan_export_service.py",
     "backend/app/local/weekly_plan_export_api.py",
+    "backend/app/local/weekly_ai_adoption.py",
+    "backend/app/local/weekly_ai_api.py",
+    "backend/app/local/weekly_ai_candidates.py",
+    "backend/app/local/weekly_ai_contracts.py",
+    "backend/app/local/weekly_ai_inputs.py",
+    "backend/app/local/weekly_ai_service.py",
+    "backend/app/local/weekly_ai_sources.py",
+    "backend/app/local/weekly_materials.py",
     "backend/migrations_local/versions/20261101_0007_local_weekly_plans.py",
+    "backend/migrations_local/versions/20261102_0008_local_weekly_ai.py",
 )
 REQUIRED_STATIC_CHECKS = (
     "static_no_execution",
@@ -663,6 +680,7 @@ def _package_info_checks(data: Any, expected_product: str) -> dict:
                 "20261023_0005_local_history.py",
                 "20261025_0006_local_game_observations.py",
                 "20261101_0007_local_weekly_plans.py",
+                "20261102_0008_local_weekly_ai.py",
             )
         )
     templates = data.get("templates")

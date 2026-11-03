@@ -49,6 +49,7 @@ from app.local.models import (
     LocalWeeklyExportAttempt,
     LocalWeeklyExportSnapshot,
     LocalWeeklyExportToken,
+    LocalWeeklyPlan,
     LocalWeeklyPlanConfirmation,
     LocalWeeklyPlanContent,
     LocalWeeklyPlanOperation,
@@ -2506,3 +2507,70 @@ class WeeklyExportTests(LocalTestCase):
         )
         self.assertEqual(status, 200, attempt)
         self.assertEqual(attempt["filename"], "合法.docx")
+class Schema2WeeklyExportTests(WeeklyExportTests):
+    def _promote_current_schema2(self, plan_id: str) -> int:
+        plan = self.session.get(LocalWeeklyPlan, plan_id)
+        current = self.session.get(LocalWeeklyPlanContent, plan.current_draft_id)
+        content = copy.deepcopy(current.content_json)
+        if content.get("schema_version") == 1:
+            content = weekly_plan_content.promote_to_schema2(content)
+        content["theme"] = "AI新主题"
+        content["weekly_columns"] = {
+            key: f"AI四栏-{key}" for key in weekly_plan_content.WEEKLY_COLUMN_KEYS
+        }
+        content["materials"] = None
+        new_id = uuid.uuid4().hex
+        new_version = current.version + 1
+        new_hash = weekly_plan_content.content_hash(content)
+        self.session.add(LocalWeeklyPlanContent(
+            id=new_id, weekly_plan_id=plan_id, version=new_version,
+            schema_version=2, content_json=content, content_hash=new_hash,
+            editor_profile_id=self.profile.id,
+        ))
+        self.session.commit()
+        plan = self.session.get(LocalWeeklyPlan, plan_id)
+        plan.current_draft_id = new_id
+        plan.current_draft_version = new_version
+        self.session.commit()
+        return new_version
+    def _confirm_current(self, plan_id: str, version: int) -> str:
+        target = weekly_plan_service.confirmation_preview(
+            self.session, runtime=self.runtime, profile_id=self.profile.id,
+            launch_id=self.manager.launch_id,
+            session_scope_hash=self.manager.session_scope_hash,
+            plan_id=plan_id, expected_draft_version=version,
+        )
+        confirmed = weekly_plan_service.confirm(
+            self.session, runtime=self.runtime, profile_id=self.profile.id,
+            launch_id=self.manager.launch_id,
+            session_scope_hash=self.manager.session_scope_hash,
+            request_id=str(uuid.uuid4()), plan_id=plan_id,
+            expected_draft_version=version,
+            context_token=target["preview_token"], ack_missing=True,
+            ack_stale=True,
+        )
+        return confirmed["confirmation"]["id"]
+    def test_schema2_mixed_confirmations_export_new_text_and_empty_materials(self) -> None:
+        plan_id, old_confirmation, _old_version = self._make_confirmation()
+        old_docx = self._export_weekly_docx(plan_id, old_confirmation)
+        version = self._promote_current_schema2(plan_id)
+        new_confirmation = self._confirm_current(plan_id, version)
+        new_docx = self._export_weekly_docx(plan_id, new_confirmation)
+        old_root, _ = _weekly_table(old_docx)
+        new_root, _ = _weekly_table(new_docx)
+        old_text = _xml_text(old_root)
+        new_text = _xml_text(new_root)
+        self.assertNotIn("AI四栏-key_week_focus", old_text)
+        self.assertIn("AI新主题", new_text)
+        self.assertIn("AI四栏-key_week_focus", new_text)
+        self.assertNotIn("None", new_text)
+        self.assertNotIn("null", new_text)
+        self.assertNotIn("来源", new_text)
+        again = self._export_weekly_docx(plan_id, old_confirmation)
+        again_root, _ = _weekly_table(again)
+        self.assertNotIn("AI四栏-key_week_focus", _xml_text(again_root))
+        out = os.environ.get("KGM_G2_WORD_OUT")
+        if out:
+            from pathlib import Path
+            Path(out).parent.mkdir(parents=True, exist_ok=True)
+            Path(out).write_bytes(new_docx)

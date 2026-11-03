@@ -145,12 +145,20 @@ def _progress_chunks(text: str) -> list[str]:
     ] or [""]
 
 
-def _send(conn: Any, frame: dict[str, Any]) -> bool:
+def _send(
+    conn: Any, frame: dict[str, Any], *, result_limit: int | None = None
+) -> bool:
     try:
         raw = _encode(frame)
     except (TypeError, ValueError):
         return False
-    limit = RESPONSE_FRAME_MAX if frame.get("type") == "result" else CONTROL_FRAME_MAX
+    limit = (
+        result_limit
+        if frame.get("type") == "result" and result_limit is not None
+        else RESPONSE_FRAME_MAX
+        if frame.get("type") == "result"
+        else CONTROL_FRAME_MAX
+    )
     if len(raw) > limit:
         if frame.get("type") == "progress":
             # Display-only progress must never be turned into a fake final
@@ -250,6 +258,44 @@ def validate_vision_bootstrap(
     return True
 
 
+_FORBIDDEN_BUDGET_KEYS = frozenset(
+    {
+        "max_tokens",
+        "wire_max_bytes",
+        "content_max_bytes",
+        "event_max_bytes",
+        "buffer_max_bytes",
+        "result_ipc_max_bytes",
+        "budget",
+        "response_budget",
+    }
+)
+
+
+def text_request_body(request: Any) -> tuple[ai_transport.ResponseBudget, bytes]:
+    """Build the exact text body once; used by the worker's real path."""
+    if not isinstance(request, dict):
+        raise ValueError("response_budget_not_authorized")
+    if any(key in request for key in _FORBIDDEN_BUDGET_KEYS):
+        raise ValueError("response_budget_not_authorized")
+    source_kind = request.get("source_kind")
+    task_type = request.get("task_type")
+    if not isinstance(source_kind, str) or not isinstance(task_type, str):
+        raise ValueError("response_budget_not_authorized")
+    budget = ai_transport.text_response_budget(
+        task_type, source_kind=source_kind
+    )
+    if budget is None:
+        raise ValueError("response_budget_not_authorized")
+    body = ai_transport.build_request(
+        model=str(request.get("model") or ""),
+        system_text=str(request.get("system_text") or ""),
+        user_text=str(request.get("user_text") or ""),
+        max_tokens=budget.max_tokens,
+    )
+    return budget, body
+
+
 def run(conn: Any) -> None:
     """The whole worker lifetime for one attempt."""
     import os  # noqa: PLC0415
@@ -313,6 +359,7 @@ def run(conn: Any) -> None:
         ca_pem = synthetic.get("ca_pem") or None
 
     vision = request.get("protocol") == ai_transport.VISION_PROTOCOL_ID
+    budget = ai_transport.DEFAULT_TEXT_RESPONSE_BUDGET
     if vision and not ai_transport.vision_capability(
         request.get("base_url"), request.get("model")
     ):
@@ -347,7 +394,20 @@ def run(conn: Any) -> None:
             )))
             return
     else:
-        body = None
+        try:
+            budget, body = text_request_body(request)
+        except ValueError:
+            _send(
+                conn,
+                _result_frame(
+                    ai_transport.TransportResult(
+                        ai_transport.POLICY,
+                        reason="endpoint_blocked",
+                        detail="response_budget_not_authorized",
+                    )
+                ),
+            )
+            return
 
     # 2) DNS + TCP + TLS. Still no HTTP byte.
     prepared, failure = ai_transport.prepare(
@@ -445,6 +505,7 @@ def run(conn: Any) -> None:
         deadline_ms=deadline_ms,
         on_progress=on_progress,
         on_heartbeat=on_heartbeat,
+        budget=budget,
     )
     if progress["reasoning"]:
         flush_progress("thinking")
@@ -460,7 +521,11 @@ def run(conn: Any) -> None:
             "content_chars": progress["content_chars"],
         },
     )
-    _send(conn, _result_frame(result))
+    _send(
+        conn,
+        _result_frame(result),
+        result_limit=budget.result_ipc_max_bytes,
+    )
 
 
 def worker_entry(conn: Any) -> None:  # pragma: no cover - runs in the child

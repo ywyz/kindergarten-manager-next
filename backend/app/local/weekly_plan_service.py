@@ -233,8 +233,29 @@ def _find_plan(
     ).first()
 
 
-def _facts(content: dict, snapshot: dict) -> dict:
-    return _content_call(_content_module().build_facts, content, snapshot)
+def _facts(
+    session: Session,
+    plan: LocalWeeklyPlan | None,
+    content: dict,
+    snapshot: dict,
+) -> dict:
+    facts = _content_call(_content_module().build_facts, content, snapshot)
+    if plan is not None and content.get("schema_version") == 2:
+        try:
+            from app.local import weekly_ai_inputs, weekly_ai_sources
+
+            raw = weekly_ai_sources.load_raw_manifest(
+                session, plan=plan, content=_current_content(session, plan)
+            )
+            ai_facts = weekly_ai_inputs.build_ai_facts(content, raw)
+            for key in ("missing", "stale_sources", "warnings"):
+                facts.setdefault(key, [])
+                facts[key].extend(list(ai_facts.get(key) or []))
+        except Exception:
+            # Facts are advisory; a broken optional AI basis must not hide the
+            # manual draft or turn a read into a 500.
+            pass
+    return facts
 
 
 def _candidates(snapshot: dict) -> list[dict]:
@@ -360,7 +381,9 @@ def _insert_content(
         id=new_opaque_id(),
         weekly_plan_id=plan.id,
         version=version,
-        schema_version=1,
+        schema_version=_content_call(
+            _content_module().content_schema_version, content
+        ),
         content_json=content,
         content_hash=content_hash,
         editor_profile_id=editor_profile_id,
@@ -524,7 +547,7 @@ def create_preview(
                 "confirmed": confirmed,
                 "source_candidates": _candidates(snapshot),
                 "source_context_hash": snapshot["source_context_hash"],
-                "facts": _facts(draft.content_json, snapshot),
+                "facts": _facts(session, existing, draft.content_json, snapshot),
                 "create_token": None,
                 "expected_config_version": None,
                 "expires_at": None,
@@ -568,7 +591,7 @@ def create_preview(
         },
         "source_candidates": _candidates(snapshot),
         "source_context_hash": snapshot["source_context_hash"],
-        "facts": _facts(content, snapshot),
+        "facts": _facts(session, None, content, snapshot),
         "create_token": create_token,
         "expected_config_version": snapshot["config_version"],
         "expires_at": _token_expires_at(),
@@ -837,7 +860,7 @@ def list_plans(
             content = _current_content(session, plan)
             snapshot = _live_snapshot(session, plan)
             item = _summary(plan)
-            item["facts"] = _facts(content.content_json, snapshot)
+            item["facts"] = _facts(session, plan, content.content_json, snapshot)
             items.append(item)
         next_cursor = None
         if has_more and rows:
@@ -866,7 +889,7 @@ def get_detail(session: Session, *, profile_id: str, plan_id: str) -> dict:
             "confirmed": confirmation,
             "source_candidates": _candidates(snapshot),
             "source_context_hash": snapshot["source_context_hash"],
-            "facts": _facts(content.content_json, snapshot),
+            "facts": _facts(session, plan, content.content_json, snapshot),
         }
 
 
@@ -1010,7 +1033,7 @@ def refresh_preview(
         "preserved": refreshed.get("preserved", []),
         "source_candidates": _candidates(snapshot),
         "source_context_hash": snapshot["source_context_hash"],
-        "facts": _facts(target, snapshot),
+        "facts": _facts(session, plan, target, snapshot),
         "preview_token": token,
         "expires_at": _token_expires_at(),
     }
@@ -1138,7 +1161,7 @@ def confirmation_preview(
                 details={"draft_version": content.version}
             )
         live = _live_snapshot(session, plan)
-    facts = _facts(content.content_json, live)
+    facts = _facts(session, plan, content.content_json, live)
     target = _confirmation_snapshot(plan, content, facts)
     target_hash = confirmation_schema.snapshot_hash(target)
     token = tokens.issue_token(
@@ -1248,7 +1271,7 @@ def confirm(
                 details={"draft_version": content.version}
             )
         live = _live_snapshot(session, plan)
-        facts = _facts(content.content_json, live)
+        facts = _facts(session, plan, content.content_json, live)
         facts_hash = _hash(facts)
         snapshot_json = _confirmation_snapshot(plan, content, facts)
         snapshot_hash = confirmation_schema.snapshot_hash(snapshot_json)

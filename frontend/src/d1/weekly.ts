@@ -70,7 +70,48 @@ export interface WeeklyManualGame {
   focus_guidance: string | null
 }
 
-export type WeeklyGameChoice = WeeklyDailyGame | WeeklyManualGame
+export interface WeeklyAiGame {
+  source_kind: 'ai_supplement'
+  manual_item_id: null
+  ai_item_id: string
+  candidate_id: string
+  input_id: string
+  basis_keys: string[]
+  daily_plan_id: null
+  content_id: null
+  content_version: null
+  content_hash: null
+  section: null
+  group_id: null
+  game_id: null
+  name: string
+  shared_objectives: string | null
+  guidance_points: string | null
+  focus_guidance: string | null
+}
+export interface WeeklyAiFocus {
+  source_kind: 'ai_supplement'
+  manual_item_id: null
+  ai_item_id: string
+  candidate_id: string
+  input_id: string
+  basis_keys: string[]
+  daily_plan_id: null
+  content_id: null
+  content_version: null
+  content_hash: null
+  section: null
+  group_id: null
+  game_id: null
+  context_kind: 'area' | 'outdoor' | 'special_room'
+  area: string | null
+  name: string
+  objectives: string | null
+  guidance: string | null
+  support_strategy: string | null
+}
+export type WeeklyGameChoice = WeeklyDailyGame | WeeklyManualGame | WeeklyAiGame
+export type WeeklyFocusChoice = WeeklyFocusArea | WeeklyAiFocus
 
 export interface WeeklyFocusArea extends WeeklySourceRef {
   source_kind: 'daily_plan'
@@ -115,15 +156,17 @@ export interface WeeklyColumns {
 }
 
 export interface WeeklyDraftContent {
-  schema_version: 1
+  schema_version: 1 | 2
   theme: string
   deterministic: WeeklyDay[]
   outdoor_game_slots: Record<WeeklySlot, WeeklyGameChoice | null>
-  focus_area: WeeklyFocusArea | null
+  focus_area: WeeklyFocusChoice | null
   weekly_columns: WeeklyColumns
-  materials: null
+  materials: string | null
   source_manifest: Record<string, unknown>
   calendar_basis: WeeklyCalendarBasis
+  ai_provenance?: Record<string, unknown> | null
+  materials_provenance?: Record<string, unknown> | null
 }
 
 export interface WeeklyDailySelector {
@@ -158,6 +201,7 @@ export interface WeeklyPatch {
   outdoor_game_slots?: Partial<Record<WeeklySlot, WeeklyGamePatch | null>>
   focus_area?: WeeklyDailySelector | null
   weekly_columns?: Partial<WeeklyColumns>
+  materials?: string | null
 }
 
 export interface WeeklyFact {
@@ -429,15 +473,21 @@ export function formatFrozenWeeklyTarget(snapshot: ConfirmationSnapshotV1, sourc
     const game = content.outdoor_game_slots[key]
     if (!game) { lines.push(`${label}：未选择`); continue }
     if (game.source_kind === 'manual') lines.push(`${label}：手工 · ${game.name || '（未填名称）'} · 共同目标 ${game.shared_objectives || '—'} · 指导 ${game.guidance_points || '—'} · 重点 ${game.focus_guidance || '—'}`)
+    else if (game.source_kind === 'ai_supplement') lines.push(`${label}：AI 补充 · ${game.name} · 共同目标 ${game.shared_objectives || '—'} · 指导 ${game.guidance_points || '—'} · 重点 ${game.focus_guidance || '—'}`)
     else lines.push(`${label}：${game.name} · ${frozenSourceLabel(game, dates)} · 共同目标 ${game.shared_objectives || '—'} · 指导 ${game.guidance_points || '—'} · 重点 ${game.focus_guidance || '—'}`)
   }
   const focus = content.focus_area
-  lines.push(focus ? `重点区域：${weeklyContextKindLabel(focus.context_kind)} ${focus.area || ''} · ${focus.name} · ${frozenSourceLabel(focus, dates)} · 目标 ${focus.objectives || '—'} · 指导 ${focus.guidance || '—'} · 支持 ${focus.support_strategy || '—'}` : '重点区域：未选择')
+  lines.push(focus ? (focus.source_kind === 'ai_supplement' ? `重点区域：AI 补充 ${focus.name} · 目标 ${focus.objectives || '—'} · 指导 ${focus.guidance || '—'} · 支持 ${focus.support_strategy || '—'}` : `重点区域：${weeklyContextKindLabel(focus.context_kind)} ${focus.area || ''} · ${focus.name} · ${frozenSourceLabel(focus, dates)} · 目标 ${focus.objectives || '—'} · 指导 ${focus.guidance || '—'} · 支持 ${focus.support_strategy || '—'}`) : '重点区域：未选择')
   lines.push(`本周重点：${content.weekly_columns.key_week_focus || '—'}`)
   lines.push(`环境创设：${content.weekly_columns.environment_setup || '—'}`)
   lines.push(`习惯与文化：${content.weekly_columns.habit_culture || '—'}`)
   lines.push(`家园合作：${content.weekly_columns.home_cooperation || '—'}`)
-  lines.push(`材料：${content.materials === null ? '未选择材料' : '材料已填写'}`)
+  if (content.materials === null) lines.push('材料：未选择材料')
+  else if (content.materials === '') lines.push('材料：材料为空')
+  else {
+    lines.push('材料：')
+    for (const line of content.materials.split(/\r?\n/)) lines.push(line)
+  }
   return lines
 }
 const WEEKLY_SLOT_LABELS: Record<string, string> = {

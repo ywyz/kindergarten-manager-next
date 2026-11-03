@@ -4,13 +4,15 @@
 
 ## 最新状态与下一步
 
+2026-11-03本轮：文档先提交51ec4d3；G0、旧档案／备份先行、页面实现及限定独立审核已完成，真实游戏／材料生成采用、新候选构建及独立54／59静态检查通过。材料原生页面后半仍受远程桌面捕获／输入影响，新包目标运行未验；下一步补该流程及新包增量目标验证。实际身份与边界见[实施核查§12–15](desktop-weekly-ai-review.md)，唯一入口[current](../tasks/current.md)。
+
 | 范围 | 当前结论与直接入口 |
 | --- | --- |
 | 本轮另机目标与教师收口 | 另一台Windows11实际业务及指定13份独立Word／43页工程逐页检查完成，39项教师清单由用户整体接受。用户明确：“目前全部通过，有问题届时再通过小补丁或者更新的方式修改，请提交并推送”。本轮范围收口，不补造逐项教师查看日志；分层证据与后续反馈方式见[目标测试收口](desktop-weekly-target-test-closeout.md)。 |
 | 新周计划候选与GitHub身份 | 原GitHub源57806b2／build0b56217d…的实际构建、下载与初始目标证据保持[原核查身份](desktop-weekly-windows11-review.md)。本机修复包build_id `763706b0-c9c0-4064-96b4-f2b8c0b43843`使用Python3.14.10，构建时基础d6ff4b7＋5文件补丁；90项相关后端、前端、54／59静态、49预检及实际Word分别记账。本机收口时尚无修复的新GitHub制品；推送触发的自动CI如产生新制品，另核身份及静态结果，不继承本机验收。 |
 | 周计划与明暗 | Q1–Q6已确认；Q1–Q4及明暗／备份配套按实际包身份完成本轮目标／指定教师收口。[产品](../specs/desktop-weekly-plan.md)、[工程](../specs/desktop-weekly-plan-engineering.md)、[实施核查](desktop-weekly-plan-review.md)保持，最新限定结果见[收口](desktop-weekly-target-test-closeout.md)；既定Q5/Q6未因此自动实施。 |
-| Q5/Q6合同准备 | 原生OpenCode／Command Go的Flash max已并行交稿，Codex最终审核并收口[工程合同与分工](../specs/desktop-weekly-ai-engineering.md)、[46项假供应商矩阵](../specs/desktop-weekly-ai-validation.md)；仅文档，业务／测试／迁移未实施，矩阵与真实应用AI未运行。会话和审核边界见[准备核查](desktop-weekly-ai-preparation-review.md)。 |
-| 分支与当前Git操作 | 继续codex/desktop-v2-foundation；本轮最小修复／文档按用户授权及精确门禁普通提交推送，实际身份以收口记录所在提交及远端一致核对回执为准，不循环回填自身SHA。不重放历史parent／tree批准；main保持已合并基线。 |
+| Q5/Q6实施与核查 | G1保留0007旧档案48表／全部历史／5照片，schema2及恢复通过；最终后端271、纯层101、前端及独立异步／挂载探针通过。提示游戏／材料2/1、栏目1/1，旧1历史保留；真实游戏／材料各1次成功并明确采用。新build_id e1b727c8…完整构建及Root54／59静态通过，新增材料Word实际1页通过；材料原生后半及新包目标运行仍未验。身份、恢复事件及边界见[实施核查§12–15](desktop-weekly-ai-review.md)，不宣布全46项通过。 |
+| 分支与当前Git操作 | 继续codex/desktop-v2-foundation；此前推送按[收口记录](desktop-weekly-target-test-closeout.md)保留。本轮文档基线51ec4d3已普通提交；Q5/Q6实现和限定结果按新准确文件／blob／parent／tree门禁普通提交，身份由Git回执读，不循环回填自身SHA。本轮不自动推送，不重放历史门禁或改main。 |
 | 历史r03用户目标测试 | 固定r03目标1普通业务、完整备份／恢复、保护包及W1–W8工程页检已有[实际回执](desktop-windows11-target-review.md)，用户已逐项确认八份Word通过；指定Word教师体验收口，未扩大为产品／发行整体验收。[手册](desktop-windows11-portable-manual.md)及原build_id／SHA保持，不迁移新代码结果。 |
 | 历史完整内部候选 | [独立核查](desktop-windows11-portable-review.md)源码493 desktop、实际目录54／ZIP59静态、本机PS7只读预检49通过；固定r03的目标1与指定Word教师结论见上行，不迁移为本轮新周源码通过。主EXE未签名；PS5.1只解析通过，文件执行受策略阻止。 |
 | 完整本地备份／恢复 | [核查§38–§40](desktop-backup-restore-review.md)848 local／469 desktop及源码窗口限定范围、前轮推送91e6a553保持。本轮另机明文／加密、A/B保护包、首次页／空保护包及新进程接续实际证据按各包身份列于[目标收口](desktop-weekly-target-test-closeout.md)，不外推跨Windows用户、真实断电或其它环境。 |
@@ -23,7 +25,7 @@ D2当前工程规格在 [docs/specs](../specs/desktop-ai-engineering.md)，各�
 
 2026-11-03 API只读核对：0285a7c已触发[成功CI运行41464103529](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41464103529)，构建／静态／上传步骤成功并生成制品13150402814。本次未下载或复核新CI包字节／内层身份，其目标／Word／教师结论不继承本机修复包；具体API摘要记于current。
 
-本轮源码／静态、另机实际运行、指定Word及教师整体接受已分层归[目标测试收口](desktop-weekly-target-test-closeout.md)。本机修复包使用用户授权补齐的CPython3.14.10／x64／标准GIL及锁定依赖，原3.14.7环境与临时链接已复位。测试机已完成授权提交推送；2026-11-03开发机快进至0285a7c并合并本地Q5/Q6文档准备，本地文档待单独Git收口。后续问题按反馈作小补丁／更新；Q5/Q6须新授权进入G0，仍不自动启动。G0–G4与旧在途责任按历史结果保留，不重新派发；Win10／WPS／其它显示条件、真实AI、WebDAV、签名及发行等未验边界不因本次收口关闭。
+前轮源码／静态、另机运行、指定Word及教师接受分层归[目标测试收口](desktop-weekly-target-test-closeout.md)。其修复包使用已授权补齐的CPython3.14.10／x64／标准GIL及锁定依赖，原3.14.7环境与临时链接已复位；测试机已完成前轮授权提交推送。本轮开发机从0285a7c先整合提交文档51ec4d3，再按新授权实施Q5/Q6；限定源码／真实合成AI／新包静态及原生未验见[实施核查](desktop-weekly-ai-review.md)，不迁移旧包结论。历史G0–G4／在途责任不重派；Win10／WPS／其它显示条件、WebDAV、签名及发行等原边界保持。
 
 ## 历史内容的适用范围
 

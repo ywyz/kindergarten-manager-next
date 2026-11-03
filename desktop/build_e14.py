@@ -2,7 +2,7 @@
 
 The package is a PyInstaller onedir/windowed distribution of the real D1/E14
 entry, current frontend build, controlled observation templates, local
-migrations (including 0006) and Pillow imaging plugins. It reuses the existing
+migrations (including 0008) and Pillow imaging plugins. It reuses the existing
 venv/node_modules and never installs or upgrades dependencies.
 
 Path safety (E14-R01): every write target is resolved and checked *before* any
@@ -15,7 +15,7 @@ Source freeze (E14-R02): product/build sources are hashed both before and after
 the build (cache files excluded); the build fails if the two lists differ.
 
 Build identity/licence (E14-R03): the candidate receives a real UUID
-``_internal/build_identity.json`` (version 0.1.0, database revision 0006); a
+``_internal/build_identity.json`` (version 0.1.0, database revision 0008); a
 missing Pillow licence or imaging plugin aborts the build instead of producing
 a package that claims to be complete.
 """
@@ -49,8 +49,8 @@ README_NAME = "README-KGNext-E14-win11-r01.txt"
 MANIFEST_NAME = "package-files.json"
 SUMS_NAME = "SHA256SUMS.txt"
 MANIFEST_SCHEMA_VERSION = 1
-DATABASE_REVISION = "20261101_0007_local_weekly"
-MIGRATION_FILENAME = "20261101_0007_local_weekly_plans.py"
+DATABASE_REVISION = "20261102_0008_local_weekly_ai"
+MIGRATION_FILENAME = "20261102_0008_local_weekly_ai.py"
 PILLOW_VERSION = "13.0.0"
 
 TEMPLATE_DIR = d0_paths.BACKEND_ROOT / "app" / "assets" / "word_templates"
@@ -754,6 +754,22 @@ def build_package(
         "--hidden-import",
         "app.local.restore_types",
         "--hidden-import",
+        "app.local.weekly_ai_adoption",
+        "--hidden-import",
+        "app.local.weekly_ai_api",
+        "--hidden-import",
+        "app.local.weekly_ai_candidates",
+        "--hidden-import",
+        "app.local.weekly_ai_contracts",
+        "--hidden-import",
+        "app.local.weekly_ai_inputs",
+        "--hidden-import",
+        "app.local.weekly_ai_service",
+        "--hidden-import",
+        "app.local.weekly_ai_sources",
+        "--hidden-import",
+        "app.local.weekly_materials",
+        "--hidden-import",
         "app.local.observation_export_service",
         "--hidden-import",
         "app.local.observation_export_api",
@@ -1228,7 +1244,7 @@ def main() -> int:
 
     require_pillow_license()
     if not MIGRATION_FILE.is_file():
-        raise SystemExit(f"拒绝构建：缺少 0007 迁移 {MIGRATION_FILE}")
+        raise SystemExit(f"拒绝构建：缺少 0008 迁移 {MIGRATION_FILE}")
     if not ALEMBIC_INI.is_file():
         raise SystemExit(f"拒绝构建：缺少本地 Alembic 配置 {ALEMBIC_INI}")
     if not TEMPLATE_DIR.is_dir():

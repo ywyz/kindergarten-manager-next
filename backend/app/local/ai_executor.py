@@ -877,7 +877,9 @@ class AiExecutor:
             # keeps supervising and can terminate the Job to unblock the pipe.
             status = self._run_io(
                 active,
-                lambda: {"data": conn.recv_bytes(ai_worker_frame_limit())},
+                lambda: {
+                    "data": conn.recv_bytes(ai_worker_frame_limit(active.claim))
+                },
             )
             if status == "stopped":
                 return _DRAIN
@@ -1206,13 +1208,20 @@ def _encode_bootstrap(
             raise ValueError("frame_too_large")
         return frames
 
-    if claim.source_kind != "daily_plan" or claim.vision_authorized:
+    if claim.source_kind not in ("daily_plan", "weekly_plan") or claim.vision_authorized:
         raise ValueError("text_bootstrap_not_authorized")
 
+    budget = ai_transport.text_response_budget(
+        claim.task_type, source_kind=claim.source_kind
+    )
+    if budget is None:
+        raise ValueError("response_budget_not_authorized")
     request = {
         "base_url": claim.base_url,
         "model": claim.model,
         "secret": claim.secret,
+        "source_kind": claim.source_kind,
+        "task_type": claim.task_type,
         "system_text": claim.system_text,
         "user_text": json.dumps(claim.payload, ensure_ascii=False, separators=(",", ":")),
     }
@@ -1224,6 +1233,7 @@ def _encode_bootstrap(
             model=claim.model,
             system_text=claim.system_text,
             user_text=request["user_text"],
+            max_tokens=budget.max_tokens,
         )
     )
     if body_size > ai_transport.REQUEST_MAX_BYTES:
@@ -1240,9 +1250,16 @@ def _encode_bootstrap(
     return [raw]
 
 
-def ai_worker_frame_limit() -> int:
+def ai_worker_frame_limit(claim: Any | None = None) -> int:
     from app.local import ai_worker
 
+    if claim is not None:
+        budget = ai_transport.text_response_budget(
+            getattr(claim, "task_type", None),
+            source_kind=getattr(claim, "source_kind", None),
+        )
+        if budget is not None:
+            return budget.result_ipc_max_bytes
     return ai_worker.RESPONSE_FRAME_MAX
 
 

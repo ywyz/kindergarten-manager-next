@@ -5,6 +5,7 @@
  * Run with:  node frontend/src/d1/d1.test.mjs
  */
 import assert from 'node:assert'
+import { getSessionEpoch, setSessionToken } from './client.ts'
 import { LeaveCoordinator } from './leave.ts'
 import {
   applyServerIdentity,
@@ -729,6 +730,30 @@ const noSleep = async () => {}
   assert.equal(ok, true)
   const timedOut = await waitForApi(() => false, { timeoutMs: 30, pollMs: 10 })
   assert.equal(timedOut, false)
+}
+
+// --- session generation (G2 shared client) ---------------------------------
+{
+  const initial = getSessionEpoch()
+  assert.equal(typeof initial, 'number')
+  assert.equal(Number.isSafeInteger(initial), true)
+
+  setSessionToken('epoch-token-a')
+  assert.equal(getSessionEpoch(), initial + 1)
+  // Repeating the same value is not a new launch/session generation.
+  setSessionToken('epoch-token-a')
+  assert.equal(getSessionEpoch(), initial + 1)
+
+  setSessionToken(null)
+  assert.equal(getSessionEpoch(), initial + 2)
+  setSessionToken(null)
+  assert.equal(getSessionEpoch(), initial + 2)
+
+  setSessionToken('epoch-token-b')
+  assert.equal(getSessionEpoch(), initial + 3)
+  // The getter is only a number; it never returns the in-memory token.
+  assert.equal(typeof getSessionEpoch(), 'number')
+  assert.notEqual(getSessionEpoch(), 'epoch-token-b')
 }
 
 console.log('OK D1 pure-logic regression tests')

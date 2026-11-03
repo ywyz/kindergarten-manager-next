@@ -30,6 +30,7 @@ from app.local.observation_export_api import observation_exports_router
 from app.local.runtime import LocalRuntime
 from app.local.schemas import LocalHealthOut
 from app.local.weekly_plan_api import weekly_plans_router
+from app.local.weekly_ai_api import weekly_ai_router
 from app.local.weekly_plan_export_api import weekly_exports_router
 
 SESSION_HEADER = "X-App-Session"
@@ -166,5 +167,6 @@ def create_local_app(
     app.include_router(observations_router)
     app.include_router(observation_exports_router)
     app.include_router(weekly_plans_router)
+    app.include_router(weekly_ai_router)
     app.include_router(weekly_exports_router)
     return app

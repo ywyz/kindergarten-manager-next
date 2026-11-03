@@ -1213,3 +1213,194 @@ class LocalObservationExportAttemptResultIn(BaseModel):
     status: Literal["saved", "cancelled", "failed", "indeterminate"]
     byte_size: int | None = Field(default=None, ge=0, strict=True)
     result_hash: str | None = Field(default=None, min_length=64, max_length=64)
+
+
+# ---------------------------------------------------------------------------
+# Q5/Q6 weekly AI (engineering §9)
+# ---------------------------------------------------------------------------
+
+WeeklyColumnKey = Literal[
+    "key_week_focus",
+    "environment_setup",
+    "habit_culture",
+    "home_cooperation",
+]
+WeeklyAITarget = Literal[
+    "games",
+    "key_week_focus",
+    "environment_setup",
+    "habit_culture",
+    "home_cooperation",
+    "materials",
+]
+
+
+class WeeklyAIGamesCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+
+
+class WeeklyAIColumnsCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+    selected_fields: list[WeeklyColumnKey] = Field(..., min_length=1, max_length=4)
+
+
+class WeeklyAIMaterialsCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+
+
+class WeeklyAICreateTaskOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str
+    task_id: str
+
+
+class WeeklyAICreateDraftOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    version: int
+
+
+class WeeklyAICreateOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    operation_kind: str
+    weekly_plan_id: str
+    draft: WeeklyAICreateDraftOut
+    tasks: list[WeeklyAICreateTaskOut]
+    replayed: bool
+
+
+class WeeklyAITaskOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    source_kind: str
+    source_id: str
+    weekly_plan_id: str
+    target: str
+    task_type: str
+    status: str
+    reason: str | None = None
+    processing_certainty: str
+    user_stop_requested: bool
+    draft: WeeklyAICreateDraftOut
+    input_summary: dict[str, Any]
+    execution: LocalAITaskExecutionOut | None = None
+    candidate_id: str | None = None
+    allowed_actions: list[str]
+    retry_requires_ack: bool
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class WeeklyAITaskListOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[WeeklyAITaskOut]
+    next_cursor: str | None = None
+
+
+class WeeklyAICandidateListItemOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    task_id: str
+    target: str
+    candidate_hash: str
+    eligibility: str
+    available_targets: list[str]
+    create_operation_id: str | None = None
+    created_at: str | None = None
+
+
+class WeeklyAICandidateListOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[WeeklyAICandidateListItemOut]
+    next_cursor: str | None = None
+
+
+class WeeklyAICandidateOut(WeeklyAICandidateListItemOut):
+    model_config = ConfigDict(extra="forbid")
+
+    data: dict[str, Any]
+    basis: dict[str, Any]
+    warnings: list[Any]
+    unavailable_inputs: list[Any]
+
+
+class WeeklyAISelectionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    target: WeeklyAITarget
+
+
+class WeeklyAISelectionOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    target: WeeklyAITarget
+
+
+class WeeklyAIAdoptionPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+    selections: list[WeeklyAISelectionIn] = Field(..., min_length=1)
+
+
+class WeeklyAIAdoptionPreviewOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_token: str
+    expires_at: datetime
+    weekly_plan_id: str
+    draft: WeeklyAICreateDraftOut
+    selections: list[WeeklyAISelectionOut]
+    before: dict[str, Any]
+    after: dict[str, Any]
+    warnings: list[Any]
+
+
+class WeeklyAIAdoptionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_draft_version: int = Field(..., ge=1, strict=True)
+    preview_token: str
+
+
+class WeeklyAIAdoptionOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str
+    request_id: str
+    status: str
+    weekly_plan_id: str
+    draft: dict[str, Any]
+    selections: list[WeeklyAISelectionOut]
+    changed: bool
+    replayed: bool
+
+
+class WeeklyAIOperationOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    operation_kind: str
+    status: str
+    result: dict[str, Any]
+    created_at: str

@@ -376,12 +376,17 @@ class RestoreCore:
     def _reset_authorizations(self) -> None:
         config_tokens.rotate_key()
         weekly_plan_tokens.rotate_key(self.runtime)
+        try:
+            from app.local import weekly_ai_adoption
+        except ImportError:  # pragma: no cover - A module is optional only pre-G1
+            weekly_ai_adoption = None
         for module in (
             ai_adoption,
             daily_plan_history_service,
             observation_ai_service,
+            weekly_ai_adoption,
         ):
-            reset = getattr(module, "reset_tokens", None)
+            reset = getattr(module, "reset_tokens", None) if module is not None else None
             if callable(reset):
                 reset()
 

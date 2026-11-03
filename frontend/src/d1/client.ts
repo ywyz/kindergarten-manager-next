@@ -8,9 +8,20 @@
 export const SESSION_HEADER = 'X-App-Session'
 
 let sessionToken: string | null = null
+let sessionEpoch = 0
 
 export function setSessionToken(token: string | null): void {
+  // Only a real value change starts a new session generation. Repeated
+  // bootstrap/refresh calls with the same token must not invalidate work that
+  // is already in flight for this launch.
+  if (token === sessionToken) return
   sessionToken = token
+  sessionEpoch += 1
+}
+
+/** Monotonic in-memory session generation; never exposes the token itself. */
+export function getSessionEpoch(): number {
+  return sessionEpoch
 }
 
 export function hasSessionToken(): boolean {

@@ -232,10 +232,18 @@ def test_new_content_exact_schema_and_q1_states():
     assert set(content) == {
         "schema_version", "theme", "deterministic", "outdoor_game_slots",
         "focus_area", "weekly_columns", "materials", "source_manifest",
-        "calendar_basis",
+        "calendar_basis", "ai_provenance", "materials_provenance",
     }
-    assert content["schema_version"] == 1
+    assert content["schema_version"] == 2
     assert content["theme"] == ""
+    assert content["ai_provenance"] == {
+        "games": None,
+        "key_week_focus": None,
+        "environment_setup": None,
+        "habit_culture": None,
+        "home_cooperation": None,
+    }
+    assert content["materials_provenance"] is None
     assert content["materials"] is None
     assert len(content["deterministic"]) == 7
     assert content["deterministic"][0]["source_state"] == "saved"
@@ -914,3 +922,325 @@ def test_module_imports_are_pure():
 
 def test_module_has_no_db_or_runtime_imports():
     assert "app.local.weekly_plan_content" in sys.modules
+
+
+# ---------------------------------------------------------------------------
+# Schema-2 AI/materials adoption, PATCH echoes and refresh preservation
+# ---------------------------------------------------------------------------
+
+from app.local import weekly_materials as _materials  # noqa: E402
+
+
+def _adoption_meta(*, candidate_hash: str | None = None, dependency_hash: str | None = None) -> dict:
+    return {
+        "candidate_id": "candidate-1",
+        "candidate_hash": candidate_hash or _hash("c"),
+        "input_id": "input-1",
+        "execution_id": "execution-1",
+        "contract_version": 1,
+        "dependency_hash": dependency_hash or _hash("d"),
+        "adopter_profile_id": "profile-1",
+        "adopted_draft_id": "draft-2",
+        "adopted_draft_version": 2,
+        "adopted_at": "2026-11-03T00:00:00+00:00",
+    }
+
+
+def _games_basis() -> dict:
+    return {
+        "schema_version": 1,
+        "target": "games",
+        "grade": "small",
+        "theme": None,
+        "manual_text": None,
+        "daily_sources": [],
+        "selected": None,
+        "config": [
+            {
+                "revision_id": "rev-1",
+                "revision_no": 2,
+                "game_scope": None,
+                "guidance": None,
+                "locations": [
+                    {
+                        "kind": "area",
+                        "name": "建构区",
+                        "occurrence": 1,
+                        "guidance": "配置指导",
+                    }
+                ],
+            }
+        ],
+        "calendar": None,
+    }
+
+
+def _with_ai_games(snapshot: dict) -> dict:
+    content = _with_slot(snapshot)
+    content = w.apply_patch(content, {"focus_area": _selector(_candidate(snapshot, "focus"))}, snapshot)
+    ai = {
+        "source_kind": "ai_supplement",
+        "manual_item_id": None,
+        "daily_plan_id": None,
+        "content_id": None,
+        "content_version": None,
+        "content_hash": None,
+        "section": None,
+        "group_id": None,
+        "game_id": None,
+        "name": "AI游戏",
+        "shared_objectives": "目标",
+        "guidance_points": "指导",
+        "focus_guidance": "重点",
+        "basis_keys": [],
+    }
+    candidate_value = {
+        "outdoor_game_slots": {
+            "collective_1": copy.deepcopy(content["outdoor_game_slots"]["collective_1"]),
+            "collective_2": ai,
+            "free_choice_1": None,
+        },
+        "focus_area": copy.deepcopy(content["focus_area"]),
+    }
+    return w.apply_weekly_ai_adoption(
+        content,
+        target="games",
+        candidate_value=candidate_value,
+        adoption=_adoption_meta(),
+        basis=_games_basis(),
+        ai_item_ids={"collective_2": "ai-item-1"},
+    )
+
+
+def _materials_manifest() -> dict:
+    return {
+        "schema_version": 1,
+        "task_type": "weekly_materials_generate",
+        "plan": {
+            "weekly_plan_id": "plan-1",
+            "draft_id": "draft-1",
+            "draft_version": 1,
+            "content_hash": _hash("e"),
+            "profile_id": "profile-1",
+            "class_id": "class-1",
+            "term_id": "term-1",
+            "week_anchor_date": "2026-09-07",
+            "week_number": 2,
+        },
+        "source_context_hash": _hash("f"),
+        "handles": {},
+    }
+
+
+def _with_empty_materials(snapshot: dict, *, with_ai: bool = True) -> dict:
+    if with_ai:
+        content = _with_ai_games(snapshot)
+    else:
+        content = _with_slot(snapshot)
+        content = w.apply_patch(
+            content, {"focus_area": _selector(_candidate(snapshot, "focus"))}, snapshot
+        )
+    from app.local import weekly_ai_inputs as _inputs
+    from tests.local.weekly_ai_fake_transport import make_raw as _make_raw
+
+    projection = _inputs.project_weekly_input(
+        "weekly_materials_generate", _make_raw(snapshot, content), content
+    )
+    business = _inputs.build_business_dependency_view(projection.dependencies)
+    basis = {
+        key: business[key]
+        for key in (
+            "schema_version",
+            "target",
+            "grade",
+            "theme",
+            "manual_text",
+            "daily_sources",
+            "selected",
+            "config",
+            "calendar",
+        )
+    }
+    return w.apply_weekly_ai_adoption(
+        content,
+        target="materials",
+        candidate_value={"items": []},
+        adoption=_adoption_meta(candidate_hash=_hash("1"), dependency_hash=_hash("2")),
+        basis=basis,
+        server_manifest=projection.server_manifest,
+    )
+
+
+def test_patch_echoes_only_exact_trusted_ai_items_and_rejects_new_identity():
+    snap = _snapshot()
+    content = _with_ai_games(snap)
+    ai = copy.deepcopy(content["outdoor_game_slots"]["collective_2"])
+    echoed = w.apply_patch(content, {"outdoor_game_slots": {"collective_2": copy.deepcopy(ai)}}, snap)
+    assert echoed["outdoor_game_slots"]["collective_2"] == ai
+
+    changed = copy.deepcopy(ai)
+    changed["name"] = "改写"
+    with pytest.raises(w.WeeklyContentError):
+        w.apply_patch(content, {"outdoor_game_slots": {"collective_2": changed}}, snap)
+
+    forged = copy.deepcopy(ai)
+    forged["ai_item_id"] = "forged"
+    with pytest.raises(w.WeeklyContentError):
+        w.apply_patch(content, {"outdoor_game_slots": {"collective_2": forged}}, snap)
+
+    new_ai = copy.deepcopy(ai)
+    new_ai["ai_item_id"] = "new-ai"
+    new_ai["candidate_id"] = "new-candidate"
+    new_ai["input_id"] = "new-input"
+    with pytest.raises(w.WeeklyContentError):
+        w.apply_patch(content, {"outdoor_game_slots": {"free_choice_1": new_ai}}, snap)
+
+    cleared = w.apply_patch(content, {"outdoor_game_slots": {"collective_2": None}}, snap)
+    assert cleared["outdoor_game_slots"]["collective_2"] is None
+
+    manual = {
+        "source_kind": "manual",
+        "manual_item_id": None,
+        "client_key": "manual-key",
+        "name": "手工游戏",
+        "shared_objectives": "目标",
+        "guidance_points": "指导",
+        "focus_guidance": "重点",
+    }
+    replaced = w.apply_patch(
+        content,
+        {"outdoor_game_slots": {"collective_2": manual}},
+        snap,
+        manual_ids={"manual-key": "manual-1"},
+    )
+    assert replaced["outdoor_game_slots"]["collective_2"]["source_kind"] == "manual"
+    assert replaced["ai_provenance"]["games"]["manual_edited"] is True
+
+
+def test_materials_patch_preserves_null_and_exact_strings_including_empty():
+    snap = _snapshot()
+    content = _with_empty_materials(snap)
+    assert content["materials"] == ""
+    provenance = copy.deepcopy(content["materials_provenance"])
+
+    noop = w.apply_patch(content, {"materials": ""}, snap)
+    assert noop["materials"] == ""
+    assert noop["materials_provenance"] == provenance
+    assert noop["materials_provenance"]["edited"] is False
+
+    edited = w.apply_patch(content, {"materials": "彩纸\n胶水"}, snap)
+    assert edited["materials"] == "彩纸\n胶水"
+    assert edited["materials_provenance"]["edited"] is True
+    assert edited["materials_provenance"]["basis"] == provenance["basis"]
+    assert edited["materials_provenance"]["original_text"] == ""
+
+    cleared = w.apply_patch(content, {"materials": None}, snap)
+    assert cleared["materials"] is None
+    assert cleared["materials_provenance"]["edited"] is True
+    assert cleared["materials_provenance"]["basis"] == provenance["basis"]
+
+
+def test_materials_without_provenance_cannot_be_created_by_patch():
+    snap = _snapshot()
+    content = _with_slot(snap)
+    assert content["materials"] is None
+    with pytest.raises(w.WeeklyContentError):
+        w.apply_patch(content, {"materials": "彩纸"}, snap)
+    with pytest.raises(w.WeeklyContentError):
+        w.apply_patch(content, {"materials": ""}, snap)
+    unchanged = w.apply_patch(content, {"materials": None}, snap)
+    assert unchanged["materials"] is None
+
+
+def test_refresh_preserves_ai_identity_columns_and_materials():
+    snap = _snapshot()
+    content = _with_empty_materials(snap)
+    content = w.apply_patch(content, {"weekly_columns": {"habit_culture": "习惯文字"}}, snap)
+    newer = _snapshot(version=2, name="新游戏", focus_name="新区域游戏", context_hash=_hash("9"))
+    refreshed = w.refresh_content(content, newer)
+    result = refreshed["content"]
+    assert result["schema_version"] == 2
+    assert result["outdoor_game_slots"]["collective_2"] == content["outdoor_game_slots"]["collective_2"]
+    assert result["focus_area"]["name"] == "新区域游戏"
+    assert result["focus_area"]["content_version"] == 2
+    assert result["weekly_columns"] == content["weekly_columns"]
+    assert result["materials"] == content["materials"]
+    assert result["materials_provenance"] == content["materials_provenance"]
+    assert result["ai_provenance"]["games"]["adopted_value"] == content["ai_provenance"]["games"]["adopted_value"]
+    assert result["ai_provenance"]["games"]["manual_edited"] is True
+    assert result["outdoor_game_slots"]["collective_1"]["name"] == "新游戏"
+    assert refreshed["differences"]
+
+
+def test_schema1_refresh_noop_stays_and_real_change_promotes():
+    snap = _snapshot()
+    current = w.new_content(snap)
+    legacy = {
+        key: copy.deepcopy(value)
+        for key, value in current.items()
+        if key not in ("ai_provenance", "materials_provenance")
+    }
+    legacy["schema_version"] = 1
+    noop = w.refresh_content(legacy, snap)
+    assert noop["content"] == legacy
+    assert noop["content"]["schema_version"] == 1
+
+    newer = _snapshot(version=2, name="新游戏", context_hash=_hash("9"))
+    changed = w.refresh_content(legacy, newer)
+    assert changed["content"]["schema_version"] == 2
+    assert changed["content"]["ai_provenance"] == {
+        "games": None,
+        "key_week_focus": None,
+        "environment_setup": None,
+        "habit_culture": None,
+        "home_cooperation": None,
+    }
+    assert changed["content"]["materials_provenance"] is None
+    assert changed["content"]["materials"] is None
+
+
+def test_facts_do_not_reuse_old_materials_basis_as_fresh():
+    snap = _snapshot()
+    content = _with_empty_materials(snap, with_ai=False)
+    facts = w.build_facts(content, snap)
+    assert "materials_empty" in _codes(facts["missing"])
+    # build_facts is source/daily-only; AI/material staleness is a separate pure
+    # function so the old basis is never compared against a copy of itself.
+    from app.local import weekly_ai_inputs as _inputs
+    from tests.local.weekly_ai_fake_transport import make_raw
+
+    raw = make_raw(snap, content)
+    assert _inputs.build_ai_facts(content, raw)["stale_sources"] == []
+
+
+def test_unknown_patch_and_content_keys_are_not_echoed_in_errors():
+    marker = "SYNTH_CONTENT_SECRET_MARKER_2c9"
+    snap = _snapshot()
+    content = w.new_content(snap)
+    with pytest.raises(w.WeeklyContentError) as exc_info:
+        w.apply_patch(content, {marker: 1}, snap)
+    assert all(
+        marker not in text
+        for text in (
+            str(exc_info.value),
+            exc_info.value.message,
+            exc_info.value.field_path,
+            repr(exc_info.value.details),
+            repr(vars(exc_info.value)),
+        )
+    )
+
+    bad = copy.deepcopy(content)
+    bad[marker] = 1
+    with pytest.raises(w.WeeklyContentError) as exc_info:
+        w.validate_content(bad)
+    assert all(
+        marker not in text
+        for text in (
+            str(exc_info.value),
+            exc_info.value.message,
+            exc_info.value.field_path,
+            repr(exc_info.value.details),
+            repr(vars(exc_info.value)),
+        )
+    )

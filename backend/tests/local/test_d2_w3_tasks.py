@@ -1076,3 +1076,35 @@ class WorkerFrameBoundTests(LocalTestCase):
             ai_worker.RESPONSE_FRAME_MAX, ai_transport.RESPONSE_MAX_BYTES + 16 * 1024
         )
         self.assertLessEqual(ai_worker.CONTROL_FRAME_MAX, 16 * 1024)
+
+
+class TaskContractGateTests(unittest.TestCase):
+    def test_weekly_contract2_is_scoped_and_daily_observation_stay_v1(self):
+        self.assertTrue(
+            ai_task_service._supports_task_contract("weekly_games_select", 2)
+        )
+        self.assertTrue(
+            ai_task_service._supports_task_contract("weekly_materials_generate", 2)
+        )
+        self.assertTrue(
+            ai_task_service._supports_task_contract("weekly_games_select", 1)
+        )
+        self.assertFalse(
+            ai_task_service._supports_task_contract("weekly_key_week_focus", 2)
+        )
+        self.assertFalse(
+            ai_task_service._supports_task_contract("daily_lesson_split", 2)
+        )
+        self.assertFalse(
+            ai_task_service._supports_task_contract("game_observation_generate", 2)
+        )
+        self.assertTrue(
+            ai_task_service._supports_task_contract("daily_lesson_split", 1)
+        )
+        self.assertTrue(
+            ai_task_service._supports_task_contract("game_observation_generate", 1)
+        )
+        self.assertFalse(ai_task_service._supports_task_contract("unknown", 1))
+        self.assertFalse(
+            ai_task_service._supports_task_contract("weekly_games_select", True)
+        )

@@ -350,7 +350,7 @@ def test_build_identity_and_package_info_are_portable(monkeypatch, tmp_path):
     assert identity is not None
     assert identity.build_id == build_id
     assert identity.build_id != update_identity.SOURCE_BUILD_ID
-    assert identity.database_revision == "20261101_0007_local_weekly"
+    assert identity.database_revision == "20261102_0008_local_weekly_ai"
     payload = json.loads(identity_path.read_text(encoding="utf-8"))
     assert payload["app_id"] == update_identity.APP_ID
     assert payload["package_format"] == update_identity.PACKAGE_FORMAT
@@ -540,3 +540,34 @@ def test_missing_migration_fails_before_any_build(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         _run(monkeypatch, ["--build-root", str(paths["build_root"])])
     assert calls == []
+
+def test_e14_g2_0008_and_weekly_ai_modules_are_real_requirements():
+    import verify_e14_package
+    import verify_e14_portable_archive
+    assert build_e14.DATABASE_REVISION == "20261102_0008_local_weekly_ai"
+    assert build_e14.MIGRATION_FILENAME == "20261102_0008_local_weekly_ai.py"
+    assert build_e14.MIGRATION_FILE.is_file()
+    assert build_e14.DATABASE_REVISION != "20261101_0007_local_weekly"
+    new_modules = {
+        "weekly_ai_adoption", "weekly_ai_api", "weekly_ai_candidates",
+        "weekly_ai_contracts", "weekly_ai_inputs", "weekly_ai_service",
+        "weekly_ai_sources", "weekly_materials",
+    }
+    local_modules = {
+        name for name in verify_e14_package.ARCHIVE_REQUIRED_MODULES
+        if name.startswith("app.local.")
+    }
+    for name in new_modules:
+        assert f"app.local.{name}" in local_modules
+        source = REPO / "backend" / "app" / "local" / f"{name}.py"
+        assert source.is_file(), name
+        assert f"backend/app/local/{name}.py" in verify_e14_package.REQUIRED_FREEZE_PATHS
+    assert "backend/migrations_local/versions/20261102_0008_local_weekly_ai.py" in verify_e14_package.REQUIRED_FREEZE_PATHS
+    assert "backend/migrations_local/versions/20261101_0007_local_weekly_plans.py" in verify_e14_package.REQUIRED_FREEZE_PATHS
+    assert verify_e14_portable_archive.DATABASE_REVISION == "20261102_0008_local_weekly_ai"
+    freeze = build_e14.source_freeze()
+    paths = {item["path"] for item in freeze["files"]}
+    for name in new_modules:
+        assert f"backend/app/local/{name}.py" in paths
+    assert "backend/migrations_local/versions/20261102_0008_local_weekly_ai.py" in paths
+    assert "backend/migrations_local/versions/20261101_0007_local_weekly_plans.py" in paths

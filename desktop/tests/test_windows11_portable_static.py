@@ -322,7 +322,7 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         "package": "KGNext-E14",
         "version": "0.1.0",
         "build_id": build_id,
-        "database_revision": "20261101_0007_local_weekly",
+        "database_revision": "20261102_0008_local_weekly_ai",
         "unsigned_internal_test": True,
         "source_commit": "b" * 40,
         "frontend_digest": "c" * 64,
@@ -342,7 +342,7 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         "schema_version": 1,
         "package": "KGNext-E14",
         "build_id": build_id,
-        "database_revision": "20261101_0007_local_weekly",
+        "database_revision": "20261102_0008_local_weekly_ai",
         "source_freeze_digest": freeze_digest,
         "generated_at": "2026-10-31T01:00:00+00:00",
         "files": [
@@ -427,6 +427,23 @@ def test_archive_positive_coherent_tiny_candidate(tmp_path):
     rc, report = _run_archive_case(tmp_path)
     checks = report["checks"]
     assert rc == 0
+    import build_e14
+    import verify_e14_package
+    modules = {
+        "weekly_ai_adoption", "weekly_ai_api", "weekly_ai_candidates",
+        "weekly_ai_contracts", "weekly_ai_inputs", "weekly_ai_service",
+        "weekly_ai_sources", "weekly_materials",
+    }
+    required = set(verify_e14_package.ARCHIVE_REQUIRED_MODULES)
+    for name in modules:
+        assert f"app.local.{name}" in required
+        assert (build_e14.d0_paths.BACKEND_ROOT / "app" / "local" / f"{name}.py").is_file()
+    old_root = tmp_path / "old-revision"
+    old_root.mkdir()
+    old_rc, old_report = _run_archive_case(
+        old_root, package_info_extra={"database_revision": "20261101_0007_local_weekly"})
+    assert old_rc != 0
+    assert old_report["checks"]["package_info_metadata_exact"] is False
     assert report["mode"] == "static" and report["ok"] is True
     assert all(type(value) is bool for value in checks.values())
     assert checks["public_ca_and_licenses_preserved"] is True

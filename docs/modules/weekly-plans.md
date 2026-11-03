@@ -1,6 +1,8 @@
 # 周计划 Contract
 
-状态：Architecture v2 有效 Contract，依据[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。2026-11-01 用户已确认 Q1–Q6，[产品规格](../specs/desktop-weekly-plan.md)已定稿，[首片工程](../specs/desktop-weekly-plan-engineering.md)已落实Q1–Q4。2026-11-02本轮只准备[Q5/Q6工程合同](../specs/desktop-weekly-ai-engineering.md)、[假供应商矩阵](../specs/desktop-weekly-ai-validation.md)和文件分工；不启动周AI／材料实现或真实应用AI，2026-11-03同步的[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)已包含限定目标／指定Word及教师整体接受，Q5/Q6仍未实施。
+2026-11-03最新实施状态：Q5/Q6已完成G0、旧档案／备份先行、页面实现及限定独立审核，真实游戏／材料生成采用和新候选静态检查通过；材料原生页面后半及新包目标运行仍未验。文档基线51ec4d3，接口按[工程§9](../specs/desktop-weekly-ai-engineering.md)，最终来源及下一步见[实施核查§12–15](../bootstrap/desktop-weekly-ai-review.md)。以下准备轮与旧包结论保留当时范围。
+
+状态：Architecture v2 有效 Contract，依据[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。2026-11-01 用户已确认 Q1–Q6，[产品规格](../specs/desktop-weekly-plan.md)已定稿，[首片工程](../specs/desktop-weekly-plan-engineering.md)已落实Q1–Q4。历史准备轮（2026-11-02）只准备[Q5/Q6工程合同](../specs/desktop-weekly-ai-engineering.md)、[假供应商矩阵](../specs/desktop-weekly-ai-validation.md)和分工，当时未实现或调用真实AI；其状态已由上段本轮实施接续。[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)的限定目标／指定Word及教师整体接受保持原范围。
 
 ## 归属与唯一性
 

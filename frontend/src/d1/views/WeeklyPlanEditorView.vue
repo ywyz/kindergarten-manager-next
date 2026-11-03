@@ -18,6 +18,7 @@ import {
   type WeeklyDraftContent,
   type WeeklyExportPreview,
   type WeeklyFocusArea,
+  type WeeklyFocusChoice,
   type WeeklyGameChoice,
   type WeeklyDailyGame,
   type WeeklyManualGame,
@@ -28,13 +29,15 @@ import {
 import { WeeklyEditorController } from '../weekly-editor'
 import WeeklyHistoryPanel from './WeeklyHistoryPanel.vue'
 import WeeklyExportDialog from './WeeklyExportDialog.vue'
+import WeeklyAiPanel from './WeeklyAiPanel.vue'
 
 const props = withDefaults(defineProps<{
   planId: string
   disabled?: boolean
   profileEpoch?: number
   host?: HostApi | null
-}>(), { disabled: false, profileEpoch: 0, host: null })
+  sessionEpoch?: number
+}>(), { disabled: false, profileEpoch: 0, sessionEpoch: 0, host: null })
 const emit = defineEmits<{
   (e: 'register-editor', bridge: LeaveEditor | null): void
   (e: 'busy', payload: { identity: string; busy: boolean }): void
@@ -59,6 +62,8 @@ const dirty = ref(false)
 const unknown = ref(false)
 const busy = ref(false)
 const exportBusy = ref(false)
+const aiBusy = ref(false)
+const aiBlocking = ref<BlockingDraft | null>(null)
 const blocking = ref<BlockingDraft | null>(null)
 const composing = ref(false)
 const refreshPreviewData = ref<WeeklyRefreshPreview | null>(null)
@@ -119,8 +124,8 @@ function syncState(): void {
   unknown.value = controller.hasUnknown()
   factsPending.value = controller.isFactsPending()
   factsStale.value = controller.factsAreStale()
-  busy.value = controller.isBusy() || exportBusy.value
-  blocking.value = controller.blockingDraft() ?? (exportBusy.value ? { kind: 'weekly', message: '周计划导出仍在进行，请等待结果后再离开' } : null)
+  busy.value = controller.isBusy() || exportBusy.value || aiBusy.value
+  blocking.value = controller.blockingDraft() ?? aiBlocking.value ?? (exportBusy.value ? { kind: 'weekly', message: '周计划导出仍在进行，请等待结果后再离开' } : null)
   if (bridge) emit('busy', { identity: bridge.identity(), busy: busy.value })
 }
 function makeBridge(): LeaveEditor {
@@ -175,6 +180,8 @@ function resetForContext(): void {
   unknown.value = false
   busy.value = false
   exportBusy.value = false
+  aiBusy.value = false
+  aiBlocking.value = null
   blocking.value = null
   refreshPreviewData.value = null
   refreshPreviewMeta.value = null
@@ -299,9 +306,11 @@ function sourceDateLabel(id: string): string { return `${currentSourceDates.valu
 function gameText(game: WeeklyGameChoice | null): string {
   if (!game) return '未选择'
   if (game.source_kind === 'manual') return `手工：${game.name || '（未填名称）'} · 目标 ${game.shared_objectives || '—'} · 指导 ${game.guidance_points || '—'} · 重点 ${game.focus_guidance || '—'}`
+  if (game.source_kind === 'ai_supplement') return `AI 补充：${game.name} · 目标 ${game.shared_objectives || '—'} · 指导 ${game.guidance_points || '—'} · 重点 ${game.focus_guidance || '—'}`
   return `${game.name} · 日来源 v${game.content_version} · 目标 ${game.shared_objectives || '—'} · 指导 ${game.guidance_points || '—'} · 重点 ${game.focus_guidance || '—'}`
 }
-function focusText(focus: WeeklyFocusArea): string {
+function focusText(focus: WeeklyFocusChoice): string {
+  if (focus.source_kind === 'ai_supplement') return `AI 补充 · ${focus.name} · 目标 ${focus.objectives || '—'} · 指导 ${focus.guidance || '—'} · 支持 ${focus.support_strategy || '—'}`
   return `${contextKindLabel(focus.context_kind)} ${focus.area || ''} · ${focus.name} · v${focus.content_version} · 目标 ${focus.objectives || '—'} · 指导 ${focus.guidance || '—'} · 支持 ${focus.support_strategy || '—'}`
 }
 
@@ -317,7 +326,12 @@ function contentLines(content: WeeklyDraftContent): string[] {
   for (const key of outdoorSlots) lines.push(`${slotLabels[key]}：${gameText(content.outdoor_game_slots[key])}`)
   lines.push(`重点区域：${content.focus_area ? focusText(content.focus_area) : '未选择'}`)
   for (const [label, value] of [['本周重点', content.weekly_columns.key_week_focus], ['环境创设', content.weekly_columns.environment_setup], ['习惯与文化', content.weekly_columns.habit_culture], ['家园合作', content.weekly_columns.home_cooperation]] as const) lines.push(`${label}：${value || '—'}`)
-  lines.push(`材料：${content.materials === null ? '未选择材料' : '已填写'}`)
+  if (content.materials === null) lines.push('材料：未选择材料')
+  else if (content.materials === '') lines.push('材料：材料为空')
+  else {
+    lines.push('材料：')
+    for (const line of content.materials.split(/\r?\n/)) lines.push(line)
+  }
   return lines
 }
 
@@ -332,7 +346,7 @@ async function loadConfirmDates(snapshot: ConfirmationSnapshotV1): Promise<void>
     if (game?.source_kind === 'daily_plan' && !base[game.daily_plan_id]) missing.add(game.daily_plan_id)
   }
   const focus = snapshot.content.focus_area
-  if (focus && !base[focus.daily_plan_id]) missing.add(focus.daily_plan_id)
+  if (focus && focus.source_kind === 'daily_plan' && !base[focus.daily_plan_id]) missing.add(focus.daily_plan_id)
   confirmDateLoading.value = missing.size > 0
   for (const id of missing) {
     try {
@@ -495,6 +509,8 @@ function openExport(mode: 'current' | 'previous' | 'range', confirmation: Weekly
   exportConfirmation.value = confirmation
   exportOpen.value = true
 }
+function onAiBusy(value: boolean): void { aiBusy.value = value; syncState() }
+function onAiBlocking(value: BlockingDraft | null): void { aiBlocking.value = value; syncState() }
 function onExportBusy(value: boolean): void { exportBusy.value = value; syncState() }
 function onHistoryExport(confirmation: WeeklyConfirmationSummary): void { historyOpen.value = false; openExport('previous', confirmation) }
 defineExpose({ resetForContext })
@@ -525,6 +541,7 @@ defineExpose({ resetForContext })
       title="原生周导出尚未就绪；查看、编辑和确认仍可正常使用" type="info" :closable="false" />
 
     <template v-if="detail && content">
+    <WeeklyAiPanel v-if="controller" :controller="controller" :plan-id="planId" :detail="detail" :disabled="disabled || loading" :profile-epoch="profileEpoch" :session-epoch="sessionEpoch" @busy="onAiBusy" @blocking="onAiBlocking" />
       <el-card shadow="never" class="block">
         <h3>{{ detail.plan.header.class_name }} · {{ detail.plan.week_anchor_date }}</h3>
         <p>{{ detail.plan.header.school_name }} · 第 {{ detail.plan.week_number_snapshot }} 周 ·

@@ -719,7 +719,10 @@ class LocalPromptBundle(LocalBase):
         CheckConstraint(
             "task_type IN ('daily_lesson_split', 'daily_process_adapt', "
             "'daily_other_activities', 'game_observation_generate', "
-            "'game_observation_rewrite')",
+            "'game_observation_rewrite', 'weekly_games_select', "
+            "'weekly_key_week_focus', 'weekly_environment_setup', "
+            "'weekly_habit_culture', 'weekly_home_cooperation', "
+            "'weekly_materials_generate')",
             name="ck_local_prompt_bundles_task_type",
         ),
         CheckConstraint(
@@ -902,11 +905,14 @@ class LocalAIInput(LocalBase):
         CheckConstraint(
             "task_type IN ('daily_lesson_split', 'daily_process_adapt', "
             "'daily_other_activities', 'game_observation_generate', "
-            "'game_observation_rewrite')",
+            "'game_observation_rewrite', 'weekly_games_select', "
+            "'weekly_key_week_focus', 'weekly_environment_setup', "
+            "'weekly_habit_culture', 'weekly_home_cooperation', "
+            "'weekly_materials_generate')",
             name="ck_local_ai_inputs_task_type",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan')",
             name="ck_local_ai_inputs_source_kind",
         ),
         CheckConstraint(
@@ -920,7 +926,9 @@ class LocalAIInput(LocalBase):
             "AND target_grade IN ('small', 'middle', 'large') "
             "AND observation_id IS NULL "
             "AND source_id = daily_plan_id "
-            "AND source_revision IS NULL) "
+            "AND source_revision IS NULL "
+            "AND weekly_plan_id IS NULL AND weekly_draft_id IS NULL "
+            "AND create_operation_id IS NULL) "
             "OR "
             "(source_kind = 'game_observation' "
             "AND task_type IN ('game_observation_generate', "
@@ -933,7 +941,22 @@ class LocalAIInput(LocalBase):
             "AND source_id = observation_id "
             "AND source_revision IS NOT NULL "
             "AND typeof(source_revision) = 'integer' "
-            "AND source_revision >= 1)",
+            "AND source_revision >= 1 "
+            "AND weekly_plan_id IS NULL AND weekly_draft_id IS NULL "
+            "AND create_operation_id IS NULL) "
+            "OR "
+            "(source_kind = 'weekly_plan' "
+            "AND task_type IN ('weekly_games_select', 'weekly_key_week_focus', "
+            "'weekly_environment_setup', 'weekly_habit_culture', "
+            "'weekly_home_cooperation', 'weekly_materials_generate') "
+            "AND daily_plan_id IS NULL AND content_id IS NULL "
+            "AND content_version IS NULL AND target_grade IS NULL "
+            "AND observation_id IS NULL "
+            "AND source_id = weekly_plan_id "
+            "AND weekly_plan_id IS NOT NULL AND weekly_draft_id IS NOT NULL "
+            "AND source_revision IS NOT NULL "
+            "AND typeof(source_revision) = 'integer' AND source_revision >= 1 "
+            "AND create_operation_id IS NOT NULL)",
             name="ck_local_ai_inputs_source_match",
         ),
         ForeignKeyConstraint(
@@ -957,6 +980,25 @@ class LocalAIInput(LocalBase):
                 "local_observation_records.id",
             ],
             name="fk_local_ai_inputs_observation",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "weekly_plan_id"],
+            ["local_weekly_plans.profile_id", "local_weekly_plans.id"],
+            name="fk_local_ai_inputs_weekly_plan",
+        ),
+        ForeignKeyConstraint(
+            ["weekly_plan_id", "weekly_draft_id", "source_revision"],
+            [
+                "local_weekly_plan_contents.weekly_plan_id",
+                "local_weekly_plan_contents.id",
+                "local_weekly_plan_contents.version",
+            ],
+            name="fk_local_ai_inputs_weekly_draft",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "create_operation_id"],
+            ["local_ai_operations.profile_id", "local_ai_operations.id"],
+            name="fk_local_ai_inputs_create_operation",
         ),
         UniqueConstraint(
             "daily_plan_id", "id", "task_type",
@@ -985,6 +1027,9 @@ class LocalAIInput(LocalBase):
     daily_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     content_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     content_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    weekly_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    weekly_draft_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    create_operation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     task_type: Mapped[str] = mapped_column(String(40), nullable=False)
     target_grade: Mapped[str | None] = mapped_column(String(20), nullable=True)
     input_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1012,7 +1057,7 @@ class LocalAITask(LocalBase):
             name="ck_local_ai_tasks_status",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan')",
             name="ck_local_ai_tasks_source_kind",
         ),
         CheckConstraint(
@@ -1021,6 +1066,7 @@ class LocalAITask(LocalBase):
             "'daily_other_activities') "
             "AND daily_plan_id IS NOT NULL "
             "AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL "
             "AND source_id = daily_plan_id) "
             "OR "
             "(source_kind = 'game_observation' "
@@ -1028,7 +1074,16 @@ class LocalAITask(LocalBase):
             "'game_observation_rewrite') "
             "AND daily_plan_id IS NULL "
             "AND observation_id IS NOT NULL "
-            "AND source_id = observation_id)",
+            "AND weekly_plan_id IS NULL "
+            "AND source_id = observation_id) "
+            "OR "
+            "(source_kind = 'weekly_plan' "
+            "AND task_type IN ('weekly_games_select', 'weekly_key_week_focus', "
+            "'weekly_environment_setup', 'weekly_habit_culture', "
+            "'weekly_home_cooperation', 'weekly_materials_generate') "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND weekly_plan_id IS NOT NULL "
+            "AND source_id = weekly_plan_id)",
             name="ck_local_ai_tasks_source_match",
         ),
         ForeignKeyConstraint(
@@ -1055,6 +1110,11 @@ class LocalAITask(LocalBase):
             ["profile_id"],
             ["local_profile.id"],
             name="fk_local_ai_tasks_profile_id",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "weekly_plan_id"],
+            ["local_weekly_plans.profile_id", "local_weekly_plans.id"],
+            name="fk_local_ai_tasks_weekly_plan",
         ),
         # Deferred composite self-reference to executions: pending tasks may
         # have no current execution yet.
@@ -1090,6 +1150,15 @@ class LocalAITask(LocalBase):
                 "('pending', 'claimed', 'dispatching', 'retry_wait')"
             ),
         ),
+        Index(
+            "uq_local_ai_tasks_active_per_weekly_type",
+            "profile_id", "weekly_plan_id", "task_type",
+            unique=True,
+            sqlite_where=text(
+                "source_kind = 'weekly_plan' AND status IN "
+                "('pending', 'claimed', 'dispatching', 'retry_wait')"
+            ),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -1098,6 +1167,7 @@ class LocalAITask(LocalBase):
     source_id: Mapped[str] = mapped_column(String(32), nullable=False)
     observation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     daily_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    weekly_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     task_type: Mapped[str] = mapped_column(String(40), nullable=False)
     input_id: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -1146,7 +1216,7 @@ class LocalAIExecution(LocalBase):
             name="ck_local_ai_executions_state",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan')",
             name="ck_local_ai_executions_source_kind",
         ),
         CheckConstraint(
@@ -1155,6 +1225,7 @@ class LocalAIExecution(LocalBase):
             "'daily_other_activities') "
             "AND daily_plan_id IS NOT NULL "
             "AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL "
             "AND source_id = daily_plan_id) "
             "OR "
             "(source_kind = 'game_observation' "
@@ -1162,7 +1233,16 @@ class LocalAIExecution(LocalBase):
             "'game_observation_rewrite') "
             "AND daily_plan_id IS NULL "
             "AND observation_id IS NOT NULL "
-            "AND source_id = observation_id)",
+            "AND weekly_plan_id IS NULL "
+            "AND source_id = observation_id) "
+            "OR "
+            "(source_kind = 'weekly_plan' "
+            "AND task_type IN ('weekly_games_select', 'weekly_key_week_focus', "
+            "'weekly_environment_setup', 'weekly_habit_culture', "
+            "'weekly_home_cooperation', 'weekly_materials_generate') "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND weekly_plan_id IS NOT NULL "
+            "AND source_id = weekly_plan_id)",
             name="ck_local_ai_executions_source_match",
         ),
         ForeignKeyConstraint(
@@ -1192,6 +1272,11 @@ class LocalAIExecution(LocalBase):
             ["profile_id"],
             ["local_profile.id"],
             name="fk_local_ai_executions_profile_id",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "weekly_plan_id"],
+            ["local_weekly_plans.profile_id", "local_weekly_plans.id"],
+            name="fk_local_ai_executions_weekly_plan",
         ),
         # Pinned configuration version for this execution.
         ForeignKeyConstraint(
@@ -1256,6 +1341,7 @@ class LocalAIExecution(LocalBase):
     source_id: Mapped[str] = mapped_column(String(32), nullable=False)
     observation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     daily_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    weekly_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     input_id: Mapped[str] = mapped_column(String(32), nullable=False)
     task_type: Mapped[str] = mapped_column(String(40), nullable=False)
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1336,7 +1422,7 @@ class LocalAICandidate(LocalBase):
             name="ck_local_ai_candidates_schema_version",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan')",
             name="ck_local_ai_candidates_source_kind",
         ),
         CheckConstraint(
@@ -1345,6 +1431,7 @@ class LocalAICandidate(LocalBase):
             "'daily_other_activities') "
             "AND daily_plan_id IS NOT NULL "
             "AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL "
             "AND source_id = daily_plan_id) "
             "OR "
             "(source_kind = 'game_observation' "
@@ -1352,7 +1439,16 @@ class LocalAICandidate(LocalBase):
             "'game_observation_rewrite') "
             "AND daily_plan_id IS NULL "
             "AND observation_id IS NOT NULL "
-            "AND source_id = observation_id)",
+            "AND weekly_plan_id IS NULL "
+            "AND source_id = observation_id) "
+            "OR "
+            "(source_kind = 'weekly_plan' "
+            "AND task_type IN ('weekly_games_select', 'weekly_key_week_focus', "
+            "'weekly_environment_setup', 'weekly_habit_culture', "
+            "'weekly_home_cooperation', 'weekly_materials_generate') "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND weekly_plan_id IS NOT NULL "
+            "AND source_id = weekly_plan_id)",
             name="ck_local_ai_candidates_source_match",
         ),
         ForeignKeyConstraint(
@@ -1385,6 +1481,11 @@ class LocalAICandidate(LocalBase):
             ["local_profile.id"],
             name="fk_local_ai_candidates_profile_id",
         ),
+        ForeignKeyConstraint(
+            ["profile_id", "weekly_plan_id"],
+            ["local_weekly_plans.profile_id", "local_weekly_plans.id"],
+            name="fk_local_ai_candidates_weekly_plan",
+        ),
         UniqueConstraint(
             "execution_id", name="uq_local_ai_candidates_execution"
         ),
@@ -1409,6 +1510,7 @@ class LocalAICandidate(LocalBase):
     source_id: Mapped[str] = mapped_column(String(32), nullable=False)
     observation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     daily_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    weekly_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     input_id: Mapped[str] = mapped_column(String(32), nullable=False)
     task_type: Mapped[str] = mapped_column(String(40), nullable=False)
     contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1577,6 +1679,10 @@ class LocalAIOperation(LocalBase):
         UniqueConstraint(
             "profile_id", "request_id",
             name="uq_local_ai_operations_profile_request",
+        ),
+        UniqueConstraint(
+            "profile_id", "id",
+            name="uq_local_ai_operations_profile_id",
         ),
     )
 
@@ -2411,7 +2517,7 @@ class LocalWeeklyPlanContent(LocalBase):
             name="ck_local_weekly_plan_contents_version",
         ),
         CheckConstraint(
-            "schema_version = 1",
+            "typeof(schema_version) = 'integer' AND schema_version IN (1, 2)",
             name="ck_local_weekly_plan_contents_schema_version",
         ),
         CheckConstraint(
@@ -2445,6 +2551,79 @@ class LocalWeeklyPlanContent(LocalBase):
     content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     editor_profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalWeeklyPlanAIAdoption(LocalBase):
+    """One atomic AI adoption event per target and resulting draft."""
+
+    __tablename__ = "local_weekly_plan_ai_adoption"
+    __table_args__ = (
+        CheckConstraint(
+            "source_kind = 'weekly_plan'",
+            name="ck_local_weekly_plan_ai_adoption_source",
+        ),
+        CheckConstraint(
+            "target_key IN ('games', 'key_week_focus', 'environment_setup', "
+            "'habit_culture', 'home_cooperation', 'materials')",
+            name="ck_local_weekly_plan_ai_adoption_target",
+        ),
+        CheckConstraint(
+            "typeof(draft_version) = 'integer' AND draft_version >= 1",
+            name="ck_local_weekly_plan_ai_adoption_version",
+        ),
+        CheckConstraint(
+            "length(before_hash) = 64 AND length(after_hash) = 64",
+            name="ck_local_weekly_plan_ai_adoption_hash",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "weekly_plan_id"],
+            ["local_weekly_plans.profile_id", "local_weekly_plans.id"],
+            name="fk_local_weekly_plan_ai_adoption_plan",
+        ),
+        ForeignKeyConstraint(
+            ["weekly_plan_id", "draft_id", "draft_version"],
+            [
+                "local_weekly_plan_contents.weekly_plan_id",
+                "local_weekly_plan_contents.id",
+                "local_weekly_plan_contents.version",
+            ],
+            name="fk_local_weekly_plan_ai_adoption_draft",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "source_kind", "weekly_plan_id", "candidate_id"],
+            [
+                "local_ai_candidates.profile_id",
+                "local_ai_candidates.source_kind",
+                "local_ai_candidates.source_id",
+                "local_ai_candidates.id",
+            ],
+            name="fk_local_weekly_plan_ai_adoption_candidate",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "operation_id"],
+            ["local_ai_operations.profile_id", "local_ai_operations.id"],
+            name="fk_local_weekly_plan_ai_adoption_operation",
+        ),
+        UniqueConstraint(
+            "draft_id", "target_key",
+            name="uq_local_weekly_plan_ai_adoption_draft_target",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    weekly_plan_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    draft_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    draft_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    before_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    after_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation_id: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=utc_now, nullable=False
     )

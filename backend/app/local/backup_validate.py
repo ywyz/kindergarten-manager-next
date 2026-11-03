@@ -534,12 +534,16 @@ def _weekly_require(condition: bool, label: str) -> None:
         )
 
 
-def _weekly_content(value: Any, expected_hash: str, label: str) -> dict:
+def _weekly_content(
+    value: Any, expected_hash: str, schema_version: int, label: str
+) -> dict:
     from app.local import weekly_plan_content
 
     content = _weekly_json(value, label)
     try:
-        content = weekly_plan_content.validate_content(content)
+        content = weekly_plan_content.validate_content(
+            content, expected_schema=schema_version
+        )
         actual = weekly_plan_content.content_hash(content)
     except weekly_plan_content.WeeklyContentError as exc:
         raise BackupValidationError(
@@ -547,6 +551,11 @@ def _weekly_content(value: Any, expected_hash: str, label: str) -> dict:
             f"备份数据库周计划内容不合法：{label}",
         ) from exc
     _weekly_require(actual == expected_hash, f"{label} content hash")
+    _weekly_require(
+        type(content.get("schema_version")) is int
+        and content["schema_version"] == schema_version,
+        f"{label} schema version",
+    )
     _weekly_require(
         len(_weekly_canonical(content).encode("utf-8"))
         <= _WEEKLY_MAX_CONTENT_BYTES,
@@ -791,6 +800,621 @@ def _weekly_validate_export_manifest(
     return manifest
 
 
+def _weekly_reconstruct_adoption(connection: sqlite3.Connection, plans: dict[str, dict],
+                                 contents: dict[tuple[str, str], dict],
+                                 candidates: dict[str, tuple], provenance: dict,
+                                 origin_id: str, origin_version: int,
+                                 target: str) -> None:
+    from app.local import weekly_ai_contracts, weekly_ai_inputs
+    from app.local import weekly_plan_content
+    candidate = candidates.get(provenance.get("candidate_id"))
+    _weekly_require(candidate is not None, "weekly origin candidate row")
+    _weekly_require(candidate[7] == provenance.get("input_id"),
+                    "weekly origin candidate input")
+    _weekly_require(candidate[6] == provenance.get("execution_id"),
+                    "weekly origin candidate execution")
+    task = connection.execute(
+        "SELECT id, profile_id, source_kind, source_id, weekly_plan_id, "
+        "input_id, task_type FROM local_ai_tasks WHERE id=?", (candidate[5],)
+    ).fetchone()
+    execution = connection.execute(
+        "SELECT task_id, profile_id, source_kind, source_id, weekly_plan_id, "
+        "input_id, contract_version FROM local_ai_executions WHERE id=?",
+        (candidate[6],),
+    ).fetchone()
+    _weekly_require(
+        task is not None and task[1] == provenance.get("adopter_profile_id")
+        and task[2] == "weekly_plan" and task[4] == plans[candidate[4]]["id"]
+        and task[5] == candidate[7] and task[6] == candidate[8],
+        "weekly origin task binding",
+    )
+    _weekly_require(
+        execution is not None and execution[0] == candidate[5]
+        and execution[1] == provenance.get("adopter_profile_id")
+        and execution[2] == "weekly_plan" and execution[4] == plans[candidate[4]]["id"]
+        and execution[5] == candidate[7]
+        and execution[6] == candidate[12] == provenance.get("contract_version"),
+        "weekly origin execution binding",
+    )
+    input_row = connection.execute(
+        "SELECT profile_id, source_kind, source_id, weekly_plan_id, "
+        "weekly_draft_id, source_revision, dependency_hash, task_type, "
+        "dependencies_json FROM local_ai_inputs WHERE id=?", (candidate[7],)
+    ).fetchone()
+    _weekly_require(
+        input_row is not None and input_row[0] == provenance.get("adopter_profile_id")
+        and input_row[1] == "weekly_plan" and input_row[2] == plans[candidate[4]]["id"]
+        and input_row[3] == plans[candidate[4]]["id"]
+        and input_row[7] == candidate[8]
+        and input_row[6] == provenance.get("dependency_hash"),
+        "weekly origin actual input binding",
+    )
+    _weekly_require(
+        weekly_ai_contracts.target_for_task(candidate[8]) == target,
+        "weekly origin candidate target",
+    )
+    deps = _weekly_json(input_row[8], "weekly origin dependencies")
+    business = weekly_ai_inputs.build_business_dependency_view(deps)
+    basis = {key: business[key] for key in (
+        "schema_version", "target", "grade", "theme", "manual_text",
+        "daily_sources", "selected", "config", "calendar")}
+    _weekly_require(basis["target"] == target, "weekly origin basis target")
+    _weekly_require(_weekly_canonical(basis) == _weekly_canonical(provenance["basis"]),
+                    "weekly origin actual basis")
+    manifest = weekly_ai_inputs.server_manifest_from_dependencies(deps)
+    try:
+        raw = _weekly_json(candidate[10], "weekly origin candidate value")
+        candidate_value = weekly_ai_contracts.validate_stored_candidate(
+            candidate[8], raw, server_manifest=manifest
+        )
+    except Exception as exc:  # noqa: BLE001 - pure candidate refusal
+        raise BackupValidationError(
+            "BACKUP_DB_LOGICAL_INVALID", "备份数据库周计划采用候选原点无法规范化"
+        ) from exc
+    meta = {key: provenance[key] for key in (
+        "candidate_id", "candidate_hash", "input_id", "execution_id",
+        "contract_version", "dependency_hash", "adopter_profile_id",
+        "adopted_draft_id", "adopted_draft_version", "adopted_at")}
+    before = next(
+        (item for (plan_key, _content_key), item in contents.items()
+         if plan_key == plans[candidate[4]]["id"]
+         and item["version"] == origin_version - 1), None)
+    _weekly_require(before is not None, "weekly origin before draft")
+    ai_ids = None
+    if target == "games":
+        ai_ids = {}
+        value = provenance["adopted_value"]
+        for slot_key in ("collective_1", "collective_2", "free_choice_1"):
+            item = (value.get("outdoor_game_slots") or {}).get(slot_key)
+            if isinstance(item, dict) and item.get("source_kind") == "ai_supplement":
+                ai_ids[slot_key] = item["ai_item_id"]
+        focus = value.get("focus_area")
+        if isinstance(focus, dict) and focus.get("source_kind") == "ai_supplement":
+            ai_ids["focus_area"] = focus["ai_item_id"]
+    try:
+        expected = weekly_plan_content.apply_weekly_ai_adoption(
+            before["content"], target=target, candidate_value=candidate_value,
+            adoption=meta, basis=basis,
+            server_manifest=manifest if target == "materials" else None,
+            ai_item_ids=ai_ids if target == "games" else None,
+        )
+    except Exception as exc:  # noqa: BLE001 - pure reconstruction refusal
+        raise BackupValidationError(
+            "BACKUP_DB_LOGICAL_INVALID", "备份数据库周计划采用目标无法重建"
+        ) from exc
+    origin_content = contents[(plans[candidate[4]]["id"], origin_id)]["content"]
+    if target == "games":
+        _weekly_require(
+            expected["outdoor_game_slots"] == origin_content["outdoor_game_slots"]
+            and expected["focus_area"] == origin_content["focus_area"]
+            and expected["ai_provenance"]["games"]
+            == origin_content["ai_provenance"]["games"]
+            and expected["ai_provenance"]["games"].get("manual_edited") is False,
+            "weekly origin games value",
+        )
+    elif target == "materials":
+        _weekly_require(
+            expected["materials"] == origin_content["materials"]
+            and expected["materials_provenance"]
+            == origin_content["materials_provenance"]
+            and expected["materials_provenance"].get("edited") is False,
+            "weekly origin materials value",
+        )
+    else:
+        _weekly_require(
+            expected["weekly_columns"][target]
+            == origin_content["weekly_columns"][target]
+            and expected["ai_provenance"][target]
+            == origin_content["ai_provenance"][target]
+            and expected["ai_provenance"][target].get("manual_edited") is False,
+            "weekly origin column value",
+        )
+    expected_hash = weekly_ai_inputs.target_hash(expected, target)
+    _weekly_require(
+        weekly_ai_inputs.target_hash(origin_content, target) == expected_hash,
+        "weekly origin target hash",
+    )
+
+def _weekly_ai_origin_chain(connection: sqlite3.Connection, plan: dict,
+                            candidates: dict[str, tuple], provenance: dict,
+                            origin_id: str, origin_version: int) -> None:
+    profile_id = plan["profile_id"]
+    candidate = candidates.get(provenance.get("candidate_id"))
+    _weekly_require(candidate is not None and candidate[1] == profile_id
+                    and candidate[4] == plan["id"], "weekly origin candidate")
+    _weekly_require(candidate[9] == provenance.get("candidate_hash"),
+                    "weekly origin candidate hash")
+    input_row = connection.execute(
+        "SELECT profile_id, source_kind, source_id, weekly_plan_id, "
+        "weekly_draft_id, source_revision, dependency_hash, task_type "
+        "FROM local_ai_inputs WHERE id=?", (provenance.get("input_id"),)
+    ).fetchone()
+    _weekly_require(
+        input_row is not None and input_row[0] == profile_id
+        and input_row[1] == "weekly_plan" and input_row[2] == plan["id"]
+        and input_row[3] == plan["id"]
+        and input_row[6] == provenance.get("dependency_hash"),
+        "weekly origin input",
+    )
+    input_draft = connection.execute(
+        "SELECT version FROM local_weekly_plan_contents "
+        "WHERE weekly_plan_id=? AND id=?", (plan["id"], input_row[4])
+    ).fetchone()
+    _weekly_require(input_draft is not None and input_draft[0] == input_row[5],
+                    "weekly origin input draft")
+    execution = connection.execute(
+        "SELECT task_id, profile_id, source_kind, source_id, weekly_plan_id, "
+        "input_id, contract_version FROM local_ai_executions WHERE id=?",
+        (provenance.get("execution_id"),),
+    ).fetchone()
+    _weekly_require(
+        execution is not None and execution[1] == profile_id
+        and execution[2] == "weekly_plan" and execution[3] == plan["id"]
+        and execution[4] == plan["id"] and execution[5] == provenance.get("input_id")
+        and execution[6] == provenance.get("contract_version"),
+        "weekly origin execution",
+    )
+    _weekly_require(
+        provenance.get("adopted_draft_id") == origin_id
+        and provenance.get("adopted_draft_version") == origin_version
+        and provenance.get("adopter_profile_id") == profile_id,
+        "weekly origin draft/owner",
+    )
+
+def _weekly_ai_provenance(connection: sqlite3.Connection, plans: dict[str, dict],
+                          contents: dict[tuple[str, str], dict],
+                          candidates: dict[str, tuple]) -> None:
+    for (plan_id, content_id), item in contents.items():
+        body = item["content"]
+        if body.get("schema_version") != 2:
+            continue
+        for target, key in (
+            ("games", "games"), ("key_week_focus", "key_week_focus"),
+            ("environment_setup", "environment_setup"),
+            ("habit_culture", "habit_culture"),
+            ("home_cooperation", "home_cooperation"),
+        ):
+            provenance = (body.get("ai_provenance") or {}).get(target)
+            if provenance is None:
+                continue
+            origin_id = provenance.get("adopted_draft_id")
+            origin = contents.get((plan_id, origin_id)) if isinstance(origin_id, str) else None
+            _weekly_require(
+                origin is not None
+                and origin["version"] == provenance.get("adopted_draft_version"),
+                f"weekly provenance draft {target}",
+            )
+            origin_value = (origin["content"].get("ai_provenance") or {}).get(target)
+            _weekly_require(origin_value is not None,
+                            f"weekly provenance origin {target}")
+            for immutable_key in _ADOPTION_IMMUTABLE:
+                _weekly_require(provenance.get(immutable_key) == origin_value.get(immutable_key),
+                                f"weekly provenance immutable {target}.{immutable_key}")
+            _weekly_ai_origin_chain(connection, plans[plan_id], candidates,
+                                    origin_value, origin_id,
+                                    provenance.get("adopted_draft_version"))
+            _weekly_reconstruct_adoption(
+                connection, plans, contents, candidates, origin_value,
+                origin_id, provenance.get("adopted_draft_version"), target
+            )
+            candidate = candidates.get(provenance.get("candidate_id"))
+            _weekly_require(
+                candidate is not None and candidate[1] == plans[plan_id]["profile_id"]
+                and candidate[4] == plan_id, f"weekly provenance candidate {target}",
+            )
+            adoption = connection.execute(
+                "SELECT 1 FROM local_weekly_plan_ai_adoption "
+                "WHERE draft_id=? AND target_key=? AND candidate_id=?",
+                (origin_id, target, provenance.get("candidate_id")),
+            ).fetchone()
+            _weekly_require(adoption is not None, f"weekly provenance adoption {target}")
+        materials = body.get("materials_provenance")
+        if materials is not None:
+            origin_id = materials.get("adopted_draft_id")
+            origin = contents.get((plan_id, origin_id)) if isinstance(origin_id, str) else None
+            _weekly_require(
+                origin is not None
+                and origin["version"] == materials.get("adopted_draft_version"),
+                "weekly materials provenance draft",
+            )
+            origin_materials = origin["content"].get("materials_provenance")
+            _weekly_require(origin_materials is not None,
+                            "weekly materials provenance origin")
+            origin_candidate = candidates.get(origin_materials.get("candidate_id"))
+            _weekly_require(origin_candidate is not None,
+                            "weekly materials candidate")
+            material_input = connection.execute(
+                "SELECT dependencies_json FROM local_ai_inputs WHERE id=?",
+                (origin_materials.get("input_id"),),
+            ).fetchone()
+            _weekly_require(material_input is not None, "weekly materials input")
+            from app.local import weekly_ai_inputs, weekly_materials
+            material_raw = _weekly_json(
+                origin_candidate[10], "weekly materials candidate value"
+            )
+            material_deps = _weekly_json(
+                material_input[0], "weekly materials dependencies"
+            )
+            material_manifest = weekly_ai_inputs.server_manifest_from_dependencies(
+                material_deps
+            )
+            try:
+                material_items = weekly_materials.materialize_materials_items(
+                    material_raw.get("items"), server_manifest=material_manifest
+                )
+            except Exception as exc:  # noqa: BLE001 - pure evidence refusal
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID", "备份数据库材料证据无法规范化"
+                ) from exc
+            _weekly_require(
+                _weekly_canonical(material_items)
+                == _weekly_canonical(origin_materials.get("items")),
+                "weekly materials candidate evidence",
+            )
+            for key in _MATERIAL_IMMUTABLE:
+                _weekly_require(materials.get(key) == origin_materials.get(key),
+                                f"weekly materials provenance immutable {key}")
+            _weekly_ai_origin_chain(connection, plans[plan_id], candidates,
+                                    origin_materials, origin_id,
+                                    materials.get("adopted_draft_version"))
+            _weekly_reconstruct_adoption(
+                connection, plans, contents, candidates, origin_materials,
+                origin_id, materials.get("adopted_draft_version"), "materials"
+            )
+            candidate = candidates.get(materials.get("candidate_id"))
+            _weekly_require(
+                candidate is not None and candidate[1] == plans[plan_id]["profile_id"]
+                and candidate[4] == plan_id, "weekly materials provenance candidate",
+            )
+            adoption = connection.execute(
+                "SELECT 1 FROM local_weekly_plan_ai_adoption "
+                "WHERE draft_id=? AND target_key='materials' AND candidate_id=?",
+                (origin_id, materials.get("candidate_id")),
+            ).fetchone()
+            _weekly_require(adoption is not None, "weekly materials provenance adoption")
+
+def _weekly_ai_adoptions(connection: sqlite3.Connection, plans: dict[str, dict],
+                         contents: dict[tuple[str, str], dict],
+                         candidates: dict[str, tuple]) -> list[tuple]:
+    rows = connection.execute(
+        "SELECT profile_id, source_kind, weekly_plan_id, draft_id, draft_version, "
+        "candidate_id, target_key, before_hash, after_hash, operation_id "
+        "FROM local_weekly_plan_ai_adoption"
+    ).fetchall()
+    for profile_id, source_kind, plan_id, draft_id, draft_version, candidate_id, \
+            target_key, before_hash, after_hash, operation_id in rows:
+        _weekly_require(
+            source_kind == "weekly_plan" and plan_id in plans
+            and plans[plan_id]["profile_id"] == profile_id,
+            "weekly adoption plan",
+        )
+        content = contents.get((plan_id, draft_id))
+        _weekly_require(content is not None and content["version"] == draft_version,
+                        "weekly adoption draft")
+        candidate = candidates.get(candidate_id)
+        _weekly_require(
+            candidate is not None and candidate[1] == profile_id
+            and candidate[4] == plan_id, "weekly adoption candidate",
+        )
+        operation = connection.execute(
+            "SELECT operation_kind, result_json, request_id FROM local_ai_operations "
+            "WHERE id=? AND profile_id=?", (operation_id, profile_id)
+        ).fetchone()
+        _weekly_require(operation is not None and operation[0] == "weekly_ai_adopt",
+                        "weekly adoption operation")
+        _weekly_require(target_key in _WEEKLY_AI_TARGETS, "weekly adoption target")
+        _weekly_require(
+            isinstance(before_hash, str) and len(before_hash) == 64
+            and isinstance(after_hash, str) and len(after_hash) == 64,
+            "weekly adoption hash",
+        )
+        try:
+            from app.local import weekly_ai_inputs
+            expected_after = weekly_ai_inputs.target_hash(
+                content["content"], target_key
+            )
+            previous = [
+                item for (plan_key, _content_key), item in contents.items()
+                if plan_key == plan_id and item["version"] < draft_version
+            ]
+            expected_before = (
+                weekly_ai_inputs.target_hash(max(
+                    previous, key=lambda item: item["version"]
+                )["content"], target_key)
+                if previous else None
+            )
+            result = _weekly_json(operation[1], "weekly adoption operation result")
+        except Exception as exc:  # noqa: BLE001 - pure target refusal
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID", "备份数据库周计划采用无法规范化"
+            ) from exc
+        _weekly_require(expected_after == after_hash, "weekly adoption after hash")
+        if expected_before is not None:
+            _weekly_require(expected_before == before_hash,
+                            "weekly adoption before hash")
+        _weekly_require(isinstance(result, dict), "weekly adoption result")
+        _weekly_require(result.get("operation_id") == operation_id,
+                        "weekly adoption result operation")
+        _weekly_require(result.get("request_id") == operation[2],
+                        "weekly adoption result request")
+        _weekly_require(result.get("status") == "committed",
+                        "weekly adoption result status")
+        _weekly_require(result.get("weekly_plan_id") == plan_id,
+                        "weekly adoption result plan")
+        draft = result.get("draft")
+        _weekly_require(
+            isinstance(draft, dict) and draft.get("id") == draft_id
+            and draft.get("version") == draft_version
+            and draft.get("content_hash") == content["hash"],
+            "weekly adoption result draft",
+        )
+        selections = result.get("selections")
+        _weekly_require(isinstance(selections, list), "weekly adoption selections")
+        _weekly_require(
+            any(isinstance(item, dict) and item.get("target") == target_key
+                and item.get("candidate_id") == candidate_id for item in selections),
+            "weekly adoption result selection",
+        )
+    return rows
+
+def _weekly_ai_candidates(connection: sqlite3.Connection, plans: dict[str, dict],
+                          tasks: dict[str, tuple],
+                          executions: dict[str, tuple]) -> dict[str, tuple]:
+    candidates = {
+        row[0]: row
+        for row in connection.execute(
+            "SELECT id, profile_id, source_kind, source_id, weekly_plan_id, "
+            "task_id, execution_id, input_id, task_type, candidate_hash, "
+            "raw_candidate_json, schema_version, contract_version "
+            "FROM local_ai_candidates WHERE source_kind='weekly_plan'"
+        ).fetchall()
+    }
+    for candidate_id, profile_id, source_kind, source_id, plan_id, task_id, \
+            execution_id, input_id, task_type, candidate_hash, raw_candidate_json, \
+            schema_version, contract_version in candidates.values():
+        _weekly_require(
+            source_kind == "weekly_plan" and source_id == plan_id
+            and plan_id in plans and plans[plan_id]["profile_id"] == profile_id,
+            "weekly candidate plan",
+        )
+        _weekly_require(
+            task_id in tasks and execution_id in executions,
+            "weekly candidate chain",
+        )
+        _weekly_require(
+            tasks[task_id][1] == profile_id and tasks[task_id][4] == plan_id
+            and executions[execution_id][2] == profile_id
+            and executions[execution_id][4] == plan_id
+            and executions[execution_id][6] == tasks[task_id][5],
+            "weekly candidate identity",
+        )
+        _weekly_require(isinstance(candidate_hash, str) and len(candidate_hash) == 64,
+                        "weekly candidate hash")
+        _weekly_require(schema_version == 1, "weekly candidate schema")
+        try:
+            from app.local import weekly_ai_contracts
+            contract_ok = weekly_ai_contracts.supports_prompt_contract(
+                task_type, contract_version)
+        except Exception:  # noqa: BLE001 - unknown/invalid contract is unsafe
+            contract_ok = False
+        _weekly_require(contract_ok, "weekly candidate contract")
+        try:
+            from app.local import weekly_ai_contracts, weekly_ai_inputs
+            input_row = connection.execute(
+                "SELECT dependencies_json FROM local_ai_inputs WHERE id=?",
+                (input_id,),
+            ).fetchone()
+            _weekly_require(input_row is not None, "weekly candidate input")
+            dependencies = _weekly_json(input_row[0], "weekly candidate dependencies")
+            manifest = weekly_ai_inputs.server_manifest_from_dependencies(
+                dependencies
+            )
+            raw_value = _weekly_json(raw_candidate_json, "weekly candidate value")
+            validated = weekly_ai_contracts.validate_stored_candidate(
+                task_type, raw_value, server_manifest=manifest
+            )
+            expected = weekly_ai_contracts.candidate_hash(validated)
+        except Exception as exc:  # noqa: BLE001 - pure contract refusal
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID", "备份数据库周计划候选无法规范化"
+            ) from exc
+        _weekly_require(_weekly_canonical(validated) == _weekly_canonical(raw_value),
+                        "weekly candidate normalized value")
+        _weekly_require(expected == candidate_hash, "weekly candidate normalized hash")
+    return candidates
+
+def _weekly_ai_executions(connection: sqlite3.Connection, plans: dict[str, dict],
+                          tasks: dict[str, tuple]) -> dict[str, tuple]:
+    executions = {
+        row[0]: row
+        for row in connection.execute(
+            "SELECT id, task_id, profile_id, source_kind, source_id, weekly_plan_id, "
+            "input_id, task_type FROM local_ai_executions "
+            "WHERE source_kind='weekly_plan'"
+        ).fetchall()
+    }
+    for execution_id, task_id, profile_id, source_kind, source_id, plan_id, \
+            input_id, task_type in executions.values():
+        _weekly_require(
+            source_kind == "weekly_plan" and source_id == plan_id
+            and plan_id in plans and plans[plan_id]["profile_id"] == profile_id
+            and task_id in tasks and input_id == tasks[task_id][5],
+            "weekly execution chain",
+        )
+        _weekly_require(
+            tasks[task_id][1] == profile_id and tasks[task_id][4] == plan_id
+            and tasks[task_id][6] == task_type,
+            "weekly execution task identity",
+        )
+    for task_id, task in tasks.items():
+        pointer = task[7] if len(task) > 7 else None
+        if pointer is not None:
+            execution = executions.get(pointer)
+            _weekly_require(execution is not None, "weekly task execution")
+            _weekly_require(
+                execution[1] == task_id and execution[2] == task[1]
+                and execution[4] == task[4] and execution[6] == task[5],
+                "weekly task execution identity",
+            )
+    return executions
+
+def _weekly_ai_inputs(connection: sqlite3.Connection, plans: dict[str, dict],
+                      contents: dict[tuple[str, str], dict]) -> dict[str, tuple]:
+    tasks = {
+        row[0]: row
+        for row in connection.execute(
+            "SELECT id, profile_id, source_kind, source_id, weekly_plan_id, "
+            "input_id, task_type, current_execution_id FROM local_ai_tasks "
+            "WHERE source_kind='weekly_plan'"
+        ).fetchall()
+    }
+    inputs = {
+        row[0]: row
+        for row in connection.execute(
+            "SELECT id, profile_id, source_kind, source_id, weekly_plan_id, "
+            "weekly_draft_id, source_revision, create_operation_id, task_type, "
+            "payload_json, dependencies_json, dependency_hash, target_hashes_json, "
+            "input_schema_version FROM local_ai_inputs WHERE source_kind='weekly_plan'"
+        ).fetchall()
+    }
+    for input_id, profile_id, source_kind, source_id, plan_id, draft_id, \
+            source_revision, operation_id, task_type, payload_json, \
+            dependencies_json, dependency_hash, target_hashes_json, input_schema_version \
+            in inputs.values():
+        _weekly_require(source_kind == "weekly_plan", "weekly input source")
+        _weekly_require(source_id == plan_id and plan_id in plans, "weekly input plan")
+        plan = plans.get(plan_id)
+        _weekly_require(plan is not None and plan["profile_id"] == profile_id,
+                        "weekly input profile")
+        content = contents.get((plan_id, draft_id))
+        _weekly_require(content is not None and content["version"] == source_revision,
+                        "weekly input draft")
+        _weekly_require(task_type in _WEEKLY_AI_TASKS, "weekly input task type")
+        _weekly_require(input_schema_version == 1, "weekly input schema")
+        operation = connection.execute(
+            "SELECT operation_kind FROM local_ai_operations "
+            "WHERE id=? AND profile_id=?", (operation_id, profile_id)
+        ).fetchone()
+        _weekly_require(operation is not None and operation[0] in _WEEKLY_AI_CREATE_KINDS,
+                        "weekly input operation")
+        try:
+            from app.local import weekly_ai_contracts, weekly_ai_inputs
+            dependencies = _weekly_json(dependencies_json, "weekly input dependencies")
+            payload = _weekly_json(payload_json, "weekly input payload")
+            target_hashes = _weekly_json(target_hashes_json, "weekly target hashes")
+            standby = weekly_ai_inputs.build_business_dependency_view(dependencies)
+            expected_dependency = weekly_ai_inputs.dependency_hash(dependencies)
+            expected_manifest = weekly_ai_inputs.server_manifest_from_dependencies(
+                dependencies
+            )
+            target = weekly_ai_contracts.target_for_task(task_type)
+            expected_target = weekly_ai_inputs.target_hash(content["content"], target)
+            plan_identity = {
+                "weekly_plan_id": plan_id,
+                "draft_id": draft_id,
+                "draft_version": source_revision,
+                "content_hash": content["hash"],
+                "profile_id": plan["profile_id"],
+                "class_id": plan["class_id"],
+                "term_id": plan["term_id"],
+                "week_anchor_date": plan["anchor"],
+                "week_number": plan["week_number"],
+            }
+            projected = weekly_ai_inputs.validate_stored_weekly_input(
+                task_type, payload, dependencies, content["content"],
+                plan_identity=plan_identity,
+            )
+        except Exception as exc:  # noqa: BLE001 - pure contract refusal
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID", "备份数据库周计划输入无法规范化"
+            ) from exc
+        _weekly_require(isinstance(standby, dict), "weekly input dependencies")
+        _weekly_require(expected_dependency == dependency_hash, "weekly input hash")
+        _weekly_require(isinstance(expected_manifest, dict), "weekly input manifest")
+        _weekly_require(isinstance(payload, dict), "weekly input payload")
+        _weekly_require(
+            isinstance(target_hashes, dict)
+            and set(target_hashes) == {target}
+            and target_hashes[target] == expected_target,
+            "weekly input target hashes",
+        )
+        _weekly_require(projected.dependency_hash == dependency_hash,
+                        "weekly input stored hash")
+        _weekly_require(projected.target_hashes == target_hashes,
+                        "weekly input stored target hashes")
+        _weekly_require(_weekly_canonical(projected.payload) == _weekly_canonical(payload),
+                        "weekly input stored payload")
+        linked = [task for task in tasks.values() if task[5] == input_id]
+        _weekly_require(bool(linked), "weekly input task")
+        for task in linked:
+            _weekly_require(
+                task[1] == profile_id and task[2] == "weekly_plan"
+                and task[3] == plan_id and task[4] == plan_id
+                and task[6] == task_type, "weekly task identity",
+            )
+    return tasks
+
+def _weekly_ai_chain(connection: sqlite3.Connection, plans: dict[str, dict],
+                     contents: dict[tuple[str, str], dict]) -> None:
+    tables = {
+        str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "local_weekly_plan_ai_adoption" not in tables:
+        return
+    tasks = _weekly_ai_inputs(connection, plans, contents)
+    executions = _weekly_ai_executions(connection, plans, tasks)
+    candidates = _weekly_ai_candidates(connection, plans, tasks, executions)
+    _weekly_ai_adoptions(connection, plans, contents, candidates)
+    _weekly_ai_provenance(connection, plans, contents, candidates)
+
+_ADOPTION_IMMUTABLE = (
+    "candidate_id", "candidate_hash", "input_id", "execution_id",
+    "contract_version", "dependency_hash", "adopted_draft_id",
+    "adopted_draft_version", "adopter_profile_id", "adopted_at",
+    "adopted_value", "adopted_value_hash", "basis",
+)
+_MATERIAL_IMMUTABLE = (
+    "candidate_id", "candidate_hash", "input_id", "execution_id",
+    "contract_version", "dependency_hash", "basis", "basis_hash", "items",
+    "original_text", "adopter_profile_id", "adopted_draft_id",
+    "adopted_draft_version", "adopted_at",
+)
+_WEEKLY_AI_TASKS = (
+    "weekly_games_select", "weekly_key_week_focus",
+    "weekly_environment_setup", "weekly_habit_culture",
+    "weekly_home_cooperation", "weekly_materials_generate",
+)
+_WEEKLY_AI_CREATE_KINDS = (
+    "weekly_ai_games_create", "weekly_ai_columns_create",
+    "weekly_ai_materials_create",
+)
+_WEEKLY_AI_TARGETS = (
+    "games", "key_week_focus", "environment_setup",
+    "habit_culture", "home_cooperation", "materials",
+)
+
 def _weekly_checks(connection: sqlite3.Connection) -> None:
     """Strict historical weekly validation, including real daily history."""
     daily_contents = _daily_contents(connection)
@@ -813,6 +1437,7 @@ def _weekly_checks(connection: sqlite3.Connection) -> None:
         _weekly_require(isinstance(header, dict), "plan header")
         _weekly_require(_weekly_hash(header) == row[6], "plan header hash")
         plans[plan_id] = {
+            "id": plan_id,
             "anchor": row[1],
             "term_start": row[2],
             "term_end": row[3],
@@ -835,8 +1460,8 @@ def _weekly_checks(connection: sqlite3.Connection) -> None:
         plan_id, content_id, version = row[1], row[0], row[2]
         _weekly_require(plan_id in plans, "content plan")
         plan = plans[plan_id]
-        _weekly_require(row[3] == 1, "content schema_version")
-        content = _weekly_content(row[4], row[5], f"content {content_id}")
+        _weekly_require(type(row[3]) is int and row[3] in (1, 2), "content schema_version")
+        content = _weekly_content(row[4], row[5], row[3], f"content {content_id}")
         manifest = content["source_manifest"]
         _weekly_require(
             manifest.get("profile_id") == plan["profile_id"]
@@ -853,6 +1478,7 @@ def _weekly_checks(connection: sqlite3.Connection) -> None:
             "hash": row[5],
             "content": content,
         }
+    _weekly_ai_chain(connection, plans, contents)
     for plan_id, plan in plans.items():
         _weekly_require(
             (plan_id, plan["draft_id"]) in contents, "current draft pointer"
@@ -919,6 +1545,7 @@ def _weekly_checks(connection: sqlite3.Connection) -> None:
             "hash": row[7],
             "snapshot": snapshot,
         }
+    _weekly_ai_chain(connection, plans, contents)
     for plan_id, plan in plans.items():
         if plan["confirmed_id"] is not None:
             _weekly_require(

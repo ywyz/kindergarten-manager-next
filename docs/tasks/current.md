@@ -1,21 +1,31 @@
-# 当前：另机验收已收口，Q5/Q6文档已准备
+# 当前：Q5/Q6实现及候选静态收束，接续增量目标验证
 
-2026-11-03开发机同步：已快进拉取 `0285a7c2984d267985a1f25edbb8ae957922c0ae`，保留并合并本地Q5/Q6准备文档；本次只拉取／审阅和处理文档冲突，没有重新执行目标机测试、编写业务或提交推送。本地9份准备／入口文档仍待单独Git收口。
+更新：2026-11-03。本轮已按用户授权先提交文档基线51ec4d3，再按新HEAD核定G0、明确放行G1旧档案／假供应商／备份兼容，最后接页面、构建及真实应用AI。Codex负责限定审核、结果归并和精确Git门禁，由原OpenCode A普通提交；不自动推送。
 
-更新：2026-11-02。本轮另一台Windows11上的实际业务、两项最小修复及指定13份独立Word／43页工程检查已完成；用户对39项教师清单作整体接受，并明确：“目前全部通过，有问题届时再通过小补丁或者更新的方式修改，请提交并推送”。本轮工程／教师范围据此收口，不再索要逐项确认，不补造教师逐页实际查看日志。详细身份、首失败、修复、验证分层及Git回执归[目标测试收口](../bootstrap/desktop-weekly-target-test-closeout.md)。
+继续`codex/desktop-v2-foundation`。唯一当前入口为本文件；正式结果及来源见[实施核查§12–15](../bootstrap/desktop-weekly-ai-review.md)，实际接口／DTO／迁移／文件责任见[工程§9](../specs/desktop-weekly-ai-engineering.md)，案例分层见[46项矩阵§8](../specs/desktop-weekly-ai-validation.md)。不重放已结束的在途白名单或旧Git门禁，不新增提示词副本。
 
-继续 `codex/desktop-v2-foundation`。本轮5文件最小修复和相关收口文档按用户授权、精确文件／blob／parent／tree门禁普通提交推送；实际Git身份以包含收口记录的提交及远端一致核对回执为准，不循环回填自身SHA，不重放旧parent／tree批准，不新增提示词副本。本轮无剩余编码或教师追验任务；后续收到具体问题再处理。
+## 本轮已取得的结果
 
-## Q5/Q6准备与下一步
+G0完成；G1独立门通过。真实0007旧档案48表原值、日计划、观察照片、周草稿／确认及全部历史保留，5照片字节／顺序不变。schema1/2、来源原点和篡改拒绝、明文／加密／保护包恢复及旧token／permit失效有实际SQLite证据，先于页面。
 
-[工程合同与文件分工](../specs/desktop-weekly-ai-engineering.md)、[46项假供应商矩阵](../specs/desktop-weekly-ai-validation.md)已由原生OpenCode／Command Go的DeepSeek V4.1 Flash max并行准备、Codex最终审核，实际会话与metadata见[准备核查](../bootstrap/desktop-weekly-ai-preparation-review.md)。A/C已自然停写，B/D未启动；矩阵全部未执行，拟议实施白名单未生效。目标机反馈条件已取得，不再重复追验已接受清单；下一阶段可在明确授权后核新HEAD、迁移head、函数签名、DTO和精确文件责任进入G0，再逐门实施G1假供应商后端／纯合同／备份兼容，C页面待接口冻结。
+游戏、所选栏目、材料的明确生成／候选／预览采用及材料手改保存已实现；保存／来源变化／采用不自动发AI。最终受影响后端271项、纯层101项独立通过；C6全前端14脚本（新增10core／29 SFC setup）、typecheck／build及Root真正挂载材料输入、异步／保存互斥反例通过。最后C仅清理两文件末空行，非末尾字节相同。新增材料Word本机实际1页检查通过，保持该文件身份。
 
-本地准备合同基于旧d6ff4b7编制；拉取的五文件修复未增加迁移或改变周内容／确认schema，但后续G0仍须按0285a7c复核D导出与C错误投影接点。日常使用固定已验包，实际反馈优先；本次拉取不等于授权G1编码、真实AI或发布。
+游戏／材料提示契约2/default1，栏目1/1；raw/input1、周content2和唯一迁移0008保持。旧提示／个人文本／冻结任务不改写，旧1候选过期但历史／备份可读，新2采用可用。原D误截断自有validator已由原D从精确事前快照恢复，Root确认原AST完整且仅新增1处版本支持谓词；原始失败、中断及恢复记录均保留，不称全部阶段自然0。
 
-2026-11-03只读API复核：提交0285a7c的[GitHub运行41464103529／attempt1](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41464103529)已成功，job125340342704的构建／静态及上传步骤均success；[制品13150402814](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41464103529/artifacts/13150402814)为44,052,873 bytes，API给出的外层SHA-256为`1750dacab1303c7dcd9ae3789e926e0898f1411913fa0605f4711fd82c81c0d2`。本次未下载制品、未重算其字节或核内层build_id；只记录远端状态，不冒充下载静态／目标／Word验证，也不要求重跑已验本机包。
+真实官方DeepSeek标准API经合成副本验证可用。新游戏与材料各1次成功、各1候选，生成不改稿，明确采用才v2→3→4；材料7项，provenance存在，完整服务采用链校验通过。本轮共7次实际应用发送，旧5次失败／unknown历史保持；用户已允许多次显式重试及重复费用，未收到余额不足错误。仅合成资料，不自动重试、不输出secret／原响应／思考正文；原合成G17四个保护文件指纹不变。
 
-## 身份与范围
+原D在新根`build/desktop-e14-q56-r01`实际完整Vite／PyInstaller／portable构建，Root独立目录54／归档59静态通过。build_id `e1b727c8-6ba9-4b39-82bf-a6b4fe81cdc3`，CPython3.14.10／Windows x64／标准GIL，数据库0008。来源是构建时HEAD51ec4d3＋285文件freeze `ee38fabd35a74b31e13b85a865ab3a8aa1e52dab5c0e23ec4f1486e22eb30e56`，不回填其后提交SHA。ZIP SHA-256 `7a47e3cf74829461c594da042d37c74042e28501d2eddaf912897b76f1d2652f`，完整EXE／ZIP身份见实施核查§14。
 
-原[GitHub制品13104229266](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41360367631/artifacts/13104229266)仍为来源57806b2、build_id `0b56217d-026a-428e-a5d8-1b9f36960326`，以[原构建核查](../bootstrap/desktop-weekly-windows11-review.md)为准。本机修复包为build_id `763706b0-c9c0-4064-96b4-f2b8c0b43843`／CPython3.14.10，构建时基础为d6ff4b7＋5文件补丁；提交后的Git身份不倒填为该包的构建提交。本机补测收口时尚无包含此次修复的新GitHub制品；此次推送如触发自动CI，须另核新制品身份和静态结果，不继承本机运行／Word或教师结论，不自动发行。
+## 当前未验与下一步
 
-后续问题按用户反馈作小补丁或更新；既定Q5/Q6周AI／材料不自动启动。本次不新增真实AI调用、WebDAV、签名、安装更新、远控或公开发行。Win10／WPS／干净机／其它显示条件、跨Windows用户凭据恢复、真实断电、长根206及历史无guard缺口保持原未验／证据边界；微软拼音和W6跨120秒睡眠不重测。原资料、原包、全部保护副本和首失败现场保留，不改系统保护或公开历史。
+源码真实窗口已完成游戏及四栏目生成／预览／采用。材料后半遇捕获0x80070057／输入0x80070005；按用户要求恢复并从远程桌面再次重试后，截图调用返回全黑，UIA仍可读，点击／Tab未产生可观察变化。新r03合成窗口仍v2、0任务／发送，不能记材料采用／手改／leave／重进／确认或无执行器503窗口通过，也不能据黑色捕获裁定应用白屏。此项与真实服务链、SFC挂载及包静态分别记账。
+
+下一步先在能实际观察操作的桌面补材料后半及无执行器手工闭环，再对本次新build_id在适合运行的Windows11目标环境做Q5/Q6增量包运行、升级／恢复和持久历史核查。只验新功能及实际受影响流程；[已接受](../bootstrap/desktop-weekly-target-test-closeout.md)的39项教师清单、13份／43页Word、微软拼音及W6不重追。未宣布全46项、G4目标／教师验收或正式发行通过。
+
+原生A/B/C/D责任已按结果收束，固定原会话Flash max，不fork／另派子代理。只有最终Git沿原A本轮新准确68文件／raw SHA／blob／parent／tree门禁普通提交；不add-all、amend、rebase、reset／force、改main、tag／Release或推送。其后若需修复，先定位具体文件并重新激活原owner互斥责任；Codex不接管业务／测试／迁移／构建代码。
+
+## 环境与保留边界
+
+沿现有CPython3.14.10及锁定依赖，不安装升级。验证禁dotenv，用经绝对路径核验的新合成库／图片／凭据／导出根及对应网络守卫；Python守卫不称OS／WebView全局隔离。真实原业务库、密钥／DPAPI、原件、旧包及首失败现场保持。
+
+已知SAC4551机不执行受阻新旧EXE/helper，不改名／换路径或降低保护重试。本次未执行新包目标PS／EXE/helper；新包不继承旧运行／Word结论。Win10／WPS／干净机、其它显示条件、跨Windows用户、真实断电、长根206及历史无guard缺口保留。不启动WebDAV、签名、安装更新、新远程连接或公开发行。

@@ -410,6 +410,48 @@ class LocalAiExecutorUnavailable(LocalError):
     message = "本机 AI 执行器暂不可用；手工功能不受影响"
 
 
+class LocalWeeklyAiSourceChanged(LocalError):
+    code = "WEEKLY_AI_SOURCE_CHANGED"
+    status_code = 409
+    message = "生成输入已变化，请重新生成"
+
+
+class LocalWeeklyAiTargetChanged(LocalError):
+    code = "WEEKLY_AI_TARGET_CHANGED"
+    status_code = 409
+    message = "待替换的内容已变化，请重新预览"
+
+
+class LocalWeeklyAiPreviewExpired(LocalError):
+    code = "WEEKLY_AI_PREVIEW_EXPIRED"
+    status_code = 409
+    message = "预览凭证已失效，请重新预览"
+
+
+class LocalWeeklyAiContractObsolete(LocalError):
+    code = "WEEKLY_AI_CONTRACT_OBSOLETE"
+    status_code = 409
+    message = "该候选的契约版本已过时，只能查看"
+
+
+class LocalWeeklyAiRequestConflict(LocalError):
+    code = "WEEKLY_AI_REQUEST_CONFLICT"
+    status_code = 409
+    message = "同一请求 ID 已用于不同操作、批次或内容"
+
+
+class LocalWeeklyAiTaskActive(LocalError):
+    code = "WEEKLY_AI_TASK_ACTIVE"
+    status_code = 409
+    message = "该周计划已有同类活跃 AI 任务"
+
+
+class LocalMaterialContextRequired(LocalError):
+    code = "MATERIAL_CONTEXT_REQUIRED"
+    status_code = 422
+    message = "生成材料前需要明确重点区域"
+
+
 class LocalAiContractUnsupported(LocalError):
     code = "AI_CONTRACT_UNSUPPORTED"
     status_code = 409

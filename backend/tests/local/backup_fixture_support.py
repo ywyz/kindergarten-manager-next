@@ -57,12 +57,14 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import base64
+import gzip
 import math
 import os
 import random
 import sqlite3
 from dataclasses import asdict, dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -125,6 +127,362 @@ from app.local.normalize import normalize_initialization
 # ---------------------------------------------------------------------------
 # Fixed fixture facts
 # ---------------------------------------------------------------------------
+
+
+OLD_0007_DATA_B64 = (
+    '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'
+    'AAvijLyyUI1DR2jAvbjvtsr48xP2SYg8cZ2NT1Wf6UsAxw5Nh95guBCn+/XFLKojaGu+H7oBAkV6fsj0LerZVabWixiwvlru+6In'
+    '0pMBwvflHGqwEektZUotKjRLE/i0x62JXzGxtgcwYb7oS6dJsvwTOZP6cAYW/bAPyRInnslU30t0v3QJRm8Ww/rE7I3B8GmywSZk'
+    'knKM7/q98Q1LppdW3gxDJd9Ij05MhYx1oiTiIhn2wP7oG5GeTFQ2JjXgzLfOUhz2yXubS59ILDlZV3aGhAbejQ1fQ+UNB7+fkOIA'
+    'EWa4JuXoSGRIqKP30hFlx5IYMonwTFoZT0ipG4nE/WBHT5cIZc/4wnGkfJDkcOi32xt76ppKQ06H1U2zEmyAHVxTnDr7hax0OlYa'
+    'TDLJA8HEC5MbkyzW6aTHy+c/HwmOn6J7Xzi6t+8Ct1pNagcGCdbCRrLsXpYwL4u1pStJD+sATZHBU2TwFBk8RQZPkcFTZPAUGTxd'
+    '3ykyeIoM/pwig9+w5QltLaB8s+mYdN2k7N3xVhIZOKX6FLmZSXm+/G4Yoy3s1lUte0JvXuIlDLO/QeVQvS0NN290Os32F199dRNP'
+    'lZLLrzRalVdVC2GcV9EbBwVHX02fN36FXllWayqkogEGpIFN2dqRLbnba9SUjkpqpqYvwZ+FmL2tXVppSaVH3bTFPLvbphToTHtb'
+    '1mo22l9VGFxSjBK+mpnX3zTfaOnH3WpLK/vscLv9Nl63VUmx0lVj465kexvLWltbarjQKUlixSm8bH9g0Lnv9GznkZM3YKeNfGJQ'
+    'AR/5yIAyNvKJEZt6TmO9zeHo7SPrlAxscBBDHR7s3KiOZBo9dnmP9GBoOSajj74v45M/fvfguz8/+M23n/7wn57+8i0cRf/07//x'
+    '4JsfffrTb3zyX99/+vs/Hvzdb5/95GvJH598+MdP/+c/HnzvO89+87u/fPzTg3f+9dkPfpu8ePCf//703W/hyee//O3zP5u7yfWn'
+    '7/7rwTf+KXnx6Y//4/mfvo+PP/uXjw7e+/Gzf/vnTz789798/PYnH37n+T//7bOPf/Tpl3/xv7/8laOm+1Ankx6mffvp+09/8U00'
+    '98mff/bsh/+Ex57+6JvPP3jv4J1ff/Lhdz/95UcHH72DJg5+9ZOnP/ul6e13/ufzX7598NY3Pv3JD0wnbfdGdiztyZDtN6YrB9/8'
+    'xsGvvnnwja8fvP+Hv3z81rNv/cvz36cX//eX//bZH9/59F/fTn4+e+9bf/n4W8Od7k/csX0aNDzGdOnTb37n2Vf+MHJ2JmpolB48'
+    'rrmf/OlMzWXUsjGtPP/zN5/99tuGbv78s6dv/23SCijPEOh/vfv0vV9/+q+/Shb+4B/e7rVuieyXvzYdsB/89JtvP/33XyYk++y7'
+    'Hzz/u68c30PDOpS6En6zEIc4xEEAADCSRBQPUMzcM45VD37ySLixhnuVaxI42Ooi7HeoZ65C6keDe+LddE9kr+B8mICx0+2JI5Jx'
+    'LngH6LXYbnRbkX5he+JQsy/RlniiLWNiUX95KKXq6S/+8PQ77z97571nH/3m4A+/x7/Pf/fVpz/8vaHWr/86yxyGG/7w+0//9LVP'
+    'v/yVg/ffffrl3yTsAqYckOT/ALb4I2QveOLgvX9++rV3Dn76JyMt3/kg/TJk0p/+BOmVcBWeB4sffPTP4Ibnf/7BwU//x8H7b+Mx'
+    'I/bt8wff+26PO3/69Me/+PTdLyfXDUslz3/358kD+MKzP37/6f9495M/mZ0CquTTD37w/E9fNU18+VtPv/0vCcsmmwI2l4N3/v7Z'
+    'D35uGvrgTwe/+MonH3374P3/0WNK11UKeQKo/OVIzagfe6jTzT2cXYmDTZjEMZYOQjOU+6GQTFJEgSJCZUwZlHdgd8QFMOVoDP5F'
+    'kyE0xV51/VFcFzda29LG0exDhjJ3td4qgxlD3Rp4CdJeV3Qr4cx6dduyKzFv9CsfAx2ehuUmUAB1HCcbOqLA+R3si4WOlii0n1ys'
+    'QwfO/u7Wt+qN3TokRNp/Jfcn6Lv5JffSX555d6NRQ03e/ZEDka0WvoqHEFvdbk82xpPNfFr9f9TT6PWSrldszXpyVIDYT/S+cLzC'
+    'eOT94bXITOOIWTm2ASOHD7MFskP6UmauTHTPfmto0gwzdWx47qzTb/ITjqMricJtFpLQ1Kbqf7nVaGxbfTOF9r1+kpVJKKr/23fs'
+    'VHQxe/XBXfFLmS/05yH7KmqmO0fXyQ5o8nXurUM7ajRP1rxvmj9t3/2RfT9c1sFuZVuZhLIOqzYPnVtyeit1Eqo8Yq8enYZ8y3X0'
+    'szk27OiHR1uzo58dZ9fmdeWIujLiwTcnWJ7hfLLM9/os3J/jE/BysnqTcHTUqNWSNbBytqUhiDYaVUNePY44u2jJkwhH6X5yXo0b'
+    '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'
+    'O1I8lVT/f2pMXC4A1AIA')
 
 FIXTURE_DISPLAY_NAME = "王老师"
 FIXTURE_CLASS_NAME = "中二班"
@@ -414,6 +772,359 @@ def _require_empty_business(session: Session) -> None:
 # Image material
 # ---------------------------------------------------------------------------
 
+
+def old_0007_data_sql() -> str:
+    """Frozen 0007 business data, excluding photo binary rows."""
+    raw = gzip.decompress(base64.b64decode(OLD_0007_DATA_B64)).decode("utf-8")
+    return "\n".join(
+        line.replace('INSERT INTO "local_prompt_bundles"',
+                     'INSERT OR IGNORE INTO "local_prompt_bundles"')
+        for line in raw.splitlines()
+        if not line.startswith('INSERT INTO "local_alembic_version"')
+    )
+
+
+def _write_old_asset(data_dir: Path, relative: str, payload: bytes) -> None:
+    path = Path(data_dir).joinpath(*relative.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+
+OLD_0007_TABLE_COLUMNS = {'local_ai_attempts': ['id', 'execution_id', 'attempt_no', 'state', 'dispatch_marked_at', 'ended_at', 'evidence_code', 'http_status', 'provider_request_id', 'returned_model', 'usage_json', 'duration_ms', 'created_at'], 'local_ai_candidates': ['id', 'profile_id', 'execution_id', 'task_id', 'source_kind', 'source_id', 'observation_id', 'daily_plan_id', 'input_id', 'task_type', 'contract_version', 'schema_version', 'raw_candidate_json', 'candidate_hash', 'created_at'], 'local_ai_config_versions': ['profile_id', 'version', 'protocol_id', 'base_url', 'model', 'credential_id', 'created_at'], 'local_ai_credentials': ['id', 'profile_id', 'key_id', 'nonce', 'ciphertext', 'state', 'created_at', 'updated_at'], 'local_ai_executions': ['id', 'task_id', 'source_kind', 'source_id', 'observation_id', 'daily_plan_id', 'input_id', 'task_type', 'generation', 'launch_id', 'permit_id', 'config_version', 'profile_id', 'personal_revision', 'contract_version', 'default_revision', 'state', 'runtime_meta_json', 'started_at', 'created_at', 'ended_at'], 'local_ai_inputs': ['id', 'profile_id', 'source_kind', 'source_id', 'observation_id', 'source_revision', 'daily_plan_id', 'content_id', 'content_version', 'task_type', 'target_grade', 'input_schema_version', 'payload_json', 'dependencies_json', 'dependency_hash', 'target_hashes_json', 'created_at'], 'local_ai_operations': ['id', 'profile_id', 'request_id', 'operation_kind', 'request_fingerprint', 'fingerprint_kind', 'fingerprint_key_id', 'result_json', 'created_at'], 'local_ai_state': ['profile_id', 'database_uuid', 'current_config_version', 'blocked_config_version', 'blocked_reason', 'created_at', 'updated_at'], 'local_ai_tasks': ['id', 'profile_id', 'source_kind', 'source_id', 'observation_id', 'daily_plan_id', 'task_type', 'input_id', 'status', 'reason', 'current_execution_id', 'generation', 'runtime_meta_json', 'created_at', 'updated_at'], 'local_calendar_days': ['revision_id', 'date', 'base_state', 'base_library_version', 'override_state', 'override_reason', 'effective_state'], 'local_calendar_revisions': ['id', 'term_id', 'revision_no', 'library_version', 'created_by', 'created_at'], 'local_class_game_heads': ['class_id', 'current_revision_id', 'created_at', 'updated_at'], 'local_class_game_revisions': ['id', 'class_id', 'revision_no', 'payload_json', 'payload_hash', 'created_at'], 'local_classes': ['id', 'name', 'grade', 'created_at', 'updated_at', 'header_teacher_names', 'caregiver_name'], 'local_config_operations': ['id', 'request_id', 'input_fingerprint', 'result_json', 'config_version', 'created_at'], 'local_daily_plan_ai_provenance': ['content_id', 'daily_plan_id', 'content_version', 'baseline_candidate_id', 'adopted_candidate_id', 'selected_targets_json', 'adopted_payload_hash', 'created_at'], 'local_daily_plan_contents': ['id', 'daily_plan_id', 'version', 'raw_lesson_plan', 'split_baseline', 'adopted_content', 'editor_id', 'created_at'], 'local_daily_plan_restores': ['id', 'profile_id', 'request_id', 'request_fingerprint', 'daily_plan_id', 'source_content_id', 'source_content_version', 'before_content_id', 'before_content_version', 'result_content_id', 'result_content_version', 'created_at'], 'local_daily_plans': ['id', 'class_id', 'term_id', 'plan_date', 'creator_id', 'week_number', 'weekday', 'calendar_revision_id', 'current_content_id', 'current_content_version', 'creator_display_name', 'school_name', 'class_name', 'grade', 'deleted_at', 'deleted_by', 'created_at', 'updated_at'], 'local_observation_ai_input_photos': ['id', 'profile_id', 'source_kind', 'source_id', 'observation_id', 'input_id', 'asset_id', 'derivative_id', 'sort_order', 'caption', 'original_hash', 'work_hash'], 'local_observation_ai_provenance': ['id', 'profile_id', 'source_kind', 'source_id', 'observation_id', 'version', 'candidate_id', 'adopted_targets_json', 'input_hash', 'output_hash', 'created_at'], 'local_observation_asset_derivatives': ['id', 'observation_id', 'asset_id', 'purpose', 'params_version', 'content_hash', 'mime_type', 'width', 'height', 'relative_path', 'created_at'], 'local_observation_assets': ['id', 'observation_id', 'relative_path', 'display_name', 'mime_type', 'content_hash', 'byte_size', 'width', 'height', 'orientation', 'created_at'], 'local_observation_draft_photos': ['observation_id', 'asset_id', 'sort_order', 'caption'], 'local_observation_drafts': ['observation_id', 'revision', 'payload_json', 'payload_hash', 'created_at', 'updated_at'], 'local_observation_export_attempts': ['id', 'profile_id', 'snapshot_id', 'export_id_hash', 'filename_fingerprint', 'status', 'result_hash', 'byte_size', 'started_at', 'ended_at', 'created_at'], 'local_observation_export_snapshots': ['id', 'profile_id', 'launch_id', 'session_scope_hash', 'manifest_json', 'manifest_hash', 'created_at', 'expires_at'], 'local_observation_export_tokens': ['id', 'snapshot_id', 'profile_id', 'token_hash', 'expires_at', 'consumed_at', 'created_at'], 'local_observation_operations': ['id', 'profile_id', 'request_id', 'operation_kind', 'observation_id', 'request_fingerprint', 'status', 'result_json', 'created_at'], 'local_observation_records': ['id', 'creator_profile_id', 'observation_date', 'record_type', 'start_time', 'end_time', 'term_id', 'term_snapshot_json', 'school_name', 'class_name', 'observer_name', 'adult_count', 'child_count', 'age_years', 'subjects_json', 'environment', 'current_draft_revision', 'current_version', 'created_at', 'updated_at'], 'local_observation_restore_previews': ['id', 'token_hash', 'profile_id', 'observation_id', 'source_version', 'source_hash', 'base_draft_revision', 'base_draft_hash', 'effective_term_id', 'term_snapshot_hash', 'effective_payload_hash', 'material_hash', 'request_id', 'expires_at', 'consumed_at', 'created_at'], 'local_observation_restores': ['id', 'operation_id', 'profile_id', 'observation_id', 'source_version', 'result_version', 'before_draft_revision', 'before_version', 'changed', 'term_decision', 'effective_term_id', 'effective_payload_hash', 'created_at'], 'local_observation_version_photos': ['version_id', 'asset_id', 'observation_id', 'sort_order', 'caption'], 'local_observation_versions': ['id', 'observation_id', 'version', 'payload_json', 'payload_hash', 'source_kind', 'creator_profile_id', 'created_at'], 'local_operation_records': ['id', 'created_at', 'actor_id', 'action', 'target_type', 'target_id', 'target_version_after'], 'local_personal_prompt_heads': ['profile_id', 'task_type', 'current_revision', 'required_contract_version', 'latest_default_revision', 'created_at', 'updated_at'], 'local_personal_prompt_versions': ['profile_id', 'task_type', 'revision', 'contract_version', 'based_default_revision', 'guidance_json', 'orphaned_guidance_json', 'action', 'rejected_default_revision', 'created_at'], 'local_profile': ['id', 'singleton', 'display_name', 'created_at', 'updated_at'], 'local_prompt_bundles': ['task_type', 'contract_version', 'default_revision', 'input_schema_json', 'output_schema_json', 'guidance_defaults_json', 'bundle_hash', 'created_at'], 'local_settings': ['id', 'singleton', 'school_name', 'current_class_id', 'init_request_id', 'init_input_fingerprint', 'created_at', 'updated_at', 'config_version', 'ui_theme', 'ui_theme_version'], 'local_terms': ['id', 'name', 'start_date', 'end_date', 'current_calendar_revision_id', 'created_at', 'updated_at'], 'local_weekly_export_attempts': ['id', 'profile_id', 'snapshot_id', 'token_id', 'export_id_hash', 'filename_fingerprint', 'status', 'result_hash', 'byte_size', 'started_at', 'ended_at', 'created_at'], 'local_weekly_export_snapshots': ['id', 'profile_id', 'launch_id', 'session_scope_hash', 'manifest_json', 'manifest_hash', 'created_at', 'expires_at'], 'local_weekly_export_tokens': ['id', 'snapshot_id', 'profile_id', 'token_hash', 'expires_at', 'consumed_at', 'parent_attempt_id', 'created_at'], 'local_weekly_plan_confirmations': ['id', 'weekly_plan_id', 'version', 'draft_id', 'draft_version', 'schema_version', 'snapshot_json', 'snapshot_hash', 'facts_json', 'facts_hash', 'note', 'confirmed_by', 'confirmed_at'], 'local_weekly_plan_contents': ['id', 'weekly_plan_id', 'version', 'schema_version', 'content_json', 'content_hash', 'editor_profile_id', 'created_at'], 'local_weekly_plan_operations': ['id', 'profile_id', 'request_id', 'weekly_plan_id', 'action', 'input_fingerprint', 'result_draft_id', 'result_draft_version', 'result_confirmed_id', 'result_confirmed_version', 'result_snapshot_id', 'result_token_id', 'launch_id', 'session_scope_hash', 'result_json', 'created_at'], 'local_weekly_plans': ['id', 'profile_id', 'class_id', 'term_id', 'week_anchor_date', 'week_number_snapshot', 'term_start_date', 'term_end_date', 'calendar_revision_id', 'header_json', 'header_hash', 'current_draft_id', 'current_draft_version', 'current_confirmed_id', 'current_confirmed_version', 'created_at', 'updated_at']}
+
+def _raw_sql_value(value: Any) -> list[Any]:
+    if value is None:
+        return ["null"]
+    if isinstance(value, bytes):
+        return ["blob", len(value), _sha256_bytes(value)]
+    if isinstance(value, str):
+        return ["text", value]
+    if isinstance(value, int):
+        return ["int", value]
+    if isinstance(value, float):
+        return ["float", value.hex()]
+    return ["other", type(value).__name__, repr(value)]
+
+
+def migration_rows(db_path: Path,
+                   profile: dict[str, list[str]] | None = None) -> dict[str, Any]:
+    profile = profile or OLD_0007_TABLE_COLUMNS
+    con = sqlite3.connect(str(db_path))
+    try:
+        tables = {}
+        for table, columns in profile.items():
+            quoted = '"' + table.replace('"', '""') + '"'
+            names = ", ".join('"' + c.replace('"', '""') + '"' for c in columns)
+            rows = con.execute(f"SELECT {names} FROM {quoted}").fetchall()
+            canon = [
+                json.dumps(
+                    [[column, _raw_sql_value(value)] for column, value in zip(columns, row)],
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                )
+                for row in rows
+            ]
+            canon.sort()
+            tables[table] = {"columns": list(columns), "rows": canon}
+        return {"format": 1, "tables": tables}
+    finally:
+        con.close()
+
+
+def migration_fingerprint(db_path: Path,
+                          profile: dict[str, list[str]] | None = None) -> dict[str, Any]:
+    snapshot = migration_rows(db_path, profile)
+    tables = {}
+    for table, item in snapshot["tables"].items():
+        tables[table] = {
+            "columns": item["columns"],
+            "row_count": len(item["rows"]),
+            "rows_sha256": _sha256_bytes(
+                json.dumps(item["rows"], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ),
+        }
+    return {"format": 1, "tables": tables}
+
+def _old_photo_specs() -> list[dict[str, Any]]:
+    return [
+        {
+            "asset_id": "fixturea" + "0" * 24,
+            "path": "observations/assets/fixture-a/original.jpg",
+            "name": "合成当前照片.jpg",
+            "payload": _jpeg_bytes((320, 240), 101),
+            "mime": "image/jpeg",
+            "width": 320,
+            "height": 240,
+            "orientation": None,
+            "derivatives": [
+                {
+                    "id": "fixtured" + "0" * 24,
+                    "purpose": "ai",
+                    "path": "observations/assets/fixture-a/derivatives/ai.jpg",
+                    "payload": _jpeg_bytes((160, 120), 201),
+                    "mime": "image/jpeg",
+                    "width": 160,
+                    "height": 120,
+                },
+                {
+                    "id": "fixtured" + "1" * 24,
+                    "purpose": "export",
+                    "path": "observations/assets/fixture-a/derivatives/export.jpg",
+                    "payload": _jpeg_bytes((160, 120), 202),
+                    "mime": "image/jpeg",
+                    "width": 160,
+                    "height": 120,
+                },
+            ],
+        },
+        {
+            "asset_id": "fixtureb" + "0" * 24,
+            "path": "observations/assets/fixture-b/original.png",
+            "name": "合成历史照片.png",
+            "payload": _png_bytes((240, 180)),
+            "mime": "image/png",
+            "width": 240,
+            "height": 180,
+            "orientation": None,
+            "derivatives": [
+                {
+                    "id": "fixtured" + "2" * 24,
+                    "purpose": "export",
+                    "path": "observations/assets/fixture-b/derivatives/export.png",
+                    "payload": _png_bytes((120, 90)),
+                    "mime": "image/png",
+                    "width": 120,
+                    "height": 90,
+                }
+            ],
+        },
+    ]
+
+def _insert_old_photo_rows(db_path: Path, data_dir: Path) -> None:
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute("PRAGMA foreign_keys=OFF")
+        record = con.execute(
+            "SELECT id, creator_profile_id FROM local_observation_records "
+            "ORDER BY id LIMIT 1"
+        ).fetchone()
+        if record is None:
+            raise FixtureError("old fixture has no observation record")
+        observation_id, profile_id = record
+        draft = con.execute(
+            "SELECT observation_id, revision FROM local_observation_drafts "
+            "WHERE observation_id=? LIMIT 1", (observation_id,)
+        ).fetchone()
+        version = con.execute(
+            "SELECT id FROM local_observation_versions WHERE observation_id=? "
+            "ORDER BY version LIMIT 1", (observation_id,)
+        ).fetchone()
+        ai_input = con.execute(
+            "SELECT id, source_kind, source_id FROM local_ai_inputs "
+            "WHERE source_kind='game_observation' ORDER BY id LIMIT 1"
+        ).fetchone()
+        if draft is None or version is None or ai_input is None:
+            raise FixtureError("old fixture photo prerequisites missing")
+        now = datetime.utcnow().isoformat()
+        specs = _old_photo_specs()
+        for spec in specs:
+            payload = spec["payload"]
+            _write_old_asset(data_dir, spec["path"], payload)
+            con.execute(
+                "INSERT INTO local_observation_assets (id, observation_id, "
+                "relative_path, display_name, mime_type, content_hash, byte_size, "
+                "width, height, orientation, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (spec["asset_id"], observation_id, spec["path"], spec["name"],
+                 spec["mime"], _sha256_bytes(payload), len(payload),
+                 spec["width"], spec["height"], spec["orientation"], now),
+            )
+            for derivative in spec["derivatives"]:
+                dpayload = derivative["payload"]
+                _write_old_asset(data_dir, derivative["path"], dpayload)
+                con.execute(
+                    "INSERT INTO local_observation_asset_derivatives (id, "
+                    "observation_id, asset_id, purpose, params_version, content_hash, "
+                    "mime_type, width, height, relative_path, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (derivative["id"], observation_id, spec["asset_id"],
+                     derivative["purpose"], "v1", _sha256_bytes(dpayload),
+                     derivative["mime"], derivative["width"], derivative["height"],
+                     derivative["path"], now),
+                )
+        _insert_old_photo_links(con, observation_id, profile_id, version[0],
+                                ai_input, specs, now)
+        con.commit()
+    finally:
+        con.close()
+
+
+def _insert_old_photo_links(con, observation_id, profile_id, version_id,
+                            ai_input, specs, now) -> None:
+    con.execute(
+        "INSERT INTO local_observation_draft_photos "
+        "(observation_id, asset_id, sort_order, caption) VALUES (?,?,?,?)",
+        (observation_id, specs[0]["asset_id"], 0, "合成当前照片"),
+    )
+    con.execute(
+        "INSERT INTO local_observation_draft_photos "
+        "(observation_id, asset_id, sort_order, caption) VALUES (?,?,?,?)",
+        (observation_id, specs[1]["asset_id"], 1, None),
+    )
+    con.execute(
+        "INSERT INTO local_observation_version_photos "
+        "(version_id, asset_id, observation_id, sort_order, caption) "
+        "VALUES (?,?,?,?,?)",
+        (version_id, specs[0]["asset_id"], observation_id, 0, "合成当前照片"),
+    )
+    con.execute(
+        "INSERT INTO local_observation_ai_input_photos (id, profile_id, "
+        "source_kind, source_id, observation_id, input_id, asset_id, "
+        "derivative_id, sort_order, caption, original_hash, work_hash) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("fixturep" + "0" * 24, profile_id, ai_input[1], ai_input[2],
+         observation_id, ai_input[0], specs[0]["asset_id"],
+         specs[0]["derivatives"][0]["id"], 0, None,
+         _sha256_bytes(specs[0]["payload"]),
+         _sha256_bytes(specs[0]["derivatives"][0]["payload"])),
+    )
+
+def create_old_0007_fixture(db_path: Path, data_dir: Path) -> None:
+    """Create the frozen synthetic 0007 archive without any new ORM writes."""
+    from alembic import command
+    from app.local.migrate import alembic_config
+
+    db_path = Path(db_path)
+    data_dir = Path(data_dir)
+    if db_path.exists():
+        raise FixtureError("old fixture database already exists")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    command.upgrade(alembic_config(db_path), "20261101_0007_local_weekly")
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.executescript(old_0007_data_sql())
+        con.commit()
+    finally:
+        con.close()
+    _insert_old_photo_rows(db_path, data_dir)
+    _insert_old_export_rows(db_path)
+
+def _insert_old_export_rows(db_path: Path) -> None:
+    con = sqlite3.connect(str(db_path))
+    try:
+        profile_id = con.execute("SELECT id FROM local_profile LIMIT 1").fetchone()[0]
+        now = datetime.utcnow().isoformat()
+        expires = (datetime.utcnow() + timedelta(days=1)).isoformat()
+        obs_snapshot = "oldobssnap" + "0" * 22
+        obs_token = "oldobstok" + "0" * 23
+        obs_hash = _sha256_bytes(b"{}")
+        con.execute(
+            "INSERT INTO local_observation_export_snapshots (id, profile_id, "
+            "launch_id, session_scope_hash, manifest_json, manifest_hash, "
+            "created_at, expires_at) VALUES (?,?,?,?,?,?,?,?)",
+            (obs_snapshot, profile_id, "old-launch", "a" * 64, "{}", obs_hash,
+             now, expires),
+        )
+        con.execute(
+            "INSERT INTO local_observation_export_tokens (id, snapshot_id, "
+            "profile_id, token_hash, expires_at, consumed_at, created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (obs_token, obs_snapshot, profile_id, "b" * 64, expires, None, now),
+        )
+        con.execute(
+            "INSERT INTO local_observation_export_attempts (id, profile_id, "
+            "snapshot_id, export_id_hash, filename_fingerprint, status, "
+            "result_hash, byte_size, started_at, ended_at, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("oldobsatt" + "0" * 23, profile_id, obs_snapshot, "c" * 64,
+             "d" * 64, "saved", "e" * 64, 1, now, now, now),
+        )
+        from app.local import weekly_plan_snapshot
+        plan_id, conf_id, conf_version, snap_hash, snapshot_json = con.execute(
+            "SELECT p.id, c.id, c.version, c.snapshot_hash, c.snapshot_json "
+            "FROM local_weekly_plans p JOIN local_weekly_plan_confirmations c "
+            "ON c.weekly_plan_id=p.id ORDER BY c.version DESC LIMIT 1"
+        ).fetchone()
+        snapshot = weekly_plan_snapshot.validate_confirmation_snapshot(
+            json.loads(snapshot_json)
+        )
+        item = dict(snapshot)
+        item["confirmation_id"] = conf_id
+        item["confirmation_version"] = conf_version
+        item["confirmation_hash"] = snap_hash
+        selection = {
+            "weekly_plan_id": plan_id,
+            "confirmation_id": conf_id,
+            "confirmation_version": conf_version,
+            "draft_id": snapshot["draft_id"],
+            "draft_version": snapshot["draft_version"],
+            "content_hash": snapshot["content_hash"],
+            "confirmation_hash": snap_hash,
+            "week_anchor_date": snapshot["creation_context"]["week_anchor_date"],
+            "week_number": snapshot["creation_context"]["week_number_snapshot"],
+            "date_range": snapshot["date_range"],
+        }
+        missing = []
+        for fact in snapshot["facts"]["missing"]:
+            copied = json.loads(json.dumps(fact, ensure_ascii=False))
+            details = dict(copied.get("details") or {})
+            details.update(weekly_plan_id=plan_id, confirmation_id=conf_id)
+            copied["details"] = details
+            missing.append(copied)
+        manifest = {
+            "schema_version": 1, "profile_id": profile_id, "mode": "single",
+            "requested_range": None, "selection": [selection],
+            "warnings_as_of": datetime.now(timezone.utc).isoformat(),
+            "missing": missing, "warnings": [], "items": [item],
+        }
+        manifest = weekly_plan_snapshot.validate_export_manifest(manifest)
+        manifest_json = json.dumps(manifest, ensure_ascii=False, sort_keys=True,
+                                   separators=(",", ":"))
+        manifest_hash = weekly_plan_snapshot.snapshot_hash(manifest)
+        snap_id = "oldweeksna" + "0" * 22
+        tok_id = "oldweektok" + "0" * 21
+        att_id = "oldweekatt" + "0" * 21
+        op_id = "oldweekopr" + "0" * 21
+        draft_id, draft_version = snapshot["draft_id"], snapshot["draft_version"]
+        con.execute(
+            "INSERT INTO local_weekly_export_snapshots (id, profile_id, launch_id, "
+            "session_scope_hash, manifest_json, manifest_hash, created_at, expires_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (snap_id, profile_id, "old-launch", "f" * 64, manifest_json,
+             manifest_hash, now, expires),
+        )
+        con.execute(
+            "INSERT INTO local_weekly_export_tokens (id, snapshot_id, profile_id, "
+            "token_hash, expires_at, consumed_at, parent_attempt_id, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (tok_id, snap_id, profile_id, "9" * 64, expires, None, None, now),
+        )
+        con.execute(
+            "INSERT INTO local_weekly_export_attempts (id, profile_id, snapshot_id, "
+            "token_id, export_id_hash, filename_fingerprint, status, result_hash, "
+            "byte_size, started_at, ended_at, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (att_id, profile_id, snap_id, tok_id, "8" * 64, "7" * 64,
+             "saved", "6" * 64, 1, now, now, now),
+        )
+        metadata = {
+            "schema_version": 1, "weekly_plan_id": None, "draft_id": None,
+            "draft_version": None, "confirmation_id": None,
+            "confirmation_version": None, "snapshot_id": snap_id,
+            "token_id": tok_id,
+        }
+        con.execute(
+            "INSERT INTO local_weekly_plan_operations (id, profile_id, request_id, "
+            "weekly_plan_id, action, input_fingerprint, result_draft_id, "
+            "result_draft_version, result_confirmed_id, result_confirmed_version, "
+            "result_snapshot_id, result_token_id, launch_id, session_scope_hash, "
+            "result_json, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (op_id, profile_id, "00000000-0000-4000-8000-000000000002", None,
+             "export_create", "5" * 64, None, None, None, None,
+             snap_id, tok_id, "old-launch", "f" * 64,
+             json.dumps(metadata, ensure_ascii=False), now),
+        )
+        con.commit()
+    finally:
+        con.close()
 
 def _jpeg_bytes(size: tuple[int, int], seed: int, quality: int = 92) -> bytes:
     """Create a deterministic, high-detail JPEG that is a real photo payload.

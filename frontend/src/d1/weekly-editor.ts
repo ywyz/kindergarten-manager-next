@@ -21,7 +21,7 @@ import {
   type WeeklyExportPreview,
   type WeeklyRefreshPreview,
   type WeeklyFact,
-  type WeeklyFocusArea,
+  type WeeklyFocusChoice,
   type WeeklyGameChoice,
   type WeeklyGamePatch,
   type WeeklyPatch,
@@ -97,6 +97,7 @@ function selectorFromGame(game: WeeklyGameChoice): WeeklyGamePatch {
       game_id: game.game_id,
     }
   }
+  if (game.source_kind === 'ai_supplement') throw new Error('AI 补充项必须保留原值或整体替换')
   return {
     source_kind: 'manual',
     manual_item_id: game.manual_item_id ?? null,
@@ -108,7 +109,8 @@ function selectorFromGame(game: WeeklyGameChoice): WeeklyGamePatch {
   }
 }
 
-function selectorFromFocus(focus: WeeklyFocusArea): WeeklyDailySelector {
+function selectorFromFocus(focus: WeeklyFocusChoice): WeeklyDailySelector {
+  if (focus.source_kind === 'ai_supplement') throw new Error('AI 补充重点必须保留原值或整体替换')
   return {
     source_kind: 'daily_plan',
     daily_plan_id: focus.daily_plan_id,
@@ -167,6 +169,7 @@ export function weeklyPatchFrom(
     const after = current.weekly_columns[key]
     if (after !== baseline.weekly_columns[key]) columns[key] = after
   }
+  if (current.materials !== baseline.materials) patch.materials = current.materials
   if (Object.keys(columns).length) patch.weekly_columns = columns
   return patch
 }
@@ -192,6 +195,7 @@ function applyLaterInput(response: WeeklyDraftContent, submitted: WeeklyDraftCon
     if (!sameValue(submitted.outdoor_game_slots[key], later.outdoor_game_slots[key])) next.outdoor_game_slots[key] = cloneWeekly(later.outdoor_game_slots[key])
   }
   if (!sameValue(submitted.focus_area, later.focus_area)) next.focus_area = cloneWeekly(later.focus_area)
+  if (submitted.materials !== later.materials) next.materials = later.materials
   return next
 }
 
@@ -773,10 +777,41 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
       this.endBusy(confirmReason)
     }
   }
+  savedDraftRef(): { id: string; version: number; content_hash: string } {
+    return { id: this.detail.draft.id, version: this.loadedVersion, content_hash: this.detail.draft.content_hash }
+  }
+
+  beginExternalBusy(reason: string): () => void {
+    this.beginBusy(reason)
+    let done = false
+    return () => { if (done) return; done = true; this.endBusy(reason) }
+  }
+
+  reconcileExternalDraft(detail: WeeklyDetail, guard: { identity: string; input_revision: number; sequence: number }, submitted: WeeklyDraftContent, acceptedDraft: { id: string; version: number; content_hash: string }): 'applied' | 'stale' | 'conflict' {
+    if (this.identity() !== guard.identity || this.sequence !== guard.sequence) return 'stale'
+    if (detail.draft.id !== acceptedDraft.id || detail.draft.version !== acceptedDraft.version || detail.draft.content_hash !== acceptedDraft.content_hash) return 'conflict'
+    const later = this.form
+    const laterRevision = this.inputRevision
+    let nextForm: WeeklyDraftContent
+    if (laterRevision === guard.input_revision) {
+      nextForm = cloneWeekly(detail.draft.content)
+    } else {
+      const overlay = applyLaterInput(detail.draft.content, submitted, later)
+      const merged = mergeManualIds(overlay, submitted, detail.draft.content)
+      if (merged.conflicts.length) return 'conflict'
+      nextForm = merged.content
+    }
+    this.detail = detail
+    this.baseline = cloneWeekly(detail.draft.content)
+    this.loadedVersion = detail.draft.version
+    this.acceptedDraft = { ...acceptedDraft }
+    this.form = nextForm
+    this.status = 'idle'
+    this.unknown = false
+    this.notify()
+    return 'applied'
+  }
 }
-
-
-
 export interface WeeklyConfirmDecision {
   ack_missing: boolean
   ack_stale: boolean

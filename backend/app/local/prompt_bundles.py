@@ -73,7 +73,16 @@ OBSERVATION_TASK_TYPES: tuple[str, ...] = (
     "game_observation_generate",
     "game_observation_rewrite",
 )
-REGISTERED_TASK_TYPES: tuple[str, ...] = TASK_TYPES + OBSERVATION_TASK_TYPES
+WEEKLY_TASK_TYPES: tuple[str, ...] = (
+    "weekly_games_select",
+    "weekly_key_week_focus",
+    "weekly_environment_setup",
+    "weekly_habit_culture",
+    "weekly_home_cooperation",
+    "weekly_materials_generate",
+)
+NEW_TASK_TYPES: tuple[str, ...] = OBSERVATION_TASK_TYPES + WEEKLY_TASK_TYPES
+REGISTERED_TASK_TYPES: tuple[str, ...] = TASK_TYPES + NEW_TASK_TYPES
 
 # Package contract delivered by this application build. A future build that
 # ships contract 2 or default r2/r3 only has to add manifest entries and bump
@@ -832,6 +841,33 @@ PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
     ),
 )
 
+
+def _weekly_bundle_manifest() -> tuple[dict, ...]:
+    from app.local.weekly_ai_contracts import weekly_bundle_definitions
+
+    def guidance(value):
+        return {
+            str(key): (
+                "true" if item is True else "false" if item is False else str(item)
+            )
+            for key, item in dict(value).items()
+        }
+
+    return tuple(
+        _bundle(
+            item["task_type"],
+            item["input_schema_json"],
+            item["output_schema_json"],
+            guidance(item["guidance_defaults_json"]),
+            contract_version=item["contract_version"],
+            default_revision=item["default_revision"],
+        )
+        for item in weekly_bundle_definitions()
+    )
+
+
+PROMPT_BUNDLE_MANIFEST = PROMPT_BUNDLE_MANIFEST + _weekly_bundle_manifest()
+
 GUIDANCE_FIELDS: dict[str, tuple[str, ...]] = {
     bundle["task_type"]: tuple(bundle["guidance_defaults_json"].keys())
     for bundle in PROMPT_BUNDLE_MANIFEST
@@ -1566,7 +1602,7 @@ def _ensure_missing_observation_prompt_seeds(
     """
     observation_targets = {
         task_type: targets[task_type]
-        for task_type in OBSERVATION_TASK_TYPES
+        for task_type in NEW_TASK_TYPES
         if task_type in targets
     }
     if not observation_targets:
@@ -1781,6 +1817,7 @@ def sync_prompt_bundles(
 __all__ = [
     "TASK_TYPES",
     "OBSERVATION_TASK_TYPES",
+    "WEEKLY_TASK_TYPES",
     "REGISTERED_TASK_TYPES",
     "PACKAGE_CONTRACT_VERSION",
     "PACKAGE_DEFAULT_REVISION",

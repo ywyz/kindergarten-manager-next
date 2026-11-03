@@ -361,14 +361,14 @@ class D2SchemaTests(LocalTestCase):
             self.assertIsNotNone(state[0]["database_uuid"])
             self.assertIsNone(state[0]["current_config_version"])
 
-            # 5 类个人提示头：3 个 daily + 2 个观察数据基础
+            # 11 类个人提示头：3 daily + 2 observation + 6 weekly
             heads = query_rows(
                 runtime.db_path,
                 "SELECT task_type, current_revision, required_contract_version, latest_default_revision "
                 "FROM local_personal_prompt_heads WHERE profile_id = ? ORDER BY task_type",
                 (profile_id,),
             )
-            self.assertEqual(len(heads), 5)
+            self.assertEqual(len(heads), 11)
             daily_heads = [h for h in heads if h["task_type"].startswith("daily_")]
             observation_heads = [
                 h for h in heads if h["task_type"].startswith("game_observation_")
@@ -1513,9 +1513,9 @@ class D2SchemaTests(LocalTestCase):
         finally:
             session.close()
         self.assertEqual(
-            query_scalar(db, "SELECT count(*) FROM local_personal_prompt_heads"), 5)
+            query_scalar(db, "SELECT count(*) FROM local_personal_prompt_heads"), 11)
         self.assertEqual(
-            query_scalar(db, "SELECT count(*) FROM local_personal_prompt_versions"), 5)
+            query_scalar(db, "SELECT count(*) FROM local_personal_prompt_versions"), 11)
         self.assertEqual(
             query_scalar(db, "SELECT count(*) FROM local_class_game_revisions"), 1)
         self.assertEqual(

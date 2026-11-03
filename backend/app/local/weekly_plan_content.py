@@ -6,9 +6,10 @@ module only validates that snapshot, derives the canonical draft, applies
 explicit manual patches, refreshes resolvable references, and computes
 point-in-time facts.
 
-``schema_version`` is 1.  All string values are UTF-8 text; IDs are opaque
-server values (at most 32 characters); ``client_key`` is only a patch-time
-correlation key and never enters stored content.
+``schema_version`` is 1 or 2.  Schema 1 is read with its original exact key
+set; schema 2 adds trusted AI and materials provenance.  All string values are
+UTF-8 text; IDs are opaque server values (at most 32 characters); ``client_key``
+is only a patch-time correlation key and never enters stored content.
 """
 
 from __future__ import annotations
@@ -16,8 +17,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from collections.abc import Mapping
-from datetime import date, timedelta
+import re
+from collections.abc import Mapping, Sequence
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 SCHEMA_VERSION = 1
@@ -168,6 +170,131 @@ CALENDAR_BASIS_KEYS = frozenset(
 )
 CALENDAR_DAY_KEYS = frozenset({"date", "day_state"})
 
+SCHEMA1_VERSION = 1
+SCHEMA2_VERSION = 2
+SCHEMA_VERSION = SCHEMA2_VERSION
+CONTENT_KEYS_V1 = CONTENT_KEYS
+AI_PROVENANCE_KEYS = frozenset(
+    {
+        "games",
+        "key_week_focus",
+        "environment_setup",
+        "habit_culture",
+        "home_cooperation",
+    }
+)
+CONTENT_KEYS_V2 = CONTENT_KEYS | frozenset({"ai_provenance", "materials_provenance"})
+ADOPTION_KEYS = frozenset(
+    {
+        "candidate_id",
+        "candidate_hash",
+        "input_id",
+        "execution_id",
+        "contract_version",
+        "dependency_hash",
+        "adopted_draft_id",
+        "adopted_draft_version",
+        "adopter_profile_id",
+        "adopted_at",
+        "adopted_value",
+        "adopted_value_hash",
+        "manual_edited",
+        "basis",
+    }
+)
+MATERIALS_PROVENANCE_KEYS = frozenset(
+    {
+        "candidate_id",
+        "candidate_hash",
+        "input_id",
+        "execution_id",
+        "contract_version",
+        "dependency_hash",
+        "basis",
+        "basis_hash",
+        "items",
+        "original_text",
+        "edited",
+        "adopter_profile_id",
+        "adopted_draft_id",
+        "adopted_draft_version",
+        "adopted_at",
+    }
+)
+AI_ITEM_KEYS = frozenset({"ai_item_id", "candidate_id", "input_id", "basis_keys"})
+OUTDOOR_KEYS_V2 = SLOT_KEYS + ("ai_item_id", "candidate_id", "input_id", "basis_keys")
+FOCUS_KEYS_V2 = FOCUS_KEYS + ("ai_item_id", "candidate_id", "input_id", "basis_keys")
+BASIS_KEYS = frozenset(
+    {
+        "schema_version",
+        "target",
+        "grade",
+        "theme",
+        "manual_text",
+        "daily_sources",
+        "selected",
+        "config",
+        "calendar",
+    }
+)
+DAILY_BASIS_KEYS = frozenset(
+    {
+        "date",
+        "day_state",
+        "source_state",
+        "daily_plan_id",
+        "content_id",
+        "content_version",
+        "content_hash",
+        "morning_talk_topic",
+        "group_activity_theme",
+        "group_activity_objectives",
+        "group_activity_process",
+        "teacher_entered",
+        "morning_groups",
+        "post_group_groups",
+    }
+)
+TEACHER_ENTERED_KEYS = frozenset({"morning_talk_topic", "group_activity_theme"})
+SELECTED_BASIS_KEYS = frozenset({"outdoor_game_slots", "focus_area"})
+SELECTED_ITEM_KEYS = frozenset({"value", "ai_basis"})
+AI_SELECTED_BASIS_KEYS = frozenset(
+    {
+        "candidate_id",
+        "candidate_hash",
+        "input_id",
+        "execution_id",
+        "contract_version",
+        "dependency_hash",
+        "adopted_value_hash",
+        "ai_item_id",
+        "source_ref",
+        "config_refs",
+    }
+)
+CONFIG_BASIS_KEYS = frozenset(
+    {"revision_id", "revision_no", "game_scope", "guidance", "locations"}
+)
+CONFIG_REF_KEYS = frozenset(
+    {"revision_id", "revision_no", "kind", "name", "occurrence"}
+)
+CALENDAR_BASIS_CONTEXT_KEYS = frozenset({"window_start", "window_end", "days"})
+CALENDAR_CONTEXT_DAY_KEYS = frozenset(
+    {"date", "day_state", "holiday_names", "coverage"}
+)
+MATERIAL_ITEM_KEYS = frozenset({"text", "origin", "evidence_refs"})
+MATERIAL_EVIDENCE_KEYS = frozenset(
+    {"source_handle", "field_path", "start", "end", "quote", "source"}
+)
+MAX_MATERIAL_ITEMS = 100
+MAX_MATERIAL_ITEM_TEXT = 300
+MAX_MATERIAL_QUOTE = 2_000
+MAX_MATERIAL_SYNTHESIS = 20_000
+MAX_PROVENANCE_BYTES = 524_288
+MAX_BASIS_HANDLES = 100
+HANDLE_RE = re.compile(r"^[a-z][0-9]{1,5}$")
+BASIS_TARGETS = ("games", *WEEKLY_COLUMN_KEYS, "materials")
+
 
 class WeeklyContentError(ValueError):
     """A pure content validation/materialisation error for A to map."""
@@ -204,19 +331,38 @@ def _exact_keys(value: Mapping[str, Any], expected: frozenset[str] | tuple[str, 
     wanted = set(expected)
     actual = set(value)
     if actual != wanted:
-        missing = sorted(wanted - actual)
-        extra = sorted(actual - wanted)
-        _fail(f"键不匹配 missing={missing} extra={extra}", field_path)
+        _fail(
+            f"键不匹配 missing_count={len(wanted - actual)} extra_count={len(actual - wanted)}",
+            field_path,
+        )
 
 
-def _text(value: Any, field_path: str, *, allow_none: bool = False, strip: bool = False) -> str:
+def _text(
+    value: Any,
+    field_path: str,
+    *,
+    allow_none: bool = False,
+    strip: bool = False,
+    maximum: int | None = None,
+    nonempty: bool = False,
+) -> str:
     if value is None and allow_none:
         return ""
     if not isinstance(value, str):
         _fail("必须是字符串", field_path)
     if "\x00" in value:
         _fail("字符串不得包含 NUL", field_path)
-    return value.strip() if strip else value
+    result = value.strip() if strip else value
+    if maximum is not None and len(result) > maximum:
+        _fail(
+            "文本超限",
+            field_path,
+            code="WEEKLY_CONTENT_TOO_LARGE",
+            details={"max": maximum},
+        )
+    if nonempty and not result.strip():
+        _fail("文本不能为空", field_path)
+    return result
 
 
 def _name(value: Any, field_path: str) -> str:
@@ -691,10 +837,13 @@ def _validate_week_structure(anchor: str, term_start: str, term_end: str, days: 
         _fail("日期必须从周一 anchor 连续 7 天", f"{field_path}.days")
 
 
-def _normalize_slot(value: Any, field_path: str) -> dict | None:
+def _normalize_slot(value: Any, field_path: str, *, allow_ai: bool = False) -> dict | None:
     if value is None:
         return None
     data = _map(value, field_path)
+    if allow_ai and data.get("source_kind") == "ai_supplement":
+        _exact_keys(data, frozenset(OUTDOOR_KEYS_V2), field_path)
+        return _normalize_ai_outdoor(data, field_path)
     _exact_keys(data, SLOT_KEYS, field_path)
     kind = _text(data.get("source_kind"), f"{field_path}.source_kind")
     if kind == "daily_plan":
@@ -754,39 +903,47 @@ def _normalize_slot(value: Any, field_path: str) -> dict | None:
     _fail("source_kind 必须是 daily_plan/manual", f"{field_path}.source_kind")
 
 
-def _normalize_focus(value: Any) -> dict | None:
+def _normalize_focus(
+    value: Any,
+    *,
+    allow_ai: bool = False,
+    field_path: str = "content.focus_area",
+) -> dict | None:
     if value is None:
         return None
-    data = _map(value, "content.focus_area")
-    _exact_keys(data, FOCUS_KEYS, "content.focus_area")
+    data = _map(value, field_path)
+    if allow_ai and data.get("source_kind") == "ai_supplement":
+        _exact_keys(data, frozenset(FOCUS_KEYS_V2), field_path)
+        return _normalize_ai_focus(data, field_path)
+    _exact_keys(data, FOCUS_KEYS, field_path)
     if data.get("source_kind") != "daily_plan":
-        _fail("focus_area 只允许日来源", "content.focus_area.source_kind")
+        _fail("focus_area 只允许日来源", f"{field_path}.source_kind")
     if data.get("manual_item_id") is not None:
-        _fail("focus_area 不得携带 manual_item_id", "content.focus_area.manual_item_id")
+        _fail("focus_area 不得携带 manual_item_id", f"{field_path}.manual_item_id")
     if data.get("section") != "post_group_games":
-        _fail("focus_area section 必须是 post_group_games", "content.focus_area.section")
-    context = _text(data.get("context_kind"), "content.focus_area.context_kind")
+        _fail("focus_area section 必须是 post_group_games", f"{field_path}.section")
+    context = _text(data.get("context_kind"), f"{field_path}.context_kind")
     if context not in CONTEXT_KINDS:
-        _fail("context_kind 非法", "content.focus_area.context_kind")
+        _fail("context_kind 非法", f"{field_path}.context_kind")
     return {
         "source_kind": "daily_plan",
         "manual_item_id": None,
-        "daily_plan_id": _id(data.get("daily_plan_id"), "content.focus_area.daily_plan_id"),
-        "content_id": _id(data.get("content_id"), "content.focus_area.content_id"),
+        "daily_plan_id": _id(data.get("daily_plan_id"), f"{field_path}.daily_plan_id"),
+        "content_id": _id(data.get("content_id"), f"{field_path}.content_id"),
         "content_version": _positive_int(
-            data.get("content_version"), "content.focus_area.content_version"
+            data.get("content_version"), f"{field_path}.content_version"
         ),
-        "content_hash": _hash(data.get("content_hash"), "content.focus_area.content_hash"),
+        "content_hash": _hash(data.get("content_hash"), f"{field_path}.content_hash"),
         "section": "post_group_games",
-        "group_id": _id(data.get("group_id"), "content.focus_area.group_id"),
-        "game_id": _id(data.get("game_id"), "content.focus_area.game_id"),
+        "group_id": _id(data.get("group_id"), f"{field_path}.group_id"),
+        "game_id": _id(data.get("game_id"), f"{field_path}.game_id"),
         "context_kind": context,
-        "area": _text(data.get("area"), "content.focus_area.area", allow_none=True),
-        "name": _text(data.get("name"), "content.focus_area.name"),
-        "objectives": _text(data.get("objectives"), "content.focus_area.objectives", allow_none=True),
-        "guidance": _text(data.get("guidance"), "content.focus_area.guidance", allow_none=True),
+        "area": _text(data.get("area"), f"{field_path}.area", allow_none=True),
+        "name": _text(data.get("name"), f"{field_path}.name"),
+        "objectives": _text(data.get("objectives"), f"{field_path}.objectives", allow_none=True),
+        "guidance": _text(data.get("guidance"), f"{field_path}.guidance", allow_none=True),
         "support_strategy": _text(
-            data.get("support_strategy"), "content.focus_area.support_strategy", allow_none=True
+            data.get("support_strategy"), f"{field_path}.support_strategy", allow_none=True
         ),
     }
 
@@ -814,12 +971,907 @@ def _validate_collective_slot_names(slots: Mapping[str, Any]) -> None:
         by_name[name] = key
 
 
-def validate_content(content: Any, *, snapshot: Mapping[str, Any] | None = None) -> dict:
-    """Strictly validate stored/derived content and return a deep copy."""
+def _bool(value: Any, field_path: str) -> bool:
+    if type(value) is not bool:
+        _fail("必须是布尔值", field_path)
+    return value
+
+
+def _optional_text(value: Any, field_path: str) -> str | None:
+    if value is None:
+        return None
+    return _text(value, field_path, allow_none=True)
+
+
+def _handle_list(value: Any, field_path: str) -> list[str]:
+    if not isinstance(value, list) or len(value) > MAX_BASIS_HANDLES:
+        _fail("handle 数组超限", field_path)
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not HANDLE_RE.fullmatch(item):
+            _fail("handle 语法非法", f"{field_path}[{index}]")
+        if item in result:
+            _fail("handle 重复", f"{field_path}[{index}]")
+        result.append(item)
+    return sorted(result)
+
+
+def _utc_timestamp(value: Any, field_path: str) -> str:
+    text = _text(value, field_path, maximum=64, nonempty=True)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        _fail("必须是 ISO 时间", field_path)
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        _fail("必须是 UTC 时间", field_path)
+    return text
+
+
+def _normalize_ai_outdoor(data: Mapping[str, Any], field_path: str) -> dict:
+    if data.get("source_kind") != "ai_supplement":
+        _fail("AI 户外项 source_kind 必须是 ai_supplement", f"{field_path}.source_kind")
+    for key in (
+        "manual_item_id",
+        "daily_plan_id",
+        "content_id",
+        "content_version",
+        "content_hash",
+        "section",
+        "group_id",
+        "game_id",
+    ):
+        if data.get(key) is not None:
+            _fail("AI 户外项日/手工引用必须为 null", f"{field_path}.{key}")
+    return {
+        "source_kind": "ai_supplement",
+        "manual_item_id": None,
+        "daily_plan_id": None,
+        "content_id": None,
+        "content_version": None,
+        "content_hash": None,
+        "section": None,
+        "group_id": None,
+        "game_id": None,
+        "name": _name(data.get("name"), f"{field_path}.name"),
+        "shared_objectives": _text(
+            data.get("shared_objectives"), f"{field_path}.shared_objectives", allow_none=True
+        ),
+        "guidance_points": _text(
+            data.get("guidance_points"), f"{field_path}.guidance_points", allow_none=True
+        ),
+        "focus_guidance": _text(
+            data.get("focus_guidance"), f"{field_path}.focus_guidance", allow_none=True
+        ),
+        "ai_item_id": _id(data.get("ai_item_id"), f"{field_path}.ai_item_id"),
+        "candidate_id": _id(data.get("candidate_id"), f"{field_path}.candidate_id"),
+        "input_id": _id(data.get("input_id"), f"{field_path}.input_id"),
+        "basis_keys": _handle_list(data.get("basis_keys"), f"{field_path}.basis_keys"),
+    }
+
+
+def _normalize_ai_focus(data: Mapping[str, Any], field_path: str) -> dict:
+    if data.get("source_kind") != "ai_supplement":
+        _fail("AI 重点区域 source_kind 必须是 ai_supplement", f"{field_path}.source_kind")
+    for key in (
+        "manual_item_id",
+        "daily_plan_id",
+        "content_id",
+        "content_version",
+        "content_hash",
+        "section",
+        "group_id",
+        "game_id",
+    ):
+        if data.get(key) is not None:
+            _fail("AI 重点区域日/手工引用必须为 null", f"{field_path}.{key}")
+    context = _text(data.get("context_kind"), f"{field_path}.context_kind")
+    if context not in CONTEXT_KINDS:
+        _fail("context_kind 非法", f"{field_path}.context_kind")
+    return {
+        "source_kind": "ai_supplement",
+        "manual_item_id": None,
+        "daily_plan_id": None,
+        "content_id": None,
+        "content_version": None,
+        "content_hash": None,
+        "section": None,
+        "group_id": None,
+        "game_id": None,
+        "context_kind": context,
+        "area": _text(data.get("area"), f"{field_path}.area", allow_none=True),
+        "name": _name(data.get("name"), f"{field_path}.name"),
+        "objectives": _text(data.get("objectives"), f"{field_path}.objectives", allow_none=True),
+        "guidance": _text(data.get("guidance"), f"{field_path}.guidance", allow_none=True),
+        "support_strategy": _text(
+            data.get("support_strategy"), f"{field_path}.support_strategy", allow_none=True
+        ),
+        "ai_item_id": _id(data.get("ai_item_id"), f"{field_path}.ai_item_id"),
+        "candidate_id": _id(data.get("candidate_id"), f"{field_path}.candidate_id"),
+        "input_id": _id(data.get("input_id"), f"{field_path}.input_id"),
+        "basis_keys": _handle_list(data.get("basis_keys"), f"{field_path}.basis_keys"),
+    }
+
+
+def _normalize_games_target(value: Any, field_path: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, frozenset({"outdoor_game_slots", "focus_area"}), field_path)
+    slots_raw = _map(data.get("outdoor_game_slots"), f"{field_path}.outdoor_game_slots")
+    _exact_keys(slots_raw, frozenset(OUTDOOR_SLOT_KEYS), f"{field_path}.outdoor_game_slots")
+    slots = {
+        key: _normalize_slot(
+            slots_raw.get(key), f"{field_path}.outdoor_game_slots.{key}", allow_ai=True
+        )
+        for key in OUTDOOR_SLOT_KEYS
+    }
+    _validate_collective_slot_names(slots)
+    focus = _normalize_focus(data.get("focus_area"), allow_ai=True, field_path=f"{field_path}.focus_area")
+    return {"outdoor_game_slots": slots, "focus_area": focus}
+
+
+def _normalize_daily_ref(value: Any, field_path: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, frozenset({"daily_plan_id", "content_id", "content_version", "content_hash", "section", "group_id", "game_id"}), field_path)
+    section = _text(data.get("section"), f"{field_path}.section")
+    if section not in ("morning_games", "post_group_games"):
+        _fail("section 非法", f"{field_path}.section")
+    return {
+        "daily_plan_id": _id(data.get("daily_plan_id"), f"{field_path}.daily_plan_id"),
+        "content_id": _id(data.get("content_id"), f"{field_path}.content_id"),
+        "content_version": _positive_int(data.get("content_version"), f"{field_path}.content_version"),
+        "content_hash": _hash(data.get("content_hash"), f"{field_path}.content_hash"),
+        "section": section,
+        "group_id": _id(data.get("group_id"), f"{field_path}.group_id"),
+        "game_id": _id(data.get("game_id"), f"{field_path}.game_id"),
+    }
+
+
+def _normalize_config_ref(value: Any, field_path: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, CONFIG_REF_KEYS, field_path)
+    kind = _text(data.get("kind"), f"{field_path}.kind")
+    if kind not in CONTEXT_KINDS:
+        _fail("配置 kind 非法", f"{field_path}.kind")
+    return {
+        "revision_id": _id(data.get("revision_id"), f"{field_path}.revision_id"),
+        "revision_no": _positive_int(data.get("revision_no"), f"{field_path}.revision_no"),
+        "kind": kind,
+        "name": _name(data.get("name"), f"{field_path}.name"),
+        "occurrence": _positive_int(data.get("occurrence"), f"{field_path}.occurrence"),
+    }
+
+
+def _normalize_config_basis(value: Any, field_path: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, CONFIG_BASIS_KEYS, field_path)
+    locations_raw = data.get("locations")
+    if not isinstance(locations_raw, list) or len(locations_raw) > 100:
+        _fail("配置 locations 必须是有限数组", f"{field_path}.locations")
+    locations: list[dict] = []
+    for index, item in enumerate(locations_raw):
+        raw = _map(item, f"{field_path}.locations[{index}]")
+        _exact_keys(raw, frozenset({"kind", "name", "occurrence", "guidance"}), f"{field_path}.locations[{index}]")
+        kind = _text(raw.get("kind"), f"{field_path}.locations[{index}].kind")
+        if kind not in CONTEXT_KINDS:
+            _fail("配置 location kind 非法", f"{field_path}.locations[{index}].kind")
+        locations.append(
+            {
+                "kind": kind,
+                "name": _name(raw.get("name"), f"{field_path}.locations[{index}].name"),
+                "occurrence": _positive_int(raw.get("occurrence"), f"{field_path}.locations[{index}].occurrence"),
+                "guidance": _optional_text(raw.get("guidance"), f"{field_path}.locations[{index}].guidance"),
+            }
+        )
+    locations.sort(key=lambda item: (item["kind"], item["name"], item["occurrence"]))
+    return {
+        "revision_id": _id(data.get("revision_id"), f"{field_path}.revision_id"),
+        "revision_no": _positive_int(data.get("revision_no"), f"{field_path}.revision_no"),
+        "game_scope": _optional_text(data.get("game_scope"), f"{field_path}.game_scope"),
+        "guidance": _optional_text(data.get("guidance"), f"{field_path}.guidance"),
+        "locations": locations,
+    }
+
+
+def _normalize_calendar_basis_context(value: Any, field_path: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, CALENDAR_BASIS_CONTEXT_KEYS, field_path)
+    start = _iso_date(data.get("window_start"), f"{field_path}.window_start")
+    end = _iso_date(data.get("window_end"), f"{field_path}.window_end")
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end)
+    if end_date < start_date:
+        _fail("calendar window 顺序非法", field_path)
+    days_raw = data.get("days")
+    if not isinstance(days_raw, list) or len(days_raw) > 31:
+        _fail("calendar days 必须是有限数组", f"{field_path}.days")
+    days: list[dict] = []
+    for index, item in enumerate(days_raw):
+        raw = _map(item, f"{field_path}.days[{index}]")
+        _exact_keys(raw, CALENDAR_CONTEXT_DAY_KEYS, f"{field_path}.days[{index}]")
+        state = _text(raw.get("day_state"), f"{field_path}.days[{index}].day_state")
+        if state not in (*DAY_STATES, "unknown"):
+            _fail("calendar day_state 非法", f"{field_path}.days[{index}].day_state")
+        coverage = _text(raw.get("coverage"), f"{field_path}.days[{index}].coverage")
+        if coverage not in ("known", "unknown"):
+            _fail("calendar coverage 非法", f"{field_path}.days[{index}].coverage")
+        names_raw = raw.get("holiday_names")
+        if not isinstance(names_raw, list) or len(names_raw) > 8:
+            _fail("holiday_names 必须是有限数组", f"{field_path}.days[{index}].holiday_names")
+        names: list[str] = []
+        for name_index, name in enumerate(names_raw):
+            text = _text(name, f"{field_path}.days[{index}].holiday_names[{name_index}]", maximum=80, nonempty=True)
+            if text in names:
+                _fail("holiday_names 重复", f"{field_path}.days[{index}].holiday_names")
+            names.append(text)
+        names.sort()
+        days.append(
+            {
+                "date": _iso_date(raw.get("date"), f"{field_path}.days[{index}].date"),
+                "day_state": state,
+                "holiday_names": names,
+                "coverage": coverage,
+            }
+        )
+    expected = [(start_date + timedelta(days=index)).isoformat() for index in range((end_date - start_date).days + 1)]
+    if [item["date"] for item in days] != expected:
+        _fail("calendar days 必须从 start 到 end 连续", f"{field_path}.days")
+    return {"window_start": start, "window_end": end, "days": days}
+
+
+def _normalize_teacher_entered(value: Any, field_path: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, TEACHER_ENTERED_KEYS, field_path)
+    return {
+        key: _optional_text(data.get(key), f"{field_path}.{key}")
+        for key in ("morning_talk_topic", "group_activity_theme")
+    }
+
+
+def _normalize_daily_basis(value: Any, field_path: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, DAILY_BASIS_KEYS, field_path)
+    day_state = _text(data.get("day_state"), f"{field_path}.day_state")
+    if day_state not in DAY_STATES:
+        _fail("day_state 非法", f"{field_path}.day_state")
+    source_state = _text(data.get("source_state"), f"{field_path}.source_state")
+    if source_state not in SOURCE_STATES:
+        _fail("source_state 非法", f"{field_path}.source_state")
+    nullable_ids = (
+        "daily_plan_id",
+        "content_id",
+        "content_version",
+        "content_hash",
+    )
+    values = [data.get(key) for key in nullable_ids]
+    if any(value is None for value in values) and not all(value is None for value in values):
+        _fail("daily basis 来源 ID 必须全有或全无", field_path)
+    if data.get("content_version") is not None:
+        _positive_int(data.get("content_version"), f"{field_path}.content_version")
+    if data.get("content_hash") is not None:
+        _hash(data.get("content_hash"), f"{field_path}.content_hash")
+    mornings = data.get("morning_groups")
+    posts = data.get("post_group_groups")
+    if not isinstance(mornings, list) or not isinstance(posts, list):
+        _fail("daily basis 游戏组必须是数组", field_path)
+    return {
+        "date": _iso_date(data.get("date"), f"{field_path}.date"),
+        "day_state": day_state,
+        "source_state": source_state,
+        "daily_plan_id": _id(data["daily_plan_id"], f"{field_path}.daily_plan_id") if data.get("daily_plan_id") is not None else None,
+        "content_id": _id(data["content_id"], f"{field_path}.content_id") if data.get("content_id") is not None else None,
+        "content_version": _positive_int(data["content_version"], f"{field_path}.content_version") if data.get("content_version") is not None else None,
+        "content_hash": _hash(data["content_hash"], f"{field_path}.content_hash") if data.get("content_hash") is not None else None,
+        "morning_talk_topic": _optional_text(data.get("morning_talk_topic"), f"{field_path}.morning_talk_topic"),
+        "group_activity_theme": _optional_text(data.get("group_activity_theme"), f"{field_path}.group_activity_theme"),
+        "group_activity_objectives": _optional_text(data.get("group_activity_objectives"), f"{field_path}.group_activity_objectives"),
+        "group_activity_process": _optional_text(data.get("group_activity_process"), f"{field_path}.group_activity_process"),
+        "teacher_entered": _normalize_teacher_entered(data.get("teacher_entered"), f"{field_path}.teacher_entered"),
+        "morning_groups": [
+            _normalize_morning_group(item, f"{field_path}.morning_groups[{index}]")
+            for index, item in enumerate(mornings)
+        ],
+        "post_group_groups": [
+            _normalize_post_group(item, f"{field_path}.post_group_groups[{index}]")
+            for index, item in enumerate(posts)
+        ],
+    }
+
+
+def _normalize_ai_selected_basis(value: Any, field_path: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, AI_SELECTED_BASIS_KEYS, field_path)
+    refs_raw = data.get("config_refs")
+    if not isinstance(refs_raw, list) or len(refs_raw) > 100:
+        _fail("config_refs 必须是有限数组", f"{field_path}.config_refs")
+    refs = [
+        _normalize_config_ref(item, f"{field_path}.config_refs[{index}]")
+        for index, item in enumerate(refs_raw)
+    ]
+    refs.sort(key=lambda item: (item["revision_no"], item["revision_id"], item["kind"], item["name"], item["occurrence"]))
+    source_ref = data.get("source_ref")
+    return {
+        "candidate_id": _id(data.get("candidate_id"), f"{field_path}.candidate_id"),
+        "candidate_hash": _hash(data.get("candidate_hash"), f"{field_path}.candidate_hash"),
+        "input_id": _id(data.get("input_id"), f"{field_path}.input_id"),
+        "execution_id": _id(data.get("execution_id"), f"{field_path}.execution_id"),
+        "contract_version": _positive_int(data.get("contract_version"), f"{field_path}.contract_version"),
+        "dependency_hash": _hash(data.get("dependency_hash"), f"{field_path}.dependency_hash"),
+        "adopted_value_hash": _hash(data.get("adopted_value_hash"), f"{field_path}.adopted_value_hash"),
+        "ai_item_id": _id(data.get("ai_item_id"), f"{field_path}.ai_item_id"),
+        "source_ref": _normalize_daily_ref(source_ref, f"{field_path}.source_ref") if source_ref is not None else None,
+        "config_refs": refs,
+    }
+
+
+def _normalize_selected_basis(value: Any, field_path: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, SELECTED_BASIS_KEYS, field_path)
+    slots_raw = _map(data.get("outdoor_game_slots"), f"{field_path}.outdoor_game_slots")
+    _exact_keys(slots_raw, frozenset(OUTDOOR_SLOT_KEYS), f"{field_path}.outdoor_game_slots")
+    slots: dict[str, Any] = {}
+    for key in OUTDOOR_SLOT_KEYS:
+        raw = slots_raw.get(key)
+        if raw is None:
+            slots[key] = None
+            continue
+        item = _map(raw, f"{field_path}.outdoor_game_slots.{key}")
+        _exact_keys(item, SELECTED_ITEM_KEYS, f"{field_path}.outdoor_game_slots.{key}")
+        value = _normalize_slot(item.get("value"), f"{field_path}.outdoor_game_slots.{key}.value", allow_ai=True)
+        ai_basis = item.get("ai_basis")
+        if ai_basis is not None:
+            ai_basis = _normalize_ai_selected_basis(ai_basis, f"{field_path}.outdoor_game_slots.{key}.ai_basis")
+        if value is None:
+            _fail("selected value 不能为空", f"{field_path}.outdoor_game_slots.{key}.value")
+        if value["source_kind"] == "ai_supplement":
+            if ai_basis is None:
+                _fail("AI selected 必须有 ai_basis", f"{field_path}.outdoor_game_slots.{key}.ai_basis")
+            if ai_basis["ai_item_id"] != value["ai_item_id"] or ai_basis["candidate_id"] != value["candidate_id"] or ai_basis["input_id"] != value["input_id"]:
+                _fail("AI selected 与 ai_basis 身份不一致", f"{field_path}.outdoor_game_slots.{key}")
+        elif ai_basis is not None:
+            _fail("非 AI selected 的 ai_basis 必须为 null", f"{field_path}.outdoor_game_slots.{key}.ai_basis")
+        slots[key] = {"value": value, "ai_basis": ai_basis}
+    focus_raw = data.get("focus_area")
+    if focus_raw is None:
+        focus = None
+    else:
+        item = _map(focus_raw, f"{field_path}.focus_area")
+        _exact_keys(item, SELECTED_ITEM_KEYS, f"{field_path}.focus_area")
+        value = _normalize_focus(item.get("value"), allow_ai=True, field_path=f"{field_path}.focus_area.value")
+        ai_basis = item.get("ai_basis")
+        if ai_basis is not None:
+            ai_basis = _normalize_ai_selected_basis(ai_basis, f"{field_path}.focus_area.ai_basis")
+        if value is None:
+            _fail("selected focus 不能为空", f"{field_path}.focus_area.value")
+        if value["source_kind"] == "ai_supplement":
+            if ai_basis is None:
+                _fail("AI focus 必须有 ai_basis", f"{field_path}.focus_area.ai_basis")
+            if ai_basis["ai_item_id"] != value["ai_item_id"] or ai_basis["candidate_id"] != value["candidate_id"] or ai_basis["input_id"] != value["input_id"]:
+                _fail("AI focus 与 ai_basis 身份不一致", f"{field_path}.focus_area")
+        elif ai_basis is not None:
+            _fail("非 AI focus 的 ai_basis 必须为 null", f"{field_path}.focus_area.ai_basis")
+        focus = {"value": value, "ai_basis": ai_basis}
+    return {"outdoor_game_slots": slots, "focus_area": focus}
+
+
+def _normalize_basis(value: Any, field_path: str, *, expected_target: str, grade: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, BASIS_KEYS, field_path)
+    if data.get("schema_version") != 1 or type(data.get("schema_version")) is not int:
+        _fail("basis schema_version 必须为 1", f"{field_path}.schema_version")
+    target = data.get("target")
+    if target != expected_target or target not in BASIS_TARGETS:
+        _fail("basis target 不匹配", f"{field_path}.target")
+    if _text(data.get("grade"), f"{field_path}.grade") != grade:
+        _fail("basis grade 与 content 不一致", f"{field_path}.grade")
+    theme = _optional_text(data.get("theme"), f"{field_path}.theme")
+    manual_text = _optional_text(data.get("manual_text"), f"{field_path}.manual_text")
+    daily_raw = data.get("daily_sources")
+    if not isinstance(daily_raw, list) or len(daily_raw) > 7:
+        _fail("basis daily_sources 必须是有限数组", f"{field_path}.daily_sources")
+    daily = [
+        _normalize_daily_basis(item, f"{field_path}.daily_sources[{index}]")
+        for index, item in enumerate(daily_raw)
+    ]
+    if [item["date"] for item in daily] != sorted(item["date"] for item in daily):
+        _fail("daily_sources 必须日期升序", f"{field_path}.daily_sources")
+    selected = data.get("selected")
+    selected_value = _normalize_selected_basis(selected, f"{field_path}.selected") if selected is not None else None
+    config_raw = data.get("config")
+    if not isinstance(config_raw, list) or len(config_raw) > 20:
+        _fail("basis config 必须是有限数组", f"{field_path}.config")
+    config = [
+        _normalize_config_basis(item, f"{field_path}.config[{index}]")
+        for index, item in enumerate(config_raw)
+    ]
+    config.sort(key=lambda item: (item["revision_no"], item["revision_id"]))
+    calendar = data.get("calendar")
+    calendar_value = _normalize_calendar_basis_context(calendar, f"{field_path}.calendar") if calendar is not None else None
+
+    if target == "games":
+        if theme is not None or manual_text is not None or selected_value is not None or calendar_value is not None:
+            _fail("games basis 含未使用字段", field_path)
+        if not config:
+            _fail("games basis 必须有 config", field_path)
+    elif target in ("key_week_focus", "habit_culture"):
+        if selected_value is not None or config or calendar_value is not None:
+            _fail("栏目 basis 含未使用字段", field_path)
+        if theme is None or manual_text is None:
+            _fail("栏目 basis 必须保留 theme/manual_text", field_path)
+    elif target == "environment_setup":
+        if selected_value is None or calendar_value is not None:
+            _fail("environment basis 缺少 selected 或含 calendar", field_path)
+        if theme is None or manual_text is None:
+            _fail("environment basis 必须保留 theme/manual_text", field_path)
+    elif target == "home_cooperation":
+        if selected_value is not None or config or calendar_value is None:
+            _fail("home basis 缺少 calendar 或含未使用字段", field_path)
+        if theme is None or manual_text is None:
+            _fail("home basis 必须保留 theme/manual_text", field_path)
+    elif target == "materials":
+        if selected_value is None or theme is not None or manual_text is not None or calendar_value is not None or daily:
+            _fail("materials basis 含未使用字段", field_path)
+        if not config:
+            # A material basis may consist of a manual/daily selection without
+            # a config; allow empty config but selected is still required.
+            pass
+    return {
+        "schema_version": 1,
+        "target": target,
+        "grade": _text(data.get("grade"), f"{field_path}.grade"),
+        "theme": theme,
+        "manual_text": manual_text,
+        "daily_sources": daily,
+        "selected": selected_value,
+        "config": config,
+        "calendar": calendar_value,
+    }
+
+
+def _normalize_adoption(value: Any, field_path: str, *, target: str, current_value: Any, grade: str) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, ADOPTION_KEYS, field_path)
+    for key in ("candidate_id", "input_id", "execution_id", "adopted_draft_id", "adopter_profile_id"):
+        _id(data.get(key), f"{field_path}.{key}")
+    _hash(data.get("candidate_hash"), f"{field_path}.candidate_hash")
+    _positive_int(data.get("contract_version"), f"{field_path}.contract_version")
+    _hash(data.get("dependency_hash"), f"{field_path}.dependency_hash")
+    _positive_int(data.get("adopted_draft_version"), f"{field_path}.adopted_draft_version")
+    _utc_timestamp(data.get("adopted_at"), f"{field_path}.adopted_at")
+    basis = _normalize_basis(data.get("basis"), f"{field_path}.basis", expected_target=target, grade=grade)
+    adopted_value = data.get("adopted_value")
+    if target == "games":
+        adopted_value = _normalize_games_target(adopted_value, f"{field_path}.adopted_value")
+    elif target in WEEKLY_COLUMN_KEYS:
+        raw = _map(adopted_value, f"{field_path}.adopted_value")
+        _exact_keys(raw, frozenset({"text"}), f"{field_path}.adopted_value")
+        adopted_value = {"text": _text(raw.get("text"), f"{field_path}.adopted_value.text", nonempty=True)}
+    else:
+        _fail("采用目标非法", f"{field_path}.target")
+    adopted_hash = _hash(data.get("adopted_value_hash"), f"{field_path}.adopted_value_hash")
+    if adopted_hash != content_hash(adopted_value):
+        _fail("adopted_value_hash 不一致", f"{field_path}.adopted_value_hash")
+    manual_edited = _bool(data.get("manual_edited"), f"{field_path}.manual_edited")
+    if target == "games":
+        expected_edited = canonical_json(adopted_value) != canonical_json(_normalize_games_target(current_value, "content.games"))
+    else:
+        expected_edited = adopted_value["text"] != _text(current_value, "weekly_columns.value")
+    if manual_edited != expected_edited:
+        _fail("manual_edited 与服务端派生值不一致", f"{field_path}.manual_edited")
+    return {
+        "candidate_id": data["candidate_id"],
+        "candidate_hash": data["candidate_hash"],
+        "input_id": data["input_id"],
+        "execution_id": data["execution_id"],
+        "contract_version": data["contract_version"],
+        "dependency_hash": data["dependency_hash"],
+        "adopted_draft_id": data["adopted_draft_id"],
+        "adopted_draft_version": data["adopted_draft_version"],
+        "adopter_profile_id": data["adopter_profile_id"],
+        "adopted_at": data["adopted_at"],
+        "adopted_value": adopted_value,
+        "adopted_value_hash": adopted_hash,
+        "manual_edited": manual_edited,
+        "basis": basis,
+    }
+
+
+def _normalize_ai_provenance(
+    value: Any,
+    field_path: str,
+    *,
+    slots: Mapping[str, Any],
+    focus: Any,
+    columns: Mapping[str, Any],
+    grade: str,
+) -> dict:
+    data = _map(value, field_path)
+    _exact_keys(data, AI_PROVENANCE_KEYS, field_path)
+    result: dict[str, Any] = {}
+    for key in AI_PROVENANCE_KEYS:
+        raw = data.get(key)
+        if raw is None:
+            result[key] = None
+            continue
+        if key == "games":
+            current = {"outdoor_game_slots": slots, "focus_area": focus}
+        elif key in WEEKLY_COLUMN_KEYS:
+            current = columns[key]
+        else:
+            _fail("ai_provenance 键非法", f"{field_path}.{key}")
+        result[key] = _normalize_adoption(
+            raw,
+            f"{field_path}.{key}",
+            target=key,
+            current_value=current,
+            grade=grade,
+        )
+    return result
+
+
+def _validate_ai_items_against_games(slots: Mapping[str, Any], focus: Any, provenance: Mapping[str, Any]) -> None:
+    ai_items: list[tuple[str, dict]] = []
+    for key, slot in slots.items():
+        if slot is not None and slot.get("source_kind") == "ai_supplement":
+            ai_items.append((key, slot))
+    if focus is not None and focus.get("source_kind") == "ai_supplement":
+        ai_items.append(("focus_area", focus))
+    if not ai_items:
+        return
+    games = provenance.get("games")
+    if games is None:
+        _fail("AI 槽/重点区域缺少 games provenance", "content.ai_provenance.games")
+    adopted = games["adopted_value"]
+    for key, item in ai_items:
+        if item["candidate_id"] != games["candidate_id"] or item["input_id"] != games["input_id"]:
+            _fail("AI 项 candidate/input 与 games provenance 不一致", f"content.outdoor_game_slots.{key}")
+        if key == "focus_area":
+            adopted_item = adopted.get("focus_area")
+        else:
+            adopted_item = adopted["outdoor_game_slots"].get(key)
+        if adopted_item is None or adopted_item.get("ai_item_id") != item["ai_item_id"]:
+            _fail("AI 项未出现在 games adopted_value", f"content.outdoor_game_slots.{key}")
+        for field in ("candidate_id", "input_id", "basis_keys"):
+            if adopted_item.get(field) != item.get(field):
+                _fail("AI 项与 games adopted_value 不一致", f"content.outdoor_game_slots.{key}")
+
+
+def _normalize_materials_text(value: Any, field_path: str) -> str | None:
+    if value is None:
+        return None
+    text = _text(value, field_path, maximum=MAX_MATERIAL_SYNTHESIS)
+    return text
+
+
+def _stored_source_text(source: Mapping[str, Any], field_path: str) -> str:
+    value = source.get(field_path)
+    if value is None:
+        return ""
+    return _text(value, f"source.{field_path}")
+
+
+def _normalize_stored_material_item(value: Any, field_path: str) -> dict:
+    from app.local import weekly_ai_contracts as contracts
+
+    data = _map(value, field_path)
+    _exact_keys(data, MATERIAL_ITEM_KEYS, field_path)
+    text = _text(data.get("text"), f"{field_path}.text", maximum=MAX_MATERIAL_ITEM_TEXT, nonempty=True)
+    origin = data.get("origin")
+    if origin not in ("extracted", "suggested"):
+        _fail("origin 非法", f"{field_path}.origin")
+    refs_raw = data.get("evidence_refs")
+    if not isinstance(refs_raw, list) or len(refs_raw) > MAX_MATERIAL_ITEMS:
+        _fail("evidence_refs 必须是有限数组", f"{field_path}.evidence_refs")
+    if origin == "extracted" and not refs_raw:
+        _fail("extracted 必须有证据", f"{field_path}.evidence_refs")
+    if origin == "suggested" and refs_raw:
+        _fail("suggested 不得有证据", f"{field_path}.evidence_refs")
+    refs: list[dict] = []
+    seen: set[tuple[Any, ...]] = set()
+    for index, raw_ref in enumerate(refs_raw):
+        ref_path = f"{field_path}.evidence_refs[{index}]"
+        ref = _map(raw_ref, ref_path)
+        _exact_keys(ref, MATERIAL_EVIDENCE_KEYS, ref_path)
+        handle = _text(ref.get("source_handle"), f"{ref_path}.source_handle", maximum=6, nonempty=True)
+        if not HANDLE_RE.fullmatch(handle):
+            _fail("source_handle 语法非法", f"{ref_path}.source_handle")
+        source = contracts.validate_typed_handle(handle, ref.get("source"))
+        field_path_value = _text(ref.get("field_path"), f"{ref_path}.field_path", maximum=64, nonempty=True)
+        if field_path_value not in contracts.EVIDENCE_FIELD_PATHS[source["kind"]]:
+            _fail("field_path 不允许", f"{ref_path}.field_path")
+        start = ref.get("start")
+        end = ref.get("end")
+        if type(start) is not int or type(end) is not int or start < 0 or end <= start:
+            _fail("证据位置非法", ref_path)
+        quote = _text(ref.get("quote"), f"{ref_path}.quote", maximum=MAX_MATERIAL_QUOTE, nonempty=True)
+        source_text = _stored_source_text(source, field_path_value)
+        if end > len(source_text) or source_text[start:end] != quote:
+            _fail("证据位置与原文不匹配", ref_path)
+        key = (handle, field_path_value, start, end, quote)
+        if key in seen:
+            _fail("证据重复", ref_path)
+        seen.add(key)
+        refs.append({"source_handle": handle, "field_path": field_path_value, "start": start, "end": end, "quote": quote, "source": source})
+    return {"text": text, "origin": origin, "evidence_refs": refs}
+
+
+def _evidence_text(value: Any) -> str:
+    return "" if value is None else value
+
+
+def _selected_value_items(basis: Mapping[str, Any]) -> list[tuple[str | None, dict]]:
+    result: list[tuple[str | None, dict]] = []
+    selected = basis.get("selected") or {}
+    for key, item in (selected.get("outdoor_game_slots") or {}).items():
+        if item is not None:
+            result.append((key, item["value"]))
+    focus = selected.get("focus_area")
+    if focus is not None:
+        result.append((None, focus["value"]))
+    return result
+
+
+def _selected_ai_config_refs(basis: Mapping[str, Any]) -> set[tuple[Any, ...]]:
+    refs: set[tuple[Any, ...]] = set()
+    selected = basis.get("selected") or {}
+    items: list[Mapping[str, Any]] = []
+    for item in (selected.get("outdoor_game_slots") or {}).values():
+        if item is not None:
+            items.append(item)
+    if selected.get("focus_area") is not None:
+        items.append(selected["focus_area"])
+    for item in items:
+        if item["value"].get("source_kind") != "ai_supplement":
+            continue
+        for ref in (item.get("ai_basis") or {}).get("config_refs") or []:
+            refs.add(
+                (
+                    ref["revision_id"],
+                    ref["revision_no"],
+                    ref["kind"],
+                    ref["name"],
+                    ref["occurrence"],
+                )
+            )
+    return refs
+
+
+def _matches_selected_source(
+    source: Mapping[str, Any], value: Mapping[str, Any], slot_key: str | None
+) -> bool:
+    kind = source["kind"]
+    source_kind = value.get("source_kind")
+    if kind == "morning_game":
+        if slot_key not in (*COLLECTIVE_SLOT_KEYS, *FREE_CHOICE_SLOT_KEYS):
+            return False
+        expected_group_kind = (
+            "collective" if slot_key in COLLECTIVE_SLOT_KEYS else "free_choice"
+        )
+        return (
+            source_kind == "daily_plan"
+            and value.get("section") == "morning_games"
+            and source["group_kind"] == expected_group_kind
+            and all(
+                source[key] == value.get(key)
+                for key in (
+                    "daily_plan_id",
+                    "content_id",
+                    "content_version",
+                    "content_hash",
+                    "group_id",
+                    "game_id",
+                    "name",
+                )
+            )
+            and _evidence_text(source["shared_objectives"])
+            == _evidence_text(value.get("shared_objectives"))
+            and _evidence_text(source["guidance_points"])
+            == _evidence_text(value.get("guidance_points"))
+            and _evidence_text(source["focus_guidance"])
+            == _evidence_text(value.get("focus_guidance"))
+        )
+    if kind == "post_group_game":
+        return (
+            slot_key is None
+            and source_kind == "daily_plan"
+            and value.get("section") == "post_group_games"
+            and all(
+                source[key] == value.get(key)
+                for key in (
+                    "daily_plan_id",
+                    "content_id",
+                    "content_version",
+                    "content_hash",
+                    "group_id",
+                    "game_id",
+                    "name",
+                    "context_kind",
+                )
+            )
+            and _evidence_text(source["area"]) == _evidence_text(value.get("area"))
+            and _evidence_text(source["objectives"])
+            == _evidence_text(value.get("objectives"))
+            and _evidence_text(source["guidance"])
+            == _evidence_text(value.get("guidance"))
+            and _evidence_text(source["support_strategy"])
+            == _evidence_text(value.get("support_strategy"))
+        )
+    if kind == "manual_outdoor":
+        return (
+            slot_key is not None
+            and source_kind == "manual"
+            and source["slot_key"] == slot_key
+            and source["manual_item_id"] == value.get("manual_item_id")
+            and _evidence_text(source["name"]) == _evidence_text(value.get("name"))
+            and _evidence_text(source["shared_objectives"])
+            == _evidence_text(value.get("shared_objectives"))
+            and _evidence_text(source["guidance_points"])
+            == _evidence_text(value.get("guidance_points"))
+            and _evidence_text(source["focus_guidance"])
+            == _evidence_text(value.get("focus_guidance"))
+        )
+    if kind == "ai_outdoor":
+        return (
+            slot_key is not None
+            and source_kind == "ai_supplement"
+            and source["slot_key"] == slot_key
+            and source["ai_item_id"] == value.get("ai_item_id")
+            and source["candidate_id"] == value.get("candidate_id")
+            and source["input_id"] == value.get("input_id")
+            and _evidence_text(source["name"]) == _evidence_text(value.get("name"))
+            and _evidence_text(source["shared_objectives"])
+            == _evidence_text(value.get("shared_objectives"))
+            and _evidence_text(source["guidance_points"])
+            == _evidence_text(value.get("guidance_points"))
+            and _evidence_text(source["focus_guidance"])
+            == _evidence_text(value.get("focus_guidance"))
+        )
+    if kind == "ai_focus":
+        return (
+            slot_key is None
+            and source_kind == "ai_supplement"
+            and source["ai_item_id"] == value.get("ai_item_id")
+            and source["candidate_id"] == value.get("candidate_id")
+            and source["input_id"] == value.get("input_id")
+            and source["context_kind"] == value.get("context_kind")
+            and _evidence_text(source["area"]) == _evidence_text(value.get("area"))
+            and _evidence_text(source["name"]) == _evidence_text(value.get("name"))
+            and _evidence_text(source["objectives"])
+            == _evidence_text(value.get("objectives"))
+            and _evidence_text(source["guidance"])
+            == _evidence_text(value.get("guidance"))
+            and _evidence_text(source["support_strategy"])
+            == _evidence_text(value.get("support_strategy"))
+        )
+    return False
+
+
+def _matches_basis_config(source: Mapping[str, Any], basis: Mapping[str, Any]) -> bool:
+    refs = _selected_ai_config_refs(basis)
+    if not refs:
+        return False
+    source_ref = (
+        source["revision_id"],
+        source["revision_no"],
+        source["location_kind"],
+        source["name"],
+        source["occurrence"],
+    )
+    if source_ref not in refs:
+        return False
+    for entry in basis.get("config") or []:
+        if (
+            entry.get("revision_id") != source["revision_id"]
+            or entry.get("revision_no") != source["revision_no"]
+        ):
+            continue
+        if _evidence_text(entry.get("game_scope")) != _evidence_text(
+            source.get("game_scope")
+        ):
+            continue
+        if _evidence_text(entry.get("guidance")) != _evidence_text(
+            source.get("config_guidance")
+        ):
+            continue
+        for location in entry.get("locations") or []:
+            if (
+                location.get("kind") == source["location_kind"]
+                and location.get("name") == source["name"]
+                and location.get("occurrence") == source["occurrence"]
+                and _evidence_text(location.get("guidance"))
+                == _evidence_text(source.get("guidance"))
+            ):
+                return True
+    return False
+
+
+def _validate_materials_evidence_basis(
+    items: Sequence[Mapping[str, Any]], basis: Mapping[str, Any]
+) -> None:
+    selected_values = _selected_value_items(basis)
+    for item_index, item in enumerate(items):
+        for ref_index, ref in enumerate(item.get("evidence_refs") or []):
+            source = ref["source"]
+            if source["kind"] == "config_location":
+                matched = _matches_basis_config(source, basis)
+            else:
+                matched = any(
+                    _matches_selected_source(source, value, slot_key)
+                    for slot_key, value in selected_values
+                )
+            if not matched:
+                _fail(
+                    "证据来源不属于冻结材料依据",
+                    f"materials_provenance.items[{item_index}].evidence_refs[{ref_index}]",
+                )
+
+
+def _normalize_materials_provenance(value: Any, field_path: str, *, materials: str | None, grade: str) -> dict | None:
+    if value is None:
+        if materials is not None:
+            _fail("无 materials_provenance 时 materials 必须为 null", "content.materials")
+        return None
+    data = _map(value, field_path)
+    _exact_keys(data, MATERIALS_PROVENANCE_KEYS, field_path)
+    for key in ("candidate_id", "input_id", "execution_id", "adopted_draft_id", "adopter_profile_id"):
+        _id(data.get(key), f"{field_path}.{key}")
+    _hash(data.get("candidate_hash"), f"{field_path}.candidate_hash")
+    _positive_int(data.get("contract_version"), f"{field_path}.contract_version")
+    _hash(data.get("dependency_hash"), f"{field_path}.dependency_hash")
+    _positive_int(data.get("adopted_draft_version"), f"{field_path}.adopted_draft_version")
+    _utc_timestamp(data.get("adopted_at"), f"{field_path}.adopted_at")
+    basis = _normalize_basis(data.get("basis"), f"{field_path}.basis", expected_target="materials", grade=grade)
+    basis_hash = _hash(data.get("basis_hash"), f"{field_path}.basis_hash")
+    if basis_hash != content_hash(basis):
+        _fail("basis_hash 不一致", f"{field_path}.basis_hash")
+    items_raw = data.get("items")
+    if not isinstance(items_raw, list) or len(items_raw) > MAX_MATERIAL_ITEMS:
+        _fail("items 必须是有限数组", f"{field_path}.items")
+    items = [_normalize_stored_material_item(item, f"{field_path}.items[{index}]") for index, item in enumerate(items_raw)]
+    _validate_materials_evidence_basis(items, basis)
+    original_text = _text(data.get("original_text"), f"{field_path}.original_text", maximum=MAX_MATERIAL_SYNTHESIS)
+    if original_text != "\n".join(item["text"] for item in items):
+        _fail("original_text 与 items 不一致", f"{field_path}.original_text")
+    edited = _bool(data.get("edited"), f"{field_path}.edited")
+    if edited != (materials != original_text):
+        _fail("edited 与服务端派生值不一致", f"{field_path}.edited")
+    if materials is not None and len(materials) > MAX_MATERIAL_SYNTHESIS:
+        _fail("materials 正文超限", "content.materials")
+    return {
+        "candidate_id": data["candidate_id"],
+        "candidate_hash": data["candidate_hash"],
+        "input_id": data["input_id"],
+        "execution_id": data["execution_id"],
+        "contract_version": data["contract_version"],
+        "dependency_hash": data["dependency_hash"],
+        "basis": basis,
+        "basis_hash": basis_hash,
+        "items": items,
+        "original_text": original_text,
+        "edited": edited,
+        "adopter_profile_id": data["adopter_profile_id"],
+        "adopted_draft_id": data["adopted_draft_id"],
+        "adopted_draft_version": data["adopted_draft_version"],
+        "adopted_at": data["adopted_at"],
+    }
+
+
+def validate_content(
+    content: Any,
+    *,
+    snapshot: Mapping[str, Any] | None = None,
+    expected_schema: int | None = None,
+) -> dict:
+    """Strictly validate stored/derived schema1/schema2 content."""
     data = _map(content, "content")
-    _exact_keys(data, CONTENT_KEYS, "content")
-    if data.get("schema_version") != SCHEMA_VERSION or type(data.get("schema_version")) is not int:
-        _fail("schema_version 必须为 1", "content.schema_version")
+    schema_version = data.get("schema_version")
+    if type(schema_version) is not int or schema_version not in (SCHEMA1_VERSION, SCHEMA2_VERSION):
+        _fail("schema_version 必须严格为 1 或 2", "content.schema_version")
+    if expected_schema is not None and schema_version != expected_schema:
+        _fail("schema_version 与期望不一致", "content.schema_version")
+    _exact_keys(
+        data,
+        CONTENT_KEYS_V2 if schema_version == SCHEMA2_VERSION else CONTENT_KEYS_V1,
+        "content",
+    )
     theme = _text(data.get("theme"), "content.theme")
     rows_raw = data.get("deterministic")
     if not isinstance(rows_raw, list) or len(rows_raw) != 7:
@@ -873,23 +1925,64 @@ def validate_content(content: Any, *, snapshot: Mapping[str, Any] | None = None)
             _fail("effective 与服务端派生值不一致", f"content.deterministic[{row['date']}].effective")
     slots_raw = _map(data.get("outdoor_game_slots"), "content.outdoor_game_slots")
     _exact_keys(slots_raw, frozenset(OUTDOOR_SLOT_KEYS), "content.outdoor_game_slots")
+    allow_ai = schema_version == SCHEMA2_VERSION
     slots = {
-        key: _normalize_slot(slots_raw.get(key), f"content.outdoor_game_slots.{key}")
+        key: _normalize_slot(
+            slots_raw.get(key),
+            f"content.outdoor_game_slots.{key}",
+            allow_ai=allow_ai,
+        )
         for key in OUTDOOR_SLOT_KEYS
     }
     manual_ids: set[str] = set()
+    ai_item_ids: set[str] = set()
     for key, slot in slots.items():
         if slot is not None and slot["source_kind"] == "manual":
             if slot["manual_item_id"] in manual_ids:
                 _fail("manual_item_id 重复", f"content.outdoor_game_slots.{key}")
             manual_ids.add(slot["manual_item_id"])
+        if slot is not None and slot["source_kind"] == "ai_supplement":
+            if slot["ai_item_id"] in ai_item_ids:
+                _fail("ai_item_id 重复", f"content.outdoor_game_slots.{key}")
+            ai_item_ids.add(slot["ai_item_id"])
     _validate_collective_slot_names(slots)
-    focus = _normalize_focus(data.get("focus_area"))
+    focus = _normalize_focus(data.get("focus_area"), allow_ai=allow_ai)
+    if focus is not None and focus["source_kind"] == "ai_supplement":
+        if focus["ai_item_id"] in ai_item_ids:
+            _fail("ai_item_id 重复", "content.focus_area")
+        ai_item_ids.add(focus["ai_item_id"])
     columns = _normalize_columns(data.get("weekly_columns"), "content.weekly_columns")
-    if data.get("materials") is not None:
-        _fail("首片 materials 必须为 null", "content.materials")
+    if schema_version == SCHEMA1_VERSION:
+        if data.get("materials") is not None:
+            _fail("schema1 materials 必须为 null", "content.materials")
+        materials = None
+        ai_provenance = None
+        materials_provenance = None
+    else:
+        materials = _normalize_materials_text(data.get("materials"), "content.materials")
+        ai_provenance = None
+        materials_provenance = None
     manifest = _normalize_source_manifest(data.get("source_manifest"))
     calendar = _normalize_calendar_basis(data.get("calendar_basis"))
+    if schema_version == SCHEMA2_VERSION:
+        grade = manifest["header"]["grade"]
+        ai_provenance = _normalize_ai_provenance(
+            data.get("ai_provenance"),
+            "content.ai_provenance",
+            slots=slots,
+            focus=focus,
+            columns=columns,
+            grade=grade,
+        )
+        materials_provenance = _normalize_materials_provenance(
+            data.get("materials_provenance"),
+            "content.materials_provenance",
+            materials=materials,
+            grade=grade,
+        )
+        if materials_provenance is None and materials is not None:
+            _fail("无 materials_provenance 时 materials 必须为 null", "content.materials")
+        _validate_ai_items_against_games(slots, focus, ai_provenance)
     _validate_week_structure(
         calendar["week_anchor_date"],
         calendar["term_start"],
@@ -936,16 +2029,29 @@ def validate_content(content: Any, *, snapshot: Mapping[str, Any] | None = None)
         ):
             _fail("source_manifest 与 deterministic source 不一致", "content.source_manifest.sources")
     result = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "theme": theme,
         "deterministic": rows,
         "outdoor_game_slots": slots,
         "focus_area": focus,
         "weekly_columns": columns,
-        "materials": None,
+        "materials": materials,
         "source_manifest": manifest,
         "calendar_basis": calendar,
     }
+    if schema_version == SCHEMA2_VERSION:
+        result["ai_provenance"] = ai_provenance
+        result["materials_provenance"] = materials_provenance
+        provenance_bytes = len(
+            _canonical_json(
+                {
+                    "ai_provenance": ai_provenance,
+                    "materials_provenance": materials_provenance,
+                }
+            ).encode("utf-8")
+        )
+        if provenance_bytes > MAX_PROVENANCE_BYTES:
+            _fail("provenance 超过 512KiB", "content", "WEEKLY_CONTENT_TOO_LARGE")
     if len(_canonical_json(result).encode("utf-8")) > MAX_CONTENT_BYTES:
         _fail("content 超过 1MiB", "content", "WEEKLY_CONTENT_TOO_LARGE")
     if snapshot is not None:
@@ -1047,7 +2153,7 @@ def new_content(snapshot: Mapping[str, Any], *, theme: str = "") -> dict:
     if not isinstance(theme, str):
         _fail("theme 必须是字符串", "theme")
     content = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": SCHEMA2_VERSION,
         "theme": theme,
         "deterministic": _rows_from_snapshot(snap),
         "outdoor_game_slots": {key: None for key in OUTDOOR_SLOT_KEYS},
@@ -1056,6 +2162,8 @@ def new_content(snapshot: Mapping[str, Any], *, theme: str = "") -> dict:
         "materials": None,
         "source_manifest": _source_manifest_from_snapshot(snap),
         "calendar_basis": _calendar_basis_from_snapshot(snap),
+        "ai_provenance": {key: None for key in AI_PROVENANCE_KEYS},
+        "materials_provenance": None,
     }
     return validate_content(content)
 
@@ -1256,11 +2364,21 @@ def _manual_slot(value: Mapping[str, Any], path: str, previous_ids: set[str], ma
     }
 
 
-def _apply_slots(previous: Mapping[str, Any], payload: Any, snapshot: Mapping[str, Any], manual_ids: Mapping[str, str] | None) -> dict:
+def _apply_slots(
+    previous: Mapping[str, Any],
+    payload: Any,
+    snapshot: Mapping[str, Any],
+    manual_ids: Mapping[str, str] | None,
+    *,
+    allow_ai: bool = False,
+) -> dict:
     data = _map(payload, "outdoor_game_slots")
     unknown = set(data) - set(OUTDOOR_SLOT_KEYS)
     if unknown:
-        _fail(f"outdoor_game_slots 含未知字段 {sorted(unknown)}", "outdoor_game_slots")
+        _fail(
+            f"outdoor_game_slots 含未知字段 count={len(unknown)}",
+            "outdoor_game_slots",
+        )
     previous_slots = previous["outdoor_game_slots"]
     previous_ids = {
         slot["manual_item_id"]
@@ -1281,6 +2399,12 @@ def _apply_slots(previous: Mapping[str, Any], payload: Any, snapshot: Mapping[st
             result[key] = None
             continue
         raw = _map(value, f"outdoor_game_slots.{key}")
+        if allow_ai and raw.get("source_kind") == "ai_supplement":
+            old = previous_slots.get(key)
+            if old is None or canonical_json(old) != canonical_json(raw):
+                _fail("普通 PATCH 只能原样回传既有 AI 项", f"outdoor_game_slots.{key}")
+            result[key] = copy.deepcopy(old)
+            continue
         if raw.get("source_kind") == "manual":
             result[key] = _manual_slot(
                 raw,
@@ -1307,9 +2431,21 @@ def _apply_slots(previous: Mapping[str, Any], payload: Any, snapshot: Mapping[st
     return result
 
 
-def _apply_focus(previous: Mapping[str, Any], payload: Any, snapshot: Mapping[str, Any]) -> dict | None:
+def _apply_focus(
+    previous: Mapping[str, Any],
+    payload: Any,
+    snapshot: Mapping[str, Any],
+    *,
+    allow_ai: bool = False,
+) -> dict | None:
     if payload is None:
         return None
+    raw = _map(payload, "focus_area")
+    if allow_ai and raw.get("source_kind") == "ai_supplement":
+        old = previous["focus_area"]
+        if old is None or canonical_json(old) != canonical_json(raw):
+            _fail("普通 PATCH 只能原样回传既有 AI 重点区域", "focus_area")
+        return copy.deepcopy(old)
     selector = _selector(payload, "focus_area", section="post_group_games")
     return _resolve_focus(selector, snapshot)
 
@@ -1325,6 +2461,146 @@ def _apply_columns(previous: Mapping[str, Any], payload: Any) -> dict:
     return result
 
 
+ADOPTION_METADATA_KEYS = frozenset(
+    {
+        "candidate_id",
+        "candidate_hash",
+        "input_id",
+        "execution_id",
+        "contract_version",
+        "dependency_hash",
+        "adopter_profile_id",
+        "adopted_draft_id",
+        "adopted_draft_version",
+        "adopted_at",
+    }
+)
+
+
+def apply_weekly_ai_adoption(
+    previous: Mapping[str, Any],
+    *,
+    target: str,
+    candidate_value: Mapping[str, Any],
+    adoption: Mapping[str, Any],
+    basis: Mapping[str, Any],
+    server_manifest: Mapping[str, Any] | None = None,
+    ai_item_ids: Mapping[str, str] | None = None,
+) -> dict:
+    """Pure adoption merge: one target, one new in-memory draft value."""
+    prev = validate_content(previous)
+    if target not in BASIS_TARGETS:
+        _fail("采用目标非法", "target")
+    meta = _map(adoption, "adoption")
+    _exact_keys(meta, ADOPTION_METADATA_KEYS, "adoption")
+    value = _map(candidate_value, "candidate_value")
+    base = promote_to_schema2(prev) if prev["schema_version"] == SCHEMA1_VERSION else copy.deepcopy(prev)
+    if target == "games":
+        from app.local import weekly_ai_contracts as contracts
+
+        finalized = contracts.finalize_games_value(
+            value,
+            candidate_id=meta["candidate_id"],
+            input_id=meta["input_id"],
+            ai_item_ids=ai_item_ids or {},
+        )
+        base["outdoor_game_slots"] = copy.deepcopy(finalized["outdoor_game_slots"])
+        base["focus_area"] = copy.deepcopy(finalized["focus_area"])
+        adopted_value = {
+            "outdoor_game_slots": copy.deepcopy(finalized["outdoor_game_slots"]),
+            "focus_area": copy.deepcopy(finalized["focus_area"]),
+        }
+        base["ai_provenance"]["games"] = {
+            **copy.deepcopy(meta),
+            "adopted_value": adopted_value,
+            "adopted_value_hash": content_hash(adopted_value),
+            "manual_edited": False,
+            "basis": copy.deepcopy(dict(basis)),
+        }
+    elif target in WEEKLY_COLUMN_KEYS:
+        _exact_keys(value, frozenset({"text"}), "candidate_value")
+        text = _text(value.get("text"), "candidate_value.text", nonempty=True)
+        base["weekly_columns"][target] = text
+        adopted_value = {"text": text}
+        base["ai_provenance"][target] = {
+            **copy.deepcopy(meta),
+            "adopted_value": adopted_value,
+            "adopted_value_hash": content_hash(adopted_value),
+            "manual_edited": False,
+            "basis": copy.deepcopy(dict(basis)),
+        }
+    elif target == "materials":
+        if server_manifest is None:
+            _fail("材料采用缺少 server_manifest", "server_manifest")
+        from app.local import weekly_materials
+
+        _exact_keys(value, frozenset({"items"}), "candidate_value")
+        items = weekly_materials.materialize_materials_items(
+            value.get("items"), server_manifest=server_manifest
+        )
+        original_text = weekly_materials.synthesize_materials_text(items)
+        base["materials"] = original_text
+        base["materials_provenance"] = weekly_materials.build_materials_provenance(
+            candidate_id=meta["candidate_id"],
+            candidate_hash=meta["candidate_hash"],
+            input_id=meta["input_id"],
+            execution_id=meta["execution_id"],
+            contract_version=meta["contract_version"],
+            dependency_hash=meta["dependency_hash"],
+            basis=basis,
+            items=items,
+            original_text=original_text,
+            adopter_profile_id=meta["adopter_profile_id"],
+            adopted_draft_id=meta["adopted_draft_id"],
+            adopted_draft_version=meta["adopted_draft_version"],
+            adopted_at=meta["adopted_at"],
+        )
+    else:
+        _fail("采用目标非法", "target")
+    _update_provenance_flags(base)
+    return validate_content(base)
+
+
+def content_schema_version(value: object) -> int:
+    data = _map(value, "content")
+    schema = data.get("schema_version")
+    if type(schema) is not int or schema not in (SCHEMA1_VERSION, SCHEMA2_VERSION):
+        _fail("schema_version 必须严格为 1 或 2", "content.schema_version")
+    return schema
+
+
+def promote_to_schema2(content: Mapping[str, Any]) -> dict:
+    prev = validate_content(content, expected_schema=SCHEMA1_VERSION)
+    promoted = {
+        **copy.deepcopy(prev),
+        "schema_version": SCHEMA2_VERSION,
+        "ai_provenance": {key: None for key in AI_PROVENANCE_KEYS},
+        "materials_provenance": None,
+    }
+    return validate_content(promoted, expected_schema=SCHEMA2_VERSION)
+
+
+def _update_provenance_flags(result: dict) -> None:
+    if result["schema_version"] != SCHEMA2_VERSION:
+        return
+    games = result["ai_provenance"].get("games")
+    if games is not None:
+        current = {
+            "outdoor_game_slots": result["outdoor_game_slots"],
+            "focus_area": result["focus_area"],
+        }
+        games["manual_edited"] = canonical_json(current) != canonical_json(games["adopted_value"])
+    for field in WEEKLY_COLUMN_KEYS:
+        adoption = result["ai_provenance"].get(field)
+        if adoption is not None:
+            adoption["manual_edited"] = (
+                result["weekly_columns"][field] != adoption["adopted_value"]["text"]
+            )
+    materials_prov = result.get("materials_provenance")
+    if materials_prov is not None:
+        materials_prov["edited"] = result["materials"] != materials_prov["original_text"]
+
+
 def apply_patch(
     previous: Mapping[str, Any],
     patch: Mapping[str, Any],
@@ -1335,10 +2611,14 @@ def apply_patch(
     """Apply only the explicit manual-patch whitelist to an existing draft."""
     prev = validate_content(previous)
     snap = validate_source_snapshot(snapshot)
+    schema_version = prev["schema_version"]
     data = _map(patch, "patch")
-    unknown = set(data) - PATCH_KEYS
+    allowed = set(PATCH_KEYS)
+    if schema_version == SCHEMA2_VERSION:
+        allowed.add("materials")
+    unknown = set(data) - allowed
     if unknown:
-        _fail(f"patch 含未知字段 {sorted(unknown)}", "patch")
+        _fail(f"patch 含未知字段 count={len(unknown)}", "patch")
     theme = prev["theme"]
     if "theme" in data:
         if data["theme"] is None:
@@ -1352,7 +2632,6 @@ def apply_patch(
     if "deterministic_overrides" in data:
         overrides = _merge_overrides(prev, data["deterministic_overrides"], snap)
     rows = []
-    by_date = {row["date"]: row for row in prev["deterministic"]}
     for row in prev["deterministic"]:
         override = overrides.get(row["date"], copy.deepcopy(row["override"]))
         rows.append(
@@ -1367,22 +2646,71 @@ def apply_patch(
         )
     slots = prev["outdoor_game_slots"]
     if "outdoor_game_slots" in data:
-        slots = _apply_slots(prev, data["outdoor_game_slots"], snap, manual_ids)
+        slots = _apply_slots(
+            prev,
+            data["outdoor_game_slots"],
+            snap,
+            manual_ids,
+            allow_ai=schema_version == SCHEMA2_VERSION,
+        )
     focus = prev["focus_area"]
     if "focus_area" in data:
-        focus = _apply_focus(prev, data["focus_area"], snap)
+        focus = _apply_focus(
+            prev,
+            data["focus_area"],
+            snap,
+            allow_ai=schema_version == SCHEMA2_VERSION,
+        )
     columns = prev["weekly_columns"]
     if "weekly_columns" in data:
         columns = _apply_columns(prev["weekly_columns"], data["weekly_columns"])
-    result = {
-        **copy.deepcopy(prev),
+    materials = prev.get("materials")
+    materials_provenance = copy.deepcopy(prev.get("materials_provenance"))
+    if "materials" in data:
+        submitted = data["materials"]
+        if materials_provenance is None:
+            if submitted is not None:
+                _fail("无 materials_provenance 只允许维持 null", "patch.materials")
+            materials = None
+        elif submitted is None:
+            materials = None
+        elif isinstance(submitted, str):
+            materials = _text(submitted, "patch.materials", maximum=MAX_MATERIAL_SYNTHESIS)
+        else:
+            _fail("materials 必须是字符串或 null", "patch.materials")
+    business = {
         "theme": theme,
         "deterministic": rows,
         "outdoor_game_slots": slots,
         "focus_area": focus,
         "weekly_columns": columns,
-        "materials": None,
+        "materials": materials,
+        "source_manifest": copy.deepcopy(prev["source_manifest"]),
+        "calendar_basis": copy.deepcopy(prev["calendar_basis"]),
     }
+    if schema_version == SCHEMA1_VERSION:
+        # Business no-op is decided before any storage-format promotion.
+        if canonical_json(business) == canonical_json(
+            {key: prev[key] for key in business}
+        ):
+            return copy.deepcopy(prev)
+        result = {
+            "schema_version": SCHEMA2_VERSION,
+            **business,
+            "materials": None,
+            "ai_provenance": {key: None for key in AI_PROVENANCE_KEYS},
+            "materials_provenance": None,
+        }
+    else:
+        result = {
+            "schema_version": SCHEMA2_VERSION,
+            **business,
+            "ai_provenance": copy.deepcopy(prev.get("ai_provenance")),
+            "materials_provenance": materials_provenance,
+        }
+        _update_provenance_flags(result)
+        if canonical_json(result) == canonical_json(prev):
+            return copy.deepcopy(prev)
     return validate_content(result)
 
 
@@ -1555,7 +2883,7 @@ def refresh_content(previous: Mapping[str, Any], snapshot: Mapping[str, Any]) ->
     slots: dict[str, Any] = {}
     for key in OUTDOOR_SLOT_KEYS:
         old = prev["outdoor_game_slots"][key]
-        if old is None or old["source_kind"] == "manual":
+        if old is None or old["source_kind"] in ("manual", "ai_supplement"):
             slots[key] = copy.deepcopy(old)
             continue
         current = _find_current_slot(snap, old, slot_key=key)
@@ -1583,6 +2911,8 @@ def refresh_content(previous: Mapping[str, Any], snapshot: Mapping[str, Any]) ->
     old_focus = prev["focus_area"]
     if old_focus is None:
         focus = None
+    elif old_focus["source_kind"] == "ai_supplement":
+        focus = copy.deepcopy(old_focus)
     else:
         current = _find_current_slot(snap, old_focus)
         if current is None:
@@ -1636,6 +2966,19 @@ def refresh_content(previous: Mapping[str, Any], snapshot: Mapping[str, Any]) ->
         "source_manifest": manifest,
         "calendar_basis": _calendar_basis_from_snapshot(snap),
     }
+    if prev["schema_version"] == SCHEMA1_VERSION:
+        if canonical_json(content) == canonical_json(prev):
+            return {
+                "content": copy.deepcopy(prev),
+                "differences": differences,
+                "preserved": preserved,
+            }
+        content["schema_version"] = SCHEMA2_VERSION
+        content["ai_provenance"] = {key: None for key in AI_PROVENANCE_KEYS}
+        content["materials_provenance"] = None
+        content["materials"] = None
+    else:
+        _update_provenance_flags(content)
     return {
         "content": validate_content(content),
         "differences": differences,
@@ -1700,7 +3043,8 @@ def build_facts(content: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict
         for field in ("name", "objectives", "guidance", "support_strategy"):
             if not (focus[field] or "").strip():
                 missing.append(_fact("empty_field", f"focus_area.{field}"))
-    missing.append(_fact("materials_empty", "materials"))
+    if fixed["materials"] is None or not fixed["materials"].strip():
+        missing.append(_fact("materials_empty", "materials"))
 
     current_by_date = {day["date"]: day for day in snap["days"]}
     for row in fixed["deterministic"]:
@@ -1720,7 +3064,7 @@ def build_facts(content: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict
             )
     for key in OUTDOOR_SLOT_KEYS:
         slot = fixed["outdoor_game_slots"][key]
-        if slot is None or slot["source_kind"] == "manual":
+        if slot is None or slot["source_kind"] in ("manual", "ai_supplement"):
             continue
         current = _find_current_slot(snap, slot, slot_key=key)
         old_ref = _ref_for_slot(slot)
@@ -1736,7 +3080,7 @@ def build_facts(content: Mapping[str, Any], snapshot: Mapping[str, Any]) -> dict
                 )
             )
     focus = fixed["focus_area"]
-    if focus is not None:
+    if focus is not None and focus["source_kind"] != "ai_supplement":
         current = _find_current_slot(snap, focus)
         old_ref = _ref_for_slot(focus)
         new_ref = _ref_for_slot(current) if current else None
@@ -1854,4 +3198,7 @@ __all__ = [
     "canonical_json",
     "content_hash",
     "validate_content",
+    "content_schema_version",
+    "promote_to_schema2",
+    "apply_weekly_ai_adoption",
 ]

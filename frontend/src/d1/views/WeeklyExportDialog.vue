@@ -101,7 +101,7 @@ async function loadItemDates(items: WeeklyExportPreview['items']): Promise<void>
       if (game?.source_kind === 'daily_plan' && !base[game.daily_plan_id] && !cache.has(game.daily_plan_id)) missing.add(game.daily_plan_id)
     }
     const focus = item.content.focus_area
-    if (focus && !base[focus.daily_plan_id] && !cache.has(focus.daily_plan_id)) missing.add(focus.daily_plan_id)
+    if (focus && focus.source_kind === 'daily_plan' && !base[focus.daily_plan_id] && !cache.has(focus.daily_plan_id)) missing.add(focus.daily_plan_id)
 
     const resolved = { ...base }
     for (const [id, date] of cache) resolved[id] = date

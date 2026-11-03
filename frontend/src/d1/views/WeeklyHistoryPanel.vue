@@ -12,7 +12,7 @@ import {
   type WeeklyConfirmationHistory,
   type WeeklyConfirmationSummary,
   type WeeklyDraftContent,
-  type WeeklyFocusArea,
+  type WeeklyFocusChoice,
   type WeeklyGameChoice,
   type WeeklySlot,
 } from '../weekly'
@@ -88,7 +88,7 @@ async function loadSourceDates(snapshot: ConfirmationSnapshotV1): Promise<void> 
     if (game?.source_kind === 'daily_plan' && !base[game.daily_plan_id]) missing.add(game.daily_plan_id)
   }
   const focus = snapshot.content.focus_area
-  if (focus && !base[focus.daily_plan_id]) missing.add(focus.daily_plan_id)
+  if (focus && focus.source_kind === 'daily_plan' && !base[focus.daily_plan_id]) missing.add(focus.daily_plan_id)
   dateLoading.value = missing.size > 0
   for (const id of missing) {
     try {
@@ -105,9 +105,11 @@ async function loadSourceDates(snapshot: ConfirmationSnapshotV1): Promise<void> 
 function gameText(game: WeeklyGameChoice | null): string {
   if (!game) return '未选择'
   if (game.source_kind === 'manual') return `手工：${game.name || '（未填名称）'} · 共同目标 ${game.shared_objectives || '—'} · 指导 ${game.guidance_points || '—'} · 重点 ${game.focus_guidance || '—'}`
+  if (game.source_kind === 'ai_supplement') return `AI 补充：${game.name} · 目标 ${game.shared_objectives || '—'} · 指导 ${game.guidance_points || '—'} · 重点 ${game.focus_guidance || '—'}`
   return `${game.name} · 日来源 v${game.content_version} · 共同目标 ${game.shared_objectives || '—'} · 指导 ${game.guidance_points || '—'} · 重点 ${game.focus_guidance || '—'}`
 }
-function focusText(focus: WeeklyFocusArea | null): string {
+function focusText(focus: WeeklyFocusChoice | null): string {
+  if (focus?.source_kind === 'ai_supplement') return `AI 补充 · ${focus.name} · 目标 ${focus.objectives || '—'} · 指导 ${focus.guidance || '—'} · 支持 ${focus.support_strategy || '—'}`
   return focus ? `${focus.context_kind} ${focus.area || ''} · ${focus.name} · 目标 ${focus.objectives || '—'} · 指导 ${focus.guidance || '—'} · 支持 ${focus.support_strategy || '—'}` : '未选择'
 }
 function dayStateLabel(value: string): string { return value === 'teaching' ? '教学日' : value === 'rest' ? '休息日' : '学期外' }

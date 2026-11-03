@@ -117,6 +117,9 @@ DETAIL = {
     "length_conflict": "length_conflict",
     "bad_content_length": "bad_content_length",
     "body_too_large": "body_too_large",
+    "content_too_large": "content_too_large",
+    "event_too_large": "event_too_large",
+    "buffer_too_large": "buffer_too_large",
     "length_mismatch": "length_mismatch",
     "incomplete_body": "incomplete_body",
     "malformed_frame": "malformed_frame",
@@ -370,8 +373,74 @@ def resolve_addresses(
 # ---------------------------------------------------------------------------
 
 
+WEEKLY_TEXT_TASK_TYPES = frozenset(
+    {
+        "weekly_games_select",
+        "weekly_key_week_focus",
+        "weekly_environment_setup",
+        "weekly_habit_culture",
+        "weekly_home_cooperation",
+        "weekly_materials_generate",
+    }
+)
+DAILY_TEXT_TASK_TYPES = frozenset(
+    {"daily_lesson_split", "daily_process_adapt", "daily_other_activities"}
+)
+
+
+@dataclass(frozen=True)
+class ResponseBudget:
+    """One transport response policy; never accepted from model/user input."""
+
+    max_tokens: int | None
+    wire_max_bytes: int
+    content_max_bytes: int
+    event_max_bytes: int | None = None
+    buffer_max_bytes: int | None = None
+    result_ipc_max_bytes: int = RESPONSE_MAX_BYTES + 16 * 1024
+    require_terminal: bool = False
+
+
+DEFAULT_TEXT_RESPONSE_BUDGET = ResponseBudget(
+    max_tokens=None,
+    wire_max_bytes=RESPONSE_MAX_BYTES,
+    content_max_bytes=RESPONSE_MAX_BYTES,
+)
+WEEKLY_TEXT_RESPONSE_BUDGET = ResponseBudget(
+    max_tokens=16_384,
+    wire_max_bytes=16 * 1024 * 1024,
+    content_max_bytes=1_048_576,
+    event_max_bytes=2 * 1_048_576 + 16 * 1024,
+    buffer_max_bytes=2 * 1_048_576 + 16 * 1024,
+    result_ipc_max_bytes=6 * 1_048_576 + 16 * 1024,
+    require_terminal=True,
+)
+
+
+def text_response_budget(
+    task_type: object, *, source_kind: object = None
+) -> ResponseBudget | None:
+    """Resolve only known text task/source pairs; never accept arbitrary data."""
+    if not isinstance(task_type, str):
+        return None
+    if task_type in WEEKLY_TEXT_TASK_TYPES:
+        if source_kind is not None and source_kind != "weekly_plan":
+            return None
+        return WEEKLY_TEXT_RESPONSE_BUDGET
+    if task_type in DAILY_TEXT_TASK_TYPES:
+        if source_kind is not None and source_kind != "daily_plan":
+            return None
+        return DEFAULT_TEXT_RESPONSE_BUDGET
+    return None
+
+
 def build_request(
-    *, model: str, system_text: str, user_text: str, stream: bool = True
+    *,
+    model: str,
+    system_text: str,
+    user_text: str,
+    stream: bool = True,
+    max_tokens: int | None = None,
 ) -> bytes:
     payload = {
         "model": model,
@@ -381,6 +450,14 @@ def build_request(
         ],
         "stream": bool(stream),
     }
+    if max_tokens is not None:
+        if (
+            type(max_tokens) is not int
+            or max_tokens <= 0
+            or max_tokens > 1_000_000
+        ):
+            raise ValueError("max_tokens")
+        payload["max_tokens"] = max_tokens
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
@@ -584,6 +661,9 @@ class _BoundedFile(io.RawIOBase):
         self._phase = "body"
         self._total = 0
 
+    def set_body_limit(self, value: int) -> None:
+        self._body_limit = value
+
     def _count(self, n: int) -> None:
         self._total += n
         if self._phase == "headers" and self._total > self._header_limit:
@@ -635,7 +715,9 @@ def _duplicate_header(headers: Any, name: str) -> bool:
     return len(values) > 1
 
 
-def _check_framing(headers: Any) -> tuple[int | None, bool, str | None]:
+def _check_framing(
+    headers: Any, *, wire_max_bytes: int = RESPONSE_MAX_BYTES
+) -> tuple[int | None, bool, str | None]:
     """Return ``(content_length, chunked, error_code)`` for the response.
 
     A duplicated framing header, a non-``chunked`` ``Transfer-Encoding``, a
@@ -664,7 +746,7 @@ def _check_framing(headers: Any) -> tuple[int | None, bool, str | None]:
         if not raw.isascii() or not raw.isdigit() or (len(raw) > 1 and raw.startswith("0")):
             return None, False, DETAIL["bad_content_length"]
         length = int(raw)
-        if length > RESPONSE_MAX_BYTES:
+        if length > wire_max_bytes:
             return None, False, DETAIL["body_too_large"]
     return length, chunked, None
 
@@ -675,6 +757,7 @@ def send(
     deadline_ms: int,
     on_progress: Any = None,
     on_heartbeat: Any = None,
+    budget: ResponseBudget | None = None,
 ) -> TransportResult:
     """Write the single HTTP request and read the strictly validated response.
 
@@ -684,6 +767,7 @@ def send(
     may be ``text/event-stream`` (streamed) or a plain JSON document
     (compatibility); a failed attempt is never retried here.
     """
+    limits = budget or DEFAULT_TEXT_RESPONSE_BUDGET
     if _remaining_ms(deadline_ms) <= 0:
         prepared.sock.close()
         return TransportResult(NOT_SENT, reason="connection_unavailable", transient_not_sent=True, detail=DETAIL["pre_send_timeout"])
@@ -714,7 +798,9 @@ def send(
         return TransportResult(UNKNOWN, reason="timeout_after_dispatch", detail=DETAIL["send_failed"])
 
     raw = sock.makefile("rb", buffering=0)
-    bounded = _BoundedFile(raw, header_limit=HEADER_MAX_BYTES, body_limit=RESPONSE_MAX_BYTES)
+    bounded = _BoundedFile(
+        raw, header_limit=HEADER_MAX_BYTES, body_limit=limits.wire_max_bytes
+    )
     adapter = _SockAdapter(sock, bounded)
     sock.settimeout(max(_remaining_ms(deadline_ms), 1) / 1000.0)
     response = http.client.HTTPResponse(adapter, method="POST")
@@ -728,12 +814,21 @@ def send(
             response.getheader("x-request-id") or response.getheader("openai-request-id"),
             MAX_REQUEST_ID_LEN,
         )
-        length, chunked, framing_error = _check_framing(response.headers)
+        content_type = (response.getheader("Content-Type") or "").lower()
+        is_stream = status == 200 and "text/event-stream" in content_type
+        # The larger weekly wire budget is only for the authenticated SSE
+        # branch.  A weekly non-SSE body keeps the old 1 MiB limit.
+        effective_wire = limits.wire_max_bytes
+        if not is_stream:
+            effective_wire = min(effective_wire, RESPONSE_MAX_BYTES)
+        length, chunked, framing_error = _check_framing(
+            response.headers, wire_max_bytes=effective_wire
+        )
         if framing_error is not None:
             return TransportResult(PROVIDER_ERROR, reason="provider_error", sent=True, http_status=status, detail=framing_error)
         bounded.start_body()
-        content_type = (response.getheader("Content-Type") or "").lower()
-        if status == 200 and "text/event-stream" in content_type:
+        bounded.set_body_limit(effective_wire)
+        if is_stream:
             return _read_stream(
                 response,
                 deadline_ms,
@@ -742,8 +837,9 @@ def send(
                 on_heartbeat,
                 length,
                 chunked,
+                limits,
             )
-        body = response.read(RESPONSE_MAX_BYTES + 1)
+        body = response.read(effective_wire + 1)
     except _ResponseTooLarge:
         return TransportResult(PROVIDER_ERROR, reason="provider_error", sent=True, http_status=status, detail=DETAIL["body_too_large"])
     except http.client.IncompleteRead:
@@ -760,7 +856,7 @@ def send(
         except Exception:  # noqa: BLE001
             pass
 
-    if len(body) > RESPONSE_MAX_BYTES:
+    if len(body) > effective_wire:
         return TransportResult(PROVIDER_ERROR, reason="provider_error", sent=True, http_status=status, detail=DETAIL["body_too_large"])
     if length is not None and len(body) != length:
         # A declared length that does not match the bytes read (short or long)
@@ -768,7 +864,12 @@ def send(
         return TransportResult(PROVIDER_ERROR, reason="provider_error", sent=True, http_status=status, detail=DETAIL["length_mismatch"])
 
     if status == 200:
-        return _parse_success(body, provider_request_id, sent=True)
+        return _parse_success(
+            body,
+            provider_request_id,
+            sent=True,
+            content_max_bytes=limits.content_max_bytes,
+        )
     return _classify_http_status(status, provider_request_id, sent=True)
 
 
@@ -813,6 +914,7 @@ def _read_stream(
     on_heartbeat: Any,
     expected_length: int | None,
     chunked: bool,
+    limits: ResponseBudget,
 ) -> TransportResult:
     """Incrementally parse a standard SSE chat-completions stream.
 
@@ -954,6 +1056,18 @@ def _read_stream(
             if boundary < 0:
                 return None
             event_text, buffer = buffer[:boundary], buffer[boundary + 2:]
+            if (
+                limits.event_max_bytes is not None
+                and len(event_text.encode("utf-8")) > limits.event_max_bytes
+            ):
+                return TransportResult(
+                    OUTPUT_INVALID,
+                    reason="output_invalid",
+                    sent=True,
+                    http_status=200,
+                    provider_request_id=provider_request_id,
+                    detail=DETAIL["event_too_large"],
+                )
             if _sse_has_comment(event_text):
                 heartbeat()
             data = _sse_data(event_text)
@@ -962,6 +1076,15 @@ def _read_stream(
             error = apply_event(data)
             if error == "__done__":
                 done = True
+                if limits.require_terminal and buffer.strip():
+                    return TransportResult(
+                        OUTPUT_INVALID,
+                        reason="output_invalid",
+                        sent=True,
+                        http_status=200,
+                        provider_request_id=provider_request_id,
+                        detail=DETAIL["stream_truncated"],
+                    )
                 buffer = ""
                 return None
             if error is not None:
@@ -995,6 +1118,18 @@ def _read_stream(
         if not chunk:
             break
         body_bytes += len(chunk)
+        if done and chunk.strip():
+            # Weekly success requires [DONE] to be the final non-whitespace
+            # data; a provider tail after it is a truncated/malformed stream.
+            if limits.require_terminal:
+                return TransportResult(
+                    OUTPUT_INVALID,
+                    reason="output_invalid",
+                    sent=True,
+                    http_status=200,
+                    provider_request_id=provider_request_id,
+                    detail=DETAIL["stream_truncated"],
+                )
         try:
             buffer += decoder.decode(chunk)
         except UnicodeDecodeError:
@@ -1006,12 +1141,45 @@ def _read_stream(
         failure = process_buffer(final=False)
         if failure is not None:
             return failure
+        if (
+            limits.buffer_max_bytes is not None
+            and len(buffer.encode("utf-8")) > limits.buffer_max_bytes
+        ):
+            return TransportResult(
+                OUTPUT_INVALID,
+                reason="output_invalid",
+                sent=True,
+                http_status=200,
+                provider_request_id=provider_request_id,
+                detail=DETAIL["buffer_too_large"],
+            )
 
     # A split trailing CR is a real line ending at EOF; process any final event
     # before the strict decoder flush catches an incomplete multibyte tail.
     failure = process_buffer(final=True)
     if failure is not None:
         return failure
+    if (
+        limits.buffer_max_bytes is not None
+        and len(buffer.encode("utf-8")) > limits.buffer_max_bytes
+    ):
+        return TransportResult(
+            OUTPUT_INVALID,
+            reason="output_invalid",
+            sent=True,
+            http_status=200,
+            provider_request_id=provider_request_id,
+            detail=DETAIL["buffer_too_large"],
+        )
+    if limits.require_terminal and buffer.strip():
+        return TransportResult(
+            OUTPUT_INVALID,
+            reason="output_invalid",
+            sent=True,
+            http_status=200,
+            provider_request_id=provider_request_id,
+            detail=DETAIL["stream_truncated"],
+        )
     try:
         decoder.decode(b"", final=True)
     except UnicodeDecodeError:
@@ -1046,7 +1214,25 @@ def _read_stream(
             provider_request_id=provider_request_id,
             detail=DETAIL["stream_truncated"],
         )
+    if limits.require_terminal and not done:
+        return TransportResult(
+            OUTPUT_INVALID,
+            reason="output_invalid",
+            sent=True,
+            http_status=200,
+            provider_request_id=provider_request_id,
+            detail=DETAIL["stream_truncated"],
+        )
     content = "".join(content_parts)
+    if len(content.encode("utf-8")) > limits.content_max_bytes:
+        return TransportResult(
+            OUTPUT_INVALID,
+            reason="output_invalid",
+            sent=True,
+            http_status=200,
+            provider_request_id=provider_request_id,
+            detail=DETAIL["content_too_large"],
+        )
     try:
         parse_strict_json_object(content)
     except ValueError:
@@ -1099,7 +1285,13 @@ def parse_strict_json_object(text: str) -> dict[str, Any]:
     return obj
 
 
-def _parse_success(body: bytes, provider_request_id: str | None, *, sent: bool) -> TransportResult:
+def _parse_success(
+    body: bytes,
+    provider_request_id: str | None,
+    *,
+    sent: bool,
+    content_max_bytes: int = RESPONSE_MAX_BYTES,
+) -> TransportResult:
     try:
         text = body.decode("utf-8")
     except UnicodeDecodeError:
@@ -1125,6 +1317,8 @@ def _parse_success(body: bytes, provider_request_id: str | None, *, sent: bool) 
     content = message.get("content")
     if not isinstance(content, str):
         return TransportResult(OUTPUT_INVALID, reason="output_invalid", sent=sent, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["non_text_content"])
+    if len(content.encode("utf-8")) > content_max_bytes:
+        return TransportResult(OUTPUT_INVALID, reason="output_invalid", sent=sent, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["content_too_large"])
     try:
         parse_strict_json_object(content)
     except ValueError:
@@ -1159,8 +1353,14 @@ __all__ = [
     "TLS_INVALID",
     "UNKNOWN",
     "AUTH",
+    "DAILY_TEXT_TASK_TYPES",
+    "DEFAULT_TEXT_RESPONSE_BUDGET",
     "DETAIL",
     "Prepared",
+    "ResponseBudget",
+    "WEEKLY_TEXT_RESPONSE_BUDGET",
+    "WEEKLY_TEXT_TASK_TYPES",
+    "text_response_budget",
     "TransportResult",
     "VISION_ATTEMPT_BUDGET_MS",
     "VISION_BODY_MAX_BYTES",

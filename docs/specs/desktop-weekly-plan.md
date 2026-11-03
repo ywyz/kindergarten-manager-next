@@ -1,5 +1,7 @@
 # 桌面版周计划产品规格
 
+2026-11-03最新实施状态：Q5/Q6已完成G0、旧档案／备份先行、页面实现及限定独立审核；真实游戏／材料生成采用、新候选构建及独立静态检查通过。材料原生页面后半及新包目标运行仍未验。文档基线51ec4d3，接口见[工程§9](desktop-weekly-ai-engineering.md)，最终来源、边界及下一步见[实施核查§12–15](../bootstrap/desktop-weekly-ai-review.md)。以下准备轮与旧包结论保留当时范围。
+
 更新：2026-11-02。Q1–Q6已定稿（§12）；Q1–Q4手工／本人来源／保存／确认／Word及明暗首片已实现，通过限定源码回归、真实Word全页及完整备份恢复核查，最后文案正常重开已核。2026-11-03同步：另机限定运行、两项最小修复、指定13份／43页Word工程检查及39项教师清单整体接受已收口，包身份分别见[目标收口](../bootstrap/desktop-weekly-target-test-closeout.md)；不外推其它环境或发行。本轮[Q5/Q6工程合同与分工](desktop-weekly-ai-engineering.md)、[假供应商验证矩阵](desktop-weekly-ai-validation.md)已并行准备并经Codex审核，未启动业务实现或真实应用AI；目标反馈已取得，实现仍须另行放行。唯一入口[current](../tasks/current.md)，首片接口见[工程设计](desktop-weekly-plan-engineering.md)。
 
 本规格接续[阶段计划](../bootstrap/desktop-next-development-plan.md)、[周计划 Contract](../modules/weekly-plans.md)、[身份与班级 Contract](../modules/identity-and-class.md)、[Word Contract](../modules/word-export.md)及 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。旧 [I4](manual-weekly-plan-confirmation.md)、[I5](word-export-implementation.md)及[材料规格](weekly-materials-implementation.md)只按下述映射继承；旧实施／验收不转换为桌面周计划通过。唯一任务入口为 [current.md](../tasks/current.md)。

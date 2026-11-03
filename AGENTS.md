@@ -6,11 +6,11 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-03同步：另机测试、两项最小修复、指定13份独立Word／43页工程检查及39项教师清单整体接受已收口，见[目标测试收口](docs/bootstrap/desktop-weekly-target-test-closeout.md)；不重复索取本轮确认，不外推跨环境或正式发行。Q5/Q6[工程合同与分工](docs/specs/desktop-weekly-ai-engineering.md)、[46项假供应商矩阵](docs/specs/desktop-weekly-ai-validation.md)也已准备，矩阵／业务实现／真实应用AI未启动。
+2026-11-03：另机测试及指定Word／39项教师清单整体接受已收口，见[目标结果](docs/bootstrap/desktop-weekly-target-test-closeout.md)，不重复追验。9份文档已先提交51ec4d3。用户本轮授权的Q5/Q6已完成G0、旧档案／备份先行、页面实现及限定独立审核；真实游戏／材料生成采用成功，新候选构建及54／59静态检查通过。材料页面后半流程仍受远程桌面捕获／输入影响，未记通过；下一步补该流程及新包增量目标运行，见[实施结果](docs/bootstrap/desktop-weekly-ai-review.md)。本轮普通提交，不自动推送、签名或发行。
 
-继续 `codex/desktop-v2-foundation`，已拉取测试收口提交 `0285a7c`。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；产品 [周计划](docs/specs/desktop-weekly-plan.md)、[首片工程](docs/specs/desktop-weekly-plan-engineering.md)，状态 [v2入口](docs/bootstrap/architecture-v2-readiness.md)，准备历史见[准备核查](docs/bootstrap/desktop-weekly-ai-preparation-review.md)。原GitHub包与修复后本机包身份分别按结果记录，新CI制品不继承本机运行／Word结论。
+继续 `codex/desktop-v2-foundation`，业务源码基线0285a7c。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；Q5/Q6见[工程合同](docs/specs/desktop-weekly-ai-engineering.md)及[矩阵](docs/specs/desktop-weekly-ai-validation.md)，产品见[周计划](docs/specs/desktop-weekly-plan.md)，状态见[v2入口](docs/bootstrap/architecture-v2-readiness.md)。原包保持各自身份，新构建不继承旧运行／Word结论。
 
-本轮拉取仅合并文档状态，既有本地准备文档保留待提交；旧Git门禁与已完成会话白名单不重放。后续问题按反馈作小补丁／更新；通用保存、恢复、关闭缺陷优先。Q5/Q6可在后续明确授权后进入新G0，暂不启动实现、真实AI、WebDAV、签名或发行。
+本轮原生A/B/C/D固定Flash max，按当前门及精确文件责任并行；Codex独占正式文档和最终审核。旧Git门禁／白名单不重放，通用保存、恢复、关闭缺陷优先；真实原库／照片／凭据与首失败现场保留，验证用合成资料。不启动WebDAV、签名、安装更新或发行。
 
 ## 产品与架构原则
 

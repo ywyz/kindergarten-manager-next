@@ -631,7 +631,7 @@ class WeeklyPlanServiceTests(LocalTestCase):
             require_current=True,
             scratch_dir=self.tmp_root,
         )
-        self.assertEqual(facts["revision"], "20261101_0007_local_weekly")
+        self.assertEqual(facts["revision"], "20261102_0008_local_weekly_ai")
 
     def test_version_conflict_and_explicit_reselect_validation(self) -> None:
         self._create_daily()

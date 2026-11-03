@@ -781,7 +781,10 @@ def get_ai_task(task_id: str, session: Session = Depends(get_session)):
 
 
 def _task_progress(
-    session: Session, task_id: str, source_kind: str = "daily_plan"
+    session: Session,
+    task_id: str,
+    source_kind: str = "daily_plan",
+    weekly_plan_id: str | None = None,
 ) -> dict[str, Any]:
     """Read-only display progress for the task's current execution.
 
@@ -790,7 +793,12 @@ def _task_progress(
     resolved through the normal profile-scoped read (foreign/missing = 404).
     """
     with storage_errors():
-        task = ai_task_service.get_task(session, task_id, source_kind=source_kind)
+        task = ai_task_service.get_task(
+            session,
+            task_id,
+            source_kind=source_kind,
+            weekly_plan_id=weekly_plan_id,
+        )
         status = str(task.get("status") or "")
         execution = task.get("execution") or {}
         execution_id = execution.get("id")
