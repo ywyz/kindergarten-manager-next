@@ -219,3 +219,19 @@ Root经真实窗口执行并逐步只读核对SQLite：游戏生成保持v2，�
 本次只补过上述剩余源码窗口片，不提升为全46项、任意故障／显示条件或冻结包目标运行通过。Root私有检查器最初误用Alembic表名、随后一处采用表名导致检查失败，已按实际表与既有ORM改正，首回执保留；最终通过来自新副本，不覆写首现场。无生产／测试／迁移／构建代码修复，不重建候选，构建身份与§14保持。
 
 下一步改为对本次build_id做Windows11增量目标包运行、升级／恢复及历史持久性核查；源码Python闭环不能替代此项。已知SAC4551机继续不运行受阻EXE/helper。旧教师39项、13份／43页Word、微软拼音和W6不重追；无新增真实AI、推送、签名、更新、WebDAV或发行。此次只按新parent／文档文件／blob／tree门禁补提交结果，不能重放cd88d9d的68文件门禁。
+
+## 17. 测试机新候选交接与本次提交推送范围
+
+用户随后明确要求“撰写最新的提示词，提交并推送，我会从测试机上拉取并进行测试”。本次把唯一current替换为Windows11测试机增量执行入口，历史唯一决定及实际证据均已留在本报告／规格；不新增prompt-final或归档提示词。51ec4d3、cd88d9d、56189d8及本次交接文档按用户新授权普通推送同一桌面分支，不从旧授权推导签名、发行或未来测试结果推送。
+
+开发机本次只读确认SmartAppControlState=On、CI策略值1，当前e1b727c8…主EXE仍NotSigned，17,147,586字节及SHA d9e61e5c…与§14相同；没有启动它或改保护。新hash是否获准未用启动试错裁定；先前[4551定因](desktop-d2-g17-result.md#8-4551定因与设置窗口关闭2026-10-23)和停止边界保持。用户采用此前独立Windows11测试机，无需迁移开发环境。
+
+原D沿原会话Flash max只读审核工作流、CI脚本、目标PS1及手册，natural CLI0。CI及PS1没有硬编码0007，revision由新构建／期望参数传递、模块和freeze检查为动态；不需改CI、业务或构建实现。发现手册仍给0007且只列Q1–Q4，本次由Codex改为0008，并明确旧通用清单只供参考，当前只做增量。PS1不接收ExpectedSourceCommit，故current另要求内层package-info／build_identity的source_commit逐一核HEAD；summary自身不在SHA256SUMS内，须与可信成功job摘要及run／artifact元数据交叉核定，不盲信下载目录。
+
+build/被Git忽略，测试机拉取源码不会得到本机ZIP。本次推送包含新业务源码及手册路径，将触发现有Windows11 weekly validation build；只在临时runner安装锁定依赖，构建及静态完成后交付最小artifact，不运行目标EXE/helper。测试机须取**本次完整提交、对应成功run／attempt**的外层artifact，再核内层ZIP、原字节PS1、manual及summary；旧0285a7c的成功CI或开发机e1b727c8…均不能替代。新CI的build_id／源freeze／ZIP SHA分别记录，不回填本机包身份，不继承旧目标／Word／教师结论。未完成／失败／缺制品即保持未验，不改用旧包或自动dispatch。
+
+current要求先对目标机原0007无真实凭据合成档案的授权副本做冷升级及已有备份恢复，逐原值／JSON／BLOB、全部日／周／观察历史和照片字节／顺序核保留，之后才新AI／材料写入；缺旧源不得用新0008假冒。新功能按T01–T11核明确三操作、预览采用、材料手改保存／确认历史、新材料Word、0008完整备份／保护包及独立新进程持久性，未实际覆盖的组合如实记状态。原39项、13份／43页Word、微软拼音和W6不重追；冻结包不能注入私有fake／noexecutor源码hook。
+
+测试机新收费AI尚待用户当轮答复；先检查脱敏配置并继续不依赖发送的项，不能从开发机旧7次或重复计费许可推导跨轮新调用。若本次会话获得明确答复，current按实更新；无答复不自动发送，不索取聊天密钥或跨机搬DPAPI。此处是交接准备，不是目标／Word／教师通过，也没有新增真实应用AI、签名、安装更新、WebDAV或发行。
+
+本次仅五份文档，原A按新准确路径／raw SHA／blob／parent／tree及远端旧tip门禁普通提交推送；不add-all、amend、rebase／force、改main／tag／Release。提交及远端实际SHA从Git回执核，不循环写入自身提交。实际目标结果由测试机另立脱敏`desktop-weekly-ai-windows11-target-review.md`，不覆盖开发机记录。

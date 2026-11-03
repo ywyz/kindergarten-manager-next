@@ -1,6 +1,6 @@
 # 周计划 Windows 11 验证包：下载与另一台电脑测试
 
-更新：2026-11-02。适用本轮包含周计划 Q1–Q4、明暗模式和完整备份恢复的**新身份未签名内部测试包**。本轮构建与静态结果见[核查](desktop-weekly-windows11-review.md)，[当前入口](../tasks/current.md)控制执行范围。旧 r03 目标1及 W1–W8 教师确认保持[原身份](desktop-windows11-target-review.md)，不能填作本包通过。
+更新：2026-11-03。当前适用于包含周计划Q5/Q6、明暗及完整备份恢复的**新身份未签名内部测试包**，数据库0008。实际执行顺序、AI授权及增量范围只按[当前入口](../tasks/current.md)；本手册§3–6保留通用操作参考，不要求重做已接受39项教师清单、13份／43页Word或全部旧样例。Q5/Q6开发机证据见[实施核查](desktop-weekly-ai-review.md)，旧包／旧目标结果保持[各自身份](desktop-weekly-target-test-closeout.md)，不填作新包通过。
 
 ## 1. 从 GitHub 下载
 
@@ -22,7 +22,7 @@ $check = (Resolve-Path -LiteralPath '<check_windows11_target.ps1 完整路径>')
 $expectedSha = '<运行摘要 ZIP SHA-256>'
 $buildId = '<同一运行的 build_id>'
 $expectedCheckSha = '<同一运行的 PS1 SHA-256>'
-$revision = '20261101_0007_local_weekly'
+$revision = '20261102_0008_local_weekly_ai'
 if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedSha) { throw '程序 ZIP 身份不符，停止。' }
 if ((Get-FileHash -LiteralPath $check -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedCheckSha) { throw '预检脚本身份不符，停止。' }
 $trial = Join-Path $env:TEMP ('KgmWeekly-' + [Guid]::NewGuid().ToString('N').Substring(0,8))
@@ -84,9 +84,9 @@ $exe = Join-Path $extract 'KGNext-E14\KGNext-E14.exe'
 4. 在恢复的新窗口编辑并保存，正常退出后新进程重开核内容；再通过正常UI预览并恢复保护包，找回B、暗色和B的历史／照片。每次产生的保护包都保留，不自动清理。
 5. 另一个新数据／凭据根验证首次页直接恢复及空业务保护包；失败／取消／恢复未明确完成时，核档案仍可用并保留首现场。
 
-只使用本轮新包自行生成的合成包。外部Word和原图另行保管；不搬DPAPI、凭据根或可携带主密钥，不将旧源码合成备份说成本候选生成。跨Windows用户凭据恢复仍未验；本次普通另一台电脑测试不自动扩大该范围。不调用真实供应商、WebDAV或安装更新。
+新0008材料／采用备份使用本轮新包自行生成的合成包；旧0007兼容性另按current使用目标机前轮保留的合成档案／备份，先冻结原值及照片再对授权副本升级／恢复，两个来源分别记账。外部Word和原图另行保管；不搬DPAPI、凭据根或可携带主密钥，不将旧源码合成备份说成本候选生成。跨Windows用户凭据恢复仍未验；另一台电脑测试不自动扩大该范围。本手册不授予真实供应商付费调用，按current及当轮明确答复执行；不启动WebDAV或安装更新。
 
-## 6. 回传最小结果
+## 6. 回传最小结果（通用参考，当前只执行current的增量项）
 
 保留原始报告、Word、截图和备份；只回传设备角色、build_id／ZIP SHA、Windows／架构／WebView2、PowerShell／Word版本、下表结论和证据别名。不要公开机器名、SID、用户名路径、真实正文／照片、口令或密钥。首失败与复验分开，不覆盖原现场。
 
