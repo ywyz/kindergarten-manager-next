@@ -2,7 +2,11 @@
 
 更新：2026-11-04。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前：Q5/Q6目标测试与补核交开发机接续
+## 当前：源码恢复片通过，接续测试机增量
+
+已拉取测试机提交61ef9f9，完成用户确认的[异常页面手动重开](../specs/desktop-renderer-recovery.md)及关闭通知有界调度。原A／B互斥实现、C只读审阅，Codex最终独立238项及实际renderer／browser故障业务窗口、独立进程完整指纹通过，首失败和未验边界见[生命周期核查§10–§12](desktop-renderer-lifecycle-review.md#10-恢复实现审核与首失败)。下一步为本片新提交的测试机增量；只见[唯一入口](../tasks/current.md)。SAC4551不启动受阻EXE／helper或改变保护，新包／目标结论另核，本轮未调用真实供应商AI。
+
+## 已完成：Q5/Q6目标测试与白屏／并发／Word补核
 
 [目标机独立核查](desktop-weekly-ai-windows11-target-review.md)保留原CI策略拦截、SQLAlchemy与来源一致性修复、三个候选身份、三次真实DeepSeek、新材料Word四页、完整备份／保护包／旧0007恢复和独立重开。[白屏／并发／Word补核](desktop-windows11-white-concurrency-review.md)最终后端62／桌面35项独立通过；并发最小测试修复已审核，白屏受控重开数据保持、精确触发未证实，Word当前功能正常但/r历史差异未知。按用户授权普通提交推送后，由[唯一入口](../tasks/current.md)交开发机继续限定源码核查及白屏复现／恢复方案，不改系统保护、不启动4551主系统候选／helper、不发行，新CI制品另核身份。
 

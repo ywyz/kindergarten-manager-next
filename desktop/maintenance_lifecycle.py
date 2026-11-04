@@ -46,6 +46,9 @@ class LifecycleBundle:
     # old window closes without starting the normal close-and-exit handshake
     # and without touching the new window.
     retire_destroy: Callable[[], None] | None = None
+    # Manual recovery's partial failed-start owner: retain the worker/runtime
+    # lock instead of forcing teardown while an unconfirmed new worker exists.
+    preserve_resources: bool = False
 
     def destroy_window_for_retire(self) -> None:
         if self.retire_destroy is not None:
@@ -63,6 +66,7 @@ class LifecycleManager:
         self._lock = threading.RLock()
         self._current: LifecycleBundle | None = None
         self._generation = 0
+        self._auxiliary: list[LifecycleBundle] = []
 
     def next_generation(self) -> int:
         with self._lock:
@@ -74,9 +78,43 @@ class LifecycleManager:
             self._current = bundle
         return bundle
 
+    def install_if_current(
+        self, expected: LifecycleBundle | None, bundle: LifecycleBundle
+    ) -> bool:
+        """Install only when ``expected`` is still current (atomic handoff)."""
+        if expected is None:
+            return False
+        with self._lock:
+            if self._current is not expected:
+                return False
+            self._current = bundle
+            return True
+
     def current(self) -> LifecycleBundle | None:
         with self._lock:
             return self._current
+
+    def is_current(self, bundle: LifecycleBundle | None) -> bool:
+        """Identity-bound generation guard for stale recovery callbacks."""
+        if bundle is None:
+            return False
+        with self._lock:
+            return self._current is bundle
+
+    def retain_auxiliary(self, bundle: LifecycleBundle) -> None:
+        """Keep a failed-but-owned resource outside the current generation.
+
+        Manual recovery may build a new executor before its bundle can be
+        installed.  If that partial generation is abandoned while a newer
+        current exists, it must still keep the process root lock/cleanup
+        ownership without overwriting the current bundle.
+        """
+        with self._lock:
+            self._auxiliary.append(bundle)
+
+    def has_auxiliary(self) -> bool:
+        with self._lock:
+            return bool(self._auxiliary)
 
     # -- retirement / stop primitives -----------------------------------
     @staticmethod
@@ -127,6 +165,16 @@ class LifecycleManager:
         """
         if bundle is None:
             return True
+        with self._lock:
+            unresolved_auxiliary = bool(self._auxiliary)
+        if unresolved_auxiliary:
+            # Never release this runtime's root while a known failed partial
+            # startup worker/ownership is still unresolved.
+            return False
+        if bool(getattr(bundle, "preserve_resources", False)):
+            # A failed manual-start executor is still owned by the process;
+            # never release the shared runtime lock or force its teardown.
+            return False
         self.retire_host(bundle)
         if not self.stop_service(bundle, timeout):
             return False
@@ -159,6 +207,10 @@ class LifecycleManager:
     def close_latest(self, timeout: float = 10.0) -> bool:
         with self._lock:
             bundle = self._current
+            unresolved_auxiliary = bool(self._auxiliary)
+        if unresolved_auxiliary:
+            # Must happen before dispose_bundle can release the runtime/root.
+            return False
         return self.dispose_bundle(bundle, timeout)
 
 
@@ -191,6 +243,8 @@ class ReopenSequencer:
         wait_business_ready: Callable[[LifecycleBundle, float], bool],
         timeout: float = 60.0,
         log: Callable[[str], None] | None = None,
+        expected_current: LifecycleBundle | None = None,
+        manual_reopen: bool = False,
     ) -> None:
         self.manager = manager
         self.old_bundle = old_bundle
@@ -199,11 +253,33 @@ class ReopenSequencer:
         self.wait_business_ready = wait_business_ready
         self.timeout = timeout
         self.log = log or (lambda _message: None)
+        # Optional manual-recovery CAS: default restore keeps its historical
+        # unconditional install.  A manual recovery passes the exact old
+        # bundle and may not overwrite a newer current generation.
+        self.expected_current = expected_current
+        # Manual recovery keeps an already-working new business window even if
+        # only the old fault window's retire-destroy fails.  Restore keeps its
+        # historical cleanup/teardown behavior.
+        self.manual_reopen = bool(manual_reopen)
 
     def run(self) -> dict[str, Any]:
+        # An explicit expected generation is checked before any retirement or
+        # resource construction.  Stale manual recovery has zero effect.
+        if self.expected_current is not None:
+            checker = getattr(self.manager, "is_current", None)
+            try:
+                current = bool(checker(self.expected_current)) if callable(checker) else False
+            except Exception:  # noqa: BLE001 - unknown is stale
+                current = False
+            if not current:
+                return {
+                    "state": "reopen_failed",
+                    "code": "REOPEN_SUPERSEDED",
+                }
         # 1. No new old-host side effect or bootstrap may race the new engine.
         self.manager.retire_host(self.old_bundle)
         new_bundle: LifecycleBundle | None = None
+        installed = False
         try:
             # 2. New runtime exposure exists only after this bundle is built.
             new_bundle = self.build_bundle(self.old_bundle)
@@ -213,8 +289,21 @@ class ReopenSequencer:
                 )
             # 2. Install the new bundle BEFORE the service starts: a failed
             # start (or an unconfirmed stop) must still be the latest bundle
-            # whose cleanup protects the shared runtime lock.
-            self.manager.install(new_bundle)
+            # whose cleanup protects the shared runtime lock.  Manual recovery
+            # uses an identity CAS so a stale generation cannot overwrite a
+            # newer current bundle.
+            if self.expected_current is not None:
+                installer = getattr(self.manager, "install_if_current", None)
+                if not callable(installer) or not installer(
+                    self.expected_current, new_bundle
+                ):
+                    raise ReopenSequenceError(
+                        "REOPEN_SUPERSEDED",
+                        "当前窗口代际已被替换",
+                    )
+            else:
+                self.manager.install(new_bundle)
+            installed = True
             service = new_bundle.service
             if service is not None:
                 started = False
@@ -235,7 +324,17 @@ class ReopenSequencer:
                     "REOPEN_PAGE_TIMEOUT", "新页面未能读取本地资料"
                 )
             # 6. Retire path bound to the old window itself.
-            self.old_bundle.destroy_window_for_retire()
+            try:
+                self.old_bundle.destroy_window_for_retire()
+            except Exception:  # noqa: BLE001 - manual mode keeps new workbench
+                if not self.manual_reopen:
+                    raise
+                self.log("reopen old-window retire failed; new window retained")
+                return {
+                    "state": "reopened",
+                    "generation": new_bundle.generation,
+                    "warning": "OLD_WINDOW_RETAINED",
+                }
             return {
                 "state": "reopened",
                 "generation": new_bundle.generation,
@@ -248,6 +347,39 @@ class ReopenSequencer:
                 # progress and the process must not lose its single writer.
                 self.manager.retire_host(new_bundle)
                 self.manager.stop_service(new_bundle, self.timeout)
+                if not installed:
+                    # CAS failure after construction: the new service was
+                    # never exposed and the new bundle was never the latest
+                    # owner.  Use only an owned freeze + atomic idle stop; if
+                    # that cannot confirm cleanup, retain a separate auxiliary
+                    # ownership so close_latest cannot release the root while
+                    # an unknown worker exists.
+                    executor = getattr(new_bundle, "executor", None)
+                    if executor is not None:
+                        owner = f"reopen-partial:{id(executor)}"
+                        confirmed = False
+                        freeze = getattr(executor, "freeze", None)
+                        if callable(freeze):
+                            try:
+                                freeze(owner=owner)
+                            except Exception:  # noqa: BLE001 - ownership retained
+                                pass
+                        stop_if_idle = getattr(executor, "stop_if_idle", None)
+                        if callable(stop_if_idle):
+                            try:
+                                confirmed = bool(
+                                    stop_if_idle(owner=owner, timeout=5.0)
+                                )
+                            except Exception:  # noqa: BLE001
+                                confirmed = False
+                        if not confirmed:
+                            partial = LifecycleBundle(
+                                generation=new_bundle.generation,
+                                runtime=new_bundle.runtime,
+                                executor=executor,
+                                preserve_resources=True,
+                            )
+                            self.manager.retain_auxiliary(partial)
                 if new_bundle.window is not None:
                     # Never leave a half-started new window beside the old
                     # error window.  Its own retire path bypasses the normal

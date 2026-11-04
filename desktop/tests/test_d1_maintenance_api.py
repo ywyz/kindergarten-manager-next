@@ -492,3 +492,325 @@ def test_maintenance_guard_requires_page_ready():
     host = make_host(FakeWindow("a", dialog_result="C:/synthetic/a.kgmbackup"), maintenance)
     assert host.choose_backup_target()["error"]["code"] == "BRIDGE_NOT_READY"
     assert maintenance.targets == []
+
+
+class _RecoveryClose:
+    def __init__(self, intercept=False):
+        self.intercept = intercept
+        self.intercepts = 0
+        self.marked = 0
+
+    def intercept_native_close(self):
+        self.intercepts += 1
+        return self.intercept
+
+    def mark_expected_close(self):
+        self.marked += 1
+
+
+def _install_with_recovery(recovery):
+    import d1_main
+
+    window = _CloseWindow()
+    host = d1_host_api.D1HostApi(
+        launch_token="synthetic", window_getter=lambda: window
+    )
+    holder = {"coordinator": recovery}
+    d1_main._install_close_handlers(
+        window, host, None, recovery_holder=holder
+    )
+    return d1_main, window, host, holder
+
+
+def test_faulted_native_close_intercepts_without_close_request_or_js():
+    d1_main, window, host, _holder = _install_with_recovery(
+        _RecoveryClose(intercept=True)
+    )
+    try:
+        allow = window.events.closing.callbacks[0]()
+        assert allow is False
+        assert window.destroyed == 0
+        assert host._close_coordinator._current_id is None
+        assert _holder["coordinator"].intercepts == 1
+    finally:
+        host._close_coordinator._cancel_timer()
+
+
+def test_faulted_keep_can_re_present_choice_on_later_native_close():
+    d1_main, window, host, holder = _install_with_recovery(
+        _RecoveryClose(intercept=True)
+    )
+    try:
+        assert window.events.closing.callbacks[0]() is False
+        assert window.events.closing.callbacks[0]() is False
+        assert holder["coordinator"].intercepts == 2
+        assert host._close_coordinator._current_id is None
+        assert window.destroyed == 0
+    finally:
+        host._close_coordinator._cancel_timer()
+
+
+def test_retire_destroy_flag_bypasses_fault_interception():
+    d1_main, window, host, holder = _install_with_recovery(
+        _RecoveryClose(intercept=True)
+    )
+    try:
+        host._request_retire_destroy()
+        assert window.events.closing.callbacks[0]() is True
+        assert holder["coordinator"].intercepts == 0
+        assert holder["coordinator"].marked == 1
+    finally:
+        host._close_coordinator._cancel_timer()
+
+
+def test_normal_close_without_fault_starts_existing_handshake():
+    d1_main, window, host, holder = _install_with_recovery(
+        _RecoveryClose(intercept=False)
+    )
+    try:
+        assert window.events.closing.callbacks[0]() is False
+        assert host._close_coordinator._current_id is not None
+        assert holder["coordinator"].intercepts == 1
+        assert holder["coordinator"].marked == 0
+        assert window.destroyed == 0
+    finally:
+        host._close_coordinator._cancel_timer()
+
+
+def test_final_normal_allow_marks_expected_close_before_exit():
+    d1_main, window, host, holder = _install_with_recovery(
+        _RecoveryClose(intercept=False)
+    )
+    try:
+        assert window.events.closing.callbacks[0]() is False
+        request_id = host._close_coordinator._current_id
+        assert request_id is not None
+        assert host._close_coordinator.complete(request_id, True) == {
+            "accepted": True,
+            "state": "closing",
+        }
+        assert window.events.closing.callbacks[0]() is True
+        assert holder["coordinator"].marked == 1
+    finally:
+        host._close_coordinator._cancel_timer()
+
+
+def test_retired_exit_marks_expected_close():
+    d1_main, window, host, holder = _install_with_recovery(
+        _RecoveryClose(intercept=False)
+    )
+    try:
+        host._retire()
+        assert window.events.closing.callbacks[0]() is True
+        assert holder["coordinator"].marked == 1
+        assert holder["coordinator"].intercepts == 1
+    finally:
+        host._close_coordinator._cancel_timer()
+
+
+class _StartupExecutor:
+    instances = []
+
+    def __init__(self, runtime, **_kwargs):
+        self.dispose_calls = 0
+        self.stop_calls = 0
+        self.freeze_calls = 0
+        self.stop_result = False
+        type(self).instances.append(self)
+
+    def start(self):
+        raise RuntimeError("synthetic startup failure")
+
+    def freeze(self, owner="close"):
+        self.freeze_calls += 1
+
+    def stop_if_idle(self, *, owner, timeout=5.0):
+        self.stop_calls += 1
+        return self.stop_result
+
+    def dispose(self):
+        self.dispose_calls += 1
+        return True
+
+
+def _startup_args():
+    return types.SimpleNamespace(
+        synthetic_executor_fail=None,
+        synthetic_provider_port=None,
+        synthetic_provider_ca=None,
+    )
+
+
+def test_recovery_safe_startup_never_disposes_unconfirmed_worker(monkeypatch):
+    import app.local.ai_executor as ai_executor
+    import d1_main
+
+    _StartupExecutor.instances = []
+    monkeypatch.setattr(ai_executor, "AiExecutor", _StartupExecutor)
+    executor, _reason, unconfirmed = d1_main._start_ai_executor(
+        types.SimpleNamespace(), _startup_args(), recovery_safe=True
+    )
+    assert executor is _StartupExecutor.instances[0]
+    assert unconfirmed is True
+    assert executor.freeze_calls == 1
+    assert executor.stop_calls == 1
+    assert executor.dispose_calls == 0
+
+
+def test_recovery_safe_startup_confirms_atomic_idle_cleanup(monkeypatch):
+    import app.local.ai_executor as ai_executor
+    import d1_main
+
+    _StartupExecutor.instances = []
+    fake = _StartupExecutor
+    original_init = fake.__init__
+
+    def init(self, runtime, **kwargs):
+        original_init(self, runtime, **kwargs)
+        self.stop_result = True
+
+    monkeypatch.setattr(fake, "__init__", init)
+    monkeypatch.setattr(ai_executor, "AiExecutor", fake)
+    executor, _reason, unconfirmed = d1_main._start_ai_executor(
+        types.SimpleNamespace(), _startup_args(), recovery_safe=True
+    )
+    assert executor is None
+    assert unconfirmed is False
+    assert fake.instances[0].dispose_calls == 0
+    assert fake.instances[0].stop_calls == 1
+
+
+def test_partial_new_executor_ownership_survives_app_factory_failure(monkeypatch):
+    import d1_main
+    import d1_server
+    import maintenance_lifecycle as ml
+
+    class Executor:
+        def __init__(self):
+            self.dispose_calls = 0
+            self.freeze_calls = 0
+            self.stop_calls = 0
+
+        def freeze(self, owner="close"):
+            self.freeze_calls += 1
+
+        def stop_if_idle(self, *, owner, timeout=5.0):
+            self.stop_calls += 1
+            return False
+
+        def dispose(self):
+            self.dispose_calls += 1
+            return True
+
+    class Host:
+        _update_manager = None
+
+    executor = Executor()
+    runtime = types.SimpleNamespace(ai_executor=None)
+    manager = ml.LifecycleManager()
+    old = ml.LifecycleBundle(
+        generation=manager.next_generation(),
+        host_api=Host(),
+        runtime=runtime,
+        window=FakeWindow("old"),
+        executor=None,
+    )
+    manager.install(old)
+    monkeypatch.setattr(
+        d1_main, "_start_ai_executor", lambda *_a, **_k: (executor, None, False)
+    )
+
+    def app_factory(**_kwargs):
+        raise RuntimeError("synthetic app factory failure")
+
+    monkeypatch.setattr(d1_server, "build_d1_app", app_factory)
+    args = types.SimpleNamespace(frontend="unused")
+    result = d1_main._run_reopen_sequence(
+        args,
+        manager,
+        old,
+        runtime,
+        notice_override="manual recovery",
+        hidden_new_window=True,
+        recovery_mode=True,
+    )
+    assert result["state"] == "reopen_failed"
+    latest = manager.current()
+    assert latest is not old
+    assert latest.preserve_resources is True
+    assert latest.executor is executor
+    assert manager.close_latest(timeout=0.01) is False
+    assert executor.dispose_calls == 0
+    assert executor.stop_calls == 1
+    assert executor.freeze_calls == 1
+
+
+def test_partial_new_executor_ownership_survives_host_factory_failure(monkeypatch):
+    import d1_main
+    import d1_host_api
+    import d1_server
+    import maintenance_lifecycle as ml
+
+    class Executor:
+        def __init__(self):
+            self.dispose_calls = 0
+            self.stop_calls = 0
+
+        def freeze(self, owner="close"):
+            pass
+
+        def stop_if_idle(self, *, owner, timeout=5.0):
+            self.stop_calls += 1
+            return False
+
+        def dispose(self):
+            self.dispose_calls += 1
+            return True
+
+    class Host:
+        _update_manager = None
+
+    executor = Executor()
+    runtime = types.SimpleNamespace(ai_executor=None)
+    manager = ml.LifecycleManager()
+    old = ml.LifecycleBundle(
+        generation=manager.next_generation(),
+        host_api=Host(),
+        runtime=runtime,
+        window=FakeWindow("old"),
+        executor=None,
+    )
+    manager.install(old)
+    monkeypatch.setattr(
+        d1_main, "_start_ai_executor", lambda *_a, **_k: (executor, None, False)
+    )
+    monkeypatch.setattr(
+        d1_server,
+        "build_d1_app",
+        lambda **_kwargs: types.SimpleNamespace(
+            state=types.SimpleNamespace(weekly_export_manager=None)
+        ),
+    )
+
+    def host_factory(**_kwargs):
+        raise RuntimeError("synthetic host factory failure")
+
+    monkeypatch.setattr(d1_host_api, "D1HostApi", host_factory)
+    args = types.SimpleNamespace(frontend="unused")
+    result = d1_main._run_reopen_sequence(
+        args,
+        manager,
+        old,
+        runtime,
+        notice_override="manual recovery",
+        hidden_new_window=True,
+        recovery_mode=True,
+    )
+    assert result["state"] == "reopen_failed"
+    latest = manager.current()
+    assert latest is not old
+    assert latest.preserve_resources is True
+    assert latest.executor is executor
+    assert manager.close_latest(timeout=0.01) is False
+    assert executor.dispose_calls == 0
+    assert executor.stop_calls == 1

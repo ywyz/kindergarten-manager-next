@@ -6,9 +6,9 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-04：Q5/Q6测试机增量已完成[分身份目标核查](docs/bootstrap/desktop-weekly-ai-windows11-target-review.md)：SQLAlchemy构建与来源一致性最小回修、三次真实DeepSeek、新材料Word四页、完整备份／保护包／旧0007恢复及重开有各自证据。[白屏／并发／Word补核](docs/bootstrap/desktop-windows11-white-concurrency-review.md)独立后端62／桌面35项通过；原白屏受控重开资料保持，精确触发仍未证实，Word/r历史差异未知。用户已授权审核后普通提交推送并交开发机接续；不作产品整体验收，旧39项及13份43页不重验。开发机SAC4551不启动包／helper，不签名或发行。
+2026-11-04：开发机接收测试结果后，关闭通知有界调度及用户确认的[异常页面手动重开](docs/specs/desktop-renderer-recovery.md)已完成[限定源码审核](docs/bootstrap/desktop-renderer-lifecycle-review.md)：独立238项、实际renderer／browser故障业务窗口及独立进程完整指纹通过。下一步交测试机做本片增量，不继承旧包结论。原白屏精确触发、Word/r历史差异仍未知；不作产品整体验收，旧39项及13份43页不重验。开发机SAC4551不启动包／helper，不签名或发行。
 
-继续 `codex/desktop-v2-foundation`，本轮测试机父提交7eb4b5e，交付身份以分支历史及远端核对为准。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；Q5/Q6见[工程合同](docs/specs/desktop-weekly-ai-engineering.md)及[矩阵](docs/specs/desktop-weekly-ai-validation.md)，产品见[周计划](docs/specs/desktop-weekly-plan.md)，状态见[v2入口](docs/bootstrap/architecture-v2-readiness.md)。原包保持各自身份，新构建不继承旧运行／Word结论。
+继续 `codex/desktop-v2-foundation`，本片接收基线61ef9f9，交付身份以分支历史及远端核对为准。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；Q5/Q6测试机历史见[目标核查](docs/bootstrap/desktop-weekly-ai-windows11-target-review.md)及[补核](docs/bootstrap/desktop-windows11-white-concurrency-review.md)，规格见[工程合同](docs/specs/desktop-weekly-ai-engineering.md)及[矩阵](docs/specs/desktop-weekly-ai-validation.md)，状态见[v2入口](docs/bootstrap/architecture-v2-readiness.md)。原包保持各自身份，新构建不继承旧运行／Word结论。
 
 原生OpenCode／Command Go固定DeepSeek V4.1 Flash max，按当前门及精确文件责任执行；测试机Command Go写工具受拒后仅只读复核，唯一并发测试文件转原OpenCode，详见补核。Codex独占正式文档和最终审核。旧Git门禁／白名单不重放，通用保存、恢复、关闭缺陷优先；真实原库／照片／凭据与首失败现场保留，验证用合成资料。不启动WebDAV、签名、安装更新或发行。
 

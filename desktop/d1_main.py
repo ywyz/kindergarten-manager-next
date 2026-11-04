@@ -294,7 +294,7 @@ def _failing_start_thread_factory(**kwargs):
     return thread
 
 
-def _start_ai_executor(runtime, args):
+def _start_ai_executor(runtime, args, *, recovery_safe: bool = False):
     """Start the AI executor, or degrade to "unavailable" when it cannot run.
 
     Returns ``(executor_or_None, reason_or_None, unconfirmed_bool)``.
@@ -312,6 +312,11 @@ def _start_ai_executor(runtime, args):
     ``start()`` that returns False (cold-start recovery failed) keeps the
     executor object (``is_runnable()`` False) so close coordination still owns
     it while scheduling stays blocked.
+
+    ``recovery_safe`` is the manual renderer-recovery path: it must never call
+    dispose/drain/abort/kill on an unconfirmed new worker.  It may freeze the
+    new executor and use the atomic idle-stop only; if that cannot prove idle,
+    the executor is retained as unconfirmed and the runtime lock stays owned.
     """
     executor = None
     try:
@@ -339,6 +344,28 @@ def _start_ai_executor(runtime, args):
         reason = f"{type(exc).__name__}: {exc}"
         if executor is None:
             return None, reason, False
+        if recovery_safe:
+            # Manual renderer recovery must never force-clean a new startup
+            # worker.  Only an owned freeze plus the atomic idle-stop may prove
+            # cleanup; otherwise keep the executor/runtime-lock ownership and
+            # report unconfirmed.
+            owner = f"renderer-startup:{id(executor)}"
+            confirmed = False
+            try:
+                executor.freeze(owner=owner)
+            except Exception:  # noqa: BLE001
+                pass
+            stop_if_idle = getattr(executor, "stop_if_idle", None)
+            if callable(stop_if_idle):
+                try:
+                    confirmed = bool(
+                        stop_if_idle(owner=owner, timeout=5.0)
+                    )
+                except Exception:  # noqa: BLE001
+                    confirmed = False
+            if confirmed:
+                return None, reason, False
+            return executor, reason, True
         confirmed = False
         try:
             confirmed = bool(executor.dispose())
@@ -7273,8 +7300,57 @@ def _dispose_executor(runtime, summary: dict | None = None) -> bool:
     return confirmed
 
 
+def _install_renderer_recovery(
+    window,
+    host_api,
+    lifecycle,
+    bundle,
+    runtime,
+    args,
+    recovery_holder: dict,
+):
+    """Install the business recovery coordinator and B's native watcher."""
+    try:
+        import renderer_recovery
+    except Exception as exc:  # noqa: BLE001 - normal close remains usable
+        _startup_log(f"renderer recovery unavailable: {type(exc).__name__}")
+        return None
+
+    def reopen_sequence() -> dict:
+        return _run_reopen_sequence(
+            args,
+            lifecycle,
+            bundle,
+            runtime,
+            notice_override=renderer_recovery.RECOVERY_NOTICE,
+            hidden_new_window=True,
+            recovery_mode=True,
+        )
+
+    try:
+        coordinator = renderer_recovery.install_renderer_recovery(
+            window=window,
+            host_api=host_api,
+            lifecycle=lifecycle,
+            bundle=bundle,
+            runtime=runtime,
+            reopen_sequence=reopen_sequence,
+            log=_startup_log,
+        )
+    except Exception as exc:  # noqa: BLE001 - never break startup/close
+        _startup_log(f"renderer recovery install failed: {type(exc).__name__}")
+        return None
+    recovery_holder["coordinator"] = coordinator
+    return coordinator
+
+
 def _install_close_handlers(
-    window, host_api, runtime=None, *, weekly_export_manager=None
+    window,
+    host_api,
+    runtime=None,
+    *,
+    weekly_export_manager=None,
+    recovery_holder: dict | None = None,
 ) -> None:
     import d1_host_api
 
@@ -7404,11 +7480,21 @@ def _install_close_handlers(
     host_api._close_coordinator = coordinator
 
     def on_closing():
-        # The restore retire path destroys this exact old window without
-        # starting a normal close-and-exit handshake.  The flag is bound to
-        # this host/window instance only; the new window is untouched.
+        recovery = (
+            recovery_holder.get("coordinator") if recovery_holder is not None else None
+        )
+        # The restore/recovery retire path destroys this exact old window
+        # without starting a normal close-and-exit handshake.  The flag is
+        # bound to this host/window instance only; the new window is untouched.
         if host_api._consume_retire_destroy():
+            if recovery is not None:
+                recovery.mark_expected_close()
             return True
+        # A confirmed native fault must intercept before the retired/recovery
+        # safeguards; otherwise a failed reopen could silently exit the fault
+        # window.  It only schedules a native prompt and never waits for JS.
+        if recovery is not None and recovery.intercept_native_close():
+            return False
         retired_exit = bool(getattr(host_api, "_retired", False))
         recovery_exit = (
             host_api._recovery_required_probe()
@@ -7423,9 +7509,14 @@ def _install_close_handlers(
             # close choice/refusal.  The process-level latest-bundle cleanup
             # still owns the shared runtime; an active switch/reopen is
             # refused by the probe above.
+            if recovery is not None:
+                recovery.mark_expected_close()
             return True
         # Never wait for JS/database in the synchronous closing callback.
-        return coordinator.handle_closing()
+        allow = coordinator.handle_closing()
+        if recovery is not None and allow:
+            recovery.mark_expected_close()
+        return allow
 
     window.events.closing += on_closing
 
@@ -7535,62 +7626,125 @@ def _retire_destroy_window(bundle) -> None:
     bundle.window.destroy()
 
 
-def _run_reopen_sequence(args, lifecycle, old_bundle, runtime) -> dict:
-    """Host-side continuation after the restore core reopened the engine."""
+def _run_reopen_sequence(
+    args,
+    lifecycle,
+    old_bundle,
+    runtime,
+    *,
+    notice_override: str | None = None,
+    hidden_new_window: bool = False,
+    recovery_mode: bool = False,
+) -> dict:
+    """Host-side continuation after the restore/recovery engine reopen."""
     import d1_host_api
     import d1_server
     import maintenance_lifecycle
 
-    notice = None
-    maintenance = getattr(old_bundle.host_api, "_maintenance_host", None)
-    getter = getattr(maintenance, "completion_notice", None)
-    if callable(getter):
+    notice = notice_override
+    if notice is None:
+        maintenance = getattr(old_bundle.host_api, "_maintenance_host", None)
+        getter = getattr(maintenance, "completion_notice", None)
+        if callable(getter):
+            try:
+                notice = getter()
+            except Exception:  # noqa: BLE001 - display-only notice
+                notice = None
+
+    def _retain_partial_new_executor(executor, generation, old):
+        """Own/quiet-stop a new executor created before its bundle exists."""
+        if not recovery_mode or executor is None:
+            return
+        owner = f"renderer-startup:{id(executor)}"
         try:
-            notice = getter()
-        except Exception:  # noqa: BLE001 - display-only notice
-            notice = None
+            executor.freeze(owner=owner)
+        except Exception:  # noqa: BLE001 - ownership still retained
+            pass
+        stop_if_idle = getattr(executor, "stop_if_idle", None)
+        confirmed = False
+        if callable(stop_if_idle):
+            try:
+                confirmed = bool(stop_if_idle(owner=owner, timeout=5.0))
+            except Exception:  # noqa: BLE001
+                confirmed = False
+        if confirmed:
+            runtime.ai_executor = None
+            return
+        partial = maintenance_lifecycle.LifecycleBundle(
+            generation=generation,
+            service=None,
+            host_api=None,
+            runtime=runtime,
+            executor=executor,
+            preserve_resources=True,
+        )
+        installer = getattr(lifecycle, "install_if_current", None)
+        installed = False
+        if callable(installer):
+            installed = bool(installer(old, partial))
+        else:
+            lifecycle.install(partial)
+            installed = True
+        if not installed:
+            retain = getattr(lifecycle, "retain_auxiliary", None)
+            if callable(retain):
+                retain(partial)
 
     def build_bundle(_old):
         generation = lifecycle.next_generation()
         port = free_loopback_port()
         token = secrets.token_urlsafe(32)
-        executor, reason, unconfirmed = _start_ai_executor(runtime, args)
+        executor, reason, unconfirmed = _start_ai_executor(
+            runtime, args, recovery_safe=recovery_mode
+        )
         if unconfirmed:
-            # Keep the unconfirmed worker owned by the runtime; the old
-            # window stays and final cleanup retries dispose.
+            # Keep the unconfirmed worker owned by the runtime.  The normal
+            # restore path may make one bounded dispose attempt; the renderer
+            # recovery path is explicitly forbidden to force/kill a worker.
             runtime.ai_executor = executor
-            try:
-                executor.dispose()
-            except Exception:  # noqa: BLE001
-                pass
+            if not recovery_mode:
+                try:
+                    executor.dispose()
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                _retain_partial_new_executor(executor, generation, _old)
             raise RuntimeError("新的 AI 执行器未能确认退出")
         if executor is None:
             _startup_log(f"reopen:AI executor unavailable ({reason})")
         runtime.ai_executor = executor
-        app = d1_server.build_d1_app(
-            runtime=runtime,
-            port=port,
-            session_token=token,
-            frontend_dir=args.frontend,
-            executor=executor,
-        )
-        host_api = d1_host_api.D1HostApi(
-            launch_token=token,
-            service_port=port,
-            document_generation=generation,
-            # Version discovery survives; a new install plan does not belong
-            # to the restored document.
-            update_manager=getattr(old_bundle.host_api, "_update_manager", None),
-            install_coordinator=None,
-            maintenance_notice=notice,
-            weekly_export_manager=getattr(
+        try:
+            app = d1_server.build_d1_app(
+                runtime=runtime,
+                port=port,
+                session_token=token,
+                frontend_dir=args.frontend,
+                executor=executor,
+            )
+            host_api = d1_host_api.D1HostApi(
+                launch_token=token,
+                service_port=port,
+                document_generation=generation,
+                # Version discovery survives; a new install plan does not
+                # belong to the restored document.
+                update_manager=getattr(old_bundle.host_api, "_update_manager", None),
+                install_coordinator=None,
+                maintenance_notice=notice,
+                weekly_export_manager=getattr(
+                    app.state, "weekly_export_manager", None
+                ),
+            )
+            service_run = ServiceRun(app, port)
+            service_run.weekly_export_manager = getattr(
                 app.state, "weekly_export_manager", None
-            ),
-        )
-        service_run = ServiceRun(app, port)
-        service_run.weekly_export_manager = getattr(
-            app.state, "weekly_export_manager", None
-        )
+            )
+        except Exception:
+            # The new executor already exists but no LifecycleBundle could be
+            # constructed yet (app, host factory or ServiceRun failure).  Do
+            # not leave it unowned while old bundle cleanup might release the
+            # shared root lock.
+            _retain_partial_new_executor(executor, generation, _old)
+            raise
         return maintenance_lifecycle.LifecycleBundle(
             generation=generation,
             service=service_run,
@@ -7610,9 +7764,11 @@ def _run_reopen_sequence(args, lifecycle, old_bundle, runtime) -> dict:
             height=820,
             min_size=(760, 560),
             text_select=True,
+            hidden=hidden_new_window,
         )
         bundle.window = window
         bundle.host_api._bind_window(window)
+        recovery_holder: dict = {}
         _install_close_handlers(
             window,
             bundle.host_api,
@@ -7620,14 +7776,33 @@ def _run_reopen_sequence(args, lifecycle, old_bundle, runtime) -> dict:
             weekly_export_manager=getattr(
                 bundle.service, "weekly_export_manager", None
             ),
+            recovery_holder=recovery_holder,
         )
         bundle.retire_destroy = lambda: _retire_destroy_window(bundle)
         bundle.host_api._bind_maintenance(
             _build_maintenance_host(args, runtime, lifecycle, bundle)
         )
+        _install_renderer_recovery(
+            window,
+            bundle.host_api,
+            lifecycle,
+            bundle,
+            runtime,
+            args,
+            recovery_holder,
+        )
 
     def wait_business_ready(bundle, timeout: float) -> bool:
-        return bundle.host_api._wait_business_ready(timeout)
+        ready = bool(bundle.host_api._wait_business_ready(timeout))
+        if not ready:
+            return False
+        if hidden_new_window:
+            try:
+                bundle.window.show()
+            except Exception as exc:  # noqa: BLE001 - keep the old window
+                _startup_log(f"reopen:new window show failed: {type(exc).__name__}")
+                return False
+        return True
 
     sequencer = maintenance_lifecycle.ReopenSequencer(
         manager=lifecycle,
@@ -7637,6 +7812,8 @@ def _run_reopen_sequence(args, lifecycle, old_bundle, runtime) -> dict:
         wait_business_ready=wait_business_ready,
         timeout=60.0,
         log=_startup_log,
+        expected_current=old_bundle if recovery_mode else None,
+        manual_reopen=recovery_mode,
     )
     return sequencer.run()
 
@@ -7687,6 +7864,7 @@ def run_interactive(args) -> int:
             text_select=True,
         )
         host_api._bind_window(window)
+        recovery_holder: dict = {}
         _install_close_handlers(
             window,
             host_api,
@@ -7694,6 +7872,7 @@ def run_interactive(args) -> int:
             weekly_export_manager=getattr(
                 service, "weekly_export_manager", None
             ),
+            recovery_holder=recovery_holder,
         )
         bundle = maintenance_lifecycle.LifecycleBundle(
             generation=lifecycle.next_generation(),
@@ -7701,11 +7880,15 @@ def run_interactive(args) -> int:
             host_api=host_api,
             runtime=runtime,
             window=window,
+            executor=getattr(runtime, "ai_executor", None),
         )
         lifecycle.install(bundle)
         bundle.retire_destroy = lambda: _retire_destroy_window(bundle)
         host_api._bind_maintenance(
             _build_maintenance_host(args, runtime, lifecycle, bundle)
+        )
+        _install_renderer_recovery(
+            window, host_api, lifecycle, bundle, runtime, args, recovery_holder
         )
         try:
             webview.start(gui="edgechromium")

@@ -21,11 +21,30 @@ class FakeTimer:
         self.canceled = True
 
 
+class EventList(list):
+    """A list that lets tests wait deterministically for an append."""
+
+    def __init__(self):
+        super().__init__()
+        self._condition = threading.Condition()
+
+    def append(self, item):
+        with self._condition:
+            super().append(item)
+            self._condition.notify_all()
+
+    def wait_for_count(self, count=1, timeout=5.0):
+        with self._condition:
+            return self._condition.wait_for(
+                lambda: len(self) >= count, timeout
+            )
+
+
 class Harness:
     def __init__(self):
-        self.notified = []
-        self.notified_generations = []
-        self.aborted = []
+        self.notified = EventList()
+        self.notified_generations = EventList()
+        self.aborted = EventList()
         self.destroyed = 0
         self.destroy_error = None
         self.timers = []
@@ -43,8 +62,9 @@ class Harness:
                 raise self.destroy_error
 
         def notify_page(request_id, generation=None):
-            self.notified.append(request_id)
+            # Publish the generation before waking a waiter on the id list.
             self.notified_generations.append((request_id, generation))
+            self.notified.append(request_id)
 
         self.coordinator = CloseCoordinator(
             notify_page=notify_page,
@@ -57,16 +77,20 @@ class Harness:
         return self.coordinator
 
     def wait_notified(self, count=1):
-        # The notification is delivered from a thread that re-checks the
-        # request state under the coordinator lock; wait for the expected
-        # count deterministically instead of assuming an immediate append.
-        for _ in range(200):
-            if len(self.notified) >= count:
-                return
-            threading.Event().wait(0.01)
-        raise AssertionError(
-            f"page was notified {len(self.notified)} time(s), expected {count}"
-        )
+        # The notification pump re-checks the request state under the
+        # coordinator lock; wait on the recorded append instead of assuming
+        # immediate delivery.
+        if not self.notified.wait_for_count(count):
+            raise AssertionError(
+                f"page was notified {len(self.notified)} time(s), expected {count}"
+            )
+
+    def wait_aborted(self, count=1):
+        if not self.aborted.wait_for_count(count):
+            raise AssertionError(
+                f"page was aborted-notified {len(self.aborted)} time(s), "
+                f"expected {count}"
+            )
 
 
 def test_closing_is_canceled_then_completed():
@@ -131,6 +155,7 @@ def test_timeout_only_cancels_unallowed_requests():
     # Fire the timeout: pending -> canceled + page notified.
     harness.timers[-1].fn()
     assert coordinator.state(request_id) == "canceled"
+    harness.wait_aborted()
     assert harness.aborted == [(request_id, "timeout")]
     # A late allow is refused.
     late = coordinator.complete(request_id, True)
@@ -164,6 +189,7 @@ def test_destroy_failure_revokes_allow_and_notifies():
     result = coordinator.complete(request_id, True)
     assert result == {"accepted": False, "state": "canceled"}
     assert coordinator.state(request_id) == "canceled"
+    harness.wait_aborted()
     assert harness.aborted == [(request_id, "destroy_failed")]
     # The allow flag was revoked: closing again must not be allowed.
     assert coordinator.handle_closing() is False
@@ -285,6 +311,7 @@ def test_final_allow_refused_while_save_in_flight():
     result = coordinator.complete(request_id, True)
     assert result == {"accepted": False, "state": "canceled"}
     assert harness.destroyed == 0
+    harness.wait_aborted()
     assert harness.aborted == [(request_id, "save_in_flight")]
     assert coordinator.state(request_id) == "canceled"
     # After the save finishes the user can close again.
@@ -314,6 +341,7 @@ def test_flag_consumption_refused_while_save_in_flight():
     harness.busy = True
     assert coordinator.handle_closing() is False
     assert coordinator.state(request_id) == "canceled"
+    harness.wait_aborted()
     assert harness.aborted == [(request_id, "save_in_flight")]
     # No second destroy; a later close after the save works.
     assert harness.destroyed == 1
@@ -337,6 +365,7 @@ def test_busy_probe_exception_fails_safe():
     result = coordinator.complete(request_id, True)
     assert result == {"accepted": False, "state": "canceled"}
     assert harness.destroyed == 0
+    harness.wait_aborted()
     assert harness.aborted == [(request_id, "save_in_flight")]
 
 
@@ -349,7 +378,7 @@ def test_busy_probe_exception_fails_safe():
 def test_destroy_reentry_revocation_returns_canceled_not_closing():
     harness = Harness()
     main_thread = threading.current_thread()
-    deliveries = []
+    deliveries = EventList()
     coordinator = None
 
     def destroy():
@@ -383,12 +412,9 @@ def test_destroy_reentry_revocation_returns_canceled_not_closing():
     assert result == {"accepted": False, "state": "canceled"}
     assert coordinator.state(request_id) == "canceled"
     # The close_aborted notification is delivered from outside the
-    # synchronous closing callback (a different thread), never via a
-    # same-thread evaluate_js wait inside FormClosing.
-    for _ in range(200):
-        if deliveries:
-            break
-        threading.Event().wait(0.01)
+    # synchronous closing callback (the notification pump thread), never via
+    # a same-thread evaluate_js wait inside FormClosing.
+    assert deliveries.wait_for_count(1)
     assert deliveries == [(request_id, "save_in_flight", False)]
     # No second destroy; a later close after the save finishes works.
     harness.busy = False
@@ -551,8 +577,8 @@ class TaskBarrier:
 
 def _barrier_coordinator(barrier):
     destroyed = {"count": 0}
-    aborted = []
-    notified = []
+    aborted = EventList()
+    notified = EventList()
 
     def timer_factory(seconds, fn):
         timer = FakeTimer(seconds, fn)
@@ -573,12 +599,15 @@ def _barrier_coordinator(barrier):
 
 def _begin(coordinator, notified, count=1):
     assert coordinator.handle_closing() is False
-    for _ in range(200):
-        if len(notified) >= count:
-            break
-        threading.Event().wait(0.01)
-    assert len(notified) >= count
+    assert notified.wait_for_count(count)
     return notified[count - 1]
+
+
+def _wait_aborted(aborted, count=1):
+    if not aborted.wait_for_count(count):
+        raise AssertionError(
+            f"page was aborted-notified {len(aborted)} time(s), expected {count}"
+        )
 
 
 def test_ai_close_intent_freezes_new_claims():
@@ -598,6 +627,7 @@ def test_ai_active_tasks_require_an_explicit_task_choice():
         "state": "canceled",
     }
     assert destroyed["count"] == 0
+    _wait_aborted(aborted)
     assert aborted == [(request, "ai_tasks_active")]
     assert barrier.canceled == 1, "a refused close releases the AI freeze"
     # keep_waiting cancels this close without touching in-flight tasks.
@@ -607,6 +637,7 @@ def test_ai_active_tasks_require_an_explicit_task_choice():
         "state": "canceled",
     }
     assert destroyed["count"] == 0
+    _wait_aborted(aborted, 2)
     assert aborted[-1] == (request, "ai_keep_waiting")
     assert barrier.drains == 0
 
@@ -633,6 +664,7 @@ def test_ai_drain_failure_refuses_close():
         "state": "canceled",
     }
     assert destroyed["count"] == 0
+    _wait_aborted(aborted)
     assert aborted == [(request, "ai_drain_failed")]
     assert barrier.canceled == 1
 
@@ -646,6 +678,7 @@ def test_ai_tasks_still_live_after_drain_refuses_close():
         "state": "canceled",
     }
     assert destroyed["count"] == 0
+    _wait_aborted(aborted)
     assert aborted == [(request, "ai_tasks_active")]
 
 
@@ -675,6 +708,7 @@ def test_ai_timeout_releases_the_freeze():
     coordinator, _destroyed, aborted, notified = _barrier_coordinator(barrier)
     request = _begin(coordinator, notified)
     coordinator._on_timeout(request)
+    _wait_aborted(aborted)
     assert aborted == [(request, "timeout")]
     assert barrier.canceled == 1, "an abandoned close releases the AI freeze"
 
@@ -951,3 +985,577 @@ def test_page_ready_validates_ticket_before_ready_receipt_confirm():
         }
     )["accepted"] is False
     assert receipt.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Bounded notification pump: one possibly-stuck bridge callback, one latest
+# pending notification, no per-close threads.
+# ---------------------------------------------------------------------------
+
+
+def _make_pump_coordinator(
+    *,
+    notify_page,
+    notify_aborted,
+    on_close_intent=None,
+    on_close_canceled=None,
+):
+    timers = []
+    destroyed = []
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    def destroy():
+        destroyed.append(True)
+
+    coordinator = CloseCoordinator(
+        notify_page=notify_page,
+        destroy_window=destroy,
+        notify_aborted=notify_aborted,
+        timeout=30.0,
+        timer_factory=timer_factory,
+        on_close_intent=on_close_intent,
+        on_close_canceled=on_close_canceled,
+    )
+    return coordinator, timers, destroyed
+
+
+def test_blocked_pump_keeps_one_callback_and_latest_abort_across_closes():
+    gate = threading.Event()
+    entered = threading.Event()
+    timeout_returned = threading.Event()
+    aborted = EventList()
+    notifications = EventList()
+    worker_threads = []
+    active = 0
+    maximum = 0
+    intents = 0
+    canceled = 0
+
+    def notify_page(request_id, generation=None):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        notifications.append((request_id, generation))
+        worker_threads.append(threading.current_thread())
+        entered.set()
+        try:
+            gate.wait(5)
+        finally:
+            active -= 1
+
+    def notify_aborted(request_id, reason):
+        aborted.append((request_id, reason))
+
+    def on_intent():
+        nonlocal intents
+        intents += 1
+
+    def on_canceled():
+        nonlocal canceled
+        canceled += 1
+
+    coordinator, timers, destroyed = _make_pump_coordinator(
+        notify_page=notify_page,
+        notify_aborted=notify_aborted,
+        on_close_intent=on_intent,
+        on_close_canceled=on_canceled,
+    )
+
+    worker = None
+    timeout_caller = None
+    try:
+        assert coordinator.handle_closing() is False
+        assert entered.wait(5)
+        request_a = coordinator._current_id
+        generation_a = coordinator.state_answer(request_a)["generation"]
+        worker = coordinator._notify_thread
+        assert worker is not None and worker.is_alive()
+
+        # The timeout runs while the request callback is still stuck. It must
+        # return without waiting for the vendor bridge, and it must not start
+        # a second callback thread.
+        timer_a = timers[-1]
+
+        def fire_timeout():
+            timer_a.fn()
+            timeout_returned.set()
+
+        timeout_caller = threading.Thread(
+            target=fire_timeout, name="test-close-timeout", daemon=True
+        )
+        timeout_caller.start()
+        assert timeout_returned.wait(2), "timeout callback blocked on the bridge"
+        timeout_caller.join(2)
+        assert not timeout_caller.is_alive()
+        assert coordinator.state(request_a) == "canceled"
+        assert coordinator._notify_thread is worker
+
+        assert coordinator.handle_closing() is False
+        request_b = coordinator._current_id
+        timers[-1].fn()
+        assert coordinator.state(request_b) == "canceled"
+        assert coordinator._notify_thread is worker
+
+        assert coordinator.handle_closing() is False
+        request_c = coordinator._current_id
+        timers[-1].fn()
+        assert coordinator.state(request_c) == "canceled"
+        assert coordinator._notify_thread is worker
+
+        # A is stuck in the vendor callback; B/C were superseded before
+        # delivery, and only C's abort remains queued.
+        assert maximum == 1
+        pending = coordinator._notify_pending
+        assert pending is not None
+        assert pending["kind"] == "aborted"
+        assert pending["request_id"] == request_c
+        assert pending["reason"] == "timeout"
+        assert list(notifications) == [(request_a, generation_a)]
+        assert worker_threads == [worker]
+        assert list(aborted) == []
+        assert intents == 3
+        assert canceled == 3
+        assert destroyed == []
+
+        gate.set()
+        assert aborted.wait_for_count(1)
+        assert list(aborted) == [(request_c, "timeout")]
+        assert maximum == 1
+        assert active == 0
+        worker.join(5)
+        assert not worker.is_alive()
+        assert coordinator._notify_thread is None
+        assert coordinator._notify_pending is None
+    finally:
+        gate.set()
+        if timeout_caller is not None:
+            timeout_caller.join(5)
+        if worker is not None:
+            worker.join(5)
+
+
+def test_pump_survives_callback_exception_and_ignores_stale_abort():
+    first_attempt = threading.Event()
+    second_entered = threading.Event()
+    release = threading.Event()
+    aborted = EventList()
+    attempts = []
+    active = 0
+    maximum = 0
+    worker_threads = []
+
+    def notify_page(request_id, generation=None):
+        nonlocal active, maximum
+        attempts.append(request_id)
+        active += 1
+        maximum = max(maximum, active)
+        worker_threads.append(threading.current_thread())
+        try:
+            if len(attempts) == 1:
+                first_attempt.set()
+                raise RuntimeError("bridge exception")
+            second_entered.set()
+            release.wait(5)
+        finally:
+            active -= 1
+
+    coordinator, timers, destroyed = _make_pump_coordinator(
+        notify_page=notify_page,
+        notify_aborted=lambda rid, reason: aborted.append((rid, reason)),
+    )
+
+    worker = None
+    try:
+        assert coordinator.handle_closing() is False
+        assert first_attempt.wait(5)
+        request_a = coordinator._current_id
+        assert coordinator.complete(request_a, False) == {
+            "accepted": True,
+            "state": "canceled",
+        }
+
+        assert coordinator.handle_closing() is False
+        request_b = coordinator._current_id
+        assert second_entered.wait(5)
+        worker = coordinator._notify_thread
+        assert worker is not None and worker.is_alive()
+        assert attempts == [request_a, request_b]
+        assert maximum == 1
+        assert coordinator._notify_pending is None
+
+        # A stale abort for the previous request must not replace B's queued
+        # request notification.
+        coordinator._safe_notify_aborted(request_a, "stale")
+        assert coordinator._notify_pending is None
+        assert list(aborted) == []
+
+        timers[-1].fn()
+        assert coordinator.state(request_b) == "canceled"
+        pending = coordinator._notify_pending
+        assert pending is not None
+        assert pending["kind"] == "aborted"
+        assert pending["request_id"] == request_b
+
+        release.set()
+        assert aborted.wait_for_count(1)
+        assert list(aborted) == [(request_b, "timeout")]
+        assert maximum == 1
+        worker.join(5)
+        assert not worker.is_alive()
+        assert coordinator._notify_thread is None
+        assert coordinator._notify_pending is None
+        assert destroyed == []
+    finally:
+        release.set()
+        for thread in worker_threads:
+            thread.join(5)
+        if worker is not None:
+            worker.join(5)
+
+
+def test_idle_pump_exits_and_restarts_for_a_later_request():
+    notifications = EventList()
+    worker_threads = []
+
+    def notify_page(request_id, generation=None):
+        notifications.append((request_id, generation))
+        worker_threads.append(threading.current_thread())
+
+    coordinator, _timers, destroyed = _make_pump_coordinator(
+        notify_page=notify_page,
+        notify_aborted=lambda rid, reason: None,
+    )
+
+    try:
+        assert coordinator.handle_closing() is False
+        assert notifications.wait_for_count(1)
+        request_a = coordinator._current_id
+        first_worker = worker_threads[0]
+        assert first_worker is not threading.main_thread()
+        first_worker.join(5)
+        assert not first_worker.is_alive()
+        assert coordinator._notify_thread is None
+        assert coordinator._notify_pending is None
+
+        assert coordinator.complete(request_a, False) == {
+            "accepted": True,
+            "state": "canceled",
+        }
+        assert coordinator.handle_closing() is False
+        assert notifications.wait_for_count(2)
+        request_b = coordinator._current_id
+        second_worker = worker_threads[1]
+        assert second_worker is not first_worker
+        second_worker.join(5)
+        assert not second_worker.is_alive()
+        assert coordinator._notify_thread is None
+        assert coordinator._notify_pending is None
+        assert list(notifications)[1][0] == request_b
+        assert destroyed == []
+    finally:
+        for thread in worker_threads:
+            thread.join(5)
+
+
+def test_thread_start_failure_clears_state_and_later_notification_recovers():
+    real_thread = threading.Thread
+    aborted = EventList()
+    aborted_workers = []
+    notifications = []
+
+    class FailingThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("cannot start notification worker")
+
+        def is_alive(self):
+            return False
+
+    def notify_aborted(request_id, reason):
+        aborted.append((request_id, reason))
+        aborted_workers.append(threading.current_thread())
+
+    coordinator, timers, _destroyed = _make_pump_coordinator(
+        notify_page=lambda rid, generation=None: notifications.append(
+            (rid, generation)
+        ),
+        notify_aborted=notify_aborted,
+    )
+
+    try:
+        d1_host_api.threading.Thread = FailingThread
+        assert coordinator.handle_closing() is False
+        request = coordinator._current_id
+        assert coordinator.state(request) == "pending"
+        assert coordinator._notify_thread is None
+        assert coordinator._notify_pending is None
+        assert notifications == []
+    finally:
+        d1_host_api.threading.Thread = real_thread
+
+    timers[-1].fn()
+    assert coordinator.state(request) == "canceled"
+    assert aborted.wait_for_count(1)
+    assert list(aborted) == [(request, "timeout")]
+    worker = aborted_workers[0]
+    worker.join(5)
+    assert not worker.is_alive()
+    assert coordinator._notify_thread is None
+    assert coordinator._notify_pending is None
+
+
+def test_reentrant_notification_is_served_by_the_same_worker():
+    notifications = EventList()
+    aborted = EventList()
+    worker_threads = []
+    aborted_workers = []
+    coordinator = None
+
+    def notify_page(request_id, generation=None):
+        notifications.append((request_id, generation))
+        worker_threads.append(threading.current_thread())
+        if len(worker_threads) == 1:
+            # A page callback may synchronously cancel the request; the
+            # resulting abort must be queued for this same pump, not a second
+            # worker and not a deadlock.
+            coordinator._on_timeout(request_id)
+
+    def notify_aborted(request_id, reason):
+        aborted.append((request_id, reason))
+        aborted_workers.append(threading.current_thread())
+
+    coordinator, _timers, destroyed = _make_pump_coordinator(
+        notify_page=notify_page,
+        notify_aborted=notify_aborted,
+    )
+
+    try:
+        assert coordinator.handle_closing() is False
+        assert aborted.wait_for_count(1)
+        request = notifications[0][0]
+        assert coordinator.state(request) == "canceled"
+        assert len(worker_threads) == 1
+        assert aborted_workers == [worker_threads[0]]
+        assert list(notifications) == [(request, notifications[0][1])]
+        assert list(aborted) == [(request, "timeout")]
+        worker = worker_threads[0]
+        worker.join(5)
+        assert not worker.is_alive()
+        assert coordinator._notify_thread is None
+        assert coordinator._notify_pending is None
+        assert destroyed == []
+    finally:
+        for thread in worker_threads:
+            thread.join(5)
+
+
+def test_stale_generation_abort_does_not_override_deny_or_final_allow():
+    notifications = EventList()
+    aborted = EventList()
+    worker_threads = []
+
+    def notify_page(request_id, generation=None):
+        notifications.append((request_id, generation))
+        worker_threads.append(threading.current_thread())
+
+    def notify_aborted(request_id, reason):
+        worker_threads.append(threading.current_thread())
+        aborted.append((request_id, reason))
+
+    coordinator, timers, destroyed = _make_pump_coordinator(
+        notify_page=notify_page,
+        notify_aborted=notify_aborted,
+    )
+
+    try:
+        assert coordinator.handle_closing() is False
+        assert notifications.wait_for_count(1)
+        request_a = coordinator._current_id
+        generation_a = coordinator.state_answer(request_a)["generation"]
+        timers[-1].fn()
+        assert aborted.wait_for_count(1)
+        assert list(aborted) == [(request_a, "timeout")]
+
+        assert coordinator.handle_closing() is False
+        assert notifications.wait_for_count(2)
+        request_b = coordinator._current_id
+        generation_b = coordinator.state_answer(request_b)["generation"]
+        assert generation_b > generation_a
+        coordinator._safe_notify_aborted(request_a, "timeout")
+        assert coordinator._notify_pending is None
+        assert len(aborted) == 1
+
+        assert coordinator.complete(request_b, False) == {
+            "accepted": True,
+            "state": "canceled",
+        }
+        assert coordinator.complete(request_b, True) == {
+            "accepted": False,
+            "state": "canceled",
+        }
+
+        assert coordinator.handle_closing() is False
+        assert notifications.wait_for_count(3)
+        request_c = coordinator._current_id
+        generation_c = coordinator.state_answer(request_c)["generation"]
+        assert generation_c > generation_b
+        assert coordinator.complete(request_c, True) == {
+            "accepted": True,
+            "state": "closing",
+        }
+        assert destroyed == [True]
+        assert coordinator.complete(request_c, True) == {
+            "accepted": False,
+            "state": "closing",
+        }
+        timers[-1].fn()
+        assert coordinator.state(request_c) == "closing"
+        assert list(aborted) == [(request_a, "timeout")]
+        assert list(notifications) == [
+            (request_a, generation_a),
+            (request_b, generation_b),
+            (request_c, generation_c),
+        ]
+    finally:
+        for thread in worker_threads:
+            thread.join(5)
+    for thread in worker_threads:
+        assert not thread.is_alive()
+    assert coordinator._notify_thread is None
+
+
+def test_queued_newer_request_is_discarded_when_denied_before_dispatch():
+    gate = threading.Event()
+    entered = threading.Event()
+    notifications = EventList()
+    workers = []
+
+    def notify_page(request_id, generation=None):
+        notifications.append((request_id, generation))
+        workers.append(threading.current_thread())
+        entered.set()
+        gate.wait(5)
+
+    coordinator, timers, destroyed = _make_pump_coordinator(
+        notify_page=notify_page,
+        notify_aborted=lambda rid, reason: None,
+    )
+    worker = None
+    try:
+        assert coordinator.handle_closing() is False
+        assert entered.wait(5)
+        request_a = coordinator._current_id
+        generation_a = coordinator.state_answer(request_a)["generation"]
+        worker = coordinator._notify_thread
+        assert worker is not None
+        assert coordinator.complete(request_a, False) == {
+            "accepted": True,
+            "state": "canceled",
+        }
+        assert coordinator.handle_closing() is False
+        request_b = coordinator._current_id
+        assert coordinator.complete(request_b, False) == {
+            "accepted": True,
+            "state": "canceled",
+        }
+        assert coordinator._notify_pending is not None
+        gate.set()
+        worker.join(5)
+        assert not worker.is_alive()
+        assert list(notifications) == [(request_a, generation_a)]
+        assert coordinator._notify_pending is None
+        assert destroyed == []
+    finally:
+        gate.set()
+        if worker is not None:
+            worker.join(5)
+        for thread in workers:
+            thread.join(5)
+
+
+def test_queued_newer_request_is_discarded_when_final_allowed_before_dispatch():
+    gate = threading.Event()
+    entered = threading.Event()
+    notifications = EventList()
+    workers = []
+
+    def notify_page(request_id, generation=None):
+        notifications.append((request_id, generation))
+        workers.append(threading.current_thread())
+        entered.set()
+        gate.wait(5)
+
+    coordinator, _timers, destroyed = _make_pump_coordinator(
+        notify_page=notify_page,
+        notify_aborted=lambda rid, reason: None,
+    )
+    worker = None
+    try:
+        assert coordinator.handle_closing() is False
+        assert entered.wait(5)
+        request_a = coordinator._current_id
+        generation_a = coordinator.state_answer(request_a)["generation"]
+        worker = coordinator._notify_thread
+        assert worker is not None
+        assert coordinator.complete(request_a, False)["accepted"] is True
+        assert coordinator.handle_closing() is False
+        request_b = coordinator._current_id
+        assert coordinator.complete(request_b, True) == {
+            "accepted": True,
+            "state": "closing",
+        }
+        assert coordinator._notify_pending is not None
+        gate.set()
+        worker.join(5)
+        assert not worker.is_alive()
+        assert list(notifications) == [(request_a, generation_a)]
+        assert coordinator._notify_pending is None
+        assert destroyed == [True]
+    finally:
+        gate.set()
+        if worker is not None:
+            worker.join(5)
+        for thread in workers:
+            thread.join(5)
+
+
+def test_enqueue_at_worker_idle_exit_race_does_not_lose_latest():
+    for _ in range(40):
+        gate = threading.Event()
+        entered = threading.Event()
+        notifications = EventList()
+        workers = []
+
+        def notify_page(request_id, generation=None):
+            notifications.append((request_id, generation))
+            workers.append(threading.current_thread())
+            entered.set()
+            gate.wait(5)
+
+        coordinator, _timers, _destroyed = _make_pump_coordinator(
+            notify_page=notify_page,
+            notify_aborted=lambda rid, reason: None,
+        )
+        try:
+            assert coordinator.handle_closing() is False
+            assert entered.wait(5)
+            request_a = coordinator._current_id
+            assert coordinator.complete(request_a, False)["accepted"] is True
+            gate.set()
+            assert coordinator.handle_closing() is False
+            request_b = coordinator._current_id
+            assert notifications.wait_for_count(2)
+            assert list(notifications)[1][0] == request_b
+            assert coordinator._notify_pending is None
+        finally:
+            gate.set()
+            for thread in {thread for thread in workers}:
+                thread.join(5)
+        assert all(not thread.is_alive() for thread in workers)
+        assert coordinator._notify_thread is None

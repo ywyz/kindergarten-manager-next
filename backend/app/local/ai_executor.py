@@ -446,6 +446,45 @@ class AiExecutor:
             and not self._unconfirmed_slots
         )
 
+    def stop_if_idle(self, *, owner: str, timeout: float = 5.0) -> bool:
+        """Atomically stop only an executor proven idle under the gate.
+
+        This is the renderer-recovery teardown, not normal close/drain:
+        - the caller must already own a freeze owner (renderer:<generation>:...);
+        - ``_idle`` must be set under the same gate that ``_claim_and_run`` uses
+          to clear it before its DB claim, so an in-progress handoff with
+          ``_active is None`` is refused;
+        - no active/pending/unconfirmed/slot work may exist;
+        - only then is ``_stop`` set before unlocking, preventing a new claim.
+        There is no revoke, abort, Job terminate, drain or dispose here. A
+        coordinator thread that does not confirm exit is retained and False is
+        returned for the caller to keep the root lock/window.
+        """
+        if not isinstance(owner, str) or not owner:
+            return False
+        with self._gate:
+            if owner not in self._freeze_owners:
+                return False
+            if not self._idle.is_set():
+                return False
+            if (
+                self._active is not None
+                or self._pending_results
+                or self._unconfirmed
+                or self._unconfirmed_slots
+            ):
+                return False
+            self._stop.set()
+        self._wake.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=max(0.0, float(timeout)))
+            if thread.is_alive():
+                # The thread may still own resources; never claim a stop.
+                return False
+            self._thread = None
+        return True
+
     def dispose(self, *, grace: float = 2.0, force: float = 3.0) -> bool:
         """Confirm worker收口 before the runtime lock may be released.
 

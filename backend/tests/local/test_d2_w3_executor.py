@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 import time
 import unittest
 import uuid
@@ -691,3 +692,139 @@ class RealTlsExecutorTests(ExecutorCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class AtomicIdleStopTests(ExecutorCase):
+    """Renderer-recovery atomic idle stop, never a forced drain/dispose."""
+
+    def _counts(self):
+        return (
+            query_scalar(self.db, "SELECT count(*) FROM local_ai_tasks"),
+            query_scalar(self.db, "SELECT count(*) FROM local_ai_executions"),
+            query_scalar(self.db, "SELECT count(*) FROM local_ai_attempts"),
+        )
+
+    def test_stop_if_idle_requires_owner_and_preserves_task_delta(self):
+        executor = self.start_executor()
+        before = self._counts()
+        owner = "renderer:1:test"
+        self.assertFalse(executor.stop_if_idle(owner=owner))
+        self.assertIsNotNone(executor._thread)
+        executor.freeze(owner=owner)
+        self.assertTrue(executor._idle.wait(5))
+        self.assertTrue(executor.stop_if_idle(owner=owner))
+        self.assertIsNone(executor._thread)
+        self.assertEqual(self._counts(), before)
+
+    def test_stop_if_idle_refuses_claim_handoff_when_active_is_none(self):
+        executor = self.start_executor()
+        owner = "renderer:1:handoff"
+        executor.freeze(owner=owner)
+        with executor._gate:
+            executor._idle.clear()
+        try:
+            self.assertFalse(executor.stop_if_idle(owner=owner))
+            self.assertFalse(executor._stop.is_set())
+        finally:
+            with executor._gate:
+                executor._idle.set()
+        self.assertTrue(executor.stop_if_idle(owner=owner))
+
+    def test_stop_if_idle_refuses_active_pending_and_unconfirmed_state(self):
+        owner = "renderer:1:state"
+        cases = (
+            ("_active", object()),
+            ("_pending_results", {"execution": {"claim": None, "result": {}}}),
+            ("_unconfirmed", True),
+            ("_unconfirmed_slots", [{}]),
+        )
+        for field, value in cases:
+            executor = AiExecutor(self.runtime)
+            executor.freeze(owner=owner)
+            with executor._gate:
+                setattr(executor, field, value)
+            try:
+                self.assertFalse(
+                    executor.stop_if_idle(owner=owner),
+                    f"{field} must refuse atomic idle stop",
+                )
+            finally:
+                with executor._gate:
+                    if field == "_active":
+                        executor._active = None
+                    elif field == "_pending_results":
+                        executor._pending_results = {}
+                    elif field == "_unconfirmed":
+                        executor._unconfirmed = False
+                    else:
+                        executor._unconfirmed_slots = []
+
+    def test_stop_if_idle_retains_thread_when_join_is_unconfirmed(self):
+        executor = AiExecutor(self.runtime)
+        owner = "renderer:1:join"
+        executor.freeze(owner=owner)
+
+        class AliveThread:
+            def join(self, timeout=None):
+                return None
+
+            def is_alive(self):
+                return True
+
+        thread = AliveThread()
+        executor._thread = thread
+        self.assertFalse(executor.stop_if_idle(owner=owner, timeout=0.01))
+        self.assertIs(executor._thread, thread)
+        executor._thread = None
+
+    def test_stop_if_idle_never_calls_stop_and_drain_or_dispose(self):
+        from unittest import mock
+
+        executor = self.start_executor()
+        owner = "renderer:1:no-force"
+        executor.freeze(owner=owner)
+        self.assertTrue(executor._idle.wait(5))
+        with mock.patch.object(
+            executor, "stop_and_drain", side_effect=AssertionError("drain")
+        ), mock.patch.object(
+            executor, "dispose", side_effect=AssertionError("dispose")
+        ):
+            self.assertTrue(executor.stop_if_idle(owner=owner))
+
+    def test_renderer_owner_survives_ordinary_close_unfreeze(self):
+        executor = self.start_executor()
+        owner = "renderer:1:close-cancel"
+        executor.freeze(owner=owner)
+        executor.freeze(owner="close:request")
+        executor.unfreeze(owner="close:request")
+        self.assertTrue(executor.is_frozen())
+        self.assertIn(owner, executor._freeze_owners)
+        self.assertTrue(executor._idle.wait(5))
+        self.assertTrue(executor.stop_if_idle(owner=owner))
+
+    def test_atomic_stop_refuses_real_before_claim_handoff(self):
+        owner = "renderer:1:real-handoff"
+        entered = threading.Event()
+        release = threading.Event()
+        seen = {"blocked": False}
+
+        def on_event(name, _claim, _info):
+            if name == "before_claim" and not seen["blocked"]:
+                seen["blocked"] = True
+                entered.set()
+                assert release.wait(5)
+
+        executor = self.start_executor(on_event=on_event)
+        try:
+            self.assertTrue(entered.wait(5))
+            # _claim_and_run has cleared _idle under the gate and has not set
+            # _active yet.  A read-only active snapshot/is_snapshot_idle would
+            # say idle; the atomic stop must refuse this real handoff.
+            executor.freeze(owner=owner)
+            self.assertFalse(executor.stop_if_idle(owner=owner, timeout=0.2))
+            self.assertFalse(executor._stop.is_set())
+            release.set()
+            self.assertTrue(executor._idle.wait(5))
+            self.assertTrue(executor.stop_if_idle(owner=owner))
+        finally:
+            release.set()

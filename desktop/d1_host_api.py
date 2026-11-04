@@ -295,6 +295,12 @@ class CloseCoordinator:
         self._current_generation = 0
         self._allow_once = False
         self._timer = None
+        # One daemon pump per coordinator.  The external bridge call can
+        # block indefinitely (a dead WebView2 renderer), so at most one
+        # callback is active at a time and only the latest relevant queued
+        # notification is retained.
+        self._notify_pending: dict[str, object] | None = None
+        self._notify_thread: threading.Thread | None = None
 
     def _save_busy(self) -> bool:
         try:
@@ -392,11 +398,9 @@ class CloseCoordinator:
             return False
         if revoke is not None:
             # Never call evaluate_js from inside the synchronous FormClosing
-            # callback: the page notification runs on its own thread after
-            # this callback has returned False (R11).
-            threading.Thread(
-                target=self._safe_notify_aborted, args=revoke, daemon=True
-            ).start()
+            # callback: enqueue only; the single notification pump runs the
+            # potentially blocking bridge callback outside this lock.
+            self._safe_notify_aborted(*revoke)
         if revoked_id is not None:
             # The revoke canceled this request: release the AI freeze (only if
             # this request still owns the close) and revoke any install plan
@@ -427,13 +431,10 @@ class CloseCoordinator:
         # again. The freeze is a short in-memory operation (no DB, no network).
         self._safe_on_intent()
         self._safe_on_install_intent(request_id, generation)
-        # Notify the page outside the synchronous UI callback; the generation
-        # assigned under this lock is bound to the announcement (R1 §15.3).
-        threading.Thread(
-            target=self._safe_notify_page,
-            args=(request_id, generation),
-            daemon=True,
-        ).start()
+        # Notify the page outside the synchronous UI callback through the
+        # coordinator's single pump; the generation assigned under this lock
+        # is bound to the announcement (R1 §15.3).
+        self._safe_notify_page(request_id, generation)
 
     def _on_timeout(self, bound_request_id: str) -> None:
         with self._lock:
@@ -613,29 +614,118 @@ class CloseCoordinator:
             self._timer.cancel()
             self._timer = None
 
-    # -- notification helpers ---------------------------------------------
-    def _safe_notify_page(self, request_id: str, generation: int) -> None:
+    # -- notification pump ------------------------------------------------
+    def _notification_valid_locked(self, message: dict[str, object]) -> bool:
+        """Check a queued message against the current id/generation/state."""
+        request_id = message.get("request_id")
+        generation = message.get("generation")
+        if (
+            self._current_id != request_id
+            or self._current_generation != generation
+        ):
+            return False
+        if message.get("kind") == "request":
+            return self._state == self.PENDING
+        if message.get("kind") == "aborted":
+            return self._state == self.CANCELED
+        return False
+
+    def _enqueue_notification(self, message: dict[str, object]) -> None:
+        """Queue at most one latest notification; never call the bridge here.
+
+        The lock also protects the worker transition: a worker that finds no
+        pending message clears ``_notify_thread`` and exits under this same
+        lock, so an enqueue either observes a live worker (and leaves the
+        message for it) or starts a fresh one. There is no separate wait
+        state and therefore no lost wakeup.
+        """
+        start_failed = False
         with self._lock:
-            if self._current_id != request_id or self._state != self.PENDING:
-                # This request was superseded or resolved before its
-                # notification could run: never deliver a stale request
-                # announcement (R1 §14.3). Delivery order is still not
-                # guaranteed once the callback runs, so the page additionally
-                # confirms the host's current request id and generation with
-                # ``get_close_state`` before acting on a notification.
+            if not self._notification_valid_locked(message):
+                # A superseded request/abort must not replace a newer pending
+                # message (R1 §14.3).
                 return
+            self._notify_pending = message
+            thread = self._notify_thread
+            if thread is not None and thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._notification_loop,
+                name="d1-close-notify",
+                daemon=True,
+            )
+            self._notify_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                # Keep the coordinator usable: a later enqueue may start a
+                # worker. The pending slot must not outlive its worker.
+                if self._notify_thread is thread:
+                    self._notify_thread = None
+                if self._notify_pending is message:
+                    self._notify_pending = None
+                start_failed = True
+        if start_failed:
+            _host_log("notification worker start failed")
+
+    def _notification_loop(self) -> None:
+        """Single daemon pump; a stuck vendor callback never spawns another.
+
+        The worker exits when the single pending slot is empty. A stuck bridge
+        callback keeps this one daemon alive for the coordinator's lifetime;
+        later notifications replace the one pending slot and are not sent by
+        any additional thread.
+        """
         try:
-            self._notify_page(request_id, generation)
-        except Exception:
-            # Notification failure leaves the request pending; the timeout
-            # cancels it and notifies the aborted side.
-            pass
+            while True:
+                with self._lock:
+                    message = self._notify_pending
+                    if message is None:
+                        if self._notify_thread is threading.current_thread():
+                            self._notify_thread = None
+                        return
+                    self._notify_pending = None
+                    if not self._notification_valid_locked(message):
+                        # The request/abort was superseded while it waited.
+                        continue
+                try:
+                    if message.get("kind") == "request":
+                        self._notify_page(
+                            str(message["request_id"]), int(message["generation"])
+                        )
+                    else:
+                        self._notify_aborted(
+                            str(message["request_id"]), str(message["reason"])
+                        )
+                except Exception:
+                    # The pump survives a callback exception; no untracked
+                    # second worker is created. The next message can still run.
+                    pass
+        finally:
+            with self._lock:
+                if self._notify_thread is threading.current_thread():
+                    self._notify_thread = None
+
+    def _safe_notify_page(self, request_id: str, generation: int) -> None:
+        self._enqueue_notification(
+            {
+                "kind": "request",
+                "request_id": request_id,
+                "generation": generation,
+            }
+        )
 
     def _safe_notify_aborted(self, request_id: str, reason: str) -> None:
-        try:
-            self._notify_aborted(request_id, reason)
-        except Exception:
-            pass
+        with self._lock:
+            generation = self._current_generation
+        self._enqueue_notification(
+            {
+                "kind": "aborted",
+                "request_id": request_id,
+                "generation": generation,
+                "reason": reason,
+            }
+        )
 
 
 def _base_name(name: str) -> str:

@@ -654,3 +654,132 @@ def test_maintenance_busy_probe_includes_fixed_weekly_manager():
     assert d1_main._maintenance_busy(bundle) is True
     manager.active = 0
     assert d1_main._maintenance_busy(bundle) is False
+
+
+def test_is_current_is_identity_bound_and_never_replaces_newer_bundle():
+    manager = ml.LifecycleManager()
+    old = bundle(manager)
+    manager.install(old)
+    assert manager.is_current(old) is True
+    newer = bundle(manager)
+    manager.install(newer)
+    assert manager.is_current(old) is False
+    assert manager.is_current(newer) is True
+    assert manager.current() is newer
+
+
+def test_install_if_current_is_atomic_and_rejects_stale_expected():
+    manager = ml.LifecycleManager()
+    old = bundle(manager)
+    newer = bundle(manager)
+    manager.install(newer)
+    assert manager.install_if_current(old, bundle(manager)) is False
+    assert manager.current() is newer
+
+
+def test_reopen_sequencer_stale_expected_has_zero_effect():
+    manager = ml.LifecycleManager()
+    old = bundle(manager)
+    manager.install(old)
+    newer = bundle(manager)
+    manager.install(newer)
+    events = []
+    sequencer = ml.ReopenSequencer(
+        manager=manager,
+        old_bundle=old,
+        build_bundle=lambda _old: events.append("build") or bundle(manager),
+        create_window=lambda _new: events.append("window"),
+        wait_business_ready=lambda _new, _timeout: True,
+        timeout=0.01,
+        expected_current=old,
+    )
+    result = sequencer.run()
+    assert result == {"state": "reopen_failed", "code": "REOPEN_SUPERSEDED"}
+    assert events == []
+    assert manager.current() is newer
+    assert old.window.destroyed == 0
+
+
+def test_reopen_sequencer_cas_failure_does_not_overwrite_newer_current():
+    manager = ml.LifecycleManager()
+    old = bundle(manager)
+    newer = bundle(manager)
+    manager.install(old)
+    raced = bundle(manager)
+
+    def build(_old):
+        manager.install(newer)
+        return raced
+
+    sequencer = ml.ReopenSequencer(
+        manager=manager,
+        old_bundle=old,
+        build_bundle=build,
+        create_window=lambda _new: None,
+        wait_business_ready=lambda _new, _timeout: True,
+        timeout=0.01,
+        expected_current=old,
+    )
+    result = sequencer.run()
+    assert result == {"state": "reopen_failed", "code": "REOPEN_SUPERSEDED"}
+    assert manager.current() is newer
+    assert old.window.destroyed == 0
+    assert raced.window.destroyed == 1
+
+
+def test_manual_reopen_old_destroy_failure_keeps_new_owner_visible():
+    manager = ml.LifecycleManager()
+    old = bundle(manager)
+    manager.install(old)
+
+    def fail_old_destroy():
+        raise RuntimeError("old window destroy failed")
+
+    old.retire_destroy = fail_old_destroy
+    new = ml.LifecycleBundle(
+        generation=manager.next_generation(),
+        service=FakeService(),
+        host_api=FakeHost("new"),
+        runtime=old.runtime,
+        window=FakeWindow("new"),
+    )
+    events = []
+    sequencer = ml.ReopenSequencer(
+        manager=manager,
+        old_bundle=old,
+        build_bundle=lambda _old: new,
+        create_window=lambda _new: events.append("new-window"),
+        wait_business_ready=lambda _new, _timeout: True,
+        timeout=0.01,
+        expected_current=old,
+        manual_reopen=True,
+    )
+    result = sequencer.run()
+    assert result == {
+        "state": "reopened",
+        "generation": new.generation,
+        "warning": "OLD_WINDOW_RETAINED",
+    }
+    assert manager.current() is new
+    assert new.service.started == 1
+    assert new.window.destroyed == 0
+    assert old.window.destroyed == 0
+    assert events == ["new-window"]
+
+
+def test_unresolved_auxiliary_blocks_root_release_before_dispose():
+    manager = ml.LifecycleManager()
+    item = bundle(manager)
+    manager.install(item)
+    partial = ml.LifecycleBundle(
+        generation=manager.next_generation(),
+        runtime=item.runtime,
+        executor=item.runtime.ai_executor,
+        preserve_resources=True,
+    )
+    manager.retain_auxiliary(partial)
+    assert manager.close_latest(timeout=0.01) is False
+    assert manager.dispose_bundle(item) is False
+    assert item.runtime.disposed == 0
+    assert item.runtime.ai_executor.disposed == 0
+    assert item.service.stopped == 0

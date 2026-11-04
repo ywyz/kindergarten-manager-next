@@ -15,6 +15,25 @@ import pytest
 import d1_host_api
 
 
+class EventList(list):
+    """A list that lets tests wait deterministically for an append."""
+
+    def __init__(self):
+        super().__init__()
+        self._condition = threading.Condition()
+
+    def append(self, item):
+        with self._condition:
+            super().append(item)
+            self._condition.notify_all()
+
+    def wait_for_count(self, count=1, timeout=5.0):
+        with self._condition:
+            return self._condition.wait_for(
+                lambda: len(self) >= count, timeout
+            )
+
+
 class FakeExecutor:
     def __init__(self):
         self.frozen = 0
@@ -105,8 +124,8 @@ def _install(monkeypatch, live_counts):
     runtime = FakeRuntime(executor)
     window = FakeWindow()
     host_api = d1_host_api.D1HostApi(launch_token="synthetic")
-    notifications = []
-    aborts = []
+    notifications = EventList()
+    aborts = EventList()
     host_api._notify_request_close = lambda rid, generation=None: notifications.append(
         (rid, generation)
     )
@@ -118,11 +137,7 @@ def _install(monkeypatch, live_counts):
 
 def _begin(window, notifications, count=1):
     assert window.events.fire() is False
-    for _ in range(200):
-        if len(notifications) >= count:
-            break
-        threading.Event().wait(0.01)
-    assert len(notifications) >= count
+    assert notifications.wait_for_count(count)
     return notifications[count - 1][0]
 
 
@@ -147,6 +162,7 @@ def test_live_tasks_require_task_choice_through_the_real_host(monkeypatch):
         "state": "canceled",
     }
     assert window.destroyed == 0
+    assert aborts.wait_for_count(1)
     assert aborts == [(request, "ai_tasks_active")]
     assert executor.unfrozen == 1
     # keep_waiting cancels the close.
@@ -154,6 +170,8 @@ def test_live_tasks_require_task_choice_through_the_real_host(monkeypatch):
     assert host_api.complete_close(
         {"close_request_id": request, "allow": True, "task_choice": "keep_waiting"}
     ) == {"accepted": False, "state": "canceled"}
+    assert aborts.wait_for_count(2)
+    assert aborts[-1] == (request, "ai_keep_waiting")
     assert executor.drain_calls == 0
 
 

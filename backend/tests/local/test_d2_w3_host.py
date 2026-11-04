@@ -8,6 +8,7 @@ stop-and-exit drain are exercised end to end.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import unittest
 import uuid
@@ -28,12 +29,31 @@ from app.local.base import utc_now  # noqa: E402
 from tests.local.support import LocalTestCase, query_scalar  # noqa: E402
 
 
+class _AbortedList(list):
+    """Abort receipts are delivered by the asynchronous notification pump."""
+
+    def __init__(self):
+        super().__init__()
+        self._condition = threading.Condition()
+
+    def append(self, item):
+        with self._condition:
+            super().append(item)
+            self._condition.notify_all()
+
+    def wait_for_count(self, count=1, timeout=5.0):
+        with self._condition:
+            return self._condition.wait_for(
+                lambda: len(self) >= count, timeout
+            )
+
+
 class CloseCoordinatorTests(unittest.TestCase):
     """Pure state-machine branches (no window, no DB)."""
 
     def _coordinator(self, **kwargs):
         destroyed = {"count": 0}
-        aborted: list[tuple[str, str]] = []
+        aborted = _AbortedList()
         coordinator = d1_host_api.CloseCoordinator(
             notify_page=lambda *_a: None,
             destroy_window=lambda: destroyed.__setitem__("count", destroyed["count"] + 1),
@@ -68,6 +88,7 @@ class CloseCoordinatorTests(unittest.TestCase):
         result = coordinator.complete(request_id, True)
         self.assertFalse(result["accepted"])
         self.assertEqual(released["n"], 1)
+        self.assertTrue(aborted.wait_for_count(1))
         self.assertEqual(aborted[-1][1], "save_in_flight")
 
     def test_destroy_failure_releases_freeze(self):
@@ -99,12 +120,14 @@ class CloseCoordinatorTests(unittest.TestCase):
         refused = coordinator.complete(request_id, True)
         self.assertFalse(refused["accepted"])
         self.assertEqual(destroyed["count"], 0)
+        self.assertTrue(aborted.wait_for_count(1))
         self.assertEqual(aborted[-1][1], "ai_tasks_active")
         self.assertEqual(released["n"], 1)
         # A fresh close with "keep waiting" also stays open.
         request_id = self._open_request(coordinator)
         kept = coordinator.complete(request_id, True, "keep_waiting")
         self.assertFalse(kept["accepted"])
+        self.assertTrue(aborted.wait_for_count(2))
         self.assertEqual(aborted[-1][1], "ai_keep_waiting")
 
     def test_stop_and_exit_requires_drain_confirmation(self):
@@ -116,6 +139,7 @@ class CloseCoordinatorTests(unittest.TestCase):
         result = coordinator.complete(request_id, True, "stop_and_exit")
         self.assertFalse(result["accepted"])
         self.assertEqual(destroyed["count"], 0)
+        self.assertTrue(aborted.wait_for_count(1))
         self.assertEqual(aborted[-1][1], "ai_drain_failed")
 
     def test_stale_cancel_does_not_release_newer_freeze(self):
@@ -189,6 +213,7 @@ class CloseCoordinatorTests(unittest.TestCase):
         request_id = self._open_request(coordinator)
         coordinator._on_timeout(request_id)
         self.assertEqual(released["n"], 1)
+        self.assertTrue(aborted.wait_for_count(1))
         self.assertEqual(aborted[-1][1], "timeout")
 
 
