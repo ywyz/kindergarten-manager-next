@@ -1,8 +1,10 @@
 # Windows 11 白屏、并发首失败与 Word 注册调用补核
 
-更新：2026-11-04。状态：限定测试修复经Codex独立审核通过，最终后端62项、桌面35项通过，允许按§5门禁普通提交推送。白屏原实例的渲染器已丢失，受控重开保留数据且正常退出；最初触发原因未证实，未新增自动恢复行为。Word当前功能正常，/r历史注册差异不可还原。前轮包身份、首次策略拦截、三次真实AI及保存／Word／备份结果见[目标机核查](desktop-weekly-ai-windows11-target-review.md)。不作完整产品验收结论。
+更新：2026-11-04。**最新完整回归未通过，决定交回开发机修复，见§6。** 原限定测试修复经Codex独立审核通过，后端62项、桌面35项及原Git门禁保持§1–5的历史身份。白屏原实例的渲染器已丢失，受控重开保留数据且正常退出；最初触发原因未证实，未新增自动恢复行为。Word当前功能正常，/r历史注册差异不可还原。前轮包身份、首次策略拦截、三次真实AI及保存／Word／备份结果见[目标机核查](desktop-weekly-ai-windows11-target-review.md)。不作完整产品验收结论。
 
 ## 1. 授权、来源与责任
+
+新增本机验证见§6：已提交61ef9f9上的完整回归未通过，真实AI源码样本通过，并取得人工浏览器丢失后的纯白状态对照。下文§1–5保留原限定审核身份，不以其通过结论代替新增全套结果。
 
 用户明确授权原OpenCode会话和Command Go继续使用DeepSeek V4.1 Flash max，排查白屏及并发首失败、核查Word/r影响，保持系统保护不变；处理后继续测试，由Codex审核，通过后提交推送，交开发机接续。沿用`codex/desktop-v2-foundation`，开工HEAD与远端均为`7eb4b5ea859625de83fff073b01c6bb543e5cdf5`；开工12文件未提交补丁`c745f3cc…`及两份正式文档差异已保留，不覆盖原件。
 
@@ -56,4 +58,107 @@ Command Go首试读取外部任务文件被工具权限拒绝，未执行源码�
 
 Codex结论：上述源码修复及限定验证**通过，无阻塞代码问题**。保留白屏精确触发原因、异常页面未保存资料及恢复交互设计、/r历史差异与前轮未验边界；这些均不写已修复或完整验收。通过后由原OpenCode按具体文件／Git规范化blob／parent核准清单只stage；Codex独立比对index后再核定tree及普通commit／push。禁止add-all、amend、rebase、force、改main／tag／Release或纳入私有证据；Git实际提交身份以分支历史及最终远端核对为准。
 
-开发机接续见[唯一入口](../tasks/current.md)：先保留本地修改再快进核源；4551主系统保持源码验证边界，不启动候选／helper。白屏后续以受控合成复现和保存合同为起点，有证据的最小修复仍由原生指定模型实施、Codex独立审核；新增渲染恢复交互须先核定产品行为，不默认reload／退出或强杀。没有新增发行／签名／WebDAV／安装更新授权。
+开发机接续见[唯一入口](../tasks/current.md)：先保留本地修改再快进核源；4551主系统保持源码验证边界，不启动冻结候选及冻结helper。白屏后续以受控合成复现和保存合同为起点，有证据的最小修复仍由原生指定模型实施、Codex独立审核；新增渲染恢复交互须先核定产品行为，不默认reload／退出或强杀。没有新增发行／签名／WebDAV／安装更新授权。
+
+## 6. 2026-11-04本机完整回归、真实AI与渲染器丢失对照
+
+本节是对已提交源码`61ef9f9ee54724e8c9a03e95f5e303ae0ba970da`的新增独立验证，tree为`7146737f7475cd7ab1d7a22b327cfea75749efb1`。此前§5的62／35项限定结论保持原范围；**本次完整回归未通过**，不能用单项复验或一次真实AI成功覆盖首失败。
+
+### 6.1 来源、环境与授权
+
+用户要求拉取最新代码、按当前提示词本机测试，并明确允许应用真实AI；配置缺失时由用户在应用中填写。最初指定工作树在main／`e836726`，其提示词仍为旧备份阶段；按项目规定使用已有`kindergarten-manager-target-handoff`工作树的`codex/desktop-v2-foundation`。普通fetch及快进拉取均核为上述61ef9f9，测试收尾fetch仍相同；测试阶段没有改main、另建分支、提交或推送。其后用户授权交回开发机时提交推送，接续门禁见§6.6。
+
+复用既有CPython3.14.10／Windows x64／标准GIL环境，47个锁定包版本与现有lock一致；源码测试设置`APP_DISABLE_DOTENV=1`、`DISABLE_SQLALCHEMY_CEXT_RUNTIME=1`，使用新短合成数据、凭据、临时及证据根。没有安装或升级依赖／工具、执行冻结候选及冻结helper、改系统保护、调用Word注册、启动WebDAV或发行；U2仅运行合成源码helper。环境开关和测试守卫不等于OS隔离。最终前端由既有Node24.22.1直接执行14份脚本、typecheck及构建。
+
+复用实际存在的原OpenCode会话`ses_e651729c9ffeG6mP7f6K1oat1I`仅作只读诊断。按两次CLI实际message ID核脱敏export，21条assistant消息均为build／`opencode-go/deepseek-v4.1-flash#max`，末次finish为stop，两次CLI退出0；未另起实现会话或让Codex写实现。本节及当前入口由Codex记录，日志／XML／过程证据及合成库索引私下保存在`kgm-20261104-151044`；保留的合成库位于各自新测试根，不含原业务资料。
+
+### 6.2 自动回归及首失败
+
+| 范围 | 实际结果 | 限制与身份 |
+| --- | --- | --- |
+| 后端全local，1221个收集用例 | **1201 passed、20 failed、1 error，exit1，4515.34秒** | error是同一失败用例的清理阶段，不额外算一个业务用例；91条warning保留。 |
+| 桌面全套首轮，561项 | **543 passed、17 failed、1 skipped，exit1，183.50秒** | 首轮经过既有venv junction，且B3合成根位于TEMP兄弟目录；首失败不删除。 |
+| 桌面U2／B3定向复验，60项 | **57 passed、3 failed，exit1，54.43秒** | 改用解释器实际路径，并令合成根位于TEMP内；未改生产路径保护。与首轮按用例身份合并为555通过／5失败／1跳过，**不是一次新的完整全套**。 |
+| 已包含的限定桌面范围 | 关闭／AI屏障35、周AI生命周期2、构建guard36均通过 | 不作为冻结候选或整体验收。 |
+| 前端 | **14份脚本、typecheck、build均exit0** | 最终直接Node24运行；此前npm由系统Node27启动的提示保留。首次Vite误用`--root`是调用参数错误，改用正确工作目录后构建成功；未改构建器。 |
+| 观察记录真实源码窗口 | 验证器exit1、窗口子进程exit3 | 创建／编辑、历史恢复、冲突离开、首次Word保存通过；取消导出超时，后续多页检查失败并出现destroy_timeout。不能记窗口整体通过。 |
+
+已核实的过期预期及环境问题：
+
+- 后端5个失败来自旧预期：`test_daily_plans.py`周表集合遗漏已批准的`local_weekly_plan_ai_adoption`；`test_observation_migration.py`三个用例仍把当前head写为0007，实际0008；`test_observation_prompt_contracts.py`注册集合仍为旧5种，遗漏周6种。runtime guard用例在旧revision断言失败后未到dispose，另出现`.app-runtime.lock`的WinError32清理错误。需要保留旧行摘要、FK、源保护包及daily执行集合隔离等原断言，不能批量替换特定历史0005／0006目标或弱化检查。
+- 桌面剩余5个失败为：资源manifest旧9条预期未纳入周6条；U2三个成功路径仍以0007作为当前target，而实际runtime迁至0008，真实回执返回`READY_MIGRATION_MISMATCH`，新进程无成功回执而退出；静态重解析点用例因WinError1314无法创建符号链接。未修改系统权限或把该项改记通过。另1项跳过原因为旧验证包不存在。
+- 观察窗口直接原因经原OpenCode诊断及Codex回读确认：`run_selftest`创建窗口后未像普通入口那样调用`host_api._bind_window(window)`；取消用例清空验证保存目录后，其文件对话框替身没有被宿主使用，转为“无活动窗口”异常。普通入口有绑定，不能据此宣布生产取消逻辑已坏。异常外层返回失败时，该合成现场已有attempt仍为`in_progress`；宿主异常终态补报的健壮性须另核。本次没有修复入口或重跑成通过。
+
+后端其余15个失败是1个观察视觉deadline用例和14个`WeeklyAIExecutorTests`：整套中出现claimed／retry_wait未到期望终态、trace计数0等。两个不同用例在独立新进程单项复验通过：视觉deadline为8.49秒，周部分成功为15.48秒。后者另用原venv junction路径的新进程对照也通过，9.24秒；因此**不能仅归因junction，也不能由代表用例通过关闭全部15项**。最初入口对照在会话中断时未形成XML／退出回执，按未完成保留，不算通过；随后对照使用新根及独立证据名。整套影响、执行时序及夹具隔离的根因仍待定位，不用追加sleep、串行化或skip代替修复。
+
+### 6.3 本次真实DeepSeek源码闭环
+
+新合成档案最初未配置AI；用户在源码窗口自行填写并保存官方标准API配置后，Codex只点击一次“生成所选周栏目”，仅勾选家园合作。实际为**1任务／1execution／1attempt／1candidate**，HTTP200、返回模型`deepseek-flash`、attempt时长12453ms。未在聊天索取密钥、复制DPAPI材料或真实儿童资料，未为模拟失败另发付费请求。
+
+生成前后周头、草稿、确认和采用记录散列相同。完整只读预览列出人工输入和候选，明确采用后才v2→v3并新增1采用事件；内容变化仅为`weekly_columns.home_cooperation`及对应`ai_provenance.home_cooperation`。旧v1／v2行逐值保持，确认仍0；任务、attempt仍各1，无自动连发或确认。
+
+普通关闭取得launcher和宿主实际exit0；同根同凭据根重开，八组业务／AI表散列一致，工作台及重进编辑器实际显示v3、原主题和已采用内容。再次普通关闭仍exit0。本次只有这一条周栏目真实成功样本，不覆盖真实unknown／付费重试、游戏／材料、视觉照片、MiMo或教师质量；前轮候选的三次真实调用保持其自身来源身份。
+
+一次初始内容核对未解码SQLite中的JSON文本，导致中文子串检查false；解码后两字段均已保存，首次误判及更正文件保留，不作为产品保存失败。
+
+### 6.4 真实源码进程级故障对照
+
+使用另一新空合成根，档案0、凭据0、AI任务0；首次设置页面正常，先固定宿主、浏览器及其renderer的PID、父子关系、启动时间和实际路径。每次终止前重新核同一身份，只操作该明确测试实例，不做真实关机／注销，不杀未知进程。
+
+1. 仅外部终止该renderer，实际显示WebView2的`RESULT_CODE_KILLED`错误页；宿主和浏览器仍存活，宿主响应。此状态与原纯白屏不同，未点击刷新或新增自动恢复行为。
+2. 再外部终止该浏览器进程，实际为纯白窗口，Web内容树和所属WebView2子进程消失，原生窗口及响应宿主仍在；这取得了与原记录相似的状态复现。
+3. 对该窗口发出一次普通Alt+F4，超过30秒后窗口和宿主仍在；50张SQLite表的行数／散列全部不变。没有对该存活进程内部的pending／canceled状态作直接观测，不能用单位测试推定本次内部状态回执。
+4. 保存现场和逻辑快照后，仅外部结束已核身份的空合成宿主用于清理；宿主及launcher均exit-1（0xFFFFFFFF），明确不是正常关闭。真实AI档案此前已两次正常关闭，未用于本次故障注入。
+
+**结论只覆盖人工造成浏览器丢失后的状态及关闭表现，不证明原自然触发原因、Word/r因果关系、异常页面未保存资料安全或自动恢复能力。** 当前保存ack合同未改变；若新增重载／恢复／异常退出交互，仍须按当前入口先核定具体行为。
+
+### 6.5 当前结论与接续
+
+本次源码完整回归**未通过**，首次失败、清理错误、隔离通过和中断的无结果对照分别记账。原§5已通过的限定修复及各候选身份不重写；测试阶段无实现／测试／迁移／构建脚本修改，仅更新独立结果与执行入口，未提交推送。后续文档交付及本机私下配置保留安排见§6.6–6.7，不作为失败已修复。
+
+后续先由原OpenCode按具体文件责任核修旧预期、清理及源码验证入口，并定位整套执行器失败的时序／隔离原因；Codex保留原失败并独立复验。渲染恢复产品行为仍待核定。不重做已收口Word／IME／旧教师清单，不扩为安装、冻结入口、Win10／WPS／其它DPI、签名、WebDAV或发行通过。
+
+### 6.6 返回开发机的决定与最小回修清单
+
+用户随后要求判断“返回开发机修复还是重新测试”，并明确授权选择前者时提交推送。决定**返回开发机修复**：已知9项旧预期、清理及源码窗口入口有具体回修对象，另外15项整套执行器失败尚未定位；同源再盲跑75分钟不能代替修复。此次交付只提交本报告与唯一入口两份脱敏文档，不把失败状态写成通过。Codex审核准确文件／blob／父提交／暂存tree，原OpenCode在同一指定模型会话执行普通提交及推送；最终是否成功以实际Git回执核定。
+
+开发机先保留本地差异、普通快进核源，再按以下互斥责任由原实现者实施，Codex独立核查：
+
+| 对象 | 已定位用例／入口 | 必须保留的约束 |
+| --- | --- | --- |
+| 后端旧预期5项及清理 | `test_daily_plans.py::DailyPlanApiTests::test_no_weekly_projection_tables_or_fields`；`test_observation_migration.py::ObservationMigrationTests`下`test_empty_database_registers_only_bundles_and_new_profile_seeds_all`、`test_post_commit_verify_failure_refuses_startup_and_does_not_seed`、`test_runtime_guard_then_seed_is_idempotent_and_keeps_daily_rows`；`test_observation_prompt_contracts.py::ObservationBundleContractTests::test_daily_executable_and_registered_sets_are_separate` | 当前head为0008，注册为日3＋观察2＋周6；daily可执行集合仍仅3种。清理须在断言失败时也dispose；原历史迁移目标、旧行摘要、FK和保护包断言不能弱化。 |
+| 桌面旧预期4项 | `test_d2_w6_degrade_host.py::test_resource_bundle_check_requires_exact_daily_and_observation_rows`；`test_update_u2.py`下`test_helper_reverifies_original_zip_and_switches_directory`、`test_real_0004_to_0006_cold_migration_after_old_handles_release`、`test_ready_receipt_requires_real_identity_service_and_page` | manifest当前15条；区分当前runtime head、历史源0004及显式历史0005／0006目标。不能全局替换revision或豁免回执身份／来源核验。 |
+| 源码窗口验证入口 | `desktop/d1_main.py::run_selftest`的窗口绑定；观察导出异常终态补报另核 | 对照普通入口绑定，保留取消、不覆盖、历史／冲突和多页断言；先分清夹具问题与产品异常路径，不凭验证入口失败改生产取消行为。 |
+| 待定位15项 | `test_observation_ai.py::ObservationAiRealTransportTests::test_observation_attempt_uses_vision_budget_and_unknown_after_deadline`；`test_weekly_ai_service.py::WeeklyAIExecutorTests`的14个失败，见下文 | 保留首轮时序及trace；检查spawn／ready／permit／发送／终态持久化和夹具收尾。独立单项通过及junction对照只用于缩小原因，不算关闭。 |
+| 环境未验 | `test_windows11_portable_static.py::test_report_path_guard_rejects_raw_parent_and_reparse` | 本机WinError1314；不提权、不改保护、不以skip记通过。移交有现成适用权限的环境时另记身份；旧包缺失的1个skip也单列。 |
+
+上表后端文件均在`backend/tests/local/`，桌面文件均在`desktop/tests/`。周执行器14个失败的完整方法名为：
+
+```text
+test_wai21_partial_success_keeps_success_and_never_resends_invalid
+test_wai22_truncated_success_response_is_unknown_not_candidate
+test_wai23_pre_send_connection_failures_retry_exactly_three_times
+test_wai23_retry_revalidates_source_before_second_attempt
+test_wai23_tls_and_policy_refusals_fail_without_retry_or_send
+test_wai24_auth_401_pauses_without_candidate
+test_wai24_auth_403_pauses_without_candidate
+test_wai24_invalid_output_fails_without_auto_repair
+test_wai24_provider_5xx_is_outcome_unknown
+test_wai24_rate_limit_pauses_unknown_and_never_resends
+test_wai24_timeout_after_send_is_unknown_with_one_send
+test_wai25_retry_requires_ack_and_creates_new_generation_only
+test_wai27_local_commit_failure_retries_only_the_commit
+test_wai27_unpersistable_result_keeps_unknown_without_resend
+```
+
+复验先跑上述受影响文件／节点及关联迁移、AI、关闭屏障；修复和定向通过后，再独立执行一次`python -m pytest backend/tests/local`及`python -m pytest desktop/tests`，输出新的日志与JUnit XML并记录完整source commit／tree。用实际解释器路径、现有锁定依赖，`PYTHONPATH=<repo>/backend`、`APP_DISABLE_DOTENV=1`、`DISABLE_SQLALCHEMY_CEXT_RUNTIME=1`、`PYTHONIOENCODING=utf-8`、`PYTHONDONTWRITEBYTECODE=1`；每次新短TEMP／TMP，B3根必须在TEMP内且满足120字符限制。前端直接用现有Node24运行`frontend/package.json`列出的14份脚本、typecheck和D1构建。源码窗口单独回归取消／多页／正常退出；不以新增sleep、重试、串行或删断言消除首失败。需要改动时再复验相关范围，不无故重复全套。
+
+### 6.7 后续拉取代码时保留本机AI配置
+
+用户希望后续修复拉取后不用重新填写。当前实现的供应商配置／凭据密文随档案数据库保存，DPAPI保护的主密钥位于独立凭据根的`<database_uuid>/<key_id>.dpapi`。单纯`git pull`只更新仓库文件，不清理仓库外两根；**同一测试机、同一Windows用户、同一档案数据根及凭据根、保留库身份与key标识时，可以沿用已保存配置**。本次普通关闭／同根重开已成功；修复后新源码仍须按下述方式核验，不能预先宣称未来版本已验。
+
+本机保留本次真实AI合成体验档案及原凭据根，私下索引固定指向两根；公开仓库不记录个人绝对路径。使用普通源码入口时始终显式传入`--data`及`--credential-root`：漏掉后者会转用系统默认凭据目录，可能出现“未配置／不可用”。不要新建空档案代替原体验档案后再次要求用户填key；不要将这两根用于自动化测试、故障注入、备份恢复或临时清理。应用普通启动可读取自身已存配置，测试工具不得读取／解密／导出密钥或自动发起付费请求。
+
+先正常关闭应用并确认宿主退出，再拉取并重建当前源码前端。私下固定启动说明、原OpenCode编写的本机便利入口及无密钥路径配置放在已有Git ignored的`private-evidence/`，不进入提交或作为产品安装功能。Windows PowerShell 5曾拒绝PS1，原拒绝保留；已安装PowerShell 7的既有RemoteSigned策略允许该本地文件，未修改策略、未使用Bypass。原OpenCode的`-CheckOnly`退出0；Codex另用该入口完成当前同源前端重建、普通源码启动、设置状态核对和正常关闭，入口退出0，实际显示“地址/模型/密钥已填写且密钥可解密”及“密钥已保存：是”，没有重新填写或保存配置。前后八组业务／AI表散列相同，task／execution／attempt／candidate仍各1，SQLite完整性与FK通过，新增真实请求0。该检查证明本机当前源码可以继续沿用配置，不预先证明未来修复版本已验。
+
+后续拉取修复版本仍用原两根普通启动，设置显示已配置、不再输入，正常退出且无新增AI attempt，即可验证配置保留，无需为此再发真实AI请求。换机／换Windows用户、新建档案、丢失凭据材料或恢复不含DPAPI的备份不承诺免填；不复制DPAPI、不把密钥写入`.env`／启动命令，不改变现有加密与备份合同。
