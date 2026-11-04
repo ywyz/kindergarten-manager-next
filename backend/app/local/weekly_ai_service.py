@@ -11,14 +11,22 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
-from app.local import ai_task_service, ai_transport, weekly_ai_inputs, weekly_ai_sources
+from app.local import (
+    ai_task_service,
+    ai_transport,
+    weekly_ai_contracts,
+    weekly_ai_inputs,
+    weekly_ai_sources,
+)
 from app.local.errors import (
+    LocalAiInputTooLarge,
     LocalAiNotFound,
     LocalAiOperationNotFound,
     LocalMaterialContextRequired,
     LocalStorageError,
     LocalValidationError,
     LocalWeeklyAiRequestConflict,
+    LocalWeeklyAiSourceChanged,
     LocalWeeklyAiTaskActive,
     LocalWeeklyPlanNotFound,
     LocalWeeklyVersionConflict,
@@ -286,11 +294,21 @@ def create_weekly_tasks(
                 projection = weekly_ai_inputs.project_weekly_input(
                     spec.task_type, raw, content.content_json
                 )
-            except Exception as exc:
+            except weekly_ai_contracts.WeeklyAIContractError as exc:
                 code = getattr(exc, "code", "")
                 if code == "MATERIAL_CONTEXT_REQUIRED":
                     raise LocalMaterialContextRequired() from None
-                raise
+                if code == "WEEKLY_CONTENT_TOO_LARGE":
+                    raise LocalAiInputTooLarge(
+                        details=getattr(exc, "details", None)
+                    ) from None
+                field_path = str(getattr(exc, "field_path", "") or "")
+                if (
+                    code == "WEEKLY_AI_INPUT_INVALID"
+                    and field_path.startswith("raw_manifest.")
+                ):
+                    raise LocalWeeklyAiSourceChanged() from None
+                raise LocalValidationError("周计划 AI 输入不合法") from None
             projections.append(projection)
             if runtime is not None:
                 _preflight_projection_size(runtime, session, spec.task_type, projection)

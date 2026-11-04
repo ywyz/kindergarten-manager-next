@@ -453,6 +453,18 @@ def test_archive_positive_coherent_tiny_candidate(tmp_path):
     assert checks["zip_streamed_without_extract"] is True
     assert report["frozen_runtime"] == "not_run_static_only"
 
+def test_archive_rejects_sqlalchemy_compiled_extension(tmp_path):
+    rc, report = _run_archive_case(
+        tmp_path,
+        product_extra={
+            "_internal/sqlalchemy/cyextension/util.cp314-win_amd64.pyd": b"policy-blocked",
+        },
+    )
+    assert rc != 0
+    assert report["ok"] is False
+    assert report["checks"]["sqlalchemy_cyextension_absent"] is False
+
+
 def _dup_manifest_keys(base):
     import json
     raw = json.dumps(base, ensure_ascii=False, indent=2).rstrip()
@@ -610,6 +622,27 @@ def test_load_freeze_actual_baseline_and_counterexamples(tmp_path):
     loaded_required = package_verifier._load_freeze(missing_required, info, self_rel)
     assert first in loaded_required["required_missing"]
     assert loaded_required["schema_ok"] is True
+
+def test_sqlalchemy_compiled_extension_gate_rejects_pyd(tmp_path):
+    import verify_e14_package as package_verifier
+
+    package = tmp_path / "KGNext-E14"
+    extension = (
+        package
+        / "_internal"
+        / "sqlalchemy"
+        / "cyextension"
+        / "util.cp314-win_amd64.pyd"
+    )
+    extension.parent.mkdir(parents=True)
+    assert package_verifier._sqlalchemy_compiled_extensions(package) == []
+    extension.write_bytes(b"policy-blocked")
+    assert package_verifier._sqlalchemy_compiled_extensions(package) == [
+        "_internal/sqlalchemy/cyextension/util.cp314-win_amd64.pyd"
+    ]
+    assert "sqlalchemy_cyextension_absent" in package_verifier.REQUIRED_STATIC_CHECKS
+    assert "sqlalchemy_pure_python_present" in package_verifier.REQUIRED_STATIC_CHECKS
+
 
 def test_resource_and_archive_negative_checks_use_real_parsers(tmp_path):
     import verify_e14_package as package_verifier

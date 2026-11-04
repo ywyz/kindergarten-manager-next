@@ -9,6 +9,8 @@ frontend, package, old build root or source file is written.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -354,6 +356,111 @@ def test_build_identity_and_package_info_are_portable(monkeypatch, tmp_path):
     payload = json.loads(identity_path.read_text(encoding="utf-8"))
     assert payload["app_id"] == update_identity.APP_ID
     assert payload["package_format"] == update_identity.PACKAGE_FORMAT
+
+
+def test_build_package_excludes_optional_sqlalchemy_cyextensions(monkeypatch, tmp_path):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(list(command))
+        package = tmp_path / "dist" / build_e14.APP_NAME
+        package.mkdir(parents=True)
+        (package / f"{build_e14.APP_NAME}.exe").write_bytes(b"MZ")
+
+    monkeypatch.setattr(build_e14.subprocess, "run", fake_run)
+    package = build_e14.build_package(
+        tmp_path / "dist",
+        tmp_path / "frontend",
+        tmp_path / "work",
+        tmp_path / "spec",
+    )
+    assert package == tmp_path / "dist" / build_e14.APP_NAME
+    command = commands[0]
+    pairs = set(zip(command, command[1:]))
+    for module in build_e14.SQLALCHEMY_CYEXTENSION_MODULES:
+        assert ("--exclude-module", module) in pairs, module
+
+
+def test_build_package_rejects_reintroduced_sqlalchemy_compiled_extension(monkeypatch, tmp_path):
+    def fake_run(command, **kwargs):
+        package = tmp_path / "dist" / build_e14.APP_NAME
+        extension = (
+            package
+            / "_internal"
+            / "sqlalchemy"
+            / "cyextension"
+            / "util.cp314-win_amd64.pyd"
+        )
+        extension.parent.mkdir(parents=True)
+        extension.write_bytes(b"policy-blocked")
+        (package / f"{build_e14.APP_NAME}.exe").write_bytes(b"MZ")
+
+    monkeypatch.setattr(build_e14.subprocess, "run", fake_run)
+    with pytest.raises(SystemExit):
+        build_e14.build_package(
+            tmp_path / "dist",
+            tmp_path / "frontend",
+            tmp_path / "work",
+            tmp_path / "spec",
+        )
+
+
+def test_sqlalchemy_pure_python_sqlite_crud_fallback(tmp_path):
+    script = tmp_path / "pure_sqlalchemy.py"
+    script.write_text(
+        """
+import os
+import sys
+from pathlib import Path
+
+import sqlalchemy
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.util._has_cy import HAS_CYEXTENSION
+
+assert HAS_CYEXTENSION is False
+assert not any(name.startswith("sqlalchemy.cyextension") for name in sys.modules)
+db = Path(sys.argv[1])
+engine = create_engine(f"sqlite:///{db.as_posix()}")
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Item(Base):
+    __tablename__ = "items"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+
+
+Base.metadata.create_all(engine)
+with Session(engine) as session:
+    session.add(Item(name="pure-python"))
+    session.commit()
+    assert session.scalars(select(Item)).one().name == "pure-python"
+with engine.begin() as connection:
+    assert connection.execute(text("select count(*) from items")).scalar_one() == 1
+print("sqlalchemy", sqlalchemy.__version__)
+print("HAS_CYEXTENSION", HAS_CYEXTENSION)
+print("sqlite_crud_ok", True)
+""",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["DISABLE_SQLALCHEMY_CEXT_RUNTIME"] = "1"
+    environment["APP_DISABLE_DOTENV"] = "1"
+    completed = subprocess.run(
+        [sys.executable, str(script), str(tmp_path / "pure.db")],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert completed.returncode == 0, (completed.stdout, completed.stderr)
+    assert "HAS_CYEXTENSION False" in completed.stdout
+    assert "sqlite_crud_ok True" in completed.stdout
 
 
 def test_source_freeze_and_archive_cover_github_update_module():

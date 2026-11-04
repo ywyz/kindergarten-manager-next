@@ -117,6 +117,7 @@ REQUIRED_ARCHIVE_CHECKS = (
     "manifest_files_nonempty",
     "product_file_set_exact",
     "product_sizes_and_hashes_exact",
+    "sqlalchemy_cyextension_absent",
     "checksums_schema_exact",
     "checksums_no_duplicates",
     "checksums_cover_product_and_outer",
@@ -227,6 +228,20 @@ def _name_codes(name: Any) -> set[str]:
         if stem in RESERVED_NAMES:
             codes.add("reserved_name")
     return codes
+
+
+def _sqlalchemy_compiled_members(relative_names: Iterable[str]) -> list[str]:
+    """Return SQLAlchemy compiled/cyextension members; the list must be empty."""
+    prefix = "_internal/sqlalchemy/"
+    return sorted(
+        name
+        for name in relative_names
+        if name.startswith(prefix)
+        and (
+            "/cyextension/" in name
+            or name.lower().endswith((".pyd", ".dll"))
+        )
+    )
 
 
 def validate_manifest_path(raw: Any) -> str | None:
@@ -1097,6 +1112,11 @@ def main(argv: list[str] | None = None) -> int:
                     for path, item in manifest["files"].items()
                 )
             )
+            sqlalchemy_compiled_members = _sqlalchemy_compiled_members(product_files)
+            checks["sqlalchemy_cyextension_absent"] = not sqlalchemy_compiled_members
+            report["sqlalchemy"] = {
+                "compiled_members": sqlalchemy_compiled_members,
+            }
             if hash_errors:
                 report["errors"].extend(hash_errors[:20])
 

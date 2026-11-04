@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import uuid
+from unittest import mock
 
-from app.local import weekly_ai_adoption
-from app.local.models import LocalAICandidate, LocalAIExecution, LocalAIInput
+from app.local import (
+    weekly_ai_adoption,
+    weekly_ai_contracts,
+    weekly_ai_inputs,
+)
+from app.local.models import (
+    LocalAICandidate,
+    LocalAIExecution,
+    LocalAIInput,
+    LocalAITask,
+)
 from tests.local.support import LocalTestCase
 from tests.local.test_weekly_ai_service import WeeklyAIServiceFixture
 
@@ -83,6 +93,42 @@ class WeeklyAIApiTests(WeeklyAIServiceFixture):
         )
         self.assertEqual(status, 404, wrong_plan_tasks)
         self.assertEqual(wrong_plan_tasks["error"]["code"], "AI_NOT_FOUND")
+
+    def test_contract_projection_failure_is_safe_409_not_500(self):
+        error = weekly_ai_contracts.WeeklyAIContractError(
+            "raw manifest 与已存周稿归属不一致",
+            field_path="raw_manifest.term_end",
+        )
+        with mock.patch.object(
+            weekly_ai_inputs, "project_weekly_input", side_effect=error
+        ):
+            status, payload = self.client.post(
+                self._path("/games"),
+                {
+                    "request_id": str(uuid.uuid4()),
+                    "expected_draft_version": self.version,
+                },
+            )
+        self.assertEqual(status, 409, payload)
+        self.assertEqual(payload["error"]["code"], "WEEKLY_AI_SOURCE_CHANGED")
+        self.assertNotIn("field_path", payload["error"].get("details") or {})
+        self.assertNotIn("raw manifest", payload["error"].get("message", ""))
+        self.assertEqual(self.session.query(LocalAITask).count(), 0)
+        self.assertEqual(self.session.query(LocalAIInput).count(), 0)
+
+    def test_unrefreshed_term_change_is_409_without_creating_tasks(self):
+        self._apply_term_end("2026-09-12")
+        status, payload = self.client.post(
+            self._path("/games"),
+            {
+                "request_id": str(uuid.uuid4()),
+                "expected_draft_version": self.version,
+            },
+        )
+        self.assertEqual(status, 409, payload)
+        self.assertEqual(payload["error"]["code"], "WEEKLY_AI_SOURCE_CHANGED")
+        self.assertEqual(self.session.query(LocalAITask).count(), 0)
+        self.assertEqual(self.session.query(LocalAIInput).count(), 0)
 
     def test_frozen_adopt_rejects_before_token_consumption_and_replays_after(self):
         _task_id, candidate_id = self._succeed_games()

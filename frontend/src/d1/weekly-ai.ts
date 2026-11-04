@@ -122,7 +122,7 @@ export interface WeeklyAiUiError { code: string; message: string; retry: 'reload
 const AI_ERRORS: Record<string, WeeklyAiUiError> = {
   VALIDATION_ERROR: { code: 'VALIDATION_ERROR', message: '周计划 AI 输入未通过校验，请核对后重试', retry: 'none' },
   WEEKLY_VERSION_CONFLICT: { code: 'WEEKLY_VERSION_CONFLICT', message: '周计划已在其他页面更新，请重新加载后再继续', retry: 'reload' },
-  WEEKLY_AI_SOURCE_CHANGED: { code: 'WEEKLY_AI_SOURCE_CHANGED', message: '生成依据已变化，请重新生成或重新预览', retry: 'reload' },
+  WEEKLY_AI_SOURCE_CHANGED: { code: 'WEEKLY_AI_SOURCE_CHANGED', message: '生成依据已变化，请刷新来源并保存后重新生成', retry: 'reload' },
   WEEKLY_AI_TARGET_CHANGED: { code: 'WEEKLY_AI_TARGET_CHANGED', message: '待替换的字段已变化，请重新预览', retry: 'reload' },
   WEEKLY_AI_PREVIEW_EXPIRED: { code: 'WEEKLY_AI_PREVIEW_EXPIRED', message: 'AI 预览已失效，请重新预览', retry: 'reload' },
   WEEKLY_AI_CONTRACT_OBSOLETE: { code: 'WEEKLY_AI_CONTRACT_OBSOLETE', message: '该候选使用旧规则，只能查看', retry: 'none' },

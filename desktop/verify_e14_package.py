@@ -52,6 +52,15 @@ REQUIRED_PILLOW_PLUGINS = (
     "_webp.cp314-win_amd64.pyd",
     "_avif.cp314-win_amd64.pyd",
 )
+SQLALCHEMY_COMPILED_SUFFIXES = (".pyd", ".dll")
+SQLALCHEMY_PURE_PYTHON_MODULES = (
+    "sqlalchemy.util._has_cy",
+    "sqlalchemy.util._py_collections",
+    "sqlalchemy.engine._py_row",
+    "sqlalchemy.engine._py_processors",
+    "sqlalchemy.engine._py_util",
+    "sqlalchemy.sql._py_util",
+)
 ARCHIVE_REQUIRED_MODULES = (
     "app.local.appearance_service",
     "app.local.weekly_plan_api",
@@ -237,6 +246,8 @@ REQUIRED_STATIC_CHECKS = (
     "archive_module_count_ok",
     "archive_verification_support_separated",
     "archive_no_unexpected_production_modules",
+    "sqlalchemy_cyextension_absent",
+    "sqlalchemy_pure_python_present",
     "bundle_frontend_matches",
     "frontend_digest_matches",
     "bundle_templates_match",
@@ -1004,6 +1015,8 @@ def _archive_static_report(package_root: Path, freeze: Mapping[str, Any]) -> dic
         "missing_required": [],
         "missing_maintenance": [],
         "missing_backup_restore": [],
+        "sqlalchemy_cyextension_modules": [],
+        "missing_sqlalchemy_pure_python": [],
         "module_count": 0,
         "production_all_match": False,
         "production_match_freeze": False,
@@ -1048,6 +1061,12 @@ def _archive_static_report(package_root: Path, freeze: Mapping[str, Any]) -> dic
         )
         pyz = reader.open_embedded_archive("PYZ.pyz")
         result["pyz_total_modules"] = len(pyz.toc)
+        result["sqlalchemy_cyextension_modules"] = sorted(
+            name for name in pyz.toc if name.startswith("sqlalchemy.cyextension")
+        )
+        result["missing_sqlalchemy_pure_python"] = sorted(
+            name for name in SQLALCHEMY_PURE_PYTHON_MODULES if name not in pyz.toc
+        )
         modules: dict[str, dict] = {}
         for name in sorted(pyz.toc):
             kind = _module_class(name)
@@ -1212,6 +1231,22 @@ def _tree_matches(package_root: Path, relative: str, source: Path) -> bool:
         )
     except Exception:  # noqa: BLE001
         return False
+
+
+def _sqlalchemy_compiled_extensions(package_root: Path) -> list[str]:
+    """Return packaged SQLAlchemy optional/compiled extensions (must be empty)."""
+    base = package_root / "_internal" / "sqlalchemy"
+    if not base.is_dir():
+        return []
+    return sorted(
+        path.relative_to(package_root).as_posix()
+        for path in base.rglob("*")
+        if path.is_file()
+        and (
+            "cyextension" in path.relative_to(base).parts
+            or path.suffix.lower() in SQLALCHEMY_COMPILED_SUFFIXES
+        )
+    )
 
 
 def _resource_checks(package_root: Path) -> dict:
@@ -2007,6 +2042,26 @@ def main(argv: list[str] | None = None) -> int:
         checks["archive_no_unexpected_production_modules"] = bool(
             archive.get("readable") and not archive.get("unexpected_production")
         )
+        compiled_sqlalchemy = _sqlalchemy_compiled_extensions(package_root)
+        pyz_sqlalchemy_cyextension = list(
+            archive.get("sqlalchemy_cyextension_modules") or []
+        )
+        missing_sqlalchemy_pure_python = list(
+            archive.get("missing_sqlalchemy_pure_python") or []
+        )
+        checks["sqlalchemy_cyextension_absent"] = bool(
+            not compiled_sqlalchemy
+            and archive.get("readable")
+            and not pyz_sqlalchemy_cyextension
+        )
+        checks["sqlalchemy_pure_python_present"] = bool(
+            archive.get("readable") and not missing_sqlalchemy_pure_python
+        )
+        report["sqlalchemy"] = {
+            "compiled_files": compiled_sqlalchemy,
+            "pyz_cyextension_modules": pyz_sqlalchemy_cyextension,
+            "missing_pure_python_modules": missing_sqlalchemy_pure_python,
+        }
         if archive.get("error"):
             report["errors"].append(f"archive: {archive['error']}")
 

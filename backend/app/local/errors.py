@@ -413,7 +413,7 @@ class LocalAiExecutorUnavailable(LocalError):
 class LocalWeeklyAiSourceChanged(LocalError):
     code = "WEEKLY_AI_SOURCE_CHANGED"
     status_code = 409
-    message = "生成输入已变化，请重新生成"
+    message = "生成依据已变化，请刷新来源并保存后重新生成"
 
 
 class LocalWeeklyAiTargetChanged(LocalError):

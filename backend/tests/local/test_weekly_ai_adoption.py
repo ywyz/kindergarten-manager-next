@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import threading
 import uuid
 from unittest import mock
 
-from sqlalchemy import select
+from sqlalchemy import event, inspect, select
 
 from app.local import (
     ai_task_service,
@@ -170,36 +171,76 @@ class WeeklyAIAdoptionTests(WeeklyAIServiceFixture):
         content = self.session.get(LocalWeeklyPlanContent, adopted["draft"]["id"])
         self.assertEqual(content.content_json["theme"], "无关主题")
 
+    @contextmanager
+    def _watch_main_session_from_workers(self):
+        """Record main-session ORM/transaction activity from worker threads."""
+        orm_events: list[str] = []
+        begin_events: list[str] = []
+
+        def on_orm_execute(state):
+            if threading.current_thread() is not threading.main_thread():
+                orm_events.append(threading.current_thread().name)
+
+        def on_after_begin(session, transaction, connection):
+            if (
+                session is self.session
+                and threading.current_thread() is not threading.main_thread()
+            ):
+                begin_events.append(threading.current_thread().name)
+
+        event.listen(self.session, "do_orm_execute", on_orm_execute)
+        event.listen(self.session, "after_begin", on_after_begin)
+        try:
+            yield orm_events, begin_events
+        finally:
+            event.remove(self.session, "do_orm_execute", on_orm_execute)
+            event.remove(self.session, "after_begin", on_after_begin)
+
     def test_concurrent_same_key_returns_one_result_one_draft(self):
+        profile_id = self.profile.id
+        plan_id = self.plan_id
+        version = self.version
+        launch_id = self.runtime.launch_id
+        runtime = self.runtime
         _task_id, candidate_id = self._succeed_games()
         preview = weekly_ai_adoption.preview_adoption(
             self.session,
-            runtime=self.runtime,
-            profile_id=self.profile.id,
-            plan_id=self.plan_id,
-            expected_draft_version=self.version,
+            runtime=runtime,
+            profile_id=profile_id,
+            plan_id=plan_id,
+            expected_draft_version=version,
             selections=[{"candidate_id": candidate_id, "target": "games"}],
-            launch_id=self.runtime.launch_id,
+            launch_id=launch_id,
             session_scope_hash="scope",
         )
+        preview_token = preview["preview_token"]
+        original_draft_id = preview["draft"]["id"]
+        content_count_before = (
+            self.session.query(LocalWeeklyPlanContent)
+            .filter(LocalWeeklyPlanContent.weekly_plan_id == plan_id)
+            .count()
+        )
+        self.assertTrue(inspect(self.profile).expired)
+
         barrier = threading.Barrier(2)
         results: list[dict] = []
         errors: list[BaseException] = []
+        request_id = "00000000-0000-4000-8000-000000000123"
 
         def run():
-            session = self.runtime.session()
+            session = runtime.session()
             try:
                 barrier.wait(timeout=10)
                 results.append(
                     weekly_ai_adoption.adopt(
                         session,
-                        runtime=self.runtime,
-                        profile_id=self.profile.id,
-                        plan_id=self.plan_id,
-                        request_id="00000000-0000-4000-8000-000000000123",
-                        expected_draft_version=self.version,
-                        preview_token=preview["preview_token"],
-                        launch_id=self.runtime.launch_id,
+                        runtime=runtime,
+                        profile_id=profile_id,
+                        plan_id=plan_id,
+                        request_id=request_id,
+                        expected_draft_version=version,
+                        preview_token=preview_token,
+                        launch_id=launch_id,
                         session_scope_hash="scope",
                     )
                 )
@@ -208,13 +249,34 @@ class WeeklyAIAdoptionTests(WeeklyAIServiceFixture):
             finally:
                 session.close()
 
-        threads = [threading.Thread(target=run) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=20)
+        threads = [
+            threading.Thread(
+                target=run, name=f"weekly-adopt-concurrent-{index}"
+            )
+            for index in range(2)
+        ]
+        with self._watch_main_session_from_workers() as (
+            worker_orm_events,
+            worker_begin_events,
+        ):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=20)
+
+        self.assertEqual([thread.is_alive() for thread in threads], [False, False])
         self.assertEqual(errors, [])
         self.assertEqual(len(results), 2)
+        self.assertEqual(
+            self.session.query(LocalWeeklyPlanContent)
+            .filter(LocalWeeklyPlanContent.weekly_plan_id == plan_id)
+            .count(),
+            content_count_before + 1,
+        )
+        self.assertEqual(worker_orm_events, [])
+        self.assertEqual(worker_begin_events, [])
+        self.assertTrue(inspect(self.profile).expired)
+        self.assertIn("id", inspect(self.profile).unloaded)
         self.assertEqual(results[0]["draft"], results[1]["draft"])
         self.assertEqual(results[0]["operation_id"], results[1]["operation_id"])
         self.assertEqual(
@@ -232,10 +294,81 @@ class WeeklyAIAdoptionTests(WeeklyAIServiceFixture):
             .count(),
             1,
         )
-        self.assertEqual(
-            self.session.get(LocalWeeklyPlanContent, results[0]["draft"]["id"]).version,
-            self.version + 1,
+        content = self.session.get(
+            LocalWeeklyPlanContent, results[0]["draft"]["id"]
         )
+        self.assertEqual(content.version, version + 1)
+        self.assertNotEqual(content.id, original_draft_id)
+        self.assertEqual(
+            self.session.get(LocalWeeklyPlanContent, original_draft_id).version,
+            version,
+        )
+        plan = self.session.get(LocalWeeklyPlan, plan_id)
+        self.assertEqual(plan.current_draft_id, content.id)
+        self.assertEqual(plan.current_draft_version, version + 1)
+        self.assertTrue(inspect(self.profile).expired)
+
+    def test_old_shared_profile_access_crosses_threads(self):
+        """Negative control: the old worker pattern reads the main session.
+
+        This test deliberately reproduces the hazardous fixture pattern. It
+        proves why the concurrent test above must capture immutable values
+        before starting workers. It is not a product success path and does not
+        claim the original intermittent ObjectDeletedError interleaving.
+        """
+        profile_id = self.profile.id
+        plan_id = self.plan_id
+        version = self.version
+        launch_id = self.runtime.launch_id
+        _task_id, candidate_id = self._succeed_games()
+        weekly_ai_adoption.preview_adoption(
+            self.session,
+            runtime=self.runtime,
+            profile_id=profile_id,
+            plan_id=plan_id,
+            expected_draft_version=version,
+            selections=[{"candidate_id": candidate_id, "target": "games"}],
+            launch_id=launch_id,
+            session_scope_hash="scope",
+        )
+        self.assertTrue(inspect(self.profile).expired)
+        # End any lingering read transaction and expire the fixture instance
+        # so the worker lazy load must begin a transaction on the main session.
+        self.session.rollback()
+        self.session.expire_all()
+        self.assertTrue(inspect(self.profile).expired)
+
+        begin_events: list[str] = []
+
+        def on_after_begin(session, transaction, connection):
+            if (
+                session is self.session
+                and threading.current_thread() is not threading.main_thread()
+            ):
+                begin_events.append(threading.current_thread().name)
+
+        event.listen(self.session, "after_begin", on_after_begin)
+        worker_result: list[str] = []
+        worker_errors: list[BaseException] = []
+        try:
+            def run_old_pattern():
+                try:
+                    worker_result.append(self.profile.id)
+                except BaseException as exc:  # noqa: BLE001
+                    worker_errors.append(exc)
+
+            thread = threading.Thread(
+                target=run_old_pattern, name="weekly-adopt-old-shared-profile"
+            )
+            thread.start()
+            thread.join(timeout=20)
+        finally:
+            event.remove(self.session, "after_begin", on_after_begin)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(worker_errors, [])
+        self.assertEqual(worker_result, [profile_id])
+        self.assertEqual(begin_events, ["weekly-adopt-old-shared-profile"])
 
     def test_lost_response_and_restart_receipt_replay_survives_token_reset(self):
         _task_id, candidate_id = self._succeed_games()

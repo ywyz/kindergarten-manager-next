@@ -17,13 +17,16 @@ from app.local import (
     ai_task_service,
     ai_transport,
     backup_barrier,
+    config_service,
     daily_plan_service,
     profile_service,
     prompt_bundles,
     weekly_ai_adoption,
     weekly_ai_contracts,
     weekly_ai_candidates,
+    weekly_ai_inputs,
     weekly_ai_service,
+    weekly_ai_sources,
     weekly_plan_content,
     weekly_plan_service,
 )
@@ -36,6 +39,7 @@ from app.local.errors import (
     LocalPromptAdaptationRequired,
     LocalStorageError,
     LocalWeeklyAiRequestConflict,
+    LocalWeeklyAiSourceChanged,
     LocalWeeklyAiTaskActive,
     LocalWeeklyVersionConflict,
 )
@@ -56,6 +60,7 @@ from app.local.models import (
     LocalTerm,
     LocalWeeklyPlan,
     LocalWeeklyPlanAIAdoption,
+    LocalWeeklyPlanConfirmation,
     LocalWeeklyPlanContent,
 )
 from app.local.normalize import normalize_initialization
@@ -377,6 +382,87 @@ class WeeklyAIServiceFixture(LocalTestCase):
         )
 
 
+    def _apply_term_end(self, end_date: str) -> dict:
+        term = self.session.get(LocalTerm, self.term.id)
+        version = self.session.get(LocalSettings, "singleton").config_version
+        change = {
+            "kind": "term_update",
+            "term_id": term.id,
+            "name": term.name,
+            "start_date": term.start_date.isoformat(),
+            "end_date": end_date,
+        }
+        preview = config_service.preview(
+            self.session, expected_config_version=version, change=change
+        )
+        result = config_service.apply(
+            self.session,
+            request_id=str(uuid.uuid4()),
+            expected_config_version=version,
+            change=change,
+            preview_token=preview["preview_token"],
+        )
+        self.session.expire_all()
+        return result
+
+    def _refresh_plan(self) -> dict:
+        detail = weekly_plan_service.get_detail(
+            self.session, profile_id=self.profile.id, plan_id=self.plan_id
+        )
+        version = detail["draft"]["version"]
+        preview = weekly_plan_service.refresh_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.runtime.launch_id,
+            session_scope_hash="scope",
+            plan_id=self.plan_id,
+            expected_draft_version=version,
+        )
+        result = weekly_plan_service.refresh_sources(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.runtime.launch_id,
+            session_scope_hash="scope",
+            request_id=str(uuid.uuid4()),
+            plan_id=self.plan_id,
+            expected_draft_version=version,
+            preview_token=preview["preview_token"],
+        )
+        self.session.expire_all()
+        return result
+
+    def _confirm_current(self) -> dict:
+        detail = weekly_plan_service.get_detail(
+            self.session, profile_id=self.profile.id, plan_id=self.plan_id
+        )
+        version = detail["draft"]["version"]
+        preview = weekly_plan_service.confirmation_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.runtime.launch_id,
+            session_scope_hash="scope",
+            plan_id=self.plan_id,
+            expected_draft_version=version,
+        )
+        result = weekly_plan_service.confirm(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.runtime.launch_id,
+            session_scope_hash="scope",
+            request_id=str(uuid.uuid4()),
+            plan_id=self.plan_id,
+            expected_draft_version=version,
+            context_token=preview["preview_token"],
+            ack_missing=True,
+            ack_stale=True,
+        )
+        self.session.expire_all()
+        return result
+
     def _configure_model(self, model: str) -> int:
         state = self.session.get(LocalAIState, self.profile.id, populate_existing=True)
         version = int(state.current_config_version or 0)
@@ -527,6 +613,18 @@ class WeeklyAIServiceFixture(LocalTestCase):
 
 
 class WeeklyAIServiceTests(WeeklyAIServiceFixture):
+    def _ai_counts(self) -> dict[str, int]:
+        return {
+            model.__tablename__: self.session.query(model).count()
+            for model in (
+                LocalAIInput,
+                LocalAITask,
+                LocalAIOperation,
+                LocalAIExecution,
+                LocalAIAttempt,
+            )
+        }
+
     def test_games_atomic_receipt_replay_and_task_projection(self):
         rid = str(uuid.uuid4())
         result, created = self._create(
@@ -587,6 +685,191 @@ class WeeklyAIServiceTests(WeeklyAIServiceFixture):
                 request_id=rid,
                 version=self.version + 1,
             )
+
+    def test_term_calendar_change_requires_refresh_before_games_create(self):
+        self._apply_term_end("2026-09-12")
+        before = self._ai_counts()
+        with self.assertRaises(LocalWeeklyAiSourceChanged) as raised:
+            weekly_ai_service.create_weekly_tasks(
+                self.session,
+                runtime=None,
+                profile_id=self.profile.id,
+                plan_id=self.plan_id,
+                request_id=str(uuid.uuid4()),
+                expected_draft_version=self.version,
+                operation_kind=weekly_ai_service.GAMES,
+                task_specs=[
+                    weekly_ai_service.WeeklyTaskSpec(
+                        "weekly_games_select", "games"
+                    )
+                ],
+            )
+        self.assertEqual(raised.exception.code, "WEEKLY_AI_SOURCE_CHANGED")
+        self.assertEqual(raised.exception.status_code, 409)
+        self.session.expire_all()
+        self.assertEqual(self._ai_counts(), before)
+
+    def test_refreshed_term_calendar_change_allows_games_without_mutating_context(self):
+        confirmed = self._confirm_current()
+        confirmation_id = confirmed["confirmation"]["id"]
+        self.session.expire_all()
+        confirmation_before = self.session.get(
+            LocalWeeklyPlanConfirmation, confirmation_id
+        )
+        confirmation_bytes = json.dumps(
+            confirmation_before.snapshot_json, ensure_ascii=False, sort_keys=True
+        )
+        confirmation_hash = confirmation_before.snapshot_hash
+        plan_before = self.session.get(LocalWeeklyPlan, self.plan_id)
+        creation_context = (
+            plan_before.term_start_date,
+            plan_before.term_end_date,
+            plan_before.calendar_revision_id,
+        )
+
+        self._apply_term_end("2026-09-12")
+        refreshed = self._refresh_plan()
+        new_version = refreshed["draft"]["version"]
+        self.assertEqual(new_version, self.version + 1)
+
+        self.session.expire_all()
+        plan = self.session.get(LocalWeeklyPlan, self.plan_id)
+        term = self.session.get(LocalTerm, plan.term_id)
+        content = self.session.get(LocalWeeklyPlanContent, plan.current_draft_id)
+        saved_content = weekly_plan_content.validate_content(content.content_json)
+        manifest = saved_content["source_manifest"]
+        raw = weekly_ai_sources.load_raw_manifest(
+            self.session, plan=plan, content=content
+        )
+        self.assertEqual(raw["term_start"], term.start_date.isoformat())
+        self.assertEqual(raw["term_end"], term.end_date.isoformat())
+        self.assertEqual(raw["term_end"], manifest["term_end"])
+        self.assertEqual(
+            raw["calendar_revision_id"], term.current_calendar_revision_id
+        )
+        self.assertEqual(
+            raw["calendar_revision_id"], manifest["calendar_revision_id"]
+        )
+        states = {item["day_state"] for item in raw["calendar_window"]["days"]}
+        self.assertTrue({"teaching", "rest", "outside_term"} <= states, states)
+        projected = weekly_ai_inputs.project_weekly_input(
+            "weekly_key_week_focus", raw, content.content_json
+        )
+        self.assertEqual(projected.task_type, "weekly_key_week_focus")
+        with self.assertRaises(weekly_ai_contracts.WeeklyAIContractError) as missing:
+            weekly_ai_inputs.project_weekly_input(
+                "weekly_materials_generate", raw, content.content_json
+            )
+        self.assertEqual(missing.exception.code, "MATERIAL_CONTEXT_REQUIRED")
+
+        before = self._ai_counts()
+        result, created = weekly_ai_service.create_weekly_tasks(
+            self.session,
+            runtime=None,
+            profile_id=self.profile.id,
+            plan_id=self.plan_id,
+            request_id=str(uuid.uuid4()),
+            expected_draft_version=new_version,
+            operation_kind=weekly_ai_service.GAMES,
+            task_specs=[
+                weekly_ai_service.WeeklyTaskSpec("weekly_games_select", "games")
+            ],
+        )
+        self.assertTrue(created)
+        self.assertEqual(result["draft"]["version"], new_version)
+        self.session.expire_all()
+        after = self._ai_counts()
+        self.assertEqual(after["local_ai_inputs"], before["local_ai_inputs"] + 1)
+        self.assertEqual(after["local_ai_tasks"], before["local_ai_tasks"] + 1)
+        self.assertEqual(
+            after["local_ai_operations"], before["local_ai_operations"] + 1
+        )
+        self.assertEqual(after["local_ai_executions"], before["local_ai_executions"])
+        self.assertEqual(after["local_ai_attempts"], before["local_ai_attempts"])
+
+        confirmation_after = self.session.get(
+            LocalWeeklyPlanConfirmation, confirmation_id
+        )
+        self.assertEqual(
+            json.dumps(
+                confirmation_after.snapshot_json,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            confirmation_bytes,
+        )
+        self.assertEqual(confirmation_after.snapshot_hash, confirmation_hash)
+        plan_after = self.session.get(LocalWeeklyPlan, self.plan_id)
+        self.assertEqual(
+            (
+                plan_after.term_start_date,
+                plan_after.term_end_date,
+                plan_after.calendar_revision_id,
+            ),
+            creation_context,
+        )
+        self.assertEqual(plan_after.current_draft_version, new_version)
+        self.assertEqual(plan_after.current_confirmed_version, 1)
+
+    def test_refreshed_term_calendar_change_columns_use_live_window(self):
+        self._apply_term_end("2026-09-12")
+        refreshed = self._refresh_plan()
+        new_version = refreshed["draft"]["version"]
+        self.session.expire_all()
+        plan = self.session.get(LocalWeeklyPlan, self.plan_id)
+        term = self.session.get(LocalTerm, plan.term_id)
+        content = self.session.get(LocalWeeklyPlanContent, plan.current_draft_id)
+        raw = weekly_ai_sources.load_raw_manifest(
+            self.session, plan=plan, content=content
+        )
+        self.assertEqual(raw["term_end"], term.end_date.isoformat())
+        self.assertEqual(
+            raw["calendar_revision_id"], term.current_calendar_revision_id
+        )
+
+        before = self._ai_counts()
+        result, created = weekly_ai_service.create_weekly_tasks(
+            self.session,
+            runtime=None,
+            profile_id=self.profile.id,
+            plan_id=self.plan_id,
+            request_id=str(uuid.uuid4()),
+            expected_draft_version=new_version,
+            operation_kind=weekly_ai_service.COLUMNS,
+            task_specs=[
+                weekly_ai_service.WeeklyTaskSpec(
+                    "weekly_key_week_focus", "key_week_focus"
+                )
+            ],
+        )
+        self.assertTrue(created)
+        self.assertEqual(result["tasks"][0]["target"], "key_week_focus")
+        self.session.expire_all()
+        after_columns = self._ai_counts()
+        self.assertEqual(
+            after_columns["local_ai_inputs"], before["local_ai_inputs"] + 1
+        )
+        self.assertEqual(
+            after_columns["local_ai_tasks"], before["local_ai_tasks"] + 1
+        )
+
+        with self.assertRaises(LocalMaterialContextRequired):
+            weekly_ai_service.create_weekly_tasks(
+                self.session,
+                runtime=None,
+                profile_id=self.profile.id,
+                plan_id=self.plan_id,
+                request_id=str(uuid.uuid4()),
+                expected_draft_version=new_version,
+                operation_kind=weekly_ai_service.MATERIALS,
+                task_specs=[
+                    weekly_ai_service.WeeklyTaskSpec(
+                        "weekly_materials_generate", "materials"
+                    )
+                ],
+            )
+        self.session.expire_all()
+        self.assertEqual(self._ai_counts(), after_columns)
 
     def test_columns_one_operation_and_active_conflict(self):
         specs = [

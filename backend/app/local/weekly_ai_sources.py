@@ -16,7 +16,9 @@ from typing import Any, Mapping
 from sqlalchemy.orm import Session
 
 from app.local import ai_inputs, weekly_plan_sources
+from app.local.errors import LocalStorageError
 from app.local.models import (
+    LocalCalendarRevision,
     LocalClassGameHead,
     LocalClassGameRevision,
     LocalDailyPlan,
@@ -79,9 +81,26 @@ def load_class_game_config(session: Session, *, class_id: str) -> dict[str, Any]
     }
 
 
+def _current_term_context(
+    session: Session, plan: LocalWeeklyPlan
+) -> tuple[LocalTerm, LocalCalendarRevision]:
+    """Resolve the term/revision currently used by normal weekly source refresh."""
+    term = session.get(LocalTerm, plan.term_id)
+    if term is None:
+        raise LocalStorageError("周计划所属学期缺失")
+    revision_id = term.current_calendar_revision_id
+    if revision_id is None:
+        raise LocalStorageError("学期缺少当前日历修订")
+    revision = session.get(LocalCalendarRevision, revision_id)
+    if revision is None or revision.term_id != term.id:
+        raise LocalStorageError("当前日历修订缺失")
+    return term, revision
+
+
 def load_calendar_window(
     session: Session, *, plan: LocalWeeklyPlan, holiday_provider=None
 ) -> dict[str, Any]:
+    term, revision = _current_term_context(session, plan)
     start = plan.week_anchor_date - timedelta(days=7)
     end = plan.week_anchor_date + timedelta(days=13)
     facts, coverage = ai_inputs.holiday_context(start, end, provider=holiday_provider)
@@ -94,11 +113,11 @@ def load_calendar_window(
     from app.local.models import LocalCalendarDay
 
     while day <= end:
-        outside = day < plan.term_start_date or day > plan.term_end_date
+        outside = day < term.start_date or day > term.end_date
         if outside:
             state = "outside_term"
         else:
-            row = session.get(LocalCalendarDay, (plan.calendar_revision_id, day))
+            row = session.get(LocalCalendarDay, (revision.id, day))
             state = (
                 "teaching"
                 if row is not None and row.effective_state == "teaching"
@@ -160,15 +179,16 @@ def load_raw_manifest(
     settings = session.get(LocalSettings, "singleton")
     if settings is None:
         raise ValueError("本地设置缺失")
+    term, revision = _current_term_context(session, plan)
     snapshot = weekly_plan_sources.load_source_snapshot(
         session,
         profile_id=plan.profile_id,
         class_id=plan.class_id,
         term_id=plan.term_id,
         week_anchor_date=plan.week_anchor_date,
-        calendar_revision_id=plan.calendar_revision_id,
-        term_start=plan.term_start_date,
-        term_end=plan.term_end_date,
+        calendar_revision_id=revision.id,
+        term_start=term.start_date,
+        term_end=term.end_date,
         week_number=plan.week_number_snapshot,
         header=plan.header_json,
         config_version=settings.config_version,
@@ -202,9 +222,9 @@ def load_raw_manifest(
         "content_hash": content.content_hash,
         "week_anchor_date": plan.week_anchor_date.isoformat(),
         "week_number": plan.week_number_snapshot,
-        "term_start": plan.term_start_date.isoformat(),
-        "term_end": plan.term_end_date.isoformat(),
-        "calendar_revision_id": plan.calendar_revision_id,
+        "term_start": term.start_date.isoformat(),
+        "term_end": term.end_date.isoformat(),
+        "calendar_revision_id": revision.id,
         "config_version": settings.config_version,
         "header": plan.header_json,
         "source_context_hash": snapshot["source_context_hash"],

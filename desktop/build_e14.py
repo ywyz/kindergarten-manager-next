@@ -76,6 +76,19 @@ PILLOW_REQUIRED_PLUGINS = (
     "_avif.cp314-win_amd64.pyd",
 )
 
+# SQLAlchemy 2.0.54 treats these Cython extensions as optional and falls back
+# to its pure-Python implementations when they cannot be imported.  Package
+# them as absent so the frozen app never loads the unsigned optional binaries.
+SQLALCHEMY_CYEXTENSION_MODULES = (
+    "sqlalchemy.cyextension",
+    "sqlalchemy.cyextension.collections",
+    "sqlalchemy.cyextension.immutabledict",
+    "sqlalchemy.cyextension.processors",
+    "sqlalchemy.cyextension.resultproxy",
+    "sqlalchemy.cyextension.util",
+)
+SQLALCHEMY_COMPILED_SUFFIXES = (".pyd", ".dll")
+
 # Never write into these roots. ``desktop-e14`` and ``desktop-e14-r02`` are
 # preserved candidates; ``desktop-e14-r03`` and later suffixed roots are the
 # only allowed build-root family.
@@ -662,6 +675,31 @@ def build_frontend(frontend_out: Path) -> None:
         raise SystemExit(f"E14 frontend output missing: {frontend_out}")
 
 
+def sqlalchemy_compiled_extensions(package_root: Path) -> list[str]:
+    """Return packaged SQLAlchemy optional/compiled-extension paths (must be empty)."""
+    base = package_root / "_internal" / "sqlalchemy"
+    if not base.is_dir():
+        return []
+    return sorted(
+        path.relative_to(package_root).as_posix()
+        for path in base.rglob("*")
+        if path.is_file()
+        and (
+            "cyextension" in path.relative_to(base).parts
+            or path.suffix.lower() in SQLALCHEMY_COMPILED_SUFFIXES
+        )
+    )
+
+
+def require_no_sqlalchemy_cyextension(package_root: Path) -> None:
+    offending = sqlalchemy_compiled_extensions(package_root)
+    if offending:
+        raise SystemExit(
+            "拒绝构建：SQLAlchemy 可选编译扩展必须使用纯 Python 回退，"
+            f"但包内仍存在 {offending}"
+        )
+
+
 def build_package(
     dist_root: Path, frontend_dir: Path, work_dir: Path, spec_dir: Path
 ) -> Path:
@@ -703,6 +741,10 @@ def build_package(
         "chinese_calendar",
         "--collect-submodules",
         "PIL",
+    ]
+    for module in SQLALCHEMY_CYEXTENSION_MODULES:
+        command.extend(["--exclude-module", module])
+    command += [
         "--hidden-import",
         "chinese_calendar",
         "--hidden-import",
@@ -806,6 +848,7 @@ def build_package(
     executable = package_root / f"{APP_NAME}.exe"
     if not executable.is_file():
         raise SystemExit(f"E14 package output missing: {package_root}")
+    require_no_sqlalchemy_cyextension(package_root)
     return package_root
 
 
