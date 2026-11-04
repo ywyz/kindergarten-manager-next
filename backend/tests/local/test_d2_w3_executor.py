@@ -285,26 +285,61 @@ class FreezeAndDrainTests(ExecutorCase):
         self.assertNotIn("resume", out["allowed_actions"])
 
     def test_cancel_blocks_send(self):
-        self.configure_ai(model="w3fake|ready_delay:1.5|ready_then_result:0")
+        self.configure_ai(model="w3fake|ready_then_result:0")
         plan = self.make_plan()
-        executor = self.start_executor()
+        ready_seen = threading.Event()
+        release_ready = threading.Event()
+
+        def on_event(name, claim, info):
+            if name != "ready":
+                return
+            # READY is emitted after the active attempt exists and before the
+            # dispatch mark.  Hold the worker there while the main thread
+            # commits the cancel; releasing it afterwards must end the attempt
+            # without a SEND, with no timing window.
+            ready_seen.set()
+            release_ready.wait(30.0)
+
+        executor = self.start_executor(on_event=on_event)
         task = self.submit(plan["id"], executor=executor)
-        self.wait_status(task["id"], {"claimed"}, timeout=25)
-        claim_id = self.task_row(task["id"])["current_execution_id"]
-        self.assertTrue(executor.begin_cancel(claim_id))
-        result, abort_id, abort_kind = ai_task_service.cancel_task(
-            self.session,
-            task_id=task["id"],
-            expected_execution_id=claim_id,
-            request_id=str(uuid.uuid4()),
-        )
-        executor.end_cancel(claim_id, committed=True)
+        try:
+            self.assertTrue(ready_seen.wait(25.0), "worker did not reach ready")
+            claim_id = self.task_row(task["id"])["current_execution_id"]
+            self.assertTrue(executor.begin_cancel(claim_id))
+            result, _abort_id, _abort_kind = ai_task_service.cancel_task(
+                self.session,
+                task_id=task["id"],
+                expected_execution_id=claim_id,
+                request_id=str(uuid.uuid4()),
+            )
+            executor.end_cancel(claim_id, committed=True)
+            executor.abort_execution(claim_id, "cancel")
+        finally:
+            release_ready.set()
         self.assertEqual(result["status"], "cancelled")
-        executor.abort_execution(claim_id, "cancel")
-        executor.notify()
-        time.sleep(1.5)
+        self.assertTrue(executor._idle.wait(30.0), "executor did not become idle")
+        self.assertFalse(executor.active_snapshot()["attempt_in_flight"])
+        self.assertFalse(executor.active_snapshot()["pending_persist"])
         self.assertEqual(self.candidate_count(task["id"]), 0)
         self.assertEqual(self.task_status(task["id"]), "cancelled")
+        self.assertEqual(
+            query_scalar(
+                self.db,
+                "SELECT count(*) FROM local_ai_attempts WHERE execution_id = ?",
+                (claim_id,),
+            ),
+            1,
+        )
+        self.assertIsNone(
+            query_scalar(
+                self.db,
+                "SELECT dispatch_marked_at FROM local_ai_attempts "
+                "WHERE execution_id = ?",
+                (claim_id,),
+            )
+        )
+        self.assertTrue(executor.is_runnable())
+        self.assertTrue(executor.stop())
 
 
 class IpcBlockingTests(LocalTestCase):

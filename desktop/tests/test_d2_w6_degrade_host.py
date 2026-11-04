@@ -288,14 +288,53 @@ def test_resource_bundle_check_requires_exact_daily_and_observation_rows():
             "00ce1c4125d24c6c15660de9f5c4e7174b91dd64a18960545dd283d142ace470",
         ),
     }
-    expected = expected_daily | expected_observation
+    expected_weekly = {
+        (
+            "weekly_games_select",
+            2,
+            1,
+            "da07ef1e2b13a1008a93ad1b483584f2eb783bab899baf17ade38b0876a98d19",
+        ),
+        (
+            "weekly_key_week_focus",
+            1,
+            1,
+            "7bdc3b3a49f7b0aa852f6fa30945ec5b7d2b5280ea17f06f8252a0877f2bb1d5",
+        ),
+        (
+            "weekly_environment_setup",
+            1,
+            1,
+            "4440671ab39cee4d70b1348a89884f3374c2dc34bd604f98932ef1ed88f76daa",
+        ),
+        (
+            "weekly_habit_culture",
+            1,
+            1,
+            "9329fd4ad3b20f1e626a429fc5d058c46cf5b591bbf33771c00a73ac7fc7ece5",
+        ),
+        (
+            "weekly_home_cooperation",
+            1,
+            1,
+            "14196bd647c9ad632926637d7cd1187df333345b4ecff79d6b74bd0fe898effe",
+        ),
+        (
+            "weekly_materials_generate",
+            2,
+            1,
+            "5aa3f9bb73094b3b7772680dc48ae4ca9f4dcd903682d46773ef311c44416b82",
+        ),
+    }
+    expected = expected_daily | expected_observation | expected_weekly
     exact = rows(PROMPT_BUNDLE_MANIFEST)
-    assert len(exact) == 9
+    assert len(exact) == 15
     assert set(exact) == expected
     assert {r for r in exact if r[0].startswith("daily_")} == expected_daily
     assert {
         r for r in exact if r[0].startswith("game_observation_")
     } == expected_observation
+    assert {r for r in exact if r[0].startswith("weekly_")} == expected_weekly
     assert d1_main._bundle_rows_match_manifest(exact, PROMPT_BUNDLE_MANIFEST)
 
     assert not d1_main._bundle_rows_match_manifest(
@@ -320,13 +359,13 @@ def test_resource_bundle_check_requires_exact_daily_and_observation_rows():
 
     # Removing either observation row, or changing either observation hash,
     # must be rejected independently of the daily rows.
-    for observation_row in expected_observation:
+    for protected_row in expected_observation | expected_weekly:
         assert not d1_main._bundle_rows_match_manifest(
-            [r for r in exact if r != observation_row],
+            [r for r in exact if r != protected_row],
             PROMPT_BUNDLE_MANIFEST,
         )
         changed = [
-            (*r[:3], "0" * 64) if r == observation_row else r for r in exact
+            (*r[:3], "0" * 64) if r == protected_row else r for r in exact
         ]
         assert not d1_main._bundle_rows_match_manifest(
             changed, PROMPT_BUNDLE_MANIFEST

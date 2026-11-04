@@ -2274,6 +2274,7 @@ class D1HostApi:
                 "message": "导出保存尝试无效",
             }
         temp_path: str | None = None
+        stage = "download"
         try:
             try:
                 temp_path, digest, size = self._download_observation_export(
@@ -2291,6 +2292,7 @@ class D1HostApi:
                     "attempt_id": attempt_id,
                     "receipt_pending": not confirmed,
                 }
+            stage = "dialog"
             with self._save_mutex:
                 try:
                     target = self._choose_target(filename)
@@ -2324,6 +2326,7 @@ class D1HostApi:
                         "attempt_id": attempt_id,
                         "receipt_pending": True,
                     }
+                stage = "write"
                 write_result = write_stream_atomic(
                     target,
                     temp_path,
@@ -2372,6 +2375,33 @@ class D1HostApi:
                 "attempt_id": attempt_id,
                 "receipt_pending": not confirmed,
             }
+        except Exception as exc:  # noqa: BLE001 - unexpected stage failure
+            _host_log(
+                f"observation export stage failure: {type(exc).__name__}"
+            )
+            if stage in ("download", "dialog"):
+                attempt_status = "failed"
+                result = {
+                    "status": "failed",
+                    "code": "EXPORT_SAVE_FAILED",
+                    "message": "导出保存失败：发生未预期的错误，请重试",
+                    "export_id": export_id,
+                    "attempt_id": attempt_id,
+                }
+            else:
+                attempt_status = "indeterminate"
+                result = {
+                    "status": "unknown",
+                    "code": "EXPORT_SAVE_UNKNOWN",
+                    "message": "保存结果无法确认，请核对目标文件",
+                    "export_id": export_id,
+                    "attempt_id": attempt_id,
+                }
+            confirmed = self._report_observation_attempt(
+                export_id, attempt_id, attempt_status
+            )
+            result["receipt_pending"] = not confirmed
+            return result
         finally:
             if temp_path is not None:
                 try:

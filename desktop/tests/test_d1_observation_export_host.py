@@ -771,3 +771,43 @@ def test_json_trickle_and_slow_headers_hit_total_deadline(
                 "GET", "/api/observation-exports/x/attempts/latest"
             )
         assert caught.value.code == "EXPORT_LOCAL_API_TIMEOUT"
+
+
+def test_unexpected_download_exception_reports_failed_attempt(tmp_path, monkeypatch):
+    state = FakeState()
+    with LoopbackServer(state) as server:
+        api = make_api(tmp_path, server.port)
+        monkeypatch.setattr(
+            api,
+            "_download_observation_export",
+            lambda _export_id: (_ for _ in ()).throw(RuntimeError("synthetic")),
+        )
+        result = api.save_observation_export(
+            {"export_id": "unexpected-download", "filename": "观察.docx"}
+        )
+        assert result["status"] == "failed"
+        assert result["attempt_id"] == "attempt-1"
+        assert state.result_calls[-1]["status"] == "failed"
+        assert api._save_in_progress() is False
+
+
+def test_unexpected_write_exception_reports_indeterminate_attempt(
+    tmp_path, monkeypatch
+):
+    state = FakeState()
+    with LoopbackServer(state) as server:
+        api = make_api(tmp_path, server.port)
+        monkeypatch.setattr(
+            d1_host_api,
+            "write_stream_atomic",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("synthetic write")
+            ),
+        )
+        result = api.save_observation_export(
+            {"export_id": "unexpected-write", "filename": "观察.docx"}
+        )
+        assert result["status"] == "unknown"
+        assert result["attempt_id"] == "attempt-1"
+        assert state.result_calls[-1]["status"] == "indeterminate"
+        assert api._save_in_progress() is False

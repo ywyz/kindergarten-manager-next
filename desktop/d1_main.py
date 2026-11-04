@@ -7147,6 +7147,7 @@ def run_selftest(args) -> int:
             min_size=(760, 560),
             text_select=True,
         )
+        host_api._bind_window(window)
         _install_close_handlers(
             window,
             host_api,

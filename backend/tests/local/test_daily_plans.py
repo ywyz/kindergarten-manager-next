@@ -734,6 +734,7 @@ class DailyPlanApiTests(LocalTestCase):
                 "local_weekly_export_snapshots",
                 "local_weekly_export_tokens",
                 "local_weekly_export_attempts",
+                "local_weekly_plan_ai_adoption",
             },
             names,
         )

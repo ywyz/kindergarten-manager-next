@@ -31,8 +31,15 @@ class ObservationBundleContractTests(unittest.TestCase):
             | {
                 "game_observation_generate",
                 "game_observation_rewrite",
+                "weekly_games_select",
+                "weekly_key_week_focus",
+                "weekly_environment_setup",
+                "weekly_habit_culture",
+                "weekly_home_cooperation",
+                "weekly_materials_generate",
             },
         )
+        self.assertEqual(len(prompt_bundles.REGISTERED_TASK_TYPES), 11)
         self.assertIn(
             "game_observation_generate", prompt_bundles._OUTPUT_MODELS
         )

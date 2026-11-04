@@ -150,7 +150,7 @@ class ObservationMigrationTests(LocalTestCase):
         db = runtime.db_path
         self.assertEqual(
             query_scalar(db, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261101_0007_local_weekly",
+            "20261102_0008_local_weekly_ai",
         )
         self.assertEqual(query_rows(db, "PRAGMA foreign_key_check"), [])
         tables = {
@@ -265,13 +265,14 @@ class ObservationMigrationTests(LocalTestCase):
         data_dir.mkdir(parents=True)
         shutil.copy2(source, data_dir / "kindergarten.db")
         runtime = LocalRuntime(data_dir, credential_root=self.tmp_root / "credentials")
+        self.addCleanup(runtime.dispose)
         runtime.prepare()
         self.assertIsNone(runtime.prompt_sync_error)
         db = runtime.db_path
         self.assertEqual(query_rows(db, "PRAGMA foreign_key_check"), [])
         self.assertEqual(
             query_scalar(db, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261101_0007_local_weekly",
+            "20261102_0008_local_weekly_ai",
         )
         new_daily_prompt_rows = query_rows(
             db,
@@ -306,6 +307,7 @@ class ObservationMigrationTests(LocalTestCase):
         )
         runtime.dispose()
         runtime2 = LocalRuntime(data_dir, credential_root=self.tmp_root / "credentials")
+        self.addCleanup(runtime2.dispose)
         runtime2.prepare()
         self.assertIsNone(runtime2.prompt_sync_error)
         counts_after = (
@@ -569,6 +571,7 @@ class ObservationMigrationTests(LocalTestCase):
                 raise LocalStorageError("injected post-commit verify failure")
 
         runtime = _FailVerify(data_dir, credential_root=self.tmp_root / "credentials")
+        self.addCleanup(runtime.dispose)
         with self.assertRaises(LocalStorageError):
             runtime.prepare()
         self.assertTrue(_FailVerify.hit)
@@ -577,7 +580,7 @@ class ObservationMigrationTests(LocalTestCase):
         db = data_dir / "kindergarten.db"
         self.assertEqual(
             query_scalar(db, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261101_0007_local_weekly",
+            "20261102_0008_local_weekly_ai",
         )
         self.assertEqual(
             query_scalar(
@@ -630,11 +633,12 @@ class ObservationMigrationTests(LocalTestCase):
         ensure_local_schema(restored)
         self.assertEqual(
             query_scalar(restored, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261101_0007_local_weekly",
+            "20261102_0008_local_weekly_ai",
         )
         self.assertEqual(query_rows(restored, "PRAGMA foreign_key_check"), [])
 
         normal = LocalRuntime(data_dir, credential_root=self.tmp_root / "credentials")
+        self.addCleanup(normal.dispose)
         normal.prepare()
         self.assertIsNone(normal.prompt_sync_error)
         self.assertEqual(

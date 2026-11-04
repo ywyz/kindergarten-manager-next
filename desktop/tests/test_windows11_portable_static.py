@@ -675,10 +675,40 @@ def test_report_path_guard_rejects_raw_parent_and_reparse(tmp_path):
     allowed.mkdir()
     nested.mkdir(parents=True)
     link = allowed / "link"
-    try:
+    root_abs = os.path.abspath(tmp_path)
+    link_abs = os.path.abspath(link)
+    nested_abs = os.path.abspath(nested)
+    # The fixture and both raw absolute paths stay inside this fresh tmp_path;
+    # their parents are ordinary directories before the link is created.
+    assert link.parent == allowed
+    assert os.path.commonpath([link_abs, root_abs]) == root_abs
+    assert os.path.commonpath([nested_abs, root_abs]) == root_abs
+    assert nested.is_dir() and not nested.is_symlink()
+    assert not link.exists() and not link.is_symlink()
+    assert not package_verifier._is_reparse(allowed)
+    assert not package_verifier._is_reparse(tmp_path / "protected")
+    assert not package_verifier._is_reparse(nested)
+
+    if os.name == "nt":
+        # A directory junction needs no symbolic-link privilege and is a real
+        # NTFS reparse point wholly inside the pytest-owned temporary tree.
+        import _winapi
+
+        _winapi.CreateJunction(str(nested), str(link))
+        link_stat = link.lstat()
+        assert getattr(link_stat, "st_file_attributes", 0) & 0x400
+        if hasattr(os.path, "isjunction"):
+            assert os.path.isjunction(link)
+        assert link.is_dir()
+        assert link.resolve(strict=True) == nested.resolve(strict=True)
+        reparse_tag = getattr(link_stat, "st_reparse_tag", None)
+        if reparse_tag is not None:
+            assert reparse_tag == 0xA0000003  # IO_REPARSE_TAG_MOUNT_POINT
+    else:
         link.symlink_to(nested, target_is_directory=True)
-    except OSError as exc:
-        pytest.fail(f"cannot create synthetic reparse point: {exc}")
+        assert link.is_symlink()
+        assert link.resolve(strict=True) == nested.resolve(strict=True)
+
     raw_parent = allowed / ".." / "leak.json"
     for module in (package_verifier, archive_verifier):
         accepted, reason = module._report_path_ok(raw_parent, [tmp_path / "protected"])
