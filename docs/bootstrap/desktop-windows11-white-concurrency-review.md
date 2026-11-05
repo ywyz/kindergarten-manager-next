@@ -221,3 +221,64 @@ fixture完整业务数据库／资源指纹故障前后相同，独立只读子�
 按§6.7私下索引找到原隔离体验档案和原凭据根，同机同Windows用户显式两根普通启动本轮源码，设置实际显示官方DeepSeek地址、`deepseek-flash`、已保存且可解密，无需重填。Codex未读取／展示明文key或复制DPAPI，没有点击保存配置／生成；正常退出exit0，八组业务／AI表散列不变，task／execution／attempt／candidate仍各1，integrity及FK通过，**本轮应用真实AI请求0**。该状态不代表本轮另验供应商连通。后续继续保留两根原地，不因拉取源码新建空档案或拿它做故障／恢复／清理目标。
 
 本机本次源码增量验证及新完整回归已完成，**下一步交回开发机补修两个生产恢复模块的包级来源门，以及受管验证器的bootstrap观测用法**。不把私下验证器已通过写成受管入口已修，不因全部新完整用例通过删除中断首现场或宣布所有工程门／产品通过；回修范围见[唯一入口](../tasks/current.md)。只交付两份脱敏文档，原始证据、私下验证器、下载字节及档案／凭据不入Git。原自然白屏、Word/r历史差异、冻结运行／安装更新、Win10／WPS／其它显示条件／跨用户／长根206等原边界保持；不重跑旧39项、43页Word或微软拼音，不签名、WebDAV或发行。
+
+## 8. 2026-11-05：a5580b1新冻结包恢复限定增量
+
+### 8.1 同步与唯一候选
+
+原Windows11测试机继续既有桌面工作树和`codex/desktop-v2-foundation`。开工核全部工作树、远端、index、暂存／未暂存及未跟踪差异，桌面树原为干净173880de7ac67b8fd847d13281f913f4d282fab3；普通fetch后只快进到用户指定`a5580b18ae1973100408fd16e4f496c4edd8e0d1`，tree `1d8764849e5164313819dc81ea4b41345cb844f0`，没有接收目标之后提交。旧main工作树、其它工作树、原档案、凭据和全部首失败资料保留；没有stash／reset／clean／merge提交／rebase／force。
+
+独立读取GitHub确认[run41969916766](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41969916766)为本提交push、attempt1、job127055491174成功；artifact13388773258名称、HEAD、大小和GitHub digest匹配。保留原下载字节，在新合法短根解压，未覆盖旧候选。
+
+| 对象 | 本机独立核验 |
+| --- | --- |
+| 原外ZIP | 44,135,995 bytes；SHA256 `3ac833d27da69874acf2b9b21b93f319ef719af484f03653f65e07d6adc4de08`，与GitHub artifact digest相同。 |
+| 原内ZIP | 44,169,982 bytes；SHA256 `cf2d3b4fc24cf172744fea47deab429706ab535d79be8422914ee9d4ef15e22e`。 |
+| 原目标PS1 | 62,869 bytes；SHA256 `aef1c2021a0767d66ab4ccf53c72fbb0caa5c00d35910888036fe40539faeefd`。 |
+| 两身份文件／manifest | package-info.source_commit为a5580b18完整SHA；build_id均为`887a3d08-d0eb-4461-b1cc-df928d1ca1f4`，revision均为`20261102_0008_local_weekly_ai`；AppIdentity现格式不含source_commit。187产品文件逐个大小／SHA与manifest一致；外5／内190条目未发现重复、越界或link标志。 |
+| 来源与真实归档 | 当前289文件原字节digest为`6f81b26d4df80bbcaf9672e79f62fbdaf294079b380c4e7d71712b7a417f4b2a`，与CI相同；LF规范化摘要另计，不与Git blob／CI检出字节混同。真实CArchive入口及PYZ受检123项均同源，production必要模块无缺失，两个renderer恢复模块已纳入production／required来源及归档门；14项verification support分列，源码验证器未强行加入产品。 |
+
+归档读取在禁止进程／网络的Python audit hook内进行，未执行归档code；首次误调用带Git子进程的source_freeze被守卫拒绝，保留拒绝，随后保持同一守卫、仅用无副作用文件枚举读取当前来源。此枚举不是伪造的构建前freeze文件／时间证据；CI before/after稳定声明仍归CI自身。CI的Windows2022静态56/56、60/60保持其身份，不改写为本机冻结运行通过。
+
+原字节PS1通过既有PowerShell7 RemoteSigned执行，只读预检exit0，报告44项required均通过、无required failure／unknown。本机Windows11 build26300、WebView2 156.0.4314.58、SAC enforce；未更改策略、去来源标记、改名或搬移受阻程序重试。此次新EXE正常显示首次设置页并经页面关闭ack退出；首个旁路进程观察器未取得exit code，不能补写为0。
+
+### 8.2 原配置保留与实际授权
+
+本轮用户新授权必要的官方DeepSeek／MiMo付费调用，替代上一入口“不额外应用真AI”的限制；不等于必须发请求。按§6.7本机ignored路径索引找到原体验data／credential两根，核同Windows用户和无reparse后，显式两根用**本次原字节冻结EXE**普通启动。设置页实际显示官方DeepSeek地址、`deepseek-flash`、“地址/模型/密钥已填写且密钥可解密”及“密钥已保存：是”；未重填／保存配置、未触发生成，正常退出**exit0**，整个数据库原字节SHA256前后一致。未读取、展示或导出明文key，未复制DPAPI，原两根未用于故障／自动验证／恢复／清理。本次配置保留无需付费请求；供应商连通未另验。
+
+### 8.3 冻结入口与证据边界
+
+Codex回读实际入口：正常交互及重开路径安装恢复watcher；既有selftest无恢复phase且不安装该watcher，源码专用验证器的进程内CDP／host对象观测不能移作冻结证据。当地原OpenCode与Command Go只读审阅也核此边界，没有开启远程调试端口、注入页面／进程或替换包模块。
+
+原字节冻结包可按精确宿主EXE／SHA／创建时间、显式新合成根、唯一WebView2 browser父链及私有临时user-data-dir限定外部故障目标。外部证据只覆盖真实进程故障后的可见提示／窗口、端口及完整业务／受管资源指纹；精确Core故障kind、真旧票据拒绝且内部状态不变、新port旧token401／新token200、旧executor线程／host／engine／Session退休没有可靠外部观测面，必须分列未验，不能以旧port拒连、字符串比较或源码通过代替。
+
+### 8.4 原字节冻结包实际结果
+
+两个独立新合成根均由已审私下fixture辅助器准备；窗口、恢复和冷启动全部使用上述**同一原字节冻结EXE的正常交互入口**，无`--selftest`／外部前端／源码窗口／模块替换／调试端口。准备fixture的源码服务调用及只读指纹辅助器不冒称冻结窗口；它们没有启动供应商或执行器。仅在精确宿主PID、原EXE路径／SHA、精确data／credential参数、创建时间、唯一直接browser子进程及其私有TEMP目录、唯一renderer子树全部核定后，对已打开并再次复核的单个进程句柄执行一次外部终止。没有终止宿主、其它应用或整个进程树。
+
+| 范围 | 实际结果 |
+| --- | --- |
+| renderer受控退出 | 宿主28992，renderer20660属于browser22580；句柄／父链／创建时间复核通过，单次终止成功。原生警示和两个按钮可见；点击保留后旧窗5245646、服务61618保持。点击标题栏关闭再次提示，明确点击重开后，新业务窗920306显示完整恢复提示，旧窗消失，服务切为57175。 |
+| browser受控退出 | 独立根，宿主18600，browser11876；同样只终止核明目标一次。原生警示／两按钮、保留、标题栏关闭再次提示及明确重开通过；旧窗920486消失，新业务窗7277546显示恢复提示，服务54475→62858。 |
+| 已保存业务／资源 | 两根各49张完整业务表、12个受管文件；包括日内容4版、周计划1份／正文2版／确认1份、观察3条／历史8版、照片、设置及AI候选／采用／回执。baseline、故障前、重开后、正常关闭后及独立冷启动关闭后，五阶段完整规范指纹全部相等；额外**包含全部runtime字段**的指纹也相等，不只比较计数。 |
+| AI状态保持 | 两根task／execution／attempt各4→4；两成功、一失败、一outcome_unknown的原行、候选和确认均随完整指纹保持；active为0，无新增attempt。未重发历史unknown、自动采用或确认；未发起应用付费AI。 |
+| 正常关闭／独立冷启动 | 两个恢复后的最新窗口均按页面close ack正常关闭，宿主exit0、无自有残留进程。随后分别以新进程28296、1324普通冷启动同根，工作台正常读回，再正常关闭exit0、残留0。共四个宿主运行回执均ok、实际exit0；没有以源码prepare子进程替代冻结冷启动。 |
+| 稳定与保护 | 10份fixture／快照均integrity=ok、FK0、active0、辅助器Python守卫audit通过且网络尝试0。187产品文件前后大小／SHA相同、无额外产品文件；550个非Markdown受管文件前后SHA相同。原AI体验库最终原字节SHA仍与开工相同，测试宿主全部退出。 |
+
+renderer完整业务／资源combined SHA为`a278856cccd8388280739298afdc5797db8027565c27f1ac179a37513a18b2b8`，browser为`1647b3d87f6d6769417b2b60bd0eba400b829c293c306f584cdd6ea6301002a6`。两根各自五阶段一致，不能跨根比较随机fixture身份。所有窗口截图与UI元数据、原始日志、指纹、数据库／照片、原下载字节及私下索引留当地ignored证据区；其中28幅本轮原JPEG从本地工具原始回执按原字节归档，没有重编码或重放故障补图，不入Git。
+
+**限定外部恢复行为与完整持久化保持通过，冻结恢复整体未收口。** 默认保留按钮的焦点画面可见，但Sky未返回原生owned提示窗的独立可操作身份；向所有者送Return／Enter及Alt+F4时未得到可靠提示动作，画面出现提示失焦。实际保留／再次关闭／重开采用截图定位的鼠标点击并成功；不能把这些按键输入记为通过，也不能仅据此宣布产品键盘缺陷。Enter／Escape／提示X等键盘／取消分支保持未验。失效WebView的UIA曾返回缓存旧业务树，故障状态以原始像素为准，不将缓存当活动页面；新业务页另核新窗口、新URL、可见恢复提示及真实指纹。
+
+旧端口监听撤销和新端口出现只是服务代际外部证据，**不是**新port旧token401／新token200。真旧票据提交拒绝且内部状态不变、旧host／executor线程／engine／Session及采用预览身份退休、精确Core故障kind、新业务ready与旧窗destroy的内部先后，均因冻结外部缺可靠观测能力而未验；未调用活动host.get_bootstrap()，未用字符串比较、旧port拒连或源码结论补齐。忙拒绝与真实供应商发送中／待落盘故障本轮未新增冻结运行，保留既有相应源码证据身份，不扩写为冻结通过。
+
+### 8.5 原生责任、私下验证器与Git收口
+
+当地原OpenCode `ses_e651729c9ffeG6mP7f6K1oat1I`负责两份ignored辅助器及最终Git；Command Go `b5a7810b-c0fc-44fb-8cee-48bb364231f9`只读诊断／交叉审阅；Codex独占正式两文档、源码终审、执行复验与Git门禁。实际cwd、原session／空闲与request metadata均核；验证四阶段OpenCode实际assistant为33／46／48／5，共132条，全部build／`opencode-go/deepseek-v4.1-flash#max`，最终idle/succeeded、parent为空；Command Go两阶段15条全部`deepseek/deepseek-v4.1-flash` effort=max、CLI0。未fork／派子代理、换模、扩工具权限或以shell绕过拒绝；Git阶段另核实际回执。
+
+私下辅助器初稿的语法、路径／句柄与弱成功门未执行即被审查退回；Codex裁定Command Go反馈后交原OpenCode回修，独立PS／Python AST解析通过才执行。首个只读inventory因PowerShell7将JSON时间自动解析为DateTime，而脚本转字符串后与ISO比较，误报宿主时间不同；首日志、精确时间诊断与版本身份保留。实际UTC ticks完全相同；原OpenCode仅改为兼容DateTime／ISO的**精确UTC ticks相等**比较，没有放宽身份断言、增加等待或重试。此前没有施加故障；修正后各角色只故障一次。renderer最初launcher SHA为`d80c9ed25e268c8d393ed85e706b8f7eabbc9d4bf6c52f33022dcae1229878cf`；最终进程辅助器为`2d6999911b7dc406a5de78514426eaccfdb2236e3cd28d097dd7315aa97cc771`，fixture辅助器为`a35607785fdb522a131ddd2800a7f5f0f576c0d0f0a3f1038a2134802d7dc9a8`。这些是私下验证工具，未冒称产品入口／包内功能或受管产品回修。
+
+使用现有CPython3.14.10 x64标准GIL及锁定依赖，禁dotenv／pyc、SQLAlchemy纯Python；各阶段新短TEMP／TMP，无pytest故无新增basetemp用例。辅助器守卫只覆盖其Python准备／读取，未注入冻结EXE／WebView，也不声称OS抓包或所有网络零连接。既有固定fresh KGM_D1_STARTUP_LOG只留关闭ack诊断，未增加产品调试开关。应用真实AI调用**0次**，本轮没有供应商连通验证；开发Go模型调用另列，不当应用接口。
+
+只交付本记录与current.md，Codex核准确文件、原字节／Git规范化blob、实际单parent a5580b18完整SHA及暂存tree后，交当地原OpenCode普通提交／推送原分支，再独立核远端、提交tree和工作区；准确提交SHA及推送回执以本轮实际Git结果为准，不循环写入自身SHA。不同步目标之后的他方提交，远端不可快进则报告；不add-all／amend／merge／rebase／force或改main／默认分支／可见性、tag、Release。
+
+原中断完整轮失败标记无详细堆栈／退出及未知原因、原自然白屏精确触发、Word/r历史差异继续保留。未重跑完整backend、旧39项、13份43页Word、微软拼音或W6跨120秒睡眠；不安装升级、改系统保护、执行受阻4551候选／helper、Office注册修复、签名、安装更新、WebDAV、远控或发行。本结果不等于教师体验或产品整体验收。
