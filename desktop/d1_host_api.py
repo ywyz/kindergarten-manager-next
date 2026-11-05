@@ -301,6 +301,22 @@ class CloseCoordinator:
         # notification is retained.
         self._notify_pending: dict[str, object] | None = None
         self._notify_thread: threading.Thread | None = None
+        # Native fault takeover: in-memory revocation is immediate; install
+        # cancellation and the page abort notification are deferred to the
+        # exact recovery worker before any prompt/reopen attempt.
+        self._recovery_cancel_pending: tuple[str | None, int, str] | None = None
+        self._recovery_revoked_request: str | None = None
+        self._recovery_owner_release_failed = False
+        self._recovery_owner_release_pending = False
+        # Native closing callbacks must not write install authorization files
+        # or call JS.  These actions are drained by the existing single
+        # notification pump after the native callback returns.
+        self._install_cancel_pending: list[
+            tuple[str | None, int, str, bool]
+        ] = []
+        self._install_cancel_lock = threading.RLock()
+        self._install_cancel_inflight = False
+        self._install_cancel_blocked = False
 
     def _save_busy(self) -> bool:
         try:
@@ -327,20 +343,28 @@ class CloseCoordinator:
         except Exception:
             pass
 
-    def _safe_on_canceled(self, request_id: str | None) -> None:
-        """Release the AI freeze only if this request still owns the close.
+    def _safe_on_canceled(
+        self, request_id: str | None, generation: int | None = None
+    ) -> bool:
+        """Release the close owner only if this exact request still owns it.
 
         The identity check and the (short, in-memory) unfreeze run under the
         same lock hold so a new close request cannot slip into the gap and be
-        unfrozen by a stale cancel. No DB or network work happens here.
+        unfrozen by a stale cancel. No DB, JS or network work happens here.
         """
         with self._lock:
             if request_id is not None and self._current_id != request_id:
-                return
+                return False
+            if (
+                generation is not None
+                and self._current_generation != generation
+            ):
+                return False
             try:
                 self._on_close_canceled()
             except Exception:
-                pass
+                return False
+            return True
 
     def _safe_on_install_intent(self, request_id: str, generation: int) -> None:
         try:
@@ -350,11 +374,12 @@ class CloseCoordinator:
 
     def _safe_on_install_canceled(
         self, request_id: str | None, reason: str
-    ) -> None:
+    ) -> bool:
         try:
             self._on_install_canceled(request_id, reason)
         except Exception:
-            pass
+            return False
+        return True
 
     def _safe_on_install_final(self, request_id: str, generation: int) -> None:
         try:
@@ -365,8 +390,7 @@ class CloseCoordinator:
     # -- events -----------------------------------------------------------
     def handle_closing(self) -> bool:
         """Return True only to consume the one-shot allow for this request."""
-        revoke: tuple[str, str] | None = None
-        revoked_id: str | None = None
+        revoke: tuple[str, int, str] | None = None
         begun = False
         with self._lock:
             if self._state == self.CLOSING and self._allow_once:
@@ -377,8 +401,11 @@ class CloseCoordinator:
                     self._state = self.CANCELED
                     self._cancel_timer()
                     if self._current_id:
-                        revoke = (self._current_id, "save_in_flight")
-                        revoked_id = self._current_id
+                        revoke = (
+                            self._current_id,
+                            self._current_generation,
+                            "save_in_flight",
+                        )
                     _host_log("closing revoked (save in flight)")
                 else:
                     self._allow_once = False
@@ -397,16 +424,13 @@ class CloseCoordinator:
             # page notification could run).
             return False
         if revoke is not None:
-            # Never call evaluate_js from inside the synchronous FormClosing
-            # callback: enqueue only; the single notification pump runs the
-            # potentially blocking bridge callback outside this lock.
-            self._safe_notify_aborted(*revoke)
-        if revoked_id is not None:
-            # The revoke canceled this request: release the AI freeze (only if
-            # this request still owns the close) and revoke any install plan
-            # bound to it.
-            self._safe_on_canceled(revoked_id)
-            self._safe_on_install_canceled(revoked_id, "save_in_flight")
+            # Native closing callback: release only the ordinary close owner
+            # in memory.  Install authorization writes and the page abort
+            # notification run on the existing single pump, never here.
+            self._safe_on_canceled(revoke[0], revoke[1])
+            self._defer_install_cancel(
+                revoke[0], revoke[1], revoke[2], notify_abort=True
+            )
         return False
 
     def _begin_request(self) -> None:
@@ -451,6 +475,116 @@ class CloseCoordinator:
         self._safe_on_install_canceled(request_id, "timeout")
         if request_id:
             self._safe_notify_aborted(request_id, "timeout")
+
+    # -- renderer-fault takeover -----------------------------------------
+    def revoke_for_recovery(
+        self,
+        reason: str = "renderer_recovery",
+        *,
+        expected_request_id: str | None = None,
+        expected_generation: int | None = None,
+    ) -> dict:
+        """Native-safe takeover of an active close request.
+
+        Only the ordinary close owner is released here (in-memory).  Install
+        authorization cancellation and the page abort notification are left
+        pending for ``finish_recovery_revocation`` on the recovery worker.
+        """
+        request_id: str | None = None
+        generation: int = 0
+        with self._lock:
+            if (
+                expected_request_id is not None
+                and self._current_id != expected_request_id
+            ):
+                return {"revoked": False, "reason": "stale_request"}
+            if (
+                expected_generation is not None
+                and self._current_generation != expected_generation
+            ):
+                return {"revoked": False, "reason": "stale_generation"}
+            if self._state == self.CLOSING and not self._allow_once:
+                # The one-shot allow was already consumed: the native close
+                # is final and must not be canceled here.
+                return {"revoked": False, "reason": "final_closing"}
+            if self._state not in (self.PENDING, self.CLOSING):
+                return {"revoked": False, "reason": "no_active_close"}
+            request_id = self._current_id
+            generation = self._current_generation
+            self._state = self.CANCELED
+            self._allow_once = False
+            self._cancel_timer()
+            self._recovery_cancel_pending = (request_id, generation, reason)
+            self._recovery_revoked_request = request_id
+            self._recovery_owner_release_pending = True
+        owner_released = self._safe_on_canceled(request_id, generation)
+        with self._lock:
+            self._recovery_owner_release_pending = False
+            if not owner_released:
+                # Unknown owner release is sticky: no prompt/reopen may
+                # proceed, and a later finish cannot clear it.
+                self._recovery_owner_release_failed = True
+        return {
+            "revoked": True,
+            "reason": reason,
+            "request_id": request_id,
+            "generation": generation,
+            "owner_released": bool(owner_released),
+        }
+
+    def drain_install_cancel_pending(self) -> bool:
+        """Retry deferred native-callback revokes; retain every failure."""
+        with self._lock:
+            self._install_cancel_blocked = False
+        while True:
+            with self._install_cancel_lock:
+                with self._lock:
+                    if self._install_cancel_inflight:
+                        return False
+                    if not self._install_cancel_pending:
+                        return True
+                    entry = self._install_cancel_pending[0]
+                    self._install_cancel_inflight = True
+                install_ok = self._safe_on_install_canceled(
+                    entry[0], entry[2]
+                )
+                with self._lock:
+                    self._install_cancel_inflight = False
+                    if (
+                        install_ok
+                        and self._install_cancel_pending
+                        and self._install_cancel_pending[0] == entry
+                    ):
+                        self._install_cancel_pending.pop(0)
+                if not install_ok:
+                    return False
+            if entry[3]:
+                self._safe_notify_aborted(
+                    str(entry[0]), str(entry[2])
+                )
+
+    def finish_recovery_revocation(self) -> bool:
+        """Worker-side install revoke/abort notification before prompt/recover."""
+        with self._lock:
+            if (
+                self._recovery_owner_release_pending
+                or self._recovery_owner_release_failed
+            ):
+                return False
+        if not self.drain_install_cancel_pending():
+            return False
+        with self._lock:
+            pending = self._recovery_cancel_pending
+        if pending is None:
+            return True
+        request_id, _generation, reason = pending
+        install_ok = self._safe_on_install_canceled(request_id, reason)
+        if install_ok:
+            with self._lock:
+                if self._recovery_cancel_pending == pending:
+                    self._recovery_cancel_pending = None
+        self._safe_notify_aborted(request_id, reason)
+        return bool(install_ok)
 
     # -- page calls --------------------------------------------------------
     def complete(self, close_request_id: str, allow: bool, task_choice: str | None = None) -> dict:
@@ -545,8 +679,15 @@ class CloseCoordinator:
                         superseded = False
                         aborted_reason = None
             if superseded:
-                self._safe_on_canceled(close_request_id)
-                self._safe_on_install_canceled(close_request_id, "superseded")
+                with self._lock:
+                    recovery_revoked = (
+                        self._recovery_revoked_request == close_request_id
+                    )
+                if not recovery_revoked:
+                    self._safe_on_canceled(close_request_id)
+                    self._safe_on_install_canceled(
+                        close_request_id, "superseded"
+                    )
                 return {"accepted": False, "state": self._public_state()}
             if aborted_reason is not None:
                 self._safe_notify_aborted(close_request_id, aborted_reason)
@@ -559,9 +700,15 @@ class CloseCoordinator:
             with self._lock:
                 self._state = self.CANCELED
                 self._allow_once = False
+                recovery_revoked = (
+                    self._recovery_revoked_request == close_request_id
+                )
             self._safe_notify_aborted(close_request_id, "destroy_failed")
             self._safe_on_canceled(close_request_id)
-            self._safe_on_install_canceled(close_request_id, "destroy_failed")
+            if not recovery_revoked:
+                self._safe_on_install_canceled(
+                    close_request_id, "destroy_failed"
+                )
             return {"accepted": False, "state": self.CANCELED}
         # ``destroy`` may synchronously re-enter the closing event: the
         # re-entry either consumes the one-shot allow (state stays closing)
@@ -575,11 +722,22 @@ class CloseCoordinator:
             )
             generation = self._current_generation
             state = self._public_state()
+            recovery_revoked = (
+                self._recovery_revoked_request == close_request_id
+            )
         if final:
             self._safe_on_install_final(close_request_id, generation)
             return {"accepted": True, "state": self.CLOSING}
-        self._safe_on_install_canceled(close_request_id, "destroy_revoked")
+        if not recovery_revoked:
+            self._safe_on_install_canceled(
+                close_request_id, "destroy_revoked"
+            )
         return {"accepted": False, "state": state}
+
+    def is_final_closing(self) -> bool:
+        """True after the one-shot allow was consumed for the final close."""
+        with self._lock:
+            return self._state == self.CLOSING and not self._allow_once
 
     def state(self, close_request_id: str) -> str:
         with self._lock:
@@ -645,6 +803,7 @@ class CloseCoordinator:
                 # A superseded request/abort must not replace a newer pending
                 # message (R1 §14.3).
                 return
+            self._install_cancel_blocked = False
             self._notify_pending = message
             thread = self._notify_thread
             if thread is not None and thread.is_alive():
@@ -668,6 +827,39 @@ class CloseCoordinator:
         if start_failed:
             _host_log("notification worker start failed")
 
+    def _defer_install_cancel(
+        self,
+        request_id: str | None,
+        generation: int,
+        reason: str,
+        *,
+        notify_abort: bool,
+    ) -> None:
+        """Queue native-callback install revoke/abort on the existing pump."""
+        start_failed = False
+        with self._lock:
+            self._install_cancel_blocked = False
+            self._install_cancel_pending.append(
+                (request_id, generation, reason, notify_abort)
+            )
+            thread = self._notify_thread
+            if thread is not None and thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._notification_loop,
+                name="d1-close-notify",
+                daemon=True,
+            )
+            self._notify_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                if self._notify_thread is thread:
+                    self._notify_thread = None
+                start_failed = True
+        if start_failed:
+            _host_log("notification worker start failed")
+
     def _notification_loop(self) -> None:
         """Single daemon pump; a stuck vendor callback never spawns another.
 
@@ -679,15 +871,60 @@ class CloseCoordinator:
         try:
             while True:
                 with self._lock:
-                    message = self._notify_pending
-                    if message is None:
+                    install_cancel = None
+                    if (
+                        not self._install_cancel_inflight
+                        and not self._install_cancel_blocked
+                        and self._install_cancel_pending
+                    ):
+                        install_cancel = self._install_cancel_pending.pop(0)
+                        self._install_cancel_inflight = True
+                    message = None
+                    if install_cancel is None:
+                        message = self._notify_pending
+                        if message is not None:
+                            self._notify_pending = None
+                            if not self._notification_valid_locked(message):
+                                # The request/abort was superseded while it
+                                # waited.
+                                message = None
+                    if install_cancel is None and message is None:
                         if self._notify_thread is threading.current_thread():
                             self._notify_thread = None
                         return
-                    self._notify_pending = None
-                    if not self._notification_valid_locked(message):
-                        # The request/abort was superseded while it waited.
+                if install_cancel is not None:
+                    request_id, _generation, reason, notify_abort = (
+                        install_cancel
+                    )
+                    with self._install_cancel_lock:
+                        install_ok = self._safe_on_install_canceled(
+                            request_id, reason
+                        )
+                    with self._lock:
+                        self._install_cancel_inflight = False
+                        if install_ok:
+                            self._install_cancel_blocked = False
+                        else:
+                            self._install_cancel_pending.insert(
+                                0, install_cancel
+                            )
+                            self._install_cancel_blocked = True
+                    if install_ok:
+                        if notify_abort:
+                            self._safe_notify_aborted(
+                                str(request_id), str(reason)
+                            )
                         continue
+                    # Keep the failed revoke pending.  The worker exits; the
+                    # next notification or explicit recovery attempt wakes it.
+                    if notify_abort:
+                        try:
+                            self._notify_aborted(
+                                str(request_id), str(reason)
+                            )
+                        except Exception:
+                            pass
+                    return
                 try:
                     if message.get("kind") == "request":
                         self._notify_page(
@@ -702,9 +939,36 @@ class CloseCoordinator:
                     # second worker is created. The next message can still run.
                     pass
         finally:
+            needs_wake = False
             with self._lock:
                 if self._notify_thread is threading.current_thread():
                     self._notify_thread = None
+                    needs_wake = self._notify_pending is not None
+            if needs_wake:
+                # A notification arrived while the old callback was blocked.
+                # Start its worker only after the old callback returned.
+                self._wake_notification_worker()
+
+    def _wake_notification_worker(self) -> None:
+        start_failed = False
+        with self._lock:
+            thread = self._notify_thread
+            if thread is not None and thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._notification_loop,
+                name="d1-close-notify",
+                daemon=True,
+            )
+            self._notify_thread = thread
+            try:
+                thread.start()
+            except Exception:
+                if self._notify_thread is thread:
+                    self._notify_thread = None
+                start_failed = True
+        if start_failed:
+            _host_log("notification worker start failed")
 
     def _safe_notify_page(self, request_id: str, generation: int) -> None:
         self._enqueue_notification(

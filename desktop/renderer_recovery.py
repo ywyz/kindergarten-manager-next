@@ -56,6 +56,8 @@ class RendererRecoveryCoordinator:
         log: Callable[[str], None] | None = None,
         invalidate_authorizations: Callable[[], None] | None = None,
         barrier_getter: Callable[[Any], Any] | None = None,
+        close_revoker: Callable[[str], Any] | None = None,
+        close_revocation_finisher: Callable[[], bool] | None = None,
     ) -> None:
         self._window = window
         self._host = host_api
@@ -79,6 +81,10 @@ class RendererRecoveryCoordinator:
             invalidate_authorizations or _invalidate_launch_authorizations
         )
         self._barrier_getter = barrier_getter or _default_barrier_getter
+        self._close_revoker = close_revoker
+        self._close_revocation_finisher = close_revocation_finisher
+        self._close_revoke_error = False
+        self._close_revoke_result: Any = None
         self._lock = threading.RLock()
         self._state = self.IDLE
         self._fault: RecoveryFault | None = None
@@ -175,7 +181,46 @@ class RendererRecoveryCoordinator:
             self._last_code = None
         # These are short in-memory owner operations, never DB/UI/JS.
         self._freeze_fault_owners()
+        self._revoke_close_for_recovery()
+        if (
+            isinstance(self._close_revoke_result, dict)
+            and self._close_revoke_result.get("reason") == "final_closing"
+        ):
+            # The close already consumed its final allow: keep the native
+            # close final and do not start a new teacher prompt.
+            self.mark_expected_close()
+            return
         self._request_prompt_worker()
+
+    def _revoke_close_for_recovery(self) -> None:
+        """Native-safe takeover of an armed close before the prompt worker."""
+        self._close_revoke_result = None
+        if self._close_revoker is None:
+            return
+        try:
+            self._close_revoke_result = self._close_revoker(
+                "renderer_recovery"
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed before prompt
+            self._close_revoke_error = True
+            self._log(
+                f"renderer recovery: close revoke failed: {type(exc).__name__}"
+            )
+
+    def _finish_close_revocation(self) -> bool:
+        """Worker-side install revoke/abort notification before any prompt."""
+        if self._close_revoke_error:
+            return False
+        if self._close_revocation_finisher is None:
+            return True
+        try:
+            return bool(self._close_revocation_finisher())
+        except Exception as exc:  # noqa: BLE001 - unknown is not safe
+            self._log(
+                f"renderer recovery: close revoke finish failed: "
+                f"{type(exc).__name__}"
+            )
+            return False
 
     def _freeze_fault_owners(self) -> None:
         executor = self._executor()
@@ -224,20 +269,34 @@ class RendererRecoveryCoordinator:
 
     # -- public close interception ---------------------------------------
 
-    def intercept_native_close(self) -> bool:
-        """Return True to cancel a faulted native close and request a choice."""
+    def takeover_native_close(self) -> dict:
+        """Revoke an armed close before any prompt; report final closing."""
         with self._lock:
             if self._expected_close or self._fault is None:
-                return False
-            if self._state == self.RECOVERING:
-                return True
-            if self._state in (self.RECOVERED, self.STALE):
-                return True
-            if not self._identity_current():
+                return {"intercepted": False, "final": False}
+            state = self._state
+            request_worker = state not in (
+                self.RECOVERING,
+                self.RECOVERED,
+                self.STALE,
+            )
+            if request_worker and not self._identity_current():
                 self._state = self.STALE
-                return True
-        self._request_prompt_worker()
-        return True
+                request_worker = False
+        self._revoke_close_for_recovery()
+        if (
+            isinstance(self._close_revoke_result, dict)
+            and self._close_revoke_result.get("reason") == "final_closing"
+        ):
+            self.mark_expected_close()
+            return {"intercepted": False, "final": True}
+        if request_worker:
+            self._request_prompt_worker()
+        return {"intercepted": True, "final": False}
+
+    def intercept_native_close(self) -> bool:
+        """Return True to cancel a faulted native close and request a choice."""
+        return bool(self.takeover_native_close().get("intercepted"))
 
     def mark_expected_close(self) -> None:
         """Detach the native watcher before a controlled/final window close."""
@@ -258,6 +317,23 @@ class RendererRecoveryCoordinator:
             if not self._identity_current():
                 with self._lock:
                     self._state = self.STALE
+                return
+            with self._lock:
+                if self._expected_close:
+                    return
+            if not self._finish_close_revocation():
+                with self._lock:
+                    self._state = self.BLOCKED
+                    self._last_code = "REOPEN_FAILED"
+                try:
+                    self._adapter.notify_reopen_blocked(
+                        self._window, "REOPEN_FAILED"
+                    )
+                except Exception as exc:  # noqa: BLE001 - notice is best effort
+                    self._log(
+                        f"renderer recovery: blocked notice failed: "
+                        f"{type(exc).__name__}"
+                    )
                 return
             try:
                 choice = bool(self._adapter.prompt_reopen(self._window))
@@ -534,6 +610,8 @@ def install_renderer_recovery(
     log: Callable[[str], None] | None = None,
     invalidate_authorizations: Callable[[], None] | None = None,
     barrier_getter: Callable[[Any], Any] | None = None,
+    close_revoker: Callable[[str], Any] | None = None,
+    close_revocation_finisher: Callable[[], bool] | None = None,
 ) -> RendererRecoveryCoordinator:
     """Install the business coordinator and B's native watcher for one window."""
     if adapter is None:
@@ -549,6 +627,8 @@ def install_renderer_recovery(
         log=log,
         invalidate_authorizations=invalidate_authorizations,
         barrier_getter=barrier_getter,
+        close_revoker=close_revoker,
+        close_revocation_finisher=close_revocation_finisher,
     )
     coordinator.install()
     return coordinator

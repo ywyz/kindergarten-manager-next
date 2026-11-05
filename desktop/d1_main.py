@@ -7328,6 +7328,18 @@ def _install_renderer_recovery(
             recovery_mode=True,
         )
 
+    def revoke_close_for_recovery(reason: str) -> dict:
+        close_coordinator = getattr(host_api, "_close_coordinator", None)
+        if close_coordinator is None:
+            return {"revoked": False, "reason": "no_close_coordinator"}
+        return close_coordinator.revoke_for_recovery(reason)
+
+    def finish_close_revocation() -> bool:
+        close_coordinator = getattr(host_api, "_close_coordinator", None)
+        if close_coordinator is None:
+            return True
+        return bool(close_coordinator.finish_recovery_revocation())
+
     try:
         coordinator = renderer_recovery.install_renderer_recovery(
             window=window,
@@ -7337,6 +7349,8 @@ def _install_renderer_recovery(
             runtime=runtime,
             reopen_sequence=reopen_sequence,
             log=_startup_log,
+            close_revoker=revoke_close_for_recovery,
+            close_revocation_finisher=finish_close_revocation,
         )
     except Exception as exc:  # noqa: BLE001 - never break startup/close
         _startup_log(f"renderer recovery install failed: {type(exc).__name__}")
@@ -7493,9 +7507,35 @@ def _install_close_handlers(
             return True
         # A confirmed native fault must intercept before the retired/recovery
         # safeguards; otherwise a failed reopen could silently exit the fault
-        # window.  It only schedules a native prompt and never waits for JS.
-        if recovery is not None and recovery.intercept_native_close():
-            return False
+        # window.  The takeover revokes any armed close before it starts the
+        # prompt worker; a consumed final allow is never canceled or prompted.
+        if (
+            coordinator.is_final_closing()
+            and recovery is not None
+            and bool(getattr(recovery, "faulted", False))
+        ):
+            recovery.mark_expected_close()
+            return True
+        if recovery is not None:
+            takeover = getattr(recovery, "takeover_native_close", None)
+            if callable(takeover):
+                result = takeover()
+            else:
+                intercepted = bool(recovery.intercept_native_close())
+                if intercepted:
+                    coordinator.revoke_for_recovery("renderer_recovery")
+                result = {"intercepted": intercepted, "final": False}
+            if result.get("final"):
+                recovery.mark_expected_close()
+                return True
+            if (
+                coordinator.is_final_closing()
+                and bool(getattr(recovery, "faulted", False))
+            ):
+                recovery.mark_expected_close()
+                return True
+            if result.get("intercepted"):
+                return False
         retired_exit = bool(getattr(host_api, "_retired", False))
         recovery_exit = (
             host_api._recovery_required_probe()
@@ -7515,6 +7555,17 @@ def _install_close_handlers(
             return True
         # Never wait for JS/database in the synchronous closing callback.
         allow = coordinator.handle_closing()
+        if (
+            not allow
+            and recovery is not None
+            and bool(getattr(recovery, "faulted", False))
+        ):
+            # A fault registered while this close request was being armed
+            # must take over before the prompt/recovery preflight.
+            revoke = coordinator.revoke_for_recovery("renderer_recovery")
+            if revoke.get("reason") == "final_closing":
+                recovery.mark_expected_close()
+                return True
         if recovery is not None and allow:
             recovery.mark_expected_close()
         return allow
@@ -7828,7 +7879,7 @@ def _stop_service(service) -> None:
         pass
 
 
-def run_interactive(args) -> int:
+def _run_interactive_session(args, state: dict) -> int:
     version = webview2_runtime_version()
     if version is None:
         show_error(
@@ -7840,104 +7891,159 @@ def run_interactive(args) -> int:
     import maintenance_lifecycle
 
     lifecycle = maintenance_lifecycle.LifecycleManager()
+    state["lifecycle"] = lifecycle
     service = None
     runtime = None
     try:
-        try:
-            service, host_api, runtime = build_runtime(args)
-        except Exception as exc:
-            show_error("启动失败", f"初始化本地运行时失败：\n{exc}")
-            return 2
-        if not service.start_and_wait():
-            error = service.error
-            _stop_service(service)
-            show_error("启动失败", f"本地服务启动失败：\n{error}")
-            return 2
-        import webview
+        service, host_api, runtime = build_runtime(args)
+        state["service"] = service
+        state["runtime"] = runtime
+    except Exception as exc:
+        show_error("启动失败", f"初始化本地运行时失败：\n{exc}")
+        return 2
+    if not service.start_and_wait():
+        error = service.error
+        _stop_service(service)
+        show_error("启动失败", f"本地服务启动失败：\n{error}")
+        return 2
+    import webview
 
-        window = webview.create_window(
-            "幼儿园教师工作台（本地）",
-            url=f"http://127.0.0.1:{service.port}/",
-            js_api=host_api,
-            width=1180,
-            height=820,
-            min_size=(760, 560),
-            text_select=True,
+    window = webview.create_window(
+        "幼儿园教师工作台（本地）",
+        url=f"http://127.0.0.1:{service.port}/",
+        js_api=host_api,
+        width=1180,
+        height=820,
+        min_size=(760, 560),
+        text_select=True,
+    )
+    host_api._bind_window(window)
+    recovery_holder: dict = {}
+    _install_close_handlers(
+        window,
+        host_api,
+        runtime,
+        weekly_export_manager=getattr(
+            service, "weekly_export_manager", None
+        ),
+        recovery_holder=recovery_holder,
+    )
+    bundle = maintenance_lifecycle.LifecycleBundle(
+        generation=lifecycle.next_generation(),
+        service=service,
+        host_api=host_api,
+        runtime=runtime,
+        window=window,
+        executor=getattr(runtime, "ai_executor", None),
+    )
+    lifecycle.install(bundle)
+    bundle.retire_destroy = lambda: _retire_destroy_window(bundle)
+    host_api._bind_maintenance(
+        _build_maintenance_host(args, runtime, lifecycle, bundle)
+    )
+    _install_renderer_recovery(
+        window, host_api, lifecycle, bundle, runtime, args, recovery_holder
+    )
+    try:
+        webview.start(gui="edgechromium")
+    except Exception as exc:
+        _stop_service(service)
+        show_error("窗口失败", f"窗口启动失败：\n{exc}")
+        return 2
+    try:
+        latest = lifecycle.current()
+        manager = (
+            getattr(latest.host_api, "_update_manager", None)
+            if latest is not None
+            else None
         )
-        host_api._bind_window(window)
-        recovery_holder: dict = {}
-        _install_close_handlers(
-            window,
-            host_api,
-            runtime,
-            weekly_export_manager=getattr(
-                service, "weekly_export_manager", None
-            ),
-            recovery_holder=recovery_holder,
-        )
-        bundle = maintenance_lifecycle.LifecycleBundle(
-            generation=lifecycle.next_generation(),
-            service=service,
-            host_api=host_api,
-            runtime=runtime,
-            window=window,
-            executor=getattr(runtime, "ai_executor", None),
-        )
-        lifecycle.install(bundle)
-        bundle.retire_destroy = lambda: _retire_destroy_window(bundle)
-        host_api._bind_maintenance(
-            _build_maintenance_host(args, runtime, lifecycle, bundle)
-        )
-        _install_renderer_recovery(
-            window, host_api, lifecycle, bundle, runtime, args, recovery_holder
-        )
-        try:
-            webview.start(gui="edgechromium")
-        except Exception as exc:
-            _stop_service(service)
-            show_error("窗口失败", f"窗口启动失败：\n{exc}")
-            return 2
-        try:
-            latest = lifecycle.current()
-            manager = (
-                getattr(latest.host_api, "_update_manager", None)
-                if latest is not None
-                else None
+        if manager is not None:
+            latest.host_api._update_shutdown_confirmed = bool(
+                manager.shutdown()
             )
-            if manager is not None:
-                latest.host_api._update_shutdown_confirmed = bool(
-                    manager.shutdown()
-                )
-                if not latest.host_api._update_shutdown_confirmed:
-                    _startup_log("update manager shutdown not confirmed")
-            install_coordinator = (
-                getattr(latest.host_api, "_install_coordinator", None)
-                if latest is not None
-                else None
-            )
-            if install_coordinator is not None:
-                install_coordinator.shutdown()
-        except Exception:
-            target_host = latest.host_api if latest is not None else host_api
+            if not latest.host_api._update_shutdown_confirmed:
+                state["shutdown_ok"] = False
+                _startup_log("update manager shutdown not confirmed")
+        install_coordinator = (
+            getattr(latest.host_api, "_install_coordinator", None)
+            if latest is not None
+            else None
+        )
+        if install_coordinator is not None:
+            install_coordinator.shutdown()
+    except Exception:
+        state["shutdown_ok"] = False
+        target_host = latest.host_api if latest is not None else host_api
+        if target_host is not None:
             target_host._update_shutdown_confirmed = False
-        return 0
-    finally:
-        # Always close the newest bundle (a restore may have replaced the
-        # initial server).  Never release the runtime lock while the latest
-        # service thread is still alive.
-        if lifecycle.current() is not None:
-            if not lifecycle.close_latest(timeout=10.0):
-                _startup_log(
-                    "close_latest: latest service stop not confirmed; "
-                    "runtime lock retained"
-                )
-        else:
-            _stop_service(service)
-            if runtime is not None:
-                if _dispose_executor(runtime) or getattr(
-                    runtime, "ai_executor", None
-                ) is None:
-                    runtime.dispose()
+    return 0
+
+
+def _stop_service_confirmed(service) -> bool:
+    if service is None:
+        return True
+    confirm = getattr(service, "stop_and_confirm", None)
+    if callable(confirm):
+        try:
+            return bool(confirm(10.0))
+        except Exception:  # noqa: BLE001 - unknown is not success
+            return False
+    _stop_service(service)
+    return False
+
+
+def _cleanup_interactive_state(state: dict) -> bool:
+    lifecycle = state.get("lifecycle")
+    service = state.get("service")
+    runtime = state.get("runtime")
+    if lifecycle is not None and lifecycle.current() is not None:
+        try:
+            ok = bool(lifecycle.close_latest(timeout=10.0))
+        except Exception:  # noqa: BLE001 - unknown cleanup is failure
+            ok = False
+        if not ok:
+            _startup_log(
+                "close_latest: cleanup not confirmed; no clean exit claimed"
+            )
+        return ok
+    if not _stop_service_confirmed(service):
+        return False
+    if runtime is None:
+        return True
+    executor_ok = _dispose_executor(runtime)
+    if not executor_ok and getattr(runtime, "ai_executor", None) is not None:
+        return False
+    try:
+        runtime.dispose()
+    except Exception:  # noqa: BLE001 - terminal status is failure
+        return False
+    return True
+
+
+def run_interactive(args) -> int:
+    state = {
+        "lifecycle": None,
+        "service": None,
+        "runtime": None,
+        "shutdown_ok": True,
+    }
+    try:
+        exit_code = _run_interactive_session(args, state)
+    except BaseException:
+        try:
+            _cleanup_interactive_state(state)
+        except Exception:  # noqa: BLE001 - preserve the original exception
+            pass
+        raise
+    try:
+        cleanup_ok = _cleanup_interactive_state(state)
+    except Exception:  # noqa: BLE001 - unknown cleanup is failure
+        cleanup_ok = False
+    if exit_code != 0:
+        return exit_code
+    if not state.get("shutdown_ok", True):
+        return 1
+    return 0 if cleanup_ok else 1
 
 
 def main() -> int:

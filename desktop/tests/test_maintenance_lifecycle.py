@@ -783,3 +783,18 @@ def test_unresolved_auxiliary_blocks_root_release_before_dispose():
     assert item.runtime.disposed == 0
     assert item.runtime.ai_executor.disposed == 0
     assert item.service.stopped == 0
+
+
+def test_runtime_dispose_exception_is_not_clean_close():
+    class FailingRuntime(FakeRuntime):
+        def dispose(self):
+            self.disposed += 1
+            raise RuntimeError("synthetic runtime dispose failure")
+
+    manager = ml.LifecycleManager()
+    item = bundle(manager, runtime=FailingRuntime())
+    manager.install(item)
+    assert manager.dispose_bundle(item) is False
+    assert item.runtime.disposed == 1
+    assert manager.close_latest(timeout=1.0) is False
+    assert item.runtime.disposed == 2

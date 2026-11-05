@@ -6,7 +6,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-05：本轮恢复核验结果见[限定核查§9](docs/bootstrap/desktop-regression-repair-review.md#9-2026-11-05恢复身份内部退休与真实输入限定核验)。仅补受管验证器／测试，源码真实服务及对象合同通过；原生输入遇能力拒绝，人工收尾已取得退出及完整指纹回执，首轮焦点门失败保留，真实窗口与冻结内部项未收口，不认定为产品键盘缺陷。原测试机外部冻结结论保持原身份；旧失败原因、自然白屏及Word/r差异继续未知。开发机SAC4551不启动包／冻结helper，不签名或发行。
+2026-11-06：已接收测试机96dc1d7并完成关闭交错／清理退出及验证器回修，见[限定核查§10](docs/bootstrap/desktop-regression-repair-review.md#10-2026-11-06测试机回执接收与关闭交错回修)。Codex独立216项相关测试和8个反例通过，源码字节稳定；新包运行仍须按新来源另验。原测试机3e0e42b冻结外部结论保持原身份，Enter／Escape及冻结内部项未验，旧自然白屏／Word差异未知。开发机SAC4551不启动包／冻结helper，不签名或发行。
 
 继续 `codex/desktop-v2-foundation`。本轮指定接收、源码字节、验证与Git／CI身份归正式结果，唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；测试机历史见[白屏／并发补核](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。用户已授权限定核验和审核后普通提交推送；不重放旧merge或写入白名单，源码、包、Word与教师结论分别记。
 原生OpenCode／Command Go固定DeepSeek V4.1 Flash max，按当轮精确文件责任执行。已完成白名单不重放，原生会话身份不可跨机冒充；本轮Command Go仅只读诊断／交叉审阅；此前写工具拒绝保留，未放宽权限或以shell绕过。Codex独占正式文档和最终审核，通用保存、恢复、关闭缺陷优先；真实原库／照片／凭据与首失败保留，验证用合成资料。不启动WebDAV、签名、安装更新或发行。

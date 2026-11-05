@@ -200,8 +200,8 @@ class LifecycleManager:
             if callable(dispose_runtime):
                 try:
                     dispose_runtime()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception:  # noqa: BLE001 - unknown is not success
+                    return False
         return True
 
     def close_latest(self, timeout: float = 10.0) -> bool:

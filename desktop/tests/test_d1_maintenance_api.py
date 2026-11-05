@@ -6,6 +6,7 @@ covered by ``test_maintenance_host.py``.  No WebView2 window is created.
 
 from __future__ import annotations
 
+import threading
 import types
 from pathlib import Path
 
@@ -497,6 +498,7 @@ def test_maintenance_guard_requires_page_ready():
 class _RecoveryClose:
     def __init__(self, intercept=False):
         self.intercept = intercept
+        self.faulted = False
         self.intercepts = 0
         self.marked = 0
 
@@ -814,3 +816,286 @@ def test_partial_new_executor_ownership_survives_host_factory_failure(monkeypatc
     assert manager.close_latest(timeout=0.01) is False
     assert executor.dispose_calls == 0
     assert executor.stop_calls == 1
+
+
+class _ReentrantFaultWindow(_CloseWindow):
+    def __init__(self, recovery):
+        super().__init__()
+        self.recovery = recovery
+        self.reentry_allowed = None
+
+    def destroy(self):
+        self.recovery.intercept = True
+        self.reentry_allowed = self.events.closing.callbacks[0]()
+        if self.reentry_allowed:
+            self.destroyed += 1
+
+
+def _install_reentrant_fault(recovery):
+    import d1_main
+
+    window = _ReentrantFaultWindow(recovery)
+    host = d1_host_api.D1HostApi(
+        launch_token="synthetic", window_getter=lambda: window
+    )
+    holder = {"coordinator": recovery}
+    d1_main._install_close_handlers(
+        window, host, None, recovery_holder=holder
+    )
+    return d1_main, window, host, holder
+
+
+def test_reentrant_fault_takes_over_armed_close_without_false_ack():
+    recovery = _RecoveryClose(intercept=False)
+    _d1_main, window, host, _holder = _install_reentrant_fault(recovery)
+    coordinator = host._close_coordinator
+    try:
+        assert window.events.closing.callbacks[0]() is False
+        request_id = coordinator._current_id
+        reply = coordinator.complete(request_id, True)
+        assert reply == {"accepted": False, "state": "canceled"}
+        assert window.destroyed == 0
+        assert window.reentry_allowed is False
+        assert coordinator._state == coordinator.CANCELED
+        assert coordinator._allow_once is False
+    finally:
+        coordinator._cancel_timer()
+
+
+def test_fault_after_consumed_allow_does_not_cancel_final_close():
+    recovery = _RecoveryClose(intercept=False)
+    d1_main, window, host, _holder = _install_with_recovery(recovery)
+    coordinator = host._close_coordinator
+    try:
+        assert window.events.closing.callbacks[0]() is False
+        request_id = coordinator._current_id
+        assert coordinator.complete(request_id, True) == {
+            "accepted": True,
+            "state": "closing",
+        }
+        assert coordinator.handle_closing() is True
+        assert coordinator._allow_once is False
+        recovery.intercept = True
+        recovery.faulted = True
+        assert window.events.closing.callbacks[0]() is True
+        assert recovery.marked == 1
+        assert coordinator._state == coordinator.CLOSING
+        assert coordinator._allow_once is False
+    finally:
+        coordinator._cancel_timer()
+
+
+def test_faulted_late_close_after_consumed_allow_allows_final_close():
+    recovery = _RecoveryClose(intercept=False)
+    d1_main, window, host, _holder = _install_with_recovery(recovery)
+    coordinator = host._close_coordinator
+    try:
+        assert window.events.closing.callbacks[0]() is False
+        request_id = coordinator._current_id
+        assert coordinator.complete(request_id, True) == {
+            "accepted": True,
+            "state": "closing",
+        }
+        assert coordinator.handle_closing() is True
+        assert coordinator._allow_once is False
+        recovery.faulted = True
+        assert window.events.closing.callbacks[0]() is True
+        assert recovery.marked == 1
+        assert coordinator._state == coordinator.CLOSING
+    finally:
+        coordinator._cancel_timer()
+
+
+class _RecoveryHookWindow(_CloseWindow):
+    def __init__(self):
+        super().__init__()
+        self.native = types.SimpleNamespace(IsDisposed=False)
+
+
+class _BlockingStateAdapter:
+    def __init__(self, host, prompt_results=None):
+        self.host = host
+        self.prompt_results = list(prompt_results or [False])
+        self.prompts = 0
+        self.blocked = []
+        self.prompt_states = []
+        self.prompt_entered = threading.Event()
+        self.release_prompt = threading.Event()
+
+    def install_renderer_watcher(self, window, on_failure, *, log=None):
+        return types.SimpleNamespace(close=lambda: None)
+
+    def prompt_reopen(self, window):
+        self.prompt_states.append(self.host._close_coordinator._state)
+        self.prompts += 1
+        self.prompt_entered.set()
+        assert self.release_prompt.wait(5.0)
+        if len(self.prompt_results) > 1:
+            return self.prompt_results.pop(0)
+        return self.prompt_results[0] if self.prompt_results else False
+
+    def notify_reopen_blocked(self, window, code):
+        self.blocked.append(code)
+
+
+def _install_real_recovery_hook():
+    import d1_main
+    import renderer_recovery
+    import test_renderer_recovery as support
+
+    window = _RecoveryHookWindow()
+    weekly = support.FakeWeekly()
+    host = d1_host_api.D1HostApi(
+        launch_token="synthetic",
+        window_getter=lambda: window,
+        weekly_export_manager=weekly,
+    )
+    runtime = support.FakeRuntime(host)
+    executor = support.FakeExecutor()
+    bundle = support.FakeBundle(generation=1, runtime=runtime)
+    bundle.window = window
+    bundle.host_api = host
+    bundle.service = types.SimpleNamespace(weekly_export_manager=weekly)
+    bundle.executor = executor
+    lifecycle = support.FakeLifecycle(bundle, host)
+    holder = {}
+    d1_main._install_close_handlers(
+        window, host, None, recovery_holder=holder
+    )
+    adapter = _BlockingStateAdapter(host)
+    coordinator = renderer_recovery.RendererRecoveryCoordinator(
+        window=window,
+        host_api=host,
+        lifecycle=lifecycle,
+        bundle=bundle,
+        runtime=runtime,
+        reopen_sequence=lambda: {"state": "reopened"},
+        adapter=adapter,
+        log=lambda _message: None,
+        barrier_getter=lambda _root: support.FakeBarrier(),
+        close_revoker=lambda reason: host._close_coordinator.revoke_for_recovery(
+            reason
+        ),
+        close_revocation_finisher=(
+            lambda: host._close_coordinator.finish_recovery_revocation()
+        ),
+    )
+    coordinator.install()
+    holder["coordinator"] = coordinator
+    return coordinator, window, host, adapter
+
+
+def test_middle_fault_real_hook_revokes_before_prompt():
+    coordinator, window, host, adapter = _install_real_recovery_hook()
+    original_takeover = coordinator.takeover_native_close
+    try:
+        assert window.events.closing.callbacks[0]() is False
+        request_id = host._close_coordinator._current_id
+        assert host._close_coordinator.complete(request_id, True) == {
+            "accepted": True,
+            "state": "closing",
+        }
+
+        def injected_takeover():
+            coordinator._on_native_failure("RenderProcessExited")
+            return original_takeover()
+
+        coordinator.takeover_native_close = injected_takeover
+        assert window.events.closing.callbacks[0]() is False
+        assert adapter.prompt_entered.wait(2.0)
+        assert adapter.prompt_states == ["canceled"]
+        assert host._close_coordinator._state == "canceled"
+        assert host._close_coordinator._allow_once is False
+        # The first destroy request came from complete(); the fault takeover
+        # must not add a second/normal destroy.
+        assert window.destroyed == 1
+        adapter.release_prompt.set()
+        assert coordinator._worker_done.wait(2.0)
+    finally:
+        adapter.release_prompt.set()
+        coordinator.mark_expected_close()
+        host._close_coordinator._cancel_timer()
+
+
+def test_middle_final_fault_real_hook_does_not_prompt():
+    coordinator, window, host, adapter = _install_real_recovery_hook()
+    original_takeover = coordinator.takeover_native_close
+    original_final = host._close_coordinator.is_final_closing
+    final_checks = {"count": 0}
+    try:
+        assert window.events.closing.callbacks[0]() is False
+        request_id = host._close_coordinator._current_id
+        assert host._close_coordinator.complete(request_id, True) == {
+            "accepted": True,
+            "state": "closing",
+        }
+        assert host._close_coordinator.handle_closing() is True
+        assert host._close_coordinator._allow_once is False
+
+        def stale_final_check():
+            final_checks["count"] += 1
+            if final_checks["count"] == 1:
+                return False
+            return original_final()
+
+        def injected_takeover():
+            coordinator._on_native_failure("RenderProcessExited")
+            return original_takeover()
+
+        host._close_coordinator.is_final_closing = stale_final_check
+        coordinator.takeover_native_close = injected_takeover
+        assert window.events.closing.callbacks[0]() is True
+        assert adapter.prompts == 0
+        assert coordinator.expected_close is True
+        assert host._close_coordinator._state == host._close_coordinator.CLOSING
+        assert host._close_coordinator._allow_once is False
+    finally:
+        coordinator.mark_expected_close()
+        host._close_coordinator._cancel_timer()
+
+
+def test_ordinary_close_allow_is_not_reused_without_recovery():
+    import d1_main
+
+    window = _CloseWindow()
+    host = d1_host_api.D1HostApi(
+        launch_token="synthetic", window_getter=lambda: window
+    )
+    d1_main._install_close_handlers(window, host, None)
+    coordinator = host._close_coordinator
+    hook = window.events.closing.callbacks[0]
+    try:
+        assert hook() is False
+        request_id = coordinator._current_id
+        assert coordinator.complete(request_id, True) == {
+            "accepted": True,
+            "state": "closing",
+        }
+        assert hook() is True
+        assert coordinator.handle_closing() is False
+        assert hook() is False
+        assert coordinator._allow_once is False
+    finally:
+        coordinator._cancel_timer()
+
+
+def test_ordinary_close_allow_is_not_reused_with_unfaulted_recovery():
+    recovery = _RecoveryClose(intercept=False)
+    d1_main, window, host, _holder = _install_with_recovery(recovery)
+    coordinator = host._close_coordinator
+    hook = window.events.closing.callbacks[0]
+    try:
+        assert hook() is False
+        request_id = coordinator._current_id
+        assert coordinator.complete(request_id, True) == {
+            "accepted": True,
+            "state": "closing",
+        }
+        assert hook() is True
+        assert recovery.marked == 1
+        assert coordinator.handle_closing() is False
+        assert hook() is False
+        assert recovery.marked == 1
+        assert coordinator._allow_once is False
+    finally:
+        coordinator._cancel_timer()

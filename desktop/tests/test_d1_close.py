@@ -1559,3 +1559,660 @@ def test_enqueue_at_worker_idle_exit_race_does_not_lose_latest():
                 thread.join(5)
         assert all(not thread.is_alive() for thread in workers)
         assert coordinator._notify_thread is None
+
+
+def test_recovery_revoke_cancels_armed_close_and_defers_install_cancel():
+    notified = EventList()
+    aborted = EventList()
+    install_cancels = []
+    close_cancels = []
+    timers = []
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    coordinator = CloseCoordinator(
+        notify_page=lambda rid, generation=None: notified.append(rid),
+        destroy_window=lambda: None,
+        notify_aborted=lambda rid, reason: aborted.append((rid, reason)),
+        timer_factory=timer_factory,
+        on_close_canceled=lambda: close_cancels.append(1),
+        on_install_canceled=lambda rid, reason: install_cancels.append(
+            (rid, reason)
+        ),
+    )
+    assert coordinator.handle_closing() is False
+    request_id = coordinator._current_id
+    generation = coordinator.state_answer(request_id)["generation"]
+    assert coordinator.complete(request_id, True) == {
+        "accepted": True,
+        "state": "closing",
+    }
+    assert close_cancels == []
+    assert install_cancels == []
+
+    assert coordinator.revoke_for_recovery(
+        "renderer_recovery", expected_request_id="stale"
+    ) == {"revoked": False, "reason": "stale_request"}
+    assert coordinator.revoke_for_recovery(
+        "renderer_recovery", expected_generation=generation + 1
+    ) == {"revoked": False, "reason": "stale_generation"}
+    result = coordinator.revoke_for_recovery(
+        "renderer_recovery",
+        expected_request_id=request_id,
+        expected_generation=generation,
+    )
+    assert result == {
+        "revoked": True,
+        "reason": "renderer_recovery",
+        "request_id": request_id,
+        "generation": generation,
+        "owner_released": True,
+    }
+    assert coordinator._state == coordinator.CANCELED
+    assert coordinator._allow_once is False
+    assert close_cancels == [1]
+    assert install_cancels == []
+    assert aborted == []
+
+    assert coordinator.finish_recovery_revocation() is True
+    assert install_cancels == [(request_id, "renderer_recovery")]
+    assert aborted.wait_for_count(1)
+    assert aborted[0][0] == request_id
+    assert coordinator.finish_recovery_revocation() is True
+    assert install_cancels == [(request_id, "renderer_recovery")]
+
+
+def test_recovery_revoke_does_not_cancel_consumed_final_close():
+    timers = []
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    coordinator = CloseCoordinator(
+        notify_page=lambda rid, generation=None: None,
+        destroy_window=lambda: None,
+        notify_aborted=lambda rid, reason: None,
+        timer_factory=timer_factory,
+    )
+    assert coordinator.handle_closing() is False
+    request_id = coordinator._current_id
+    assert coordinator.complete(request_id, True) == {
+        "accepted": True,
+        "state": "closing",
+    }
+    assert coordinator.handle_closing() is True
+    assert coordinator._state == coordinator.CLOSING
+    assert coordinator._allow_once is False
+    assert coordinator.revoke_for_recovery("renderer_recovery") == {
+        "revoked": False,
+        "reason": "final_closing",
+    }
+    assert coordinator._state == coordinator.CLOSING
+    assert coordinator.finish_recovery_revocation() is True
+
+
+def _run_interactive_case(
+    monkeypatch,
+    *,
+    service_ok=True,
+    executor_ok=True,
+    runtime_raises=False,
+    startup_raises=False,
+    start_fails=False,
+    window_raises=False,
+    update_ok=True,
+    install_raises=False,
+    handover=False,
+):
+    import sys
+    from types import SimpleNamespace
+
+    import d1_main
+    from maintenance_lifecycle import LifecycleBundle
+
+    tracking = {
+        "initial_service_stops": 0,
+        "initial_runtime_disposes": 0,
+        "new_runtime_disposes": 0,
+    }
+
+    class FakeExecutor:
+        def __init__(self, ok=True):
+            self.ok = ok
+            self.dispose_calls = 0
+
+        def dispose(self):
+            self.dispose_calls += 1
+            return self.ok
+
+    class FakeService:
+        def __init__(self, ok=True):
+            self.ok = ok
+            self.port = 1
+            self.error = ""
+            self.weekly_export_manager = None
+            self.stop_calls = 0
+
+        def start_and_wait(self):
+            return not start_fails
+
+        def stop(self, timeout=10.0):
+            self.stop_calls += 1
+
+        def stop_and_confirm(self, timeout=10.0):
+            self.stop_calls += 1
+            return self.ok
+
+    class FakeRuntime:
+        def __init__(self, executor, *, raises=False, name="initial"):
+            self.ai_executor = executor
+            self.raises = raises
+            self.name = name
+            self.dispose_calls = 0
+
+        def dispose(self):
+            self.dispose_calls += 1
+            if self.name == "initial":
+                tracking["initial_runtime_disposes"] += 1
+            else:
+                tracking["new_runtime_disposes"] += 1
+            if self.raises:
+                raise RuntimeError("synthetic runtime dispose failure")
+
+    executor = FakeExecutor(executor_ok)
+    service = FakeService(service_ok)
+    runtime = FakeRuntime(executor, raises=runtime_raises)
+    def install_shutdown():
+        if install_raises:
+            raise RuntimeError("synthetic install shutdown failure")
+
+    host = SimpleNamespace(
+        _bind_window=lambda window: None,
+        _bind_maintenance=lambda hooks: None,
+        _update_manager=SimpleNamespace(shutdown=lambda: update_ok),
+        _install_coordinator=SimpleNamespace(shutdown=install_shutdown),
+    )
+    def fake_start(**kwargs):
+        if window_raises:
+            raise RuntimeError("synthetic window failure")
+
+    fake_webview = SimpleNamespace(
+        create_window=lambda *args, **kwargs: SimpleNamespace(),
+        start=fake_start,
+    )
+
+    def fake_build_runtime(_args):
+        if startup_raises:
+            raise RuntimeError("synthetic startup failure")
+        return service, host, runtime
+
+    def fake_install_close_handlers(*args, **kwargs):
+        return None
+
+    def fake_install_recovery(
+        window, host_api, lifecycle, bundle, current_runtime, args, holder
+    ):
+        if not handover:
+            return None
+        # A restore/recovery handover: old transport confirmed dead first,
+        # then the newest bundle owns cleanup.
+        assert service.stop_and_confirm(10.0) is True
+        tracking["initial_service_stops"] += 1
+        new_executor = FakeExecutor(True)
+        new_service = FakeService(True)
+        new_runtime = FakeRuntime(new_executor, name="new")
+        new_bundle = LifecycleBundle(
+            generation=lifecycle.next_generation(),
+            service=new_service,
+            host_api=SimpleNamespace(
+                _bind_window=lambda window: None,
+                _bind_maintenance=lambda hooks: None,
+            ),
+            runtime=new_runtime,
+            window=window,
+            executor=new_executor,
+        )
+        lifecycle.install(new_bundle)
+        return None
+
+    monkeypatch.setitem(sys.modules, "webview", fake_webview)
+    monkeypatch.setattr(d1_main, "webview2_runtime_version", lambda: "synthetic")
+    monkeypatch.setattr(d1_main, "build_runtime", fake_build_runtime)
+    monkeypatch.setattr(d1_main, "show_error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        d1_main, "_install_close_handlers", fake_install_close_handlers
+    )
+    monkeypatch.setattr(
+        d1_main, "_install_renderer_recovery", fake_install_recovery
+    )
+    monkeypatch.setattr(
+        d1_main, "_build_maintenance_host", lambda *args, **kwargs: None
+    )
+    exit_code = d1_main.run_interactive(SimpleNamespace())
+    return exit_code, tracking
+
+
+def test_run_interactive_normal_success_exits_zero(monkeypatch):
+    exit_code, tracking = _run_interactive_case(monkeypatch)
+    assert exit_code == 0
+    assert tracking["initial_runtime_disposes"] == 1
+
+
+def test_run_interactive_unconfirmed_service_exits_nonzero(monkeypatch):
+    exit_code, tracking = _run_interactive_case(
+        monkeypatch, service_ok=False
+    )
+    assert exit_code == 1
+    assert tracking["initial_runtime_disposes"] == 0
+
+
+def test_run_interactive_unconfirmed_executor_exits_nonzero(monkeypatch):
+    exit_code, tracking = _run_interactive_case(
+        monkeypatch, executor_ok=False
+    )
+    assert exit_code == 1
+    assert tracking["initial_runtime_disposes"] == 0
+
+
+def test_run_interactive_runtime_dispose_exception_exits_nonzero(monkeypatch):
+    exit_code, tracking = _run_interactive_case(
+        monkeypatch, runtime_raises=True
+    )
+    assert exit_code == 1
+    assert tracking["initial_runtime_disposes"] == 1
+
+
+def test_run_interactive_startup_failure_preserves_exit_two(monkeypatch):
+    exit_code, tracking = _run_interactive_case(
+        monkeypatch, startup_raises=True
+    )
+    assert exit_code == 2
+    assert tracking["initial_runtime_disposes"] == 0
+
+
+def test_run_interactive_handover_closes_latest_bundle(monkeypatch):
+    exit_code, tracking = _run_interactive_case(monkeypatch, handover=True)
+    assert exit_code == 0
+    assert tracking["initial_service_stops"] == 1
+    assert tracking["initial_runtime_disposes"] == 0
+    assert tracking["new_runtime_disposes"] == 1
+
+
+def test_save_busy_native_close_defers_install_cancel_to_pump():
+    aborted = EventList()
+    install_cancels = []
+    timers = []
+    busy = {"value": False}
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    coordinator = CloseCoordinator(
+        notify_page=lambda rid, generation=None: None,
+        destroy_window=lambda: None,
+        notify_aborted=lambda rid, reason: aborted.append((rid, reason)),
+        timer_factory=timer_factory,
+        busy_probe=lambda: busy["value"],
+        on_install_canceled=lambda rid, reason: install_cancels.append(
+            (rid, reason)
+        ),
+    )
+    assert coordinator.handle_closing() is False
+    request_id = coordinator._current_id
+    assert coordinator.complete(request_id, True) == {
+        "accepted": True,
+        "state": "closing",
+    }
+    busy["value"] = True
+    assert coordinator.handle_closing() is False
+    assert coordinator._state == coordinator.CANCELED
+    assert coordinator._allow_once is False
+    assert install_cancels == []
+    assert aborted.wait_for_count(1)
+    assert install_cancels == [(request_id, "save_in_flight")]
+
+
+def test_recovery_install_cancel_failure_remains_pending_for_explicit_retry():
+    calls = []
+    timers = []
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    def install_cancel(request_id, reason):
+        calls.append((request_id, reason))
+        if len(calls) == 1:
+            raise RuntimeError("synthetic install cancel failure")
+
+    coordinator = CloseCoordinator(
+        notify_page=lambda rid, generation=None: None,
+        destroy_window=lambda: None,
+        notify_aborted=lambda rid, reason: None,
+        timer_factory=timer_factory,
+        on_install_canceled=install_cancel,
+    )
+    assert coordinator.handle_closing() is False
+    request_id = coordinator._current_id
+    assert coordinator.complete(request_id, True) == {
+        "accepted": True,
+        "state": "closing",
+    }
+    assert coordinator.revoke_for_recovery("renderer_recovery")["revoked"] is True
+    assert coordinator.finish_recovery_revocation() is False
+    assert len(calls) == 1
+    assert coordinator.finish_recovery_revocation() is True
+    assert len(calls) == 2
+    assert coordinator.finish_recovery_revocation() is True
+    assert len(calls) == 2
+
+
+
+def test_run_interactive_service_start_failure_preserves_exit_two(monkeypatch):
+    exit_code, tracking = _run_interactive_case(
+        monkeypatch, start_fails=True, service_ok=False
+    )
+    assert exit_code == 2
+    assert tracking["initial_runtime_disposes"] == 0
+
+
+def test_run_interactive_window_failure_preserves_exit_two(monkeypatch):
+    exit_code, tracking = _run_interactive_case(
+        monkeypatch, window_raises=True, service_ok=False
+    )
+    assert exit_code == 2
+    assert tracking["initial_runtime_disposes"] == 0
+
+
+
+def test_run_interactive_unconfirmed_update_exits_nonzero(monkeypatch):
+    exit_code, tracking = _run_interactive_case(
+        monkeypatch, update_ok=False
+    )
+    assert exit_code == 1
+    assert tracking["initial_runtime_disposes"] == 1
+
+
+def test_run_interactive_install_shutdown_exception_exits_nonzero(monkeypatch):
+    exit_code, tracking = _run_interactive_case(
+        monkeypatch, install_raises=True
+    )
+    assert exit_code == 1
+    assert tracking["initial_runtime_disposes"] == 1
+
+
+def test_deferred_install_cancel_failure_retained_then_retried_without_old_id():
+    attempts = []
+    first_failed = threading.Event()
+    second_done = threading.Event()
+    aborted = EventList()
+    timers = []
+    busy = {"value": False}
+
+    def install_cancel(request_id, reason):
+        attempts.append((request_id, reason))
+        if len(attempts) == 1:
+            first_failed.set()
+            raise OSError("synthetic install cancel failure")
+        second_done.set()
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    coordinator = CloseCoordinator(
+        notify_page=lambda rid, generation=None: None,
+        destroy_window=lambda: None,
+        notify_aborted=lambda rid, reason: aborted.append((rid, reason)),
+        timer_factory=timer_factory,
+        busy_probe=lambda: busy["value"],
+        on_install_canceled=install_cancel,
+    )
+    assert coordinator.handle_closing() is False
+    request_a = coordinator._current_id
+    assert coordinator.complete(request_a, True) == {
+        "accepted": True,
+        "state": "closing",
+    }
+    busy["value"] = True
+    assert coordinator.handle_closing() is False
+    assert first_failed.wait(2.0)
+    # The aborted callback runs only after the failed revoke has been put
+    # back on the pending queue.
+    assert aborted.wait_for_count(1)
+    assert len(attempts) == 1
+    with coordinator._lock:
+        assert len(coordinator._install_cancel_pending) == 1
+
+    assert coordinator.handle_closing() is False
+    request_b = coordinator._current_id
+    assert request_b != request_a
+    assert coordinator.drain_install_cancel_pending() is True
+    assert second_done.wait(2.0)
+    assert attempts == [
+        (request_a, "save_in_flight"),
+        (request_a, "save_in_flight"),
+    ]
+    assert all(request_id == request_a for request_id, _reason in attempts)
+    with coordinator._lock:
+        assert coordinator._install_cancel_pending == []
+    coordinator._cancel_timer()
+
+
+def test_recovery_owner_release_failure_is_sticky_and_blocks_finish():
+    owner_calls = []
+    install_cancels = []
+    timers = []
+
+    def owner_failure():
+        owner_calls.append(1)
+        raise RuntimeError("synthetic owner release failure")
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    coordinator = CloseCoordinator(
+        notify_page=lambda rid, generation=None: None,
+        destroy_window=lambda: None,
+        notify_aborted=lambda rid, reason: None,
+        timer_factory=timer_factory,
+        on_close_canceled=owner_failure,
+        on_install_canceled=lambda rid, reason: install_cancels.append(
+            (rid, reason)
+        ),
+    )
+    assert coordinator.handle_closing() is False
+    request_a = coordinator._current_id
+    assert coordinator.complete(request_a, True) == {
+        "accepted": True,
+        "state": "closing",
+    }
+    result = coordinator.revoke_for_recovery("renderer_recovery")
+    assert result["revoked"] is True
+    assert result["owner_released"] is False
+    assert owner_calls == [1]
+    assert coordinator.finish_recovery_revocation() is False
+    assert coordinator.finish_recovery_revocation() is False
+    assert owner_calls == [1]
+    assert install_cancels == []
+
+    assert coordinator.handle_closing() is False
+    request_b = coordinator._current_id
+    assert request_b != request_a
+    assert coordinator.finish_recovery_revocation() is False
+    assert owner_calls == [1]
+    assert install_cancels == []
+    coordinator._cancel_timer()
+
+
+def test_recovery_owner_release_gap_blocks_finish_until_result():
+    reached = threading.Event()
+    release = threading.Event()
+    calls = []
+    timers = []
+
+    def owner_failure():
+        calls.append(1)
+        raise RuntimeError("synthetic owner release failure")
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    coordinator = CloseCoordinator(
+        notify_page=lambda rid, generation=None: None,
+        destroy_window=lambda: None,
+        notify_aborted=lambda rid, reason: None,
+        timer_factory=timer_factory,
+        on_close_canceled=owner_failure,
+    )
+    assert coordinator.handle_closing() is False
+    request_id = coordinator._current_id
+    assert coordinator.complete(request_id, True) == {
+        "accepted": True,
+        "state": "closing",
+    }
+    original = coordinator._safe_on_canceled
+
+    def paused(*args, **kwargs):
+        result = original(*args, **kwargs)
+        reached.set()
+        assert release.wait(2.0)
+        return result
+
+    coordinator._safe_on_canceled = paused
+    thread = threading.Thread(target=coordinator.revoke_for_recovery)
+    thread.start()
+    assert reached.wait(2.0)
+    try:
+        assert coordinator.finish_recovery_revocation() is False
+    finally:
+        release.set()
+        thread.join(2.0)
+    assert coordinator.finish_recovery_revocation() is False
+    assert calls == [1]
+    coordinator._cancel_timer()
+
+
+def test_deferred_install_cancel_failure_wakes_new_notification():
+    attempts = []
+    notifications = EventList()
+    expected = {"id": None}
+    new_notified = threading.Event()
+    failed = threading.Event()
+    release_abort = threading.Event()
+    timers = []
+    busy = {"value": False}
+
+    def install_cancel(request_id, reason):
+        attempts.append((request_id, reason))
+        if len(attempts) == 1:
+            raise OSError("synthetic install cancel failure")
+
+    def aborted(request_id, reason):
+        if len(attempts) == 1:
+            failed.set()
+            assert release_abort.wait(2.0)
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    def notified(request_id, generation=None):
+        notifications.append(request_id)
+        if expected["id"] is not None and request_id == expected["id"]:
+            new_notified.set()
+
+    coordinator = CloseCoordinator(
+        notify_page=notified,
+        destroy_window=lambda: None,
+        notify_aborted=aborted,
+        timer_factory=timer_factory,
+        busy_probe=lambda: busy["value"],
+        on_install_canceled=install_cancel,
+    )
+    assert coordinator.handle_closing() is False
+    request_a = coordinator._current_id
+    assert coordinator.complete(request_a, True) == {
+        "accepted": True,
+        "state": "closing",
+    }
+    busy["value"] = True
+    assert coordinator.handle_closing() is False
+    assert failed.wait(2.0)
+    old_worker = coordinator._notify_thread
+    assert old_worker is not None
+    busy["value"] = False
+    assert coordinator.handle_closing() is False
+    request_b = coordinator._current_id
+    assert request_b != request_a
+    expected["id"] = request_b
+    if request_b in notifications:
+        new_notified.set()
+    release_abort.set()
+    old_worker.join(2.0)
+    assert new_notified.wait(2.0)
+    successor = coordinator._notify_thread
+    if successor is not None and successor.is_alive():
+        successor.join(2.0)
+    assert any(rid == request_b for rid in notifications)
+    assert coordinator._install_cancel_pending == []
+    assert coordinator._notify_pending is None
+    assert coordinator._notify_thread is None or not coordinator._notify_thread.is_alive()
+    coordinator._cancel_timer()
+
+
+def test_deferred_install_cancel_permanent_failure_does_not_hot_loop():
+    attempts = []
+    failed = threading.Event()
+    abort_done = threading.Event()
+    timers = []
+    busy = {"value": False}
+
+    def install_cancel(request_id, reason):
+        attempts.append((request_id, reason))
+        failed.set()
+        raise OSError("synthetic permanent install cancel failure")
+
+    def timer_factory(seconds, fn):
+        timer = FakeTimer(seconds, fn)
+        timers.append(timer)
+        return timer
+
+    coordinator = CloseCoordinator(
+        notify_page=lambda rid, generation=None: None,
+        destroy_window=lambda: None,
+        notify_aborted=lambda rid, reason: abort_done.set(),
+        timer_factory=timer_factory,
+        busy_probe=lambda: busy["value"],
+        on_install_canceled=install_cancel,
+    )
+    assert coordinator.handle_closing() is False
+    request_id = coordinator._current_id
+    assert coordinator.complete(request_id, True) == {
+        "accepted": True,
+        "state": "closing",
+    }
+    busy["value"] = True
+    assert coordinator.handle_closing() is False
+    assert failed.wait(2.0)
+    assert abort_done.wait(2.0)
+    assert len(attempts) == 1
+    assert len(coordinator._install_cancel_pending) == 1
+    assert coordinator.finish_recovery_revocation() is False
+    assert len(attempts) == 2
+    assert len(coordinator._install_cancel_pending) == 1
+    coordinator._cancel_timer()

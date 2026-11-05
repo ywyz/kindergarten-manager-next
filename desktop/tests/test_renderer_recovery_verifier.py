@@ -1831,3 +1831,605 @@ def test_synthetic_output_inside_data_is_rejected_before_mkdir(tmp_path):
         verifier._validate_synthetic_paths(data, credential, output)
     assert not data.exists()
     assert not credential.exists()
+
+
+class _CleanupHost:
+    def __init__(self) -> None:
+        self.retire_requests = 0
+
+    def _request_retire_destroy(self) -> None:
+        self.retire_requests += 1
+
+
+class _CleanupRecovery:
+    def __init__(self) -> None:
+        self.marked = 0
+
+    def mark_expected_close(self) -> None:
+        self.marked += 1
+
+
+def _make_cleanup_bundle(lifecycle, runtime, window, host):
+    import maintenance_lifecycle
+
+    bundle = maintenance_lifecycle.LifecycleBundle(
+        generation=lifecycle.next_generation(),
+        runtime=runtime,
+        window=window,
+        host_api=host,
+    )
+
+    def retire_destroy():
+        host._request_retire_destroy()
+        window.destroy()
+
+    bundle.retire_destroy = retire_destroy
+    return bundle
+
+
+def _cleanup_result(stage="new_port_token_auth_failed"):
+    return {
+        "stage": stage,
+        "first_failure": stage,
+        "errors": [],
+    }
+
+
+def test_failed_driver_cleanup_retires_old_and_new_owned_windows(tmp_path):
+    import maintenance_lifecycle
+
+    runtime = SimpleNamespace()
+    old_window = _FakeWindow("old-window")
+    new_window = _FakeWindow("new-window")
+    old_host = _CleanupHost()
+    new_host = _CleanupHost()
+    old_recovery = _CleanupRecovery()
+    lifecycle = maintenance_lifecycle.LifecycleManager()
+    old_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, old_window, old_host
+    )
+    lifecycle.install(old_bundle)
+    new_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, new_window, new_host
+    )
+    lifecycle.install(new_bundle)
+
+    result = _cleanup_result()
+    finished = threading.Event()
+    out = tmp_path / "result.json"
+    cleanup = verifier._finish_failed_driver(
+        result,
+        out,
+        lifecycle=lifecycle,
+        runtime=runtime,
+        old_bundle=old_bundle,
+        old_window=old_window,
+        old_host=old_host,
+        old_generation=old_bundle.generation,
+        old_recovery=old_recovery,
+        new_bundle=new_bundle,
+        new_window=new_window,
+        new_host=new_host,
+        new_generation=new_bundle.generation,
+        finished=finished,
+    )
+
+    assert old_window.destroyed is True
+    assert new_window.destroyed is True
+    assert old_recovery.marked == 1
+    assert old_host.retire_requests >= 1
+    assert new_host.retire_requests >= 1
+    assert result["stage"] == "new_port_token_auth_failed"
+    assert result["first_failure"] == "new_port_token_auth_failed"
+    assert "normal_close" not in result
+    assert "success" not in result
+    assert cleanup["all_owned_windows_retired"] is True
+    assert [entry["label"] for entry in result["cleanup_objects"]] == [
+        "old",
+        "new",
+    ]
+    assert all(
+        entry["status"] == "destroy_requested"
+        for entry in result["cleanup_objects"]
+    )
+    assert finished.is_set() is False
+    assert result["driver_finished_event_set"] is False
+    assert out.is_file()
+
+
+def test_failed_driver_cleanup_pre_reopen_retires_old_window(tmp_path):
+    import maintenance_lifecycle
+
+    runtime = SimpleNamespace()
+    old_window = _FakeWindow("old-window")
+    old_host = _CleanupHost()
+    old_recovery = _CleanupRecovery()
+    lifecycle = maintenance_lifecycle.LifecycleManager()
+    old_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, old_window, old_host
+    )
+    lifecycle.install(old_bundle)
+
+    result = _cleanup_result("prompt_enter_foreground")
+    finished = threading.Event()
+    out = tmp_path / "result.json"
+    cleanup = verifier._finish_failed_driver(
+        result,
+        out,
+        lifecycle=lifecycle,
+        runtime=runtime,
+        old_bundle=old_bundle,
+        old_window=old_window,
+        old_host=old_host,
+        old_generation=old_bundle.generation,
+        old_recovery=old_recovery,
+        new_bundle=None,
+        new_window=None,
+        new_host=None,
+        new_generation=None,
+        finished=finished,
+    )
+
+    assert old_window.destroyed is True
+    assert cleanup["all_owned_windows_retired"] is True
+    assert result["stage"] == "prompt_enter_foreground"
+    assert result["first_failure"] == "prompt_enter_foreground"
+    assert finished.is_set() is False
+
+
+def test_failed_driver_cleanup_retains_wrong_or_superseded_new_window(tmp_path):
+    import maintenance_lifecycle
+
+    runtime = SimpleNamespace()
+    old_window = _FakeWindow("old-window")
+    new_window = _FakeWindow("new-window")
+    third_window = _FakeWindow("third-window")
+    old_host = _CleanupHost()
+    new_host = _CleanupHost()
+    third_host = _CleanupHost()
+    old_recovery = _CleanupRecovery()
+    lifecycle = maintenance_lifecycle.LifecycleManager()
+    old_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, old_window, old_host
+    )
+    lifecycle.install(old_bundle)
+    new_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, new_window, new_host
+    )
+    lifecycle.install(new_bundle)
+    third_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, third_window, third_host
+    )
+    lifecycle.install(third_bundle)
+
+    result = _cleanup_result()
+    finished = threading.Event()
+    cleanup = verifier._finish_failed_driver(
+        result,
+        tmp_path / "superseded.json",
+        lifecycle=lifecycle,
+        runtime=runtime,
+        old_bundle=old_bundle,
+        old_window=old_window,
+        old_host=old_host,
+        old_generation=old_bundle.generation,
+        old_recovery=old_recovery,
+        new_bundle=new_bundle,
+        new_window=new_window,
+        new_host=new_host,
+        new_generation=new_bundle.generation,
+        finished=finished,
+    )
+    new_entry = next(
+        entry for entry in cleanup["objects"] if entry["label"] == "new"
+    )
+    assert new_entry["status"] == "retained_not_current"
+    assert new_window.destroyed is False
+    assert third_window.destroyed is False
+    assert new_host.retire_requests == 0
+    assert third_host.retire_requests == 0
+    assert cleanup["all_owned_windows_retired"] is False
+    assert finished.is_set() is False
+
+    lifecycle.install(new_bundle)
+    wrong_window = _FakeWindow("wrong-window")
+    result = _cleanup_result()
+    finished = threading.Event()
+    cleanup = verifier._finish_failed_driver(
+        result,
+        tmp_path / "wrong-identity.json",
+        lifecycle=lifecycle,
+        runtime=runtime,
+        old_bundle=old_bundle,
+        old_window=old_window,
+        old_host=old_host,
+        old_generation=old_bundle.generation,
+        old_recovery=old_recovery,
+        new_bundle=new_bundle,
+        new_window=wrong_window,
+        new_host=new_host,
+        new_generation=new_bundle.generation,
+        finished=finished,
+    )
+    new_entry = next(
+        entry for entry in cleanup["objects"] if entry["label"] == "new"
+    )
+    assert new_entry["status"] == "retained_identity"
+    assert new_entry["identity_error"] == "window_mismatch"
+    assert wrong_window.destroyed is False
+    assert new_window.destroyed is False
+    assert new_host.retire_requests == 0
+    assert cleanup["all_owned_windows_retired"] is False
+    assert finished.is_set() is False
+
+
+def test_failed_driver_cleanup_persists_first_failure_before_cleanup(
+    tmp_path, monkeypatch
+):
+    import json
+
+    result = _cleanup_result()
+    finished = threading.Event()
+    out = tmp_path / "result.json"
+    observed = {}
+
+    def observe(**_kwargs):
+        observed["stage"] = json.loads(out.read_text(encoding="utf-8"))["stage"]
+        return {
+            "objects": [],
+            "retained": [],
+            "all_owned_windows_retired": True,
+            "steps": [],
+        }
+
+    monkeypatch.setattr(
+        verifier, "_cleanup_failed_verifier_windows", observe
+    )
+    verifier._finish_failed_driver(
+        result,
+        out,
+        lifecycle=None,
+        runtime=None,
+        old_bundle=None,
+        old_window=None,
+        old_host=None,
+        old_generation=None,
+        old_recovery=None,
+        new_bundle=None,
+        new_window=None,
+        new_host=None,
+        new_generation=None,
+        finished=finished,
+    )
+    assert observed["stage"] == "new_port_token_auth_failed"
+    assert result["stage"] == "new_port_token_auth_failed"
+    assert result["first_failure"] == "new_port_token_auth_failed"
+    assert finished.is_set() is False
+
+
+def test_failed_driver_cleanup_exception_preserves_first_failure(
+    tmp_path, monkeypatch
+):
+    result = _cleanup_result()
+    finished = threading.Event()
+
+    def boom(**_kwargs):
+        raise RuntimeError("cleanup boom")
+
+    monkeypatch.setattr(
+        verifier, "_cleanup_failed_verifier_windows", boom
+    )
+    cleanup = verifier._finish_failed_driver(
+        result,
+        tmp_path / "result.json",
+        lifecycle=None,
+        runtime=None,
+        old_bundle=None,
+        old_window=None,
+        old_host=None,
+        old_generation=None,
+        old_recovery=None,
+        new_bundle=None,
+        new_window=None,
+        new_host=None,
+        new_generation=None,
+        finished=finished,
+    )
+    assert result["stage"] == "new_port_token_auth_failed"
+    assert result["first_failure"] == "new_port_token_auth_failed"
+    assert result["cleanup_error"] == "RuntimeError"
+    assert cleanup["retained"] == ["cleanup_exception"]
+    assert cleanup["all_owned_windows_retired"] is False
+    assert finished.is_set() is False
+
+
+
+def test_failed_driver_cleanup_records_per_object_failure(tmp_path):
+    import maintenance_lifecycle
+
+    class FailingHost(_CleanupHost):
+        def _request_retire_destroy(self) -> None:
+            self.retire_requests += 1
+            raise RuntimeError("host busy")
+
+    runtime = SimpleNamespace()
+    old_window = _FakeWindow("old-window")
+    new_window = _FakeWindow("new-window")
+    old_host = FailingHost()
+    new_host = _CleanupHost()
+    old_recovery = _CleanupRecovery()
+    lifecycle = maintenance_lifecycle.LifecycleManager()
+    old_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, old_window, old_host
+    )
+    lifecycle.install(old_bundle)
+    new_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, new_window, new_host
+    )
+    lifecycle.install(new_bundle)
+
+    result = _cleanup_result()
+    finished = threading.Event()
+    cleanup = verifier._finish_failed_driver(
+        result,
+        tmp_path / "result.json",
+        lifecycle=lifecycle,
+        runtime=runtime,
+        old_bundle=old_bundle,
+        old_window=old_window,
+        old_host=old_host,
+        old_generation=old_bundle.generation,
+        old_recovery=old_recovery,
+        new_bundle=new_bundle,
+        new_window=new_window,
+        new_host=new_host,
+        new_generation=new_bundle.generation,
+        finished=finished,
+    )
+    old_entry = next(
+        entry for entry in cleanup["objects"] if entry["label"] == "old"
+    )
+    assert old_entry["status"] == "retained_permit_failed"
+    assert any(
+        item.startswith("request_retire_destroy:RuntimeError")
+        for item in old_entry["errors"]
+    )
+    assert not any(
+        item.startswith("destroy:") for item in old_entry["errors"]
+    )
+    assert "destroy" not in old_entry["steps"]
+    assert old_window.destroyed is False
+    assert new_window.destroyed is True
+    assert cleanup["all_owned_windows_retired"] is False
+    assert result["stage"] == "new_port_token_auth_failed"
+    assert result["first_failure"] == "new_port_token_auth_failed"
+    assert finished.is_set() is False
+
+
+def test_record_failure_preserves_first_failure_stage(tmp_path):
+    import json
+
+    result = {"stage": "window_start", "errors": []}
+    out = tmp_path / "result.json"
+    verifier._record_failure(
+        result, out, "new_port_token_auth_failed"
+    )
+    verifier._record_failure(result, out, "watchdog_timeout")
+    assert result["stage"] == "new_port_token_auth_failed"
+    assert result["first_failure"] == "new_port_token_auth_failed"
+    assert [item["code"] for item in result["failures"]] == [
+        "new_port_token_auth_failed",
+        "watchdog_timeout",
+    ]
+    assert json.loads(out.read_text(encoding="utf-8"))["stage"] == (
+        "new_port_token_auth_failed"
+    )
+
+
+def test_window_closed_unknown_native_is_not_closed():
+    class UnreadableNative:
+        @property
+        def IsDisposed(self):
+            raise RuntimeError("synthetic native state unavailable")
+
+    window = SimpleNamespace(
+        native=UnreadableNative(), events=SimpleNamespace()
+    )
+    assert verifier._window_closed(window) is False
+    closed = _FakeWindow("closed")
+    closed.events.closed.set()
+    assert verifier._window_closed(closed) is True
+
+
+def test_main_early_startup_failure_returns_failure_without_gui(
+    tmp_path, monkeypatch
+):
+    import json
+    import sys
+
+    data = tmp_path / "data"
+    credentials = tmp_path / "credentials"
+    frontend = tmp_path / "frontend"
+    out = tmp_path / "out" / "result.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verifier",
+            "--data",
+            str(data),
+            "--credential-root",
+            str(credentials),
+            "--frontend",
+            str(frontend),
+            "--out",
+            str(out),
+        ],
+    )
+
+    def startup_failure(_args):
+        raise RuntimeError("synthetic startup failure")
+
+    monkeypatch.setattr(
+        verifier.d1_main, "build_runtime", startup_failure
+    )
+    exit_code = verifier.main()
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert result["stage"] == "top_level_exception"
+    assert result["first_failure"] == "top_level_exception"
+    assert result["cleanup_objects"][0]["status"] == "no_window"
+    assert result["close_latest"] == "skipped_failure_retained"
+    assert result["driver_finished_event_set"] is False
+
+
+def test_failed_driver_cleanup_requires_closed_evidence(tmp_path):
+    import maintenance_lifecycle
+
+    class NonClosingWindow(_FakeWindow):
+        def destroy(self) -> None:
+            self.destroyed = True
+
+    runtime = SimpleNamespace()
+    old_window = NonClosingWindow("old-window")
+    old_host = _CleanupHost()
+    old_recovery = _CleanupRecovery()
+    lifecycle = maintenance_lifecycle.LifecycleManager()
+    old_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, old_window, old_host
+    )
+    lifecycle.install(old_bundle)
+    result = _cleanup_result()
+    finished = threading.Event()
+    cleanup = verifier._finish_failed_driver(
+        result,
+        tmp_path / "result.json",
+        lifecycle=lifecycle,
+        runtime=runtime,
+        old_bundle=old_bundle,
+        old_window=old_window,
+        old_host=old_host,
+        old_generation=old_bundle.generation,
+        old_recovery=old_recovery,
+        new_bundle=None,
+        new_window=None,
+        new_host=None,
+        new_generation=None,
+        finished=finished,
+    )
+    old_entry = cleanup["objects"][0]
+    assert old_entry["status"] == "destroy_requested"
+    assert old_entry["closed_after"] is False
+    assert cleanup["all_owned_windows_retired"] is False
+    assert finished.is_set() is False
+
+
+def test_failed_driver_cleanup_uses_captured_bundle_when_not_assigned(
+    tmp_path,
+):
+    import maintenance_lifecycle
+
+    runtime = SimpleNamespace()
+    old_window = _FakeWindow("old-window")
+    new_window = _FakeWindow("new-window")
+    old_host = _CleanupHost()
+    new_host = _CleanupHost()
+    old_recovery = _CleanupRecovery()
+    lifecycle = maintenance_lifecycle.LifecycleManager()
+    old_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, old_window, old_host
+    )
+    lifecycle.install(old_bundle)
+    new_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, new_window, new_host
+    )
+    lifecycle.install(new_bundle)
+    result = _cleanup_result()
+    finished = threading.Event()
+    cleanup = verifier._finish_failed_driver(
+        result,
+        tmp_path / "result.json",
+        lifecycle=lifecycle,
+        runtime=runtime,
+        old_bundle=old_bundle,
+        old_window=old_window,
+        old_host=old_host,
+        old_generation=old_bundle.generation,
+        old_recovery=old_recovery,
+        new_bundle=new_bundle,
+        new_window=None,
+        new_host=None,
+        new_generation=None,
+        finished=finished,
+    )
+    new_entry = next(
+        entry for entry in cleanup["objects"] if entry["label"] == "new"
+    )
+    assert new_entry["status"] == "destroy_requested"
+    assert new_entry["closed_after"] is True
+    assert new_window.destroyed is True
+    assert new_host.retire_requests >= 1
+    assert cleanup["all_owned_windows_retired"] is True
+    assert finished.is_set() is False
+
+
+def test_record_failure_replaces_reopened_stage_on_first_failure(tmp_path):
+    result = {"stage": "reopened", "errors": []}
+    out = tmp_path / "result.json"
+    verifier._record_failure(result, out, "watchdog_timeout")
+    assert result["stage"] == "watchdog_timeout"
+    assert result["first_failure"] == "watchdog_timeout"
+    verifier._record_failure(result, out, "cleanup_timeout")
+    assert result["stage"] == "watchdog_timeout"
+    assert [item["code"] for item in result["failures"]] == [
+        "watchdog_timeout",
+        "cleanup_timeout",
+    ]
+
+
+def test_failed_driver_cleanup_retains_installed_bundle_without_window(tmp_path):
+    import maintenance_lifecycle
+
+    runtime = SimpleNamespace()
+    old_window = _FakeWindow("old-window")
+    old_host = _CleanupHost()
+    new_host = _CleanupHost()
+    old_recovery = _CleanupRecovery()
+    lifecycle = maintenance_lifecycle.LifecycleManager()
+    old_bundle = _make_cleanup_bundle(
+        lifecycle, runtime, old_window, old_host
+    )
+    lifecycle.install(old_bundle)
+    new_bundle = maintenance_lifecycle.LifecycleBundle(
+        generation=lifecycle.next_generation(),
+        runtime=runtime,
+        window=None,
+        host_api=new_host,
+    )
+    lifecycle.install(new_bundle)
+    result = _cleanup_result()
+    finished = threading.Event()
+    cleanup = verifier._finish_failed_driver(
+        result,
+        tmp_path / "result.json",
+        lifecycle=lifecycle,
+        runtime=runtime,
+        old_bundle=old_bundle,
+        old_window=old_window,
+        old_host=old_host,
+        old_generation=old_bundle.generation,
+        old_recovery=old_recovery,
+        new_bundle=new_bundle,
+        new_window=None,
+        new_host=new_host,
+        new_generation=new_bundle.generation,
+        finished=finished,
+    )
+    new_entry = next(
+        entry for entry in cleanup["objects"] if entry["label"] == "new"
+    )
+    assert new_entry["status"] == "retained_window_unavailable"
+    assert new_entry["identity_error"] == "window_not_created"
+    assert cleanup["all_owned_windows_retired"] is False
+    assert old_window.destroyed is True
+    assert finished.is_set() is False

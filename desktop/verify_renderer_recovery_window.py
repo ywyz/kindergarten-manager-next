@@ -915,6 +915,313 @@ def _controlled_retire_failure(recovery, bundle, window) -> dict:
     return {"steps": steps}
 
 
+def _record_failure(result: dict, out: Path, code: str, exc=None) -> None:
+    """Persist the first failure; later cleanup/timeout detail cannot replace it."""
+    entry = {"code": code}
+    if exc is not None:
+        entry["type"] = type(exc).__name__
+        result.setdefault("errors", []).append(
+            {"code": code, "type": type(exc).__name__}
+        )
+    result.setdefault("failures", []).append(entry)
+    if not result.get("first_failure"):
+        result["first_failure"] = code
+        # The first real failure must replace a provisional/reopened stage.
+        result["stage"] = code
+    out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _window_closed(window) -> bool:
+    """Best-effort immediate closed check; never waits for the UI loop."""
+    if window is None:
+        return True
+    events = getattr(window, "events", None)
+    closed = getattr(events, "closed", None)
+    checker = getattr(closed, "is_set", None)
+    if callable(checker):
+        try:
+            if bool(checker()):
+                return True
+        except Exception:  # noqa: BLE001 - unknown is not a close claim
+            pass
+    native = getattr(window, "native", None)
+    if native is not None:
+        try:
+            return bool(getattr(native, "IsDisposed", False))
+        except Exception:  # noqa: BLE001 - unknown is not a close claim
+            return False
+    return False
+
+
+def _owned_bundle_identity_error(
+    bundle, *, runtime, window, host, generation
+) -> str | None:
+    """Validate exact captured ownership; unknown identity is retained."""
+    if bundle is None:
+        return "bundle_missing"
+    if getattr(bundle, "runtime", None) is not runtime:
+        return "runtime_mismatch"
+    if getattr(bundle, "window", None) is not window:
+        return "window_mismatch"
+    if host is not None and getattr(bundle, "host_api", None) is not host:
+        return "host_mismatch"
+    if generation is not None:
+        try:
+            bundle_generation = int(getattr(bundle, "generation", 0) or 0)
+        except Exception:  # noqa: BLE001 - unreadable is not owned
+            return "generation_unreadable"
+        if bundle_generation != int(generation):
+            return "generation_mismatch"
+    return None
+
+
+def _retire_owned_window(
+    *,
+    label: str,
+    bundle,
+    window,
+    host,
+    generation,
+    runtime,
+    recovery=None,
+    lifecycle=None,
+    require_current: bool = False,
+) -> dict:
+    """Retire one exact verifier-owned window; never guess identity."""
+    entry = {
+        "label": label,
+        "status": "retained",
+        "steps": [],
+        "errors": [],
+    }
+    if window is None:
+        entry["status"] = "no_window"
+        return entry
+    identity_error = _owned_bundle_identity_error(
+        bundle,
+        runtime=runtime,
+        window=window,
+        host=host,
+        generation=generation,
+    )
+    if identity_error is not None:
+        entry["status"] = "retained_identity"
+        entry["identity_error"] = identity_error
+        return entry
+    if host is None:
+        entry["status"] = "retained_identity"
+        entry["identity_error"] = "host_missing"
+        return entry
+    if require_current:
+        try:
+            current = lifecycle.current() if lifecycle is not None else None
+        except Exception as exc:  # noqa: BLE001 - unknown current is retained
+            entry["status"] = "retained_current_unreadable"
+            entry["errors"].append("current:" + type(exc).__name__)
+            return entry
+        if current is not bundle:
+            entry["status"] = "retained_not_current"
+            return entry
+    entry["closed_before"] = _window_closed(window)
+    if entry["closed_before"]:
+        entry["status"] = "already_closed"
+        return entry
+    if recovery is not None:
+        try:
+            recovery.mark_expected_close()
+            entry["steps"].append("mark_expected_close")
+        except Exception as exc:  # noqa: BLE001 - cleanup continues
+            entry["errors"].append(
+                "mark_expected_close:" + type(exc).__name__
+            )
+    try:
+        host._request_retire_destroy()
+        entry["steps"].append("request_retire_destroy")
+    except Exception as exc:  # noqa: BLE001 - no normal-close fallback
+        entry["errors"].append(
+            "request_retire_destroy:" + type(exc).__name__
+        )
+        entry["status"] = "retained_permit_failed"
+        return entry
+    try:
+        destroy = getattr(bundle, "destroy_window_for_retire", None)
+        if callable(destroy):
+            destroy()
+        else:
+            window.destroy()
+        entry["steps"].append("destroy")
+        entry["status"] = "destroy_requested"
+    except Exception as exc:  # noqa: BLE001 - cleanup continues
+        entry["errors"].append("destroy:" + type(exc).__name__)
+        entry["status"] = "destroy_failed"
+    entry["closed_after"] = _window_closed(window)
+    return entry
+
+
+def _cleanup_failed_verifier_windows(
+    *,
+    lifecycle,
+    runtime,
+    old_bundle,
+    old_window,
+    old_host,
+    old_generation,
+    old_recovery,
+    new_bundle,
+    new_window,
+    new_host,
+    new_generation,
+) -> dict:
+    """Retire the captured old and new windows, retaining unknown objects."""
+    if new_bundle is not None:
+        if new_window is None:
+            new_window = getattr(new_bundle, "window", None)
+        if new_host is None:
+            new_host = getattr(new_bundle, "host_api", None)
+        if new_generation is None:
+            new_generation = getattr(new_bundle, "generation", None)
+    old_expected_host = (
+        old_host
+        if old_host is not None
+        else getattr(old_bundle, "host_api", None)
+    )
+    objects = [
+        _retire_owned_window(
+            label="old",
+            bundle=old_bundle,
+            window=old_window,
+            host=old_expected_host,
+            generation=old_generation,
+            runtime=runtime,
+            recovery=old_recovery,
+        )
+    ]
+    if new_bundle is not None or new_window is not None:
+        if new_bundle is old_bundle or new_window is old_window:
+            objects.append(
+                {
+                    "label": "new",
+                    "status": "retained_same_as_old",
+                    "steps": [],
+                    "errors": [],
+                    "identity_error": "same_as_old",
+                }
+            )
+        elif new_bundle is not None and new_window is None:
+            # CAS installed the new bundle but its window is not created yet.
+            # The worker may still create it, so this is unknown/future, not
+            # evidence that every owned window retired.
+            objects.append(
+                {
+                    "label": "new",
+                    "status": "retained_window_unavailable",
+                    "steps": [],
+                    "errors": [],
+                    "identity_error": "window_not_created",
+                }
+            )
+        else:
+            new_expected_host = (
+                new_host
+                if new_host is not None
+                else getattr(new_bundle, "host_api", None)
+            )
+            objects.append(
+                _retire_owned_window(
+                    label="new",
+                    bundle=new_bundle,
+                    window=new_window,
+                    host=new_expected_host,
+                    generation=new_generation,
+                    runtime=runtime,
+                    lifecycle=lifecycle,
+                    require_current=True,
+                )
+            )
+    retained = [
+        entry["label"]
+        for entry in objects
+        if str(entry.get("status", "")).startswith("retained")
+    ]
+    all_retired = all(
+        not entry.get("errors")
+        and (
+            entry.get("status") in ("already_closed", "no_window")
+            or (
+                entry.get("status") == "destroy_requested"
+                and entry.get("closed_after") is True
+            )
+        )
+        for entry in objects
+    )
+    steps = [
+        f"{entry['label']}:{step}"
+        for entry in objects
+        for step in entry.get("steps", [])
+    ]
+    return {
+        "objects": objects,
+        "retained": retained,
+        "all_owned_windows_retired": all_retired,
+        "steps": steps,
+    }
+
+
+def _finish_failed_driver(
+    result: dict,
+    out: Path,
+    *,
+    lifecycle,
+    runtime,
+    old_bundle,
+    old_window,
+    old_host,
+    old_generation,
+    old_recovery,
+    new_bundle,
+    new_window,
+    new_host,
+    new_generation,
+    finished: threading.Event,
+) -> dict:
+    """Persist the first failure, then retire only verifier-owned windows."""
+    result["cleanup"] = "controlled_retire_after_failure"
+    out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        cleanup = _cleanup_failed_verifier_windows(
+            lifecycle=lifecycle,
+            runtime=runtime,
+            old_bundle=old_bundle,
+            old_window=old_window,
+            old_host=old_host,
+            old_generation=old_generation,
+            old_recovery=old_recovery,
+            new_bundle=new_bundle,
+            new_window=new_window,
+            new_host=new_host,
+            new_generation=new_generation,
+        )
+    except Exception as exc:  # noqa: BLE001 - cleanup never masks first failure
+        cleanup = {
+            "objects": [],
+            "retained": ["cleanup_exception"],
+            "all_owned_windows_retired": False,
+            "steps": [],
+        }
+        result["cleanup_error"] = type(exc).__name__
+    result["cleanup_objects"] = cleanup["objects"]
+    result["cleanup_steps"] = cleanup["steps"]
+    result["cleanup_retained"] = cleanup["retained"]
+    result["cleanup_all_owned_windows_retired"] = cleanup[
+        "all_owned_windows_retired"
+    ]
+    # Deliberately do not set ``finished`` here: the driver body returning is
+    # not proof that webview.start() can return while an owned window remains.
+    result["driver_finished_event_set"] = bool(finished.is_set())
+    out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return cleanup
+
+
 def _is_link_like(path: Path) -> bool:
     try:
         if path.is_symlink():
@@ -1566,14 +1873,16 @@ def main() -> int:
     old_host = None
     old_launch_token = None
     old_state = None
+    old_generation = None
+    owned_new_bundle = None
+    new_bundle = None
+    new_window = None
     new_host = None
+    new_generation = None
     finished = threading.Event()
 
     def fail(code: str, exc: BaseException | None = None) -> None:
-        result["stage"] = code
-        if exc is not None:
-            result["errors"].append({"code": code, "type": type(exc).__name__})
-        out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        _record_failure(result, out, code, exc)
 
     try:
         from tests.local import backup_fixture_support as fixture
@@ -1897,6 +2206,7 @@ def main() -> int:
         original_install_if_current = lifecycle.install_if_current
 
         def observed_install_if_current(expected, current_bundle):
+            nonlocal owned_new_bundle
             observer.record(
                 "new_bundle.install_cas.enter",
                 window_uid=_window_uid(getattr(current_bundle, "window", None)),
@@ -1906,6 +2216,10 @@ def main() -> int:
                 detail={"expected_is_old": expected is bundle},
             )
             installed = bool(original_install_if_current(expected, current_bundle))
+            if installed:
+                # Capture the exact CAS-installed bundle before any observer
+                # or wrapper code that may raise.
+                owned_new_bundle = current_bundle
             observer.record(
                 "new_bundle.install_cas.return",
                 window_uid=_window_uid(getattr(current_bundle, "window", None)),
@@ -2095,7 +2409,8 @@ def main() -> int:
 
         def driver():
             nonlocal old_form, old_ticket, old_host, before_counts, recovery
-            nonlocal before_fingerprint, old_launch_token, old_state, new_host
+            nonlocal before_fingerprint, old_launch_token, old_state
+            nonlocal new_bundle, new_window, new_host, new_generation
             try:
                 if not old_window.events.loaded.wait(30):
                     fail("page_not_loaded")
@@ -2350,8 +2665,15 @@ def main() -> int:
                     fail("reopen_failed")
                     return
 
-                new_bundle = lifecycle.current()
+                new_bundle = owned_new_bundle
+                if new_bundle is None:
+                    fail("new_bundle_not_captured")
+                    return
                 new_window = getattr(new_bundle, "window", None)
+                new_host = getattr(new_bundle, "host_api", None)
+                new_generation = int(
+                    getattr(new_bundle, "generation", 0) or 0
+                )
                 if new_window is None or new_window is old_window:
                     fail("new_window_missing")
                     return
@@ -2745,16 +3067,22 @@ def main() -> int:
                 fail("driver_exception", exc)
             finally:
                 if result.get("stage") != "reopened":
-                    result["cleanup"] = "controlled_retire_after_failure"
-                    out.write_text(
-                        json.dumps(result, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
+                    _finish_failed_driver(
+                        result,
+                        out,
+                        lifecycle=lifecycle,
+                        runtime=runtime,
+                        old_bundle=bundle,
+                        old_window=old_window,
+                        old_host=old_host,
+                        old_generation=old_generation,
+                        old_recovery=recovery,
+                        new_bundle=owned_new_bundle or new_bundle,
+                        new_window=new_window,
+                        new_host=new_host,
+                        new_generation=new_generation,
+                        finished=finished,
                     )
-                    cleanup = _controlled_retire_failure(
-                        recovery, bundle, old_window
-                    )
-                    result["cleanup_steps"] = cleanup["steps"]
-                finished.set()
                 out.write_text(
                     json.dumps(result, ensure_ascii=False, indent=2),
                     encoding="utf-8",
@@ -2773,8 +3101,17 @@ def main() -> int:
 
         try:
             if lifecycle is not None:
-                result["close_latest"] = bool(lifecycle.close_latest(timeout=10.0))
+                if (
+                    result.get("stage") == "reopened"
+                    and not result.get("first_failure")
+                ):
+                    result["close_latest"] = bool(
+                        lifecycle.close_latest(timeout=10.0)
+                    )
+                else:
+                    result["close_latest"] = "skipped_failure_retained"
         except Exception as exc:  # noqa: BLE001 - report only
+            result["close_latest"] = False
             result["close_latest_error"] = type(exc).__name__
 
         # True child-process full fingerprint readback after a cold LocalRuntime
@@ -2943,7 +3280,8 @@ def main() -> int:
         )
         result["observation_ok"] = observation_ok
         success = bool(
-            result.get("stage") == "reopened"
+            not result.get("first_failure")
+            and result.get("stage") == "reopened"
             and result.get("normal_close") == "closed"
             and result.get("close_latest") is True
             and result.get("persist") == "ok"
@@ -2972,16 +3310,43 @@ def main() -> int:
             result.get("stage") != "reopened"
             and "cleanup_steps" not in result
         ):
-            result["cleanup"] = "controlled_retire_after_failure"
-            cleanup = _controlled_retire_failure(
-                recovery, locals().get("bundle"), old_window
+            _finish_failed_driver(
+                result,
+                out,
+                lifecycle=lifecycle,
+                runtime=runtime,
+                old_bundle=locals().get("bundle"),
+                old_window=old_window,
+                old_host=old_host,
+                old_generation=old_generation,
+                old_recovery=recovery,
+                new_bundle=owned_new_bundle or new_bundle,
+                new_window=new_window,
+                new_host=new_host,
+                new_generation=new_generation,
+                finished=finished,
             )
-            result["cleanup_steps"] = cleanup["steps"]
         try:
-            if lifecycle is not None and lifecycle.current() is not None:
-                lifecycle.close_latest(timeout=10.0)
-        except Exception:
-            pass
+            if (
+                lifecycle is not None
+                and lifecycle.current() is not None
+                and result.get("stage") == "reopened"
+                and not result.get("first_failure")
+                and "close_latest" not in result
+            ):
+                result["close_latest"] = bool(
+                    lifecycle.close_latest(timeout=10.0)
+                )
+            elif (
+                result.get("stage") != "reopened"
+                or result.get("first_failure")
+            ):
+                result.setdefault(
+                    "close_latest", "skipped_failure_retained"
+                )
+        except Exception as exc:  # noqa: BLE001 - report only
+            result.setdefault("close_latest", False)
+            result.setdefault("close_latest_error", type(exc).__name__)
         out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

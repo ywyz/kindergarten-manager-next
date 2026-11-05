@@ -236,7 +236,13 @@ class FakeWatcher:
 
 
 def make_coordinator(
-    *, prompt_results=None, host=None, lifecycle=None, adapter=None
+    *,
+    prompt_results=None,
+    host=None,
+    lifecycle=None,
+    adapter=None,
+    close_revoker=None,
+    close_revocation_finisher=None,
 ):
     bundle = FakeBundle()
     host = host or FakeHost()
@@ -262,6 +268,8 @@ def make_coordinator(
         log=lambda _message: None,
         invalidate_authorizations=lambda: order.append("invalidate"),
         barrier_getter=lambda _root: barrier,
+        close_revoker=close_revoker,
+        close_revocation_finisher=close_revocation_finisher,
     )
     coordinator.install()
     return coordinator, bundle, host, lifecycle, runtime, barrier, adapter, order
@@ -653,3 +661,88 @@ def test_blocking_prompt_and_notice_keep_single_worker_reservation():
     assert coordinator.state == coordinator.BLOCKED
     assert coordinator.last_code == "BUSY"
     assert adapter.prompts == 1
+
+
+class FakeCloseGuard:
+    def __init__(self):
+        self.revoked: list[str] = []
+        self.finish_calls = 0
+        self.finish_ok = True
+
+    def revoke(self, reason):
+        self.revoked.append(reason)
+        return {"revoked": True, "reason": reason}
+
+    def finish(self):
+        self.finish_calls += 1
+        return self.finish_ok
+
+
+class OrderAdapter(FakeAdapter):
+    def __init__(self, guard):
+        super().__init__([False])
+        self.guard = guard
+        self.prompt_finish_calls = None
+
+    def prompt_reopen(self, window):
+        self.prompt_finish_calls = self.guard.finish_calls
+        return super().prompt_reopen(window)
+
+
+def test_fault_revokes_close_and_finishes_install_before_prompt():
+    guard = FakeCloseGuard()
+    adapter = OrderAdapter(guard)
+    coordinator, _bundle, _host, _lifecycle, _runtime, _barrier, _adapter, _order = (
+        make_coordinator(
+            adapter=adapter,
+            close_revoker=guard.revoke,
+            close_revocation_finisher=guard.finish,
+        )
+    )
+    fault(coordinator)
+    assert guard.revoked == ["renderer_recovery"]
+    assert guard.finish_calls == 1
+    assert adapter.prompt_finish_calls == 1
+    assert coordinator.state == coordinator.KEPT
+
+
+def test_close_revocation_failure_blocks_prompt():
+    guard = FakeCloseGuard()
+    guard.finish_ok = False
+    adapter = OrderAdapter(guard)
+    coordinator, _bundle, _host, _lifecycle, _runtime, _barrier, _adapter, _order = (
+        make_coordinator(
+            adapter=adapter,
+            close_revoker=guard.revoke,
+            close_revocation_finisher=guard.finish,
+        )
+    )
+    fault(coordinator)
+    assert guard.finish_calls == 1
+    assert adapter.prompts == 0
+    assert adapter.prompt_finish_calls is None
+    assert coordinator.state == coordinator.BLOCKED
+    assert coordinator.last_code == "REOPEN_FAILED"
+    assert adapter.blocked == ["REOPEN_FAILED"]
+
+
+def test_final_closing_fault_does_not_prompt_or_finish_install_cancel():
+    class FinalCloseGuard(FakeCloseGuard):
+        def revoke(self, reason):
+            self.revoked.append(reason)
+            return {"revoked": False, "reason": "final_closing"}
+
+    guard = FinalCloseGuard()
+    adapter = OrderAdapter(guard)
+    coordinator, _bundle, _host, _lifecycle, _runtime, _barrier, _adapter, _order = (
+        make_coordinator(
+            adapter=adapter,
+            close_revoker=guard.revoke,
+            close_revocation_finisher=guard.finish,
+        )
+    )
+    fault(coordinator)
+    assert guard.revoked == ["renderer_recovery"]
+    assert guard.finish_calls == 0
+    assert adapter.prompts == 0
+    assert coordinator.expected_close is True

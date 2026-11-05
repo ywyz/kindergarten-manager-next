@@ -242,3 +242,81 @@ push自动生成新CI时只读核本次commit可信run／attempt、artifact dige
 Codex只读核187份产品manifest、289份source freeze（digest `071fb9dd7b8cef116fece50cfd04320b81c16ddb31450bed4670674a7854bdb8`）、CArchive/PYZ来源及必要模块门；Git过滤后重建的CI checkout原字节匹配freeze，本机raw字节不同按身份分别记。package静态**56／56**、archive静态**60／60**，源码verification未入产品；下载原字节及完整报告留当地，未执行冻结EXE／helper。Windows2022构建／静态通过不外推原Windows11运行。本次人工收尾仅补三份文档，源码／构建字节不变；文档后续提交须以3e0e42b为实际parent重新过文件／blob／tree门，不能把该已有候选改称来自文档新HEAD，也不主动dispatch／重跑CI。
 
 交回原Windows11测试机的最小增量：先核实际交付SHA／tree和新候选完整身份／原字节，在新合成根确认可取得真正owned提示身份、前台／焦点与可靠输入能力；能力不足就停止该分支记未验。可用时各一次自有renderer／browser受控故障，真实Enter保留、再次原生关闭重提示、Escape及提示X保留、再次提示后明确重开，正常关闭及独立新进程冷启动，完整默认／全runtime指纹保持；只按新身份记运行。内部项没有可靠冻结外部观测仍阻塞，不开调试端口、不注入／换模块、不增加公开JS／HTTP身份能力或产品debug开关。首次失败现场及其它历史未知继续保留，本片不是产品整体验收。
+
+
+## 10. 2026-11-06：测试机回执接收与关闭交错回修
+
+### 10.1 接收、授权与证据归属
+
+用户本轮授权拉取最新代码，继续原生 OpenCode／Command Go，审核、本机测试、必要测试环境创建安装、修复及审核后普通提交推送。开工分支为 `codex/desktop-v2-foundation`，工作树／index干净，HEAD及首次两次fetch均为 `6b0a99e61be7d01f7e045f58f377ba6345f9dbea`，tree `f36e6e7e4dca93628d57df2a25284f32232a2216`。当时尚无新测试报告提交；Codex询问位置，同时只读审阅与独立验证现有源码，没有把旧目标报告作为本轮新回执。
+
+用户随后给出 `96dc1d7a555a1eec8bd33c2139a74f0a706c0e06`。再次fetch核其为6b0a99e的单父后继，仅变更目标报告与current，tree `6133b1e7d9f1b4ecdd0d62c4cff4cf1cf9a2bedf`。原生当阶段自然结束后，Codex备份自有current改动，只恢复该文件以接收快进；首个快进因状态缓存仍报文档修改而安全拒绝，规范化blob与HEAD相同，刷新状态后只快进至指定96dc1d7。随后整合本轮current，550份非Markdown字节恰为原548份与原A交付两文件，没有丢失在途修复。没有stash／reset／clean、merge提交、rebase／force，测试机正式报告原文保留。
+
+已审核[测试机§9](desktop-windows11-white-concurrency-review.md#9-2026-11-056b0a99e接收及3e0e42b候选限定复验)。其101项源码、原字节冻结包两类外部故障、鼠标提示X／保留／明确重开、四次宿主exit0及两根五阶段完整指纹通过，保持source **3e0e42b**、build **e12d7af1-d388-4e74-be72-1ba8a6b7cd88**、run **42010782459**／artifact **13406493851**。Command Go只读交叉核同一source／build／revision／外内ZIP身份，无实质矛盾；多出的2项为app令牌测试。此处是报告审阅，不冒称开发机访问了测试机私有原始资料或重放了冻结运行。
+
+提示X已按该新目标报告记为真实鼠标通过；Enter／Escape和冻结内部身份／退休观测仍未验。测试机私下launcher的启动后异常收尾未注入，复用前由原测试机单独审；它不是本机产品缺陷。报告“该轮未发现产品缺陷”不覆盖下述新增确定性交错，也不能将原包运行结论套到本轮待交付源码。旧中断轮原因、自然白屏、Word/r差异等未知保持。
+
+### 10.2 独立复现与修复裁定
+
+本机沿现有CPython3.14.10 x64标准GIL及锁定环境；实际解释器版本已核，未因venv历史创建字段安装或升级。禁dotenv／pyc、SQLAlchemy纯Python，新短TEMP／TMP及其内basetemp，Python loopback守卫；仅新合成资料。接收6b0a99e时，Codex先独立运行恢复／原生／生命周期 **67**、原子idle-stop **7**、验证器 **25**，共 **99 passed、0 failed/error/skipped**，各进程exit0，550份非Markdown字节前后相同。真实服务集成核到49表、完整默认／runtime指纹、旧token／ticket拒绝、对象退休与根锁释放；窗口与adapter为测试替身。该轮99是修补前基线，不冒称最终回修后结果。
+
+原OpenCode初审提出关闭交错与错误成功退出。Codex使用真实 `d1_main._install_close_handlers`／CloseCoordinator／LifecycleManager及明确窗口／启动替身，独立确定性复现，原回执实际exit1：
+
+- 页面已允许关闭后，destroy同步进入原生closing回调，故障恢复拦截使窗口仍在；complete却返回accepted=true／closing，allow_once仍为true，定时器已撤销，真实恢复preflight返回BUSY。缺陷是两个关闭协议的交接，未据此认定旧自然白屏根因。
+- runtime.dispose抛异常时close_latest仍返回True；真实run_interactive在服务停止未确认时仍返回0。属于清理状态与退出码错误，没有取得数据损坏证据。
+- Codex另发现验证器重开后断言失败时只收旧窗、提前置finished，可能留下新窗并禁用原watchdog。原A无原生窗的修补前回归在“新窗应已销毁”断言失败，原exit1／XML／结果保留。
+
+Command Go独立确认两个产品问题，并核到安装授权撤销会写文件：原生故障／closing回调只能做内存状态与close owner撤销，安装撤销与页面abort须在受控工作线程／通知泵处理，不能同步等待磁盘或失效JS。后端 `LocalRuntime.dispose` 的终结行为有明确测试合同，恢复专用 `close_engine_keep_lock` 另有保锁合同；本轮不改后端runtime，不将两者混同，不新增强行退出或教师操作。
+
+原A首版只改两份验证器／测试，其32项及相关99项自测通过仍不足以通过Codex审核。Codex对中间验证器原字节 `0f1a57e0ee3c4c059343978e493ab1693913dffac1581218a8a152ba5ad8d436` 独立注入：native.IsDisposed读取异常被误记为closed=true；实际main在build_runtime早期抛错后，finally因old_generation未初始化抛UnboundLocalError。原exit1、精确源副本与报告保留；前一项随后已被原A自查修正，其余连同首失败保持、退休许可失败、精确新bundle捕获和关闭证据门交原A继续回修。不同迭代的自测与独立负例分别记，不能拿早一版通过替代最终源码。
+
+### 10.3 原生责任与范围
+
+本机原A `ses_ead8af71dffeJphI1NOWg4jZgI` 固定build／`opencode-go/deepseek-v4.1-flash#max`；原C `8cf528de-8773-4a06-9cc5-31e96fab515f` 固定`deepseek/deepseek-v4.1-flash`／max、只读交叉审阅。Codex独占正式三文档、独立复现／审核／验证与Git门禁；不冒用测试机会话、不fork或另派子代理，不扩权限或以shell绕过拒绝。
+
+A先按两验证器文件责任自然交付，再单独接受本轮关闭修复责任：d1_host_api、d1_main、renderer_recovery、maintenance_lifecycle及四份对应测试；其余后端runtime、构建、依赖、迁移、架构和教师流程保持。初审／首版阶段实际metadata通过：A累计137条assistant、C累计33次request_end，准确原会话／指定模型／max，无fork／子代理／换模；各阶段自然CLI0。后续阶段及最终Git另核，不将这些计数作为计费请求数。
+
+本轮应用真实AI调用0次；未读取真实原库／照片／配置／明文key或复制DPAPI，没有重发unknown。私有任务、原始stdout／stderr／exit、XML、负例、精确源码快照与合成根留当地 `kgm-receive-20261106-r01` 索引，不入Git。Python守卫不外推OS／WebView全局隔离。未启动受阻冻结EXE／helper、原生输入重试、签名、安装更新、WebDAV、Office注册修复、远控或发行。
+
+### 10.4 本轮中间版本独立反例与裁定
+
+Codex另以私下 `root_review_close_guard2.py` 调实际CloseCoordinator及run_interactive入口（窗口／服务／更新管理器替身）核查：安装撤销连续失败均保持False，此时A已自行保留未完成撤销；但owner释放抛错后的finisher仍True，更新后台shutdown=False时退出仍0，实际exit1，所读三份源码SHA随回执保存。此前 `R-review-guard` 是Codex私下脚本少传notify_aborted的构造错误，不是产品缺陷；另名修正后才得到上述有效反例。原 `R-pre-close.log` 首失败保留，A后续重放同一私下脚本所刷新JSON摘要不能替代它。以上是中间版本反例，最终修复及复测另记，不把后续通过覆盖首失败。
+
+Command Go对A-product读取快照作只读交叉审阅，指出延迟save-busy安装撤销失败丢条目、update/install shutdown未确认仍exit0、关闭终态与故障提示的交错，以及已安装新bundle但window尚未生成时过早声称全退休；Codex接受这些限定反馈，同时要求owner释放失败保持失败、CAS成功先捕获所有权再写观测。其shell读取被权限拒绝，未放宽或绕过，改用可用只读能力；读取期间A仍在修改，C报告明确列出前后身份，不冒充最终冻结。
+
+Codex在回修中间源码 `d1_host_api.py` SHA256 `6dec01c7d531496689ea6ea21396dc4e4c7bcda2ecab018ed73fa00b222e7ef4` 上又作两项确定性线程反例（合成回调、Event交错、实际CloseCoordinator）：`R-owner-gap-pre`在owner失败结果返回前暂停，finisher提前True，而失败记录后才False；`R-wakeup-pre`在撤销失败通知收尾中登记新close，结果撤销仅尝试1次、新请求未通知、pending message/revoke仍在但worker已退出。两者实际exit1；保留原日志和源SHA，交原A限定回修。此类交错是源码反例，不宣称真实旧包或自然白屏已复现。
+
+
+### 10.5 最终实现与普通关闭回归
+
+原A最终按限定文件完成：故障接管准确pending／armed close，撤销一次性许可和timer，只释放普通close owner；owner释放未完成或失败挡住finisher。安装撤销在既有pump／恢复worker处理，失败保留、显式触发再试，失败callback期间的新通知不丢唤醒，不在旧callback阻塞时另起处理线程，也不对永久失败热循环。原生故障新路径不做磁盘／JS等待。普通close起始的既有install.bind_close未改，不将本轮范围外路径宣称已消除所有UI线程IO。
+
+LifecycleManager对runtime.dispose异常返回False；run_interactive统一纳入最新bundle及fallback的service／executor／runtime清理确认，update shutdown=False或install shutdown异常也使退出非零；正常成功0、既有启动／窗口失败2及原异常保持。后端runtime全局终结合同不变。
+
+验证器先记录首失败，按精确自有bundle／window／host／generation收尾，CAS成功即捕获新bundle，再写观测；window尚未生成、未知／被替代对象或退休许可失败均保留，不声称全退休。destroy请求不等于closed，未知native状态不等于closed；driver结束不提前停watchdog，首失败不被后续超时覆盖。正常业务ready、token、来源及完整指纹断言未放宽。
+
+在首次独立207项desktop＋7项idle-stop及7个反例均通过后，Codex继续回读发现中间 `d1_main.py` SHA256 `aae922d9daf472d58c5f4e929057fde8cdf419bf77456a0c6c70e9d9a3315540` 的额外final allow未限定fault：真实无fault关闭hook第二次仍True，而协调器本身正确返回False。`R-one-shot-pre`实际exit1保留。原A只收窄该例外到实际fault，普通expected_close不代表fault，补无recovery／有未故障recovery两种真实hook回归；迟到故障已消费许可时仍允许最终关闭、不额外prompt。另纠正两项新异步测试的等待门，准确等失败入队及request_b回调，不依赖旧通知计数或线程调度，不删实质断言。
+
+### 10.6 Codex最终独立验证
+
+最终受审父提交96dc1d7，源码停写后，CPython3.14.10／原锁定依赖／同一Python loopback守卫与新合成短根执行：
+
+| 回执 | 范围 | 实际结果 |
+| --- | --- | --- |
+| `R-last-desktop` | close、maintenance API、renderer recovery/native、lifecycle、verifier、D2 close barrier及两项准确update close钩子 | **209 passed，0 failed/error/skipped，exit0** |
+| `R-final-idle` | AtomicIdleStopTests | **7 passed，0 failed/error/skipped，exit0**；最后一项小修仅d1_main及maintenance API测试，后端及该测试字节未变 |
+| `R-last-close/verifier/guard/consumed/owner-gap/wakeup/late-fault/one-shot` | 8份独立反例另名复测 | 全部exit0，原首失败均保留 |
+
+合计 **216项相关测试通过**，不叠加原A多轮重测数量。最后209项及8份反例前后550份非Markdown源码SHA逐项相同；上一独立214项前后也相同，两轮之间恰只变更上述最后小修两文件。最终XML SHA256：desktop `488719015d89a51137e64b356592d5bac768d0f6d74b75afdd2aded4c85689ec`；idle `d7b581a4435bf3c78d665400e006b4bfc0bcb0f5d8dc624556c1a03fa05b714a`。`verification-last.json`归并源码、XML、guard及各独立退出码。
+
+最终真实服务集成报告SHA256 `3d35ea9a631cbd57ed08919c4db19f29cc5bb08b4fbe97d087536e9ae4551999`：49表完整默认／runtime指纹相同，21项事件顺序通过；旧服务token200、新服务旧token401／新token200，旧executor／服务线程确认停止、旧engine／session拒绝、新engine／session成功，根锁在恢复后保持、close_latest确认后释放；任务／execution／attempt合成计数各4不增。窗口、adapter、原生输入均是替身／未执行，不能把源码真实服务合同外推为真实WebView或冻结内部通过。Python守卫仅见加载记录，无外网尝试；应用真实AI0次。
+
+独立反例最终得到：故障重入close返回accepted=false/canceled且preflight不再BUSY；未知native不声称关闭，早期启动失败正常exit1而不抛UnboundLocalError；服务／update清理未确认非零，runtime清理异常不报True；owner pending／失败均挡住finish；失败期间新请求被通知、无pending消息或存活worker；已消费许可的真实故障不提示，普通无fault许可不复用。最终限定审核没有剩余必须修复项；不认定产品所有场景已无问题。
+
+### 10.7 原生验收、Git与后续增量
+
+实现／交叉审核全部阶段自然结束后，实际metadata再次通过：A **408条assistant**均为build／opencode-go／deepseek-v4.1-flash／max，C **59次request_end**均为deepseek/deepseek-v4.1-flash／max；原会话准确、无parent/fork／子代理／换模，所有阶段CLI0、均无在途，同模型compaction保留并通过。计数不是计费请求数。最终Git仍由原A按Codex准确路径／raw SHA／Git blob／父提交／staged tree执行，Git阶段另核metadata和远端回执；不用add-all、amend、rebase／force或改main／tag／Release，不为写入自身SHA循环提交。
+
+下一步是**新候选的关闭／恢复限定增量**，先核包含本节的实际提交／tree和其push自动CI的run／attempt／artifact、build、外内ZIP、EXE、manifest及源字节；没有同源产物就不运行，旧3e0e42b包不能承接本轮修复结论。自动CI仅Windows2022构建／静态验证，不是Windows11运行，不主动dispatch或重跑旧任务。开发机SAC4551继续不启动受阻EXE/helper。
+
+交原Windows11测试机后仅用新合法短根／合成资料：普通保存关闭及许可不复用；各一次renderer／browser受控故障的保留、再次关闭提示、明确重开、恢复后正常关闭与独立冷开，完整默认及runtime指纹不变。只有可安全、精确控制ack／fault时才做交错，否则保留为本轮源码反例，不注入／替换包模块或开debug接口。旧提示X通过保持旧包身份，Enter／Escape、冻结私有ticket/token/host/executor/engine/session/order及真实vendor阻塞边界仍未验，不重试本机能力拒绝；原目标私下launcher复用前先审其异常收尾。旧自然白屏／原因、Word/r、长根206、Win10／WPS／干净机／其它显示条件等仍按原记录，不重跑旧Word、微软拼音、W6或整套backend。本轮不签名、安装更新、真AI、WebDAV、远控或发行。
