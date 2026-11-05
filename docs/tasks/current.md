@@ -1,33 +1,34 @@
-# 当前：回归修复交付与原测试机增量
+# 当前：0e51491测试机收口与来源核验回修
 
-更新：2026-11-04。继续`codex/desktop-v2-foundation`；本文件是唯一执行入口。用户本轮要求拉取ead1e99，使用OpenCode／Command Go DeepSeek V4.1 Flash max实施，由Codex独立审核至修复完成，判断下一步，最后普通提交推送。本机与远端不能快进后，用户已明确允许普通merge保留cb4e7ed恢复片与ead1e99测试交接两个父历史。最终交付身份按实际分支和远端核对，不为回填自身SHA循环改文档。
+更新：2026-11-05。继续`codex/desktop-v2-foundation`，本文件是唯一执行入口。用户本轮要求拉取0e51491、按最新提示词在本机测试，并允许真实AI；缺配置先寻找隔离环境既有配置，再由用户填写。本机已普通快进到`0e514917db3998adea1acbb59922fdb59be2bca4`，tree `c7ecd84bc08c4647c6378587c253ca50a5b86f8c`；未改main。本机增量与后端新完整轮已完成，549个非Markdown文件前后相同。下一步交回开发机补修包级来源门及受管验证器观测问题，不把完整用例通过写成所有工程门或产品通过。
 
-## 1. 开发机工程已完成
+最新测试机结果与全部首现场归[独立核查§7](../bootstrap/desktop-windows11-white-concurrency-review.md#7-2026-11-050e51491原测试机增量)。开发机修复、两已知父历史普通merge及原1229／628结论保留[开发机核查](../bootstrap/desktop-regression-repair-review.md)自身身份；[恢复规格](../specs/desktop-renderer-recovery.md)已获用户明确确认，[生命周期核查](../bootstrap/desktop-renderer-lifecycle-review.md)保留cb4e7ed来源。旧测试机§6的“恢复待核定”不能撤销该决定，不重复询问同一手动重开行为。
 
-[回归修复核查](../bootstrap/desktop-regression-repair-review.md)归本轮接收、互斥责任、模型metadata、所有首失败／负对照及最终身份：独立完整local **1229通过**、desktop **628通过**，均0失败／0error／0skip；前端14份脚本、typecheck、D1构建及观察源码窗口17检查通过，549个非文档文件前后相同。原首轮1214通过／14周执行器失败及D2取消夹具竞态保留，不将诊断单项通过冒称全套。
+## 1. 已完成的本机结果
 
-本轮修复旧revision／manifest／表及注册集合预期、失败dispose、selftest精确窗口绑定、观察导出非预期异常终态。周fake worker原样移到只用标准库的轻量模块，独立进程禁止重依赖回流；取消用例在实际READY到mark前双向同步，保持一次attempt／无SEND／候选0／退出确认。未改生产AI执行器／worker、预算、重试、依赖或迁移，不加sleep／skip或串行化并发采用。
+- 前端14脚本／typecheck／D1构建、观察源码窗口17检查通过；桌面修正环境后的完整628项为627通过／1缺旧验证包skip、exit0。首轮623通过／4失败／1skip保留，B3 TEMP父子关系及U2同源前端的调用问题不误报生产缺陷。
+- Page／Browser自有Core的两个新合成源码窗口完成保留后再次明确重开、票据与新port token拒绝、完整业务／资源指纹保持、正常退出及独立进程冷启动。原AI体验档案同机同用户可解密、无需重填，八组表散列不变、attempt仍1；本轮应用真实请求0。
+- 后端新完整轮**1229通过、0失败／错误／跳过，exit0，2579.52秒**，包含视觉deadline及全部22项周执行器，JUnit与退出一致；549文件前后SHA相同。原首次完整轮在日志70%后中断，无JUnit／实际退出回执，1个失败标记及同源顺序映射单列，不写其根因已定位／已修复。新完整轮使用新TEMP内basetemp及标准`-vv`记录，无observer或断言／时限修改。
+- 同HEAD自动CI run41855931829／attempt1的原ZIP、PS1、187产品文件及身份已核，前端3文件与本机原字节相同；这是Windows2022构建／静态证据。新包的两个生产恢复模块来源门有覆盖缺口，未执行新冻结EXE／helper／PS1，不能以源码窗口替代包内恢复通过。
 
-用户已确认的[异常页面手动重开](../specs/desktop-renderer-recovery.md)继续有效，[生命周期核查](../bootstrap/desktop-renderer-lifecycle-review.md)的238项及真实Page／Browser故障业务窗口、独立进程指纹保持其cb4e7ed源码身份。测试机旧报告中“恢复待核定”不是撤销该产品决定；原白屏自然触发、Word/r历史差异仍未知。新构建不继承旧包／Word／教师结论，不作产品整体验收。
+## 2. 返回开发机后的最小回修范围
 
-## 2. 下一步：返回原Windows11测试机
+用户此前“返回开发机时提交推送”的授权继续用于本轮脱敏结果与唯一入口；结果已收口，由Codex审核准确文件／blob／parent／tree，再交原OpenCode普通提交推送。测试身份保持0e51491，本轮交付只改两份Markdown，不回填自身提交SHA循环改文档。不重放旧Git白名单、原双父merge授权或跨机session身份。
 
-应回原测试机复核，因为原15项失败发生在该环境，恢复片也需要新交付的目标证据。
+开发机先核实际目录、分支、HEAD／远端及本地差异，保留独有资料，再普通fetch与`git pull --ff-only origin codex/desktop-v2-foundation`。不能快进即停止同步报告，不能自动merge／rebase／force。读取§7后由原生OpenCode／Command Go固定DeepSeek V4.1 Flash max核精确互斥责任；Codex独占正式文档、独立验证及最终审核，不另起业务实现者、不覆盖他方修改。原生工具权限拒绝时保持原拒绝，不放宽或以shell绕过。
 
-1. 先正常关闭原体验应用并确认宿主退出，保留原资料和工作区差异。核目录／分支／HEAD／远端，普通fetch及`git pull --ff-only origin codex/desktop-v2-foundation`；不能快进则停止同步并报告，不重放本轮仅针对两已知提交的merge授权。记录实际收到的完整SHA／tree及运行源，重建同源D1前端。
-2. 使用现有CPython3.14.10 x64标准GIL与锁定依赖，在新短合成TEMP／TMP内独立跑一次完整`backend/tests/local`并保留日志／JUnit。APP_DISABLE_DOTENV=1、SQLAlchemy纯Python、禁pyc及适用Python网络守卫，实际解释器路径须核；B3根在TEMP内且满足120字符限制。不要只以15个单项通过关闭原完整上下文问题。复发先保留进程／ready／permit／SEND／落盘时序与首失败，不以增加sleep／预算／重试消除。
-3. 验证恢复限定增量：原生确认后默认保留／两个选择／保留后再次明确尝试；同根新窗口读回已保存日周稿、确认、历史、照片和任务回执；保存、原生文件／Word、维护／更新和AI发送／待落盘／退出未知时拒绝；旧能力失效、正常保存关闭及独立进程重开。主动故障只用于核明归属的新合成源码窗口／自有Core，不碰已配置AI体验档案。冻结包受控触发能力另核，不加产品调试开关，不以源码注入替代包内证据。
-4. 保留测试机已配置AI的原数据根及独立凭据根，按[配置保留§6.7](../bootstrap/desktop-windows11-white-concurrency-review.md#67-后续拉取代码时保留本机ai配置)，同机同用户显式`--data`／`--credential-root`普通启动，仅核设置已配置、无新增attempt和正常关闭，无须重新填写或为此再发付费请求。两根不用于自动测试、故障注入、备份恢复或清理，不复制DPAPI，不在聊天索key。
-5. 若push自动产生新CI候选，先核本次完整HEAD的可信run／attempt、ZIP与原字节PS1、package-info.source_commit、两个身份文件build_id／revision及source freeze。工作流是Windows2022构建／静态检查，不是Windows11运行通过。未取得新包字节核验就只交源码身份，不dispatch／重跑或以旧成功包替代。
+1. **包级来源门**：将`renderer_recovery.py`及`renderer_recovery_native.py`纳入构建前后source freeze、必要归档模块与production分类，保留现有来源及归档约束，验证缺失／改hash／漏模块会被拒绝。当前PYZ中存在二者仅证明存在，285文件匹配不覆盖二者源码。源码验证器未打包本身不是产品缺陷；若用于新包恢复证据，补相应verification来源，不强行变为产品归档模块，不添加产品调试开关。
+2. **受管源码验证器**：修正`desktop/verify_renderer_recovery_window.py`两处活动host的`get_bootstrap()`观测调用。该产品接口正常创建新页面身份，不改其生产语义；验证器应锁内读取当前已绑定状态，保留真实旧票据拒绝与前后状态不变、新port旧401／新200、真实自有Core、完整指纹、独立进程及正常冷启动检查。不能把已完成私下副本当作受管入口已经修复。
+3. **保留原中断失败的证据限制**：新完整1229项已通过，不在同源上无故反复全跑；原1个标记映射到视觉deadline节点，但无原轮详细堆栈／退出，不能写已修复。若同类再现，保留准确节点、stdout／JUnit及spawn／ready／permit／SEND／落盘时序，先定位最小前序影响再核最小回修；不以增加sleep／预算／重试／skip或串行化并发采用掩盖问题。
 
-## 3. 已结束责任与后续回修
+修复先按受影响节点和来源／归档反例独立复验，再按变更需要做相关全套与目标增量；新的代码／包分别记录完整SHA、tree、build_id／revision、原字节ZIP／PS1和来源范围。只认新HEAD对应可信成功run，不能以旧成功包替代、不自动dispatch／重跑或发行。
 
-本机原A／B及新原生X的实施已停写，Command Go因写工具拒绝转只读复核；具体身份、X新对话决定及A只读阶段主动中断见结果，不冒称自然完成或跨机会话。均固定Flash max、无fork／子代理，不重放已结束文件白名单。后续首失败沿新精确文件责任交原生实现者，Codex独占正式文档、独立验证和最终审核；不还原他方修改，不放宽权限或以shell绕过拒绝。
+## 3. 配置保留、数据与验证边界
 
-本轮已明确授权普通提交推送，由原A按Codex当次准确文件、规范化blob、双parent及index tree执行，Codex独立核提交与远端；不add-all／amend／rebase／force、改main／默认分支／可见性、tag或Release。不提交私有原始日志／数据／凭据／构建目录。
+保留测试机原AI体验档案及独立凭据根，私下索引见已有ignored `private-evidence/`启动说明／路径配置。普通源码启动同机同Windows用户始终显式`--data`／`--credential-root`，不因pull新建空档案再索key。两根不作自动测试、主动故障、备份恢复或临时清理目标，不复制DPAPI、不读取／展示明文key。真实AI授权保持用户本轮明确范围；复验配置本身无需付费调用，不自动重发历史unknown。自动验证另用新合成根和适用守卫，守卫不证明原生WebView／OS全局隔离。
 
-## 4. 保持边界
+原生故障只用于核明归属的新合成源码窗口／Core，不全局kill、不真实关机／断电、不强杀绕过保存ack。正常保存关闭、忙拒绝、备份恢复、任务回执按[恢复规格](../specs/desktop-renderer-recovery.md)、[保存关闭合同](../specs/desktop-manual-daily-plan.md)、[备份规格](../specs/desktop-backup-restore.md)、[周AI工程](../specs/desktop-weekly-ai-engineering.md)及[矩阵](../specs/desktop-weekly-ai-validation.md)保持；新增产品行为仍须用户决定，不能以修验证器改教师流程。
 
-[周AI工程](../specs/desktop-weekly-ai-engineering.md)、[验证矩阵](../specs/desktop-weekly-ai-validation.md)、[正常保存关闭](../specs/desktop-manual-daily-plan.md)及[完整备份恢复](../specs/desktop-backup-restore.md)保持。写入／递归清理前核绝对路径／源目标／旧根和reparse边界，不删未知文件、不全局kill、不重发未知AI任务；守卫不证明原生WebView／OS全局隔离。真实原库／照片／凭据、旧包／Word／备份／保护包和首失败保留。
+使用现有CPython3.14.10 x64标准GIL与锁定依赖、禁dotenv／SQLAlchemy纯Python／禁pyc和新短TEMP，B3合成根必须在TEMP内且满足120字符限制；启动前先正常关原应用。源码U2合成helper不与冻结helper混称。SAC4551不执行受阻冻结包／helper，不换名换路径、修改来源标记、降低保护或执行策略来重试。不安装升级工具／Skill／MCP／依赖，不启动签名、安装更新、WebDAV、远控、tag／Release或公开发行。
 
-不重跑旧39项教师清单、13份43页Word、微软拼音或W6跨120秒睡眠，不/r／regserver／Office修复，不真实关机断电。SAC4551不启动受阻冻结EXE／helper、不换名换根／改来源标记或保护重试。不安装升级工具／Skill／MCP／依赖，不启动WebDAV、签名、安装更新、远控或公开发行。Win10／WPS／干净机／其它显示条件／跨用户凭据／长根206及Windows符号链接特权等原未验保持；本轮真实junction通过不冒称symlink特权通过。保存／恢复／关闭失败先保留现场并停对应写操作，继续独立只读工作。
+真实原库／照片／凭据、旧包／Word／备份／保护包和原始首失败保留；只提交脱敏结果，不提交私下验证器、原始日志／数据／下载字节。原自然白屏触发、Word/r历史差异、Win10／WPS／其它显示条件／跨用户／长根206／symlink特权等未验保持；不重跑旧39项、13份43页Word、微软拼音或W6跨120秒睡眠，不/r／regserver／Office修复。不把工程或源码增量等同教师体验、冻结运行或产品整体验收。

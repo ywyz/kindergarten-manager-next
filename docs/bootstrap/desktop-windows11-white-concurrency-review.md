@@ -1,6 +1,6 @@
 # Windows 11 白屏、并发首失败与 Word 注册调用补核
 
-更新：2026-11-04。**最新完整回归未通过，决定交回开发机修复，见§6。** 原限定测试修复经Codex独立审核通过，后端62项、桌面35项及原Git门禁保持§1–5的历史身份。白屏原实例的渲染器已丢失，受控重开保留数据且正常退出；最初触发原因未证实，未新增自动恢复行为。Word当前功能正常，/r历史注册差异不可还原。前轮包身份、首次策略拦截、三次真实AI及保存／Word／备份结果见[目标机核查](desktop-weekly-ai-windows11-target-review.md)。不作完整产品验收结论。
+更新：2026-11-05。**0e51491测试机增量已完成，见§7：后端新完整轮1229通过、桌面627通过／1旧包缺失skip，前端、观察窗口、手动重开及配置保留通过；来源门及受管验证器观测问题交回开发机。** 原中断轮失败标记、§6完整回归失败及§1–5限定通过保持各自身份，不写原失败根因已修复。原自然白屏最初触发、Word/r历史差异仍未知。前轮包与真实AI／Word／备份结果见[目标机核查](desktop-weekly-ai-windows11-target-review.md)，不跨身份作完整产品验收。
 
 ## 1. 授权、来源与责任
 
@@ -162,3 +162,62 @@ test_wai27_unpersistable_result_keeps_unknown_without_resend
 先正常关闭应用并确认宿主退出，再拉取并重建当前源码前端。私下固定启动说明、原OpenCode编写的本机便利入口及无密钥路径配置放在已有Git ignored的`private-evidence/`，不进入提交或作为产品安装功能。Windows PowerShell 5曾拒绝PS1，原拒绝保留；已安装PowerShell 7的既有RemoteSigned策略允许该本地文件，未修改策略、未使用Bypass。原OpenCode的`-CheckOnly`退出0；Codex另用该入口完成当前同源前端重建、普通源码启动、设置状态核对和正常关闭，入口退出0，实际显示“地址/模型/密钥已填写且密钥可解密”及“密钥已保存：是”，没有重新填写或保存配置。前后八组业务／AI表散列相同，task／execution／attempt／candidate仍各1，SQLite完整性与FK通过，新增真实请求0。该检查证明本机当前源码可以继续沿用配置，不预先证明未来修复版本已验。
 
 后续拉取修复版本仍用原两根普通启动，设置显示已配置、不再输入，正常退出且无新增AI attempt，即可验证配置保留，无需为此再发真实AI请求。换机／换Windows用户、新建档案、丢失凭据材料或恢复不含DPAPI的备份不承诺免填；不复制DPAPI、不把密钥写入`.env`／启动命令，不改变现有加密与备份合同。
+
+## 7. 2026-11-05：0e51491原测试机增量
+
+### 7.1 接收、环境与责任
+
+用户要求拉取`0e51491`、阅读最新入口并在本机测试，允许应用真实AI；若缺配置，先找隔离环境既有配置，不存在再由用户填写。原指定工作树仍在旧main，本轮继续已有桌面工作树，普通快进到`0e514917db3998adea1acbb59922fdb59be2bca4`，tree `c7ecd84bc08c4647c6378587c253ca50a5b86f8c`，不改main或另建分支。用户此前“返回开发机时提交推送”的授权继续用于本次两份脱敏交接文档，Git仍须当次准确文件／blob／parent／tree审核，不能重放旧merge或文件白名单。
+
+实际CPython3.14.10／AMD64／标准GIL，`Py_GIL_DISABLED=0`，47个锁定包版本一致；现有Node24.22.1直接运行前端脚本。禁dotenv、SQLAlchemy纯Python、禁pyc，生成并核实子进程加载Python loopback-only守卫，使用新短合成根。开工、中断恢复及全部测试后549个非Markdown已跟踪文件的路径／SHA全部相同，无guard audit失败文件。没有升级依赖／工具、改系统保护、Office注册、WebDAV、签名或发行。
+
+原OpenCode测试机会话`ses_e651729c9ffeG6mP7f6K1oat1I`只写Git ignored的私下恢复验证器及说明；三阶段91条实际assistant metadata均为build／`opencode-go/deepseek-v4.1-flash#max`，无parent／fork，均自然CLI0。Codex独立审阅后才执行；受管实现、测试、迁移及构建源码未修改。原始日志／XML／图片／合成档案及下载字节私下保留于本轮`kgm-20261105-0e51491-a54c`索引，不入Git。
+
+### 7.2 自动回归及中断分别记账
+
+| 范围 | 实际结果 | 身份与限制 |
+| --- | --- | --- |
+| 后端首次完整轮 | 日志至70%，已出现1个失败标记，**中断未完成** | 对话中断后进程已不存在；无JUnit XML、无实际退出回执，不能推算完整通过数或记完成。 |
+| 后端新根完整重启轮 | **1229 passed、0 failed、0 error、0 skipped，exit0，2579.52秒** | JUnit与实际退出一致，91条既有warning；新TEMP／TMP及其内basetemp，标准`-vv`逐节点记录，未注入observer、改断言／时限／重试或skip。 |
+| 桌面首完整轮 | **623 passed、4 failed、1 skipped，exit1，162.52秒** | 原日志和XML保留，调用环境问题见下文。 |
+| 桌面修正环境后的完整轮 | **627 passed、0 failed、0 error、1 skipped，exit0，204.13秒** | 独立新根和完整628项，非按身份合并数；8条既有warning。 |
+| 前端 | **14份脚本、typecheck、D1构建全部exit0** | 新同源前端3个文件与本次CI内ZIP逐文件原字节一致；Node24与CI Node26的环境身份仍分开。 |
+| 观察源码窗口 | **17检查全true，验证器与宿主exit0** | 覆盖创建编辑、历史／冲突、取消导出、busy清除及16份混合导出；只核页面及DOCX结构，未重新做Office视觉页检。 |
+
+桌面首轮两项B3失败来自Codex调用把basetemp设在TEMP的兄弟目录；修正父子关系后复验。另两项U2已切换目录并启动新源码fixture后提前退出；两个保留库、target及包身份均为0008，旧0007预期未复发。独立回读确认fixture未显式传前端，默认构建目录不存在；指定本轮已建同源`KGM_D1_FRONTEND_DIR`后完整复验通过。原新进程stdout／stderr为DEVNULL，不能冒称已取回首轮具体异常；不改revision、ready身份门、预算或保护来消除失败。唯一skip仍是`test_archive_module_scope_covers_host_and_same_origin`缺原验证包，不算通过。真实junction拒绝测试通过不等于Windows symlink特权已验。
+
+对原中断轮做同源1229项collection，按日志进度字符位置映射，第628个零基节点为`backend/tests/local/test_observation_ai.py::ObservationAiRealTransportTests::test_observation_attempt_uses_vision_budget_and_unknown_after_deadline`。这是顺序映射，不是原轮详细失败堆栈或退出回执。该节点及全部22项周执行器在新完整轮均通过，覆盖原14个周执行器节点；这不是代表单项的相加数。原中断失败原因仍未取得详细时序，不能写其根因已定位／已修复，也不再于同源无变化时盲目重复全套。
+
+### 7.3 异常页面手动重开的本机源码证据
+
+沿已确认[恢复规格](../specs/desktop-renderer-recovery.md)，不用旧§6“待核定”撤销用户决定。私下验证器基于当前源码入口，最终SHA256 `e1e94cb035b8f45e67b87a925ee386a03c4bed07941c4370122ff4a4e73a967a`。执行前独立审核并回修原始根／reparse与persist边界、bootstrap观测及退化的字符串票据比较；原版与回修记录保留。越界`..`及不存在persist根的独立CLI反例均exit2且未创建目标根。只对新合成窗口UI线程内核明归属的Core发送`Page.crash`／`Browser.crash`，不按PID杀未知进程，不触已配置AI档案。
+
+Page及Browser两个独立根均实际exit0：先选择保留，旧窗仍在；旧窗原生关闭再次提示，只有明确选择后同根建立新业务窗口，旧窗才退休。原生warning和两按钮文本可读，实际AcceptButton／CancelButton／ActiveControl与保留按钮的managed身份相同；这是默认属性和选择流程证据，不冒称另行手按全部键盘分支。新Core真实截图及DOM均呈现“已重新打开最后保存的档案。未保存的输入可能已丢失。”，未用WinForms空白子控件图代替WebView像素。
+
+两根分别验证完整fixture：日内容4、周稿／确认、观察记录3／全部历史、照片及12个受管资源文件、设置与AI回执保持；task／execution／attempt各4→4，已有unknown及候选／确认不变。旧执行器退出，旧host退休，页票据和launch更新；向新host实际提交旧票据被拒，调用前后票据／bound／business-ready不变。在**新服务port**上，旧token为401，新token为200，不能拿旧port连接拒绝代替此证据。
+
+fixture完整业务数据库／资源指纹故障前后相同，独立只读子进程重新计算同样通过；再分别用原受管持久化入口在另一真实进程中`LocalRuntime.prepare`冷启动、检查counts／integrity／FK、dispose，后测业务指纹仍与故障前相同。两次新窗正常关闭、`close_latest=true`。忙拒绝、owner／lease、并发及失败清理由完整自动测试提供相应证据；未对真实供应商发送中／待落盘故障作付费注入，也不证明原自然白屏触发或丢失的未保存输入可恢复。
+
+同时确认受管`verify_renderer_recovery_window.py`两处活动host的`get_bootstrap()`调用（当前302、411行）会把页面身份创建接口当作观测。`d1_host_api.py`1495–1499正常创建新票据、清bound／business-ready；不是产品bootstrap缺陷。私下副本改为锁内读当前状态并保留真正旧票据拒绝；原受管验证器仍须由实现者回修，不能把受污染的握手证据当成普通已加载页面的只读结果。对退休old_host的调用会直接返回，不具有上述重置副作用。
+
+### 7.4 同提交CI制品字节与来源门缺口
+
+可信[run 41855931829](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41855931829)／attempt1／job126664416969全部步骤成功，HEAD及tree与本轮一致。它是Windows Server2022构建／静态核验，不是Windows11运行通过。实际保留外ZIP、内ZIP和原字节目标PS1，未执行EXE／冻结helper／PS1。
+
+| 对象 | 实际核验 |
+| --- | --- |
+| artifact13338315845外ZIP | 44,134,647 bytes，SHA256 `a3280f23e3455dcb651eca1fa7c33e0e8bbbb06b2543c5ca5d0f1e11cd0eb5c4`，与GitHub digest相同。 |
+| 内ZIP | 44,169,173 bytes，SHA256 `88295fc66c4d5983d42e02ea737e1179d06a2481535ddc0b076be0d9be54548c`。 |
+| 原目标PS1 | 62,869 bytes，SHA256 `aef1c2021a0767d66ab4ccf53c72fbb0caa5c00d35910888036fe40539faeefd`，与可信日志及本机原字节相同。 |
+| 包内身份 | `package-info.source_commit`为本轮0e514917；package-info及`_internal/build_identity.json`的build为`a3344c50-2116-4138-bdde-adb13ca5b014`、revision为`20261102_0008_local_weekly_ai`，与manifest／CI摘要一致；AppIdentity按现格式没有source_commit。 |
+| 文件与来源清单 | 外5／内190条路径、重复、CRC及link／reparse标志无异常；内190＝187产品文件＋3根部元数据。187文件逐个大小／SHA与manifest相同。现有285文件freeze重算为`b3b6e60ea351290581fc0b3e0ff637cdba10c37d2371fe2e682d7dcbe8cb253d`，匹配CI。 |
+
+**新包来源门有覆盖缺口，须回修后再称恢复生产代码完整同源。** `build_e14.py`的SOURCE_GROUPS、`verify_e14_package.py`的REQUIRED_FREEZE_PATHS／ARCHIVE_REQUIRED_MODULES漏两个新增生产模块`renderer_recovery.py`、`renderer_recovery_native.py`，且`renderer_*`被分类为other，未受生产模块必要性约束。既有E14来源合同要求冻结产品／构建／验证来源并核真实生产模块；285匹配结论不包含这两个文件。只读目录核实二者确在1859项PYZ中，仅证明存在，不证明其源码hash已由旧门覆盖；未反序列化模块code或执行bundle。
+
+源码验证器`verify_renderer_recovery_window.py`也未列该freeze；它未打入产品包本身不是缺陷，不能为补证将它强行列为产品归档必需模块。若以它支撑新包恢复能力，应补相应verification来源范围。本轮未跑新冻结包恢复窗口，CI56包／60归档项保持CI自身身份，不以本机源码结果或旧包替代。
+
+### 7.5 原AI配置保留与接续
+
+按§6.7私下索引找到原隔离体验档案和原凭据根，同机同Windows用户显式两根普通启动本轮源码，设置实际显示官方DeepSeek地址、`deepseek-flash`、已保存且可解密，无需重填。Codex未读取／展示明文key或复制DPAPI，没有点击保存配置／生成；正常退出exit0，八组业务／AI表散列不变，task／execution／attempt／candidate仍各1，integrity及FK通过，**本轮应用真实AI请求0**。该状态不代表本轮另验供应商连通。后续继续保留两根原地，不因拉取源码新建空档案或拿它做故障／恢复／清理目标。
+
+本机本次源码增量验证及新完整回归已完成，**下一步交回开发机补修两个生产恢复模块的包级来源门，以及受管验证器的bootstrap观测用法**。不把私下验证器已通过写成受管入口已修，不因全部新完整用例通过删除中断首现场或宣布所有工程门／产品通过；回修范围见[唯一入口](../tasks/current.md)。只交付两份脱敏文档，原始证据、私下验证器、下载字节及档案／凭据不入Git。原自然白屏、Word/r历史差异、冻结运行／安装更新、Win10／WPS／其它显示条件／跨用户／长根206等原边界保持；不重跑旧39项、43页Word或微软拼音，不签名、WebDAV或发行。
