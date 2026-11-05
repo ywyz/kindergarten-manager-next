@@ -282,3 +282,62 @@ renderer完整业务／资源combined SHA为`a278856cccd8388280739298afdc5797db8
 只交付本记录与current.md，Codex核准确文件、原字节／Git规范化blob、实际单parent a5580b18完整SHA及暂存tree后，交当地原OpenCode普通提交／推送原分支，再独立核远端、提交tree和工作区；准确提交SHA及推送回执以本轮实际Git结果为准，不循环写入自身SHA。不同步目标之后的他方提交，远端不可快进则报告；不add-all／amend／merge／rebase／force或改main／默认分支／可见性、tag、Release。
 
 原中断完整轮失败标记无详细堆栈／退出及未知原因、原自然白屏精确触发、Word/r历史差异继续保留。未重跑完整backend、旧39项、13份43页Word、微软拼音或W6跨120秒睡眠；不安装升级、改系统保护、执行受阻4551候选／helper、Office注册修复、签名、安装更新、WebDAV、远控或发行。本结果不等于教师体验或产品整体验收。
+
+## 9. 2026-11-05：6b0a99e接收及3e0e42b候选限定复验
+
+**101项定向源码测试、新冻结候选两类外部故障恢复与完整持久化通过；Enter／Escape和冻结内部对象观测仍未验。** 未发现本轮需回修的产品缺陷，未修改受管实现、测试、构建或迁移。首轮测试结束时按用户当时安排只整理脱敏结果与交接补丁，未暂存、提交或推送；11月6日用户新授权提交推送，接续见§9.5。
+
+### 9.1 接收与候选身份
+
+开工main工作树干净，main仍为e836726；最新修复实际位于桌面分支。在原桌面测试工作树检查干净状态后普通fetch及`pull --ff-only origin codex/desktop-v2-foundation`，从e42e830快进至 **6b0a99e61be7d01f7e045f58f377ba6345f9dbea**，tree **f36e6e7e4dca93628d57df2a25284f32232a2216**。3e0e42b仅改恢复验证器／测试及文档，6b0a99e仅补文档；产品源码及前端未变。已读根AGENTS、current、开发机限定核查§9、本记录§6.7／§8及恢复规格，没有改main或重放旧实现白名单。
+
+使用既有CPython **3.14.10 x64标准GIL** 的真实venv路径；禁dotenv／pyc、SQLAlchemy纯Python，定向pytest各用新短TEMP／TMP且basetemp在其内，继承已有Python loopback守卫。图谱候选路径缺失／陈旧已确认，验证器、测试、协调器及原生适配回读当前磁盘源码，不据旧索引作完整性结论；未安装升级依赖或工具。
+
+通过GitHub连接器只读核[run42010782459](https://github.com/ywyz/kindergarten-manager-next/actions/runs/42010782459) attempt1／job127188965949成功，artifact **13406493851**未过期，head为 **3e0e42b657d24dd040ad26c9e9caabc90b56ebad**。原外ZIP44,135,372字节，SHA256 `4639314af6f9f16e877dcd78d3eb7bfdeb72187b1f126a3b4434c2ae0eb20a59`，与GitHub digest一致；内ZIP44,169,769字节，SHA256 `5354f26cb49d44685550b42d5687864bcf0af57f5b119b0e138af44984ef67be`。原目标PS1摘要与开发机§9.5相同，内包190条路径／重复／重解析标志检查通过。
+
+候选build为 **e12d7af1-d388-4e74-be72-1ba8a6b7cd88**，revision为`20261102_0008_local_weekly_ai`，package-info.source_commit仍为上述3e0e42b，EXE SHA256为 `2d6e8eebecc59472c8006e750cfe27dca51bacbc3810dc8998c28af90b39e363`。本机原字节PS1经既有PowerShell7普通权限只读预检，**46项required通过、0失败／unknown、exit0**。CI的289份freeze及56／56包、60／60归档静态门保持Windows2022身份；本轮没有另重建或冒称本机重跑同源门，也不把候选改称由较新文档HEAD构建。
+
+### 9.2 独立源码与配置复验
+
+| 范围 | 实际结果 |
+| --- | --- |
+| 恢复协调器、原生适配、维护生命周期及最终验证器四文件 | **92 passed，0 failed/error/skipped，exit0，8.15秒**；包含25项验证器测试及真实服务集成。 |
+| 原子idle-stop／owner及app令牌退休 | **9 passed，14 deselected，0 failed/error/skipped，exit0，8.95秒**；7项原子停止、2项app令牌。deselected不是skip。 |
+| 真实服务／对象合同 | 真coordinator／ReopenSequencer及service／host／runtime／executor链核到旧ticket拒绝且全状态不变、新服务旧token401／新200、旧线程／服务及对象退出、根锁保持和21事件顺序。窗口与native adapter明确为测试替身。 |
+| 独立进程持久化 | 对本轮集成合成根调用受管persist入口，新进程**exit0**；默认／全runtime完整指纹、计数、integrity=ok／FK0通过。仅篡改新expected的runtime combined SHA，反例**按预期exit1**，其余门通过。 |
+| 原配置普通源码窗口 | 复用§6.7原data／credential两根，便利入口CheckOnly及普通启动均exit0；Node24.22.1重建当前前端。设置实际显示`deepseek-flash`、密钥已保存且可解密；未重填／保存配置或生成，正常关闭exit0，原数据库原字节SHA前后相同。 |
+
+源码集成默认／全runtime combined SHA分别为 `943fdece88d0478220f98bc3a73c60a3c635bfc87ed3c1738b15f66af0a55b71`／`976afb8a5f6dc114d161171697e97ed254e255feab7c64c87d6bf206328a88cb`，不与下述独立随机fixture根交叉比较。用户真实AI授权有效，但本片无需新供应商请求，应用调用仍为 **0次**；可解密不等于另验供应商连通。没有读取导出明文key或复制原DPAPI，原体验两根未用于故障、自动测试、恢复或清理。
+
+### 9.3 新候选冻结窗口实际结果
+
+原OpenCode `ses_e651729c9ffeG6mP7f6K1oat1I`只准备两份新ignored辅助器：复制§8最终工具，仅改固定新根、EXE摘要、身份说明与旧根保护。独立逐行差分、Python AST／PowerShell解析通过，旧工具SHA保持；新增11条assistant实际均为build／`opencode-go/deepseek-v4.1-flash#max`，自然CLI0、最终succeeded。原Command Go `b5a7810b-c0fc-44fb-8cee-48bb364231f9`按显式`deepseek/deepseek-v4.1-flash` effort=max、plan只读复审，CLI0；首次仅返回旧反馈，随后给精确路径复审当前字节，确认已有startup／active任务／guard／exit0及无残留门，未代作实测或写文件。
+
+两份新合成档案各49表、12个受管资源，涵盖日内容、周稿／确认、观察全部历史／照片及AI回执。全部窗口使用同一原字节EXE正常交互入口，无selftest、外部前端、远程debug、注入或替换包模块。核精确宿主路径／SHA、显式两根、PID／创建时间、唯一直接browser及私有临时目录、唯一renderer子树，复核单个目标句柄身份后每角色只故障一次，不终止宿主或其它应用。所有UI由Codex经Computer Use操作，辅助器不执行输入。
+
+| 分支 | 实际外部结果 |
+| --- | --- |
+| renderer | 首宿主15992；提示X后保留故障窗2034908，标题栏关闭重新提示；明确保留后仍可再次提示，明确点击重开后新窗44109180显示恢复说明、旧窗消失，URL62332→57020。正常关闭exit0；独立进程29364冷启动读回工作台并正常关闭exit0。 |
+| browser | 独立首宿主28256；同样完成提示X保留、标题栏关闭重提示、明确保留、再次提示及明确重开；旧窗396070→新窗592800，URL52318→52425，出现恢复说明。正常关闭exit0；独立进程16752冷启动读回工作台并正常关闭exit0。 |
+| 完整持久化 | 两根各baseline／before-fault／after-reopen／after-close／cold-after-close共10份完整默认及全runtime指纹逐项相同，49表／12资源保持；每份integrity=ok、FK0、active0、辅助器网络审计通过。task／execution／attempt各4→4，unknown／候选／确认保持，无自动重发、采用或确认。 |
+| 退出与保护 | 四次实际宿主exit0、自有残留0，全部测试窗口退出。187份产品与manifest逐项大小／SHA相同，无额外／缺失路径；原AI体验数据库与旧辅助器原字节保持。 |
+
+renderer默认／全runtime combined SHA为 `4ed2e16cb83565b4cdf833682066d2e5091c40e39127f128f36809ac9ed839ff`／`910953101eaf0a1010637c513d9684086e2eec6c32c9834ff24ef69746ad5d03`；browser为 `b290a7d3d35051fb0fec46aebd702c96666efd4c65b4f8cbcf61c0fcc0dd938f`／`6e7a70b3938a71d8814171544565a8809cba70457322fc899e40de139985ca42`。
+
+### 9.4 能力边界、首失误与后续
+
+**提示X是真实鼠标点击通过；Enter／Escape未发送、仍未验。** 本机现在能截图及操作独立提示图像区域，但窗口清单仍只给owner，没有可独立绑定的owned提示window ID；不向owner发送按键冒称提示键盘通过。源码配置检查首个点击因无截图映射被工具拒绝，取得原生截图后输入正常；没有扩权或其它注入绕过。冻结内部ticket／token、旧host／executor／engine／Session及采用预览退出、精确Core kind、新business-ready先于旧destroy仍无可靠外部观测，不能用源码合同或URL变化补齐。
+
+源字节首清单因Git中文路径加引号漏记一份历史DOCX，开工实际549份，修正枚举后550份；原549份逐项原字节不变，漏入DOCX另与HEAD原始blob相同，不能补称开工已冻结550份。最终包计数命令首个断言误把manifest已含的元数据再加1，实际exit1；实存与manifest均187且无额外／缺失路径，改为精确集合／大小／SHA比较后exit0。两项为本轮验证清单处理失误，原回执保留，未改产品或重放故障凑通过。
+
+Command Go另指出私下launcher在启动后写回执／等待异常时可能保留进程。本轮没有注入该分支，不能声称已验异常自动清理；实际各次正常关闭后均核自有残留0。复用前先评审该辅助器异常收尾，不将其写成产品缺陷或用全局kill处理。固定fresh startup诊断沿既有用法，不是新增产品调试入口。
+
+首轮提出的两文档交回开发机提交安排，已由11月6日用户新授权替代，改为本机按§9.5完成普通提交推送；原始日志、图片、数据库、凭据、下载字节或ignored工具不入Git。Enter默认保留／Escape取消由能可靠聚焦提示的人工或原生能力补最小验收；内部冻结观测若仍要求收口，先提最小verification方案及来源／安全边界，无可靠能力时保留未验，不开产品debug或公开身份接口。没有产品源码回修待合并，不重复已通过切片或启动无关功能。
+
+真实发送中worker、完整业务采用端到端、自然白屏触发、旧中断轮原因及Word/r历史差异没有新增结论。未重跑完整backend、旧39项、43页Word、IME或跨120秒睡眠；Win10／WPS／其它显示／跨用户／长根206、SAC4551、签名／安装更新／WebDAV／发行边界保持。本片不是产品整体验收。私下证据索引别名`target-6b0a99e-94b5`保留XML、首失败、完整指纹、四次宿主回执、模型记录、原字节制品与新合成根，不入Git。
+
+### 9.5 2026-11-06：用户授权提交推送
+
+用户新指令“请提交并推送”已替代首轮停在交接补丁的安排，无需重复确认。开工核当前分支及index，仅本记录与current两份受管文档有改动；普通fetch后，本地HEAD与远端同名分支均为`6b0a99e61be7d01f7e045f58f377ba6345f9dbea`。本机原OpenCode会话、指定模型及已自然停写状态另核，没有冒用开发机会话或重放旧实现权限。
+
+Codex审核两文档的脱敏内容、相对引用、空白差异、准确路径／原字节／Git规范化blob及实际parent后，交原OpenCode仅暂存这两文件；独立核暂存tree及无额外路径，再放行该parent／tree的普通commit／push，最后独立核远端、提交文件／tree和工作区。准确提交SHA与推送回执以实际Git结果为准，不为填写自身SHA追加提交。该提交仅交付已有测试证据与最新授权记录，不重跑业务测试或改变原候选来源／测试结论，不带私有证据、不改main／默认分支／tag／Release。
