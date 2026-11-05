@@ -219,7 +219,11 @@ Codex先裁定最小verification方案；当地原A `ses_ead8af71dffeJphI1NOWg4j
 
 Computer Use只读owned子树的按钮句柄与上述原生证据相同，但没有独立可操作提示窗身份；截图报`CreateForMonitor 0x80070057`，尝试明确重开收尾时输入报`GetCursorPos 拒绝访问 0x80070005`。拒绝原样保留，未扩权或改用shell／其它输入注入绕过，已请求用户手动对该新合成档案明确重开再正常关闭。提交前未取得该原进程退出回执，不预填exit0；后续手动收尾或较新源码子进程独立记，不能补写此首轮通过。Codex另只读核该首失败根的49表／12资源默认及全runtime指纹均与故障前相同，未prepare、未输入或修改该根。
 
-本片证实并修的是**源码验证器失败收尾**：driver直接destroy故障旧窗会被原生关闭拦截，`webview.start()`可能不返回，外围finally来不及受控退休。最终验证器先持久化首failure，再仅对本验证器自有失败窗按mark_expected_close→精确host retire许可→destroy收尾；顺序及失败负对照通过。该路径不进入产品，也没有把它当作GUI运行已复验。原始首失败资料、当时精确源码字节身份及进程现场保留。
+首交付后用户回复已明确重开并正常关闭。Codex取得该原验证器实际**exit1**，原stage仍为`prompt_enter_foreground`、success=false；`webview_start_returned=true`、`close_latest=true`，原四级进程链均无残留。人工操作按用户回执记，自动`prompt_reopen`／`normal_close`仍为空，不能补写原生按键或自动重开通过。退出后的独立persist子进程实际**exit0**，完整默认／全runtime指纹、计数、integrity与FK均通过；它从`__file__`加载当时磁盘上的最终`31d43ac3…`源码，不能冒称仍是原GUI内存中的`f1a50375…`。wrapper在完成时记录的HEAD为3e0e42b，同样不是启动HEAD；首轮启动仍是e42e830工作树及上述f1原字节身份。
+
+Codex随后另作不prepare、不输入、不启动窗口的只读复核，实际**exit0**：49表／12资源完整默认及全runtime指纹与故障前、首失败时逐项完全相同，task／execution／attempt各4→4；550份非Markdown受管字节不变。该合成根默认combined SHA为`bf6528a0a7f51fcefd2b6e3c06ec58d2ea587309e1c1296ddec3b6944540aba6`，全runtime为`67d7c4526e9bcffe9c36819ae4840caf69bb90e46a1c2fa819974368f322b96b`，不与§9.3另一随机fixture根交叉比较。原始首失败、实际退出、较新源码冷读及人工收尾分别留当地；未增加应用真实AI调用，仍为0次。
+
+本片证实并修的是**源码验证器失败收尾**：driver直接destroy故障旧窗会被原生关闭拦截，`webview.start()`可能不返回，外围finally来不及受控退休。最终验证器先持久化首failure，再仅对本验证器自有失败窗按mark_expected_close→精确host retire许可→destroy收尾；顺序及失败负对照通过。该路径不进入产品，也没有把它当作GUI运行已复验。原始首失败资料、当时精确源码字节身份、合成根及进程收尾回执保留。
 
 原a5580b1冻结包的[测试机§8](desktop-windows11-white-concurrency-review.md#8-2026-11-05a5580b1新冻结包恢复限定增量)继续保持其原提交／build／run身份：外部故障、点击流程、完整持久化、配置保留及四次宿主exit0结论不重放、不撤销；内部ticket／token、对象退休、精确Core kind、business-ready先于旧destroy及真实键盘仍缺可靠冻结观测，不能用本节源码合同补写通过。真实in-flight worker退休、完整业务采用端到端、真实新WebView业务ready／正常关闭及其它既有未验仍分列。
 
@@ -230,5 +234,11 @@ Computer Use只读owned子树的按钮句柄与上述原生证据相同，但没
 只交付两份受管verification／测试及根AGENTS、本记录、current三份脱敏文档。Codex核准确路径、原字节／Git规范化blob、实际单parent e42e830完整SHA及暂存tree，再交原A普通commit／push原分支，独立核远端、tree、工作区及Git阶段metadata；准确新SHA和回执以实际Git结果为准，不循环写自身SHA。远端不可快进即报告，不接收他方后续提交或自动整合；不add-all／amend／merge／rebase／force，不改main／默认分支／可见性、tag／Release。
 
 push自动生成新CI时只读核本次commit可信run／attempt、artifact digest、原外ZIP／内ZIP／PS1、两身份文件、manifest、实际来源freeze及CArchive/PYZ同源／必要模块门；verification不强行打入产品，不dispatch／重跑或伪造构建前freeze时间。提交前不预填新CI通过；实际候选身份以最终只读回执及本地证据为准，Windows2022静态不等于Windows11运行。
+
+首交付实际提交为`3e0e42b657d24dd040ad26c9e9caabc90b56ebad`，tree `b203abc292806e4c7d996e708c77811bd304f9eb`，单parent `e42e83010c9fd81bf5788ae392af6123217fba32`；原A普通push回执`e42e830..3e0e42b HEAD -> codex/desktop-v2-foundation`，Codex独立核远端一致、五文件准确blob／原字节及干净工作区。含Git两阶段A474条assistant、C41次request_end实际metadata均为指定模型／max，所有阶段自然CLI0，无fork／子代理／换模。
+
+其push自动产生的[可信CI run 42010782459](https://github.com/ywyz/kindergarten-manager-next/actions/runs/42010782459) attempt1／job127188965949成功，artifact **13406493851**。原外ZIP为44,135,372字节，SHA256 `4639314af6f9f16e877dcd78d3eb7bfdeb72187b1f126a3b4434c2ae0eb20a59`；原内ZIP为44,169,769字节，SHA256 `5354f26cb49d44685550b42d5687864bcf0af57f5b119b0e138af44984ef67be`；PS1 SHA256 `aef1c2021a0767d66ab4ccf53c72fbb0caa5c00d35910888036fe40539faeefd`。两身份文件的build均为`e12d7af1-d388-4e74-be72-1ba8a6b7cd88`、revision均为`20261102_0008_local_weekly_ai`；package-info的source_commit为上述3e0e42b，另一AppIdentity格式没有source_commit字段，不虚构该字段。
+
+Codex只读核187份产品manifest、289份source freeze（digest `071fb9dd7b8cef116fece50cfd04320b81c16ddb31450bed4670674a7854bdb8`）、CArchive/PYZ来源及必要模块门；Git过滤后重建的CI checkout原字节匹配freeze，本机raw字节不同按身份分别记。package静态**56／56**、archive静态**60／60**，源码verification未入产品；下载原字节及完整报告留当地，未执行冻结EXE／helper。Windows2022构建／静态通过不外推原Windows11运行。本次人工收尾仅补三份文档，源码／构建字节不变；文档后续提交须以3e0e42b为实际parent重新过文件／blob／tree门，不能把该已有候选改称来自文档新HEAD，也不主动dispatch／重跑CI。
 
 交回原Windows11测试机的最小增量：先核实际交付SHA／tree和新候选完整身份／原字节，在新合成根确认可取得真正owned提示身份、前台／焦点与可靠输入能力；能力不足就停止该分支记未验。可用时各一次自有renderer／browser受控故障，真实Enter保留、再次原生关闭重提示、Escape及提示X保留、再次提示后明确重开，正常关闭及独立新进程冷启动，完整默认／全runtime指纹保持；只按新身份记运行。内部项没有可靠冻结外部观测仍阻塞，不开调试端口、不注入／换模块、不增加公开JS／HTTP身份能力或产品debug开关。首次失败现场及其它历史未知继续保留，本片不是产品整体验收。

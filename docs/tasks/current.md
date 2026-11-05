@@ -15,7 +15,9 @@
 
 首次Page.crash源码窗口属于最终回修前验证器f1a50375身份，真实自有Core及owned提示／保留焦点成立，但foreground门失败、一次SetForegroundWindow返回false，**未发送Enter**，stage为`prompt_enter_foreground`。后续Escape／提示X／实际重开未通过，Browser新窗口轮未启动。Computer Use截图及输入报0x80070057／GetCursorPos拒绝访问0x80070005，已停止输入，没有扩权或改用shell／其它输入注入绕过。
 
-已请求用户手动对此新合成档案明确重开后正常关闭；原进程未取得退出回执，首现场保留，不预填exit0。只读完整默认／全runtime指纹仍与故障前相同。验证器失败收尾已仅在verification内修为先持久化首failure、再对精确自有失败窗受控退休，顺序／负对照已验；没有再次启动实际窗口，不能把该源码修正补写为原首轮通过。后续人工收尾或较新源码子进程须另记身份。
+用户已手动对此新合成档案明确重开后正常关闭。Codex随后核到原验证器实际exit1（保留`prompt_enter_foreground`／success=false），`webview.start()`已返回、close_latest=true，原四级进程链无残留。退出后的persist子进程使用当时磁盘上的最终31d43ac3验证器，实际exit0，默认／全runtime指纹、计数、integrity及FK通过；不能把该子进程的较新源码身份套回首轮f1a50375。Codex另作不prepare、不输入的只读复核exit0，49表／12资源完整默认及全runtime指纹均与故障前和首失败时完全相同，task／execution／attempt各4→4，550份非Markdown字节不变。人工重开／关闭按用户回执记，自动prompt_reopen／normal_close仍为空，不补写自动按键或GUI通过。
+
+验证器失败收尾已仅在verification内修为先持久化首failure、再对精确自有失败窗受控退休，顺序／负对照已验；没有再次启动实际窗口，不能把该源码修正补写为原首轮通过。原始日志、合成库／资源、失败源码身份、退出及人工收尾回执分开留当地。
 
 原a5580b1冻结包的[原Windows11测试机§8](../bootstrap/desktop-windows11-white-concurrency-review.md#8-2026-11-05a5580b1新冻结包恢复限定增量)结论保持原提交／build／run：外部renderer／browser故障、点击保留、标题栏关闭再次提示、明确重开、完整持久化、原AI配置及四次宿主exit0不重放。内部真旧ticket／token、host／executor／worker／engine／Session及采用预览退休、精确Core kind、新业务ready与旧destroy先后、真实Enter／Escape／提示X仍无可靠冻结外部观测。源码服务合同、宿主exit0、内部旧对象退休和教师体验分别记，不宣布恢复整体关闭或产品键盘缺陷。
 
@@ -25,7 +27,9 @@
 
 验证写入阶段已自然停写，旧两文件白名单不自动延续。Codex独占正式文档、独立审核／执行及Git门禁；本轮只交付上述两份受管verification／测试及根AGENTS、正式结果、current三份脱敏文档。用户已明确授权审核后普通提交推送，无需重询。Codex核准确路径、原字节／Git规范化blob、实际parent e42e830完整SHA与暂存tree后，交原A普通commit／push原分支，再独立核远端、tree、工作区及metadata。远端不可快进即报告，不自动整合；不add-all／amend／merge／rebase／force，不改main／默认分支／可见性、tag／Release。
 
-push若自动产生新候选，Codex仅只读核本提交可信run／attempt、artifact digest、原外／内ZIP及PS1、两身份文件／manifest、实际来源freeze与CArchive/PYZ同源／必要模块门，verification不强行入产品。不dispatch／重跑或伪造构建前freeze时间；提交前不预填CI通过。Windows2022静态与原Windows11运行分列，准确新制品身份归最终实际回执。
+首交付已由原A普通提交推送`3e0e42b657d24dd040ad26c9e9caabc90b56ebad`，tree `b203abc292806e4c7d996e708c77811bd304f9eb`，单parent为指定e42e830；独立核远端一致、工作区干净及A474条assistant／C41次request_end固定模型metadata通过。其自动CI run **42010782459／attempt1**、artifact **13406493851**已只读核可信来源、原ZIP／digest、两身份文件、manifest、289份来源freeze及归档同源门，package 56／56、archive 60／60；新build为`e12d7af1-d388-4e74-be72-1ba8a6b7cd88`，详细身份见[正式结果§9.5](../bootstrap/desktop-regression-repair-review.md#95-git自动ci及原测试机接续)。这是Windows2022静态证据，未启动冻结EXE／helper，不等于Windows11运行。
+
+本次人工收尾后只补AGENTS、本记录及正式结果三份文档，不重启旧两文件实施责任，不改变上述源码／freeze／包身份；后续文档提交以3e0e42b为实际parent重新审准确文件／blob／tree，再交原A普通提交推送。原候选source_commit仍是3e0e42b，不冒称来自较新文档HEAD。不dispatch／重跑CI或伪造构建前freeze时间；若文档push自动产生其它run，只按实际身份只读记录。
 
 ## 4. 交原测试机的最小增量
 
