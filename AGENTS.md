@@ -6,11 +6,11 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-04：已整合测试机回归交接与本机已确认的[异常页面手动重开](docs/specs/desktop-renderer-recovery.md)，旧预期／清理、源码窗口绑定、观察导出异常回执及spawn夹具回修已完成[限定工程核查](docs/bootstrap/desktop-regression-repair-review.md)。下一步返回原Windows11测试机，按新交付身份复核完整local及恢复片增量；不继承旧包结论。原白屏精确触发、Word/r历史差异仍未知，旧39项及13份43页不重验。开发机SAC4551不启动包／冻结helper，不签名或发行。
+2026-11-05：已接收0e51491的[测试机增量§7](docs/bootstrap/desktop-windows11-white-concurrency-review.md#7-2026-11-050e51491原测试机增量)，本轮仅补齐恢复模块来源／归档门及受管源码验证器观测，已完成[限定核查§8](docs/bootstrap/desktop-regression-repair-review.md#8-2026-11-05来源门与受管恢复验证器回修)。相关119项及验证器6项、受管Page／Browser源码窗口与独立冷启动通过；新CI制品按自身提交另核，冻结运行不继承源码结论。原中断轮失败原因、自然白屏精确触发、Word/r历史差异仍未知，旧39项及13份43页不重验。开发机SAC4551不启动包／冻结helper，不签名或发行。
 
-继续 `codex/desktop-v2-foundation`，本轮用户已允许普通merge保留本地恢复片与远端交接历史，并授权审核后普通提交推送；交付身份以实际分支及远端核对为准。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；新回修及首失败见[回归核查](docs/bootstrap/desktop-regression-repair-review.md)，Q5/Q6历史见[目标核查](docs/bootstrap/desktop-weekly-ai-windows11-target-review.md)及[补核](docs/bootstrap/desktop-windows11-white-concurrency-review.md)，状态见[v2入口](docs/bootstrap/architecture-v2-readiness.md)。源码、包、Word和教师结论分别记。
+继续 `codex/desktop-v2-foundation`，本轮接收173880d，仅普通fetch及快进；用户已授权两项最小修复、验证和审核后普通提交推送。准确交付身份以实际Git及远端回执为准，不重放旧merge授权。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；测试机历史见[白屏／并发补核](docs/bootstrap/desktop-windows11-white-concurrency-review.md)，状态见[v2入口](docs/bootstrap/architecture-v2-readiness.md)。源码、包、Word和教师结论分别记。
 
-原生OpenCode／Command Go固定DeepSeek V4.1 Flash max，按当轮精确文件责任执行。已完成白名单不重放，原生会话身份不可跨机冒充；本轮Command Go写工具受拒后转只读复核，未放宽权限或以shell绕过。Codex独占正式文档和最终审核，通用保存、恢复、关闭缺陷优先；真实原库／照片／凭据与首失败保留，验证用合成资料。不启动WebDAV、签名、安装更新或发行。
+原生OpenCode／Command Go固定DeepSeek V4.1 Flash max，按当轮精确文件责任执行。已完成白名单不重放，原生会话身份不可跨机冒充；本轮Command Go仅只读诊断／交叉审阅；此前写工具拒绝保留，未放宽权限或以shell绕过。Codex独占正式文档和最终审核，通用保存、恢复、关闭缺陷优先；真实原库／照片／凭据与首失败保留，验证用合成资料。不启动WebDAV、签名、安装更新或发行。
 
 ## 产品与架构原则
 

@@ -22,6 +22,15 @@ import update_identity
 
 REPO = build_e14.d0_paths.REPO_ROOT
 
+RENDERER_PRODUCT_SOURCES = (
+    "desktop/renderer_recovery.py",
+    "desktop/renderer_recovery_native.py",
+)
+RENDERER_VERIFICATION_SOURCES = (
+    "desktop/verify_renderer_recovery_window.py",
+    "desktop/tests/test_renderer_recovery_verifier.py",
+)
+
 
 def _run(monkeypatch, argv: list[str]):
     monkeypatch.setattr(sys, "argv", ["build_e14.py", *argv])
@@ -472,6 +481,65 @@ def test_source_freeze_and_archive_cover_github_update_module():
 
     assert "update_github" in verify_e14_package.ARCHIVE_REQUIRED_MODULES
 
+
+def test_source_freeze_and_archive_cover_renderer_recovery_modules():
+    import verify_e14_package
+
+    freeze = build_e14.source_freeze()
+    by_path = {item["path"]: item["group"] for item in freeze["files"]}
+    for relative in RENDERER_PRODUCT_SOURCES:
+        assert relative in by_path
+        assert by_path[relative] == "product"
+    for relative in RENDERER_VERIFICATION_SOURCES:
+        assert relative in by_path
+        assert by_path[relative] == "verification"
+
+    for name in ("renderer_recovery", "renderer_recovery_native"):
+        assert name in verify_e14_package.ARCHIVE_REQUIRED_MODULES
+        assert f"desktop/{name}.py" in verify_e14_package.REQUIRED_FREEZE_PATHS
+        assert verify_e14_package._module_class(name) == "production"
+    assert "verify_renderer_recovery_window" not in verify_e14_package.ARCHIVE_REQUIRED_MODULES
+    assert (
+        "desktop/verify_renderer_recovery_window.py"
+        in verify_e14_package.REQUIRED_FREEZE_PATHS
+    )
+    assert (
+        verify_e14_package._module_class("verify_renderer_recovery_window")
+        == "verification_support"
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (*RENDERER_PRODUCT_SOURCES, *RENDERER_VERIFICATION_SOURCES),
+)
+def test_source_freeze_fails_closed_when_renderer_recovery_source_missing(
+    tmp_path, monkeypatch, relative
+):
+    repo = tmp_path / "repo"
+    monkeypatch.setattr(build_e14.d0_paths, "REPO_ROOT", repo)
+    monkeypatch.setattr(build_e14, "SOURCE_GROUPS", {"product": (relative,)})
+    with pytest.raises(SystemExit, match="配置来源缺失"):
+        build_e14.source_freeze()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (*RENDERER_PRODUCT_SOURCES, *RENDERER_VERIFICATION_SOURCES),
+)
+def test_freeze_changes_detects_renderer_recovery_source_change(relative):
+    before = _freeze(
+        [{"path": relative, "sha256": "a" * 64, "size": 1}], "a"
+    )
+    after = _freeze(
+        [{"path": relative, "sha256": "b" * 64, "size": 1}], "b"
+    )
+    change = build_e14._freeze_changes(before, after)
+    assert change["stable"] is False
+    assert change["changed"] == [relative]
+    assert change["before_digest"] != change["after_digest"]
+
+
 # --- C: Windows 11 portable build/static additions ---
 
 def _portable_plan(root: Path) -> dict:
@@ -490,6 +558,10 @@ def _portable_required_paths() -> set[str]:
     required = {
         "desktop/maintenance_host.py",
         "desktop/maintenance_lifecycle.py",
+        "desktop/renderer_recovery.py",
+        "desktop/renderer_recovery_native.py",
+        "desktop/verify_renderer_recovery_window.py",
+        "desktop/tests/test_renderer_recovery_verifier.py",
         "desktop/d0_db.py",
         "desktop/d0_driver.py",
         "desktop/d0_host_api.py",

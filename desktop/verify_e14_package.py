@@ -61,6 +61,13 @@ SQLALCHEMY_PURE_PYTHON_MODULES = (
     "sqlalchemy.engine._py_util",
     "sqlalchemy.sql._py_util",
 )
+# Explicitly classified product modules whose names do not use an existing
+# production prefix.  The native module is imported lazily by the coordinator
+# on the real D1 renderer-recovery path.
+PRODUCTION_MODULES = (
+    "renderer_recovery",
+    "renderer_recovery_native",
+)
 ARCHIVE_REQUIRED_MODULES = (
     "app.local.appearance_service",
     "app.local.weekly_plan_api",
@@ -133,6 +140,8 @@ ARCHIVE_REQUIRED_MODULES = (
     "d1_host_api",
     "d1_server",
     "d1_paths",
+    "renderer_recovery",
+    "renderer_recovery_native",
 )
 REQUIRED_MAINTENANCE_MODULES = ("maintenance_host", "maintenance_lifecycle")
 EXPECTED_OBS_CHECKS = (
@@ -156,10 +165,14 @@ REQUIRED_BACKUP_RESTORE_MODULES = tuple(
     )
 )
 VERIFICATION_SUPPORT_PREFIXES = ("maintenance_source_", "verify_", "build_", "test_")
-VERIFICATION_SUPPORT_MODULES = ("d2_same_origin",)
+VERIFICATION_SUPPORT_MODULES = ("d2_same_origin", "verify_renderer_recovery_window")
 REQUIRED_FREEZE_PATHS = (
     "desktop/d1_main.py",
     "desktop/d1_host_api.py",
+    "desktop/renderer_recovery.py",
+    "desktop/renderer_recovery_native.py",
+    "desktop/verify_renderer_recovery_window.py",
+    "desktop/tests/test_renderer_recovery_verifier.py",
     "desktop/maintenance_host.py",
     "desktop/maintenance_lifecycle.py",
     "desktop/build_e14.py",
@@ -911,6 +924,8 @@ def _module_class(name: str) -> str:
         return "entry"
     if name in VERIFICATION_SUPPORT_MODULES or name.startswith(VERIFICATION_SUPPORT_PREFIXES):
         return "verification_support"
+    if name in PRODUCTION_MODULES:
+        return "production"
     if name.startswith("app.") or name in REQUIRED_MAINTENANCE_MODULES:
         return "production"
     if name.startswith(("update_", "d0_", "d1_")):

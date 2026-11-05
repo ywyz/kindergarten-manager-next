@@ -1,12 +1,12 @@
 # 文档与报告索引
 
-更新：2026-11-04。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
+更新：2026-11-05。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
 
-## 当前：回归修复通过，接续测试机增量
+## 当前：来源门与受管恢复验证器限定回修通过
 
-已按用户允许普通merge整合ead1e99测试交接与cb4e7ed恢复片，完成旧预期／清理、selftest绑定、观察导出异常终态及轻量spawn夹具回修。Codex独立完整local **1229通过**、desktop **628通过**，前端14脚本／typecheck／D1构建及观察源码窗口17检查通过，549非文档文件验证前后相同，见[回归修复核查](desktop-regression-repair-review.md)。首轮1214／14失败、取消夹具竞态及各负对照保留，不以重试／扩大时限收口。
+已普通快进接收173880d及[原测试机§7](desktop-windows11-white-concurrency-review.md#7-2026-11-050e51491原测试机增量)，仅修两项核验问题：两个恢复生产模块纳入构建前后freeze、归档必要项及production；受管验证器锁内观测、真实旧票据拒绝及新port认证。Codex独立相关119项、验证器6项通过，受管Page／Browser两个新合成源码窗口的完整49表／12资源与独立冷启动一致，550非文档文件前后相同，见[核查§8](desktop-regression-repair-review.md#8-2026-11-05来源门与受管恢复验证器回修)。原中断失败标记、来源门旧缺口及私下副本证据均保留原身份。
 
-下一步返回原Windows11测试机，按新提交做完整local及[手动恢复](../specs/desktop-renderer-recovery.md)限定增量；实际renderer／browser故障及独立进程保持的历史源码证据见[生命周期核查](desktop-renderer-lifecycle-review.md)。只按[唯一入口](../tasks/current.md)执行，原配置两根保留、无须为保留配置再发付费请求；新CI候选和目标结论另核。SAC4551不启动受阻EXE／冻结helper或改变保护，不发行。
+按[唯一入口](../tasks/current.md)收口准确提交并核自动CI的原ZIP／PS1、身份和新来源门；Windows2022静态与Windows11冻结恢复分别记。之后仅按新包身份安排原测试机恢复增量，不重跑已通过完整local、旧39项、43页Word或IME。原配置两根保留，无额外应用付费AI；SAC4551不启动受阻EXE／冻结helper或改变保护，不发行。
 
 ## 已完成：Q5/Q6目标测试与白屏／并发／Word补核
 

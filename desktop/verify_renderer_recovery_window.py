@@ -15,6 +15,7 @@ B's native prompt; it never calls a real AI supplier.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -92,6 +93,225 @@ def _click_prompt(owner, text: str) -> bool:
         return False
 
 
+def _is_link_like(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        stat = path.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    return bool(getattr(stat, "st_file_attributes", 0) & 0x400)
+
+
+def _has_raw_parent(path: Path) -> bool:
+    raw = str(path).replace("\\", "/")
+    return any(part == ".." for part in raw.split("/"))
+
+
+def _check_existing_chain(path: Path) -> None:
+    current = Path(os.path.abspath(str(path)))
+    while True:
+        if current.exists() or current.is_symlink():
+            if _is_link_like(current):
+                raise ValueError(f"reparse point in path: {current.name}")
+        if current.parent == current:
+            break
+        current = current.parent
+
+
+def _validate_synthetic_paths(
+    data_root: Path, credential_root: Path, out: Path
+) -> dict[str, str]:
+    """Fail closed on the verifier's synthetic roots/output boundaries."""
+    paths = {
+        "data": data_root,
+        "credential": credential_root,
+        "output": out,
+    }
+    for label, path in paths.items():
+        if _has_raw_parent(path):
+            raise ValueError(f"{label}: raw parent segment")
+        _check_existing_chain(path)
+        if path.exists() or path.is_symlink():
+            raise ValueError(f"{label}: path must be fresh")
+    resolved = {
+        label: Path(os.path.abspath(str(path))).resolve(strict=False)
+        for label, path in paths.items()
+    }
+    for left_label, left in resolved.items():
+        for right_label, right in resolved.items():
+            if left_label >= right_label:
+                continue
+            if left == right or left in right.parents or right in left.parents:
+                raise ValueError(
+                    f"{left_label}/{right_label}: paths overlap"
+                )
+    return {label: str(path) for label, path in resolved.items()}
+
+
+def _validate_persist_paths(cli) -> dict[str, Path]:
+    """Fail closed before the cold child can create/read a wrong archive."""
+    if not cli.expected_fingerprint or not cli.persist_out:
+        raise ValueError("expected/output arguments are required")
+    data_root = Path(cli.data)
+    credential_root = Path(cli.credential_root)
+    expected = Path(cli.expected_fingerprint)
+    output = Path(cli.persist_out)
+    for label, path in (
+        ("data", data_root),
+        ("credential", credential_root),
+        ("expected", expected),
+        ("output", output),
+    ):
+        if _has_raw_parent(path):
+            raise ValueError(f"{label}: raw parent segment")
+        _check_existing_chain(path)
+    if not data_root.is_dir():
+        raise ValueError("data root missing or not a directory")
+    db_path = data_root / "kindergarten.db"
+    if not db_path.is_file():
+        raise ValueError("data root has no kindergarten.db")
+    _check_existing_chain(db_path)
+    if not credential_root.is_dir():
+        raise ValueError("credential root missing or not a directory")
+    if not expected.is_file():
+        raise ValueError("expected fingerprint file missing")
+    if output.exists() or output.is_symlink():
+        raise ValueError("persist output must be fresh")
+    if not output.parent.is_dir():
+        raise ValueError("persist output parent missing")
+    resolved = {
+        "data": data_root.resolve(strict=False),
+        "credential": credential_root.resolve(strict=False),
+        "expected": expected.resolve(strict=False),
+        "output": output.resolve(strict=False),
+    }
+    for label in ("expected", "output"):
+        target = resolved[label]
+        for root_label in ("data", "credential"):
+            root = resolved[root_label]
+            if target == root or target in root.parents or root in target.parents:
+                raise ValueError(f"{label}/{root_label}: paths overlap")
+    if resolved["expected"] == resolved["output"]:
+        raise ValueError("expected/output paths overlap")
+    return {
+        "data": data_root,
+        "credential": credential_root,
+        "expected": expected,
+        "output": output,
+        "db": db_path,
+    }
+
+
+def _validate_output_directory(out: Path) -> dict[str, Path]:
+    """Require one fresh per-window output directory and no stale sidecars."""
+    parent = out.parent
+    if out.name.casefold() in (
+        "recovery-persist-expected.json",
+        "recovery-persist-child.json",
+    ):
+        raise ValueError("main output collides with a fixed sidecar")
+    if parent.exists() or parent.is_symlink():
+        if _is_link_like(parent) or not parent.is_dir():
+            raise ValueError("output parent must be a plain directory")
+        if any(parent.iterdir()):
+            raise ValueError("output directory must be fresh and empty")
+    return {
+        "expected": parent / "recovery-persist-expected.json",
+        "child": parent / "recovery-persist-child.json",
+    }
+
+
+def _host_page_state(host) -> dict:
+    """Read the exact bound page state under the host's own page lock."""
+    lock = getattr(host, "_page_lock", None)
+    if lock is None:
+        raise RuntimeError("host page lock missing")
+    with lock:
+        business_ready = getattr(host, "_business_ready", None)
+        return {
+            "retired": bool(getattr(host, "_retired", False)),
+            "page_ready": bool(getattr(host, "_page_ready", False)),
+            "ticket_bound": bool(getattr(host, "_page_ticket_bound", False)),
+            "business_ready": bool(
+                business_ready.is_set()
+                if business_ready is not None
+                and callable(getattr(business_ready, "is_set", None))
+                else False
+            ),
+            "ticket": getattr(host, "_page_ticket", None),
+            "launch_token": getattr(host, "_launch_token", None),
+            "maintenance_notice": getattr(host, "_maintenance_notice", None),
+            "document_generation": getattr(host, "_document_generation", None),
+            "page_busy": bool(getattr(host, "_page_busy", False)),
+        }
+
+
+def _fingerprint(value) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _public_host_state(state: dict) -> dict:
+    return {
+        "retired": bool(state.get("retired")),
+        "page_ready": bool(state.get("page_ready")),
+        "ticket_bound": bool(state.get("ticket_bound")),
+        "business_ready": bool(state.get("business_ready")),
+        "ticket_fingerprint": _fingerprint(state.get("ticket")),
+        "launch_fingerprint": _fingerprint(state.get("launch_token")),
+        "maintenance_notice": state.get("maintenance_notice"),
+        "document_generation": state.get("document_generation"),
+        "page_busy": bool(state.get("page_busy")),
+    }
+
+
+def _active_page(state: dict) -> bool:
+    return bool(
+        state.get("page_ready")
+        and state.get("ticket_bound")
+        and state.get("business_ready")
+        and state.get("ticket")
+        and state.get("launch_token")
+        and not state.get("retired")
+    )
+
+
+def _readonly_status(port: int, token: str) -> int:
+    connection = http.client.HTTPConnection("127.0.0.1", int(port), timeout=3)
+    try:
+        connection.request(
+            "GET",
+            "/api/local/context",
+            headers={
+                "Host": f"127.0.0.1:{int(port)}",
+                "Origin": f"http://127.0.0.1:{int(port)}",
+                "X-App-Session": token,
+            },
+        )
+        response = connection.getresponse()
+        response.read()
+        return int(response.status)
+    finally:
+        connection.close()
+
+
+def _fingerprint_summary(fingerprint: dict) -> dict:
+    database = fingerprint.get("database") or {}
+    resources = fingerprint.get("resources") or {}
+    return {
+        "combined_sha256": fingerprint.get("combined_sha256"),
+        "database_sha256": database.get("fingerprint_sha256"),
+        "resources_sha256": resources.get("fingerprint_sha256"),
+        "schema_revision": database.get("schema_revision"),
+        "table_count": len(database.get("tables") or {}),
+        "resource_count": resources.get("file_count"),
+        "resource_total_bytes": resources.get("total_bytes"),
+        "semantic_counts": database.get("counts"),
+    }
+
+
 def _query_counts(runtime) -> dict[str, int]:
     import sqlite3
 
@@ -126,19 +346,34 @@ def _ui_form_alive(form) -> bool:
 
 
 def _persist_check(cli) -> int:
-    """Child-process persistence readback; no window, JS, provider or AI."""
+    """Child-process full persistence readback; no window, JS, provider or AI."""
     import sqlite3
 
     from app.local.runtime import LocalRuntime
+    from tests.local import backup_fixture_support as fixture
 
-    data_root = Path(cli.data)
-    out = Path(cli.persist_out)
-    expected = json.loads(Path(cli.expected_counts).read_text(encoding="utf-8"))
+    try:
+        paths = _validate_persist_paths(cli)
+        expected = json.loads(
+            paths["expected"].read_text(encoding="utf-8")
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI boundary is fail-closed
+        print(f"PERSIST_INVALID: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    data_root = paths["data"]
+    out = paths["output"]
+    try:
+        expected_fingerprint = expected["fingerprint"]
+        expected_counts = expected["table_counts"]
+    except Exception as exc:  # noqa: BLE001 - malformed expected file
+        print(f"PERSIST_INVALID: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
     runtime = LocalRuntime(
-        str(data_root), credential_root=str(cli.credential_root)
+        str(data_root), credential_root=str(paths["credential"])
     )
     try:
         runtime.prepare()
+        fingerprint = fixture.runtime_fingerprint(runtime)
         counts = _query_counts(runtime)
         connection = sqlite3.connect(str(runtime.db_path))
         try:
@@ -148,13 +383,26 @@ def _persist_check(cli) -> int:
             connection.close()
         result = {
             "counts": counts,
-            "expected": expected,
-            "counts_match": counts == expected,
+            "expected_counts": expected_counts,
+            "counts_match": counts == expected_counts,
+            "fingerprint_match": fingerprint == expected_fingerprint,
+            "combined_sha256": fingerprint.get("combined_sha256"),
+            "database_sha256": (
+                fingerprint.get("database") or {}
+            ).get("fingerprint_sha256"),
+            "resources_sha256": (
+                fingerprint.get("resources") or {}
+            ).get("fingerprint_sha256"),
             "integrity_check": integrity,
             "foreign_key_ok": not foreign,
         }
         out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        return 0 if result["counts_match"] and integrity == "ok" and not foreign else 1
+        return 0 if (
+            result["fingerprint_match"]
+            and result["counts_match"]
+            and integrity == "ok"
+            and not foreign
+        ) else 1
     finally:
         runtime.dispose()
 
@@ -166,8 +414,13 @@ def main() -> int:
     parser.add_argument("--frontend")
     parser.add_argument("--out")
     parser.add_argument("--persist-check", action="store_true")
-    parser.add_argument("--expected-counts")
+    parser.add_argument("--expected-fingerprint")
     parser.add_argument("--persist-out")
+    parser.add_argument(
+        "--fault-kind",
+        choices=("Page.crash", "Browser.crash"),
+        default="Page.crash",
+    )
     cli = parser.parse_args()
     if cli.persist_check:
         return _persist_check(cli)
@@ -178,6 +431,12 @@ def main() -> int:
     credential_root = Path(cli.credential_root)
     frontend = Path(cli.frontend)
     out = Path(cli.out)
+    try:
+        boundary = _validate_synthetic_paths(data_root, credential_root, out)
+        sidecars = _validate_output_directory(out)
+    except ValueError as exc:
+        print(f"BOUNDARY_INVALID: {exc}", file=sys.stderr)
+        return 2
     out.parent.mkdir(parents=True, exist_ok=True)
 
     args = VerifierArgs(
@@ -202,6 +461,8 @@ def main() -> int:
 
     result: dict = {
         "stage": "start",
+        "fault_kind": cli.fault_kind,
+        "boundary": boundary,
         "prompt_keep": None,
         "prompt_reopen": None,
         "normal_close": None,
@@ -216,10 +477,12 @@ def main() -> int:
     recovery = None
     evidence = None
     before_counts = None
+    before_fingerprint = None
     old_ticket = None
     old_host = None
-    old_port = None
     old_launch_token = None
+    old_state = None
+    new_host = None
     finished = threading.Event()
 
     def fail(code: str, exc: BaseException | None = None) -> None:
@@ -286,7 +549,7 @@ def main() -> int:
 
         def driver():
             nonlocal old_form, old_ticket, old_host, before_counts, recovery
-            nonlocal old_port, old_launch_token
+            nonlocal before_fingerprint, old_launch_token, old_state, new_host
             try:
                 if not old_window.events.loaded.wait(30):
                     fail("page_not_loaded")
@@ -299,25 +562,56 @@ def main() -> int:
                     fail("business_not_ready")
                     return
                 old_host = host_api
-                bootstrap = host_api.get_bootstrap()
-                old_ticket = bootstrap["page_ticket"]
-                old_port = int(service.port)
-                old_launch_token = str(bootstrap.get("launch_token") or "")
+                old_state = _host_page_state(old_host)
+                result["old_page_state"] = _public_host_state(old_state)
+                if not _active_page(old_state):
+                    fail("old_page_not_bound_business_ready")
+                    return
+                old_ticket = old_state["ticket"]
+                old_launch_token = str(old_state["launch_token"] or "")
                 before_counts = _query_counts(runtime)
+                before_fingerprint = fixture.runtime_fingerprint(runtime)
+                if before_fingerprint != evidence.fingerprint:
+                    fail("fixture_fingerprint_mismatch_before")
+                    return
+                fixture.validate_fixture(runtime, evidence)
+                result["fixture_validation_before"] = "ok"
                 result["before_counts"] = before_counts
-                result["fixture_fingerprint"] = evidence.fingerprint["combined_sha256"]
+                result["before_archive_fingerprint"] = _fingerprint_summary(
+                    before_fingerprint
+                )
+                result["fixture_fingerprint"] = before_fingerprint["combined_sha256"]
 
                 def crash_on_ui():
                     form = old_window.native
-                    if form is None or form.pywebview_window is not old_window:
-                        return "ownership"
                     browser = getattr(form, "browser", None)
                     control = getattr(browser, "webview", None)
                     core = getattr(control, "CoreWebView2", None)
-                    if core is None:
-                        return "core"
+                    ownership = {
+                        "form_current": form is not None and form is old_form,
+                        "form_owns_window": (
+                            form is not None
+                            and getattr(form, "pywebview_window", None)
+                            is old_window
+                        ),
+                        "browser_owns_window": (
+                            browser is not None
+                            and getattr(browser, "pywebview_window", None)
+                            is old_window
+                        ),
+                        "webview_identity": (
+                            control is not None
+                            and control is getattr(form, "webview", None)
+                            and control is getattr(browser, "webview", None)
+                        ),
+                        "core_present": core is not None,
+                    }
+                    result["crash_ownership"] = ownership
+                    if not all(ownership.values()):
+                        return "ownership"
                     result["crash_browser_pid"] = int(core.BrowserProcessId)
-                    core.CallDevToolsProtocolMethodAsync("Page.crash", "{}")
+                    result["crash_kind"] = cli.fault_kind
+                    core.CallDevToolsProtocolMethodAsync(cli.fault_kind, "{}")
                     return "sent"
 
                 sent = old_form.Invoke(Func[Object](crash_on_ui))
@@ -382,10 +676,31 @@ def main() -> int:
                     fail("old_window_still_alive")
                     return
 
+                new_host = getattr(new_bundle, "host_api", None)
+                if new_host is None:
+                    fail("new_host_missing")
+                    return
+                new_state = _host_page_state(new_host)
+                result["new_page_state"] = _public_host_state(new_state)
+                if not _active_page(new_state):
+                    fail("new_page_not_bound_business_ready")
+                    return
+
                 after_counts = _query_counts(runtime)
+                after_fingerprint = fixture.runtime_fingerprint(runtime)
                 result["after_counts"] = after_counts
+                result["after_archive_fingerprint"] = _fingerprint_summary(
+                    after_fingerprint
+                )
+                archive_unchanged = bool(
+                    after_fingerprint == before_fingerprint == evidence.fingerprint
+                )
+                result["archive_fingerprint_unchanged"] = archive_unchanged
                 if after_counts != before_counts:
                     fail("task_or_attempt_delta")
+                    return
+                if not archive_unchanged:
+                    fail("archive_fingerprint_changed")
                     return
                 old_stopped = (
                     old_executor is None
@@ -402,60 +717,81 @@ def main() -> int:
                     fail("saved_data_validation_failed", exc)
                     return
                 result["saved_data"] = "ok"
+                result["fixture_validation_after"] = "ok"
+                result["task_attempt_ai_receipts_unchanged"] = bool(
+                    after_fingerprint["database"]["tables"]
+                    == before_fingerprint["database"]["tables"]
+                )
 
+                old_after = _host_page_state(old_host)
+                result["old_host_state_after"] = _public_host_state(old_after)
                 old_bootstrap = old_host.get_bootstrap()
-                result["old_host_retired"] = bool(old_bootstrap.get("retired"))
+                result["old_host_retired"] = bool(
+                    old_after.get("retired")
+                    and not old_after.get("page_ready")
+                    and old_bootstrap.get("retired") is True
+                )
                 if not result["old_host_retired"]:
                     fail("old_host_not_retired")
                     return
-                new_bootstrap = new_bundle.host_api.get_bootstrap()
-                result["recovery_notice"] = new_bootstrap.get("maintenance_notice")
+                result["recovery_notice"] = new_state.get("maintenance_notice")
                 if result["recovery_notice"] != renderer_recovery.RECOVERY_NOTICE:
                     fail("recovery_notice_missing")
                     return
-                new_ticket = new_bootstrap.get("page_ticket")
-                result["new_ticket_changed"] = bool(new_ticket and new_ticket != old_ticket)
+                new_ticket = new_state.get("ticket")
+                new_launch_token = new_state.get("launch_token")
+                result["new_ticket_changed"] = bool(
+                    old_ticket and new_ticket and new_ticket != old_ticket
+                )
+                result["launch_token_changed"] = bool(
+                    old_launch_token
+                    and new_launch_token
+                    and new_launch_token != old_launch_token
+                )
+                result["old_ticket_fingerprint"] = _fingerprint(old_ticket)
+                result["new_ticket_fingerprint"] = _fingerprint(new_ticket)
+                result["old_launch_fingerprint"] = _fingerprint(old_launch_token)
+                result["new_launch_fingerprint"] = _fingerprint(new_launch_token)
                 if not result["new_ticket_changed"]:
                     fail("page_ticket_reused")
                     return
-                if new_bundle.host_api.page_business_ready(
-                    {"page_ticket": old_ticket}
-                )["accepted"]:
-                    fail("old_ticket_accepted")
-                    return
-                result["old_ticket_rejected"] = True
-                result["launch_token_changed"] = bool(
-                    old_launch_token
-                    and new_bootstrap.get("launch_token") != old_launch_token
-                )
                 if not result["launch_token_changed"]:
                     fail("launch_token_reused")
                     return
-                try:
-                    connection = http.client.HTTPConnection(
-                        "127.0.0.1", old_port, timeout=3
-                    )
-                    connection.request(
-                        "POST",
-                        "/api/daily-plans",
-                        body=b"{}",
-                        headers={
-                            "Host": f"127.0.0.1:{old_port}",
-                            "Origin": f"http://127.0.0.1:{old_port}",
-                            "X-App-Session": old_launch_token,
-                            "Content-Type": "application/json",
-                        },
-                    )
-                    status = int(connection.getresponse().status)
-                    connection.close()
-                    result["old_http_status"] = status
-                    if status not in (401, 403):
-                        fail("old_http_token_not_rejected")
-                        return
-                    result["old_http_token_rejected"] = True
-                except OSError:
-                    result["old_http_token_rejected"] = True
-                    result["old_http_status"] = "connection_refused"
+
+                before_ticket_submission = _host_page_state(new_host)
+                result["old_ticket_submission_before"] = _public_host_state(
+                    before_ticket_submission
+                )
+                submission = new_host.page_business_ready(
+                    {"page_ticket": old_ticket}
+                )
+                after_ticket_submission = _host_page_state(new_host)
+                submission_state_unchanged = bool(
+                    before_ticket_submission == after_ticket_submission
+                )
+                result["old_ticket_submission"] = {
+                    "accepted": submission.get("accepted"),
+                    "state_unchanged": submission_state_unchanged,
+                    "after": _public_host_state(after_ticket_submission),
+                }
+                if (
+                    submission.get("accepted") is not False
+                    or not submission_state_unchanged
+                ):
+                    fail("old_ticket_not_rejected_cleanly")
+                    return
+                result["old_ticket_rejected"] = True
+
+                new_port = int(new_bundle.service.port)
+                old_status = _readonly_status(new_port, old_launch_token)
+                new_status = _readonly_status(new_port, new_launch_token)
+                result["new_port_old_token_status"] = old_status
+                result["new_port_new_token_status"] = new_status
+                if old_status != 401 or new_status != 200:
+                    fail("new_port_token_auth_failed")
+                    return
+                result["new_port_auth"] = "ok"
 
                 new_form = getattr(new_window, "native", None)
                 if new_form is None:
@@ -499,13 +835,21 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - report only
             result["close_latest_error"] = type(exc).__name__
 
-        # True child-process persistence: only the counts/integrity are read
-        # back, and no real provider or credential is touched.
+        # True child-process full fingerprint readback after a cold LocalRuntime
+        # prepare; no window, JS, provider or AI, and no data copy.
         try:
-            expected_path = out.parent / "recovery-persist-expected.json"
-            child_path = out.parent / "recovery-persist-child.json"
+            expected_path = sidecars["expected"]
+            child_path = sidecars["child"]
+            if before_fingerprint is None:
+                raise RuntimeError("before fingerprint missing")
             expected_path.write_text(
-                json.dumps(result.get("before_counts") or {}, indent=2),
+                json.dumps(
+                    {
+                        "fingerprint": before_fingerprint,
+                        "table_counts": before_counts,
+                    },
+                    ensure_ascii=False,
+                ),
                 encoding="utf-8",
             )
             env = os.environ.copy()
@@ -519,7 +863,7 @@ def main() -> int:
                     str(data_root),
                     "--credential-root",
                     str(credential_root),
-                    "--expected-counts",
+                    "--expected-fingerprint",
                     str(expected_path),
                     "--persist-out",
                     str(child_path),
@@ -537,11 +881,21 @@ def main() -> int:
             )
             result["persist_subprocess"] = {
                 "exit": child.returncode,
+                "fingerprint_match": bool(child_result.get("fingerprint_match")),
                 "counts_match": bool(child_result.get("counts_match")),
+                "combined_sha256": child_result.get("combined_sha256"),
+                "database_sha256": child_result.get("database_sha256"),
+                "resources_sha256": child_result.get("resources_sha256"),
                 "integrity_check": child_result.get("integrity_check"),
                 "foreign_key_ok": bool(child_result.get("foreign_key_ok")),
             }
-            if child.returncode == 0 and child_result.get("counts_match"):
+            if (
+                child.returncode == 0
+                and child_result.get("fingerprint_match")
+                and child_result.get("counts_match")
+                and child_result.get("integrity_check") == "ok"
+                and child_result.get("foreign_key_ok")
+            ):
                 result["persist"] = "ok"
             else:
                 result["persist"] = "failed"
@@ -550,8 +904,24 @@ def main() -> int:
             result["persist"] = "failed"
             result["persist_error"] = type(exc).__name__
 
+        success = bool(
+            result.get("stage") == "reopened"
+            and result.get("normal_close") == "closed"
+            and result.get("close_latest") is True
+            and result.get("persist") == "ok"
+            and result.get("archive_fingerprint_unchanged") is True
+            and result.get("task_attempt_ai_receipts_unchanged") is True
+            and result.get("fixture_validation_before") == "ok"
+            and result.get("fixture_validation_after") == "ok"
+            and result.get("old_host_retired") is True
+            and result.get("old_ticket_rejected") is True
+            and result.get("new_ticket_changed") is True
+            and result.get("launch_token_changed") is True
+            and result.get("new_port_auth") == "ok"
+        )
+        result["success"] = success
         out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        return 0 if result.get("stage") == "reopened" and result.get("persist") == "ok" else 1
+        return 0 if success else 1
     except Exception as exc:  # noqa: BLE001 - verifier boundary
         fail("top_level_exception", exc)
         return 1

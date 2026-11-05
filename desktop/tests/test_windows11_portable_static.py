@@ -7,6 +7,7 @@ legacy verifier flow, or start the application.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -623,6 +624,49 @@ def test_load_freeze_actual_baseline_and_counterexamples(tmp_path):
     assert first in loaded_required["required_missing"]
     assert loaded_required["schema_ok"] is True
 
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "desktop/renderer_recovery.py",
+        "desktop/renderer_recovery_native.py",
+        "desktop/verify_renderer_recovery_window.py",
+        "desktop/tests/test_renderer_recovery_verifier.py",
+    ),
+)
+def test_load_freeze_requires_renderer_recovery_sources(tmp_path, relative):
+    import copy
+    import json
+    import verify_e14_package as package_verifier
+
+    files = _actual_freeze_files()
+    assert relative in {item["path"] for item in files}
+    self_rel = "desktop/verify_e14_package.py"
+    info = {"built_at": "2026-10-31T02:00:00+00:00"}
+
+    missing_files = [item for item in files if item["path"] != relative]
+    missing_doc = _freeze_document(missing_files)
+    missing_path = tmp_path / "missing-renderer-freeze.json"
+    missing_path.write_text(
+        json.dumps(missing_doc, ensure_ascii=False), encoding="utf-8"
+    )
+    loaded_missing = package_verifier._load_freeze(missing_path, info, self_rel)
+    assert relative in loaded_missing["required_missing"]
+    assert loaded_missing["schema_ok"] is True
+
+    stale_files = copy.deepcopy(files)
+    for item in stale_files:
+        if item["path"] == relative:
+            item["sha256"] = "0" * 64
+    stale_doc = _freeze_document(stale_files)
+    stale_path = tmp_path / "stale-renderer-freeze.json"
+    stale_path.write_text(
+        json.dumps(stale_doc, ensure_ascii=False), encoding="utf-8"
+    )
+    loaded_stale = package_verifier._load_freeze(stale_path, info, self_rel)
+    assert relative in loaded_stale["current_mismatches"]
+
+
 def test_sqlalchemy_compiled_extension_gate_rejects_pyd(tmp_path):
     import verify_e14_package as package_verifier
 
@@ -826,13 +870,16 @@ def _synthetic_pyz(modules: dict[str, bytes]) -> bytes:
     return header[:8] + struct.pack("!i", toc_offset) + bytes(body)
 
 
-def _synthetic_carchive(path: Path) -> None:
+def _synthetic_carchive(path: Path, *, modules: dict[str, bytes] | None = None) -> None:
     import marshal
     import struct
 
     d1_code = compile("value = 1\n", "synthetic_d1.py", "exec")
     module_code = compile("answer = 42\n", "synthetic_module.py", "exec")
-    pyz = _synthetic_pyz({"synthetic.module": marshal.dumps(module_code)})
+    pyz_modules = {"synthetic.module": marshal.dumps(module_code)}
+    if modules:
+        pyz_modules.update(modules)
+    pyz = _synthetic_pyz(pyz_modules)
     entries = [
         ("d1_main", marshal.dumps(d1_code), "m"),
         ("PYZ.pyz", pyz, "z"),
@@ -927,6 +974,130 @@ def test_archive_reader_uses_locked_leaf_without_host_probe_or_process(
     report = package_verifier._archive_static_report(package, {})
     assert report["readable"] is False
     assert report["error"]
+
+
+RENDERER_ARCHIVE_MODULES = ("renderer_recovery", "renderer_recovery_native")
+
+
+def _marshalled_renderer_source(name: str) -> bytes:
+    import marshal
+
+    source = Path(__file__).resolve().parents[1] / f"{name}.py"
+    code = compile(
+        source.read_text(encoding="utf-8"),
+        str(source),
+        "exec",
+        dont_inherit=True,
+        optimize=sys.flags.optimize,
+    )
+    return marshal.dumps(code)
+
+
+def _renderer_archive_freeze(*, tampered=()):
+    before = {}
+    for name in RENDERER_ARCHIVE_MODULES:
+        relative = f"desktop/{name}.py"
+        source = Path(__file__).resolve().parents[1] / f"{name}.py"
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        before[relative] = {
+            "size": source.stat().st_size,
+            "sha256": "0" * 64 if name in tampered else digest,
+        }
+    return {"before": before}
+
+
+def _renderer_archive_package(tmp_path, modules):
+    package = tmp_path / "KGNext-E14"
+    package.mkdir()
+    _synthetic_carchive(package / "KGNext-E14.exe", modules=modules)
+    return package
+
+
+def test_archive_static_report_accepts_matching_renderer_recovery_modules(tmp_path):
+    import verify_e14_package as package_verifier
+
+    modules = {
+        name: _marshalled_renderer_source(name) for name in RENDERER_ARCHIVE_MODULES
+    }
+    package = _renderer_archive_package(tmp_path, modules)
+    report = package_verifier._archive_static_report(
+        package, _renderer_archive_freeze()
+    )
+    assert report["error"] is None
+    assert report["readable"] is True
+    assert report["production_mismatched"] == []
+    assert report["production_unavailable"] == []
+    assert report["production_all_match"] is True
+    assert report["production_match_freeze"] is True
+    assert not set(RENDERER_ARCHIVE_MODULES) & set(report["missing_required"])
+    for name in RENDERER_ARCHIVE_MODULES:
+        assert package_verifier._module_class(name) == "production"
+    assert (
+        package_verifier._module_class("verify_renderer_recovery_window")
+        == "verification_support"
+    )
+
+
+@pytest.mark.parametrize("missing", RENDERER_ARCHIVE_MODULES)
+def test_archive_static_report_rejects_missing_renderer_recovery_module(
+    tmp_path, missing
+):
+    import verify_e14_package as package_verifier
+
+    modules = {
+        name: _marshalled_renderer_source(name)
+        for name in RENDERER_ARCHIVE_MODULES
+        if name != missing
+    }
+    package = _renderer_archive_package(tmp_path, modules)
+    report = package_verifier._archive_static_report(
+        package, _renderer_archive_freeze()
+    )
+    assert report["readable"] is True
+    assert missing in report["missing_required"]
+
+
+@pytest.mark.parametrize("changed", RENDERER_ARCHIVE_MODULES)
+def test_archive_static_report_rejects_changed_renderer_recovery_code(
+    tmp_path, changed
+):
+    import marshal
+    import verify_e14_package as package_verifier
+
+    modules = {
+        name: _marshalled_renderer_source(name) for name in RENDERER_ARCHIVE_MODULES
+    }
+    modules[changed] = marshal.dumps(
+        compile("answer = 42\n", "changed_renderer_recovery.py", "exec")
+    )
+    package = _renderer_archive_package(tmp_path, modules)
+    report = package_verifier._archive_static_report(
+        package, _renderer_archive_freeze()
+    )
+    assert report["readable"] is True
+    assert changed in report["production_mismatched"]
+    assert changed in report["unexpected_production"]
+    assert report["production_all_match"] is False
+
+
+@pytest.mark.parametrize("tampered", RENDERER_ARCHIVE_MODULES)
+def test_archive_static_report_rejects_tampered_renderer_recovery_freeze_hash(
+    tmp_path, tampered
+):
+    import verify_e14_package as package_verifier
+
+    modules = {
+        name: _marshalled_renderer_source(name) for name in RENDERER_ARCHIVE_MODULES
+    }
+    package = _renderer_archive_package(tmp_path, modules)
+    report = package_verifier._archive_static_report(
+        package, _renderer_archive_freeze(tampered=(tampered,))
+    )
+    assert report["readable"] is True
+    assert tampered in report["production_unavailable"]
+    assert report["production_all_match"] is False
+    assert report["production_match_freeze"] is False
+
 
 
 def test_archive_reader_fails_closed_without_distribution(monkeypatch):

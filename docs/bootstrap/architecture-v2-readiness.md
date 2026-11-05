@@ -1,10 +1,10 @@
 # Architecture v2 实施状态与验证门槛
 
-更新：2026-11-04。当前架构仍按 [ARCHITECTURE.md](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)，唯一执行入口是 [current.md](../tasks/current.md)。历史授权、旧“当前任务”和旧测试数字不自动适用于本轮。
+更新：2026-11-05。当前架构仍按 [ARCHITECTURE.md](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)，唯一执行入口是 [current.md](../tasks/current.md)。历史授权、旧“当前任务”和旧测试数字不自动适用于本轮。
 
 ## 最新状态与下一步
 
-2026-11-04最新接续：用户已允许普通merge整合测试交接ead1e99与本机恢复片cb4e7ed，并授权审核后普通提交推送。旧预期／失败清理、源码窗口绑定、观察导出异常回执及import-safe spawn夹具回修已由Codex独立核查：完整local1229、desktop628、前端及观察源码窗口17检查通过，549非文档源码前后稳定，首失败与新源身份见[回归修复核查](desktop-regression-repair-review.md)。已确认的[手动重开](../specs/desktop-renderer-recovery.md)及[生命周期历史证据](desktop-renderer-lifecycle-review.md)保持；下一步返回原Windows11测试机按新身份复核完整local及恢复增量。原白屏精确触发和Word/r历史差异未知，不作产品／新包整体验收。
+2026-11-05最新接续：已快进接收173880d的[测试机§7](desktop-windows11-white-concurrency-review.md#7-2026-11-050e51491原测试机增量)。本轮只补恢复生产模块来源／归档门和受管验证器观测；Codex独立119项、6项及受管Page／Browser源码窗口通过，49表／12资源和独立冷启动指纹一致，550文件前后稳定，见[限定核查§8](desktop-regression-repair-review.md#8-2026-11-05来源门与受管恢复验证器回修)。测试机新完整1229通过保留自身0e51491身份，不重复盲跑，也不删除原中断失败标记或宣称其原因已定位。新CI按实际提交核原字节及来源；冻结恢复运行仍独立安排，原自然白屏／Word/r未知，不作产品整体验收。
 
 | 范围 | 当前结论与直接入口 |
 | --- | --- |
@@ -12,7 +12,7 @@
 | 新周计划候选与GitHub身份 | 原GitHub源57806b2／build0b56217d…的实际构建、下载与初始目标证据保持[原核查身份](desktop-weekly-windows11-review.md)。本机修复包build_id `763706b0-c9c0-4064-96b4-f2b8c0b43843`使用Python3.14.10，构建时基础d6ff4b7＋5文件补丁；90项相关后端、前端、54／59静态、49预检及实际Word分别记账。本机收口时尚无修复的新GitHub制品；推送触发的自动CI如产生新制品，另核身份及静态结果，不继承本机验收。 |
 | 周计划与明暗 | Q1–Q6已确认；Q1–Q4及明暗／备份配套按实际包身份完成目标／指定教师收口。[产品](../specs/desktop-weekly-plan.md)、[工程](../specs/desktop-weekly-plan-engineering.md)、[实施核查](desktop-weekly-plan-review.md)保持，Q1–Q4限定结果见[收口](desktop-weekly-target-test-closeout.md)，Q5/Q6另见下行。 |
 | Q5/Q6实施与核查 | 开发机271后端／纯层101及真实游戏／材料各1次、e1b727c8…源码／静态身份见[实施核查](desktop-weekly-ai-review.md)。测试机32a6d197…候选三次真实DeepSeek、新材料Word四页、完整备份／保护包／旧0007恢复与独立重开见[目标核查](desktop-weekly-ai-windows11-target-review.md)；原CI拦截和各次回修分别保留，不宣布全46项或产品整体验收。后端62／桌面35最终补核见[白屏与并发结果](desktop-windows11-white-concurrency-review.md)。 |
-| 分支与当前Git操作 | 继续codex/desktop-v2-foundation。本轮保留cb4e7ed与ead1e99双父历史，由原A按准确文件／blob／parents／index tree普通提交推送，Codex独立核index与远端；具体接收和首失败见[回归核查](desktop-regression-repair-review.md)。不amend／rebase／force，不改main／tag／Release，不循环回填自身SHA，新候选身份另核。 |
+| 分支与当前Git操作 | 继续codex/desktop-v2-foundation；本轮接收173880de7ac67b8fd847d13281f913f4d282fab3。仅普通fetch／快进，Codex独立核准确文件、规范化blob、单parent及index tree后交原OpenCode A普通提交推送，再核远端。旧双父历史保留，不新merge／amend／rebase／force，不改main／tag／Release，不循环回填自身SHA；见[核查§8](desktop-regression-repair-review.md#8-2026-11-05来源门与受管恢复验证器回修)。 |
 | 历史r03用户目标测试 | 固定r03目标1普通业务、完整备份／恢复、保护包及W1–W8工程页检已有[实际回执](desktop-windows11-target-review.md)，用户已逐项确认八份Word通过；指定Word教师体验收口，未扩大为产品／发行整体验收。[手册](desktop-windows11-portable-manual.md)及原build_id／SHA保持，不迁移新代码结果。 |
 | 历史完整内部候选 | [独立核查](desktop-windows11-portable-review.md)源码493 desktop、实际目录54／ZIP59静态、本机PS7只读预检49通过；固定r03的目标1与指定Word教师结论见上行，不迁移为本轮新周源码通过。主EXE未签名；PS5.1只解析通过，文件执行受策略阻止。 |
 | 完整本地备份／恢复 | [核查§38–§40](desktop-backup-restore-review.md)848 local／469 desktop及源码窗口限定范围、前轮推送91e6a553保持。本轮另机明文／加密、A/B保护包、首次页／空保护包及新进程接续实际证据按各包身份列于[目标收口](desktop-weekly-target-test-closeout.md)，不外推跨Windows用户、真实断电或其它环境。 |
