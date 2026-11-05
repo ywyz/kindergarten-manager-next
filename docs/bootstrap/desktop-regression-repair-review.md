@@ -170,3 +170,65 @@ Page完整业务／资源combined SHA为`389673642f1663312ccb1c3c28f17e4a542d6fb
 push若自动生成候选，Codex只读核**本提交**可信成功run／attempt、原外ZIP／内ZIP／PS1、package-info.source_commit、build_id／revision、289文件freeze范围及两个实际生产归档模块的修复后来源门。Git core.autocrlf及CI检出字节分别记，不能以本机混合换行的raw digest替代CI freeze，也不制造不存在的构建前时间证据。不dispatch／重跑；没有实际核到制品就只交源码结果。此段不预先声明新CI或冻结运行通过，后续制品身份和实际结果以本提交对应run及最终只读回执为准。
 
 下一步是按新包身份安排原Windows11测试机的恢复限定增量，执行前核本次来源门及自有Core触发能力；本SAC4551开发机不试启动冻结包或helper。已通过完整local无新相关变化不再全跑；原AI配置两根按[§6.7](desktop-windows11-white-concurrency-review.md#67-后续拉取代码时保留本机ai配置)原地保留，不为这两项再调用应用付费AI，不重验旧39项、13份43页Word、IME或W6跨120秒睡眠。
+
+## 9. 2026-11-05：恢复身份、内部退休与真实输入限定核验
+
+**限定源码服务／对象合同核验通过；真实窗口输入能力阻塞，冻结内部项未收口。** 本轮只改源码专用验证器和测试，没有已确证需回修的产品缺陷，没有修改教师流程、产品运行面、构建、迁移、依赖或架构。
+
+### 9.1 接收、方案与原生责任
+
+开工工作树／index干净，HEAD为`a5580b18ae1973100408fd16e4f496c4edd8e0d1`，分支`codex/desktop-v2-foundation`、远端`git@github.com:ywyz/kindergarten-manager-next.git`。核暂存／未暂存及未跟踪资料后普通fetch，确认祖先关系及tree，只快进到用户指定`e42e83010c9fd81bf5788ae392af6123217fba32`，tree `6ddaf0cb76a0a0c9cbba95de6d08ea2695b6736c`。没有接收目标之后提交、覆盖他方修改、stash／reset／clean／merge提交／rebase／force。已读根AGENTS、current、[测试机§8.3–8.5](desktop-windows11-white-concurrency-review.md#83-冻结入口与证据边界)、本记录§8及[恢复合同](../specs/desktop-renderer-recovery.md)。
+
+Codex先裁定最小verification方案；当地原A `ses_ead8af71dffeJphI1NOWg4jZgI`开工idle／succeeded、准确cwd及build／`opencode-go/deepseek-v4.1-flash#max`已核，唯一可写`desktop/verify_renderer_recovery_window.py`及`desktop/tests/test_renderer_recovery_verifier.py`和自有私下辅助。当地原C `8cf528de-8773-4a06-9cc5-31e96fab515f`同项目原transcript及无在途运行已核，固定`deepseek/deepseek-v4.1-flash` effort=max，仅只读诊断／交叉审阅。Codex独占方案、正式文档、独立审核／复验及Git门禁。不冒用测试机会话、不fork／派子代理，不重放旧白名单。
+
+源码阶段实际metadata独立审核为A **466条assistant／六阶段**、C **41次model_request_end／三阶段**，全部准确原session、指定Flash max；无parent／fork／子代理／换模，同模型压缩metadata单列通过；九阶段均自然CLI0。CLI0不替代代码或测试结论，Git阶段仍另核实际metadata与回执。
+
+### 9.2 最小验证代码与审阅裁定
+
+- 活动host观测只在`_page_lock`内读当前ticket／绑定／ready／launch等状态，不调用`get_bootstrap()`充当只读观测。旧票据必须在实际新host提交拒绝且前后全状态相同；故障前真旧token先在旧服务受保护context取得200，随后同一新服务port上旧401／新200，不以随机token、字符串差异、旧port拒连或健康接口替代。
+- 私有observer记录精确old/new窗口标签／host／bundle／代际、真实恢复worker线程、严格递增seq和monotonic时间；核真实旧executor原子idle-stop返回、原线程由活到死、完整gate状态、旧服务确认停止、host退休、engine close/reopen、根锁保留、新bundle CAS及新业务ready先于旧destroy／closed。两次真实退休分别记录首次与幂等调用，不删事件凑顺序。新executor须非旧实例且归属新bundle／runtime，退休状态复用锁内快照，旧回调不得改变新host状态／冻结owner。
+- 真实旧engine与持有Session须实际只读拒绝并为预期`RuntimeError`；新engine／Session有`SELECT 1`正对照。根锁校验同一有效handle，竞争必须`LOCAL_APP_ALREADY_RUNNING`；周签名身份前有效／后`LocalWeeklyPreviewStale`，daily／weekly采用store前真实issue/get、实际失效后get为None。store层退休不等于完整业务采用端到端；没有真实active worker时明确记absent，不宣称某发送中worker已退出。
+- 原生输入门定位唯一owned模态提示、精确PID／owner／线程、非零互异控件句柄、前台及保留焦点，再允许真实SendInput。每提示最多一次普通激活，之后只读轮询；不通过Focus／Select／ActiveControl赋值修默认，不重复发送。Enter／Escape、提示SC_CLOSE、故障owner的SC_CLOSE、最终明确鼠标重开分别记，不用PerformClick／属性冒称按键通过。GUI门仍严格保留，能力不足不改成通过。
+- 完整默认业务／资源指纹之外，另核`include_runtime_fields=True`全字段指纹及独立persist child；输出位于数据／凭据外且fresh，保留原raw-parent／reparse／互斥门。C提出输出根可嵌入data的意见经Codex回读被驳回：原函数已有resolved互斥循环；新增负例确认mkdir前拒绝，不新增无关相邻文件规则。
+
+首版未运行窗口即被Codex退回：本机真实interop核到`IntPtr`不能直接`int()`；WinForms属性返回同一.NET对象时Python `is`为false、`Object.ReferenceEquals`为true。原A修ToInt64／managed身份，并补真实Form／Button正反例、提示尚未创建的等待竞态及错误线程／缺UID／重复seq等负对照。实现者初稿单元失败及后续修订日志均保留；这些验证器问题没有被当作产品键盘或恢复缺陷。原无详细堆栈／退出的中断完整轮失败、自然白屏触发及Word/r历史差异仍未知。
+
+### 9.3 Codex独立源码／合成证据
+
+最终受检验证器原字节SHA256为`31d43ac35b0881ec205563b656b4d7da4483b1f7ab941cca51b95293090ff7c6`，测试为`e13d36480956a019ad86a071c84143df38dba85d4842175fbbc70a4b9d30d403`。实际测试HEAD为e42e830工作树，交付时另核这些字节对应Git规范化blob和暂存tree，不把未提交工作树冒称已有新commit。
+
+使用现有CPython3.14.10 x64标准GIL／锁定venv，APP_DISABLE_DOTENV、禁pyc、SQLAlchemy纯Python，各次新短TEMP／TMP及其内basetemp，沿原Python loopback守卫。未重复无关前端构建：前端源码及此前审定三文件原字节均未变。
+
+| 独立范围 | 实际结果／边界 |
+| --- | --- |
+| 恢复协调器／原生适配／生命周期 | **67 passed，0 failed/error/skipped，exit0，1.87秒**；所涉产品源码前后未变。 |
+| 原子idle-stop节点 | **7 passed，0 failed/error/skipped，exit0，4.75秒**，保留真实claim并发及未确认退出拒绝门。 |
+| 最终验证器单元／真实服务集成 | **25 passed，0 failed/error/skipped，exit0，5.22秒**；三组独立共99项，不用实现者65项替代。 |
+| 真实服务／对象交接 | 真旧ticket在新host拒绝且全状态不变；旧port旧token200、新port旧401／新200。真实coordinator／ReopenSequencer驱动旧线程实际停止、旧service确认死、旧host／engine／Session与签名／store退休、根锁保留及竞争拒绝，fresh executor归属正确。 |
+| 顺序及所有权 | 完整21事件seq为1..21，均对应真实恢复worker；代际1→2，首次stop／service stop／retire／engine close/reopen／幂等retire／新bundle安装／service启动／business-ready／old destroy／closed顺序通过。old/new window与native adapter明确为测试替身，业务ready握手在真实context GET后建立；不声称真实WebView加载或像素通过。 |
+| 完整持久化 | 49表／12资源，默认与含runtime字段全指纹分别前后一致；task／execution／attempt各4→4，unknown／候选／确认及日周／观察／照片等全表／资源保持。实际`close_latest=True`、服务／executor确认后root handle释放；这是合成合同资源收口，不是GUI正常关闭。 |
+| 独立进程冷读 | 受管persist子命令新进程**exit0，4.67秒**；默认／全字段指纹、计数、integrity=ok／FK0均通过，无窗口、无执行器或供应商。 |
+| 全字段负对照 | 只在新expected文件篡改runtime combined SHA，数据未动；**预期exit1，4.66秒**，counts/default fingerprint/integrity/FK仍通过而runtime_fingerprint_match=false，证明不靠计数掩盖完整差异。 |
+| 来源稳定 | 最终独立执行前后**550份非Markdown受管文件SHA相同**；相对e42e830仅上述两份verification／测试改变。守卫与两份执行runner未被原生实现者改动。 |
+
+独立服务集成默认combined SHA为`08d191942118dc33a452e147c4ba34c50e8e0c88be536489a76a43c897e1d9c5`，全runtime为`8a08d8f6e5e3afbd496bba91d414b3b0ee4679cb87e3429d3827c4c3a1b51d21`；同根交接前／后及独立冷读相同，不与其它随机fixture根比较。492,067字节原始集成报告、XML、事件、日志、合成库／资源和私下索引留当地，不入Git；票据／token／bootstrap／payload不写报告。
+
+### 9.4 实际窗口首失败、能力阻塞与未验
+
+首个Page窗口受检验证器SHA为`f1a50375cbdc65381c1640f1495519db5f8c77cba9470ece8fce548e5da3f1a9`（本节最终回修前身份），先经当时21项独立单元再运行。自有Core Page.crash触发真正owned模态提示，PID／owner／线程、两个按钮、非零句柄和保留焦点均核到；但`foreground=false`，一次`SetForegroundWindow`返回false，严格门**没有发送Enter**，stage=`prompt_enter_foreground`。Enter／Escape／提示X及后续重开运行均未通过，Browser新窗口轮未启动；不自动重试或把此输入路由问题认作产品缺陷。
+
+Computer Use只读owned子树的按钮句柄与上述原生证据相同，但没有独立可操作提示窗身份；截图报`CreateForMonitor 0x80070057`，尝试明确重开收尾时输入报`GetCursorPos 拒绝访问 0x80070005`。拒绝原样保留，未扩权或改用shell／其它输入注入绕过，已请求用户手动对该新合成档案明确重开再正常关闭。提交前未取得该原进程退出回执，不预填exit0；后续手动收尾或较新源码子进程独立记，不能补写此首轮通过。Codex另只读核该首失败根的49表／12资源默认及全runtime指纹均与故障前相同，未prepare、未输入或修改该根。
+
+本片证实并修的是**源码验证器失败收尾**：driver直接destroy故障旧窗会被原生关闭拦截，`webview.start()`可能不返回，外围finally来不及受控退休。最终验证器先持久化首failure，再仅对本验证器自有失败窗按mark_expected_close→精确host retire许可→destroy收尾；顺序及失败负对照通过。该路径不进入产品，也没有把它当作GUI运行已复验。原始首失败资料、当时精确源码字节身份及进程现场保留。
+
+原a5580b1冻结包的[测试机§8](desktop-windows11-white-concurrency-review.md#8-2026-11-05a5580b1新冻结包恢复限定增量)继续保持其原提交／build／run身份：外部故障、点击流程、完整持久化、配置保留及四次宿主exit0结论不重放、不撤销；内部ticket／token、对象退休、精确Core kind、business-ready先于旧destroy及真实键盘仍缺可靠冻结观测，不能用本节源码合同补写通过。真实in-flight worker退休、完整业务采用端到端、真实新WebView业务ready／正常关闭及其它既有未验仍分列。
+
+### 9.5 Git、自动CI及原测试机接续
+
+本轮应用真实AI调用**0次**；仅新合成资料，无真实档案／照片／配置／明文密钥读取或DPAPI复制，不重发unknown。Python守卫不等于OS／WebView全局抓包；原真实配置继续按[§6.7](desktop-windows11-white-concurrency-review.md#67-后续拉取代码时保留本机ai配置)原地保留。本机SAC4551不启动冻结EXE／helper，不改名、换路径、去来源标记或降低保护；不签名、安装更新、WebDAV、远控或发行。不重跑完整backend、旧39项、13份43页Word、IME或W6跨120秒睡眠。
+
+只交付两份受管verification／测试及根AGENTS、本记录、current三份脱敏文档。Codex核准确路径、原字节／Git规范化blob、实际单parent e42e830完整SHA及暂存tree，再交原A普通commit／push原分支，独立核远端、tree、工作区及Git阶段metadata；准确新SHA和回执以实际Git结果为准，不循环写自身SHA。远端不可快进即报告，不接收他方后续提交或自动整合；不add-all／amend／merge／rebase／force，不改main／默认分支／可见性、tag／Release。
+
+push自动生成新CI时只读核本次commit可信run／attempt、artifact digest、原外ZIP／内ZIP／PS1、两身份文件、manifest、实际来源freeze及CArchive/PYZ同源／必要模块门；verification不强行打入产品，不dispatch／重跑或伪造构建前freeze时间。提交前不预填新CI通过；实际候选身份以最终只读回执及本地证据为准，Windows2022静态不等于Windows11运行。
+
+交回原Windows11测试机的最小增量：先核实际交付SHA／tree和新候选完整身份／原字节，在新合成根确认可取得真正owned提示身份、前台／焦点与可靠输入能力；能力不足就停止该分支记未验。可用时各一次自有renderer／browser受控故障，真实Enter保留、再次原生关闭重提示、Escape及提示X保留、再次提示后明确重开，正常关闭及独立新进程冷启动，完整默认／全runtime指纹保持；只按新身份记运行。内部项没有可靠冻结外部观测仍阻塞，不开调试端口、不注入／换模块、不增加公开JS／HTTP身份能力或产品debug开关。首次失败现场及其它历史未知继续保留，本片不是产品整体验收。

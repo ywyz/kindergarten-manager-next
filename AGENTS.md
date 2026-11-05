@@ -6,10 +6,9 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-05：已接收0e51491的[测试机增量§7](docs/bootstrap/desktop-windows11-white-concurrency-review.md#7-2026-11-050e51491原测试机增量)，本轮仅补齐恢复模块来源／归档门及受管源码验证器观测，已完成[限定核查§8](docs/bootstrap/desktop-regression-repair-review.md#8-2026-11-05来源门与受管恢复验证器回修)。相关119项及验证器6项、受管Page／Browser源码窗口与独立冷启动通过；新CI制品按自身提交另核，冻结运行不继承源码结论。原中断轮失败原因、自然白屏精确触发、Word/r历史差异仍未知，旧39项及13份43页不重验。开发机SAC4551不启动包／冻结helper，不签名或发行。
+2026-11-05：本轮恢复核验结果见[限定核查§9](docs/bootstrap/desktop-regression-repair-review.md#9-2026-11-05恢复身份内部退休与真实输入限定核验)。仅补受管验证器／测试，源码真实服务及对象合同通过；原生输入遇能力拒绝、首失败窗收尾待实际回执，真实窗口与冻结内部项未收口，不认定为产品键盘缺陷。原测试机外部冻结结论保持原身份；旧失败原因、自然白屏及Word/r差异继续未知。开发机SAC4551不启动包／冻结helper，不签名或发行。
 
-继续 `codex/desktop-v2-foundation`，本轮接收173880d，仅普通fetch及快进；用户已授权两项最小修复、验证和审核后普通提交推送。准确交付身份以实际Git及远端回执为准，不重放旧merge授权。唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；测试机历史见[白屏／并发补核](docs/bootstrap/desktop-windows11-white-concurrency-review.md)，状态见[v2入口](docs/bootstrap/architecture-v2-readiness.md)。源码、包、Word和教师结论分别记。
-
+继续 `codex/desktop-v2-foundation`。本轮指定接收、源码字节、验证与Git／CI身份归正式结果，唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；测试机历史见[白屏／并发补核](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。用户已授权限定核验和审核后普通提交推送；不重放旧merge或写入白名单，源码、包、Word与教师结论分别记。
 原生OpenCode／Command Go固定DeepSeek V4.1 Flash max，按当轮精确文件责任执行。已完成白名单不重放，原生会话身份不可跨机冒充；本轮Command Go仅只读诊断／交叉审阅；此前写工具拒绝保留，未放宽权限或以shell绕过。Codex独占正式文档和最终审核，通用保存、恢复、关闭缺陷优先；真实原库／照片／凭据与首失败保留，验证用合成资料。不启动WebDAV、签名、安装更新或发行。
 
 ## 产品与架构原则
