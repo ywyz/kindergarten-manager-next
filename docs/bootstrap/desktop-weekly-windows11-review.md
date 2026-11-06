@@ -1,5 +1,16 @@
 # 周计划 Windows 11 新候选与 GitHub 构建核查
 
+## 2026-11-07 main 基线便携包
+
+用户要求在一对一倾听编码前将桌面基础分支合入 main、建立并推送新功能分支，同时打包已有功能。原 OpenCode 按 Codex 审核的 36 份 Markdown、父提交 `b670587` 与准确暂存树完成普通提交。main 快进，新分支 `codex/desktop-one-to-one-listening` 从同一提交建立，两条远端引用已核对。GitHub Actions 在合并后的 main 手动触发构建。包支持已有日计划、周计划、游戏观察和本地备份等功能；一对一倾听在新分支做设计。
+
+| 项目 | 本次身份或结果 |
+| --- | --- |
+| 源与构建 | `f6c3da923db917cca00c646664f9b5e2fe75c891`，tree `b5c230be80badc665216f0a7b2d7bd47ff06f655`；[run 42308426095](https://github.com/ywyz/kindergarten-manager-next/actions/runs/42308426095)，attempt 1，artifact `13547082488` |
+| 包 | build `d04f4875-0a54-429a-9714-eea20f8c5223`，revision `20261102_0008_local_weekly_ai`；程序 ZIP 44,178,460 字节，SHA-256 `a1aea741edfa13682d79b01a087e4e0d1644c0b4a89e7c4471d3060a3381be0d` |
+| 复核 | 外层 ZIP SHA-256 `20d6201bcb338d4e7753e4a975b0396776af6a5cb15d1ae83ea50335e531049c` 与 GitHub digest 相符；CI Windows Server 2022 静态目录 56/56、归档 60/60。开发机只读复核同源工作流、脚本、两层 ZIP、包内身份及 manifest 的 187 份文件逐项大小与 SHA。 |
+| 执行边界 | 主 EXE 未签名，SAC4551 开发机未启动 EXE 或 helper。此新构建的 Windows 11 目标运行与用户使用体验尚待新包实测。旧候选的运行回执保留其原有身份。 |
+
 更新：2026-11-02。本轮用户授权新 Windows 11 周计划验证包，原生 OpenCode／Command Go 的 DeepSeek V4.1 Flash max可并行，Codex最终审核，构建及静态核查后提交推送；随后追加“在GitHub上生成exe供测试”和更新文档。目标电脑实际操作由用户执行，[测试手册](desktop-weekly-windows11-manual.md)列步骤和空白回执。
 
 后续状态：另机实际测试、两项最小回修、新包13份／43页Word补测及用户对39项教师清单的整体确认已收口，见[另机测试收口](desktop-weekly-target-test-closeout.md)。本文保留原构建／GitHub制品的历史时点身份；下文当时“目标未验”不再作为当前任务状态，也不把新包结论倒填给原制品。

@@ -1,6 +1,6 @@
 # 当前任务：一对一倾听记录工程设计
 
-2026-11-07。用户要求先把桌面基础分支合入 `main`，再从该基线创建并推送 `codex/desktop-one-to-one-listening`，后续在新分支工作。教师流程、原表文字及 Word 样稿验收归[产品规格](../specs/desktop-one-to-one-listening.md)。代码接入点、保存与备份、Word、AI 候选和分片验收归[工程设计](../specs/desktop-one-to-one-listening-engineering.md)。
+2026-11-07。桌面基础分支已快进合入 `main`，`codex/desktop-one-to-one-listening` 已从 `f6c3da9` 建立并推送。已有功能的 Windows 包、制品身份和静态核验归[打包回执](../bootstrap/desktop-weekly-windows11-review.md#2026-11-07-main-基线便携包)。新分支的一对一倾听仍处在设计阶段，最新 Word 校样要求文字纯黑，标题领域名称与两侧留白连续加单下划线。教师流程与样稿归[产品规格](../specs/desktop-one-to-one-listening.md)，接入与验收归[工程设计](../specs/desktop-one-to-one-listening-engineering.md)。
 
 ## 本轮交付
 
