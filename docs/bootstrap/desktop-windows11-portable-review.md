@@ -6,7 +6,7 @@
 
 用户授权阅读并执行 [current.md](../tasks/current.md)，分别交 Command Go 与 OpenCode 完成，Codex 独立审核，通过后提交推送，并思考下一步、撰写提示词。沿用 `codex/desktop-v2-foundation`，开工 HEAD 为 `91e6a553db6d25a1603849f139f22e9d9097537b`。既有 AGENTS、索引、备份核查、任务入口及未跟踪便携计划为已授权文档改动，已保存开工差异，保留整合。
 
-按[计划责任表](desktop-windows11-portable-plan.md#3-并行责任和依赖顺序)派发 A／B／C／D。A 续原 OpenCode `ses_ead8af71dffeJphI1NOWg4jZgI`；B 复用空闲辅助 `ses_e72ecd5f9ffeYJaLRNypsdu5Pi`；C 续 Command Code `8cf528de-8773-4a06-9cc5-31e96fab515f`；D 为独立原生 Command Code 会话。固定 Go DeepSeek V4.1 Flash max，不 fork、另派子代理、安装工具或升级依赖。A 为最终 Git 执行者，须等待具体文件及 blob／tree 批准。
+按[计划责任表](desktop-windows11-portable-plan.md#3-本轮已执行的并行责任和依赖顺序)派发 A／B／C／D。A 续原 OpenCode `ses_ead8af71dffeJphI1NOWg4jZgI`；B 复用空闲辅助 `ses_e72ecd5f9ffeYJaLRNypsdu5Pi`；C 续 Command Code `8cf528de-8773-4a06-9cc5-31e96fab515f`；D 为独立原生 Command Code 会话。固定 Go DeepSeek V4.1 Flash max，不 fork、另派子代理、安装工具或升级依赖。A 为最终 Git 执行者，须等待具体文件及 blob／tree 批准。
 
 ## 2. 开工证据与边界
 

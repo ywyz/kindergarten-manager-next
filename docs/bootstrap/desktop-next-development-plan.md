@@ -1,6 +1,6 @@
-# 桌面周计划阶段计划
+# 桌面周计划阶段计划（历史）
 
-更新：2026-11-01。Q1–Q6已定稿；Q1–Q4首片与明暗已实现，完整源码回归、真实保存确认／旧确认保稿导出、Word全页、明文／加密备份及保护包恢复通过限定工程核查，最后文案重开已核，详见[实施核查](desktop-weekly-plan-review.md)。按精确Git门禁普通提交推送，唯一入口为[current](../tasks/current.md)。固定r03目标1与指定Word教师结论保持原身份。
+本页保留 2026-11-01 的周计划分片顺序、复用理由与当轮门槛。表中的“下一片”指当时计划。Q1–Q4 与指定 Word／教师回执见[目标收口](desktop-weekly-target-test-closeout.md)，Q5/Q6 与材料的目标机结果见[独立核查](desktop-weekly-ai-windows11-target-review.md)。新的设计任务见[唯一入口](../tasks/current.md)。
 
 ## 1. 建议结论与顺序
 

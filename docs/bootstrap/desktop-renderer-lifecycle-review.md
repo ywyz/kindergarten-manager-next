@@ -1,6 +1,8 @@
 # 桌面渲染器丢失：开发机复现与生命周期核查
 
-更新：2026-11-04。本片通知有界调度与用户已确认的异常页面手动重开，完成Codex限定源码审核：最终238项相关测试、真实renderer／browser故障业务窗口及独立进程完整指纹通过，详见§10–§12；不作冻结包或产品整体验收。接收的测试机提交为`61ef9f9ee54724e8c9a03e95f5e303ae0ba970da`，tree为`7146737f7475cd7ab1d7a22b327cfea75749efb1`；接收时工作区干净，普通`pull --ff-only`完成。前轮[目标验证](desktop-weekly-ai-windows11-target-review.md)和[白屏／并发／Word补核](desktop-windows11-white-concurrency-review.md)保持各自源、包和执行身份。
+本页为 11 月 4 日的开发机生命周期记录。后续[源码交错修复](desktop-regression-repair-review.md#10-2026-11-06测试机回执接收与关闭交错回修)与[原 Windows 11 实包验收](desktop-windows11-white-concurrency-review.md#10-2026-11-06b657363-原-windows-11-关闭恢复增量)分列。
+
+2026-11-04：本片通知有界调度与用户已确认的异常页面手动重开，完成Codex限定源码审核：最终238项相关测试、真实renderer／browser故障业务窗口及独立进程完整指纹通过，详见§10–§12；不作冻结包或产品整体验收。接收的测试机提交为`61ef9f9ee54724e8c9a03e95f5e303ae0ba970da`，tree为`7146737f7475cd7ab1d7a22b327cfea75749efb1`；接收时工作区干净，普通`pull --ff-only`完成。前轮[目标验证](desktop-weekly-ai-windows11-target-review.md)和[白屏／并发／Word补核](desktop-windows11-white-concurrency-review.md)保持各自源、包和执行身份。
 
 GitHub只读API核到该完整SHA的[push CI运行41757564487](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41757564487)／attempt1为completed／success。本轮未下载或运行其制品，不能把API状态当包字节、静态或目标运行复验；它不含本片改动。
 

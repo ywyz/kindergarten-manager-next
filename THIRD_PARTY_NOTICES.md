@@ -11,6 +11,7 @@ Python 表来自当前已安装桌面验证环境的 47 个分发包及包内许
 ## Word、截图和运行时
 
 - 五份受控 Word 模板位于 `backend/app/assets/word_templates/`。用户于 2026-10-30 明确确认模板由本人制作，或已取得可公开分发及采用 MIT 的授权；本轮清理后的模板按该授权纳入 MIT。清理内容与当前 hash 见资源 README，独立核查见 [开源准备检查](docs/bootstrap/open-source-readiness-review.md)。原始未清理文件及历史证据不因此变成可推荐公开的样例。
+- 2026-11-07，用户另行确认一对一倾听的小、中、大班五领域共 15 份指定空表可按 MIT 随公开仓库和应用分发。当前处于设计阶段，待清除个人文档属性、核对格式与评价原文后再纳入资源清单。许可范围限于指定空表；教师填好的幼儿记录、作品照片和私有资料另行保管。见[一对一倾听产品规格](docs/specs/desktop-one-to-one-listening.md)。
 - 仓库中的历史界面截图是合成验证资料，不包含真实儿童照片；其中展示的 Microsoft 等产品界面、名称和商标仍归原权利人。
 - Windows、Microsoft Word、WebView2、.NET 以及系统字体不因项目采用 MIT 而取得额外分发授权；本源码仓库不提供这些产品的安装包或嵌入字体文件。
 - CPython 及其运行时组件遵守 Python Software Foundation 及所附许可。后续冻结包需保留实际随包组件的许可文件。

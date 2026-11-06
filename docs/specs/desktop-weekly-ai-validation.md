@@ -1,8 +1,8 @@
 # 桌面周计划 Q5/Q6 假供应商验证矩阵
 
-2026-11-03执行状态：文档51ec4d3、实现及限定审核cd88d9d已提交，G0／G1、页面／契约兼容、真实游戏／材料生成采用及新候选静态已有分层证据。本地桌面最新补过材料源码闭环、无执行器手工保存／确认／重进及正常退出；新包目标运行未验，不把46项全部记通过。下文“全部未执行”保留11月2日准备轮身份，当前结果见§8及[实施核查§12–16](../bootstrap/desktop-weekly-ai-review.md)。
+本矩阵定义 46 项案例。开发机实际覆盖的子集见 §8 与[Q5/Q6 实施核查](../bootstrap/desktop-weekly-ai-review.md)；另机的真实操作、Word 与备份回执按候选分列于[Q5/Q6 目标机核查](../bootstrap/desktop-weekly-ai-windows11-target-review.md)。只对各报告实际运行的场景记通过。
 
-原始案例更新：2026-11-02；该准备轮状态为**全部未执行（NOT RUN）**。以下保留案例定义，当前执行结果以上方2026-11-03状态及[实施核查](../bootstrap/desktop-weekly-ai-review.md)为准。依据[产品§9／Q5/Q6](desktop-weekly-plan.md)和[工程合同](desktop-weekly-ai-engineering.md)。矩阵自身不授予执行权限，唯一执行入口为[current](../tasks/current.md)。原生准备、Codex审核及原边界见[准备核查](../bootstrap/desktop-weekly-ai-preparation-review.md)。
+原始案例更新：2026-11-02；该准备轮状态为**全部未执行（NOT RUN）**。以下保留案例定义，各阶段实际覆盖以上方证据为准。依据[产品§9／Q5/Q6](desktop-weekly-plan.md)和[工程合同](desktop-weekly-ai-engineering.md)。矩阵自身不授予执行权限，唯一执行入口为[current](../tasks/current.md)。原生准备、Codex审核及原边界见[准备核查](../bootstrap/desktop-weekly-ai-preparation-review.md)。
 
 ## 1. 合成夹具与证据
 
@@ -115,4 +115,4 @@ S0：新合成档案P、班级C、学期T、周W，锚点2026-05-11，已存周�
 
 新build_id e1b727c8-6ba9-4b39-82bf-a6b4fe81cdc3完整构建及Root目录54／ZIP59静态通过，来源285文件摘要ee38fabd…；没有执行EXE/helper或目标PS。按用户要求从远程桌面重试后，捕获返回全黑，UIA仍读工作台，点击／Tab无可观察改变，新r03仍0任务／0发送。材料原生页面后半、无执行器窗口和新包目标运行继续未验；不将任何这些单层结果提升为整行或全46项通过。
 
-以上末段保留cd88d9d提交时的未验身份。最新本地桌面恢复后，Root实际补过材料采用／两行手改／leave自动保存v5／重进／确认v1及只读历史，随后用本次E14前端的无执行器源码进程补第三行、保存v6／确认v2／重进，两进程均实际正常关闭且exit0。最终真实SQLite副本全链通过，6内容／2确认／2采用及各2个task／execution／attempt／candidate完整，模拟发送总2、无执行器新增0，本次无真实AI。确认v1仍含原两行、v2含三行。该补验不改旧失败、不外推其它矩阵组合或新冻结包目标运行；下一步仅新包增量目标核查，详见实施核查§16。
+以上末段保留cd88d9d提交时的未验身份。最新本地桌面恢复后，Root实际补过材料采用／两行手改／leave自动保存v5／重进／确认v1及只读历史，随后用本次E14前端的无执行器源码进程补第三行、保存v6／确认v2／重进，两进程均实际正常关闭且exit0。最终真实SQLite副本全链通过，6内容／2确认／2采用及各2个task／execution／attempt／candidate完整，模拟发送总2、无执行器新增0，本次无真实AI。确认v1仍含原两行、v2含三行。该补验不改旧失败、不外推其它矩阵组合或新冻结包目标运行；该阶段的交接见实施核查 §16，后续目标机结果见篇首。

@@ -130,7 +130,7 @@ B1 Git 收口：原会话按 Codex 批准的 **20 个文件／逐 blob** 正常�
 
 原会话仅设计的 67 行共享捕获合同可采用现有 `SnapshotResult` 和独占 lease 的接口边界；独立源读发现调用者顺序尚不充分：先排空／freeze、再建立 intent，仍会给新外部 AI 提交留空隙，也可能把已排队任务冻住。另需用本轮唯一 freeze owner，不能重复字面量 `restore` 让旧释放命中新操作。
 
-核定修正已归入[规格 §10.1](../specs/desktop-backup-restore.md#101-b2-s1-共享捕获接口核定待实施及独立验证)：intent 先行、已接受工作先排空、AI live／queued 终结后 freeze／exclusive；捕获还须只读拒绝“执行器看似 idle 但 DB 仍有 queued”的错误调用，不在 exclusive 内等待写库。以上为设计发现，不能称 B2 已运行失败或接口已通过。B1 结论保持，待 B1 Git 后由原会话实施此接缝，再独立审核。
+核定修正已归入[规格 §10.1](../specs/desktop-backup-restore.md#101-b2-s1-共享捕获接口核定限定源码独立通过)：intent 先行、已接受工作先排空、AI live／queued 终结后 freeze／exclusive；捕获还须只读拒绝“执行器看似 idle 但 DB 仍有 queued”的错误调用，不在 exclusive 内等待写库。以上为设计发现，不能称 B2 已运行失败或接口已通过。B1 结论保持，待 B1 Git 后由原会话实施此接缝，再独立审核。
 
 2026-10-31 产品入口补充：用户直接确认 P06，首次启动与设置页都提供恢复入口，仍预览确认及保留恢复前空业务档案完整保护副本。已归入规格 §1；不影响 B1 已核定源身份，B2／B3 须验证两个入口。
 

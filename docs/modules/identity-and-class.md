@@ -63,7 +63,7 @@ E04日期／学期／可信快照的纯规则已随E01／E02／E04实施，见[E
 
 ## 实施前须细化
 
-2026-10-17用户确认D2班级游戏配置采用最小方案：可用区域／专用室、户外场地或游戏范围及简短限制／指导；未填写时允许生成一般建议并明确说明，不增加按星期排班。默认任务年级取计划创建快照，可明确选择本次目标年级，不改当前班级或旧表头。工程字段、版本及沿现有预览／应用路径的扩展见[D2规格§9.1](../specs/desktop-ai-daily-plan.md#91-配置和任务输入)，目前只有规格，没有新增配置实体／接口或迁移。
+2026-10-17用户确认D2班级游戏配置采用最小方案：可用区域／专用室、户外场地或游戏范围及简短限制／指导；未填写时允许生成一般建议并明确说明，不增加按星期排班。默认任务年级取计划创建快照，可明确选择本次目标年级，不改当前班级或旧表头。工程字段、版本及沿现有预览／应用路径的扩展见[D2规格§9.1](../specs/desktop-ai-daily-plan.md#91-配置和任务输入)，实际配置与版本保护见[W2 核查](../bootstrap/desktop-d2-w2-review.md)。
 
 - D1B 当前班级、多学期维护、已有计划访问及有效日历预览已按 D1 规格 §9–10 收敛，不再列为产品未决；新增班级／多班切换仍后置。
 - 配置变更、换机及恢复历史数据时的身份与计划映射。
@@ -74,4 +74,4 @@ E04日期／学期／可信快照的纯规则已随E01／E02／E04实施，见[E
 
 [原账号注册与访问规格](../specs/identity-registration-and-access.md)中的首个管理员、待分配教师、管理员重置与服务器恢复等属于 v1 历史规则，已由本地单档案初始化后直达工作台的产品流程替代；旧实现和验收证据保留原身份，桌面工程方案按[桌面基础适配计划](../specs/desktop-foundation-plan.md)细化。
 
-旧规格须先映射到本 Contract 与 ADR 0004，不能直接执行。本地身份与SQLite迁移已在相应D1／D2及备份范围验证；[D1收口](../bootstrap/desktop-d1-review.md)与[备份结果](../bootstrap/desktop-backup-restore-review.md)不等于所有环境／产品验收。班级教师名单／保育员新增设置按周计划Q4及工程设计，当前设计已定、未实现；后续入口见[Architecture v2 实施入口](../bootstrap/architecture-v2-readiness.md)。
+旧规格须先映射到本 Contract 与 ADR 0004，不能直接执行。本地身份与SQLite迁移已在相应D1／D2及备份范围验证；[D1收口](../bootstrap/desktop-d1-review.md)与[备份结果](../bootstrap/desktop-backup-restore-review.md)不等于所有环境／产品验收。班级教师名单／保育员新增设置按周计划Q4及工程设计，已随 Q1–Q4 首片实施，见[周计划核查](../bootstrap/desktop-weekly-plan-review.md)；后续入口见[Architecture v2 实施入口](../bootstrap/architecture-v2-readiness.md)。

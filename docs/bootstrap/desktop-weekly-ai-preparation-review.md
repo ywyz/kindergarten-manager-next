@@ -1,6 +1,6 @@
 # 桌面周计划 Q5/Q6 文档准备核查
 
-2026-11-03适用范围更新：以下保留11月2日准备轮的基线、metadata、检查数字和当时“目标未验”身份。开发机现已快进至`0285a7c`并合并本地文档；[另机测试收口](desktop-weekly-target-test-closeout.md)新增限定目标／指定Word及教师整体接受，两项实现修复属于远端提交，不是本次本地实现。下文旧候选未验与HEAD未变结论只指准备轮，不覆盖本次拉取；Q5/Q6仍只有文档准备，未执行矩阵。
+2026-11-03适用范围更新：以下保留11月2日准备轮的基线、metadata、检查数字和当时“目标未验”身份。开发机现已快进至`0285a7c`并合并本地文档；[另机测试收口](desktop-weekly-target-test-closeout.md)新增限定目标／指定Word及教师整体接受，两项实现修复属于远端提交，不是本次本地实现。下文旧候选未验与HEAD未变结论只指准备轮，不覆盖本次拉取；本准备轮止于文档。Q5/Q6 随后的实现和实际验证分别见[开发机核查](desktop-weekly-ai-review.md)及[目标机核查](desktop-weekly-ai-windows11-target-review.md)。
 
 更新：2026-11-02。范围：用户明确要求并行准备工程合同、假供应商验证矩阵和文件分工，继续原生OpenCode／Command Go的DeepSeek V4.1 Flash max，由Codex最终审核更新文档，暂不业务实现和真实应用AI。[工程合同与分工](../specs/desktop-weekly-ai-engineering.md)、[验证矩阵](../specs/desktop-weekly-ai-validation.md)为本轮交付，执行入口仅[current](../tasks/current.md)。
 

@@ -1,6 +1,6 @@
 # 周计划 Windows 11 验证包：下载与另一台电脑测试
 
-更新：2026-11-03。当前适用于包含周计划Q5/Q6、明暗及完整备份恢复的**新身份未签名内部测试包**，数据库0008。实际执行顺序、AI授权及增量范围只按[当前入口](../tasks/current.md)；本手册§3–6保留通用操作参考，不要求重做已接受39项教师清单、13份／43页Word或全部旧样例。Q5/Q6开发机证据见[实施核查](desktop-weekly-ai-review.md)，旧包／旧目标结果保持[各自身份](desktop-weekly-target-test-closeout.md)，不填作新包通过。
+历史测试手册（2026-11-03），适用于当时包含周计划Q5/Q6、明暗及完整备份恢复的**新身份未签名内部测试包**，数据库0008。原轮已结束，结果见[目标机核查](desktop-weekly-ai-windows11-target-review.md)。如有后续任务，实际范围只按[当前入口](../tasks/current.md)；本手册§3–6保留通用操作参考，不要求重做已接受39项教师清单、13份／43页Word或全部旧样例。Q5/Q6开发机证据见[实施核查](desktop-weekly-ai-review.md)，旧包／旧目标结果保持[各自身份](desktop-weekly-target-test-closeout.md)，不填作新包通过。
 
 ## 1. 从 GitHub 下载
 

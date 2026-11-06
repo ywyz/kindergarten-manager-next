@@ -1,8 +1,8 @@
 # 周计划 Contract
 
-2026-11-03最新实施状态：文档51ec4d3、Q5/Q6实现及限定审核cd88d9d已提交，旧档案／备份先行、真实游戏／材料生成采用及新候选静态通过；本地桌面已补过材料源码闭环、无执行器手工保存／确认／重进及正常退出，新包目标运行未验。接口按[工程§9](../specs/desktop-weekly-ai-engineering.md)，来源、补验及下一步见[实施核查§12–16](../bootstrap/desktop-weekly-ai-review.md)。以下准备轮与旧包结论保留当时范围。
+Q1–Q6 已实施。手工周计划的指定验收见[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)。游戏、所选栏目及材料由教师分别发起，实际采用、Word 及恢复的验证范围见[Q5/Q6 实施核查](../bootstrap/desktop-weekly-ai-review.md)及[Q5/Q6 目标机核查](../bootstrap/desktop-weekly-ai-windows11-target-review.md)。
 
-状态：Architecture v2 有效 Contract，依据[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。2026-11-01 用户已确认 Q1–Q6，[产品规格](../specs/desktop-weekly-plan.md)已定稿，[首片工程](../specs/desktop-weekly-plan-engineering.md)已落实Q1–Q4。历史准备轮（2026-11-02）只准备[Q5/Q6工程合同](../specs/desktop-weekly-ai-engineering.md)、[假供应商矩阵](../specs/desktop-weekly-ai-validation.md)和分工，当时未实现或调用真实AI；其状态已由上段本轮实施接续。[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)的限定目标／指定Word及教师整体接受保持原范围。
+状态：Architecture v2 有效 Contract，依据[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。2026-11-01 用户已确认 Q1–Q6，[产品规格](../specs/desktop-weekly-plan.md)已定稿，[首片工程](../specs/desktop-weekly-plan-engineering.md)已落实Q1–Q4。历史准备轮（2026-11-02）只准备[Q5/Q6工程合同](../specs/desktop-weekly-ai-engineering.md)、[假供应商矩阵](../specs/desktop-weekly-ai-validation.md)和分工，当时未实现或调用真实AI；后续实施与验证见上段。[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)的限定目标／指定Word及教师整体接受保持原范围。
 
 ## 归属与唯一性
 
@@ -72,4 +72,4 @@
 
 既有[材料实施规格](../specs/weekly-materials-implementation.md)、[协同索引](../specs/ai-capabilities-implementation.md)及旧验收记录保留原身份。与本 Contract 冲突的全班汇总、负责人接管、中央执行及触发规则须先改写，新输入按已确认Q5／Q6及工程合同适配，不能直接执行旧规格。
 
-2026-11-02：周计划Q1–Q4及明暗首片已完成限定源码、原生保存／确认、Word页检和备份恢复核查，实际范围见[实施核查](../bootstrap/desktop-weekly-plan-review.md)；新Windows候选与修复包分别见[候选核查](../bootstrap/desktop-weekly-windows11-review.md)和[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)，限定目标／指定Word及教师整体接受已完成。Q5/Q6进入文档准备，不宣称AI／材料实现或矩阵通过；唯一执行入口见[current.md](../tasks/current.md)。
+2026-11-02：周计划Q1–Q4及明暗首片已完成限定源码、原生保存／确认、Word页检和备份恢复核查，实际范围见[实施核查](../bootstrap/desktop-weekly-plan-review.md)；新Windows候选与修复包分别见[候选核查](../bootstrap/desktop-weekly-windows11-review.md)和[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)，限定目标／指定Word及教师整体接受已完成。当时 Q5/Q6 进入文档准备，后续实现与目标机证据见篇首。

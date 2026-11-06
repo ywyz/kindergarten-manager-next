@@ -1,6 +1,8 @@
 # D4-G0：游戏观察记录完整产品规格与实施前核定清单
 
-更新：2026-10-28。**产品C1–C33及E01–E14／E13六份Contract设计保持；E14源码／构建／静态分发可修项已独立核查通过，冻结运行因SAC4551受阻，完整A01–A22、教师体验和发行未通过。** 最新[核查§6–§7](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)含local759、短根桌面327、完整前端、源码窗口17／旧库升级22、静态26／归档15及r03候选。旧[导出片](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)和[页面采用v14](../bootstrap/desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)保持各自身份。本轮DeepSeek2次（整份生成unknown不重发、process重写采用成功），前片4次另列；MiMo真实未验。原配置／凭据及旧数据保持，签名与整包补验见唯一任务入口。
+原开发机受 SAC4551 限制。其后的另机观察资料及指定 Word 验收见[目标机收口](../bootstrap/desktop-weekly-target-test-closeout.md)，所用候选与以下 E14 来源分列。
+
+2026-10-28 开发机记录：**产品C1–C33及E01–E14／E13六份Contract设计保持；E14源码／构建／静态分发可修项已独立核查通过，冻结运行因SAC4551受阻，完整A01–A22、教师体验和发行未通过。** 最新[核查§6–§7](../bootstrap/desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)含local759、短根桌面327、完整前端、源码窗口17／旧库升级22、静态26／归档15及r03候选。旧[导出片](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)和[页面采用v14](../bootstrap/desktop-game-observation-pages-review.md#6-最终独立结论本片限定工程核查通过)保持各自身份。本轮DeepSeek2次（整份生成unknown不重发、process重写采用成功），前片4次另列；MiMo真实未验。原配置／凭据及旧数据保持，签名与整包补验见唯一任务入口。
 
 依据：[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)、[当前架构](../../ARCHITECTURE.md)、[身份与班级](../modules/identity-and-class.md)、[AI Service](../modules/ai-service.md)、[提示词](../modules/prompts.md)、[Word导出](../modules/word-export.md)。旧版行为和模板只作经审查的参考，不自动成为新版需求。
 

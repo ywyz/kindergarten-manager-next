@@ -1,8 +1,8 @@
 # 游戏观察记录 Contract
 
-状态：Architecture v2有效业务Contract，E13设计扩展已核定。基础、E03、E05／E08、E06／E07图文服务及页面前片结果保持；2026-10-28接续批选／排序、三模板Word与E11／E12宿主交付限定工程核查通过，见[最新核查 §6](../bootstrap/desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)。完整A01–A22、教师体验、冻结整包与产品发行未整体验收，当轮Git与停止范围保留；2026-10-31的新候选静态及后续目标测试见[便携核查](../bootstrap/desktop-windows11-portable-review.md)，当前任务已接续周计划设计，不重启旧切片。
+本 Contract 对应游戏观察 C1–C33 及 E13。页面、三模板 Word 与宿主交付见[导出核查](../bootstrap/desktop-game-observation-export-review.md)，另机指定观察 Word 与教师回执见[目标收口](../bootstrap/desktop-weekly-target-test-closeout.md)。完整 A01–A22 与其它环境仍按各报告的覆盖范围记录。
 
-产品依据为[游戏观察C1–C33](../specs/desktop-game-observation.md)，工程依据为[E01–E14](../specs/desktop-game-observation-engineering.md)。本文同时记录已实施数据基础与尚待实施的完整Contract；各项实际范围以独立核查报告为准，日计划原Contract及既有验收身份保持。
+产品依据为[游戏观察C1–C33](../specs/desktop-game-observation.md)，工程依据为[E01–E14](../specs/desktop-game-observation-engineering.md)。本文记录数据归属及各片合同；各项实际范围以独立核查报告为准，日计划原Contract及既有验收身份保持。
 
 原OpenCode会话已提交草案并按独立意见修订，最终V01–V08及必要澄清已归并；过程、证据及未验范围见[E13核定记录](../bootstrap/desktop-game-observation-contract-review.md)。旧轮次相反表述不作为另一套协议。
 

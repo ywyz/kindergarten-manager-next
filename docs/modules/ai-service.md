@@ -27,11 +27,11 @@ E02来源链及E06／E07图文服务层已实施并经[本片独立核查](../bo
 
 实际基础字段与四栏／单栏上下文矩阵、候选和采用协议统一见[观察Contract§6](game-observations.md#6-ai-投影候选与采用)。全部已关联照片参与明确操作，不静默取子集；材料在写锁外真实核验，worker只读验证图文。视觉独立小header授权后接大帧，保留公网HTTPS／DNS／peer／TLS、dispatch、密钥保护和unknown不自动重放；两帧36MiB／完整HTTP40MiB／600图／180秒，旧text1MiB／120秒、连接10秒不变，容量及上下文估算见[工程§7](../specs/desktop-game-observation-engineering.md#7-e06图文执行契约)。
 
-AI拥有执行、结构校验、候选持久化及状态，观察拥有业务意义与采用决定。本片已实现执行／候选／采用服务层；正常手工编辑、保存、恢复及Word不依赖AI就绪的Contract保持，未实施页面／导出仍按后续切片验。补写提示只属独立候选metadata，不进入正文／后续prompt／Word。D2／D3历史结果不因本片改写，设计依据仍见[E13记录](../bootstrap/desktop-game-observation-contract-review.md)。
+AI拥有执行、结构校验、候选持久化及状态，观察拥有业务意义与采用决定。本片已实现执行／候选／采用服务层；正常手工编辑、保存、恢复及Word不依赖AI就绪的Contract保持，后续[观察页面](../bootstrap/desktop-game-observation-pages-review.md)及[导出](../bootstrap/desktop-game-observation-export-review.md)另有核查。补写提示只属独立候选metadata，不进入正文／后续prompt／Word。D2／D3历史结果不因本片改写，设计依据仍见[E13记录](../bootstrap/desktop-game-observation-contract-review.md)。
 
 ## AI 与教师边界
 
-当前优先交付教案拆分、活动过程年龄适宜性调整与日计划其他活动生成。周计划游戏选取和补足、主题建议及其他栏目能力保留业务边界，按后续规格及授权实施；不能从能力清单推定本轮全部实现。
+日计划涵盖教案拆分、活动过程适龄调整和其他活动生成。周计划支持分别发起游戏、所选栏目与材料操作，输入及采用边界按[周计划规格](../specs/desktop-weekly-plan.md)。
 
 AI 不能代替教师确认，不能将候选直接设为正式内容。候选不足时可生成游戏名称、目标和指导，但须标记为 AI 补充，不能伪造日计划引用。AI 失败保留已有内容，不能阻断手工备课。
 
@@ -57,7 +57,7 @@ JSON 无法解析、必需字段缺失等输出错误须区分于网络错误；
 
 ## 实施状态与规格接续
 
-2026-10-17用户确认Q1–Q6推荐流程，Q7按OpenAI兼容选择；工程首片采用非流式Chat Completions文本JSON子集，W1–W6限定环境工程结果见[D2规格](../specs/desktop-ai-daily-plan.md)。2026-10-21用户确定应用使用DeepSeek官方与MiMo标准API，并确认实时思考展示，已按[流式设计](../specs/desktop-ai-streaming-progress.md)实现并通过[限定合成工程核查](../bootstrap/desktop-d2-streaming-review.md#11-最终交付限定合成工程核查通过)；思考增量仅作有界临时展示，不是业务候选、日志、导出或后续提示词。最终答案仍须完整校验后成为候选，三类操作分别触发，采用／保存不串联下一次AI。运行时关窗可继续等待或停止等待后退出，未发送任务重开后手动继续，可能已发送的不明请求不自动重发，不将停止等待写成供应商已撤回。该历史轮次当时未授权真实AI；本轮观察按2026-10-27新授权及独立核查执行。
+2026-10-17用户确认Q1–Q6推荐流程，Q7按OpenAI兼容选择；工程首片采用非流式Chat Completions文本JSON子集，W1–W6限定环境工程结果见[D2规格](../specs/desktop-ai-daily-plan.md)。2026-10-21用户确定应用使用DeepSeek官方与MiMo标准API，并确认实时思考展示，已按[流式设计](../specs/desktop-ai-streaming-progress.md)实现并通过[限定合成工程核查](../bootstrap/desktop-d2-streaming-review.md#11-最终交付限定合成工程核查通过)；思考增量仅作有界临时展示，不是业务候选、日志、导出或后续提示词。最终答案仍须完整校验后成为候选，三类操作分别触发，采用／保存不串联下一次AI。运行时关窗可继续等待或停止等待后退出，未发送任务重开后手动继续，可能已发送的不明请求不自动重发，不将停止等待写成供应商已撤回。该历史轮次当时未授权真实AI；观察的真实调用归 2026-10-27 当轮授权及核查。
 
 既有[AI Service 实施规格](../specs/ai-service-implementation.md)与[协同索引](../specs/ai-capabilities-implementation.md)保留原架构的设计、实现和验收身份。其云端任务、身份、密钥部署和数据库条款须先映射到本 Contract 与 ADR 0004，不能直接作为桌面实施指令。
 

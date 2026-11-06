@@ -6,10 +6,9 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-2026-11-06：已接收测试机96dc1d7并完成关闭交错／清理退出及验证器回修，见[限定核查§10](docs/bootstrap/desktop-regression-repair-review.md#10-2026-11-06测试机回执接收与关闭交错回修)。Codex独立216项相关测试和8个反例通过，源码字节稳定；新包运行仍须按新来源另验。原测试机3e0e42b冻结外部结论保持原身份，Enter／Escape及冻结内部项未验，旧自然白屏／Word差异未知。开发机SAC4551不启动包／冻结helper，不签名或发行。
+一对一倾听开发分支为 `codex/desktop-one-to-one-listening`。唯一执行入口为 [当前任务](docs/tasks/current.md)。`b657363` 的关闭／恢复专项已完成本轮限定验收。源码反例见[开发机核查 §10](docs/bootstrap/desktop-regression-repair-review.md)，同源冻结包的普通保存关闭、两类故障恢复、独立冷开及 renderer 提示键盘人工补验见[原 Windows 11 测试机 §10–10.6](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。冻结内部交错与对象顺序、原自然白屏及 Word /r 历史差异仍按报告保留。
 
-继续 `codex/desktop-v2-foundation`。本轮指定接收、源码字节、验证与Git／CI身份归正式结果，唯一执行入口 [docs/tasks/current.md](docs/tasks/current.md)；测试机历史见[白屏／并发补核](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。用户已授权限定核验和审核后普通提交推送；不重放旧merge或写入白名单，源码、包、Word与教师结论分别记。
-原生OpenCode／Command Go固定DeepSeek V4.1 Flash max，按当轮精确文件责任执行。已完成白名单不重放，原生会话身份不可跨机冒充；本轮Command Go仅只读诊断／交叉审阅；此前写工具拒绝保留，未放宽权限或以shell绕过。Codex独占正式文档和最终审核，通用保存、恢复、关闭缺陷优先；真实原库／照片／凭据与首失败保留，验证用合成资料。不启动WebDAV、签名、安装更新或发行。
+当前进行一对一倾听记录工程设计，执行范围见上方唯一入口。Codex 维护正式规格和审核记录。已结束轮次的写入白名单与原生会话权限归各轮结果，后续工作按当轮责任执行。
 
 ## 产品与架构原则
 
@@ -19,19 +18,19 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 面向教师个人，先Windows11、Win10后验；一个本地档案，无旧注册／管理员分班／同班查看／手机或同时编辑。首版全新本地数据，不安排旧业务数据导入，也不清理旧远程资源。班级维护／同班升班、多学期及旧计划编辑已确认；多班新增／切换后置。
 
-日计划、观察既有规则保持；周计划先手工／本人来源／保存／确认／Word及备份配套，后按已决Q5/Q6做AI／材料。搭班两类信息手填，不读取对方日计划；一对一倾听、人数、缺勤／退费、拍照点名等另定。应用供应商是DeepSeek官方与MiMo标准API，不能把开发Go套餐当应用接口。AI失败是可恢复结果，但不免除应用缺陷。
+日计划、游戏观察、周计划已有各自的产品规格和验证记录。周计划支持手工制作、本人来源、确认版本 Word，以及分别发起游戏、栏目和材料 AI 操作。搭班两类信息手填。人数、缺勤／退费、拍照点名等另定。应用供应商是 DeepSeek 官方与 MiMo 标准 API，开发 Go 套餐只用于开发工具。
 
 ## 权限与文件责任
 
 OpenCode是实现、测试、迁移及构建脚本写入者；Command Code仅在当轮明确授权和互斥文件责任内参与。Codex负责规划／规格、技术审核、执行验证、文档及Git／发布管理，不另起业务实现者。已有授权内持续推进，不重复索要确认；历史某轮的修复、真AI、部署或签名授权不自动延续。
 
-原生会话的当轮A/B/C/D互斥白名单及G0–G4门槛按相应结果记录保留，固定DeepSeek V4.1 Flash max；不fork／另派子代理，不并行改同一文件，不接管在途任务或还原他方修改。已完成责任归结果记录，不重放旧在途白名单。原OpenCode负责共享整合和最终Git；按Codex具体文件/blob/parent/tree门禁普通提交推送，不add-all、amend、rebase／force或改main／默认分支／可见性、tag、Release。
+原生会话的当轮A/B/C/D互斥白名单及G0–G4门槛按相应结果记录保留，固定DeepSeek V4.1 Flash max；不fork／另派子代理，不并行改同一文件，不接管在途任务或还原他方修改。已完成责任归结果记录，不重放旧在途白名单。原OpenCode负责共享整合和最终Git；按Codex具体文件/blob/parent/tree门禁普通提交推送，仅在用户当轮明确要求时合入 main。不 add-all、amend、rebase／force 或改默认分支、可见性、tag、Release。
 
 代码与迁移／候选构建、付费AI、远程操作、签名、发行各按当前实际范围，不从架构确认、提示词准备或历史结论推导自动启动。
 
 ## 环境、数据与验证
 
-Windows11原生开发；当前基线为CPython3.14.10／Windows x64／标准GIL，锁定依赖保持。本轮另机按用户明确授权补齐3.14.10并使用独立环境构建，原3.14.7环境及临时构建链接已复位；旧3.14.7证据保留其身份，不迁移通过结论。WSL只作独立辅助，不共享venv、node_modules或运行库。不擅装新工具／Skill／MCP，不升级依赖或做无关全面环境审计。Skills/MCP先审计再决定KEEP／DISABLE／REMOVE-CANDIDATE；不因全局存在某Skill/MCP就认定项目必须使用，普通Git、文件搜索、测试不要求图谱。
+Windows11原生开发；当前基线为CPython3.14.10／Windows x64／标准GIL，锁定依赖保持。此前另机按用户明确授权补齐3.14.10并使用独立环境构建，原3.14.7环境及临时构建链接已复位；旧3.14.7证据保留其身份，不迁移通过结论。WSL只作独立辅助，不共享venv、node_modules或运行库。不擅装新工具／Skill／MCP，不升级依赖或做无关全面环境审计。Skills/MCP先审计再决定KEEP／DISABLE／REMOVE-CANDIDATE；不因全局存在某Skill/MCP就认定项目必须使用，普通Git、文件搜索、测试不要求图谱。
 
 验证使用新合成库／图片／凭据／导出根或授权副本；真实原业务库、密钥／DPAPI、原件、旧包与首失败现场保留，只复核已有保护指纹。写入／递归清理前验证绝对路径及源／目标／旧根边界，不删未知文件、不全局kill。网络守卫与APP_DISABLE_DOTENV按相应验证合同执行，不读真实secret或自动重发未知AI任务。
 

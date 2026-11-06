@@ -1,8 +1,8 @@
 # 桌面版周计划产品规格
 
-2026-11-03最新实施状态：文档51ec4d3、Q5/Q6实现及限定审核cd88d9d已提交；旧档案／备份先行、真实游戏／材料生成采用及新候选静态通过。本地桌面已补过材料采用／手改／保存／重进／确认、无执行器手工闭环及正常源码退出；新包目标运行未验。接口见[工程§9](desktop-weekly-ai-engineering.md)，来源、边界及下一步见[实施核查§12–16](../bootstrap/desktop-weekly-ai-review.md)。以下准备轮与旧包结论保留当时范围。
+Q1–Q6 已确认并实施。周计划与明暗首片的指定 Word 及教师清单见[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)。Q5/Q6 的真实游戏、栏目、材料操作，及材料 Word、恢复与独立重开见[Q5/Q6 目标机核查](../bootstrap/desktop-weekly-ai-windows11-target-review.md)。报告分别列出候选身份和未验项。
 
-更新：2026-11-02。Q1–Q6已定稿（§12）；Q1–Q4手工／本人来源／保存／确认／Word及明暗首片已实现，通过限定源码回归、真实Word全页及完整备份恢复核查，最后文案正常重开已核。2026-11-03同步：另机限定运行、两项最小修复、指定13份／43页Word工程检查及39项教师清单整体接受已收口，包身份分别见[目标收口](../bootstrap/desktop-weekly-target-test-closeout.md)；不外推其它环境或发行。本轮[Q5/Q6工程合同与分工](desktop-weekly-ai-engineering.md)、[假供应商验证矩阵](desktop-weekly-ai-validation.md)已并行准备并经Codex审核，未启动业务实现或真实应用AI；目标反馈已取得，实现仍须另行放行。唯一入口[current](../tasks/current.md)，首片接口见[工程设计](desktop-weekly-plan-engineering.md)。
+实施依据见[首片工程合同](desktop-weekly-plan-engineering.md)、[Q5/Q6 工程合同](desktop-weekly-ai-engineering.md)和[验证矩阵](desktop-weekly-ai-validation.md)。下文的阶段安排和开工门槛保留当时范围。
 
 本规格接续[阶段计划](../bootstrap/desktop-next-development-plan.md)、[周计划 Contract](../modules/weekly-plans.md)、[身份与班级 Contract](../modules/identity-and-class.md)、[Word Contract](../modules/word-export.md)及 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。旧 [I4](manual-weekly-plan-confirmation.md)、[I5](word-export-implementation.md)及[材料规格](weekly-materials-implementation.md)只按下述映射继承；旧实施／验收不转换为桌面周计划通过。唯一任务入口为 [current.md](../tasks/current.md)。
 
@@ -246,4 +246,4 @@ OpenCode负责实现；共享models、迁移、API、App.vue、宿主和备份�
 
 原设计阶段确认的缺口是班级表头名单／保育员、local／d1周闭环及新schema完整备份校验；旧服务账号／MySQL／全班投影不照搬。本轮实施与验证另见核查。受控模板设计时仅核结构及SHA，不借旧Word结论。
 
-本次六项回答已在本规格、Contract 与唯一任务归并；独有阶段建议保留于阶段计划，工程细节归工程设计。新的产品变更须列出影响；不另建 prompt-final-v2/v3 或复制旧提示词归档。固定r03目标1与指定Word教师确认已收口，保留原制品身份；本片源码工程与普通Git收口见实施核查和唯一入口。本轮目标反馈与Q5/Q6文档准备均已取得；业务实现仍须新G0并另行放行，真实AI／WebDAV／签名／发行各按当时明确范围。
+本次六项回答已在本规格、Contract 与唯一任务归并；独有阶段建议保留于阶段计划，工程细节归工程设计。新的产品变更须列出影响；不另建 prompt-final-v2/v3 或复制旧提示词归档。固定r03目标1与指定Word教师确认已收口，保留原制品身份；本片源码工程与普通Git收口见实施核查和唯一入口。其后 Q5/Q6 已按单独授权实施，实际目标机结果见篇首。

@@ -1,8 +1,8 @@
 # 桌面周计划工程设计与实施合同
 
-更新：2026-11-01。产品[Q1–Q6全部确认](desktop-weekly-plan.md)，本文件给出首片合同和分工。用户已授权按G0→G4实施、Codex审核后提交推送；开工文档提交d6de14c，业务源码基线仍为下述2a469489。本轮核定补充见§11，实际进度以[current.md](../tasks/current.md)及实施核查为准。固定r03的目标1实测和指定八份Word教师确认已归[目标记录](../bootstrap/desktop-windows11-target-review.md)，不迁移到本轮新源码。
+本文件保留 Q1–Q4 已执行的接口和分工。开工文档提交 d6de14c，业务源码基线 2a469489。首片结果见[实施核查](../bootstrap/desktop-weekly-plan-review.md)与[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)。
 
-2026-11-02适用范围补充：本文件保留Q1–Q4已执行合同，§8／§11旧文件白名单不重新生效。Q5/Q6另见[工程合同](desktop-weekly-ai-engineering.md)与[假供应商矩阵](desktop-weekly-ai-validation.md)；当前只准备文档，不注册周任务、不写实现或测试、不调用真实应用AI。2026-11-03已同步[另机目标反馈与收口](../bootstrap/desktop-weekly-target-test-closeout.md)；Q5/Q6后续实施放行仍按[current](../tasks/current.md)。
+§8／§11 的文件责任仅适用于当时实施。Q5/Q6 另见[工程合同](desktop-weekly-ai-engineering.md)、[验证矩阵](desktop-weekly-ai-validation.md)和[Q5/Q6 目标机核查](../bootstrap/desktop-weekly-ai-windows11-target-review.md)。
 
 ## 1. 基线、范围与准入
 

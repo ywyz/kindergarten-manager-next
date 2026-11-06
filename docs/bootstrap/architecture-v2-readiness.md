@@ -1,18 +1,18 @@
 # Architecture v2 实施状态与验证门槛
 
-更新：2026-11-05。当前架构仍按 [ARCHITECTURE.md](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)，唯一执行入口是 [current.md](../tasks/current.md)。历史授权、旧“当前任务”和旧测试数字不自动适用于本轮。
+更新：2026-11-07。当前架构仍按 [ARCHITECTURE.md](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)，唯一执行入口是 [current.md](../tasks/current.md)。历史授权、旧“当前任务”和旧测试数字不自动适用于本轮。
 
 ## 最新状态与下一步
 
-2026-11-05最新接续：已快进接收173880d的[测试机§7](desktop-windows11-white-concurrency-review.md#7-2026-11-050e51491原测试机增量)。本轮只补恢复生产模块来源／归档门和受管验证器观测；Codex独立119项、6项及受管Page／Browser源码窗口通过，49表／12资源和独立冷启动指纹一致，550文件前后稳定，见[限定核查§8](desktop-regression-repair-review.md#8-2026-11-05来源门与受管恢复验证器回修)。测试机新完整1229通过保留自身0e51491身份，不重复盲跑，也不删除原中断失败标记或宣称其原因已定位。新CI按实际提交核原字节及来源；冻结恢复运行仍独立安排，原自然白屏／Word/r未知，不作产品整体验收。
+关闭／恢复的开发机限定源码核查与原 Windows 11 测试机增量均已完成。普通保存关闭、两类故障恢复、独立冷开及 renderer 提示键盘验收归同一候选 `b657363`。实包内一次性关闭许可是否能被再次使用、关闭确认与故障回调的精确交错、内部对象身份与退休顺序及真实回调阻塞仍未直接观测。详见[开发机 §10](desktop-regression-repair-review.md#10-2026-11-06测试机回执接收与关闭交错回修)及[目标机 §10](desktop-windows11-white-concurrency-review.md#10-2026-11-06b657363-原-windows-11-关闭恢复增量)。一对一倾听正按[产品规格](../specs/desktop-one-to-one-listening.md)细化[工程设计](../specs/desktop-one-to-one-listening-engineering.md)。
 
 | 范围 | 当前结论与直接入口 |
 | --- | --- |
-| 本轮另机目标与教师收口 | 另一台Windows11实际业务及指定13份独立Word／43页工程逐页检查完成，39项教师清单由用户整体接受。用户明确：“目前全部通过，有问题届时再通过小补丁或者更新的方式修改，请提交并推送”。本轮范围收口，不补造逐项教师查看日志；分层证据与后续反馈方式见[目标测试收口](desktop-weekly-target-test-closeout.md)。 |
+| 周计划首片的另机目标与教师收口 | 另一台Windows11实际业务及指定13份独立Word／43页工程逐页检查完成，39项教师清单由用户整体接受。用户明确：“目前全部通过，有问题届时再通过小补丁或者更新的方式修改，请提交并推送”。本轮范围收口，不补造逐项教师查看日志；分层证据与后续反馈方式见[目标测试收口](desktop-weekly-target-test-closeout.md)。 |
 | 新周计划候选与GitHub身份 | 原GitHub源57806b2／build0b56217d…的实际构建、下载与初始目标证据保持[原核查身份](desktop-weekly-windows11-review.md)。本机修复包build_id `763706b0-c9c0-4064-96b4-f2b8c0b43843`使用Python3.14.10，构建时基础d6ff4b7＋5文件补丁；90项相关后端、前端、54／59静态、49预检及实际Word分别记账。本机收口时尚无修复的新GitHub制品；推送触发的自动CI如产生新制品，另核身份及静态结果，不继承本机验收。 |
 | 周计划与明暗 | Q1–Q6已确认；Q1–Q4及明暗／备份配套按实际包身份完成目标／指定教师收口。[产品](../specs/desktop-weekly-plan.md)、[工程](../specs/desktop-weekly-plan-engineering.md)、[实施核查](desktop-weekly-plan-review.md)保持，Q1–Q4限定结果见[收口](desktop-weekly-target-test-closeout.md)，Q5/Q6另见下行。 |
-| Q5/Q6实施与核查 | 开发机271后端／纯层101及真实游戏／材料各1次、e1b727c8…源码／静态身份见[实施核查](desktop-weekly-ai-review.md)。测试机32a6d197…候选三次真实DeepSeek、新材料Word四页、完整备份／保护包／旧0007恢复与独立重开见[目标核查](desktop-weekly-ai-windows11-target-review.md)；原CI拦截和各次回修分别保留，不宣布全46项或产品整体验收。后端62／桌面35最终补核见[白屏与并发结果](desktop-windows11-white-concurrency-review.md)。 |
-| 分支与当前Git操作 | 继续codex/desktop-v2-foundation；本轮接收173880de7ac67b8fd847d13281f913f4d282fab3。仅普通fetch／快进，Codex独立核准确文件、规范化blob、单parent及index tree后交原OpenCode A普通提交推送，再核远端。旧双父历史保留，不新merge／amend／rebase／force，不改main／tag／Release，不循环回填自身SHA；见[核查§8](desktop-regression-repair-review.md#8-2026-11-05来源门与受管恢复验证器回修)。 |
+| Q5/Q6实施与核查 | 开发机271后端／纯层101及真实游戏／材料各1次、e1b727c8…源码／静态身份见[实施核查](desktop-weekly-ai-review.md)。测试机32a6d197…候选三次真实DeepSeek、新材料Word四页、完整备份／保护包／旧0007恢复与独立重开见[目标核查](desktop-weekly-ai-windows11-target-review.md)；原CI拦截和各次回修分别保留，不宣布全46项或产品整体验收。早期后端62／桌面35的限定补核和后续轮次分别见[白屏与并发结果](desktop-windows11-white-concurrency-review.md)。 |
+| 分支与交付身份 | 桌面基础分支 `codex/desktop-v2-foundation` 接收到 `b670587`，较产品提交 `b657363` 新增两笔测试文档回执。一对一倾听从合入 main 后的基线在 `codex/desktop-one-to-one-listening` 接续。实际执行范围见[当前任务](../tasks/current.md)。 |
 | 历史r03用户目标测试 | 固定r03目标1普通业务、完整备份／恢复、保护包及W1–W8工程页检已有[实际回执](desktop-windows11-target-review.md)，用户已逐项确认八份Word通过；指定Word教师体验收口，未扩大为产品／发行整体验收。[手册](desktop-windows11-portable-manual.md)及原build_id／SHA保持，不迁移新代码结果。 |
 | 历史完整内部候选 | [独立核查](desktop-windows11-portable-review.md)源码493 desktop、实际目录54／ZIP59静态、本机PS7只读预检49通过；固定r03的目标1与指定Word教师结论见上行，不迁移为本轮新周源码通过。主EXE未签名；PS5.1只解析通过，文件执行受策略阻止。 |
 | 完整本地备份／恢复 | [核查§38–§40](desktop-backup-restore-review.md)848 local／469 desktop及源码窗口限定范围、前轮推送91e6a553保持。本轮另机明文／加密、A/B保护包、首次页／空保护包及新进程接续实际证据按各包身份列于[目标收口](desktop-weekly-target-test-closeout.md)，不外推跨Windows用户、真实断电或其它环境。 |
@@ -23,7 +23,7 @@
 
 D2当前工程规格在 [docs/specs](../specs/desktop-ai-engineering.md)，各轮独立范围仍按其中链接的实际结果，不复用旧v1 MySQL结论。
 
-2026-11-03 API只读核对：0285a7c已触发[成功CI运行41464103529](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41464103529)，构建／静态／上传步骤成功并生成制品13150402814。本次未下载或复核新CI包字节／内层身份，其目标／Word／教师结论不继承本机修复包；具体API摘要记于current。
+2026-11-03 API只读核对：0285a7c已触发[成功CI运行41464103529](https://github.com/ywyz/kindergarten-manager-next/actions/runs/41464103529)，构建／静态／上传步骤成功并生成制品13150402814。本次未下载或复核新CI包字节／内层身份，其目标／Word／教师结论不继承本机修复包；当轮 API 摘要保存在对应提交的任务记录中。
 
 前轮源码／静态、另机运行、指定Word及教师接受分层归[目标测试收口](desktop-weekly-target-test-closeout.md)。其修复包使用已授权补齐的CPython3.14.10／x64／标准GIL及锁定依赖，原3.14.7环境与临时链接已复位；测试机已完成前轮授权提交推送。本轮开发机从0285a7c先整合提交文档51ec4d3，再按新授权实施Q5/Q6；限定源码／真实合成AI／新包静态及原生未验见[实施核查](desktop-weekly-ai-review.md)，不迁移旧包结论。历史G0–G4／在途责任不重派；Win10／WPS／其它显示条件、WebDAV、签名及发行等原边界保持。
 

@@ -1,18 +1,20 @@
 # 文档与报告索引
 
-更新：2026-11-05。当前工作按 [AGENTS.md](../../AGENTS.md)、[Architecture v2 实施入口](architecture-v2-readiness.md) 和 [ADR 0004](../adr/0004-local-desktop-architecture-proposal.md) 执行。系统级事实见 [ARCHITECTURE.md](../../ARCHITECTURE.md)，规格与历史报告不等于当前任务授权。
+当前工作只从[任务入口](../tasks/current.md)接续。[项目协作规则](../../AGENTS.md)、[v2 实施状态](architecture-v2-readiness.md)及[系统架构](../../ARCHITECTURE.md)分别说明权限、证据和架构职责。
 
-## 当前：来源门与受管恢复验证器限定回修通过
+## 一对一倾听记录设计与上一轮验证
 
-已普通快进接收173880d及[原测试机§7](desktop-windows11-white-concurrency-review.md#7-2026-11-050e51491原测试机增量)，仅修两项核验问题：两个恢复生产模块纳入构建前后freeze、归档必要项及production；受管验证器锁内观测、真实旧票据拒绝及新port认证。Codex独立相关119项、验证器6项通过，受管Page／Browser两个新合成源码窗口的完整49表／12资源与独立冷启动一致，550非文档文件前后相同，见[核查§8](desktop-regression-repair-review.md#8-2026-11-05来源门与受管恢复验证器回修)。原中断失败标记、来源门旧缺口及私下副本证据均保留原身份。
+一对一倾听的教师流程与样稿结果见[产品规格](../specs/desktop-one-to-one-listening.md)，保存、备份、Word 及 AI 的接入范围见[工程设计](../specs/desktop-one-to-one-listening-engineering.md)。关闭／恢复专项的源码修复及独立反例见[开发机 §10](desktop-regression-repair-review.md#10-2026-11-06测试机回执接收与关闭交错回修)。同源 `b657363` 候选的原 Windows 11 运行、完整指纹和 renderer 提示键盘补验见[测试机 §10–10.6](desktop-windows11-white-concurrency-review.md#10-2026-11-06b657363-原-windows-11-关闭恢复增量)。
 
-按[唯一入口](../tasks/current.md)收口准确提交并核自动CI的原ZIP／PS1、身份和新来源门；Windows2022静态与Windows11冻结恢复分别记。之后仅按新包身份安排原测试机恢复增量，不重跑已通过完整local、旧39项、43页Word或IME。原配置两根保留，无额外应用付费AI；SAC4551不启动受阻EXE／冻结helper或改变保护，不发行。
+## 历史阶段索引
+
+以下按当时任务、包身份及环境索引，段落内的“本轮”“下一步”和执行授权仅适用于所述轮次。11 月 5 日的恢复来源门与验证器回修见[开发机 §8](desktop-regression-repair-review.md#8-2026-11-05来源门与受管恢复验证器回修)和[测试机 §7](desktop-windows11-white-concurrency-review.md#7-2026-11-050e51491原测试机增量)。
 
 ## 已完成：Q5/Q6目标测试与白屏／并发／Word补核
 
-[目标机独立核查](desktop-weekly-ai-windows11-target-review.md)保留原CI策略拦截、SQLAlchemy与来源一致性修复、三个候选身份、三次真实DeepSeek、新材料Word四页、完整备份／保护包／旧0007恢复和独立重开。[白屏／并发／Word补核](desktop-windows11-white-concurrency-review.md)§1–5的后端62／桌面35为当时限定通过，§6完整回归失败另列；本轮回修见顶部新核查。并发最小测试修复已审核，白屏受控重开数据保持、精确触发未证实，Word当前功能正常但/r历史差异未知。按用户授权普通提交推送后，由[唯一入口](../tasks/current.md)交开发机继续限定源码核查及白屏复现／恢复方案，不改系统保护、不启动4551主系统候选／helper、不发行，新CI制品另核身份。
+[目标机独立核查](desktop-weekly-ai-windows11-target-review.md)保留原CI策略拦截、SQLAlchemy与来源一致性修复、三个候选身份、三次真实DeepSeek、新材料Word四页、完整备份／保护包／旧0007恢复和独立重开。[白屏／并发／Word补核](desktop-windows11-white-concurrency-review.md)§1–5的后端62／桌面35为当时限定通过，§6完整回归失败另列；本轮回修见顶部新核查。并发最小测试修复已审核，白屏受控重开数据保持、精确触发未证实，Word当前功能正常但/r历史差异未知。后续开发机修复和原测试机同源包回执见本页顶部。
 
-## 当前：周计划另机补测与教师确认已收口
+## 周计划另机补测与教师确认
 
 本轮另机Windows11测试、两项最小回修和新包补测已完成：最终Python3.14.10下90项后端、前端、54／59静态及49只读预检通过，13份独立Word共43页已逐页检查。用户明确“目前全部通过，有问题届时再通过小补丁或者更新的方式修改，请提交并推送”，按本次整体确认收口所列39项教师清单。准确身份、原候选备份恢复与新包补测的范围、首失败和未验边界归[另机测试收口](desktop-weekly-target-test-closeout.md)。本机修复包build_id为`763706b0-c9c0-4064-96b4-f2b8c0b43843`，不能与原GitHub制品或旧r03混用结论；不自动进入Q5/Q6或公开发行。
 
@@ -24,11 +26,11 @@
 
 [目标机独立测试记录](desktop-windows11-target-review.md)新增 2026-11-01 目标 1 的实际预检、普通业务、完整备份／恢复、原生保存与 W1–W8 Word 工程页检；SQLite 写锁保存失败时保留当前稿并阻止旧稿导出的实测只覆盖该分支。首失败与复验、权限受阻及跳过均保留，不能称所有测试单轮全通过。用户已于 2026-11-01 逐项确认八份 Word 通过，本轮指定 Word 教师体验收口；用户本轮不做跨 Windows 用户恢复测试，该项未验且不列本轮追测。产品及签名／发行未整体验收，原开发机 PS5.1 执行受阻历史保持。
 
-[唯一入口](../tasks/current.md)承接本轮周计划源码收口及下一片新身份候选安排；[中文手册](desktop-windows11-portable-manual.md)保留可重复步骤，[原计划与责任合同](desktop-windows11-portable-plan.md)保留当轮范围。新包须另行核定身份和验证，不能沿用本轮 r03 结论。不运行已知 4551 机器上的候选或降低保护，不自动真实 AI、WebDAV、签名、远控或公开发行。
+[中文手册](desktop-windows11-portable-manual.md)保留可重复步骤，[原计划与责任合同](desktop-windows11-portable-plan.md)保留当轮范围。新包须另行核定身份和验证，不能沿用本轮 r03 结论。不运行已知 4551 机器上的候选或降低保护，不自动真实 AI、WebDAV、签名、远控或公开发行。
 
 ## 已完成：周计划首片源码工程收口
 
-Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／C17完整前端exit0；C18两处历史文案的typecheck／UI13及最后正常重开通过。真实保存确认、旧确认保稿导出、W01五页／W02三页Word、明文／加密备份及保护包接续已有实际结果，详见[实施核查](desktop-weekly-plan-review.md)。[唯一入口](../tasks/current.md)承接精确Git收口与下一片候选安排；[产品](../specs/desktop-weekly-plan.md)及[工程](../specs/desktop-weekly-plan-engineering.md)保持权威，Q5/Q6不提前实现。
+Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／C17完整前端exit0；C18两处历史文案的typecheck／UI13及最后正常重开通过。真实保存确认、旧确认保稿导出、W01五页／W02三页Word、明文／加密备份及保护包接续已有实际结果，详见[实施核查](desktop-weekly-plan-review.md)。[产品](../specs/desktop-weekly-plan.md)及[工程](../specs/desktop-weekly-plan-engineering.md)记录首片范围；Q5/Q6 的后续实现与目标验证见上文。
 
 ## 明暗模式与受控并行实施
 
@@ -36,7 +38,7 @@ Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／
 
 ## 文档适用范围与分支
 
-最新桌面分支为codex/desktop-v2-foundation，main是已合并基线，不因内部测试切分支或替换r03。2026-11-01[文档维护核查](documentation-maintenance-review.md)已修正过时入口、历史计划标识及旧环境附件链接；旧实际证据保留，AGENTS中的独有历史边界已归并该记录。日期旧不自动表示可删除；唯一执行提示词仍为current。
+桌面基础工作在 `codex/desktop-v2-foundation` 完成；`main` 承接合并基线，一对一倾听后续在 `codex/desktop-one-to-one-listening` 开发。2026-11-01[文档维护核查](documentation-maintenance-review.md)已修正过时入口、历史计划标识及旧环境附件链接；旧实际证据保留，AGENTS中的独有历史边界已归并该记录。日期旧不自动表示可删除；唯一执行提示词仍为current。
 
 ## 已完成：源码合并与完整本地备份／恢复
 
@@ -50,9 +52,9 @@ Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／
 
 用户确认采用 MIT，先做开源版本，并确认清理后的受控 Word 模板具备公开分发及 MIT 授权；当前继续源码验证。README、维护者、第三方说明和 [Certum 申请资料](../opensource/certum-application.md) 已按 [开源准备检查](open-source-readiness-review.md) 在当前文件范围独立核查：导出／模板117、桌面327、源码窗口17、证据根两种条件各1项及Word10份分页对比通过。仓库已经公开，当前文件清理不等于旧 Git 历史已移除；不自动改默认分支、可见性或重写历史。唯一执行入口仍为 [current.md](../tasks/current.md)。
 
-## 当前阶段：E14源码／静态工程通过，冻结运行待签名
+## E14 开发机源码与静态工程记录（2026-10-28）
 
-2026-10-28 E14已由原Go套餐DeepSeek V4.1 Flash max会话实施回修，[独立核查§6–§7](desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)确认：local759、短根桌面327、完整前端、源码真实窗口17／旧库升级22、静态包26／便携归档15通过，E14-R01–R06在该范围关闭。r03完整候选190文件，便携归档在`build/desktop-e14-r03/dist/`；[实现者结果](desktop-game-observation-e14-result.md)与独立结果分列。本轮DeepSeek2次（整份生成unknown未重发、process重写成功采用重开），5个原配置／DB／凭据源hash保持。SAC4551仍阻止冻结运行；用户准备申请证书，E14整体／教师体验未通过，不发行。已核查源码／文档按授权由原OpenCode正常提交推送，后续签名及整包补验见[唯一入口](../tasks/current.md)。长根WinError206、正式更新源／信任身份及D2／D3未验保持。
+2026-10-28 E14已由原Go套餐DeepSeek V4.1 Flash max会话实施回修，[独立核查§6–§7](desktop-game-observation-e14-review.md#6-最终独立结论源码与静态工程通过冻结整体验证受阻)确认：local759、短根桌面327、完整前端、源码真实窗口17／旧库升级22、静态包26／便携归档15通过，E14-R01–R06在该范围关闭。r03完整候选190文件，便携归档在`build/desktop-e14-r03/dist/`；[实现者结果](desktop-game-observation-e14-result.md)与独立结果分列。本轮DeepSeek2次（整份生成unknown未重发、process重写成功采用重开），5个原配置／DB／凭据源hash保持。SAC4551仍阻止冻结运行；用户准备申请证书，E14整体／教师体验未通过，不发行。已核查源码／文档按授权由原OpenCode正常提交推送，其后的另机运行见[目标机记录](desktop-windows11-target-review.md)。长根WinError206、正式更新源／信任身份及D2／D3未验保持。
 
 此前2026-10-28导出片收口：原OpenCode会话以Go套餐DeepSeek V4.1 Flash max实施及回修，[导出独立核查 §6](desktop-game-observation-export-review.md#6-最终独立结论本片限定工程核查通过)通过，R01–R13关闭：全local758、最终桌面302／导出API专项41、最终全前端（观察54）、HTTP37及真实WebView2 16项；7份合成Word逐页、600图及大于30MiB完整交付、真实原生取消／明确重试／保存与正常关闭有实证。见[实现交接](desktop-game-observation-export-result.md)，由原OpenCode正常提交推送至5808078。当时应用真实AI调用0次，原配置／凭据及旧数据保持；该时点未验不由E14源码／静态结果改写。
 
@@ -74,7 +76,7 @@ Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／
 
 已进入 `codex/desktop-v2-foundation`，采用 Windows 11 原生开发。OpenCode 写实现、测试、迁移及构建脚本；Codex 负责技术核查、规划设计、审阅、相关验证与 Git／发布管理，均按当前授权执行。
 
-- [唯一当前任务](../tasks/current.md)：D2 W1数据迁移／凭据保存已由OpenCode实施并经Codex核查关闭。[W1实现结果](desktop-d2-w1-result.md)。[产品规格](../specs/desktop-ai-daily-plan.md)、[工程规格及清单](../specs/desktop-ai-engineering.md)、[W1独立核查](desktop-d2-w1-review.md)。W1独立全local286项、迁移18项及冻结重启探针通过，R01–R09已关闭（核查§12）；[W2](desktop-d2-w2-review.md)已由OpenCode使用Go套餐DeepSeek V4.1 Flash交付并经Codex核查通过；[实现结果](desktop-d2-w2-result.md)含后续接口交接；[W3实现](desktop-d2-w3-result.md)及[独立核查](desktop-d2-w3-review.md)已完成，当前Windows 11合成环境工程通过；[W4实现](desktop-d2-w4-result.md)及[独立核查§10](desktop-d2-w4-review.md#10-最终工程结论w4通过停在w4)已完成，独立全local470项／桌面146项及API复核通过，R01–R09关闭；[W5实现](desktop-d2-w5-result.md)与[W5独立核查§8](desktop-d2-w5-review.md#8-最终工程结论w5限定源码集成通过)已完成，三类候选采用及退出已用独立真实源码窗口复核；[W6实现](desktop-d2-w6-result.md)及[Codex独立核查§9](desktop-d2-w6-review.md#9-最终工程结论w6限定环境工程核查通过)已完成，独立477项local／168项桌面、前端及新完整包130项通过，54归档模块和真实入口同源，R01–R09关闭；后续指定Word及合成人工验收结果以本页上方2026-10-20收口记录为准；G17最新真实结果见上方2026-10-22记录，不宣布D2完整产品或发行完成。
+- D2 W1数据迁移／凭据保存已由OpenCode实施并经Codex核查关闭。[W1实现结果](desktop-d2-w1-result.md)。[产品规格](../specs/desktop-ai-daily-plan.md)、[工程规格及清单](../specs/desktop-ai-engineering.md)、[W1独立核查](desktop-d2-w1-review.md)。W1独立全local286项、迁移18项及冻结重启探针通过，R01–R09已关闭（核查§12）；[W2](desktop-d2-w2-review.md)已由OpenCode使用Go套餐DeepSeek V4.1 Flash交付并经Codex核查通过；[实现结果](desktop-d2-w2-result.md)含后续接口交接；[W3实现](desktop-d2-w3-result.md)及[独立核查](desktop-d2-w3-review.md)已完成，当前Windows 11合成环境工程通过；[W4实现](desktop-d2-w4-result.md)及[独立核查§10](desktop-d2-w4-review.md#10-最终工程结论w4通过停在w4)已完成，独立全local470项／桌面146项及API复核通过，R01–R09关闭；[W5实现](desktop-d2-w5-result.md)与[W5独立核查§8](desktop-d2-w5-review.md#8-最终工程结论w5限定源码集成通过)已完成，三类候选采用及退出已用独立真实源码窗口复核；[W6实现](desktop-d2-w6-result.md)及[Codex独立核查§9](desktop-d2-w6-review.md#9-最终工程结论w6限定环境工程核查通过)已完成，独立477项local／168项桌面、前端及新完整包130项通过，54归档模块和真实入口同源，R01–R09关闭；后续指定Word及合成人工验收结果以本页上方2026-10-20收口记录为准；G17最新真实结果见上方2026-10-22记录，不宣布D2完整产品或发行完成。
 - [D1本轮教师体验收口](desktop-d1-result.md#208-t6-b核对与本轮教师体验收口2026-10-17)与[独立复核](desktop-d1-review.md#209-t6-b复核与本轮人工验证收口2026-10-17)：原R1–R17工程通过、R18关闭、T6-A／T6-B／T7通过；配置v4、新旧表头和两份单日文件已核对。微软拼音按用户反馈正常，不再复验或穷举输入法。长园所2页、合并7页及起始页1／4／6、121导出相关／146桌面和c6dc1928…包证据保持，产品与发行未整体验收。
 - [D1B第八轮复审§17](desktop-d1-review.md#17-d1b-第八轮修复复审与工程收口2026-10-17)：原R17关闭、17项全部关闭，**当轮当前Windows 11开发机工程复审通过**。133本地／108回归／146桌面、纯逻辑＋60组件及构建通过；独立真实窗口9/9，137文件包同源。后续人工体验与R18见结果§20–21／审阅§20，完整产品与发行未验。
 - [D1A 独立审阅 §7](desktop-d1-review.md#7-版本统一与-d1a-放行2026-10-13)：R1–R6关闭及87／108项历史基线保留；3.12失败证据不再作唯一门槛，不重复派发已关闭问题。
@@ -114,9 +116,9 @@ Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／
 | 1ABC 云端部署 | [部署结果](ai-slice1abc-deployment-result-2026-10-05.md) | [部署源 JSON](ai-slice1abc-deployment-source-2026-10-05.json)、[当时方案](ai-slice1abc-deployment-plan-2026-10-05.md) |
 | 浏览器工具 | [代理修复](browser-proxy-repair-2026-10-05.md) | [浏览器与 Word 能力实证](browser-repair-and-i5-capabilities-2026-10-02.md) |
 
-I5 的 D／F／G／H 报告覆盖不同案例、版本或证据窗口，由最终收口逐一引用；对应 JSON、下载文件、截图、完整性记录和历史部署源继续保留。完整 W6 非空材料仍未通过；本地版仍须实际导出并在 Windows Word／WPS 检查全页。
+I5 的 D／F／G／H 报告覆盖不同案例、版本或证据窗口，由最终收口逐一引用；对应 JSON、下载文件、截图、完整性记录和历史部署源继续保留。v1 的完整 W6 非空材料仍按原记录。桌面周材料在 Windows Word 的实际页检见[周 AI 目标机报告 §8.3](desktop-weekly-ai-windows11-target-review.md#83-t08本包新word未保存输入与实际页检)，WPS 仍未验。
 
-[AI 协同规格索引](../specs/ai-capabilities-implementation.md)保留 v1 的 P1–P4 决定与实施记录；AI Service 调用、持久任务、业务 AI 与材料仍未实现。进入新切片前按 ADR 0004 审查适用范围。材料参考见 [提取记录](i5-material-reference-extraction-2026-10-03.md)及配套 JSON。
+[AI 协同规格索引](../specs/ai-capabilities-implementation.md)保留 v1 的 P1–P4 决定与实施记录；这些能力在 v1 当轮尚未实现。进入新切片前按 ADR 0004 审查适用范围。材料参考见 [提取记录](i5-material-reference-extraction-2026-10-03.md)及配套 JSON。
 
 ## 提示词与报告维护
 

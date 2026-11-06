@@ -1,12 +1,12 @@
 # AI 与既有实施规格适用索引
 
-当前状态：2026-11-01，Architecture v2已确认。日计划AI、观察及完整备份保持各自实际源码／静态结果，见[v2实施状态](../bootstrap/architecture-v2-readiness.md)和[文档索引](../bootstrap/README.md)。桌面周计划Q1–Q6全部确认，[产品](desktop-weekly-plan.md)及[工程](desktop-weekly-plan-engineering.md)已定稿，当前未编码，唯一派发入口[current.md](../tasks/current.md)。以下v1规则与早期v2路线只作适用映射，不按旧云端顺序继续实现。
+本文用于把 v1 规格映射到桌面版。日计划、观察、周计划的结果见[v2 实施状态](../bootstrap/architecture-v2-readiness.md)。桌面周计划 Q1–Q6 已实施，适用规则见[产品规格](desktop-weekly-plan.md)；游戏、栏目、材料的实际范围见[Q5/Q6 目标机核查](../bootstrap/desktop-weekly-ai-windows11-target-review.md)。
 
 2026-10-17的D2准备状态已被后续W1–W6、G17指定实测及其它切片报告接续；不再把“G01–G18全部待验／用户暂不实现”作为当前结论，也不把限定通过升级为完整产品／教师验收。
 
 ## v2 当前适用规则
 
-Vue／TypeScript、Python／FastAPI、SQLAlchemy／Alembic 保留；本地 SQLite 为桌面数据权威，AI 从教师电脑发出，WebDAV 管理接续与备份。pywebview＋WebView2 为优先验证方案，PyInstaller 为候选。现有 MySQL 模型、迁移、中央账号权限、后台执行与网络入口均须审查适配，不宣称旧实现已经成为桌面版。
+Vue／TypeScript、Python／FastAPI、SQLAlchemy／Alembic 保留；本地 SQLite 为桌面数据权威，AI 从教师电脑发出，本地完整备份已支持，WebDAV 接续协议后置。桌面窗口使用 pywebview＋WebView2，当前内部候选用 PyInstaller 构建。现有 MySQL 模型、迁移、中央账号权限、后台执行与网络入口均须审查适配，不宣称旧实现已经成为桌面版。
 
 | 既有规格 | v2 沿用或复用审查依据 | 必须重新适配的部分 |
 | --- | --- | --- |
@@ -15,11 +15,11 @@ Vue／TypeScript、Python／FastAPI、SQLAlchemy／Alembic 保留；本地 SQLit
 | [AI Service](ai-service-implementation.md)、[提示词](prompts-implementation.md) | 结构契约、个人指导、配置版本、候选校验、公网 HTTPS 防护、失败分类 | 本地凭据与运行、更新分发；中央管理员与离线云端执行语义失效 |
 | [设置 API 1B](ai-settings-api-1b.md)、[设置 UI 1C](ai-settings-ui-1c.md) | 既有设置交互、字段适配和版本保护，含已确认的默认修订处理 | 本地会话、身份、存储及桌面容器；旧 Windows 浏览器验收不等于桌面程序验收 |
 | [持久任务](persistent-ai-tasks-implementation.md) | 未发送可恢复、已发送结果不明不自动重发、候选与人工内容分离 | MySQL 领取／租约、worker 拓扑、程序退出／休眠／恢复；周操作触发按已确认Q5，三个操作独立点击 |
-| [周计划](manual-weekly-plan-confirmation.md)、[材料](weekly-materials-implementation.md) | 候选采用、确认快照、材料人工编辑与来源陈旧保护 | 本人游戏来源及搭班两类手填；其它AI输入按Q6、三个操作按Q5。手工首片先行，周AI／材料后片尚未实施 |
+| [周计划](manual-weekly-plan-confirmation.md)、[材料](weekly-materials-implementation.md) | 候选采用、确认快照、材料人工编辑与来源陈旧保护 | 本人游戏来源及搭班两类手填；其它AI输入按Q6、三个操作按Q5。手工、周 AI 与材料的实际边界按桌面周计划规格 |
 | [Word 导出](word-export-implementation.md)、[模板验证](word-template-validation.md) | 固定模板、选定版本、日期范围与原文标红、实际版式检查 | 桌面文件保存、SQLite 读取、本地身份与新产品实测 |
 | [I5 旧验收环境](i5-validation-environment.md)、[模板原型结果](word-template-prototype-results.md) | v1 各时点的事实、证据和未通过项 | 远程部署门槛不延续为桌面默认环境；新 Windows 应用须单独验收 |
 
-P1 管理员本人入口属于 v1 历史决定，不在 v2 引入集中管理员角色；本地单档案入口已确认，内部身份按新规格细化。P2 材料人工入口、P3 改选后的显式重生成和人工内容保护、P4 节假日上下文的非冲突规则继续作为规格依据，不因架构调整自动扩大范围。P2／P3 随未来周材料切片实施，完整 W6 非空材料仍未通过。
+P1 管理员本人入口属于 v1 历史决定，不在 v2 引入集中管理员角色；本地单档案入口已确认，内部身份按新规格细化。P2 材料人工入口、P3 改选后的显式重生成和人工内容保护、P4 节假日上下文的非冲突规则继续作为规格依据，不因架构调整自动扩大范围。桌面材料采用与编辑见上引目标机核查；v1 的 W6 非空材料保留原验收状态。
 
 日计划继续保留原始教案、未经适龄调整的拆分基准、候选与最终内容版本；采用要检查来源和编辑版本，不让后台结果覆盖人工修改。周游戏只读取制作者本人来源，另一位教师的集体活动名称与晨间谈话主题由制作者输入；其他周栏目不能自动推定仍沿用旧同班输入。
 

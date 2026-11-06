@@ -1,8 +1,8 @@
 # 完整本地备份与恢复
 
-更新：2026-10-31。状态：**P01–P06 全部已由用户确认**。源码整合完成，B1 已推送 `7d2759b`；B1、B2-S1、恢复核心、宿主及 B3 真实源码窗口已在当前 Windows 11／独立合成环境范围完成独立核查，逐项源身份和首失败见[核查报告](../bootstrap/desktop-backup-restore-review.md)。教师人工体验、冻结包与发行仍未通过。源码整理及 main 快进见[整合核查](../bootstrap/desktop-source-integration-review.md)，唯一执行入口仍为[current.md](../tasks/current.md)。
+更新：2026-10-31。状态：**P01–P06 全部已由用户确认**。源码整合完成，B1 已推送 `7d2759b`；B1、B2-S1、恢复核心、宿主及 B3 真实源码窗口已在当前 Windows 11／独立合成环境范围完成独立核查，逐项源身份和首失败见[核查报告](../bootstrap/desktop-backup-restore-review.md)。后续冻结包的明文／加密、保护包及旧库恢复按来源分别见[周计划另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)及[Q5/Q6 目标机核查](../bootstrap/desktop-weekly-ai-windows11-target-review.md)。源码整理及 main 快进见[整合核查](../bootstrap/desktop-source-integration-review.md)，唯一执行入口仍为[current.md](../tasks/current.md)。
 
-本文明确区分用户决定、当前源码事实和待核定方案。当前授权为源码开发与合成验证；由 OpenCode、build、Go 套餐 DeepSeek V4.1 Flash max 实施，用户进一步允许按文件责任并行会话，原会话继续负责共享核心及最终 Git。Codex 统一独立审核、交回修复并复验，通过后由原 OpenCode 正常提交推送。不发行、不执行受阻 EXE、不改系统保护、不调用应用真实 AI，不启动 WebDAV，不新增或升级依赖。
+本文明确区分用户决定、当前源码事实和待核定方案。以下为 2026-10-31 源码开发与合成验证的当轮授权；由 OpenCode、build、Go 套餐 DeepSeek V4.1 Flash max 实施，用户进一步允许按文件责任并行会话，原会话继续负责共享核心及最终 Git。Codex 统一独立审核、交回修复并复验，通过后由原 OpenCode 正常提交推送。不发行、不执行受阻 EXE、不改系统保护、不调用应用真实 AI，不启动 WebDAV，不新增或升级依赖。
 
 ## 1. 产品决定与集中确认
 
