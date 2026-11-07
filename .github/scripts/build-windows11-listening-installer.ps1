@@ -370,20 +370,36 @@ foreach ($relative in $payload.files.Keys) {
 $programs = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)
 $shortcutPath = Join-Path $programs (Join-Path $ShortcutFolder $ShortcutName)
 Assert-File $shortcutPath 'Start Menu shortcut'
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
+# Read the original Unicode link through the Shell property system. The
+# legacy WScript reader can return empty fields for a localized link name.
+$shell = New-Object -ComObject Shell.Application
+$shortcutFolderItem = $shell.NameSpace([System.IO.Path]::GetDirectoryName($shortcutPath))
+$shortcutItem = $shortcutFolderItem.ParseName($ShortcutName)
+$shortcutTarget = [string]$shortcutItem.ExtendedProperty('System.Link.TargetParsingPath')
+$shortcutArguments = [string]$shortcutItem.ExtendedProperty('System.Link.Arguments')
+if ([string]::IsNullOrWhiteSpace($shortcutTarget) -or [string]::IsNullOrWhiteSpace($shortcutArguments)) {
+    $probePath = Join-Path $installerRoot 'shortcut-probe.lnk'
+    Copy-Item -LiteralPath $shortcutPath -Destination $probePath
+    $wsh = New-Object -ComObject WScript.Shell
+    $probeLink = $wsh.CreateShortcut($probePath)
+    $shortcutTarget = [string]$probeLink.TargetPath
+    $shortcutArguments = [string]$probeLink.Arguments
+}
+if ([string]::IsNullOrWhiteSpace($shortcutTarget)) {
+    Fail 'Start Menu shortcut target could not be read'
+}
 $expectedTarget = [System.IO.Path]::GetFullPath((Join-Path $installDir 'KGNext-E14.exe'))
-$actualTarget = [System.IO.Path]::GetFullPath([string]$shortcut.TargetPath)
+$actualTarget = [System.IO.Path]::GetFullPath($shortcutTarget)
 if (-not $actualTarget.Equals($expectedTarget, [System.StringComparison]::OrdinalIgnoreCase)) {
     Fail "Shortcut target mismatch: $actualTarget != $expectedTarget"
 }
 $expectedArguments = '--data "{0}" --credential-root "{1}"' -f $dataRoot, $credentialRoot
 if (-not [string]::Equals(
-    [string]$shortcut.Arguments,
+    $shortcutArguments,
     $expectedArguments,
     [System.StringComparison]::OrdinalIgnoreCase
 )) {
-    Fail "Shortcut arguments mismatch: $($shortcut.Arguments)"
+    Fail "Shortcut arguments mismatch: $shortcutArguments"
 }
 
 New-Item -ItemType Directory -Path $dataRoot, $credentialRoot -Force | Out-Null
