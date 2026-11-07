@@ -1320,7 +1320,7 @@ def test_listening_installer_static_contract():
     assert "ArchitecturesAllowed=x64" in iss
     assert "Source: \"{#MyPackageDir}\\*\"" in iss
     assert "recursesubdirs createallsubdirs" in iss
-    assert "一对一倾听测试版.lnk" in iss
+    assert '一对一倾听测试版"; Filename:' in iss
     assert (
         '--data ""{localappdata}\\KindergartenManagerListeningTest\\data"" '
         '--credential-root ""{localappdata}\\KindergartenManagerListeningTest'

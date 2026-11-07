@@ -48,4 +48,4 @@ SignedUninstaller=no
 Source: "{#MyPackageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{userprograms}\Kindergarten Manager 一对一倾听测试版\一对一倾听测试版.lnk"; Filename: "{app}\KGNext-E14.exe"; WorkingDir: "{app}"; Parameters: "--data ""{localappdata}\KindergartenManagerListeningTest\data"" --credential-root ""{localappdata}\KindergartenManagerListeningTest\credentials"""
+Name: "{userprograms}\Kindergarten Manager 一对一倾听测试版\一对一倾听测试版"; Filename: "{app}\KGNext-E14.exe"; WorkingDir: "{app}"; Parameters: "--data ""{localappdata}\KindergartenManagerListeningTest\data"" --credential-root ""{localappdata}\KindergartenManagerListeningTest\credentials"""
