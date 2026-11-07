@@ -1166,14 +1166,14 @@ def test_report_path_guard_rejects_existing_file_and_overlap(tmp_path):
 
 def _installed_sbom_bytes() -> bytes:
     import sysconfig
-    path = (Path(sysconfig.get_paths()["purelib"]) / "cryptography-50.0.1.dist-info" /
+    path = (Path(sysconfig.get_paths()["purelib"]) / "cryptography-50.0.2.dist-info" /
             "sboms" / "cryptography-rust.cyclonedx.json")
     assert path.is_file()
     return path.read_bytes()
 
 
 def test_privacy_positive_actual_sbom_and_regex(tmp_path):
-    sbom_name = "_internal/cryptography-50.0.1.dist-info/sboms/cryptography-rust.cyclonedx.json"
+    sbom_name = "_internal/cryptography-50.0.2.dist-info/sboms/cryptography-rust.cyclonedx.json"
     regex_name = "_internal/frontend/assets/index-test.js"
     regex_literal = b'ye=/"(?:[^"\\\\]|\\\\[^])*"/\n'
     rc, report = _run_archive_case(tmp_path, product_extra={
@@ -1188,7 +1188,7 @@ def test_privacy_positive_actual_sbom_and_regex(tmp_path):
     assert checks["public_ca_and_licenses_preserved"] is True
 
 def test_privacy_true_leaks_in_frontend_sbom_and_text(tmp_path):
-    sbom_name = "_internal/cryptography-50.0.1.dist-info/sboms/cryptography-rust.cyclonedx.json"
+    sbom_name = "_internal/cryptography-50.0.2.dist-info/sboms/cryptography-rust.cyclonedx.json"
     sbom = _installed_sbom_bytes()
     cases = [
         ("frontend-home", "_internal/frontend/assets/index-leak.js",
@@ -1356,10 +1356,10 @@ def test_listening_installer_static_contract():
         in workflow
     )
     assert "build-windows11-listening-installer.ps1" in workflow
-    assert "windows11-listening-installer" in workflow
     assert "KGNext-Listening-Win11-x64-Setup.exe" in workflow
-    assert "SHA256SUMS.txt" in workflow
-    assert "installer-identity.json" in workflow
+    assert "archive: false" in workflow
+    assert "SHA256SUMS.txt" not in workflow
+    assert "installer-identity.json" not in workflow
     assert "retention-days: 14" in workflow
 
 

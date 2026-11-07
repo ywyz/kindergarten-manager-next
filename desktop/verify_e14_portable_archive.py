@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import sysconfig
 import unicodedata
 import uuid
 import zipfile
@@ -67,12 +68,12 @@ ABS_PATH_RE = re.compile(
     r"(?i)(?:^|[^A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/]|/(?:Users|home)/)"
 )
 KNOWN_SBOM_REL = (
-    "_internal/cryptography-50.0.1.dist-info/sboms/cryptography-rust.cyclonedx.json"
+    "_internal/cryptography-50.0.2.dist-info/sboms/cryptography-rust.cyclonedx.json"
 )
 UPSTREAM_SBOM_REF_RE = re.compile(
     r"file:///[A-Za-z]:/[^\"'\s]*/cryptography/wheelhouse/"
-    r"[^\"'\s]*/cryptography-50\.0\.1/src/rust(?:/[A-Za-z0-9_.-]+)?"
-    r"#[A-Za-z0-9_.@-]*0\.50\.1"
+    r"[^\"'\s]*/cryptography-50\.0\.2/src/rust(?:/[A-Za-z0-9_.-]+)?"
+    r"#[A-Za-z0-9_.@-]*0\.50\.2"
 )
 PRIVATE_HOME_RE = re.compile(
     r"(?i)(?<![\w])(?:[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s\"']+"
@@ -862,12 +863,8 @@ def scan_text_private_paths(
 
 def _known_sbom_info(actual_bytes: bytes | None) -> dict:
     source = (
-        Path(__file__).resolve().parent.parent
-        / "desktop"
-        / ".venv-d1"
-        / "Lib"
-        / "site-packages"
-        / "cryptography-50.0.1.dist-info"
+        Path(sysconfig.get_paths()["purelib"])
+        / "cryptography-50.0.2.dist-info"
         / "sboms"
         / "cryptography-rust.cyclonedx.json"
     )

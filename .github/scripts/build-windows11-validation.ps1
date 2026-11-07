@@ -98,8 +98,8 @@ if ($pythonVersion -ne 'Python 3.14.10') {
 if ($LASTEXITCODE -ne 0) {
     Fail 'Python is not the required CPython 3.14.10 x64 standard-GIL build'
 }
-if ($nodeVersion -ne 'v26.12.1') {
-    Fail "Expected Node v26.12.1, got: $nodeVersion"
+if ($nodeVersion -ne 'v26.13.0') {
+    Fail "Expected Node v26.13.0, got: $nodeVersion"
 }
 $commit = (& git -C $repo rev-parse HEAD 2>&1 | Out-String).Trim()
 if ($commit -notmatch '^[0-9a-f]{40}$') {
@@ -167,12 +167,40 @@ $pipArgs = @(
     '--build-constraint', $constraints
 )
 Invoke-External $venvPython $pipArgs $pipLog
+Invoke-External $venvPython @('-m', 'pip', 'check') (Join-Path $privateRoot 'pip-check.log')
 
 Push-Location $frontendRoot
 try {
     Invoke-External 'npm' @('ci', '--no-audit', '--no-fund') $npmLog
 } finally {
     Pop-Location
+}
+
+if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch' -and
+    $env:GITHUB_REF -eq 'refs/heads/codex/desktop-one-to-one-listening') {
+    $env:DISABLE_SQLALCHEMY_CEXT_RUNTIME = '1'
+    $sourceTests = @(
+        'backend/tests/local/test_listening_api.py',
+        'backend/tests/local/test_listening_backup.py',
+        'backend/tests/local/test_listening_export_api.py',
+        'desktop/tests/test_d1_listening_export_host.py',
+        'desktop/tests/test_e14_build_guard.py',
+        'desktop/tests/test_windows11_portable_static.py'
+    )
+    Push-Location $repo
+    try {
+        $pytestArgs = @('-m', 'pytest', '-q', '-p', 'no:cacheprovider') + $sourceTests
+        Invoke-External $venvPython $pytestArgs (Join-Path $privateRoot 'source-pytest.log')
+    } finally {
+        Pop-Location
+    }
+    Push-Location $frontendRoot
+    try {
+        Invoke-External 'npm' @('run', 'typecheck') (Join-Path $privateRoot 'source-typecheck.log')
+        Invoke-External 'npm' @('run', 'test:d1') (Join-Path $privateRoot 'source-frontend-tests.log')
+    } finally {
+        Pop-Location
+    }
 }
 
 $portableDir = Join-Path $buildRoot 'dist'

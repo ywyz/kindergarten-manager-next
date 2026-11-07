@@ -37,21 +37,21 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
       - name: Checkout trusted branch
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up exact CPython
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14.10"
           architecture: "x64"
           check-latest: false
 
       - name: Set up exact Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.12.1"
+          node-version: "26.13.0"
           check-latest: false
 
       - name: Record toolchain versions
@@ -68,8 +68,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Python is not the required CPython 3.14.10 x64 standard-GIL build"
           }
-          if ($nodeVersion -ne 'v26.12.1') {
-            throw "Expected Node v26.12.1, got: $nodeVersion"
+          if ($nodeVersion -ne 'v26.13.0') {
+            throw "Expected Node v26.13.0, got: $nodeVersion"
           }
           Write-Host "Python: $pythonVersion"
           Write-Host "Node: $nodeVersion"
@@ -95,7 +95,7 @@ jobs:
 
       - name: Upload minimal handoff
         if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/desktop-one-to-one-listening') }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows11-weekly-validation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kgm-weekly-win11-ci-${{ github.run_id }}-${{ github.run_attempt }}/handoff
@@ -125,12 +125,9 @@ jobs:
 
       - name: Upload unsigned one-to-one-listening test installer
         if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/desktop-one-to-one-listening' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: windows11-listening-installer-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/kgm-listening-installer-${{ github.run_id }}-${{ github.run_attempt }}/KGNext-Listening-Win11-x64-Setup.exe
-            ${{ runner.temp }}/kgm-listening-installer-${{ github.run_id }}-${{ github.run_attempt }}/SHA256SUMS.txt
-            ${{ runner.temp }}/kgm-listening-installer-${{ github.run_id }}-${{ github.run_attempt }}/installer-identity.json
+          path: ${{ runner.temp }}/kgm-listening-installer-${{ github.run_id }}-${{ github.run_attempt }}/KGNext-Listening-Win11-x64-Setup.exe
+          archive: false
           if-no-files-found: error
           retention-days: 14
