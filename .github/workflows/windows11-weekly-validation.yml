@@ -2,6 +2,9 @@ name: Windows 11 weekly validation build
 
 # Builds and statically verifies the complete weekly-plan Windows package.
 # This is a windows-2022 x64 build, not a Windows 11 runtime/target test.
+# A manual run from the exact one-to-one-listening branch additionally
+# compiles the unsigned per-user test installer and skips the portable
+# handoff upload; other branches keep the existing handoff behavior.
 "on":
   push:
     branches:
@@ -91,9 +94,43 @@ jobs:
           }
 
       - name: Upload minimal handoff
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/desktop-one-to-one-listening') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows11-weekly-validation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kgm-weekly-win11-ci-${{ github.run_id }}-${{ github.run_attempt }}/handoff
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build unsigned one-to-one-listening test installer
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/desktop-one-to-one-listening' }}
+        shell: pwsh
+        env:
+          EVIDENCE_ROOT: ${{ runner.temp }}/kgm-weekly-win11-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          INSTALLER_ROOT: ${{ runner.temp }}/kgm-listening-installer-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:GITHUB_WORKSPACE/.github/scripts/build-windows11-listening-installer.ps1" `
+            -RepoRoot $env:GITHUB_WORKSPACE `
+            -BuildRoot "$env:GITHUB_WORKSPACE/build/desktop-e14-weekly-ci-${{ github.run_id }}-${{ github.run_attempt }}" `
+            -ValidationSummary "$env:EVIDENCE_ROOT/handoff/validation-summary.json" `
+            -InstallerRoot $env:INSTALLER_ROOT `
+            -RunId "${{ github.run_id }}" `
+            -RunAttempt "${{ github.run_attempt }}" `
+            -Repository "${{ github.repository }}" `
+            -CommitSha "${{ github.sha }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "build-windows11-listening-installer.ps1 failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload unsigned one-to-one-listening test installer
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/desktop-one-to-one-listening' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows11-listening-installer-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/kgm-listening-installer-${{ github.run_id }}-${{ github.run_attempt }}/KGNext-Listening-Win11-x64-Setup.exe
+            ${{ runner.temp }}/kgm-listening-installer-${{ github.run_id }}-${{ github.run_attempt }}/SHA256SUMS.txt
+            ${{ runner.temp }}/kgm-listening-installer-${{ github.run_id }}-${{ github.run_attempt }}/installer-identity.json
           if-no-files-found: error
           retention-days: 14

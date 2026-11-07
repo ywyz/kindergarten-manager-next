@@ -33,9 +33,21 @@ ARCHIVE_NAME = "KGNext-E14-win11-r01.zip"
 PACKAGE = REPO / "build" / "desktop-e14-win11-r01" / "package" / PRODUCT
 FRONTEND = REPO / "build" / "desktop-e14-win11-r01" / "frontend"
 TEMPLATES = BACKEND / "app" / "assets" / "word_templates"
+LISTENING_TEMPLATES = BACKEND / "app" / "assets" / "listening_templates"
+LISTENING_TEMPLATE_GRADES = ("small", "middle", "large")
+LISTENING_TEMPLATE_DOMAINS = ("health", "language", "social", "science", "art")
+LISTENING_TEMPLATE_DOCX = tuple(
+    f"v1/{grade}_{domain}.docx"
+    for grade in LISTENING_TEMPLATE_GRADES
+    for domain in LISTENING_TEMPLATE_DOMAINS
+)
+LISTENING_TEMPLATE_REQUIRED_FILES = (
+    "manifest.json",
+    *LISTENING_TEMPLATE_DOCX,
+)
 MIGRATIONS = BACKEND / "migrations_local"
 ALEMBIC = BACKEND / "alembic-local.ini"
-DATABASE_REVISION = "20261102_0008_local_weekly_ai"
+DATABASE_REVISION = "20261107_0010_local_listening_ai"
 APP_VERSION = "0.1.0"
 PACKAGE_FORMAT = "pyinstaller-onedir-zip-v1"
 PLATFORM = "windows"
@@ -87,6 +99,18 @@ ARCHIVE_REQUIRED_MODULES = (
     "app.local.weekly_ai_service",
     "app.local.weekly_ai_sources",
     "app.local.weekly_materials",
+    "app.local.listening_service",
+    "app.local.listening_templates",
+    "app.local.listening_assets",
+    "app.local.listening_api",
+    "app.local.listening_export_service",
+    "app.local.listening_export_api",
+    "app.local.listening_ai_contracts",
+    "app.local.listening_ai_inputs",
+    "app.local.listening_ai_service",
+    "app.local.listening_ai_adoption",
+    "app.local.listening_ai_api",
+    "app.services.word_export_listening",
     "app.local.observation_service",
     "app.local.observation_export_service",
     "app.local.observation_export_api",
@@ -99,6 +123,7 @@ ARCHIVE_REQUIRED_MODULES = (
     "app.local.ai_executor",
     "app.local.ai_worker",
     "app.local.ai_transport",
+    "app.local.ai_spawn",
     "app.local.ai_task_service",
     "app.local.ai_config_service",
     "app.local.ai_adoption",
@@ -200,6 +225,10 @@ REQUIRED_FREEZE_PATHS = (
     "backend/app/local/config_tokens.py",
     "backend/app/assets/word_templates/daily_plan.docx",
     "backend/app/assets/word_templates/weekly_plan.docx",
+    *[
+        f"backend/app/assets/listening_templates/{relative}"
+        for relative in ("README.md", "manifest.json", *LISTENING_TEMPLATE_DOCX)
+    ],
     "backend/app/local/appearance_service.py",
     "backend/app/local/weekly_plan_api.py",
     "backend/app/local/weekly_plan_service.py",
@@ -218,8 +247,27 @@ REQUIRED_FREEZE_PATHS = (
     "backend/app/local/weekly_ai_service.py",
     "backend/app/local/weekly_ai_sources.py",
     "backend/app/local/weekly_materials.py",
+    "backend/app/local/listening_service.py",
+    "backend/app/local/listening_templates.py",
+    "backend/app/local/listening_assets.py",
+    "backend/app/local/listening_api.py",
+    "backend/app/local/listening_export_service.py",
+    "backend/app/local/listening_export_api.py",
+    "backend/app/local/listening_ai_contracts.py",
+    "backend/app/local/listening_ai_inputs.py",
+    "backend/app/local/listening_ai_service.py",
+    "backend/app/local/listening_ai_adoption.py",
+    "backend/app/local/listening_ai_api.py",
+    "backend/app/services/word_export_listening.py",
+    "backend/app/local/ai_executor.py",
+    "backend/app/local/ai_worker.py",
+    "backend/app/local/ai_transport.py",
+    "backend/app/local/ai_spawn.py",
+    "backend/app/local/ai_task_service.py",
     "backend/migrations_local/versions/20261101_0007_local_weekly_plans.py",
     "backend/migrations_local/versions/20261102_0008_local_weekly_ai.py",
+    "backend/migrations_local/versions/20261107_0009_local_listening.py",
+    "backend/migrations_local/versions/20261107_0010_local_listening_ai.py",
 )
 REQUIRED_STATIC_CHECKS = (
     "static_no_execution",
@@ -264,11 +312,14 @@ REQUIRED_STATIC_CHECKS = (
     "bundle_frontend_matches",
     "frontend_digest_matches",
     "bundle_templates_match",
+    "bundle_listening_templates_match",
     "bundle_migrations_match",
     "bundle_alembic_matches",
     "no_package_cache_files",
     "observation_templates",
     "migration_0006",
+    "migration_0009",
+    "migration_0010",
     "pillow_plugins_present",
     "pillow_license_present",
     "pillow_license_matches_source",
@@ -705,6 +756,8 @@ def _package_info_checks(data: Any, expected_product: str) -> dict:
                 "20261025_0006_local_game_observations.py",
                 "20261101_0007_local_weekly_plans.py",
                 "20261102_0008_local_weekly_ai.py",
+                "20261107_0009_local_listening.py",
+                "20261107_0010_local_listening_ai.py",
             )
         )
     templates = data.get("templates")
@@ -716,6 +769,22 @@ def _package_info_checks(data: Any, expected_product: str) -> dict:
                 "daily_plan.docx", "weekly_plan.docx", "observation_public.docx",
                 "observation_indoor.docx", "observation_outdoor.docx",
             )
+        )
+    listening_templates = data.get("listening_templates")
+    exact = exact and isinstance(listening_templates, list)
+    if isinstance(listening_templates, list):
+        names = [str(item).replace("\\", "/") for item in listening_templates]
+        exact = exact and len(names) == len(set(names))
+        exact = exact and all(
+            name
+            and not name.startswith(("/", "\\"))
+            and not re.match(r"^[A-Za-z]:", name)
+            and "\\" not in name
+            and ".." not in name.split("/")
+            for name in names
+        )
+        exact = exact and all(
+            name in names for name in LISTENING_TEMPLATE_REQUIRED_FILES
         )
     checks["metadata_exact"] = bool(exact)
     if not exact:
@@ -1268,6 +1337,15 @@ def _resource_checks(package_root: Path) -> dict:
     internal = package_root / "_internal"
     checks = {
         "templates_match": _tree_matches(package_root, "_internal/app/assets/word_templates", TEMPLATES),
+        "listening_templates_match": _tree_matches(
+            package_root,
+            "_internal/app/assets/listening_templates",
+            LISTENING_TEMPLATES,
+        ),
+        "listening_templates_complete": all(
+            (internal / "app/assets/listening_templates" / name).is_file()
+            for name in LISTENING_TEMPLATE_REQUIRED_FILES
+        ),
         "migrations_match": _tree_matches(package_root, "_internal/migrations_local", MIGRATIONS),
         "alembic_match": _tree_matches(package_root, "_internal/alembic-local.ini", ALEMBIC),
         "observation_templates": all(
@@ -1280,6 +1358,12 @@ def _resource_checks(package_root: Path) -> dict:
         ),
         "migration_0006": (
             internal / "migrations_local/versions/20261025_0006_local_game_observations.py"
+        ).is_file(),
+        "migration_0009": (
+            internal / "migrations_local/versions/20261107_0009_local_listening.py"
+        ).is_file(),
+        "migration_0010": (
+            internal / "migrations_local/versions/20261107_0010_local_listening_ai.py"
         ).is_file(),
         "pillow_plugins": sorted(
             path.name for path in (internal / "PIL").glob("_*.cp314-win_amd64.pyd")
@@ -2015,10 +2099,16 @@ def main(argv: list[str] | None = None) -> int:
 
         resources = _resource_checks(package_root)
         checks["bundle_templates_match"] = bool(resources["templates_match"])
+        checks["bundle_listening_templates_match"] = bool(
+            resources["listening_templates_match"]
+            and resources["listening_templates_complete"]
+        )
         checks["bundle_migrations_match"] = bool(resources["migrations_match"])
         checks["bundle_alembic_matches"] = bool(resources["alembic_match"])
         checks["observation_templates"] = bool(resources["observation_templates"])
         checks["migration_0006"] = bool(resources["migration_0006"])
+        checks["migration_0009"] = bool(resources["migration_0009"])
+        checks["migration_0010"] = bool(resources["migration_0010"])
         plugins = resources["pillow_plugins"]
         checks["pillow_plugins_present"] = (
             len(plugins) >= 8 and all(name in plugins for name in REQUIRED_PILLOW_PLUGINS)
@@ -2028,6 +2118,10 @@ def main(argv: list[str] | None = None) -> int:
         checks["no_package_cache_files"] = not resources["caches"]
         report["resources"] = {
             "templates_match": resources["templates_match"],
+            "listening_templates_match": resources["listening_templates_match"],
+            "listening_templates_complete": resources[
+                "listening_templates_complete"
+            ],
             "migrations_match": resources["migrations_match"],
             "alembic_match": resources["alembic_match"],
             "pillow_plugins": plugins,

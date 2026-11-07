@@ -300,6 +300,7 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
                            product_extra=None, package_info_extra=None):
     import json
     import uuid
+    import build_e14
     package = root / "package" / "KGNext-E14"
     package.mkdir(parents=True)
     product = {
@@ -323,7 +324,8 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         "package": "KGNext-E14",
         "version": "0.1.0",
         "build_id": build_id,
-        "database_revision": "20261102_0008_local_weekly_ai",
+        "database_revision": build_e14.DATABASE_REVISION,
+        "listening_templates": list(build_e14.LISTENING_TEMPLATE_REQUIRED_FILES),
         "unsigned_internal_test": True,
         "source_commit": "b" * 40,
         "frontend_digest": "c" * 64,
@@ -343,7 +345,7 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         "schema_version": 1,
         "package": "KGNext-E14",
         "build_id": build_id,
-        "database_revision": "20261102_0008_local_weekly_ai",
+        "database_revision": build_e14.DATABASE_REVISION,
         "source_freeze_digest": freeze_digest,
         "generated_at": "2026-10-31T01:00:00+00:00",
         "files": [
@@ -439,12 +441,19 @@ def test_archive_positive_coherent_tiny_candidate(tmp_path):
     for name in modules:
         assert f"app.local.{name}" in required
         assert (build_e14.d0_paths.BACKEND_ROOT / "app" / "local" / f"{name}.py").is_file()
-    old_root = tmp_path / "old-revision"
-    old_root.mkdir()
-    old_rc, old_report = _run_archive_case(
-        old_root, package_info_extra={"database_revision": "20261101_0007_local_weekly"})
-    assert old_rc != 0
-    assert old_report["checks"]["package_info_metadata_exact"] is False
+    for index, old_revision in enumerate((
+        "20261101_0007_local_weekly",
+        "20261102_0008_local_weekly_ai",
+        "20261107_0009_local_listening",
+    )):
+        old_root = tmp_path / f"old-revision-{index}"
+        old_root.mkdir()
+        old_rc, old_report = _run_archive_case(
+            old_root,
+            package_info_extra={"database_revision": old_revision},
+        )
+        assert old_rc != 0
+        assert old_report["checks"]["package_info_metadata_exact"] is False
     assert report["mode"] == "static" and report["ok"] is True
     assert all(type(value) is bool for value in checks.values())
     assert checks["public_ca_and_licenses_preserved"] is True
@@ -1254,5 +1263,103 @@ def test_privacy_scanner_discriminates_regex_sbom_and_true_leaks():
             "C:/Users/teacher/private", source_path="package-info.json", metadata=True
         )
         assert any(item["kind"] == "drive-path" for item in metadata["violations"])
+
+
+def test_listening_template_static_contract_is_current_and_complete():
+    import build_e14
+    import verify_e14_package
+
+    assert build_e14.DATABASE_REVISION == "20261107_0010_local_listening_ai"
+    assert build_e14.PREDECESSOR_MIGRATION_FILE.is_file()
+    assert build_e14.MIGRATION_FILE.is_file()
+    assert len(build_e14.LISTENING_TEMPLATE_DOCX) == 15
+    assert set(build_e14.LISTENING_TEMPLATE_REQUIRED_FILES) == {
+        "README.md",
+        "manifest.json",
+        *build_e14.LISTENING_TEMPLATE_DOCX,
+    }
+    for relative in build_e14.LISTENING_TEMPLATE_REQUIRED_FILES:
+        assert (build_e14.LISTENING_TEMPLATE_DIR / relative).is_file()
+    for relative in ("manifest.json", *build_e14.LISTENING_TEMPLATE_DOCX):
+        assert (
+            f"backend/app/assets/listening_templates/{relative}"
+            in verify_e14_package.REQUIRED_FREEZE_PATHS
+        )
+    assert (
+        "bundle_listening_templates_match"
+        in verify_e14_package.REQUIRED_STATIC_CHECKS
+    )
+    assert "migration_0009" in verify_e14_package.REQUIRED_STATIC_CHECKS
+    assert "migration_0010" in verify_e14_package.REQUIRED_STATIC_CHECKS
+
+
+def test_listening_installer_static_contract():
+    repo = Path(__file__).resolve().parents[2]
+    scripts = repo / ".github" / "scripts"
+    iss_path = scripts / "windows11-listening-installer.iss"
+    ps1_path = scripts / "build-windows11-listening-installer.ps1"
+    workflow_path = (
+        repo / ".github" / "workflows" / "windows11-weekly-validation.yml"
+    )
+    assert iss_path.is_file()
+    assert ps1_path.is_file()
+    assert workflow_path.is_file()
+    iss_bytes = iss_path.read_bytes()
+    assert iss_bytes.startswith(b"\xef\xbb\xbf"), "Inno script must be UTF-8 BOM"
+    iss = iss_bytes.decode("utf-8-sig")
+    ps1 = ps1_path.read_text(encoding="utf-8-sig")
+    workflow = workflow_path.read_text(encoding="utf-8-sig")
+
+    assert "AppId={{6F2B8E7A-5C4D-4A3E-9B1F-7D2C8A6E4F10}" in iss
+    assert (
+        "DefaultDirName={localappdata}\\Programs\\KindergartenManagerListeningTest"
+        in iss
+    )
+    assert "PrivilegesRequired=lowest" in iss
+    assert "MinVersion=10.0" in iss
+    assert "ArchitecturesAllowed=x64" in iss
+    assert "Source: \"{#MyPackageDir}\\*\"" in iss
+    assert "recursesubdirs createallsubdirs" in iss
+    assert "一对一倾听测试版.lnk" in iss
+    assert (
+        '--data ""{localappdata}\\KindergartenManagerListeningTest\\data"" '
+        '--credential-root ""{localappdata}\\KindergartenManagerListeningTest'
+        '\\credentials"""'
+    ) in iss
+    assert "[Run]" not in iss
+    assert "SignTool=" not in iss
+    assert "WebView2" not in iss
+
+    assert "GITHUB_EVENT_NAME" in ps1
+    assert "refs/heads/codex/desktop-one-to-one-listening" in ps1
+    assert "ISCC.exe" in ps1
+    assert "KGNext-Listening-Win11-x64-Setup.exe" in ps1
+    assert "VERYSILENT" in ps1
+    assert "unins000.exe" in ps1
+    assert "KGNext-E14.exe" in ps1
+    assert "--credential-root" in ps1
+    assert "installer-identity.json" in ps1
+    assert "synthetic-keep" in ps1
+    assert "data_preserved" in ps1
+    assert "get-filehash" in ps1.lower()
+
+    assert "workflow_dispatch" in workflow
+    assert "refs/heads/codex/desktop-one-to-one-listening" in workflow
+    assert (
+        "if: ${{ !(github.event_name == 'workflow_dispatch' && "
+        "github.ref == 'refs/heads/codex/desktop-one-to-one-listening') }}"
+        in workflow
+    )
+    assert (
+        "if: ${{ github.event_name == 'workflow_dispatch' && "
+        "github.ref == 'refs/heads/codex/desktop-one-to-one-listening' }}"
+        in workflow
+    )
+    assert "build-windows11-listening-installer.ps1" in workflow
+    assert "windows11-listening-installer" in workflow
+    assert "KGNext-Listening-Win11-x64-Setup.exe" in workflow
+    assert "SHA256SUMS.txt" in workflow
+    assert "installer-identity.json" in workflow
+    assert "retention-days: 14" in workflow
 
 

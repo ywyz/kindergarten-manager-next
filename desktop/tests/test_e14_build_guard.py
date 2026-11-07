@@ -351,6 +351,9 @@ def test_build_identity_and_package_info_are_portable(monkeypatch, tmp_path):
     assert info["version"] == "0.1.0"
     assert info["database_revision"] == build_e14.DATABASE_REVISION
     assert info["package"] == "KGNext-E14"
+    assert info["listening_templates"]
+    for relative in build_e14.LISTENING_TEMPLATE_REQUIRED_FILES:
+        assert relative in info["listening_templates"]
     identity_path = package / "_internal" / "build_identity.json"
     assert identity_path.is_file()
     identity = update_identity.load_app_identity(
@@ -361,10 +364,30 @@ def test_build_identity_and_package_info_are_portable(monkeypatch, tmp_path):
     assert identity is not None
     assert identity.build_id == build_id
     assert identity.build_id != update_identity.SOURCE_BUILD_ID
-    assert identity.database_revision == "20261102_0008_local_weekly_ai"
+    assert identity.database_revision == "20261107_0010_local_listening_ai"
     payload = json.loads(identity_path.read_text(encoding="utf-8"))
     assert payload["app_id"] == update_identity.APP_ID
     assert payload["package_format"] == update_identity.PACKAGE_FORMAT
+
+    import verify_e14_package
+    info_for_verifier = dict(info)
+    info_for_verifier.update({
+        "frontend_digest": "c" * 64,
+        "frontend_file_count": 1,
+        "source_commit": "b" * 40,
+    })
+    checks = verify_e14_package._package_info_checks(
+        info_for_verifier, "KGNext-E14"
+    )
+    assert checks["metadata_exact"] is True
+    without_listening = dict(info_for_verifier)
+    without_listening.pop("listening_templates")
+    assert (
+        verify_e14_package._package_info_checks(
+            without_listening, "KGNext-E14"
+        )["metadata_exact"]
+        is False
+    )
 
 
 def test_build_package_excludes_optional_sqlalchemy_cyextensions(monkeypatch, tmp_path):
@@ -388,6 +411,25 @@ def test_build_package_excludes_optional_sqlalchemy_cyextensions(monkeypatch, tm
     pairs = set(zip(command, command[1:]))
     for module in build_e14.SQLALCHEMY_CYEXTENSION_MODULES:
         assert ("--exclude-module", module) in pairs, module
+    separator = build_e14.os_sep()
+    assert (
+        "--add-data",
+        f"{build_e14.LISTENING_TEMPLATE_DIR}{separator}"
+        "app/assets/listening_templates",
+    ) in pairs
+    for module in (
+        "app.local.listening_ai_contracts",
+        "app.local.listening_ai_inputs",
+        "app.local.listening_ai_service",
+        "app.local.listening_ai_adoption",
+        "app.local.listening_ai_api",
+        "app.local.listening_export_service",
+        "app.local.listening_export_api",
+        "app.local.ai_executor",
+        "app.local.ai_worker",
+        "app.services.word_export_listening",
+    ):
+        assert ("--hidden-import", module) in pairs, module
 
 
 def test_build_package_rejects_reintroduced_sqlalchemy_compiled_extension(monkeypatch, tmp_path):
@@ -720,17 +762,35 @@ def test_missing_migration_fails_before_any_build(tmp_path, monkeypatch):
         _run(monkeypatch, ["--build-root", str(paths["build_root"])])
     assert calls == []
 
-def test_e14_g2_0008_and_weekly_ai_modules_are_real_requirements():
+
+def test_missing_listening_template_fails_before_any_build(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    monkeypatch.setattr(build_e14.d0_paths, "REPO_ROOT", repo)
+    paths = _portable_plan(repo)
+    monkeypatch.setattr(build_e14, "LISTENING_TEMPLATE_DIR", tmp_path / "missing")
+    with pytest.raises(SystemExit):
+        build_e14.require_listening_templates()
+
+
+def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
     import verify_e14_package
     import verify_e14_portable_archive
-    assert build_e14.DATABASE_REVISION == "20261102_0008_local_weekly_ai"
-    assert build_e14.MIGRATION_FILENAME == "20261102_0008_local_weekly_ai.py"
+    assert build_e14.DATABASE_REVISION == "20261107_0010_local_listening_ai"
+    assert build_e14.MIGRATION_FILENAME == "20261107_0010_local_listening_ai.py"
     assert build_e14.MIGRATION_FILE.is_file()
+    assert build_e14.PREDECESSOR_MIGRATION_FILE.is_file()
     assert build_e14.DATABASE_REVISION != "20261101_0007_local_weekly"
+    assert build_e14.DATABASE_REVISION != "20261107_0009_local_listening"
     new_modules = {
         "weekly_ai_adoption", "weekly_ai_api", "weekly_ai_candidates",
         "weekly_ai_contracts", "weekly_ai_inputs", "weekly_ai_service",
         "weekly_ai_sources", "weekly_materials",
+        "listening_service", "listening_templates", "listening_assets",
+        "listening_api", "listening_export_service", "listening_export_api",
+        "listening_ai_contracts", "listening_ai_inputs", "listening_ai_service",
+        "listening_ai_adoption", "listening_ai_api",
+        "ai_executor", "ai_worker", "ai_transport", "ai_spawn",
+        "ai_task_service",
     }
     local_modules = {
         name for name in verify_e14_package.ARCHIVE_REQUIRED_MODULES
@@ -741,12 +801,36 @@ def test_e14_g2_0008_and_weekly_ai_modules_are_real_requirements():
         source = REPO / "backend" / "app" / "local" / f"{name}.py"
         assert source.is_file(), name
         assert f"backend/app/local/{name}.py" in verify_e14_package.REQUIRED_FREEZE_PATHS
-    assert "backend/migrations_local/versions/20261102_0008_local_weekly_ai.py" in verify_e14_package.REQUIRED_FREEZE_PATHS
-    assert "backend/migrations_local/versions/20261101_0007_local_weekly_plans.py" in verify_e14_package.REQUIRED_FREEZE_PATHS
-    assert verify_e14_portable_archive.DATABASE_REVISION == "20261102_0008_local_weekly_ai"
+    assert "app.services.word_export_listening" in verify_e14_package.ARCHIVE_REQUIRED_MODULES
+    assert (
+        "backend/app/services/word_export_listening.py"
+        in verify_e14_package.REQUIRED_FREEZE_PATHS
+    )
+    for filename in (
+        "20261101_0007_local_weekly_plans.py",
+        "20261102_0008_local_weekly_ai.py",
+        "20261107_0009_local_listening.py",
+        "20261107_0010_local_listening_ai.py",
+    ):
+        assert f"backend/migrations_local/versions/{filename}" in verify_e14_package.REQUIRED_FREEZE_PATHS
+    for relative in build_e14.LISTENING_TEMPLATE_REQUIRED_FILES:
+        assert (
+            f"backend/app/assets/listening_templates/{relative}"
+            in verify_e14_package.REQUIRED_FREEZE_PATHS
+        )
+    for relative in ("manifest.json", *build_e14.LISTENING_TEMPLATE_DOCX):
+        assert relative in verify_e14_package.LISTENING_TEMPLATE_REQUIRED_FILES
+    assert verify_e14_portable_archive.DATABASE_REVISION == "20261107_0010_local_listening_ai"
     freeze = build_e14.source_freeze()
     paths = {item["path"] for item in freeze["files"]}
     for name in new_modules:
         assert f"backend/app/local/{name}.py" in paths
-    assert "backend/migrations_local/versions/20261102_0008_local_weekly_ai.py" in paths
-    assert "backend/migrations_local/versions/20261101_0007_local_weekly_plans.py" in paths
+    for relative in build_e14.LISTENING_TEMPLATE_REQUIRED_FILES:
+        assert f"backend/app/assets/listening_templates/{relative}" in paths
+    for filename in (
+        "20261101_0007_local_weekly_plans.py",
+        "20261102_0008_local_weekly_ai.py",
+        "20261107_0009_local_listening.py",
+        "20261107_0010_local_listening_ai.py",
+    ):
+        assert f"backend/migrations_local/versions/{filename}" in paths

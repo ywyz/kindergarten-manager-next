@@ -26,8 +26,19 @@ README_NAME = "README-KGNext-E14-win11-r01.txt"
 ARCHIVE_NAME = "KGNext-E14-win11-r01.zip"
 MANIFEST = "package-files.json"
 SUMS = "SHA256SUMS.txt"
-DATABASE_REVISION = "20261102_0008_local_weekly_ai"
+DATABASE_REVISION = "20261107_0010_local_listening_ai"
 APP_VERSION = "0.1.0"
+LISTENING_TEMPLATE_GRADES = ("small", "middle", "large")
+LISTENING_TEMPLATE_DOMAINS = ("health", "language", "social", "science", "art")
+LISTENING_TEMPLATE_DOCX = tuple(
+    f"v1/{grade}_{domain}.docx"
+    for grade in LISTENING_TEMPLATE_GRADES
+    for domain in LISTENING_TEMPLATE_DOMAINS
+)
+LISTENING_TEMPLATE_REQUIRED_FILES = (
+    "manifest.json",
+    *LISTENING_TEMPLATE_DOCX,
+)
 MAX_ENTRIES = 20000
 MAX_FILE_BYTES = 1024 * 1024 * 1024
 MAX_TOTAL_BYTES = 3 * 1024 * 1024 * 1024
@@ -1165,6 +1176,25 @@ def main(argv: list[str] | None = None) -> int:
                 and bool(SHA_RE.match(package_info.get("frontend_digest", "")))
                 and type(package_info.get("frontend_file_count")) is int
                 and package_info.get("frontend_file_count") > 0
+                and isinstance(package_info.get("listening_templates"), list)
+                and all(
+                    isinstance(item, str)
+                    for item in package_info.get("listening_templates") or []
+                )
+                and len(package_info.get("listening_templates") or [])
+                == len(set(package_info.get("listening_templates") or []))
+                and all(
+                    item
+                    and not item.startswith(("/", "\\"))
+                    and not re.match(r"^[A-Za-z]:", item)
+                    and "\\" not in item
+                    and ".." not in item.split("/")
+                    for item in package_info.get("listening_templates") or []
+                )
+                and all(
+                    name in (package_info.get("listening_templates") or [])
+                    for name in LISTENING_TEMPLATE_REQUIRED_FILES
+                )
             )
             manifest_ok = isinstance(manifest_data, dict)
             checks["package_info_matches_manifest"] = bool(

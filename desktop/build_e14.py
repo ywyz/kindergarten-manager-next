@@ -1,9 +1,10 @@
 """Build the E14 complete desktop package (independent root; old packages kept).
 
 The package is a PyInstaller onedir/windowed distribution of the real D1/E14
-entry, current frontend build, controlled observation templates, local
-migrations (including 0008) and Pillow imaging plugins. It reuses the existing
-venv/node_modules and never installs or upgrades dependencies.
+entry, current frontend build, controlled observation and one-to-one listening
+templates, local migrations (current head 0010) and Pillow imaging plugins. It
+reuses the existing venv/node_modules and never installs or upgrades
+dependencies.
 
 Path safety (E14-R01): every write target is resolved and checked *before* any
 frontend/package write. The build root must be a fresh direct child of
@@ -15,9 +16,9 @@ Source freeze (E14-R02): product/build sources are hashed both before and after
 the build (cache files excluded); the build fails if the two lists differ.
 
 Build identity/licence (E14-R03): the candidate receives a real UUID
-``_internal/build_identity.json`` (version 0.1.0, database revision 0008); a
-missing Pillow licence or imaging plugin aborts the build instead of producing
-a package that claims to be complete.
+``_internal/build_identity.json`` (version 0.1.0, current database head 0010);
+a missing Pillow licence, imaging plugin or controlled listening-template file
+aborts the build instead of producing a package that claims to be complete.
 """
 
 from __future__ import annotations
@@ -49,14 +50,33 @@ README_NAME = "README-KGNext-E14-win11-r01.txt"
 MANIFEST_NAME = "package-files.json"
 SUMS_NAME = "SHA256SUMS.txt"
 MANIFEST_SCHEMA_VERSION = 1
-DATABASE_REVISION = "20261102_0008_local_weekly_ai"
-MIGRATION_FILENAME = "20261102_0008_local_weekly_ai.py"
+DATABASE_REVISION = "20261107_0010_local_listening_ai"
+MIGRATION_FILENAME = "20261107_0010_local_listening_ai.py"
+PREDECESSOR_MIGRATION_FILENAME = "20261107_0009_local_listening.py"
 PILLOW_VERSION = "13.0.0"
 
 TEMPLATE_DIR = d0_paths.BACKEND_ROOT / "app" / "assets" / "word_templates"
+LISTENING_TEMPLATE_DIR = (
+    d0_paths.BACKEND_ROOT / "app" / "assets" / "listening_templates"
+)
+LISTENING_TEMPLATE_GRADES = ("small", "middle", "large")
+LISTENING_TEMPLATE_DOMAINS = ("health", "language", "social", "science", "art")
+LISTENING_TEMPLATE_DOCX = tuple(
+    f"v1/{grade}_{domain}.docx"
+    for grade in LISTENING_TEMPLATE_GRADES
+    for domain in LISTENING_TEMPLATE_DOMAINS
+)
+LISTENING_TEMPLATE_REQUIRED_FILES = (
+    "README.md",
+    "manifest.json",
+    *LISTENING_TEMPLATE_DOCX,
+)
 ALEMBIC_INI = d0_paths.BACKEND_ROOT / "alembic-local.ini"
 MIGRATIONS_DIR = d0_paths.BACKEND_ROOT / "migrations_local"
 MIGRATION_FILE = MIGRATIONS_DIR / "versions" / MIGRATION_FILENAME
+PREDECESSOR_MIGRATION_FILE = (
+    MIGRATIONS_DIR / "versions" / PREDECESSOR_MIGRATION_FILENAME
+)
 PILLOW_LICENSE = (
     d0_paths.REPO_ROOT
     / "desktop"
@@ -167,7 +187,10 @@ SOURCE_GROUPS: dict[str, tuple[str, ...]] = {
         "desktop/tests/test_windows11_portable_static.py",
         "desktop/check_windows11_target.ps1",
     ),
-    "resources": ("backend/app/assets/word_templates",),
+    "resources": (
+        "backend/app/assets/word_templates",
+        "backend/app/assets/listening_templates",
+    ),
 }
 CACHE_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 CACHE_SUFFIXES = {".pyc", ".pyo"}
@@ -734,6 +757,8 @@ def build_package(
         "--add-data",
         f"{TEMPLATE_DIR}{separator}app/assets/word_templates",
         "--add-data",
+        f"{LISTENING_TEMPLATE_DIR}{separator}app/assets/listening_templates",
+        "--add-data",
         f"{ALEMBIC_INI}{separator}.",
         "--add-data",
         f"{MIGRATIONS_DIR}{separator}migrations_local",
@@ -815,6 +840,40 @@ def build_package(
         "app.local.weekly_ai_sources",
         "--hidden-import",
         "app.local.weekly_materials",
+        "--hidden-import",
+        "app.local.listening_service",
+        "--hidden-import",
+        "app.local.listening_templates",
+        "--hidden-import",
+        "app.local.listening_assets",
+        "--hidden-import",
+        "app.local.listening_api",
+        "--hidden-import",
+        "app.local.listening_export_service",
+        "--hidden-import",
+        "app.local.listening_export_api",
+        "--hidden-import",
+        "app.local.listening_ai_contracts",
+        "--hidden-import",
+        "app.local.listening_ai_inputs",
+        "--hidden-import",
+        "app.local.listening_ai_service",
+        "--hidden-import",
+        "app.local.listening_ai_adoption",
+        "--hidden-import",
+        "app.local.listening_ai_api",
+        "--hidden-import",
+        "app.services.word_export_listening",
+        "--hidden-import",
+        "app.local.ai_executor",
+        "--hidden-import",
+        "app.local.ai_worker",
+        "--hidden-import",
+        "app.local.ai_transport",
+        "--hidden-import",
+        "app.local.ai_spawn",
+        "--hidden-import",
+        "app.local.ai_task_service",
         "--hidden-import",
         "app.local.observation_export_service",
         "--hidden-import",
@@ -913,6 +972,18 @@ def require_pillow_license() -> None:
         raise SystemExit(f"拒绝构建：Pillow 插件目录缺失 {PILLOW_PLUGIN_DIR}")
 
 
+def require_listening_templates() -> None:
+    """Require the complete controlled listening-template tree before build."""
+    if not LISTENING_TEMPLATE_DIR.is_dir():
+        raise SystemExit(f"拒绝构建：缺少倾听模板目录 {LISTENING_TEMPLATE_DIR}")
+    if _has_reparse_component(LISTENING_TEMPLATE_DIR):
+        raise SystemExit(f"拒绝构建：倾听模板目录含 reparse 别名 {LISTENING_TEMPLATE_DIR}")
+    for relative in LISTENING_TEMPLATE_REQUIRED_FILES:
+        path = LISTENING_TEMPLATE_DIR / relative
+        if not path.is_file() or _has_reparse_component(path):
+            raise SystemExit(f"拒绝构建：倾听模板文件缺失或不可读 {path}")
+
+
 def install_package_metadata(
     package_root: Path,
     build_id: str,
@@ -996,6 +1067,11 @@ def install_package_metadata(
             if path.is_file() and "__pycache__" not in path.parts
         ),
         "templates": sorted(path.name for path in TEMPLATE_DIR.glob("*.docx")),
+        "listening_templates": sorted(
+            path.relative_to(LISTENING_TEMPLATE_DIR).as_posix()
+            for path in LISTENING_TEMPLATE_DIR.rglob("*")
+            if path.is_file()
+        ),
     }
     (package_root / "package-info.json").write_text(
         json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1291,11 +1367,16 @@ def main() -> int:
 
     require_pillow_license()
     if not MIGRATION_FILE.is_file():
-        raise SystemExit(f"拒绝构建：缺少 0008 迁移 {MIGRATION_FILE}")
+        raise SystemExit(f"拒绝构建：缺少当前迁移 {MIGRATION_FILE}")
+    if not PREDECESSOR_MIGRATION_FILE.is_file():
+        raise SystemExit(
+            f"拒绝构建：缺少前置迁移 {PREDECESSOR_MIGRATION_FILE}"
+        )
     if not ALEMBIC_INI.is_file():
         raise SystemExit(f"拒绝构建：缺少本地 Alembic 配置 {ALEMBIC_INI}")
     if not TEMPLATE_DIR.is_dir():
         raise SystemExit(f"拒绝构建：缺少 Word 模板目录 {TEMPLATE_DIR}")
+    require_listening_templates()
 
     # The first freeze must cover the *entire* write chain, including Vite and
     # PyInstaller. It therefore runs before any frontend output is touched.
