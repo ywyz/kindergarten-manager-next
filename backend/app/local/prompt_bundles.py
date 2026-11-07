@@ -81,7 +81,13 @@ WEEKLY_TASK_TYPES: tuple[str, ...] = (
     "weekly_home_cooperation",
     "weekly_materials_generate",
 )
-NEW_TASK_TYPES: tuple[str, ...] = OBSERVATION_TASK_TYPES + WEEKLY_TASK_TYPES
+LISTENING_TASK_TYPES: tuple[str, ...] = (
+    "listening_note_draft",
+    "listening_domain_evaluate",
+)
+NEW_TASK_TYPES: tuple[str, ...] = (
+    OBSERVATION_TASK_TYPES + WEEKLY_TASK_TYPES + LISTENING_TASK_TYPES
+)
 REGISTERED_TASK_TYPES: tuple[str, ...] = TASK_TYPES + NEW_TASK_TYPES
 
 # Package contract delivered by this application build. A future build that
@@ -866,7 +872,25 @@ def _weekly_bundle_manifest() -> tuple[dict, ...]:
     )
 
 
-PROMPT_BUNDLE_MANIFEST = PROMPT_BUNDLE_MANIFEST + _weekly_bundle_manifest()
+def _listening_bundle_manifest() -> tuple[dict, ...]:
+    from app.local import listening_ai_contracts
+
+    return tuple(
+        _bundle(
+            item["task_type"],
+            item["input_schema_json"],
+            item["output_schema_json"],
+            dict(item["guidance_defaults_json"]),
+        )
+        for item in listening_ai_contracts.bundle_definitions()
+    )
+
+
+PROMPT_BUNDLE_MANIFEST = (
+    PROMPT_BUNDLE_MANIFEST
+    + _weekly_bundle_manifest()
+    + _listening_bundle_manifest()
+)
 
 GUIDANCE_FIELDS: dict[str, tuple[str, ...]] = {
     bundle["task_type"]: tuple(bundle["guidance_defaults_json"].keys())
@@ -1317,6 +1341,13 @@ def validate_candidate(task_type: str, candidate: Any) -> dict:
     re-exposed. Structure validation is deliberately separate from dynamic
     source cross-checking (W4).
     """
+    if task_type in LISTENING_TASK_TYPES:
+        from app.local import listening_ai_contracts
+
+        try:
+            return listening_ai_contracts.validate_candidate(task_type, candidate)
+        except listening_ai_contracts.ListeningAIContractError as exc:
+            raise CandidateInvalid(str(exc)) from None
     if task_type not in _OUTPUT_MODELS:
         raise CandidateInvalid(f"未知任务类型 {task_type!r}")
     if not isinstance(candidate, dict):
@@ -1353,6 +1384,13 @@ def validate_input(task_type: str, payload: Any) -> dict:
     for unknown task types or contract violations. The real de-identified
     source projection is W3/W4; this only checks the frozen contract shape.
     """
+    if task_type in LISTENING_TASK_TYPES:
+        from app.local import listening_ai_contracts
+
+        try:
+            return listening_ai_contracts.validate_input(task_type, payload)
+        except listening_ai_contracts.ListeningAIContractError as exc:
+            raise CandidateInvalid(str(exc)) from None
     if task_type not in _INPUT_MODELS:
         raise CandidateInvalid(f"未知任务类型 {task_type!r}")
     if not isinstance(payload, dict):
@@ -1818,6 +1856,7 @@ __all__ = [
     "TASK_TYPES",
     "OBSERVATION_TASK_TYPES",
     "WEEKLY_TASK_TYPES",
+    "LISTENING_TASK_TYPES",
     "REGISTERED_TASK_TYPES",
     "PACKAGE_CONTRACT_VERSION",
     "PACKAGE_DEFAULT_REVISION",

@@ -25,6 +25,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.local.api import exports_router, local_router, plans_router
 from app.local.errors import LocalError
+from app.local.listening_api import listening_router
+from app.local.listening_export_api import listening_exports_router
+from app.local.listening_export_service import ListeningExportManager
+from app.local.listening_ai_api import router as listening_ai_router
 from app.local.observation_api import observations_router
 from app.local.observation_export_api import observation_exports_router
 from app.local.runtime import LocalRuntime
@@ -102,6 +106,15 @@ def create_local_app(
     app.state.session_scope = secrets.token_urlsafe(16)
     if not getattr(runtime, "launch_id", None):
         runtime.launch_id = str(uuid.uuid4())
+    # Listening export previews/exports live only in this app generation and
+    # are invalidated when the runtime launch id changes.
+    previous_listening = getattr(runtime, "listening_export_manager", None)
+    if previous_listening is not None:
+        previous_listening.retire()
+    app.state.listening_export_manager = ListeningExportManager(
+        runtime, launch_id=str(runtime.launch_id)
+    )
+    runtime.listening_export_manager = app.state.listening_export_manager
     # Bind the one fixed manager for this app generation before any API can
     # serve; D's manager is constructed from the runtime/launch/scope only.
     app.state.weekly_export_manager = runtime.bind_weekly_exports(
@@ -166,6 +179,9 @@ def create_local_app(
     app.include_router(exports_router)
     app.include_router(observations_router)
     app.include_router(observation_exports_router)
+    app.include_router(listening_router)
+    app.include_router(listening_ai_router)
+    app.include_router(listening_exports_router)
     app.include_router(weekly_plans_router)
     app.include_router(weekly_ai_router)
     app.include_router(weekly_exports_router)

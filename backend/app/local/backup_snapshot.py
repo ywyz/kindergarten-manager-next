@@ -819,15 +819,27 @@ class SnapshotService:
                     raise backup_format.BackupFormatError(
                         "BACKUP_RESOURCE_HASH", "受管资源与数据库 hash 不一致"
                     )
-                item = {
-                    "asset_id": entry["asset_id"],
-                    "bytes": size,
-                    "derivative_id": entry["derivative_id"],
-                    "kind": entry["kind"],
-                    "observation_id": entry["observation_id"],
-                    "path": entry["path"],
-                    "sha256": digest,
-                }
+                if entry.get("owner_kind") == "listening":
+                    item = {
+                        "asset_id": entry["asset_id"],
+                        "bytes": size,
+                        "derivative_id": entry["derivative_id"],
+                        "kind": entry["kind"],
+                        "listening_record_id": entry["listening_record_id"],
+                        "owner_kind": "listening",
+                        "path": entry["path"],
+                        "sha256": digest,
+                    }
+                else:
+                    item = {
+                        "asset_id": entry["asset_id"],
+                        "bytes": size,
+                        "derivative_id": entry["derivative_id"],
+                        "kind": entry["kind"],
+                        "observation_id": entry["observation_id"],
+                        "path": entry["path"],
+                        "sha256": digest,
+                    }
                 jsonl.write(
                     json.dumps(
                         item,

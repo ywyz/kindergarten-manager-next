@@ -66,7 +66,7 @@ class WeeklyAIMigrationTests(LocalTestCase):
         finally:
             con.close()
 
-        command.upgrade(alembic_config(db), "head")
+        command.upgrade(alembic_config(db), "20261102_0008_local_weekly_ai")
         con = sqlite3.connect(db)
         try:
             self.assertEqual(

@@ -17,7 +17,12 @@ from sqlalchemy.orm import sessionmaker
 
 from app.local import d1_digest, profile_service, prompt_bundles
 from app.local.errors import LocalDatabaseStateError, LocalStorageError
-from app.local.migrate import D1UpgradeGuard, alembic_config, ensure_local_schema
+from app.local.migrate import (
+    D1UpgradeGuard,
+    alembic_config,
+    ensure_local_schema,
+    head_revision,
+)
 from app.local.models import (
     LocalAIInput,
     LocalAITask,
@@ -150,7 +155,7 @@ class ObservationMigrationTests(LocalTestCase):
         db = runtime.db_path
         self.assertEqual(
             query_scalar(db, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261102_0008_local_weekly_ai",
+            head_revision(),
         )
         self.assertEqual(query_rows(db, "PRAGMA foreign_key_check"), [])
         tables = {
@@ -272,7 +277,7 @@ class ObservationMigrationTests(LocalTestCase):
         self.assertEqual(query_rows(db, "PRAGMA foreign_key_check"), [])
         self.assertEqual(
             query_scalar(db, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261102_0008_local_weekly_ai",
+            head_revision(),
         )
         new_daily_prompt_rows = query_rows(
             db,
@@ -580,7 +585,7 @@ class ObservationMigrationTests(LocalTestCase):
         db = data_dir / "kindergarten.db"
         self.assertEqual(
             query_scalar(db, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261102_0008_local_weekly_ai",
+            head_revision(),
         )
         self.assertEqual(
             query_scalar(
@@ -633,7 +638,7 @@ class ObservationMigrationTests(LocalTestCase):
         ensure_local_schema(restored)
         self.assertEqual(
             query_scalar(restored, f"SELECT version_num FROM {LOCAL_VERSION_TABLE}"),
-            "20261102_0008_local_weekly_ai",
+            head_revision(),
         )
         self.assertEqual(query_rows(restored, "PRAGMA foreign_key_check"), [])
 

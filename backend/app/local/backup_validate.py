@@ -1374,6 +1374,296 @@ def _weekly_ai_inputs(connection: sqlite3.Connection, plans: dict[str, dict],
             )
     return tasks
 
+
+def _listening_ai_chain(connection: sqlite3.Connection) -> None:
+    """Validate typed listening AI source, frozen evidence, candidates and ledger."""
+    tables = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "local_listening_ai_adoption" not in tables:
+        return
+    from app.local import listening_ai_contracts, listening_templates
+    from app.local.prompt_bundles import canonical_json
+
+    def digest(value: Any) -> str:
+        return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+    def require(condition: Any, label: str) -> None:
+        if not condition:
+            raise BackupValidationError(
+                "BACKUP_DB_LOGICAL_INVALID", f"备份数据库{label}校验失败"
+            )
+
+    input_rows = connection.execute(
+        "SELECT id, profile_id, source_id, listening_record_id, listening_domain, "
+        "listening_group_id, task_type, input_schema_version, payload_json, "
+        "dependencies_json, dependency_hash, target_hashes_json, create_operation_id "
+        "FROM local_ai_inputs WHERE source_kind='one_to_one_listening'"
+    ).fetchall()
+    inputs = {row[0]: row for row in input_rows}
+    for row in input_rows:
+        require(
+            row[2] == row[3]
+            and (
+                (row[6] == "listening_note_draft" and row[5] is not None)
+                or (row[6] == "listening_domain_evaluate" and row[5] is None)
+            ),
+            "倾听输入归属",
+        )
+        try:
+            payload = json.loads(row[8])
+            deps = json.loads(row[9])
+            targets = json.loads(row[11])
+        except (TypeError, ValueError):
+            require(False, "倾听输入 JSON")
+        try:
+            listening_ai_contracts.validate_input(row[6], payload)
+        except Exception:
+            require(False, "倾听输入合同")
+        require(
+            isinstance(deps, dict)
+            and deps.get("wire_schema_version") == 1
+            and deps.get("record_id") == row[3]
+            and deps.get("domain") == row[4]
+            and deps.get("group_id") == row[5]
+            and isinstance(targets, dict)
+            and isinstance(row[10], str)
+            and len(row[10]) == 64,
+            "倾听输入依赖",
+        )
+        photos = deps.get("photos")
+        require(isinstance(photos, list), "倾听输入图片")
+        require(
+            len(photos) <= (1 if row[6] == "listening_note_draft" else 3),
+            "倾听输入图片数",
+        )
+        expected_dep = digest(
+            {
+                "payload": payload,
+                "photos": [
+                    {
+                        "group_id": item.get("group_id"),
+                        "position": item.get("position"),
+                        "work_hash": item.get("work_hash"),
+                    }
+                    for item in photos
+                ],
+            }
+        )
+        require(expected_dep == row[10], "倾听依赖散列")
+        if row[5] is not None:
+            group = connection.execute(
+                "SELECT record_id, domain, position FROM local_listening_photo_groups "
+                "WHERE id=?",
+                (row[5],),
+            ).fetchone()
+            require(
+                group is not None
+                and group[0] == row[3]
+                and group[1] == row[4]
+                and group[2] == payload.get("group_position"),
+                "倾听输入小组归属",
+            )
+        for item in photos:
+            require(
+                isinstance(item, dict)
+                and isinstance(item.get("asset_id"), str)
+                and isinstance(item.get("source_hash"), str)
+                and (row[5] is None or item.get("group_id") == row[5]),
+                "倾听输入图片归属",
+            )
+            asset = connection.execute(
+                "SELECT record_id, content_hash FROM local_listening_assets WHERE id=?",
+                (item.get("asset_id"),),
+            ).fetchone()
+            require(
+                asset is not None
+                and asset[0] == row[3]
+                and asset[1] == item.get("source_hash"),
+                "倾听历史图片散列",
+            )
+        try:
+            template = listening_templates.get_template(
+                str(payload.get("grade")), row[4], str(payload.get("template_version"))
+            )
+        except Exception:
+            require(False, "倾听模板")
+        require(template.sha256 == payload.get("template_sha256"), "倾听模板散列")
+        item_ids = [item.item_id for item in template.items]
+        expected_targets = (
+            {"listening_text"}
+            if row[6] == "listening_note_draft"
+            else {"overall_evaluation", "support_strategy", *item_ids}
+        )
+        require(
+            set(targets) == expected_targets
+            and all(isinstance(value, str) and len(value) == 64 for value in targets.values()),
+            "倾听目标散列",
+        )
+        if row[6] == "listening_domain_evaluate":
+            require(
+                [item.get("item_id") for item in payload.get("items") or []]
+                == item_ids,
+                "倾听领域项目集",
+            )
+        wire_photos = (
+            [payload.get("photo")]
+            if row[6] == "listening_note_draft"
+            else [group.get("photo") for group in payload.get("groups") or []]
+        )
+        require(
+            sorted(item.get("work_hash") for item in wire_photos if item is not None)
+            == sorted(item.get("work_hash") for item in photos),
+            "倾听输入图片散列",
+        )
+    tasks = {
+        row[0]: row
+        for row in connection.execute(
+            "SELECT id, profile_id, source_id, listening_record_id, listening_domain, "
+            "listening_group_id, input_id, task_type, status, current_execution_id "
+            "FROM local_ai_tasks WHERE source_kind='one_to_one_listening'"
+        ).fetchall()
+    }
+    for row in tasks.values():
+        inp = inputs.get(row[6])
+        require(
+            inp is not None
+            and inp[1] == row[1]
+            and inp[2] == row[2] == row[3]
+            and inp[4] == row[4]
+            and inp[5] == row[5]
+            and inp[6] == row[7],
+            "倾听任务输入",
+        )
+    executions = {
+        row[0]: row
+        for row in connection.execute(
+            "SELECT id, task_id, profile_id, source_id, listening_record_id, "
+            "listening_domain, listening_group_id, input_id, task_type, generation, "
+            "state, contract_version, default_revision, personal_revision "
+            "FROM local_ai_executions WHERE source_kind='one_to_one_listening'"
+        ).fetchall()
+    }
+    for row in executions.values():
+        task = tasks.get(row[1])
+        require(
+            task is not None
+            and task[1] == row[2]
+            and task[2] == row[3] == row[4]
+            and task[4] == row[5]
+            and task[5] == row[6]
+            and task[6] == row[7]
+            and task[7] == row[8],
+            "倾听执行归属",
+        )
+    candidates = {
+        row[0]: row
+        for row in connection.execute(
+            "SELECT id, profile_id, execution_id, task_id, source_id, "
+            "listening_record_id, listening_domain, listening_group_id, input_id, "
+            "task_type, contract_version, raw_candidate_json, candidate_hash "
+            "FROM local_ai_candidates WHERE source_kind='one_to_one_listening'"
+        ).fetchall()
+    }
+    for row in candidates.values():
+        task = tasks.get(row[3])
+        execution = executions.get(row[2])
+        require(
+            task is not None
+            and execution is not None
+            and task[1] == row[1]
+            and task[2] == row[4] == row[5]
+            and task[4] == row[6]
+            and task[5] == row[7]
+            and task[6] == row[8]
+            and task[7] == row[9],
+            "倾听候选归属",
+        )
+        try:
+            raw = json.loads(row[11])
+            validated = listening_ai_contracts.validate_candidate(row[9], raw)
+        except Exception:
+            require(False, "倾听候选合同")
+        require(digest(raw) == row[12], "倾听候选散列")
+        inp = inputs.get(row[8])
+        if row[9] == "listening_domain_evaluate":
+            payload = json.loads(inp[8])
+            expected_ids = [item.get("item_id") for item in payload.get("items") or []]
+            actual_ids = [item.get("item_id") for item in validated.get("items") or []]
+            require(
+                len(actual_ids) == len(set(actual_ids))
+                and set(actual_ids) == set(expected_ids)
+                and len(actual_ids) == len(expected_ids),
+                "倾听候选项目集",
+            )
+    adoption_rows = connection.execute(
+        "SELECT id, profile_id, record_id, domain, group_id, scope_key, target_key, "
+        "candidate_id, input_id, before_hash, after_hash, revision_before, "
+        "revision_after, operation_id FROM local_listening_ai_adoption "
+        "ORDER BY record_id, domain, scope_key, target_key, revision_after"
+    ).fetchall()
+    by_target: dict[tuple[str, str, str, str], list[Any]] = {}
+    for row in adoption_rows:
+        candidate = candidates.get(row[7])
+        require(
+            candidate is not None
+            and candidate[1] == row[1]
+            and candidate[4] == row[2]
+            and candidate[5] == row[2]
+            and candidate[6] == row[3]
+            and candidate[7] == row[4]
+            and candidate[8] == row[8]
+            and len(row[9]) == 64
+            and len(row[10]) == 64
+            and type(row[11]) is int
+            and type(row[12]) is int
+            and row[11] >= 1
+            and row[12] >= row[11]
+            and row[5] == (row[4] if row[4] is not None else "__domain__"),
+            "倾听采用归属",
+        )
+        operation = connection.execute(
+            "SELECT operation_kind, result_json FROM local_ai_operations "
+            "WHERE profile_id=? AND id=?",
+            (row[1], row[13]),
+        ).fetchone()
+        require(operation is not None, "倾听采用操作")
+        require(operation[0] == "listening_ai_adopt", "倾听采用操作类型")
+        try:
+            result = json.loads(operation[1])
+        except (TypeError, ValueError):
+            require(False, "倾听采用回执 JSON")
+        require(
+            result.get("listening_record_id") == row[2]
+            and result.get("domain") == row[3]
+            and result.get("group_id") == row[4]
+            and result.get("revision_after") == row[12],
+            "倾听采用回执绑定",
+        )
+        adopted_values = {
+            str(item.get("target")): item for item in result.get("adopted") or []
+        }
+        require(row[6] in adopted_values, "倾听采用目标回执")
+        value = adopted_values[row[6]]
+        expected_hash = listening_ai_contracts.value_hash(
+            value.get("value") if "value" in value else value.get("stars")
+        )
+        require(expected_hash == row[10], "倾听采用值散列")
+        by_target.setdefault((row[2], row[3], row[5], row[6]), []).append(row)
+    for rows in by_target.values():
+        rows.sort(key=lambda item: item[12])
+        input_row = inputs.get(rows[0][8])
+        target_hashes = json.loads(input_row[11])
+        require(
+            rows[0][9] == target_hashes.get(rows[0][6]),
+            "倾听采用前向链",
+        )
+        for previous, current in zip(rows, rows[1:]):
+            require(current[9] == previous[10], "倾听采用后向链")
+
 def _weekly_ai_chain(connection: sqlite3.Connection, plans: dict[str, dict],
                      contents: dict[tuple[str, str], dict]) -> None:
     tables = {
@@ -1414,6 +1704,458 @@ _WEEKLY_AI_TARGETS = (
     "games", "key_week_focus", "environment_setup",
     "habit_culture", "home_cooperation", "materials",
 )
+
+def _listening_checks(connection: sqlite3.Connection) -> None:
+    """Validate listening ownership, templates, groups, stars and paths.
+
+    This is deliberately more than resource enumeration: a backup whose
+    listening tables have a missing domain/group, an unknown template item or
+    a path that does not match its record/asset identity must be refused.
+    """
+    try:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "local_listening_records" not in tables:
+            return
+        from app.local import listening_templates
+
+        records = connection.execute(
+            "SELECT id, profile_id, class_id, term_id, grade, child_name, "
+            "revision FROM local_listening_records"
+        ).fetchall()
+        record_meta: dict[str, dict[str, Any]] = {}
+        domain_meta: dict[tuple[str, str], dict[str, Any]] = {}
+        group_meta: dict[tuple[str, str], dict[str, int]] = {}
+        asset_meta: dict[str, dict[str, dict[str, Any]]] = {}
+        for (
+            record_id,
+            profile_id,
+            class_id,
+            term_id,
+            grade,
+            child_name,
+            revision,
+        ) in records:
+            if (
+                grade not in listening_templates.GRADES
+                or not isinstance(child_name, str)
+                or not 1 <= len(child_name) <= 80
+                or type(revision) is not int
+                or revision < 1
+            ):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听记录字段不合法",
+                )
+            record_meta[record_id] = {
+                "profile_id": profile_id,
+                "class_id": class_id,
+                "term_id": term_id,
+                "grade": grade,
+                "child_name": child_name,
+                "revision": revision,
+            }
+            domain_rows = connection.execute(
+                "SELECT domain, template_version, template_sha256 "
+                "FROM local_listening_domains WHERE record_id = ?",
+                (record_id,),
+            ).fetchall()
+            if len(domain_rows) != 5 or {
+                row[0] for row in domain_rows
+            } != set(listening_templates.DOMAINS):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听领域不完整",
+                )
+            for domain, template_version, template_sha in domain_rows:
+                try:
+                    template = listening_templates.get_template(
+                        grade, domain, template_version
+                    )
+                except LocalError as exc:
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听模板不可用",
+                    ) from exc
+                if template.sha256 != template_sha:
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听模板散列不一致",
+                    )
+                domain_meta[(record_id, domain)] = {
+                    "version": template_version,
+                    "sha256": template_sha,
+                }
+                groups = connection.execute(
+                    "SELECT id, position, work_date_text, listening_text, "
+                    "asset_id FROM local_listening_photo_groups "
+                    "WHERE record_id = ? AND domain = ?",
+                    (record_id, domain),
+                ).fetchall()
+                if len(groups) != 3:
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听图文组数量不合法",
+                    )
+                group_ids: set[str] = set()
+                positions: list[int] = []
+                for (
+                    group_id,
+                    position,
+                    work_date_text,
+                    listening_text,
+                    asset_id,
+                ) in groups:
+                    if group_id in group_ids:
+                        raise BackupValidationError(
+                            "BACKUP_DB_LOGICAL_INVALID",
+                            "备份数据库倾听图文组重复",
+                        )
+                    group_ids.add(group_id)
+                    if (
+                        type(position) is not int
+                        or position not in (0, 1, 2)
+                    ):
+                        raise BackupValidationError(
+                            "BACKUP_DB_LOGICAL_INVALID",
+                            "备份数据库倾听图文组位置不合法",
+                        )
+                    positions.append(position)
+                    if work_date_text is not None and len(work_date_text) > 120:
+                        raise BackupValidationError(
+                            "BACKUP_DB_LOGICAL_INVALID",
+                            "备份数据库倾听作品日期过长",
+                        )
+                    if listening_text is not None and len(listening_text) > 20000:
+                        raise BackupValidationError(
+                            "BACKUP_DB_LOGICAL_INVALID",
+                            "备份数据库倾听正文过长",
+                        )
+                    if asset_id is not None:
+                        asset = connection.execute(
+                            "SELECT id FROM local_listening_assets "
+                            "WHERE record_id = ? AND id = ?",
+                            (record_id, asset_id),
+                        ).fetchone()
+                        if asset is None:
+                            raise BackupValidationError(
+                                "BACKUP_DB_LOGICAL_INVALID",
+                                "备份数据库倾听照片归属不合法",
+                            )
+                if sorted(positions) != [0, 1, 2]:
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听图文组顺序不合法",
+                    )
+                group_meta[(record_id, domain)] = {
+                    row[0]: row[1] for row in groups
+                }
+                choices = connection.execute(
+                    "SELECT item_id, stars FROM local_listening_evaluation_choices "
+                    "WHERE record_id = ? AND domain = ?",
+                    (record_id, domain),
+                ).fetchall()
+                expected_items = {item.item_id for item in template.items}
+                if (
+                    len(choices) != len(expected_items)
+                    or {row[0] for row in choices} != expected_items
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听评价项不完整",
+                    )
+                for item_id, stars in choices:
+                    if stars is not None and (
+                        type(stars) is not int or stars not in (1, 2, 3)
+                    ):
+                        raise BackupValidationError(
+                            "BACKUP_DB_LOGICAL_INVALID",
+                            "备份数据库倾听星级不合法",
+                        )
+            assets = connection.execute(
+                "SELECT id, relative_path, content_hash, byte_size, width, "
+                "height, orientation, mime_type FROM local_listening_assets "
+                "WHERE record_id = ?",
+                (record_id,),
+            ).fetchall()
+            for (
+                asset_id,
+                relative_path,
+                content_hash,
+                byte_size,
+                width,
+                height,
+                orientation,
+                mime_type,
+            ) in assets:
+                prefix = (
+                    f"observations/assets/listening/{record_id}/{asset_id}/"
+                    "original."
+                )
+                if not isinstance(relative_path, str) or not relative_path.startswith(
+                    prefix
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听照片路径不合法",
+                    )
+                extension = relative_path[len(prefix):]
+                if extension not in ("jpg", "png", "webp", "gif", "bmp"):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听照片扩展名不合法",
+                    )
+                if (
+                    not isinstance(content_hash, str)
+                    or _HEX64.fullmatch(content_hash) is None
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听照片散列不合法",
+                    )
+                if (
+                    type(byte_size) is not int
+                    or byte_size < 0
+                    or type(width) is not int
+                    or width < 1
+                    or type(height) is not int
+                    or height < 1
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听照片尺寸不合法",
+                    )
+                if orientation is not None and (
+                    type(orientation) is not int or orientation not in range(1, 9)
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听照片方向不合法",
+                    )
+                if mime_type not in (
+                    "image/jpeg",
+                    "image/png",
+                    "image/webp",
+                    "image/gif",
+                    "image/bmp",
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听照片格式不合法",
+                    )
+                asset_meta.setdefault(record_id, {})[asset_id] = {
+                    "content_hash": content_hash,
+                    "byte_size": byte_size,
+                }
+
+        # Operation receipts are the retry identity.  A forged result that
+        # names another same-name record (or a domain/group/asset that does
+        # not belong to the receipt's record) must not survive restore, or a
+        # same request id could replay the wrong child's data.
+        known_kinds = {
+            "listening_create",
+            "listening_record_patch",
+            "listening_domain_save",
+            "listening_asset_import",
+            "listening_asset_remove",
+            "listening_photo_reorder",
+        }
+        operations = connection.execute(
+            "SELECT id, profile_id, request_id, operation_kind, record_id, "
+            "request_fingerprint, status, result_json FROM "
+            "local_listening_operations"
+        ).fetchall()
+        for (
+            operation_id,
+            profile_id,
+            request_id,
+            operation_kind,
+            record_id,
+            request_fingerprint,
+            status,
+            result_json,
+        ) in operations:
+            if (
+                not isinstance(request_id, str)
+                or not 1 <= len(request_id) <= 36
+                or not isinstance(request_fingerprint, str)
+                or _HEX64.fullmatch(request_fingerprint) is None
+                or status != "committed"
+                or operation_kind not in known_kinds
+                or not isinstance(record_id, str)
+                or record_id not in record_meta
+            ):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听回执字段不合法",
+                )
+            meta = record_meta[record_id]
+            if meta["profile_id"] != profile_id:
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听回执档案归属不合法",
+                )
+            try:
+                result = (
+                    json.loads(result_json)
+                    if isinstance(result_json, (str, bytes, bytearray))
+                    else result_json
+                )
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听回执 JSON 不合法",
+                ) from exc
+            if not isinstance(result, dict):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听回执结果不合法",
+                )
+            if result.get("record_id") != record_id:
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听回执记录身份不匹配",
+                )
+            result_revision = result.get("revision")
+            if (
+                type(result_revision) is not int
+                or result_revision < 1
+                or result_revision > meta["revision"]
+            ):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听回执修订不合法",
+                )
+            if "changed" in result and not isinstance(result["changed"], bool):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听回执 changed 不合法",
+                )
+            if operation_kind == "listening_create":
+                if (
+                    result_revision != 1
+                    or result.get("class_id") != meta["class_id"]
+                    or result.get("term_id") != meta["term_id"]
+                    or result.get("grade") != meta["grade"]
+                    or not isinstance(result.get("child_name"), str)
+                    or not 1 <= len(result["child_name"]) <= 80
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听新建回执身份不匹配",
+                    )
+                templates = result.get("templates")
+                if not isinstance(templates, dict) or set(templates) != set(
+                    listening_templates.DOMAINS
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听新建回执模板不完整",
+                    )
+                for domain, template_entry in templates.items():
+                    expected = domain_meta.get((record_id, domain))
+                    if (
+                        not isinstance(template_entry, dict)
+                        or template_entry.get("version")
+                        != (expected or {}).get("version")
+                        or template_entry.get("sha256")
+                        != (expected or {}).get("sha256")
+                    ):
+                        raise BackupValidationError(
+                            "BACKUP_DB_LOGICAL_INVALID",
+                            "备份数据库倾听新建回执模板不匹配",
+                        )
+            elif operation_kind == "listening_record_patch":
+                if (
+                    not isinstance(result.get("child_name"), str)
+                    or not 1 <= len(result["child_name"]) <= 80
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听改名回执不合法",
+                    )
+            elif operation_kind == "listening_domain_save":
+                if result.get("domain") not in listening_templates.DOMAINS:
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听领域保存回执领域不合法",
+                    )
+                if (
+                    record_id,
+                    result["domain"],
+                ) not in domain_meta:
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听领域保存回执归属不合法",
+                    )
+            elif operation_kind == "listening_asset_import":
+                domain = result.get("domain")
+                group_id = result.get("group_id")
+                asset_id = result.get("asset_id")
+                if (
+                    domain not in listening_templates.DOMAINS
+                    or not isinstance(group_id, str)
+                    or group_id not in group_meta.get((record_id, domain), {})
+                    or not isinstance(asset_id, str)
+                    or asset_id not in asset_meta.get(record_id, {})
+                    or result.get("content_hash")
+                    != asset_meta[record_id][asset_id]["content_hash"]
+                    or (
+                        result.get("old_asset_id") is not None
+                        and result.get("old_asset_id")
+                        not in asset_meta.get(record_id, {})
+                    )
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听照片导入回执归属不合法",
+                    )
+            elif operation_kind == "listening_asset_remove":
+                domain = result.get("domain")
+                group_id = result.get("group_id")
+                if (
+                    domain not in listening_templates.DOMAINS
+                    or not isinstance(group_id, str)
+                    or group_id not in group_meta.get((record_id, domain), {})
+                    or result.get("asset_id") is not None
+                    or (
+                        result.get("old_asset_id") is not None
+                        and result.get("old_asset_id")
+                        not in asset_meta.get(record_id, {})
+                    )
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听照片移除回执归属不合法",
+                    )
+            elif operation_kind == "listening_photo_reorder":
+                domain = result.get("domain")
+                group_ids = result.get("group_ids")
+                expected_groups = group_meta.get((record_id, domain))
+                if (
+                    domain not in listening_templates.DOMAINS
+                    or expected_groups is None
+                    or not isinstance(group_ids, list)
+                    or len(group_ids) != 3
+                    or any(not isinstance(item, str) for item in group_ids)
+                    or len(set(group_ids)) != 3
+                    or set(group_ids) != set(expected_groups)
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库倾听排序回执归属不合法",
+                    )
+    except BackupValidationError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - controlled backup refusal
+        raise BackupValidationError(
+            "BACKUP_DB_LOGICAL_INVALID", "备份数据库倾听校验失败"
+        ) from exc
+
 
 def _weekly_checks(connection: sqlite3.Connection) -> None:
     """Strict historical weekly validation, including real daily history."""
@@ -1479,6 +2221,7 @@ def _weekly_checks(connection: sqlite3.Connection) -> None:
             "content": content,
         }
     _weekly_ai_chain(connection, plans, contents)
+    _listening_ai_chain(connection)
     for plan_id, plan in plans.items():
         _weekly_require(
             (plan_id, plan["draft_id"]) in contents, "current draft pointer"
@@ -1546,6 +2289,7 @@ def _weekly_checks(connection: sqlite3.Connection) -> None:
             "snapshot": snapshot,
         }
     _weekly_ai_chain(connection, plans, contents)
+    _listening_ai_chain(connection)
     for plan_id, plan in plans.items():
         if plan["confirmed_id"] is not None:
             _weekly_require(
@@ -1736,6 +2480,7 @@ def validate_database(
             )
         _validate_schema(connection, head, scratch_dir)
         _logical_checks(connection)
+        _listening_checks(connection)
         _weekly_checks(connection)
     finally:
         connection.close()
@@ -1792,30 +2537,72 @@ def iter_registered_resources(db_path: Path) -> Iterator[dict[str, Any]]:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-        if "local_observation_assets" not in tables:
-            return
-        has_derivatives = "local_observation_asset_derivatives" in tables
-        sql = """
-            SELECT relative_path, 'original' AS kind, observation_id,
-                   id AS asset_id, NULL AS derivative_id, content_hash,
-                   mime_type, width, height, orientation, byte_size
-              FROM local_observation_assets
-        """
-        if has_derivatives:
-            sql += """
-            UNION ALL
-            SELECT relative_path, purpose AS kind, observation_id,
-                   asset_id, id AS derivative_id, content_hash,
-                   mime_type, width, height, NULL AS orientation, NULL AS byte_size
-              FROM local_observation_asset_derivatives
+        items: list[dict[str, Any]] = []
+        if "local_observation_assets" in tables:
+            has_derivatives = "local_observation_asset_derivatives" in tables
+            sql = """
+                SELECT relative_path, 'original' AS kind, observation_id,
+                       id AS asset_id, NULL AS derivative_id, content_hash,
+                       mime_type, width, height, orientation, byte_size
+                  FROM local_observation_assets
             """
-        sql += " ORDER BY relative_path"
-        rows = connection.execute(sql)
+            if has_derivatives:
+                sql += """
+                UNION ALL
+                SELECT relative_path, purpose AS kind, observation_id,
+                       asset_id, id AS derivative_id, content_hash,
+                       mime_type, width, height, NULL AS orientation,
+                       NULL AS byte_size
+                  FROM local_observation_asset_derivatives
+                """
+            for row in connection.execute(sql):
+                items.append(
+                    {
+                        "path": row[0],
+                        "kind": row[1],
+                        "observation_id": row[2],
+                        "asset_id": row[3],
+                        "derivative_id": row[4],
+                        "sha256": row[5],
+                        "mime_type": row[6],
+                        "width": row[7],
+                        "height": row[8],
+                        "orientation": row[9],
+                        "byte_size": row[10],
+                    }
+                )
+        if "local_listening_assets" in tables:
+            for row in connection.execute(
+                """
+                SELECT relative_path, 'original' AS kind, record_id,
+                       id AS asset_id, NULL AS derivative_id, content_hash,
+                       mime_type, width, height, orientation, byte_size
+                  FROM local_listening_assets
+                """
+            ):
+                items.append(
+                    {
+                        "owner_kind": "listening",
+                        "path": row[0],
+                        "kind": row[1],
+                        "listening_record_id": row[2],
+                        "asset_id": row[3],
+                        "derivative_id": row[4],
+                        "sha256": row[5],
+                        "mime_type": row[6],
+                        "width": row[7],
+                        "height": row[8],
+                        "orientation": row[9],
+                        "byte_size": row[10],
+                    }
+                )
+        items.sort(key=lambda item: item["path"])
         seen: set[str] = set()
         folded: set[str] = set()
         prefixes: set[str] = set()
-        for row in rows:
-            path = safe_relative_path(row[0])
+        for item in items:
+            path = safe_relative_path(item["path"])
+            item["path"] = path
             folded_path = unicodedata.normalize("NFC", path).casefold()
             if path in seen or folded_path in folded:
                 raise BackupValidationError(
@@ -1835,19 +2622,7 @@ def iter_registered_resources(db_path: Path) -> Iterator[dict[str, Any]]:
                 )
             seen.add(path)
             folded.add(folded_path)
-            yield {
-                "path": path,
-                "kind": row[1],
-                "observation_id": row[2],
-                "asset_id": row[3],
-                "derivative_id": row[4],
-                "sha256": row[5],
-                "mime_type": row[6],
-                "width": row[7],
-                "height": row[8],
-                "orientation": row[9],
-                "byte_size": row[10],
-            }
+            yield item
     finally:
         connection.close()
 
@@ -2028,35 +2803,73 @@ def _validate_manifest_schema(manifest: Any) -> dict[str, Any]:
     paths: list[str] = []
     folded_paths: set[str] = set()
     for index, entry in enumerate(resources):
-        entry = _exact_keys(
-            entry,
-            {
-                "asset_id",
-                "bytes",
-                "derivative_id",
-                "kind",
-                "observation_id",
-                "path",
-                "sha256",
-            },
-            f"resources[{index}]",
-        )
-        if not _OPAQUE_ID.fullmatch(
-            _str(entry["asset_id"], minimum=1, maximum=32, label="asset_id")
-        ):
+        if not isinstance(entry, dict):
             raise BackupValidationError(
-                "BACKUP_MANIFEST_INVALID", "备份清单资源 asset_id 不合法"
+                "BACKUP_MANIFEST_INVALID", "备份清单资源项不合法"
             )
-        if not _OPAQUE_ID.fullmatch(
-            _str(
-                entry["observation_id"],
+        listening = "owner_kind" in entry
+        if listening:
+            entry = _exact_keys(
+                entry,
+                {
+                    "asset_id",
+                    "bytes",
+                    "derivative_id",
+                    "kind",
+                    "listening_record_id",
+                    "owner_kind",
+                    "path",
+                    "sha256",
+                },
+                f"resources[{index}]",
+            )
+            if entry["owner_kind"] != "listening":
+                raise BackupValidationError(
+                    "BACKUP_MANIFEST_INVALID", "备份清单资源 owner_kind 不合法"
+                )
+            listening_record_id = _str(
+                entry["listening_record_id"],
                 minimum=1,
                 maximum=32,
-                label="observation_id",
+                label="listening_record_id",
             )
-        ):
+            if not _OPAQUE_ID.fullmatch(listening_record_id):
+                raise BackupValidationError(
+                    "BACKUP_MANIFEST_INVALID",
+                    "备份清单资源 listening_record_id 不合法",
+                )
+        else:
+            entry = _exact_keys(
+                entry,
+                {
+                    "asset_id",
+                    "bytes",
+                    "derivative_id",
+                    "kind",
+                    "observation_id",
+                    "path",
+                    "sha256",
+                },
+                f"resources[{index}]",
+            )
+            if not _OPAQUE_ID.fullmatch(
+                _str(
+                    entry["observation_id"],
+                    minimum=1,
+                    maximum=32,
+                    label="observation_id",
+                )
+            ):
+                raise BackupValidationError(
+                    "BACKUP_MANIFEST_INVALID",
+                    "备份清单资源 observation_id 不合法",
+                )
+        asset_id = _str(
+            entry["asset_id"], minimum=1, maximum=32, label="asset_id"
+        )
+        if not _OPAQUE_ID.fullmatch(asset_id):
             raise BackupValidationError(
-                "BACKUP_MANIFEST_INVALID", "备份清单资源 observation_id 不合法"
+                "BACKUP_MANIFEST_INVALID", "备份清单资源 asset_id 不合法"
             )
         derivative = entry["derivative_id"]
         if derivative is not None and not _OPAQUE_ID.fullmatch(
@@ -2071,6 +2884,44 @@ def _validate_manifest_schema(manifest: Any) -> dict[str, Any]:
                 "BACKUP_MANIFEST_INVALID", "备份清单资源 kind 不合法"
             )
         path = safe_relative_path(entry["path"])
+        if listening:
+            if not path.startswith("observations/assets/listening/"):
+                raise BackupValidationError(
+                    "BACKUP_MANIFEST_INVALID", "备份清单倾听资源路径不合法"
+                )
+            parts = path.split("/")
+            if (
+                len(parts) < 6
+                or parts[3] != listening_record_id
+                or parts[4] != asset_id
+            ):
+                raise BackupValidationError(
+                    "BACKUP_MANIFEST_INVALID", "备份清单倾听资源归属不合法"
+                )
+            if kind == "original":
+                if (
+                    derivative is not None
+                    or len(parts) != 6
+                    or not parts[5].startswith("original.")
+                    or "." not in parts[5]
+                    or parts[5].split(".", 1)[1]
+                    not in ("jpg", "png", "webp", "gif", "bmp")
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_MANIFEST_INVALID",
+                        "备份清单倾听原图路径不合法",
+                    )
+            else:
+                if (
+                    derivative is None
+                    or len(parts) != 7
+                    or parts[5] != "derivatives"
+                    or parts[6] != f"{derivative}.jpg"
+                ):
+                    raise BackupValidationError(
+                        "BACKUP_MANIFEST_INVALID",
+                        "备份清单倾听派生图路径不合法",
+                    )
         folded_path = unicodedata.normalize("NFC", path).casefold()
         if folded_path in folded_paths:
             raise BackupValidationError(
@@ -2223,16 +3074,36 @@ def validate_manifest(
             raise BackupValidationError(
                 "BACKUP_MANIFEST_INVALID", "备份清单含未登记资源"
             )
-        for key in (
-            "kind",
-            "observation_id",
-            "asset_id",
-            "derivative_id",
-        ):
-            if entry.get(key) != db_entry.get(key):
+        if entry.get("owner_kind") == "listening":
+            if db_entry.get("owner_kind") != "listening":
                 raise BackupValidationError(
                     "BACKUP_MANIFEST_INVALID", "备份清单资源身份不匹配"
                 )
+            for key in (
+                "kind",
+                "listening_record_id",
+                "asset_id",
+                "derivative_id",
+            ):
+                if entry.get(key) != db_entry.get(key):
+                    raise BackupValidationError(
+                        "BACKUP_MANIFEST_INVALID", "备份清单资源身份不匹配"
+                    )
+        else:
+            if db_entry.get("owner_kind") == "listening":
+                raise BackupValidationError(
+                    "BACKUP_MANIFEST_INVALID", "备份清单资源身份不匹配"
+                )
+            for key in (
+                "kind",
+                "observation_id",
+                "asset_id",
+                "derivative_id",
+            ):
+                if entry.get(key) != db_entry.get(key):
+                    raise BackupValidationError(
+                        "BACKUP_MANIFEST_INVALID", "备份清单资源身份不匹配"
+                    )
         target = resources_root.joinpath(*PurePosixPath(path).parts)
         try:
             target.relative_to(resources_root)

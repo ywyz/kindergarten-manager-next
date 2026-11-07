@@ -24,6 +24,7 @@ export type LeaveKind =
   | 'observations'
   | 'settings'
   | 'weekly'
+  | 'listening'
 
 export interface LeaveAction {
   kind: LeaveKind
@@ -65,7 +66,7 @@ export interface LeaveEditor {
 }
 
 export interface BlockingDraft {
-  kind: 'candidate' | 'settings' | 'history' | 'material' | 'weekly'
+  kind: 'candidate' | 'settings' | 'history' | 'material' | 'weekly' | 'listening'
   message: string
 }
 

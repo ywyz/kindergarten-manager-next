@@ -912,7 +912,7 @@ class LocalAIInput(LocalBase):
             name="ck_local_ai_inputs_task_type",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening')",
             name="ck_local_ai_inputs_source_kind",
         ),
         CheckConstraint(
@@ -958,6 +958,13 @@ class LocalAIInput(LocalBase):
             "AND typeof(source_revision) = 'integer' AND source_revision >= 1 "
             "AND create_operation_id IS NOT NULL)",
             name="ck_local_ai_inputs_source_match",
+        ),
+        CheckConstraint(
+            "source_kind = 'one_to_one_listening' "
+            "OR (listening_record_id IS NULL "
+            "AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)",
+            name="ck_local_ai_aiinput_listening_columns",
         ),
         ForeignKeyConstraint(
             ["daily_plan_id", "content_id", "content_version"],
@@ -1029,6 +1036,9 @@ class LocalAIInput(LocalBase):
     content_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     weekly_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     weekly_draft_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    listening_record_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    listening_domain: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    listening_group_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     create_operation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     task_type: Mapped[str] = mapped_column(String(40), nullable=False)
     target_grade: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -1057,7 +1067,7 @@ class LocalAITask(LocalBase):
             name="ck_local_ai_tasks_status",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening')",
             name="ck_local_ai_tasks_source_kind",
         ),
         CheckConstraint(
@@ -1085,6 +1095,13 @@ class LocalAITask(LocalBase):
             "AND weekly_plan_id IS NOT NULL "
             "AND source_id = weekly_plan_id)",
             name="ck_local_ai_tasks_source_match",
+        ),
+        CheckConstraint(
+            "source_kind = 'one_to_one_listening' "
+            "OR (listening_record_id IS NULL "
+            "AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)",
+            name="ck_local_ai_aitask_listening_columns",
         ),
         ForeignKeyConstraint(
             ["daily_plan_id", "input_id", "task_type"],
@@ -1168,6 +1185,9 @@ class LocalAITask(LocalBase):
     observation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     daily_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     weekly_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    listening_record_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    listening_domain: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    listening_group_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     task_type: Mapped[str] = mapped_column(String(40), nullable=False)
     input_id: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -1216,7 +1236,7 @@ class LocalAIExecution(LocalBase):
             name="ck_local_ai_executions_state",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening')",
             name="ck_local_ai_executions_source_kind",
         ),
         CheckConstraint(
@@ -1244,6 +1264,13 @@ class LocalAIExecution(LocalBase):
             "AND weekly_plan_id IS NOT NULL "
             "AND source_id = weekly_plan_id)",
             name="ck_local_ai_executions_source_match",
+        ),
+        CheckConstraint(
+            "source_kind = 'one_to_one_listening' "
+            "OR (listening_record_id IS NULL "
+            "AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)",
+            name="ck_local_ai_aiexecution_listening_columns",
         ),
         ForeignKeyConstraint(
             ["daily_plan_id", "task_id", "input_id", "task_type"],
@@ -1342,6 +1369,9 @@ class LocalAIExecution(LocalBase):
     observation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     daily_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     weekly_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    listening_record_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    listening_domain: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    listening_group_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     input_id: Mapped[str] = mapped_column(String(32), nullable=False)
     task_type: Mapped[str] = mapped_column(String(40), nullable=False)
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1422,7 +1452,7 @@ class LocalAICandidate(LocalBase):
             name="ck_local_ai_candidates_schema_version",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening')",
             name="ck_local_ai_candidates_source_kind",
         ),
         CheckConstraint(
@@ -1450,6 +1480,13 @@ class LocalAICandidate(LocalBase):
             "AND weekly_plan_id IS NOT NULL "
             "AND source_id = weekly_plan_id)",
             name="ck_local_ai_candidates_source_match",
+        ),
+        CheckConstraint(
+            "source_kind = 'one_to_one_listening' "
+            "OR (listening_record_id IS NULL "
+            "AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)",
+            name="ck_local_ai_aicandidate_listening_columns",
         ),
         ForeignKeyConstraint(
             ["execution_id", "task_id", "daily_plan_id", "input_id", "task_type"],
@@ -1511,6 +1548,9 @@ class LocalAICandidate(LocalBase):
     observation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     daily_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     weekly_plan_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    listening_record_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    listening_domain: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    listening_group_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     input_id: Mapped[str] = mapped_column(String(32), nullable=False)
     task_type: Mapped[str] = mapped_column(String(40), nullable=False)
     contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -2629,6 +2669,93 @@ class LocalWeeklyPlanAIAdoption(LocalBase):
     )
 
 
+class LocalListeningAIAdoption(LocalBase):
+    """One adopted AI target on one listening group or domain revision."""
+
+    __tablename__ = "local_listening_ai_adoption"
+    __table_args__ = (
+        CheckConstraint(
+            "source_kind = 'one_to_one_listening'",
+            name="ck_local_listening_ai_adoption_source",
+        ),
+        CheckConstraint(
+            "target_key IN ('listening_text', 'overall_evaluation', "
+            "'support_strategy') OR target_key GLOB 'health_[0-9]*' "
+            "OR target_key GLOB 'language_[0-9]*' "
+            "OR target_key GLOB 'social_[0-9]*' "
+            "OR target_key GLOB 'science_[0-9]*' "
+            "OR target_key GLOB 'art_[0-9]*'",
+            name="ck_local_listening_ai_adoption_target",
+        ),
+        CheckConstraint(
+            "length(before_hash) = 64 AND length(after_hash) = 64",
+            name="ck_local_listening_ai_adoption_hash",
+        ),
+        CheckConstraint(
+            "typeof(revision_before) = 'integer' AND revision_before >= 1 "
+            "AND typeof(revision_after) = 'integer' AND revision_after >= 1",
+            name="ck_local_listening_ai_adoption_revision",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "record_id"],
+            ["local_listening_records.profile_id", "local_listening_records.id"],
+            name="fk_local_listening_ai_adoption_record",
+        ),
+        ForeignKeyConstraint(
+            ["record_id", "domain"],
+            ["local_listening_domains.record_id", "local_listening_domains.domain"],
+            name="fk_local_listening_ai_adoption_domain",
+        ),
+        ForeignKeyConstraint(
+            ["record_id", "domain", "group_id"],
+            [
+                "local_listening_photo_groups.record_id",
+                "local_listening_photo_groups.domain",
+                "local_listening_photo_groups.id",
+            ],
+            name="fk_local_listening_ai_adoption_group",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "source_kind", "record_id", "candidate_id"],
+            [
+                "local_ai_candidates.profile_id",
+                "local_ai_candidates.source_kind",
+                "local_ai_candidates.source_id",
+                "local_ai_candidates.id",
+            ],
+            name="fk_local_listening_ai_adoption_candidate",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "operation_id"],
+            ["local_ai_operations.profile_id", "local_ai_operations.id"],
+            name="fk_local_listening_ai_adoption_operation",
+        ),
+        UniqueConstraint(
+            "record_id", "domain", "scope_key", "target_key", "revision_after",
+            name="uq_local_listening_ai_adoption_revision_target",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    record_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    domain: Mapped[str] = mapped_column(String(20), nullable=False)
+    group_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    scope_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    candidate_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    before_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    after_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
 class LocalWeeklyPlanConfirmation(LocalBase):
     """Immutable confirmation snapshot of one exact draft version."""
 
@@ -3024,6 +3151,367 @@ class LocalWeeklyExportAttempt(LocalBase):
     ended_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=False), nullable=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# One-to-one listening (L1: records, five domains, stable groups, assets)
+# ---------------------------------------------------------------------------
+
+
+class LocalListeningRecord(LocalBase):
+    """Stable listening identity; five domain tables share one revision."""
+
+    __tablename__ = "local_listening_records"
+    __table_args__ = (
+        CheckConstraint(
+            "grade IN ('small', 'middle', 'large')",
+            name="ck_local_listening_records_grade",
+        ),
+        CheckConstraint(
+            "length(child_name) BETWEEN 1 AND 80",
+            name="ck_local_listening_records_child_name",
+        ),
+        CheckConstraint(
+            "typeof(revision) = 'integer' AND revision >= 1",
+            name="ck_local_listening_records_revision",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id"],
+            ["local_profile.id"],
+            name="fk_local_listening_records_profile",
+        ),
+        ForeignKeyConstraint(
+            ["class_id"],
+            ["local_classes.id"],
+            name="fk_local_listening_records_class",
+        ),
+        ForeignKeyConstraint(
+            ["term_id"],
+            ["local_terms.id"],
+            name="fk_local_listening_records_term",
+        ),
+        UniqueConstraint(
+            "profile_id", "id",
+            name="uq_local_listening_records_profile_id",
+        ),
+        Index(
+            "ix_local_listening_records_profile_class_term",
+            "profile_id", "class_id", "term_id", "id",
+        ),
+        Index(
+            "ix_local_listening_records_profile_name",
+            "profile_id", "class_id", "term_id", "child_name",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    class_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    term_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    grade: Mapped[str] = mapped_column(String(20), nullable=False)
+    child_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalListeningDomain(LocalBase):
+    """One of the five domain forms of a listening record."""
+
+    __tablename__ = "local_listening_domains"
+    __table_args__ = (
+        CheckConstraint(
+            "domain IN ('health', 'language', 'social', 'science', 'art')",
+            name="ck_local_listening_domains_domain",
+        ),
+        CheckConstraint(
+            "length(template_version) BETWEEN 1 AND 20",
+            name="ck_local_listening_domains_template_version",
+        ),
+        CheckConstraint(
+            "length(template_sha256) = 64",
+            name="ck_local_listening_domains_template_sha",
+        ),
+        CheckConstraint(
+            "observation_date_text IS NULL "
+            "OR length(observation_date_text) <= 120",
+            name="ck_local_listening_domains_observation_date",
+        ),
+        CheckConstraint(
+            "adult_count_text IS NULL OR length(adult_count_text) <= 80",
+            name="ck_local_listening_domains_adult_count",
+        ),
+        CheckConstraint(
+            "child_age_text IS NULL OR length(child_age_text) <= 80",
+            name="ck_local_listening_domains_child_age",
+        ),
+        CheckConstraint(
+            "goal IS NULL OR length(goal) <= 4000",
+            name="ck_local_listening_domains_goal",
+        ),
+        CheckConstraint(
+            "observation_area IS NULL OR length(observation_area) <= 4000",
+            name="ck_local_listening_domains_area",
+        ),
+        CheckConstraint(
+            "overall_evaluation IS NULL OR length(overall_evaluation) <= 20000",
+            name="ck_local_listening_domains_overall",
+        ),
+        CheckConstraint(
+            "support_strategy IS NULL OR length(support_strategy) <= 20000",
+            name="ck_local_listening_domains_support",
+        ),
+        ForeignKeyConstraint(
+            ["record_id"],
+            ["local_listening_records.id"],
+            name="fk_local_listening_domains_record",
+        ),
+        PrimaryKeyConstraint(
+            "record_id", "domain",
+            name="pk_local_listening_domains",
+        ),
+    )
+
+    record_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    domain: Mapped[str] = mapped_column(String(20), nullable=False)
+    template_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    template_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    observation_date_text: Mapped[str | None] = mapped_column(
+        String(120), nullable=True
+    )
+    adult_count_text: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
+    )
+    child_age_text: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
+    )
+    goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    observation_area: Mapped[str | None] = mapped_column(Text, nullable=True)
+    overall_evaluation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    support_strategy: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalListeningEvaluationChoice(LocalBase):
+    """One template item's empty or single 1/2/3 star choice."""
+
+    __tablename__ = "local_listening_evaluation_choices"
+    __table_args__ = (
+        CheckConstraint(
+            "length(item_id) BETWEEN 1 AND 40",
+            name="ck_local_listening_choices_item_id",
+        ),
+        CheckConstraint(
+            "stars IS NULL OR "
+            "(typeof(stars) = 'integer' AND stars IN (1, 2, 3))",
+            name="ck_local_listening_choices_stars",
+        ),
+        ForeignKeyConstraint(
+            ["record_id", "domain"],
+            ["local_listening_domains.record_id",
+             "local_listening_domains.domain"],
+            name="fk_local_listening_choices_domain",
+        ),
+        PrimaryKeyConstraint(
+            "record_id", "domain", "item_id",
+            name="pk_local_listening_evaluation_choices",
+        ),
+    )
+
+    record_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    domain: Mapped[str] = mapped_column(String(20), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    stars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalListeningAsset(LocalBase):
+    """Immutable managed listening original image."""
+
+    __tablename__ = "local_listening_assets"
+    __table_args__ = (
+        CheckConstraint(
+            "length(relative_path) BETWEEN 1 AND 500",
+            name="ck_local_listening_assets_path",
+        ),
+        CheckConstraint(
+            "substr(relative_path, 1, 30) = 'observations/assets/listening/'",
+            name="ck_local_listening_assets_path_root",
+        ),
+        CheckConstraint(
+            "length(display_name) BETWEEN 1 AND 255",
+            name="ck_local_listening_assets_display_name",
+        ),
+        CheckConstraint(
+            "mime_type IN ('image/jpeg', 'image/png', 'image/webp', "
+            "'image/gif', 'image/bmp')",
+            name="ck_local_listening_assets_mime",
+        ),
+        CheckConstraint(
+            "length(content_hash) = 64",
+            name="ck_local_listening_assets_hash",
+        ),
+        CheckConstraint(
+            "typeof(byte_size) = 'integer' AND byte_size >= 0",
+            name="ck_local_listening_assets_size",
+        ),
+        CheckConstraint(
+            "typeof(width) = 'integer' AND typeof(height) = 'integer' "
+            "AND width >= 0 AND height >= 0",
+            name="ck_local_listening_assets_dimensions",
+        ),
+        CheckConstraint(
+            "orientation IS NULL OR "
+            "(typeof(orientation) = 'integer' AND orientation BETWEEN 1 AND 8)",
+            name="ck_local_listening_assets_orientation",
+        ),
+        ForeignKeyConstraint(
+            ["record_id"],
+            ["local_listening_records.id"],
+            name="fk_local_listening_assets_record",
+        ),
+        UniqueConstraint(
+            "record_id", "id",
+            name="uq_local_listening_assets_record_id",
+        ),
+        UniqueConstraint(
+            "relative_path",
+            name="uq_local_listening_assets_path",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    relative_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    width: Mapped[int] = mapped_column(Integer, nullable=False)
+    height: Mapped[int] = mapped_column(Integer, nullable=False)
+    orientation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalListeningPhotoGroup(LocalBase):
+    """Stable per-domain text/photo position; position is a swap placeholder."""
+
+    __tablename__ = "local_listening_photo_groups"
+    __table_args__ = (
+        CheckConstraint(
+            "position IS NULL OR "
+            "(typeof(position) = 'integer' AND position BETWEEN 0 AND 2)",
+            name="ck_local_listening_groups_position",
+        ),
+        CheckConstraint(
+            "work_date_text IS NULL OR length(work_date_text) <= 120",
+            name="ck_local_listening_groups_work_date",
+        ),
+        CheckConstraint(
+            "listening_text IS NULL OR length(listening_text) <= 20000",
+            name="ck_local_listening_groups_text",
+        ),
+        CheckConstraint(
+            "asset_id IS NULL OR length(asset_id) BETWEEN 1 AND 32",
+            name="ck_local_listening_groups_asset",
+        ),
+        ForeignKeyConstraint(
+            ["record_id", "domain"],
+            ["local_listening_domains.record_id",
+             "local_listening_domains.domain"],
+            name="fk_local_listening_groups_domain",
+        ),
+        ForeignKeyConstraint(
+            ["record_id", "asset_id"],
+            ["local_listening_assets.record_id",
+             "local_listening_assets.id"],
+            name="fk_local_listening_groups_asset",
+        ),
+        UniqueConstraint(
+            "record_id", "domain", "position",
+            name="uq_local_listening_groups_position",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    domain: Mapped[str] = mapped_column(String(20), nullable=False)
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    work_date_text: Mapped[str | None] = mapped_column(
+        String(120), nullable=True
+    )
+    listening_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    asset_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalListeningOperation(LocalBase):
+    """Listening business idempotency envelope (not a content authority)."""
+
+    __tablename__ = "local_listening_operations"
+    __table_args__ = (
+        CheckConstraint(
+            "length(request_id) BETWEEN 1 AND 36",
+            name="ck_local_listening_operations_request_id",
+        ),
+        CheckConstraint(
+            "length(request_fingerprint) = 64",
+            name="ck_local_listening_operations_fingerprint",
+        ),
+        CheckConstraint(
+            "length(operation_kind) BETWEEN 1 AND 40",
+            name="ck_local_listening_operations_kind",
+        ),
+        CheckConstraint(
+            "status IN ('committed', 'failed')",
+            name="ck_local_listening_operations_status",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id"],
+            ["local_profile.id"],
+            name="fk_local_listening_operations_profile",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "record_id"],
+            ["local_listening_records.profile_id",
+             "local_listening_records.id"],
+            name="fk_local_listening_operations_record",
+        ),
+        UniqueConstraint(
+            "profile_id", "request_id",
+            name="uq_local_listening_operations_profile_request",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    operation_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    record_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=utc_now, nullable=False
     )

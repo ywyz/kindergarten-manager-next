@@ -785,6 +785,7 @@ def _task_progress(
     task_id: str,
     source_kind: str = "daily_plan",
     weekly_plan_id: str | None = None,
+    source_id: str | None = None,
 ) -> dict[str, Any]:
     """Read-only display progress for the task's current execution.
 
@@ -798,6 +799,7 @@ def _task_progress(
             task_id,
             source_kind=source_kind,
             weekly_plan_id=weekly_plan_id,
+            source_id=source_id,
         )
         status = str(task.get("status") or "")
         execution = task.get("execution") or {}

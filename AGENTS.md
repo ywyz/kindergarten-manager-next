@@ -8,7 +8,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 一对一倾听开发分支为 `codex/desktop-one-to-one-listening`。唯一执行入口为 [当前任务](docs/tasks/current.md)。`b657363` 的关闭／恢复专项已完成本轮限定验收。源码反例见[开发机核查 §10](docs/bootstrap/desktop-regression-repair-review.md)，同源冻结包的普通保存关闭、两类故障恢复、独立冷开及 renderer 提示键盘人工补验见[原 Windows 11 测试机 §10–10.6](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。冻结内部交错与对象顺序、原自然白屏及 Word /r 历史差异仍按报告保留。
 
-当前进行一对一倾听记录工程设计，执行范围见上方唯一入口。Codex 维护正式规格和审核记录。已结束轮次的写入白名单与原生会话权限归各轮结果，后续工作按当轮责任执行。
+一对一倾听 L1–L4 已通过源码技术核查，待统一教师验收。测试机补验范围见上方唯一入口。Codex 维护正式规格和审核记录。已结束轮次的写入白名单与原生会话权限归各轮结果，后续工作按当轮责任执行。
 
 ## 产品与架构原则
 

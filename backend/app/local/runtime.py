@@ -452,6 +452,7 @@ class LocalRuntime:
         self.weekly_export_manager: object | None = None
         self._weekly_export_binding: tuple[str, str] | None = None
         self._weekly_export_bind_lock = threading.RLock()
+        self.listening_export_manager: object | None = None
 
     @property
     def prepared(self) -> bool:
@@ -528,6 +529,14 @@ class LocalRuntime:
             self.weekly_export_manager = manager
             self._weekly_export_binding = requested
             return manager
+
+    def _retire_listening_exports(self) -> None:
+        manager = self.listening_export_manager
+        if manager is not None:
+            try:
+                manager.retire()
+            finally:
+                self.listening_export_manager = None
 
     def _pause_weekly_exports_for_retire(self) -> None:
         manager = self.weekly_export_manager
@@ -879,6 +888,7 @@ class LocalRuntime:
         # construction.
         self.weekly_export_manager = None
         self._weekly_export_binding = None
+        self.listening_export_manager = None
         self._check_managed_paths()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._acquire_lock()
@@ -1049,6 +1059,7 @@ class LocalRuntime:
         invalidated.  ``reopen_after_restore()`` creates the next generation.
         """
         self._pause_weekly_exports_for_retire()
+        self._retire_listening_exports()
         with self._session_lock:
             engine = self._engine
         if engine is None:
@@ -1075,6 +1086,7 @@ class LocalRuntime:
             raise RuntimeError("runtime engine must be closed before reopen")
         self.weekly_export_manager = None
         self._weekly_export_binding = None
+        self.listening_export_manager = None
         self._check_managed_paths()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         config = alembic_config(self.db_path)
@@ -1118,6 +1130,7 @@ class LocalRuntime:
         leaked; a real dispose error still propagates.
         """
         self._pause_weekly_exports_for_retire()
+        self._retire_listening_exports()
         with self._session_lock:
             engine = self._engine
             self._engine = None

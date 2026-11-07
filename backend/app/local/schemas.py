@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictInt,
     field_validator,
     model_validator,
 )
@@ -1404,3 +1405,71 @@ class WeeklyAIOperationOut(BaseModel):
     status: str
     result: dict[str, Any]
     created_at: str
+
+
+# ---------------------------------------------------------------------------
+# One-to-one listening (L1)
+# ---------------------------------------------------------------------------
+
+
+class LocalListeningCreateIn(BaseModel):
+    """Create one record; class/profile are server-derived, never supplied."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    term_id: str
+    child_name: str
+
+
+class LocalListeningRecordPatchIn(BaseModel):
+    """Shared-name correction under the same revision/receipt protocol."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+    child_name: str
+
+
+class LocalListeningGroupPatchIn(BaseModel):
+    """Only the submitted group fields change; explicit null clears one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    group_id: str
+    work_date: str | None = None
+    listening_text: str | None = None
+
+
+class LocalListeningDomainPatchIn(BaseModel):
+    """Partial domain patch; omitted fields and omitted stars stay unchanged."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+    observation_date: str | None = None
+    adult_count: str | None = None
+    child_age: str | None = None
+    goal: str | None = None
+    observation_area: str | None = None
+    overall_evaluation: str | None = None
+    support_strategy: str | None = None
+    groups: list[LocalListeningGroupPatchIn] | None = None
+    evaluation: dict[str, StrictInt | None] | None = None
+
+
+class LocalListeningReorderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+    group_ids: list[str]
+
+
+class LocalListeningPhotoRemoveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)

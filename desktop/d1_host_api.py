@@ -58,6 +58,7 @@ MAX_DOCX_BYTES = 30 * 1024 * 1024
 # Observation export uses a separate restricted channel: the page never
 # sends Base64 bytes, and the host streams from the fixed loopback endpoint.
 MAX_OBSERVATION_EXPORT_BYTES = 128 * 1024 * 1024
+MAX_LISTENING_EXPORT_BYTES = 256 * 1024 * 1024
 WEEKLY_EXPORT_MAX_BYTES = 128 * 1024 * 1024
 WEEKLY_EXPORT_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -71,6 +72,10 @@ OBSERVATION_EXPORT_TIMEOUT_SECONDS = 120.0
 OBSERVATION_EXPORT_JSON_TIMEOUT_SECONDS = 30.0
 OBSERVATION_EXPORT_JSON_DEADLINE_SECONDS = 30.0
 OBSERVATION_EXPORT_JSON_LIMIT = 256 * 1024
+LISTENING_EXPORT_MIME = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+LISTENING_EXPORT_TIMEOUT_SECONDS = 120.0
 
 # The complete set of bridge endpoints exposed to the page. Every other
 # attribute (coordinators, notification helpers) stays private (``_``) so
@@ -102,6 +107,8 @@ BRIDGE_ALLOWED_ENDPOINTS = frozenset(
         "save_observation_export",
         "get_observation_export_result",
         "reconcile_observation_export_result",
+        "save_listening_export",
+        "get_listening_export_result",
         "save_weekly_export",
         "get_weekly_export_result",
     }
@@ -996,6 +1003,60 @@ def _base_name(name: str) -> str:
     return os.path.basename(name.replace("\\", "/"))
 
 
+_LISTENING_ID = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_LISTENING_INVALID = set('<>:"/\\|?*')
+_LISTENING_MAX_FILENAME = 160
+_LISTENING_RESERVED = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+    "CONIN$",
+    "CONOUT$",
+}
+
+
+def _listening_reserved(name: str) -> bool:
+    stem = name[:-5] if name.lower().endswith(".docx") else name
+    return stem.split(".", 1)[0].strip().upper() in _LISTENING_RESERVED
+
+
+def _listening_export_id(value: object) -> str:
+    if not isinstance(value, str) or _LISTENING_ID.fullmatch(value) is None:
+        raise ValueError("export_id")
+    return value
+
+
+def _listening_filename(value: object) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValueError("filename")
+    name = value.strip()
+    if not name:
+        name = "一对一倾听记录.docx"
+    if (
+        name != _base_name(name)
+        or name in (".", "..")
+        or len(name) > _LISTENING_MAX_FILENAME
+        or name.startswith(".")
+        or name.endswith(" ")
+        or name.endswith(".")
+        or any(
+            char in _LISTENING_INVALID or ord(char) < 32
+            for char in name
+        )
+    ):
+        raise ValueError("filename")
+    if not name.lower().endswith(_ALLOWED_SUFFIX):
+        name += _ALLOWED_SUFFIX
+    if len(name) > _LISTENING_MAX_FILENAME or _listening_reserved(name):
+        raise ValueError("filename")
+    return name
+
+
 def validate_docx_target(path: str) -> tuple[bool, str]:
     """The unified .docx suffix rule (case-insensitive on Windows)."""
     if not isinstance(path, str) or not path.strip():
@@ -1196,6 +1257,7 @@ def write_stream_atomic(
     *,
     expected_hash: str,
     expected_size: int,
+    max_bytes: int = MAX_OBSERVATION_EXPORT_BYTES,
 ) -> dict:
     """Stream a verified source file into a sibling temp + atomic replace.
 
@@ -1210,7 +1272,7 @@ def write_stream_atomic(
     if (
         not isinstance(expected_size, int)
         or expected_size <= 0
-        or expected_size > MAX_OBSERVATION_EXPORT_BYTES
+        or expected_size > max_bytes
         or not isinstance(expected_hash, str)
         or len(expected_hash) != 64
     ):
@@ -1436,6 +1498,7 @@ class D1HostApi:
         document_generation: int = 1,
         maintenance_notice: str | None = None,
         weekly_export_manager=None,
+        listening_export_manager=None,
     ):
         self._launch_token = launch_token
         self._window_getter = window_getter or self._default_window
@@ -1452,6 +1515,7 @@ class D1HostApi:
         self._save_inflight = 0
         self._save_records: dict[str, dict] = {}
         self._observation_save_records: dict[str, dict] = {}
+        self._listening_save_records: dict[str, dict] = {}
         self._page_ready = False
         self._page_busy = False
         self._page_busy_seq = 0
@@ -1462,6 +1526,7 @@ class D1HostApi:
         self._close_coordinator: CloseCoordinator | None = None
         self._maintenance_host = maintenance_host
         self._weekly_export_manager = weekly_export_manager
+        self._listening_export_manager = listening_export_manager
         self._weekly_export_launch_id = (
             str(getattr(weekly_export_manager, "launch_id", "") or "")
             if weekly_export_manager is not None
@@ -1917,6 +1982,16 @@ class D1HostApi:
             return False
         try:
             return bool(probe())
+        except Exception:  # noqa: BLE001 - unknown work is not idle
+            return True
+
+    def _listening_busy_probe(self) -> bool:
+        """Captured app-generation listening activity, never runtime lookup."""
+        manager = self._listening_export_manager
+        if manager is None:
+            return False
+        try:
+            return bool(manager.has_active_work)
         except Exception:  # noqa: BLE001 - unknown work is not idle
             return True
 
@@ -2736,6 +2811,487 @@ class D1HostApi:
             )
             return False
         return True
+
+    # -- restricted listening export host channel ------------------------
+    def save_listening_export(self, payload: object = None) -> dict:
+        refusal = self._native_io_refusal()
+        if refusal is not None:
+            return refusal
+        if not self._page_ready:
+            return {
+                "status": "failed",
+                "code": "BRIDGE_NOT_READY",
+                "message": "页面尚未完成桥接握手，已拒绝保存",
+            }
+        try:
+            return self._save_listening_export_inner(payload)
+        except Exception as exc:  # never raise across the JS bridge
+            _host_log(
+                f"listening export outer failure: {type(exc).__name__}"
+            )
+            return {
+                "status": "failed",
+                "code": "LISTENING_EXPORT_SAVE_FAILED",
+                "message": "倾听记录保存失败：发生未预期的错误，请重试",
+            }
+
+    def _save_listening_export_inner(self, payload: object) -> dict:
+        if not isinstance(payload, dict) or not set(payload) <= {
+            "export_id",
+            "filename",
+        }:
+            return {
+                "status": "failed",
+                "code": "INVALID_PAYLOAD",
+                "message": "倾听导出保存数据格式不正确",
+            }
+        try:
+            export_id = _listening_export_id(payload.get("export_id"))
+            filename = _listening_filename(payload.get("filename"))
+        except ValueError:
+            return {
+                "status": "failed",
+                "code": "INVALID_PAYLOAD",
+                "message": "倾听导出凭证或文件名不合法",
+            }
+        with self._save_lock:
+            existing = self._listening_save_records.get(export_id)
+            if existing is not None:
+                if existing.get("filename") != filename:
+                    return {
+                        "status": "failed",
+                        "code": "LISTENING_EXPORT_ATTEMPT_CONFLICT",
+                        "message": "同一倾听导出凭证已用于不同文件名",
+                    }
+                if existing.get("in_flight"):
+                    return {
+                        "status": "pending",
+                        "code": "SAVE_IN_PROGRESS",
+                        "message": "倾听记录保存仍在进行中",
+                    }
+                return dict(existing.get("result") or {"status": "unknown"})
+            self._listening_save_records[export_id] = {
+                "filename": filename,
+                "result": None,
+                "in_flight": True,
+            }
+            self._save_inflight += 1
+        try:
+            result = self._perform_listening_export(export_id, filename)
+        except _LocalApiError as exc:
+            _host_log(f"listening export local api: {exc.code}")
+            result = {
+                "status": "failed",
+                "code": exc.code,
+                "message": exc.message,
+            }
+            if exc.retryable:
+                result["_forget"] = True
+        except Exception as exc:  # noqa: BLE001
+            _host_log(
+                f"listening export inner failure: {type(exc).__name__}"
+            )
+            result = {
+                "status": "failed",
+                "code": "LISTENING_EXPORT_SAVE_FAILED",
+                "message": "倾听记录保存失败：发生未预期的错误，请重试",
+            }
+        forget = bool(result.pop("_forget", False))
+        with self._save_lock:
+            self._save_inflight -= 1
+            if forget:
+                self._listening_save_records.pop(export_id, None)
+            else:
+                record = self._listening_save_records.get(export_id) or {}
+                record["in_flight"] = False
+                record["result"] = dict(result)
+                self._listening_save_records[export_id] = record
+        return result
+
+    def get_listening_export_result(self, payload: object = None) -> dict:
+        if not self._page_ready:
+            return {"status": "unknown", "code": "BRIDGE_NOT_READY"}
+        export_id = ""
+        filename = ""
+        if not isinstance(payload, dict) or not set(payload) <= {
+            "export_id",
+            "filename",
+        }:
+            return {"status": "failed", "code": "INVALID_PAYLOAD"}
+        if isinstance(payload, dict):
+            export_id = str(payload.get("export_id") or "")
+            if payload.get("filename") is not None:
+                try:
+                    filename = _listening_filename(payload.get("filename"))
+                except ValueError:
+                    return {"status": "failed", "code": "INVALID_PAYLOAD"}
+        if not export_id:
+            return {"status": "unknown", "code": "UNKNOWN_EXPORT"}
+        with self._save_lock:
+            record = self._listening_save_records.get(export_id)
+            if record is None:
+                return {"status": "unknown", "code": "EXPORT_NOT_FOUND"}
+            if filename and filename != record.get("filename"):
+                return {
+                    "status": "failed",
+                    "code": "LISTENING_EXPORT_ATTEMPT_CONFLICT",
+                    "message": "同一倾听导出凭证已用于不同文件名",
+                }
+            if record.get("in_flight"):
+                return {
+                    "status": "pending",
+                    "code": "SAVE_IN_PROGRESS",
+                    "message": "倾听记录保存仍在进行中",
+                }
+            return dict(record.get("result") or {"status": "unknown"})
+
+    def _perform_listening_export(self, export_id: str, filename: str) -> dict:
+        quoted = urllib.parse.quote(export_id, safe="")
+        owner = secrets.token_urlsafe(18)
+        try:
+            pin = self._local_json(
+                "POST",
+                f"/api/listening-exports/{quoted}/pin",
+                {"owner": owner},
+            )
+        except _LocalApiError as exc:
+            exc.retryable = True
+            raise
+        expected_size = pin.get("bytes")
+        expected_hash = pin.get("sha256")
+        if (
+            not isinstance(expected_size, int)
+            or expected_size <= 0
+            or expected_size > MAX_LISTENING_EXPORT_BYTES
+            or not isinstance(expected_hash, str)
+            or len(expected_hash) != 64
+        ):
+            self._unpin_listening_export(export_id, owner)
+            return {
+                "status": "failed",
+                "code": "LISTENING_EXPORT_INVALID",
+                "message": "倾听导出凭证内容不合法",
+                "export_id": export_id,
+            }
+        temp_path: str | None = None
+        stage = "download"
+        try:
+            try:
+                temp_path, digest, size = self._download_listening_export(
+                    export_id
+                )
+            except _ExportDownloadError as exc:
+                self._unpin_listening_export(export_id, owner)
+                return {
+                    "status": "failed",
+                    "code": exc.code,
+                    "message": exc.message,
+                    "export_id": export_id,
+                }
+            if digest != expected_hash or size != expected_size:
+                self._unpin_listening_export(export_id, owner)
+                return {
+                    "status": "failed",
+                    "code": "LISTENING_EXPORT_INVALID",
+                    "message": "倾听导出凭证与下载内容不一致",
+                    "export_id": export_id,
+                }
+            stage = "dialog"
+            with self._save_mutex:
+                try:
+                    target = self._choose_target(filename)
+                except _SaveDialogError:
+                    self._unpin_listening_export(export_id, owner)
+                    return {
+                        "status": "failed",
+                        "code": "SAVE_DIALOG_FAILED",
+                        "message": "无法打开保存对话框，请重试",
+                        "export_id": export_id,
+                    }
+                if target is None:
+                    self._unpin_listening_export(export_id, owner)
+                    return {
+                        "status": "canceled",
+                        "export_id": export_id,
+                    }
+                refusal = self._native_io_refusal()
+                if refusal is not None:
+                    self._unpin_listening_export(export_id, owner)
+                    return {**refusal, "export_id": export_id}
+                stage = "write"
+                write_result = write_stream_atomic(
+                    target,
+                    temp_path,
+                    expected_hash=digest,
+                    expected_size=size,
+                    max_bytes=MAX_LISTENING_EXPORT_BYTES,
+                )
+            status = write_result.get("status")
+            if status == "saved":
+                self._unpin_listening_export(export_id, owner)
+                return {
+                    "status": "saved",
+                    "bytes": write_result.get("bytes"),
+                    "filename": Path(target).name,
+                    "export_id": export_id,
+                    "result_hash": digest,
+                }
+            if status == "unknown":
+                # Keep the export pinned: an unknown terminal result must not
+                # be reported as saved and must not be evicted underneath the
+                # teacher's file check.
+                return {
+                    "status": "unknown",
+                    "code": write_result.get("code") or "SAVE_RESULT_UNKNOWN",
+                    "message": write_result.get("message")
+                    or "保存结果无法确认，请核对目标文件",
+                    "export_id": export_id,
+                }
+            self._unpin_listening_export(export_id, owner)
+            return {
+                "status": "failed",
+                "code": write_result.get("code") or "SAVE_FAILED",
+                "message": write_result.get("message") or "文件写入失败",
+                "export_id": export_id,
+            }
+        except Exception as exc:  # noqa: BLE001 - unexpected stage failure
+            _host_log(
+                f"listening export stage failure: {type(exc).__name__}"
+            )
+            if stage in ("download", "dialog"):
+                self._unpin_listening_export(export_id, owner)
+                return {
+                    "status": "failed",
+                    "code": "LISTENING_EXPORT_SAVE_FAILED",
+                    "message": "倾听记录保存失败：发生未预期的错误，请重试",
+                    "export_id": export_id,
+                }
+            return {
+                "status": "unknown",
+                "code": "LISTENING_EXPORT_SAVE_UNKNOWN",
+                "message": "保存结果无法确认，请核对目标文件",
+                "export_id": export_id,
+            }
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+    def _unpin_listening_export(self, export_id: str, owner: str) -> None:
+        try:
+            self._local_json(
+                "POST",
+                f"/api/listening-exports/"
+                f"{urllib.parse.quote(export_id, safe='')}/unpin",
+                {"owner": owner},
+            )
+        except Exception as exc:  # noqa: BLE001 - pin is advisory
+            _host_log(
+                f"listening export unpin failed: {type(exc).__name__}"
+            )
+
+    def _download_listening_export(
+        self, export_id: str
+    ) -> tuple[str, str, int]:
+        path = (
+            f"/api/listening-exports/"
+            f"{urllib.parse.quote(export_id, safe='')}/content"
+        )
+        headers = self._local_headers()
+        headers["Accept"] = LISTENING_EXPORT_MIME
+        connection = self._local_connection(
+            timeout=LISTENING_EXPORT_TIMEOUT_SECONDS
+        )
+        guard = _DeadlineGuard(
+            connection, LISTENING_EXPORT_TIMEOUT_SECONDS
+        )
+        deadline = time.monotonic() + LISTENING_EXPORT_TIMEOUT_SECONDS
+        per_socket = LISTENING_EXPORT_TIMEOUT_SECONDS
+        fd, temp_name = tempfile.mkstemp(
+            prefix="kgm-listening-export-", suffix=".docx"
+        )
+        total = 0
+        digest = ""
+        expected_digest = ""
+        expected_size: int | None = None
+        try:
+            try:
+                self._set_remaining_timeout(connection, deadline, per_socket)
+                connection.request("GET", path, headers=headers)
+                self._set_remaining_timeout(connection, deadline, per_socket)
+                response = connection.getresponse()
+                guard.attach_response(response)
+                status = response.status
+                if 300 <= status < 400:
+                    raise _ExportDownloadError(
+                        "EXPORT_LOCAL_API_REDIRECT",
+                        "本地导出服务返回了不允许的重定向",
+                    )
+                if status >= 400:
+                    raw = self._read_response_bounded(
+                        response,
+                        connection,
+                        deadline=deadline,
+                        per_socket=per_socket,
+                        limit=OBSERVATION_EXPORT_JSON_LIMIT,
+                    )
+                    code = "EXPORT_DOWNLOAD_FAILED"
+                    message = "下载倾听导出文件失败"
+                    try:
+                        parsed = json.loads(raw.decode("utf-8"))
+                        error = (
+                            parsed.get("error")
+                            if isinstance(parsed, dict)
+                            else None
+                        )
+                        if isinstance(error, dict):
+                            code = str(error.get("code") or code)
+                            message = str(error.get("message") or message)
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        pass
+                    raise _ExportDownloadError(code, message)
+                if status != 200:
+                    raise _ExportDownloadError(
+                        "EXPORT_DOWNLOAD_INVALID",
+                        "本地导出服务响应无效",
+                    )
+                mime = (
+                    str(response.getheader("Content-Type") or "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
+                if mime != LISTENING_EXPORT_MIME:
+                    raise _ExportDownloadError(
+                        "EXPORT_DOWNLOAD_INVALID",
+                        "倾听导出文件类型无效",
+                    )
+                length_header = response.getheader("Content-Length")
+                if length_header is not None:
+                    try:
+                        expected_size = int(length_header)
+                    except ValueError:
+                        raise _ExportDownloadError(
+                            "EXPORT_DOWNLOAD_INVALID",
+                            "倾听导出文件长度无效",
+                        ) from None
+                    if (
+                        expected_size <= 0
+                        or expected_size > MAX_LISTENING_EXPORT_BYTES
+                    ):
+                        raise _ExportDownloadError(
+                            "EXPORT_TOO_LARGE",
+                            "倾听导出文件超过技术上限",
+                        )
+                expected_digest = str(
+                    response.getheader("X-Content-SHA256") or ""
+                )
+                if len(expected_digest) != 64:
+                    raise _ExportDownloadError(
+                        "EXPORT_DOWNLOAD_INVALID",
+                        "倾听导出文件缺少有效摘要",
+                    )
+                hasher = hashlib.sha256()
+                read1 = getattr(response, "read1", None)
+                with os.fdopen(fd, "wb") as handle:
+                    fd = -1
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("listening export deadline")
+                        if connection.sock is not None:
+                            connection.sock.settimeout(
+                                min(per_socket, remaining)
+                            )
+                        want = min(
+                            OBSERVATION_EXPORT_CHUNK,
+                            MAX_LISTENING_EXPORT_BYTES + 1 - total,
+                        )
+                        if want <= 0:
+                            raise _ExportDownloadError(
+                                "EXPORT_TOO_LARGE",
+                                "倾听导出文件超过技术上限",
+                            )
+                        chunk = (
+                            read1(want)
+                            if read1 is not None
+                            else response.read(want)
+                        )
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_LISTENING_EXPORT_BYTES:
+                            raise _ExportDownloadError(
+                                "EXPORT_TOO_LARGE",
+                                "倾听导出文件超过技术上限",
+                            )
+                        hasher.update(chunk)
+                        handle.write(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                if time.monotonic() > deadline or guard.expired.is_set():
+                    raise TimeoutError("listening export deadline")
+                digest = hasher.hexdigest()
+            except _ExportDownloadError:
+                raise
+            except ValueError as exc:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_INVALID",
+                    "倾听导出文件响应过大或无效",
+                ) from exc
+            except TimeoutError as exc:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_TIMEOUT",
+                    "下载倾听导出文件超时",
+                ) from exc
+            except (OSError, http.client.HTTPException) as exc:
+                if guard.expired.is_set():
+                    raise _ExportDownloadError(
+                        "EXPORT_DOWNLOAD_TIMEOUT",
+                        "下载倾听导出文件超时",
+                    ) from exc
+                raise _ExportDownloadError(
+                    "EXPORT_TEMP_WRITE_FAILED",
+                    "写入倾听导出临时文件失败",
+                ) from exc
+            if total <= 0:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_INVALID",
+                    "倾听导出文件为空",
+                )
+            if expected_size is not None and total != expected_size:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_TRUNCATED",
+                    "倾听导出文件下载不完整",
+                )
+            if digest != expected_digest:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_INVALID",
+                    "倾听导出文件摘要不一致",
+                )
+            problem = validate_docx_file(temp_name)
+            if problem is not None:
+                raise _ExportDownloadError(
+                    "EXPORT_DOWNLOAD_INVALID",
+                    "下载的倾听 Word 文件结构无效",
+                )
+            return temp_name, digest, total
+        except Exception:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+            raise
+        finally:
+            guard.cancel()
+            connection.close()
 
     def _weekly_manager_ready(self):
         manager = self._weekly_export_manager

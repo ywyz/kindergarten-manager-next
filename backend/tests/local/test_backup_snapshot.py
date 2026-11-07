@@ -46,7 +46,7 @@ from app.local import (
     profile_service,
 )
 from app.local.base import utc_now
-from app.local.migrate import alembic_config
+from app.local.migrate import alembic_config, head_revision
 from app.local.models import (
     LocalAICredential,
     LocalObservationAsset,
@@ -980,7 +980,7 @@ def test_known_old_database_is_migrated_only_in_isolated_copy(tmp_path):
         )
         try:
             assert verified.source_revision == "20261023_0005_local_history"
-            assert verified.target_revision == "20261102_0008_local_weekly_ai"
+            assert verified.target_revision == head_revision()
             assert verified.source_sha256 == original_hash
             assert verified.manifest["database"]["sha256"] == original_hash
             assert hashlib.sha256(old.read_bytes()).hexdigest() == original_hash

@@ -51,6 +51,8 @@ import UpdatePanel from './views/UpdatePanel.vue'
 import BackupRestorePanel from './views/BackupRestorePanel.vue'
 import WeeklyPlansView from './views/WeeklyPlansView.vue'
 import WeeklyPlanEditorView from './views/WeeklyPlanEditorView.vue'
+import ListeningRecordsView from './views/ListeningRecordsView.vue'
+import ListeningEditorView from './views/ListeningEditorView.vue'
 
 type View =
   | { name: 'setup' }
@@ -66,6 +68,8 @@ type View =
   | { name: 'observation-editor'; observationId: string }
   | { name: 'weekly-plans' }
   | { name: 'weekly-editor'; planId: string }
+  | { name: 'listening-records'; termId?: string }
+  | { name: 'listening-editor'; recordId: string }
   | { name: 'settings' }
 
 let pageTicket = ''
@@ -163,12 +167,25 @@ const weeklyEditorBusy = ref(false)
 const weeklyEditorRef = ref<{ resetForContext: () => void } | null>(null)
 let weeklyBridge: LeaveEditor | null = null
 let weeklyBridgePlanId: string | null = null
+/** Listening list create/unknown barrier; only the mounted list may set it. */
+const listeningListBusy = ref(false)
+const listeningTermId = ref<string | undefined>(undefined)
+const listeningListRef = ref<{ resetForContext: () => void } | null>(null)
+let listeningListBridge: LeaveEditor | null = null
+let listeningListOwner: string | null = null
+/** Listening editor write/unknown barrier, accepted only for its owner. */
+const listeningEditorBusy = ref(false)
+const listeningEditorRef = ref<{ resetForContext: () => void } | null>(null)
+let listeningEditorBridge: LeaveEditor | null = null
+let listeningEditorOwner: string | null = null
 const pageBusy = computed(
   () =>
     observationsBusy.value ||
     editorBusy.value ||
     weeklyListBusy.value ||
     weeklyEditorBusy.value ||
+    listeningListBusy.value ||
+    listeningEditorBusy.value ||
     exportBusy.value,
 )
 
@@ -373,6 +390,18 @@ function currentBlockingDraft(): BlockingDraft | null {
       message: '周计划保存、确认或导出仍在进行：请等待结果后再离开当前页面',
     }
   }
+  if (listeningListBusy.value) {
+    return {
+      kind: 'listening',
+      message: '倾听记录创建仍在进行：请等待结果后再离开当前页面',
+    }
+  }
+  if (listeningEditorBusy.value) {
+    return {
+      kind: 'listening',
+      message: '倾听记录保存、照片提交或 Word 导出仍在进行：请等待结果后再离开当前页面',
+    }
+  }
   if (isSettingsDraftBlocking()) {
     return {
       kind: 'settings',
@@ -511,6 +540,75 @@ function clearWeeklyState(): void {
   weeklyEditorBusy.value = false
 }
 
+function registerListeningList(owner: string | null, bridge: LeaveEditor | null): void {
+  if (bridge) {
+    listeningListBridge = bridge
+    listeningListOwner = owner
+    registerEditorFor(owner, bridge)
+    return
+  }
+  if (listeningListOwner === owner) {
+    if (editorBridge === listeningListBridge) {
+      editorBridge = null
+      editorBridgeOwner = null
+    }
+    listeningListBridge = null
+    listeningListOwner = null
+    listeningListBusy.value = false
+    registerEditorFor(owner, null)
+  }
+}
+
+function onListeningListBusy(payload: { owner: string; busy: boolean }): void {
+  if (view.value.name !== 'listening-records') return
+  if (payload.owner !== listeningListOwner) return
+  listeningListBusy.value = payload.busy
+}
+
+function registerListeningEditor(
+  owner: string | null,
+  bridge: LeaveEditor | null,
+): void {
+  if (bridge) {
+    listeningEditorBridge = bridge
+    listeningEditorOwner = owner
+    registerEditorFor(owner, bridge)
+    return
+  }
+  if (listeningEditorOwner === owner) {
+    if (editorBridge === listeningEditorBridge) {
+      editorBridge = null
+      editorBridgeOwner = null
+    }
+    listeningEditorBridge = null
+    listeningEditorOwner = null
+    listeningEditorBusy.value = false
+    registerEditorFor(owner, null)
+  }
+}
+
+function onListeningEditorBusy(payload: {
+  owner: string
+  busy: boolean
+}): void {
+  if (view.value.name !== 'listening-editor') return
+  if (payload.owner !== listeningEditorOwner) return
+  listeningEditorBusy.value = payload.busy
+}
+
+function clearListeningState(): void {
+  listeningListBusy.value = false
+  listeningEditorBusy.value = false
+  if (editorBridge === listeningListBridge || editorBridge === listeningEditorBridge) {
+    editorBridge = null
+    editorBridgeOwner = null
+  }
+  listeningListBridge = null
+  listeningListOwner = null
+  listeningEditorBridge = null
+  listeningEditorOwner = null
+}
+
 function updateContext(next: LocalContext): void {
   context.value = next
   bootState.value = next.status === 'ready' ? 'ready' : 'uninitialized'
@@ -531,6 +629,8 @@ async function onMaintenanceRecovered(): Promise<void> {
     // editor requests; the reload below reads the restored profile in a new
     // epoch. resetForContext itself never reads the retired runtime.
     weeklyEditorRef.value?.resetForContext()
+    listeningEditorRef.value?.resetForContext()
+    listeningListRef.value?.resetForContext()
     resetTheme('restore')
     await reloadContext()
     maintenanceOpen.value = false
@@ -565,7 +665,8 @@ async function requestLeave(
   action:
     | { kind: 'calendar' | 'date' | 'term' | 'observations' | 'settings' }
     | { kind: 'close'; closeRequestId: string }
-    | { kind: 'weekly'; target_key: string },
+    | { kind: 'weekly'; target_key: string }
+    | { kind: 'listening'; target_key: string },
   run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed',
 ): Promise<'left' | 'stayed' | 'busy'> {
   if (
@@ -595,6 +696,7 @@ async function goWorkbench(): Promise<'left' | 'stayed'> {
   editorBridgeOwner = null
   weeklyListBusy.value = false
   clearWeeklyState()
+  clearListeningState()
   view.value = { name: 'workbench' }
   return 'left'
 }
@@ -607,6 +709,7 @@ function onSettingsLeave(
 }
 
 async function goSettings(): Promise<'left' | 'stayed'> {
+  clearListeningState()
   view.value = { name: 'settings' }
   return 'left'
 }
@@ -693,6 +796,65 @@ async function backFromWeeklyEditor(): Promise<void> {
   })
 }
 
+async function openListeningFromWorkbench(termId?: string): Promise<void> {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return
+  }
+  await requestLeave(
+    { kind: 'listening', target_key: 'listening-list' },
+    async (): Promise<'left'> => {
+      listeningTermId.value = termId
+      listeningListBusy.value = false
+      clearListeningState()
+      view.value = { name: 'listening-records', termId }
+      return 'left'
+    },
+  )
+}
+
+async function openListeningRecordFromList(recordId: string): Promise<void> {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return
+  }
+  await requestLeave(
+    { kind: 'listening', target_key: `listening-editor:${recordId}` },
+    async (): Promise<'left'> => {
+      listeningListBusy.value = false
+      view.value = { name: 'listening-editor', recordId }
+      return 'left'
+    },
+  )
+}
+
+async function backFromListeningList(): Promise<void> {
+  await requestLeave(
+    { kind: 'listening', target_key: 'listening-workbench' },
+    async (): Promise<'left'> => {
+      clearListeningState()
+      view.value = { name: 'workbench' }
+      return 'left'
+    },
+  )
+}
+
+async function backFromListeningEditor(): Promise<void> {
+  await requestLeave(
+    { kind: 'listening', target_key: 'listening-list' },
+    async (): Promise<'left'> => {
+      clearListeningState()
+      listeningListBusy.value = false
+      view.value = { name: 'listening-records', termId: listeningTermId.value }
+      return 'left'
+    },
+  )
+}
+
+async function openSettingsFromListening(): Promise<void> {
+  await leaveForAction('settings', goSettings)
+}
+
 function openObservationsFromWorkbench(): void {
   if (closeLocked.value || closeFinalAllowed.value) {
     ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
@@ -746,16 +908,19 @@ async function leaveForAction(
       editorBridgeOwner = null
       weeklyListBusy.value = false
       clearWeeklyState()
+      clearListeningState()
       view.value = { name: 'workbench' }
     } else if (kind === 'observations') {
       editorBridge = null
       editorBridgeOwner = null
       weeklyListBusy.value = false
       clearWeeklyState()
+      clearListeningState()
       view.value = { name: 'observations' }
     } else if (kind === 'settings') {
       weeklyListBusy.value = false
       clearWeeklyState()
+      clearListeningState()
       view.value = { name: 'settings' }
     }
     const result = await run()
@@ -1530,6 +1695,7 @@ onMounted(() => {
         @open-editor="openEditorFromWorkbench"
         @open-weekly-plans="() => void openWeeklyPlansFromWorkbench()"
         @open-observations="openObservationsFromWorkbench"
+        @open-listening="(termId) => void openListeningFromWorkbench(termId)"
         @open-settings="() => void leaveForAction('settings', goSettings)"
         @check-update="openUpdateManual"
         @reload-context="reloadContext"
@@ -1555,6 +1721,34 @@ onMounted(() => {
         @leave="(kind, run) => void leaveForAction(kind, run)"
         @refresh-context="reloadContext"
         @busy="setEditorBusy"
+      />
+      <ListeningRecordsView
+        v-else-if="view.name === 'listening-records'"
+        ref="listeningListRef"
+        :context="context!"
+        :initial-term-id="view.termId ?? listeningTermId"
+        :frozen="closeLocked"
+        :disabled="closeLocked || maintenanceLocked"
+        :profile-epoch="profileEpoch"
+        @open-record="(recordId) => void openListeningRecordFromList(recordId)"
+        @back="() => void backFromListeningList()"
+        @busy="onListeningListBusy"
+        @term-change="(termId) => (listeningTermId = termId)"
+        @register-editor="registerListeningList"
+      />
+      <ListeningEditorView
+        v-else-if="view.name === 'listening-editor'"
+        ref="listeningEditorRef"
+        :key="view.recordId"
+        :context="context!"
+        :record-id="view.recordId"
+        :frozen="closeLocked"
+        :disabled="closeLocked || maintenanceLocked"
+        :profile-epoch="profileEpoch"
+        @register-editor="registerListeningEditor"
+        @busy="onListeningEditorBusy"
+        @back="() => void backFromListeningEditor()"
+        @open-settings="() => void openSettingsFromListening()"
       />
       <div v-else-if="view.name === 'weekly-plans'" class="weekly-plans-page">
         <el-button

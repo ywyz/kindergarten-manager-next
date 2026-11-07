@@ -19,6 +19,7 @@ from app.local.models import (
     LocalTerm,
     LocalWeeklyPlanOperation,
 )
+from app.local.migrate import head_revision
 from app.local.normalize import normalize_initialization
 from app.local.weekly_plan_tokens import scope_hash
 from sqlalchemy import select
@@ -631,7 +632,7 @@ class WeeklyPlanServiceTests(LocalTestCase):
             require_current=True,
             scratch_dir=self.tmp_root,
         )
-        self.assertEqual(facts["revision"], "20261102_0008_local_weekly_ai")
+        self.assertEqual(facts["revision"], head_revision())
 
     def test_version_conflict_and_explicit_reselect_validation(self) -> None:
         self._create_daily()

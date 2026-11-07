@@ -33,6 +33,7 @@ const emit = defineEmits<{
   ): void
   (e: 'open-observations'): void
   (e: 'open-weekly-plans'): void
+  (e: 'open-listening', termId?: string): void
   (e: 'open-settings'): void
   (e: 'check-update'): void
   (e: 'reload-context'): Promise<LocalContext>
@@ -263,6 +264,11 @@ async function openSettings(): Promise<void> {
   emit('open-settings')
 }
 
+function openListening(): void {
+  if (frozenNow()) return
+  emit('open-listening', termFilter.value ?? undefined)
+}
+
 watch([termFilter, month], () => {
   void load()
 })
@@ -298,6 +304,9 @@ defineExpose({ reload: load })
       <div class="actions">
         <el-button data-d1="open-observations" :disabled="frozen" @click="emit('open-observations')">
           游戏观察
+        </el-button>
+        <el-button data-d1="open-listening" :disabled="frozen" @click="openListening">
+          一对一倾听
         </el-button>
         <el-button data-d1="open-weekly-plans" :disabled="frozen" @click="emit('open-weekly-plans')">
           周计划

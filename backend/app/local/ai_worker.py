@@ -184,6 +184,8 @@ def _result_frame(result: ai_transport.TransportResult) -> dict[str, Any]:
 VISION_TASK_TYPES = (
     "game_observation_generate",
     "game_observation_rewrite",
+    "listening_note_draft",
+    "listening_domain_evaluate",
 )
 VISION_SCHEMA_VERSION = 1
 VISION_CONTRACT_VERSIONS = (1,)
@@ -199,9 +201,27 @@ def validate_vision_header(header: Any) -> bool:
         return False
     if header.get("schema_version") != VISION_SCHEMA_VERSION:
         return False
-    if header.get("source_kind") != "game_observation":
+    source_kind = header.get("source_kind")
+    task_type = header.get("task_type")
+    if source_kind == "game_observation":
+        if task_type not in ("game_observation_generate", "game_observation_rewrite"):
+            return False
+    elif source_kind == "one_to_one_listening":
+        if task_type not in ("listening_note_draft", "listening_domain_evaluate"):
+            return False
+        if not isinstance(header.get("listening_record_id"), str) or not header.get("listening_record_id"):
+            return False
+        if not isinstance(header.get("listening_domain"), str) or not header.get("listening_domain"):
+            return False
+        group_id = header.get("listening_group_id")
+        if task_type == "listening_note_draft":
+            if not isinstance(group_id, str) or not group_id:
+                return False
+        elif group_id is not None:
+            return False
+    else:
         return False
-    if header.get("task_type") not in VISION_TASK_TYPES:
+    if task_type not in VISION_TASK_TYPES:
         return False
     if header.get("contract_version") not in VISION_CONTRACT_VERSIONS:
         return False
@@ -212,6 +232,10 @@ def validate_vision_header(header: Any) -> bool:
         or not 1 <= image_count <= ai_transport.VISION_MAX_IMAGES
     ):
         return False
+    if source_kind == "one_to_one_listening":
+        maximum = 1 if task_type == "listening_note_draft" else 3
+        if image_count > maximum:
+            return False
     frame_size = header.get("frame_size")
     if (
         not isinstance(frame_size, int)
@@ -252,6 +276,9 @@ def validate_vision_bootstrap(
         "task_type",
         "contract_version",
         "image_count",
+        "listening_record_id",
+        "listening_domain",
+        "listening_group_id",
     ):
         if meta.get(key) != header.get(key):
             return False

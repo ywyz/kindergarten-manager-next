@@ -1185,6 +1185,76 @@ def _encode_bootstrap(
         build_vision_frames,
         check_vision_context,
     )
+    from app.local.listening_ai_inputs import build_vision_frames as build_listening_vision_frames
+
+    if claim.image_urls and claim.source_kind == "one_to_one_listening":
+        if not (
+            claim.listening_record_id
+            and claim.listening_domain
+            and claim.task_type in ("listening_note_draft", "listening_domain_evaluate")
+            and claim.vision_authorized
+            and claim.vision_protocol == ai_transport.VISION_PROTOCOL_ID
+            and claim.vision_schema_version == 1
+            and claim.contract_version == 1
+            and ai_transport.vision_capability(claim.base_url, claim.model)
+            and len(claim.work_dimensions) == len(claim.image_urls)
+        ):
+            raise ValueError("vision_not_authorized")
+        maximum = 1 if claim.task_type == "listening_note_draft" else 3
+        if not 1 <= len(claim.image_urls) <= maximum:
+            raise ValueError("vision_image_count")
+        if claim.task_type == "listening_note_draft" and not claim.listening_group_id:
+            raise ValueError("vision_group_missing")
+        if claim.task_type == "listening_domain_evaluate" and claim.listening_group_id is not None:
+            raise ValueError("vision_group_invalid")
+        if any(
+            not isinstance(url, str) or not url.startswith("data:image/")
+            for url in claim.image_urls
+        ):
+            raise ValueError("vision_image_url")
+        user_text = json.dumps(
+            claim.payload, ensure_ascii=False, separators=(",", ":")
+        )
+        check_vision_context(
+            base_url=claim.base_url,
+            model=claim.model,
+            system_text=claim.system_text,
+            user_text=user_text,
+            work_dimensions=list(claim.work_dimensions),
+        )
+        body = ai_transport.build_vision_request(
+            model=claim.model,
+            system_text=claim.system_text,
+            user_text=user_text,
+            image_urls=list(claim.image_urls),
+        )
+        if len(body) > ai_transport.VISION_BODY_MAX_BYTES:
+            raise ValueError("request_too_large")
+        total = ai_transport.build_http_request(
+            base_url=claim.base_url, secret=claim.secret, body=body
+        )
+        if len(total) > ai_transport.VISION_HTTP_MAX_BYTES:
+            raise ValueError("request_too_large")
+        frames = build_listening_vision_frames(
+            base_url=claim.base_url,
+            model=claim.model,
+            secret=claim.secret,
+            system_text=claim.system_text,
+            user_text=user_text,
+            image_urls=list(claim.image_urls),
+            deadline_ms=deadline_ms,
+            task_type=claim.task_type,
+            contract_version=claim.contract_version,
+            record_id=claim.listening_record_id,
+            domain=claim.listening_domain,
+            group_id=claim.listening_group_id,
+            synthetic=synthetic,
+        )
+        if sum(len(item) for item in frames) > ai_transport.VISION_IPC_FRAME_MAX:
+            raise ValueError("frame_too_large")
+        if len(frames[0]) > ai_worker.REQUEST_FRAME_MAX:
+            raise ValueError("frame_too_large")
+        return frames
 
     if claim.image_urls:
         if not (
@@ -1247,7 +1317,7 @@ def _encode_bootstrap(
             raise ValueError("frame_too_large")
         return frames
 
-    if claim.source_kind not in ("daily_plan", "weekly_plan") or claim.vision_authorized:
+    if claim.source_kind not in ("daily_plan", "weekly_plan", "one_to_one_listening") or claim.vision_authorized:
         raise ValueError("text_bootstrap_not_authorized")
 
     budget = ai_transport.text_response_budget(

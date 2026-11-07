@@ -28,6 +28,7 @@ from app.local.models import (
     LocalWeeklyExportSnapshot,
     LocalWeeklyExportToken,
 )
+from app.local.migrate import head_revision
 from app.local.normalize import normalize_initialization
 from app.local.runtime import LocalRuntime
 from app.local.weekly_plan_tokens import scope_hash
@@ -140,7 +141,7 @@ class WeeklyBackupTests(LocalTestCase):
 
     def test_weekly_plan_backup_validates(self) -> None:
         facts = self._validate()
-        self.assertEqual(facts["revision"], "20261102_0008_local_weekly_ai")
+        self.assertEqual(facts["revision"], head_revision())
 
     def test_tampered_content_hash_is_rejected(self) -> None:
         connection = sqlite3.connect(str(self.copy))
@@ -269,7 +270,7 @@ class WeeklyBackupTests(LocalTestCase):
             target.close()
             source.close()
         facts = self._validate()
-        self.assertEqual(facts["revision"], "20261102_0008_local_weekly_ai")
+        self.assertEqual(facts["revision"], head_revision())
 
     def test_interrupted_export_attempt_becomes_indeterminate(self) -> None:
         from app.local import weekly_plan_operations
@@ -550,12 +551,8 @@ class WeeklyBackupTests(LocalTestCase):
         verified = service.verify(
             package, password=None, cancel=threading.Event()
         )
-        self.assertEqual(
-            verified.source_revision, "20261102_0008_local_weekly_ai"
-        )
-        self.assertEqual(
-            verified.target_revision, "20261102_0008_local_weekly_ai"
-        )
+        self.assertEqual(verified.source_revision, head_revision())
+        self.assertEqual(verified.target_revision, head_revision())
 
     def test_snapshot_service_accepts_default_and_fixed_weekly_manager(self) -> None:
         default = backup_snapshot.SnapshotService(

@@ -53,7 +53,7 @@ class BackupFixtureSupportTests(LocalTestCase):
             len(LocalBase.metadata.tables),
         )
         self.assertEqual(
-            len(LocalBase.metadata.tables), 49
+            len(LocalBase.metadata.tables), 55
         )
         self.assertEqual(len(evidence.calendar_revision_ids), 2)
         self.assertEqual(len(evidence.class_game_revision_ids), 2)

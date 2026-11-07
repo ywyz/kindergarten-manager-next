@@ -7,7 +7,7 @@ from pathlib import Path
 from alembic import command
 from app.local import (backup_format, backup_snapshot, backup_validate,
                        weekly_plan_content, weekly_plan_snapshot)
-from app.local.migrate import alembic_config
+from app.local.migrate import alembic_config, head_revision
 from app.local.restore_service import RestoreCore
 from app.local.restore_types import MaintenanceHooks
 from app.local.runtime import LocalRuntime
@@ -106,7 +106,7 @@ def test_0007_archive_migration_preserves_raw_old_rows_and_photos(tmp_path):
         require_current=False, scratch_dir=scratch,
     )
     assert facts["source_revision"] == "20261101_0007_local_weekly"
-    assert facts["revision"] == "20261102_0008_local_weekly_ai"
+    assert facts["revision"] == head_revision()
     after = migration_rows(migrated / "kindergarten.db")
     _old_rows_preserved(before, after)
     assert resource_fingerprint(migrated) == before_resources
@@ -200,7 +200,7 @@ def test_0007_plain_and_encrypted_packages_verify_and_restore(tmp_path):
             verified = service.verify(package, password=password,
                                       cancel=threading.Event())
             assert verified.source_revision == "20261101_0007_local_weekly"
-            assert verified.target_revision == "20261102_0008_local_weekly_ai"
+            assert verified.target_revision == head_revision()
             core = RestoreCore(target, app_version="g1-test",
                                weekly_export_manager=None)
             preview = core.preview(package, password,
@@ -253,7 +253,7 @@ def test_0008_restore_protection_package_round_trip(tmp_path):
         verify = backup_snapshot.SnapshotService(
             target, app_version="g1-test", source_identity={}
         ).verify(protection, password=None, cancel=threading.Event())
-        assert verify.source_revision == "20261102_0008_local_weekly_ai"
+        assert verify.source_revision == head_revision()
         target.dispose()
         restored_data = tmp_path / "protection-restored"
         restored = LocalRuntime(restored_data, credential_root=tmp_path / "restored-cred")
@@ -340,7 +340,7 @@ def test_schema2_mixed_confirmation_validates_on_real_sqlite(tmp_path):
         migrated / "kindergarten.db", migrate_old=False,
         require_current=True, scratch_dir=scratch,
     )
-    assert facts["revision"] == "20261102_0008_local_weekly_ai"
+    assert facts["revision"] == head_revision()
     assert weekly_plan_snapshot.validate_confirmation_snapshot(snapshot2)
 
 from app.local import (weekly_ai_adoption, weekly_ai_contracts, weekly_ai_service,

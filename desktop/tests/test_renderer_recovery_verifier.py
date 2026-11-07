@@ -1181,7 +1181,7 @@ def test_real_coordinator_reopen_sequencer_contract_without_window(tmp_path):
 
     before_default = fixture.runtime_fingerprint(runtime)
     before_full = fixture.runtime_fingerprint(runtime, include_runtime_fields=True)
-    assert len(before_default["database"]["tables"]) == 49
+    assert len(before_default["database"]["tables"]) == 56
     assert before_default["resources"]["file_count"] == 12
     weekly_token, weekly_kwargs = verifier._issue_weekly_identity(
         runtime, evidence.profile_id

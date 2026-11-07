@@ -41,6 +41,16 @@ export interface SaveObservationExportResult {
   receipt_pending?: boolean
 }
 
+export interface SaveListeningExportResult {
+  status: 'saved' | 'canceled' | 'failed' | 'pending' | 'unknown'
+  code?: string
+  message?: string
+  filename?: string
+  export_id?: string
+  bytes?: number
+  result_hash?: string
+}
+
 /**
  * Weekly native delivery result. This is deliberately strict: generation is
  * never reported as ``saved``; a lost reply is ``unknown`` and a durable
@@ -120,6 +130,14 @@ export interface HostApi {
     export_id: string
     filename?: string
   }) => Promise<SaveObservationExportResult>
+  save_listening_export?: (payload: {
+    export_id: string
+    filename: string
+  }) => Promise<SaveListeningExportResult>
+  get_listening_export_result?: (payload: {
+    export_id: string
+    filename?: string
+  }) => Promise<SaveListeningExportResult>
   reconcile_observation_export_result?: (payload: {
     export_id: string
     filename?: string

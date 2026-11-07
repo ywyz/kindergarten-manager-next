@@ -386,6 +386,9 @@ WEEKLY_TEXT_TASK_TYPES = frozenset(
 DAILY_TEXT_TASK_TYPES = frozenset(
     {"daily_lesson_split", "daily_process_adapt", "daily_other_activities"}
 )
+LISTENING_TEXT_TASK_TYPES = frozenset(
+    {"listening_note_draft", "listening_domain_evaluate"}
+)
 
 
 @dataclass(frozen=True)
@@ -415,6 +418,15 @@ WEEKLY_TEXT_RESPONSE_BUDGET = ResponseBudget(
     result_ipc_max_bytes=6 * 1_048_576 + 16 * 1024,
     require_terminal=True,
 )
+LISTENING_TEXT_RESPONSE_BUDGET = ResponseBudget(
+    max_tokens=16_384,
+    wire_max_bytes=16 * 1024 * 1024,
+    content_max_bytes=1_048_576,
+    event_max_bytes=2 * 1_048_576 + 16 * 1024,
+    buffer_max_bytes=2 * 1_048_576 + 16 * 1024,
+    result_ipc_max_bytes=6 * 1_048_576 + 16 * 1024,
+    require_terminal=True,
+)
 
 
 def text_response_budget(
@@ -431,6 +443,10 @@ def text_response_budget(
         if source_kind is not None and source_kind != "daily_plan":
             return None
         return DEFAULT_TEXT_RESPONSE_BUDGET
+    if task_type in LISTENING_TEXT_TASK_TYPES:
+        if source_kind is not None and source_kind != "one_to_one_listening":
+            return None
+        return LISTENING_TEXT_RESPONSE_BUDGET
     return None
 
 
@@ -1360,6 +1376,7 @@ __all__ = [
     "ResponseBudget",
     "WEEKLY_TEXT_RESPONSE_BUDGET",
     "WEEKLY_TEXT_TASK_TYPES",
+    "LISTENING_TEXT_TASK_TYPES",
     "text_response_budget",
     "TransportResult",
     "VISION_ATTEMPT_BUDGET_MS",

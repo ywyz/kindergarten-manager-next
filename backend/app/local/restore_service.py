@@ -114,6 +114,8 @@ def _read_preview_meta(db_path: Path, credential_root: Path) -> dict[str, Any]:
             ("daily_plans", "local_daily_plans"),
             ("observations", "local_observation_records"),
             ("assets", "local_observation_assets"),
+            ("listening_records", "local_listening_records"),
+            ("listening_assets", "local_listening_assets"),
         ):
             try:
                 value = connection.execute(
@@ -492,6 +494,12 @@ class RestoreCore:
                 "daily_plans": int(meta["counts"].get("daily_plans", 0)),
                 "observations": int(meta["counts"].get("observations", 0)),
                 "assets": int(meta["counts"].get("assets", 0)),
+                "listening_records": int(
+                    meta["counts"].get("listening_records", 0)
+                ),
+                "listening_assets": int(
+                    meta["counts"].get("listening_assets", 0)
+                ),
             }
         )
         warnings: list[str] = []

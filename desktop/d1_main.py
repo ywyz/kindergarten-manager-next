@@ -455,6 +455,9 @@ def build_runtime(args):
         service.weekly_export_manager = getattr(
             app.state, "weekly_export_manager", None
         )
+        service.listening_export_manager = getattr(
+            app.state, "listening_export_manager", None
+        )
         import update_github
         import update_identity
         import update_install
@@ -582,6 +585,9 @@ def build_runtime(args):
             service_port=port,
             weekly_export_manager=getattr(
                 app.state, "weekly_export_manager", None
+            ),
+            listening_export_manager=getattr(
+                app.state, "listening_export_manager", None
             ),
         )
         _startup_log("build_runtime:done")
@@ -7155,6 +7161,9 @@ def run_selftest(args) -> int:
             weekly_export_manager=getattr(
                 service, "weekly_export_manager", None
             ),
+            listening_export_manager=getattr(
+                service, "listening_export_manager", None
+            ),
         )
         _startup_log("run_selftest:window created")
 
@@ -7365,6 +7374,7 @@ def _install_close_handlers(
     runtime=None,
     *,
     weekly_export_manager=None,
+    listening_export_manager=None,
     recovery_holder: dict | None = None,
 ) -> None:
     import d1_host_api
@@ -7375,6 +7385,9 @@ def _install_close_handlers(
     # current field later: after a restore reopen that field points at the
     # new generation, which this old window must not pause or resume.
     weekly_manager = weekly_export_manager
+    # The same fixed app-generation binding applies to listening export
+    # previews/generation; never look this up from runtime later.
+    listening_manager = listening_export_manager
     coordinator_holder: dict[str, object] = {}
     close_owner_lock = threading.Lock()
     close_owners: set[str] = set()
@@ -7399,6 +7412,14 @@ def _install_close_handlers(
             return False
         try:
             return not bool(weekly_manager.wait_idle(timeout=0.0))
+        except Exception:  # noqa: BLE001 - unknown work is not idle
+            return True
+
+    def listening_busy() -> bool:
+        if listening_manager is None:
+            return False
+        try:
+            return bool(listening_manager.has_active_work)
         except Exception:  # noqa: BLE001 - unknown work is not idle
             return True
 
@@ -7480,7 +7501,8 @@ def _install_close_handlers(
         busy_probe=lambda: host_api._save_in_progress()
         or host_api._page_busy_probe()
         or host_api._maintenance_busy_probe()
-        or weekly_busy(),
+        or weekly_busy()
+        or listening_busy(),
         # D2 §4.3: freeze AI on the close intent and require an explicit task
         # choice before releasing the window.
         task_snapshot=task_snapshot,
@@ -7609,11 +7631,36 @@ def _maintenance_busy(bundle) -> bool:
             weekly_busy = not bool(weekly_manager.wait_idle(timeout=0.0))
         except Exception:  # noqa: BLE001 - unknown work is not idle
             weekly_busy = True
+    listening_manager = getattr(
+        bundle.service, "listening_export_manager", None
+    )
+    listening_busy = False
+    if listening_manager is not None:
+        try:
+            listening_busy = bool(listening_manager.has_active_work)
+        except Exception:  # noqa: BLE001 - unknown work is not idle
+            listening_busy = True
+    ai_busy = False
+    runtime = getattr(bundle, "runtime", None)
+    if runtime is not None:
+        try:
+            from app.local import ai_task_service
+
+            session = runtime.session()
+            try:
+                counts = ai_task_service.active_task_snapshot(session)
+            finally:
+                session.close()
+            ai_busy = bool(counts.get("live")) or bool(counts.get("in_flight"))
+        except Exception:  # noqa: BLE001 - unknown work is not idle
+            ai_busy = True
     return bool(
         host._save_in_progress()
         or host._page_busy_probe()
         or host._update_busy_probe()
         or weekly_busy
+        or listening_busy
+        or ai_busy
     )
 
 
@@ -7785,10 +7832,16 @@ def _run_reopen_sequence(
                 weekly_export_manager=getattr(
                     app.state, "weekly_export_manager", None
                 ),
+                listening_export_manager=getattr(
+                    app.state, "listening_export_manager", None
+                ),
             )
             service_run = ServiceRun(app, port)
             service_run.weekly_export_manager = getattr(
                 app.state, "weekly_export_manager", None
+            )
+            service_run.listening_export_manager = getattr(
+                app.state, "listening_export_manager", None
             )
         except Exception:
             # The new executor already exists but no LifecycleBundle could be
@@ -7827,6 +7880,9 @@ def _run_reopen_sequence(
             bundle.runtime,
             weekly_export_manager=getattr(
                 bundle.service, "weekly_export_manager", None
+            ),
+            listening_export_manager=getattr(
+                bundle.service, "listening_export_manager", None
             ),
             recovery_holder=recovery_holder,
         )
@@ -7925,6 +7981,9 @@ def _run_interactive_session(args, state: dict) -> int:
         runtime,
         weekly_export_manager=getattr(
             service, "weekly_export_manager", None
+        ),
+        listening_export_manager=getattr(
+            service, "listening_export_manager", None
         ),
         recovery_holder=recovery_holder,
     )

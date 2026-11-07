@@ -97,9 +97,12 @@ def _supports_task_contract(task_type: object, contract_version: object) -> bool
             task_type, contract_version
         )
     from app.local.observation_ai_inputs import OBSERVATION_TASK_TYPES
+    from app.local.listening_ai_contracts import TASK_TYPES as LISTENING_TASK_TYPES
 
     if isinstance(task_type, str) and (
-        task_type in TASK_TYPES or task_type in OBSERVATION_TASK_TYPES
+        task_type in TASK_TYPES
+        or task_type in OBSERVATION_TASK_TYPES
+        or task_type in LISTENING_TASK_TYPES
     ):
         return (
             type(contract_version) is int
@@ -190,11 +193,16 @@ def require_task(
     *,
     source_kind: str = "daily_plan",
     weekly_plan_id: str | None = None,
+    source_id: str | None = None,
 ) -> LocalAITask:
     task = session.get(LocalAITask, task_id, populate_existing=True)
     if task is None or task.source_kind != source_kind:
         raise LocalAiNotFound("未找到该 AI 任务")
     if source_kind == "weekly_plan" and task.weekly_plan_id != weekly_plan_id:
+        raise LocalAiNotFound("未找到该 AI 任务")
+    if source_kind == "one_to_one_listening" and (
+        source_id is None or task.listening_record_id != source_id
+    ):
         raise LocalAiNotFound("未找到该 AI 任务")
     return task
 
@@ -485,6 +493,26 @@ def task_out(session: Session, task: LocalAITask) -> dict[str, Any]:
     if task.source_kind == "game_observation":
         result["source_kind"] = task.source_kind
         result["observation_id"] = task.observation_id
+    if task.source_kind == "one_to_one_listening":
+        result.pop("plan_id", None)
+        inp = session.get(LocalAIInput, task.input_id)
+        result.update(
+            {
+                "task_id": task.id,
+                "source_kind": "one_to_one_listening",
+                "source_id": task.source_id,
+                "listening_record_id": task.listening_record_id,
+                "listening_domain": task.listening_domain,
+                "listening_group_id": task.listening_group_id,
+                "input_summary": {
+                    "source_revision": inp.source_revision if inp is not None else None,
+                    "dependency_hash": inp.dependency_hash if inp is not None else None,
+                    "target_hashes": dict(inp.target_hashes_json or {}) if inp is not None else {},
+                    "create_operation_id": inp.create_operation_id if inp is not None else None,
+                },
+            }
+        )
+        result.pop("id", None)
     if task.source_kind == "weekly_plan":
         result.pop("plan_id", None)
         content = (
@@ -728,17 +756,25 @@ def list_tasks(
     plan_id: str | None = None,
     observation_id: str | None = None,
     weekly_plan_id: str | None = None,
+    listening_record_id: str | None = None,
+    listening_domain: str | None = None,
     status: str | None = None,
     limit: object = DEFAULT_LIST_LIMIT,
     cursor: str | None = None,
     source_kind: str = "daily_plan",
+    source_id: str | None = None,
     create_operation_id: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_LIST_LIMIT:
         raise LocalValidationError("limit 必须在 1–100 之间")
     if status is not None and status not in (LIVE_STATUSES + TERMINAL_STATUSES + ("paused",)):
         raise LocalValidationError("status 不在允许范围")
-    if source_kind not in ("daily_plan", "game_observation", "weekly_plan"):
+    if source_kind not in (
+        "daily_plan",
+        "game_observation",
+        "weekly_plan",
+        "one_to_one_listening",
+    ):
         raise LocalValidationError("source_kind 不在允许范围")
     if observation_id is not None and source_kind != "game_observation":
         raise LocalValidationError("observation_id 只适用于观察任务")
@@ -756,6 +792,16 @@ def list_tasks(
         if observation_id is not None:
             statement = statement.where(
                 LocalAITask.observation_id == observation_id
+            )
+        if source_id is not None:
+            statement = statement.where(LocalAITask.source_id == source_id)
+        if listening_record_id is not None:
+            statement = statement.where(
+                LocalAITask.listening_record_id == listening_record_id
+            )
+        if listening_domain is not None:
+            statement = statement.where(
+                LocalAITask.listening_domain == listening_domain
             )
         if create_operation_id is not None:
             statement = statement.join(
@@ -785,6 +831,7 @@ def get_task(
     *,
     source_kind: str = "daily_plan",
     weekly_plan_id: str | None = None,
+    source_id: str | None = None,
 ) -> dict[str, Any]:
     with read_scope(session):
         _profile_id(session)
@@ -795,6 +842,7 @@ def get_task(
                 task_id,
                 source_kind=source_kind,
                 weekly_plan_id=weekly_plan_id,
+                source_id=source_id,
             ),
         )
 
@@ -859,6 +907,7 @@ def cancel_task(
     request_id: object,
     source_kind: str = "daily_plan",
     weekly_plan_id: str | None = None,
+    source_id: str | None = None,
 ) -> tuple[dict[str, Any], str | None, str]:
     """Cancel; return ``(TaskOut, abort_execution_id, abort_kind)``."""
     rid = _normalize_request_id(request_id)
@@ -878,6 +927,7 @@ def cancel_task(
             task_id,
             source_kind=source_kind,
             weekly_plan_id=weekly_plan_id,
+            source_id=source_id,
         )
         _check_expected_execution(task, expected_execution_id)
         now = _now()
@@ -975,6 +1025,13 @@ def cancel_task(
 
 
 def _revalidate_source(session: Session, task: LocalAITask) -> bool:
+    if task.source_kind == "one_to_one_listening":
+        from app.local import listening_ai_inputs
+
+        try:
+            return listening_ai_inputs.revalidate_source(session, task)
+        except Exception:  # noqa: BLE001
+            return False
     if task.source_kind == "weekly_plan":
         if task.weekly_plan_id is None:
             return False
@@ -1148,6 +1205,7 @@ def _preflight_for_task(
     *,
     source_kind: str = "daily_plan",
     weekly_plan_id: str | None = None,
+    source_id: str | None = None,
 ) -> None:
     """Runtime preflight for resume/retry: prompt sync, credential and size.
 
@@ -1161,8 +1219,13 @@ def _preflight_for_task(
             task_id,
             source_kind=source_kind,
             weekly_plan_id=weekly_plan_id,
+            source_id=source_id,
         )
         if task.source_kind == "game_observation":
+            task_type = task.task_type
+            plan_id = None
+            grade = None
+        elif task.source_kind == "one_to_one_listening":
             task_type = task.task_type
             plan_id = None
             grade = None
@@ -1203,6 +1266,7 @@ def resume_task(
     runtime: Any | None = None,
     source_kind: str = "daily_plan",
     weekly_plan_id: str | None = None,
+    source_id: str | None = None,
 ) -> dict[str, Any]:
     rid = _normalize_request_id(request_id)
     fingerprint = _fingerprint(
@@ -1222,6 +1286,7 @@ def resume_task(
             task_id,
             source_kind=source_kind,
             weekly_plan_id=weekly_plan_id,
+            source_id=source_id,
         )
     begin_immediate(session)
     try:
@@ -1236,6 +1301,7 @@ def resume_task(
             task_id,
             source_kind=source_kind,
             weekly_plan_id=weekly_plan_id,
+            source_id=source_id,
         )
         _check_expected_execution(task, expected_execution_id)
         if task.status != "paused":
@@ -1269,6 +1335,7 @@ def retry_task(
     runtime: Any | None = None,
     source_kind: str = "daily_plan",
     weekly_plan_id: str | None = None,
+    source_id: str | None = None,
 ) -> dict[str, Any]:
     rid = _normalize_request_id(request_id)
     fingerprint = _fingerprint(
@@ -1291,6 +1358,7 @@ def retry_task(
             task_id,
             source_kind=source_kind,
             weekly_plan_id=weekly_plan_id,
+            source_id=source_id,
         )
     begin_immediate(session)
     try:
@@ -1305,6 +1373,7 @@ def retry_task(
             task_id,
             source_kind=source_kind,
             weekly_plan_id=weekly_plan_id,
+            source_id=source_id,
         )
         _check_expected_execution(task, expected_execution_id)
         if task.status not in ("failed", "paused", "outcome_unknown"):
@@ -1359,6 +1428,9 @@ class Claim:
     source_kind: str = "daily_plan"
     observation_id: str | None = None
     weekly_plan_id: str | None = None
+    listening_record_id: str | None = None
+    listening_domain: str | None = None
+    listening_group_id: str | None = None
     image_urls: tuple[str, ...] = ()
     attempt_budget_ms: int = ai_transport.ATTEMPT_BUDGET_MS
     vision_authorized: bool = False
@@ -1387,6 +1459,9 @@ class _Pick:
     source_kind: str = "daily_plan"
     observation_id: str | None = None
     weekly_plan_id: str | None = None
+    listening_record_id: str | None = None
+    listening_domain: str | None = None
+    listening_group_id: str | None = None
 
 
 def _render_system_text(
@@ -1607,6 +1682,9 @@ def _pick_candidate(runtime: Any, now: datetime) -> tuple[_Pick | None, bool]:
                     source_kind=target.source_kind,
                     observation_id=target.observation_id,
                     weekly_plan_id=target.weekly_plan_id,
+                    listening_record_id=target.listening_record_id,
+                    listening_domain=target.listening_domain,
+                    listening_group_id=target.listening_group_id,
                 )
             else:  # retry_wait: reuse the execution's pinned versions
                 execution = session.get(
@@ -1648,6 +1726,9 @@ def _pick_candidate(runtime: Any, now: datetime) -> tuple[_Pick | None, bool]:
                     source_kind=target.source_kind,
                     observation_id=target.observation_id,
                     weekly_plan_id=target.weekly_plan_id,
+                    listening_record_id=target.listening_record_id,
+                    listening_domain=target.listening_domain,
+                    listening_group_id=target.listening_group_id,
                 )
             session.commit()
             return pick, False
@@ -1694,6 +1775,10 @@ def _load_material(runtime: Any, pick: _Pick) -> tuple[dict[str, Any] | None, st
         from app.local.observation_ai_service import load_observation_material
 
         return load_observation_material(runtime, pick)
+    if pick.source_kind == "one_to_one_listening":
+        from app.local import listening_ai_inputs
+
+        return listening_ai_inputs.load_material(runtime, pick)
 
     session = runtime.session()
     try:
@@ -1878,6 +1963,9 @@ def claim_next(
                     observation_id=task.observation_id,
                     daily_plan_id=task.daily_plan_id,
                     weekly_plan_id=task.weekly_plan_id,
+                    listening_record_id=task.listening_record_id,
+                    listening_domain=task.listening_domain,
+                    listening_group_id=task.listening_group_id,
                     input_id=task.input_id,
                     task_type=task.task_type,
                     generation=generation,
@@ -1967,6 +2055,9 @@ def claim_next(
                 source_kind=task.source_kind,
                 observation_id=task.observation_id,
                 weekly_plan_id=task.weekly_plan_id,
+                listening_record_id=task.listening_record_id,
+                listening_domain=task.listening_domain,
+                listening_group_id=task.listening_group_id,
                 image_urls=tuple(material.get("image_urls") or ()),
                 attempt_budget_ms=int(
                     material.get("attempt_budget_ms")
@@ -2119,7 +2210,27 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
     if not isinstance(text, str):
         return finalize_failure(session, claim, result, now)
     try:
-        if claim.source_kind == "weekly_plan":
+        if claim.source_kind == "one_to_one_listening":
+            from app.local import listening_ai_contracts
+
+            parsed = ai_transport.parse_strict_json_object(text)
+            validated = listening_ai_contracts.validate_candidate(
+                claim.task_type, parsed
+            )
+            inp = session.get(LocalAIInput, claim.input_id)
+            if inp is None:
+                raise ValueError("input_missing")
+            if claim.task_type == listening_ai_contracts.TASK_DOMAIN:
+                expected_ids = [
+                    item.get("item_id")
+                    for item in dict(inp.payload_json or {}).get("items") or []
+                ]
+                actual_ids = [item.get("item_id") for item in validated["items"]]
+                if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != set(expected_ids):
+                    raise ValueError("item_ids")
+                by_id = {item["item_id"]: item for item in validated["items"]}
+                validated["items"] = [by_id[item_id] for item_id in expected_ids]
+        elif claim.source_kind == "weekly_plan":
             from app.local import weekly_ai_contracts
 
             inp = session.get(LocalAIInput, claim.input_id)
@@ -2167,6 +2278,9 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
             observation_id=task.observation_id,
             daily_plan_id=task.daily_plan_id,
             weekly_plan_id=task.weekly_plan_id,
+            listening_record_id=task.listening_record_id,
+            listening_domain=task.listening_domain,
+            listening_group_id=task.listening_group_id,
             input_id=task.input_id,
             task_type=task.task_type,
             contract_version=execution.contract_version,
