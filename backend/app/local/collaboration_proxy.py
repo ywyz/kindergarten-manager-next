@@ -13,13 +13,14 @@ path below ``/api``.  This router deliberately has no unauthenticated route.
 
 from __future__ import annotations
 
+import datetime as _datetime
 import json
 import os
 import ssl
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -41,13 +42,18 @@ MAX_RESPONSE_BYTES = 2_000_000
 MAX_ERROR_BYTES = 65_536
 REQUEST_TIMEOUT_SECONDS = 15.0
 _OPERATION_PATH_PREFIX = "/game-config/operations/"
+_PROMOTION_OPERATION_PATH_PREFIX = "/me/class/promotion/operations/"
+_WEEKLY_GAME_SLOTS = ("collective_1", "collective_2", "free_choice_1", "focus_area")
 _ALLOWED_ENDPOINTS = frozenset(
     {
+        ("POST", "/redeem"),
         ("GET", "/me"),
         ("GET", "/classes"),
         ("GET", "/me/class"),
         ("PUT", "/me/class"),
         ("DELETE", "/me/class"),
+        ("GET", "/me/class/promotion"),
+        ("POST", "/me/class/promotion"),
         ("GET", "/classmates"),
         ("GET", "/game-config"),
         ("PUT", "/game-config"),
@@ -83,6 +89,146 @@ class MembershipOut(_StrictModel):
 
 class MembershipEnvelope(_StrictModel):
     membership: MembershipOut | None
+
+
+class RedeemUpstream(_StrictModel):
+    token: str = Field(..., min_length=1, max_length=4096)
+    token_id: UUID
+    teacher_id: UUID
+    teacher_name: str
+    school_id: UUID
+    school_name: str
+    purpose: Literal["join", "recovery"]
+    membership: MembershipOut | None
+
+
+class RedeemIn(_StrictModel):
+    code: str = Field(..., min_length=1, max_length=4096)
+
+    @field_validator("code")
+    @classmethod
+    def _code_shape(cls, value: str) -> str:
+        if value != value.strip() or not value:
+            raise ValueError("code must not have surrounding whitespace")
+        if any(ord(char) < 32 for char in value):
+            raise ValueError("code contains control characters")
+        return value
+
+
+class PromotionTerm(_StrictModel):
+    term_id: UUID
+    name: str = Field(..., min_length=1, max_length=120)
+    start_date: date
+    end_date: date
+
+
+class PromotionOverview(_StrictModel):
+    class_id: UUID
+    class_name: str
+    grade: Literal["small", "middle", "large"]
+    version: int = Field(..., ge=1)
+    terms: list[PromotionTerm] = Field(..., max_length=100)
+
+
+class PromotionIn(_StrictModel):
+    request_id: UUID
+    class_id: UUID
+    expected_version: int = Field(..., ge=1)
+    target_grade: Literal["small", "middle", "large"]
+    effective_term_id: UUID
+
+
+class PromotionResult(_StrictModel):
+    request_id: UUID
+    class_id: UUID
+    class_name: str
+    grade: Literal["small", "middle", "large"]
+    version: int = Field(..., ge=1)
+    effective_term_id: UUID
+    replayed: bool = False
+
+
+class SharedGameItem(_StrictModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    date: _datetime.date | None = None
+
+
+class SharedGames(_StrictModel):
+    collective_1: SharedGameItem | None = None
+    collective_2: SharedGameItem | None = None
+    free_choice_1: SharedGameItem | None = None
+    focus_area: SharedGameItem | None = None
+
+
+class SharedDay(_StrictModel):
+    date: _datetime.date
+    # The committed online wire uses explicit null for a sparse/empty cell.
+    # Accept it and present the editor with an empty string.
+    morning_talk_topic: str | None = Field(..., max_length=2000)
+    group_activity_theme: str | None = Field(..., max_length=2000)
+
+    @field_validator("morning_talk_topic", "group_activity_theme", mode="after")
+    @classmethod
+    def _null_is_empty(cls, value: str | None) -> str:
+        return value or ""
+
+
+class SharedContent(_StrictModel):
+    days: list[SharedDay] = Field(..., max_length=7)
+    games: SharedGames
+
+
+class WeeklyConfirmationOut(_StrictModel):
+    confirmation_id: UUID
+    confirmation_version: int = Field(..., ge=1)
+    version: int = Field(..., ge=1)
+    class_id: UUID
+    term_id: UUID
+    week_start: date
+    class_name: str
+    grade: Literal["small", "middle", "large"]
+    term_name: str
+    content: SharedContent
+    confirmed_by: str
+    confirmed_at: datetime
+
+
+class WeeklySharedOut(_StrictModel):
+    class_id: UUID
+    term_id: UUID
+    week_start: date
+    class_name: str
+    term_name: str
+    version: int = Field(..., ge=0)
+    content: SharedContent
+    confirmation: WeeklyConfirmationOut | None = None
+
+
+class WeeklySaveIn(_StrictModel):
+    request_id: UUID
+    expected_version: int = Field(..., ge=0)
+    content: SharedContent
+
+
+class WeeklySaveOut(WeeklySharedOut):
+    request_id: UUID
+    replayed: bool = False
+
+
+class WeeklyConfirmIn(_StrictModel):
+    request_id: UUID
+    expected_version: int = Field(..., ge=0)
+
+
+class WeeklyConfirmOut(WeeklyConfirmationOut):
+    request_id: UUID
+    replayed: bool = False
+
+
+class WeeklyOperationOut(_StrictModel):
+    request_id: UUID
+    kind: Literal["save", "confirm"]
+    result: WeeklySaveOut | WeeklyConfirmOut
 
 
 class ClassmateOut(_StrictModel):
@@ -177,6 +323,11 @@ class StatusOut(_StrictModel):
     message: str | None = None
 
 
+class RedeemResultOut(StatusOut):
+    purpose: Literal["join", "recovery"]
+    membership: MembershipOut | None = None
+
+
 class RemoveClassOut(_StrictModel):
     removed: bool
 
@@ -251,16 +402,45 @@ def _error(
     return error
 
 
+def _weekly_path_allowed(method: str, path: str) -> bool:
+    parts = path.strip("/").split("/")
+    if len(parts) < 5 or parts[0] != "classes" or parts[2] != "weekly":
+        return False
+    try:
+        UUID(parts[1])
+        UUID(parts[3])
+        date.fromisoformat(parts[4])
+    except (ValueError, TypeError):
+        return False
+    suffix = parts[5:]
+    if not suffix:
+        return method == "GET"
+    if len(suffix) == 1 and suffix[0] in ("save", "confirm"):
+        return method == "POST"
+    if len(suffix) == 2 and suffix[0] in ("confirmations", "operations"):
+        try:
+            UUID(suffix[1])
+        except (ValueError, TypeError):
+            return False
+        return method == "GET"
+    return False
+
+
 def _endpoint_allowed(method: str, path: str) -> bool:
     if (method, path) in _ALLOWED_ENDPOINTS:
         return True
-    if method != "GET" or not path.startswith(_OPERATION_PATH_PREFIX):
+    if _weekly_path_allowed(method, path):
+        return True
+    if method != "GET":
         return False
-    try:
-        UUID(path[len(_OPERATION_PATH_PREFIX):])
-    except (ValueError, TypeError):
-        return False
-    return True
+    for prefix in (_OPERATION_PATH_PREFIX, _PROMOTION_OPERATION_PATH_PREFIX):
+        if path.startswith(prefix):
+            try:
+                UUID(path[len(prefix):])
+            except (ValueError, TypeError):
+                return False
+            return True
+    return False
 
 
 def _not_configured() -> LocalError:
@@ -396,6 +576,16 @@ _UPSTREAM_ERRORS: dict[str, tuple[int, str, str]] = {
         "COLLABORATION_INVALID_CLASS_GAMES",
         "班级游戏配置不合法",
     ),
+    "REDEEM_CODE_INVALID": (
+        400,
+        "COLLABORATION_REDEEM_CODE_INVALID",
+        "兑换码无效或已使用，请向管理员确认",
+    ),
+    "TEACHER_INACTIVE": (
+        409,
+        "COLLABORATION_TEACHER_INACTIVE",
+        "该在线教师已停用，不能兑换",
+    ),
 }
 
 
@@ -409,6 +599,10 @@ def _safe_upstream_error(
     spec = _UPSTREAM_ERRORS.get(code or "")
     if spec is None:
         fallback = {
+            400: (
+                "COLLABORATION_INVALID_REQUEST",
+                "在线协作请求无效",
+            ),
             404: (
                 "COLLABORATION_UPSTREAM_NOT_FOUND",
                 "在线协作资源不存在",
@@ -521,6 +715,59 @@ class CollaborationProxy:
                 message=None,
             )
 
+    def redeem(self, code: str) -> RedeemResultOut:
+        """Exchange a one-time code and install the resulting teacher session.
+
+        The upstream plaintext bearer never reaches the renderer.  The returned
+        identity is checked against ``/me`` inside the same connection
+        generation before the local process installs it.
+        """
+        self._require_configured()
+        generation = self._begin_connect()
+        payload = self._send(
+            generation,
+            None,
+            "POST",
+            "/redeem",
+            {"code": code},
+        )
+        redeemed = self._validate(generation, RedeemUpstream, payload)
+        me_payload = self._send(generation, redeemed.token, "GET", "/me", None)
+        teacher = self._validate(generation, TeacherOut, me_payload)
+        if (
+            teacher.teacher_id != redeemed.teacher_id
+            or teacher.school_id != redeemed.school_id
+            or teacher.display_name != redeemed.teacher_name
+            or teacher.school_name != redeemed.school_name
+        ):
+            raise _upstream_invalid()
+        membership = redeemed.membership if redeemed.purpose == "recovery" else None
+        if membership is not None and (
+            membership.teacher_id != teacher.teacher_id
+            or membership.school_id != teacher.school_id
+        ):
+            raise _upstream_invalid()
+        with self._lock:
+            if generation != self._generation:
+                raise _session_changed()
+            self._token = redeemed.token
+            self._teacher = teacher
+            message = (
+                "已恢复在线身份并读取仍有效的原班级"
+                if redeemed.purpose == "recovery" and membership is not None
+                else "已恢复在线身份，但服务端没有仍有效的原班级；请明确选择班级"
+                if redeemed.purpose == "recovery"
+                else "已确认在线教师与园所；请从本园班级目录选择班级"
+            )
+            return RedeemResultOut(
+                configured=True,
+                connected=True,
+                teacher=teacher,
+                message=message,
+                purpose=redeemed.purpose,
+                membership=membership,
+            )
+
     def disconnect(self) -> StatusOut:
         with self._lock:
             self._generation += 1
@@ -609,6 +856,143 @@ class CollaborationProxy:
         )
         return self._validate(generation, OperationOut, payload)
 
+    def promotion(self) -> PromotionOverview:
+        generation, token = self._require_session()
+        payload = self._send(
+            generation,
+            token,
+            "GET",
+            "/me/class/promotion",
+            None,
+        )
+        return self._validate(generation, PromotionOverview, payload)
+
+    def promote(self, data: PromotionIn) -> PromotionResult:
+        generation, token = self._require_session()
+        payload = self._send(
+            generation,
+            token,
+            "POST",
+            "/me/class/promotion",
+            data.model_dump(mode="json"),
+        )
+        return self._validate(generation, PromotionResult, payload)
+
+    def promotion_operation(self, request_id: UUID) -> PromotionResult:
+        generation, token = self._require_session()
+        payload = self._send(
+            generation,
+            token,
+            "GET",
+            f"/me/class/promotion/operations/{request_id}",
+            None,
+        )
+        return self._validate(generation, PromotionResult, payload)
+
+    @staticmethod
+    def _weekly_path(
+        class_id: UUID,
+        term_id: UUID,
+        week_start: date,
+        suffix: str = "",
+    ) -> str:
+        base = f"/classes/{class_id}/weekly/{term_id}/{week_start.isoformat()}"
+        return f"{base}{suffix}"
+
+    def weekly(
+        self, class_id: UUID, term_id: UUID, week_start: date
+    ) -> WeeklySharedOut:
+        generation, token = self._require_session()
+        payload = self._send(
+            generation,
+            token,
+            "GET",
+            self._weekly_path(class_id, term_id, week_start),
+            None,
+        )
+        return self._validate(generation, WeeklySharedOut, payload)
+
+    def save_weekly(
+        self,
+        class_id: UUID,
+        term_id: UUID,
+        week_start: date,
+        data: WeeklySaveIn,
+    ) -> WeeklySaveOut:
+        generation, token = self._require_session()
+        payload = self._send(
+            generation,
+            token,
+            "POST",
+            self._weekly_path(class_id, term_id, week_start, "/save"),
+            data.model_dump(mode="json"),
+        )
+        return self._validate(generation, WeeklySaveOut, payload)
+
+    def confirm_weekly(
+        self,
+        class_id: UUID,
+        term_id: UUID,
+        week_start: date,
+        data: WeeklyConfirmIn,
+    ) -> WeeklyConfirmOut:
+        generation, token = self._require_session()
+        payload = self._send(
+            generation,
+            token,
+            "POST",
+            self._weekly_path(class_id, term_id, week_start, "/confirm"),
+            data.model_dump(mode="json"),
+        )
+        return self._validate(generation, WeeklyConfirmOut, payload)
+
+    def weekly_operation(
+        self,
+        class_id: UUID,
+        term_id: UUID,
+        week_start: date,
+        request_id: UUID,
+    ) -> WeeklyOperationOut:
+        generation, token = self._require_session()
+        payload = self._send(
+            generation,
+            token,
+            "GET",
+            self._weekly_path(
+                class_id, term_id, week_start, f"/operations/{request_id}"
+            ),
+            None,
+        )
+        return self._validate(generation, WeeklyOperationOut, payload)
+
+    def weekly_confirmation(
+        self,
+        class_id: UUID,
+        term_id: UUID,
+        week_start: date,
+        confirmation_id: UUID,
+    ) -> dict[str, Any]:
+        """Read one frozen confirmation for the local Word route.
+
+        The caller receives only the sanitized confirmation shape; the teacher
+        bearer and upstream headers never leave this process.
+        """
+        generation, token = self._require_session()
+        payload = self._send(
+            generation,
+            token,
+            "GET",
+            self._weekly_path(
+                class_id,
+                term_id,
+                week_start,
+                f"/confirmations/{confirmation_id}",
+            ),
+            None,
+        )
+        value = self._validate(generation, WeeklyConfirmationOut, payload)
+        return value.model_dump(mode="json")
+
     def _require_configured(self) -> None:
         if self._origin is None:
             raise _error(
@@ -677,7 +1061,7 @@ class CollaborationProxy:
     def _send(
         self,
         generation: int,
-        token: str,
+        token: str | None,
         method: str,
         path: str,
         payload: dict[str, Any] | None,
@@ -702,9 +1086,10 @@ class CollaborationProxy:
         headers = {
             "Accept": "application/json",
             "Accept-Encoding": "identity",
-            "Authorization": f"Bearer {token}",
             "User-Agent": "KGM-Desktop-Collaboration/1",
         }
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
         if body is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
@@ -751,7 +1136,7 @@ class CollaborationProxy:
             if exc.code == 401:
                 self._invalidate(generation)
                 raise _auth_failed() from None
-            if exc.code in (404, 409, 422):
+            if exc.code in (400, 404, 409, 422):
                 code, details = _read_upstream_error(exc)
                 if code == "AUTH_REQUIRED":
                     self._invalidate(generation)
@@ -905,6 +1290,14 @@ def collaboration_disconnect(
     return proxy.disconnect()
 
 
+@collaboration_router.post("/redeem", response_model=RedeemResultOut)
+def collaboration_redeem(
+    data: RedeemIn,
+    proxy: CollaborationProxy = Depends(_proxy),
+) -> RedeemResultOut:
+    return proxy.redeem(data.code)
+
+
 @collaboration_router.get("/classes", response_model=list[ClassOut])
 def collaboration_classes(
     proxy: CollaborationProxy = Depends(_proxy),
@@ -935,11 +1328,110 @@ def collaboration_leave_class(
     return RemoveClassOut(removed=True)
 
 
+@collaboration_router.get("/promotion", response_model=PromotionOverview)
+def collaboration_promotion(
+    proxy: CollaborationProxy = Depends(_proxy),
+) -> PromotionOverview:
+    return proxy.promotion()
+
+
+@collaboration_router.post("/promotion", response_model=PromotionResult)
+def collaboration_promote(
+    data: PromotionIn,
+    proxy: CollaborationProxy = Depends(_proxy),
+) -> PromotionResult:
+    return proxy.promote(data)
+
+
+@collaboration_router.get(
+    "/promotion/operations/{request_id}",
+    response_model=PromotionResult,
+)
+def collaboration_promotion_operation(
+    request_id: UUID,
+    proxy: CollaborationProxy = Depends(_proxy),
+) -> PromotionResult:
+    return proxy.promotion_operation(request_id)
+
+
 @collaboration_router.get("/classmates", response_model=list[ClassmateOut])
 def collaboration_classmates(
     proxy: CollaborationProxy = Depends(_proxy),
 ) -> list[ClassmateOut]:
     return proxy.classmates()
+
+
+@collaboration_router.get(
+    "/classes/{class_id}/weekly/{term_id}/{week_start}",
+    response_model=WeeklySharedOut,
+)
+def collaboration_weekly(
+    class_id: UUID,
+    term_id: UUID,
+    week_start: date,
+    proxy: CollaborationProxy = Depends(_proxy),
+) -> WeeklySharedOut:
+    return proxy.weekly(class_id, term_id, week_start)
+
+
+@collaboration_router.post(
+    "/classes/{class_id}/weekly/{term_id}/{week_start}/save",
+    response_model=WeeklySaveOut,
+)
+def collaboration_weekly_save(
+    class_id: UUID,
+    term_id: UUID,
+    week_start: date,
+    data: WeeklySaveIn,
+    proxy: CollaborationProxy = Depends(_proxy),
+) -> WeeklySaveOut:
+    return proxy.save_weekly(class_id, term_id, week_start, data)
+
+
+@collaboration_router.post(
+    "/classes/{class_id}/weekly/{term_id}/{week_start}/confirm",
+    response_model=WeeklyConfirmOut,
+)
+def collaboration_weekly_confirm(
+    class_id: UUID,
+    term_id: UUID,
+    week_start: date,
+    data: WeeklyConfirmIn,
+    proxy: CollaborationProxy = Depends(_proxy),
+) -> WeeklyConfirmOut:
+    return proxy.confirm_weekly(class_id, term_id, week_start, data)
+
+
+@collaboration_router.get(
+    "/classes/{class_id}/weekly/{term_id}/{week_start}/confirmations/{confirmation_id}",
+    response_model=WeeklyConfirmationOut,
+)
+def collaboration_weekly_confirmation(
+    class_id: UUID,
+    term_id: UUID,
+    week_start: date,
+    confirmation_id: UUID,
+    proxy: CollaborationProxy = Depends(_proxy),
+) -> WeeklyConfirmationOut:
+    return WeeklyConfirmationOut.model_validate(
+        proxy.weekly_confirmation(
+            class_id, term_id, week_start, confirmation_id
+        )
+    )
+
+
+@collaboration_router.get(
+    "/classes/{class_id}/weekly/{term_id}/{week_start}/operations/{request_id}",
+    response_model=WeeklyOperationOut,
+)
+def collaboration_weekly_operation(
+    class_id: UUID,
+    term_id: UUID,
+    week_start: date,
+    request_id: UUID,
+    proxy: CollaborationProxy = Depends(_proxy),
+) -> WeeklyOperationOut:
+    return proxy.weekly_operation(class_id, term_id, week_start, request_id)
 
 
 @collaboration_router.get("/game-config", response_model=ConfigCurrentOut)

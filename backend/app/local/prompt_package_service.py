@@ -16,6 +16,7 @@ only inside ``_apply``.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import urllib.error
 import urllib.request
@@ -39,6 +40,14 @@ from app.local.prompt_package import (
     materialize_bundle_rows,
     packaged_trust,
     verify_package,
+)
+from app.local.prompt_package_manifest import (
+    MAX_MANIFEST_BYTES,
+    PromptManifest,
+    manifest_url,
+    package_url,
+    verify_manifest,
+    verify_package_for_manifest,
 )
 from app.local.prompt_package_store import PromptPackageStore
 from app.local.tx import read_scope
@@ -95,22 +104,14 @@ def _optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def fetch_signed_package(
-    trust: PackageTrust,
+def _fetch_https(
+    url: str,
     *,
-    timeout: float = NETWORK_TIMEOUT_SECONDS,
-    max_bytes: int = MAX_PACKAGE_BYTES,
+    no_cache: bool,
+    max_bytes: int,
+    timeout: float,
 ) -> bytes:
-    """Download one package from the fixed HTTPS source.
-
-    Redirects are refused; the URL scheme must be HTTPS; the body is capped
-    before parsing.  No credential, cookie or teacher-supplied URL is used.
-    """
-    if not trust.configured or not trust.source_url:
-        raise PromptPackageNetworkError(
-            "PACKAGE_SOURCE_UNCONFIGURED", "提示词包来源未配置"
-        )
-    parsed = urlsplit(trust.source_url)
+    parsed = urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname:
         raise PromptPackageNetworkError(
             "PACKAGE_SOURCE_INVALID", "提示词包来源必须是固定 HTTPS 地址"
@@ -119,15 +120,13 @@ def fetch_signed_package(
         raise PromptPackageNetworkError(
             "PACKAGE_SOURCE_INVALID", "提示词包来源格式无效"
         )
-    request = urllib.request.Request(
-        trust.source_url,
-        headers={
-            "Accept": "application/json",
-            "Cache-Control": "no-cache",
-            "User-Agent": "kindergarten-manager-prompt-package/1",
-        },
-        method="GET",
-    )
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "kindergarten-manager-prompt-package/1",
+    }
+    if no_cache:
+        headers["Cache-Control"] = "no-cache"
+    request = urllib.request.Request(url, headers=headers, method="GET")
     opener = urllib.request.build_opener(_NoRedirect())
     try:
         with opener.open(request, timeout=timeout) as response:
@@ -169,6 +168,71 @@ def fetch_signed_package(
     return data
 
 
+def fetch_signed_package(
+    trust: PackageTrust,
+    *,
+    timeout: float = NETWORK_TIMEOUT_SECONDS,
+    max_bytes: int = MAX_PACKAGE_BYTES,
+) -> bytes:
+    """Legacy direct signed-package URL, retained for compatibility."""
+    if not trust.configured or not trust.source_url:
+        raise PromptPackageNetworkError(
+            "PACKAGE_SOURCE_UNCONFIGURED", "提示词包来源未配置"
+        )
+    return _fetch_https(
+        trust.source_url,
+        no_cache=True,
+        max_bytes=max_bytes,
+        timeout=timeout,
+    )
+
+
+def fetch_signed_manifest(
+    trust: PackageTrust,
+    *,
+    timeout: float = NETWORK_TIMEOUT_SECONDS,
+    max_bytes: int = MAX_MANIFEST_BYTES,
+) -> bytes:
+    """Fetch a channel latest manifest with an explicit no-cache request."""
+    if not trust.configured:
+        raise PromptPackageNetworkError(
+            "PACKAGE_SOURCE_UNCONFIGURED", "提示词包来源未配置"
+        )
+    try:
+        url = manifest_url(trust)
+    except PromptPackageError as exc:
+        raise PromptPackageNetworkError(exc.code, exc.message) from None
+    return _fetch_https(
+        url,
+        no_cache=True,
+        max_bytes=max_bytes,
+        timeout=timeout,
+    )
+
+
+def fetch_channel_package(
+    trust: PackageTrust,
+    manifest: PromptManifest,
+    *,
+    timeout: float = NETWORK_TIMEOUT_SECONDS,
+    max_bytes: int = MAX_PACKAGE_BYTES,
+) -> bytes:
+    """Fetch one immutable version file, allowing normal HTTP caching."""
+    if not trust.configured:
+        raise PromptPackageNetworkError(
+            "PACKAGE_SOURCE_UNCONFIGURED", "提示词包来源未配置"
+        )
+    try:
+        url = package_url(trust, manifest)
+    except PromptPackageError as exc:
+        raise PromptPackageNetworkError(exc.code, exc.message) from None
+    return _fetch_https(
+        url,
+        no_cache=False,
+        max_bytes=max_bytes,
+        timeout=timeout,
+    )
+
 class PromptPackageService:
     def __init__(
         self,
@@ -177,6 +241,10 @@ class PromptPackageService:
         trust: PackageTrust | None = None,
         store: PromptPackageStore | None = None,
         fetcher: Callable[[PackageTrust], bytes] | None = None,
+        manifest_fetcher: Callable[[PackageTrust], bytes] | None = None,
+        channel_package_fetcher: (
+            Callable[[PackageTrust, PromptManifest], bytes] | None
+        ) = None,
         apply_func: Callable[[VerifiedPackage], None] | None = None,
         fallback_func: Callable[[str], None] | None = None,
         client_version: str | None = None,
@@ -193,12 +261,25 @@ class PromptPackageService:
                 source_url=self.trust.source_url,
                 keys=dict(self.trust.keys),
                 client_version=client_version,
+                channel=self.trust.channel,
             )
         root = getattr(runtime, "data_dir", None)
-        self.store = store or PromptPackageStore(
-            Path(root) if root is not None else Path(".prompt-packages")
-        )
+        if store is not None:
+            self.store = store
+        elif self.trust.channel in ("preview", "stable"):
+            base = Path(root) if root is not None else Path(".")
+            self.store = PromptPackageStore(
+                base / ".prompt-packages", channel=self.trust.channel
+            )
+        else:
+            self.store = PromptPackageStore(
+                Path(root) if root is not None else Path(".prompt-packages")
+            )
         self._fetcher = fetcher or fetch_signed_package
+        self._manifest_fetcher = manifest_fetcher or fetch_signed_manifest
+        self._channel_package_fetcher = (
+            channel_package_fetcher or fetch_channel_package
+        )
         self._apply_func = apply_func
         self._fallback_func = fallback_func
         self._now = now or _utc_now
@@ -216,6 +297,51 @@ class PromptPackageService:
     def _prompt_sync_error(self) -> str | None:
         return getattr(self.runtime, "prompt_sync_error", None)
 
+    def _verify_cached_manifest(
+        self,
+        raw: bytes,
+        package: VerifiedPackage,
+        manifest_raw: bytes | None,
+        metadata: Any,
+    ) -> tuple[PromptManifest | None, str | None]:
+        """Require the signed manifest that admitted a channel cache package.
+
+        The directory name and the unsigned ``channel`` metadata field are not
+        proof.  A channel cache is usable offline only when its stored raw
+        manifest still verifies against the fixed trust, its digest matches the
+        state entry, and it binds this exact package (channel, sequence, raw
+        SHA-256 and key).  Legacy direct-package caches have no channel and keep
+        their previous behavior.
+        """
+        if self.trust.channel is None:
+            return None, None
+        if manifest_raw is None:
+            return None, "PACKAGE_MANIFEST_PROOF_MISSING"
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("manifest_sha256")
+            != hashlib.sha256(manifest_raw).hexdigest()
+        ):
+            return None, "PACKAGE_MANIFEST_PROOF_MISMATCH"
+        try:
+            manifest = verify_manifest(manifest_raw, self.trust)
+            verify_package_for_manifest(
+                raw,
+                manifest,
+                self.trust,
+                client_version=self.trust.client_version,
+            )
+        except PromptPackageError as exc:
+            return None, exc.code
+        if (
+            metadata.get("channel") != manifest.channel
+            or metadata.get("release_sequence") != manifest.release_sequence
+            or metadata.get("raw_sha256") != manifest.package_sha256
+            or metadata.get("key_id") != manifest.key_id
+        ):
+            return None, "PACKAGE_CACHE_MISMATCH"
+        return manifest, None
+
     def _active_cache(
         self, active: Any
     ) -> tuple[VerifiedPackage | None, str | None]:
@@ -231,9 +357,19 @@ class PromptPackageService:
             )
         except PromptPackageError as exc:
             return None, exc.code
+        _manifest, proof_error = self._verify_cached_manifest(
+            raw,
+            package,
+            self.store.load_active_manifest(),
+            active,
+        )
+        if proof_error is not None:
+            return None, proof_error
         if (
-            active.get("release_sequence") != package.release_sequence
+            active.get("channel") != self.trust.channel
+            or active.get("release_sequence") != package.release_sequence
             or active.get("content_sha256") != package.content_sha256
+            or active.get("raw_sha256") != package.raw_sha256
         ):
             return None, "PACKAGE_CACHE_MISMATCH"
         return package, None
@@ -568,7 +704,72 @@ class PromptPackageService:
         self._fallback_if_no_valid_cache("check_no_valid_cache")
         return self.status()
 
-    def _check_locked(self) -> None:
+    def _candidate_package(
+        self,
+    ) -> tuple[bytes, VerifiedPackage, bytes | None] | None:
+        if self.trust.channel in ("preview", "stable"):
+            try:
+                raw_manifest = self._manifest_fetcher(self.trust)
+            except PromptPackageNetworkError as exc:
+                self._record(
+                    "offline",
+                    f"{exc.message}；继续使用已验证版本或内置文字。",
+                    error_code=exc.code,
+                )
+                return None
+            except Exception as exc:  # noqa: BLE001 - network never blocks manual work
+                self._record(
+                    "offline",
+                    f"检查提示词更新失败：{exc}；继续使用已验证版本或内置文字。",
+                    error_code="PACKAGE_OFFLINE",
+                )
+                return None
+            try:
+                manifest = verify_manifest(
+                    raw_manifest, self.trust
+                )
+            except PromptPackageError as exc:
+                result = self._result_for_error(exc)
+                self._record(
+                    result,
+                    f"提示词清单未通过校验：{exc.message}；"
+                    "继续使用已验证版本或内置文字。",
+                    error_code=exc.code,
+                )
+                return None
+            try:
+                raw = self._channel_package_fetcher(self.trust, manifest)
+            except PromptPackageNetworkError as exc:
+                self._record(
+                    "offline",
+                    f"{exc.message}；继续使用已验证版本或内置文字。",
+                    error_code=exc.code,
+                )
+                return None
+            except Exception as exc:  # noqa: BLE001
+                self._record(
+                    "offline",
+                    f"检查提示词更新失败：{exc}；继续使用已验证版本或内置文字。",
+                    error_code="PACKAGE_OFFLINE",
+                )
+                return None
+            try:
+                package = verify_package_for_manifest(
+                    raw,
+                    manifest,
+                    self.trust,
+                    client_version=self.trust.client_version,
+                )
+            except PromptPackageError as exc:
+                result = self._result_for_error(exc)
+                self._record(
+                    result,
+                    f"提示词包未通过校验：{exc.message}；"
+                    "继续使用已验证版本或内置文字。",
+                    error_code=exc.code,
+                )
+                return None
+            return raw, package, raw_manifest
         try:
             raw = self._fetcher(self.trust)
         except PromptPackageNetworkError as exc:
@@ -577,14 +778,14 @@ class PromptPackageService:
                 f"{exc.message}；继续使用已验证版本或内置文字。",
                 error_code=exc.code,
             )
-            return
+            return None
         except Exception as exc:  # noqa: BLE001 - network never blocks manual work
             self._record(
                 "offline",
                 f"检查提示词更新失败：{exc}；继续使用已验证版本或内置文字。",
                 error_code="PACKAGE_OFFLINE",
             )
-            return
+            return None
         try:
             package = verify_package(
                 raw, self.trust, client_version=self.trust.client_version
@@ -597,7 +798,14 @@ class PromptPackageService:
                 "继续使用已验证版本或内置文字。",
                 error_code=exc.code,
             )
+            return None
+        return raw, package, None
+
+    def _check_locked(self) -> None:
+        candidate = self._candidate_package()
+        if candidate is None:
             return
+        raw, package, manifest_raw = candidate
         state = self.store.read_state()
         accepted_result = self._check_accepted(package, state)
         if accepted_result in (
@@ -619,7 +827,7 @@ class PromptPackageService:
                     package=package,
                 )
                 return
-        self.store.stage_pending(raw, package)
+        self.store.stage_pending(raw, package, manifest_raw=manifest_raw)
         try:
             self._apply(package)
         except (
@@ -647,7 +855,7 @@ class PromptPackageService:
                 error_code=str(code),
             )
             return
-        self.store.activate(raw, package)
+        self.store.activate(raw, package, manifest_raw=manifest_raw)
         self._activated_content_sha256 = package.content_sha256
         self.runtime.prompt_package_builtin_only = False
         self._record(
@@ -712,6 +920,27 @@ class PromptPackageService:
                 f"本地提示词包缓存校验失败：{exc.message}；"
                 "当前使用程序已登记文字或内置文字。",
                 error_code=exc.code,
+            )
+            if pending:
+                self.store.clear_pending()
+            return False
+        metadata = state.get("pending") if pending else state.get("active")
+        manifest_raw = None
+        if self.trust.channel is not None:
+            manifest_raw = (
+                self.store.load_pending_manifest()
+                if pending
+                else self.store.load_active_manifest()
+            )
+        _manifest, proof_error = self._verify_cached_manifest(
+            raw, package, manifest_raw, metadata
+        )
+        if proof_error is not None:
+            self._record(
+                "cache_invalid",
+                f"本地提示词包缺少或无法验证签名清单（{proof_error}）；"
+                "已忽略，可在线检查修复。",
+                error_code=proof_error,
             )
             if pending:
                 self.store.clear_pending()
@@ -790,6 +1019,7 @@ class PromptPackageService:
         self.store.activate(
             raw,
             package,
+            manifest_raw=manifest_raw,
             clear_pending=clear_pending_on_activate,
         )
         self._activated_content_sha256 = package.content_sha256

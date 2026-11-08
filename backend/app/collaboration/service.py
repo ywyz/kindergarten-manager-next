@@ -21,6 +21,10 @@ from app.local.config_service import normalize_change
 from app.local.errors import LocalValidationError
 from app.local.schemas import ConfigClassGamesChangeIn
 
+from .class_promotion_models import (
+    effective_class_name_now,
+    effective_class_names_now,
+)
 from .config import CollaborationSettings
 from .errors import (
     auth_required,
@@ -215,20 +219,27 @@ def list_classes(
     session: Session, principal: TeacherPrincipal
 ) -> list[ClassOut]:
     rows = session.scalars(
-        select(Classroom)
-        .where(Classroom.school_id == principal.school_id)
-        .order_by(Classroom.display_name, Classroom.id)
+        select(Classroom).where(
+            Classroom.school_id == principal.school_id
+        )
     ).all()
-    return [
-        ClassOut(class_id=row.id, display_name=row.display_name)
+    names = effective_class_names_now(session, [row.id for row in rows])
+    items = [
+        ClassOut(
+            class_id=row.id,
+            display_name=names.get(row.id, row.display_name),
+        )
         for row in rows
     ]
+    items.sort(key=lambda item: (item.display_name, item.class_id))
+    return items
 
 
 def current_membership(
     session: Session, principal: TeacherPrincipal
 ) -> MembershipOut | None:
-    # One statement keeps the membership and its class name in one snapshot.
+    # Read the membership and stable class ID together, then resolve the
+    # promotion-aware display name from that stable ID.
     actor = aliased(TeacherClassMembership)
     row = session.execute(
         select(actor, Classroom)
@@ -254,7 +265,9 @@ def current_membership(
         teacher_id=principal.teacher_id,
         school_id=principal.school_id,
         class_id=actor_row.class_id,
-        class_name=class_row.display_name,
+        class_name=effective_class_name_now(
+            session, class_row.id, class_row.display_name
+        ),
         selected_at=actor_row.selected_at,
     )
 
@@ -294,7 +307,9 @@ def select_class(
             teacher_id=principal.teacher_id,
             school_id=principal.school_id,
             class_id=class_id,
-            class_name=class_row.display_name,
+            class_name=effective_class_name_now(
+                session, class_row.id, class_row.display_name
+            ),
             selected_at=membership.selected_at,
         )
 

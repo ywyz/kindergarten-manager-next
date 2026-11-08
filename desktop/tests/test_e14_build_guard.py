@@ -53,6 +53,94 @@ def _freeze(files: list[dict], digest: str) -> dict:
     }
 
 
+_HOOK_PROBE_BODY = """
+import json
+import os
+from pathlib import Path
+
+import e14_online_integration_test_hook
+import app.local.prompt_package as prompt_package
+import app.local.runtime as runtime
+import app.local.sqlite as sqlite
+
+result = {
+    "dotenv": os.environ.get("APP_DISABLE_DOTENV"),
+    "origin": os.environ.get("APP_COLLABORATION_API_ORIGIN"),
+    "data": os.environ.get("KGM_LOCAL_DATA_DIR"),
+    "d0": os.environ.get("KGM_D0_DATA_DIR"),
+    "db_path": os.environ.get("KGM_LOCAL_DB_PATH"),
+    "frontend": os.environ.get("KGM_D1_FRONTEND_DIR"),
+    "source": prompt_package.PACKAGED_SOURCE_URL,
+    "key_id": prompt_package.PACKAGED_KEY_ID,
+    "public_key": prompt_package.PACKAGED_PUBLIC_KEY_B64,
+    "channel": prompt_package.PACKAGED_CHANNEL,
+    "default_data": str(sqlite.default_data_dir()),
+    "credential": str(runtime._default_credential_root()),
+}
+print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+"""
+
+
+_HOOK_EXPLICIT_ROOTS_BODY = """
+import json
+import os
+from pathlib import Path
+
+import e14_online_integration_test_hook
+from app.local.runtime import LocalRuntime
+
+runtime = LocalRuntime(
+    Path(os.environ["EXPLICIT_DATA"]),
+    credential_root=Path(os.environ["EXPLICIT_CREDENTIAL"]),
+)
+print(json.dumps({
+    "data": str(runtime.data_dir),
+    "credential": str(runtime.credential_root),
+}, ensure_ascii=False, sort_keys=True))
+"""
+
+
+def _hook_probe(
+    tmp_path: Path,
+    body: str,
+    *,
+    updates: dict[str, str | None],
+) -> dict:
+    env = os.environ.copy()
+    for name in (
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "HOME",
+        "KGM_LOCAL_DATA_DIR",
+        "KGM_LOCAL_DB_PATH",
+        "KGM_D0_DATA_DIR",
+        "KGM_D1_FRONTEND_DIR",
+        "APP_DISABLE_DOTENV",
+        "APP_COLLABORATION_API_ORIGIN",
+    ):
+        env.pop(name, None)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(REPO / "backend"), str(REPO / "desktop")]
+    )
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["USERPROFILE"] = str(tmp_path / "home")
+    env["HOME"] = str(tmp_path / "home")
+    for name, value in updates.items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
+    completed = subprocess.run(
+        [sys.executable, "-c", body],
+        cwd=REPO,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
 def _plan_paths(root: Path) -> dict:
     build_root = root / "build" / "desktop-e14-r03-test"
     return {
@@ -228,7 +316,13 @@ def test_rejects_same_hash_and_freeze_output(monkeypatch, tmp_path):
         )
 
 
-def _fake_main_env(monkeypatch, tmp_path, *, change_mid_build: bool):
+def _fake_main_env(
+    monkeypatch,
+    tmp_path,
+    *,
+    change_mid_build: bool,
+    package_kwargs: list[dict] | None = None,
+):
     repo = tmp_path / "repo"
     monkeypatch.setattr(build_e14.d0_paths, "REPO_ROOT", repo)
     paths = _plan_paths(repo)
@@ -250,8 +344,10 @@ def _fake_main_env(monkeypatch, tmp_path, *, change_mid_build: bool):
     def fake_frontend(frontend):
         calls.append("frontend")
 
-    def fake_package(dist_root, frontend, work_dir, spec_dir):
+    def fake_package(dist_root, frontend, work_dir, spec_dir, **kwargs):
         calls.append("package")
+        if package_kwargs is not None:
+            package_kwargs.append(dict(kwargs))
         package = Path(dist_root) / build_e14.APP_NAME
         package.mkdir(parents=True)
         return package
@@ -335,6 +431,200 @@ def test_main_accepts_preview_release_identity(monkeypatch, tmp_path):
             build_e14.MIGRATIONS_DIR
         )["head_revision"]
     )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        [],
+        ["--version", "1.2.3"],
+        ["--channel", "preview"],
+        ["--version", "1.2.3", "--channel", "stable"],
+        ["--version", "1.2.3-listening-test.1", "--channel", "stable"],
+        ["--version", "1.2.3", "--channel", "preview"],
+    ),
+)
+def test_online_integration_test_requires_explicit_preview_identity(
+    monkeypatch, tmp_path, argv
+):
+    repo = tmp_path / "repo"
+    monkeypatch.setattr(build_e14.d0_paths, "REPO_ROOT", repo)
+    paths = _plan_paths(repo)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        build_e14, "build_frontend", lambda *a, **k: calls.append("frontend")
+    )
+    monkeypatch.setattr(
+        build_e14, "build_package", lambda *a, **k: calls.append("package")
+    )
+    assert (
+        _run(
+            monkeypatch,
+            [
+                "--build-root",
+                str(paths["build_root"]),
+                "--online-integration-test",
+                *argv,
+            ],
+        )
+        == 2
+    )
+    assert calls == []
+
+
+def test_online_integration_test_passes_fixed_runtime_hook(
+    monkeypatch, tmp_path
+):
+    package_kwargs: list[dict] = []
+    paths, calls = _fake_main_env(
+        monkeypatch,
+        tmp_path,
+        change_mid_build=False,
+        package_kwargs=package_kwargs,
+    )
+    version = "1.2.3-listening-test.4"
+    rc = _run(
+        monkeypatch,
+        [
+            "--build-root",
+            str(paths["build_root"]),
+            "--hash-out",
+            str(tmp_path / "out" / "hash.json"),
+            "--source-freeze-out",
+            str(tmp_path / "out" / "freeze.json"),
+            "--online-integration-test",
+            "--version",
+            version,
+            "--channel",
+            "preview",
+        ],
+    )
+    assert rc == 0
+    assert calls == [
+        "freeze_before",
+        "frontend",
+        "package",
+        "metadata",
+        "freeze_after",
+    ]
+    assert package_kwargs == [
+        {"runtime_hook": build_e14.ONLINE_INTEGRATION_TEST_HOOK}
+    ]
+    freeze = json.loads(
+        (tmp_path / "out" / "freeze.json").read_text(encoding="utf-8")
+    )
+    assert freeze["version"] == version
+    assert freeze["channel"] == "preview"
+
+
+def test_normal_build_passes_no_runtime_hook(monkeypatch, tmp_path):
+    package_kwargs: list[dict] = []
+    paths, calls = _fake_main_env(
+        monkeypatch,
+        tmp_path,
+        change_mid_build=False,
+        package_kwargs=package_kwargs,
+    )
+    rc = _run(
+        monkeypatch,
+        [
+            "--build-root",
+            str(paths["build_root"]),
+            "--hash-out",
+            str(tmp_path / "out" / "hash.json"),
+            "--source-freeze-out",
+            str(tmp_path / "out" / "freeze.json"),
+        ],
+    )
+    assert rc == 0
+    assert package_kwargs == [{"runtime_hook": None}]
+    assert calls == [
+        "freeze_before",
+        "frontend",
+        "package",
+        "metadata",
+        "freeze_after",
+    ]
+
+
+def test_online_integration_hook_environment_and_default_roots(tmp_path):
+    localappdata = tmp_path / "localappdata"
+    bait = tmp_path / "bait" / "KindergartenManager"
+    result = _hook_probe(
+        tmp_path,
+        _HOOK_PROBE_BODY,
+        updates={
+            "LOCALAPPDATA": str(localappdata),
+            "KGM_LOCAL_DATA_DIR": str(bait / "data"),
+            "KGM_LOCAL_DB_PATH": str(bait / "kindergarten.db"),
+            "KGM_D1_FRONTEND_DIR": str(bait / "frontend"),
+        },
+    )
+    root = localappdata / "KGNextOnlineIntegrationTest"
+    assert result["dotenv"] == "1"
+    assert result["origin"] == "https://manager-next.ywyz.tech"
+    assert result["source"] == "https://manager-next.ywyz.tech"
+    assert result["key_id"] == "kgm-it-prompt-20261108"
+    assert result["public_key"] == (
+        "GOOfY/r1qhE8nxlkEq0OWKuTqyLMiuOSEloTFIAm59U="
+    )
+    assert result["channel"] == "stable"
+    assert Path(result["data"]).resolve() == (root / "data").resolve()
+    assert Path(result["d0"]).resolve() == root.resolve()
+    assert Path(result["default_data"]).resolve() == (root / "data").resolve()
+    assert Path(result["credential"]).resolve() == (
+        root / "credentials"
+    ).resolve()
+    assert result["db_path"] is None
+    assert result["frontend"] is None
+    for value in (
+        result["data"],
+        result["d0"],
+        result["default_data"],
+        result["credential"],
+    ):
+        assert "KindergartenManager" not in Path(value).parts
+
+
+def test_online_integration_hook_without_localappdata_stays_isolated(tmp_path):
+    result = _hook_probe(
+        tmp_path,
+        _HOOK_PROBE_BODY,
+        updates={"LOCALAPPDATA": None},
+    )
+    for value in (result["data"], result["default_data"]):
+        parts = Path(value).parts
+        assert parts[-4:] == (
+            "AppData",
+            "Local",
+            "KGNextOnlineIntegrationTest",
+            "data",
+        )
+        assert "KindergartenManager" not in parts
+    assert Path(result["credential"]).parts[-3:] == (
+        "Local",
+        "KGNextOnlineIntegrationTest",
+        "credentials",
+    )
+    assert "KindergartenManager" not in Path(result["credential"]).parts
+
+
+def test_online_integration_hook_keeps_explicit_roots_authoritative(tmp_path):
+    explicit_data = tmp_path / "explicit-data"
+    explicit_credential = tmp_path / "explicit-credentials"
+    explicit_data.mkdir()
+    explicit_credential.mkdir()
+    result = _hook_probe(
+        tmp_path,
+        _HOOK_EXPLICIT_ROOTS_BODY,
+        updates={
+            "LOCALAPPDATA": str(tmp_path / "localappdata"),
+            "EXPLICIT_DATA": str(explicit_data),
+            "EXPLICIT_CREDENTIAL": str(explicit_credential),
+        },
+    )
+    assert Path(result["data"]).resolve() == explicit_data.resolve()
+    assert Path(result["credential"]).resolve() == explicit_credential.resolve()
 
 
 @pytest.mark.parametrize(
@@ -936,6 +1226,83 @@ def test_build_package_excludes_optional_sqlalchemy_cyextensions(monkeypatch, tm
         "app.services.word_export_listening",
     ):
         assert ("--hidden-import", module) in pairs, module
+
+
+def test_build_package_adds_runtime_hook_only_when_requested(monkeypatch, tmp_path):
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(list(command))
+        dist_root = Path(command[command.index("--distpath") + 1])
+        package = dist_root / build_e14.APP_NAME
+        package.mkdir(parents=True, exist_ok=True)
+        (package / f"{build_e14.APP_NAME}.exe").write_bytes(b"MZ")
+
+    monkeypatch.setattr(build_e14.subprocess, "run", fake_run)
+    hooked = tmp_path / "dist-hooked"
+    normal = tmp_path / "dist-normal"
+    build_e14.build_package(
+        hooked,
+        tmp_path / "frontend",
+        tmp_path / "work-hooked",
+        tmp_path / "spec-hooked",
+        runtime_hook=build_e14.ONLINE_INTEGRATION_TEST_HOOK,
+    )
+    build_e14.build_package(
+        normal,
+        tmp_path / "frontend",
+        tmp_path / "work-normal",
+        tmp_path / "spec-normal",
+    )
+    hooked_pairs = set(zip(commands[0], commands[0][1:]))
+    normal_pairs = set(zip(commands[1], commands[1][1:]))
+    assert (
+        "--runtime-hook",
+        str(build_e14.ONLINE_INTEGRATION_TEST_HOOK.resolve()),
+    ) in hooked_pairs
+    assert "--runtime-hook" not in normal_pairs
+    assert (
+        "--runtime-hook",
+        str(build_e14.ONLINE_INTEGRATION_TEST_HOOK.resolve()),
+    ) not in normal_pairs
+
+
+def test_source_freeze_covers_online_integration_hook():
+    relative = "desktop/e14_online_integration_test_hook.py"
+    assert relative in build_e14.SOURCE_GROUPS["build"]
+    freeze = build_e14.source_freeze()
+    paths = {item["path"].replace("\\", "/") for item in freeze["files"]}
+    assert relative in paths
+
+
+def test_online_integration_readme_is_limited_to_test_build(tmp_path):
+    info = {
+        "version": "1.2.3-listening-test.4",
+        "channel": "preview",
+        "build_id": "synthetic-build",
+        "database_revision": "synthetic-head",
+        "source_commit": "a" * 40,
+        "frontend_digest": "b" * 64,
+    }
+    normal = tmp_path / "normal.txt"
+    test = tmp_path / "test.txt"
+    build_e14.write_portable_readme(normal, info)
+    build_e14.write_portable_readme(
+        test, info, online_integration_test=True
+    )
+    normal_text = normal.read_text(encoding="utf-8")
+    test_text = test.read_text(encoding="utf-8")
+    assert "KGNextOnlineIntegrationTest" not in normal_text
+    assert "KGNextOnlineIntegrationTest" in test_text
+    assert (
+        "%LOCALAPPDATA%\\KGNextOnlineIntegrationTest\\data" in test_text
+    )
+    assert (
+        "%LOCALAPPDATA%\\KGNextOnlineIntegrationTest\\credentials"
+        in test_text
+    )
+    assert "教师无需填写地址、公钥或切换渠道" in test_text
+    assert "不得用于真实教师资料" in test_text
 
 
 def test_build_package_rejects_reintroduced_sqlalchemy_compiled_extension(monkeypatch, tmp_path):

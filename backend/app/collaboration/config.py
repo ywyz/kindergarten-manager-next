@@ -1,9 +1,11 @@
 """Independent configuration for the optional online collaboration service.
 
 The collaboration service is deliberately separate from the local SQLite
-runtime.  It refuses to start without an explicit PostgreSQL URL and two
+runtime.  It refuses to start without an explicit MySQL 8.4 URL and two
 high-entropy secrets; there is no empty/default fallback and no implicit
-SQLite mode.  Secrets are excluded from ``repr`` and are never logged.
+SQLite mode.  Only ``mysql+pymysql`` is accepted at runtime.  The historical
+PostgreSQL SQL is retained unchanged as a record, not as a runtime fallback.
+Secrets are excluded from ``repr`` and are never logged.
 """
 
 from __future__ import annotations
@@ -12,7 +14,10 @@ import os
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+# Retained only as a historical PostgreSQL migration fact.  The ORM is
+# schema-less: the selected database in the URL is the collaboration database.
 COLLABORATION_SCHEMA = "collaboration"
+DATABASE_SCHEMES = ("mysql+pymysql",)
 MIN_SECRET_CHARS = 32
 DEFAULT_PREVIEW_TTL_SECONDS = 600
 MIN_PREVIEW_TTL_SECONDS = 60
@@ -53,9 +58,9 @@ class CollaborationSettings:
         if not self.database_url:
             raise RuntimeError("KGM_COLLAB_DATABASE_URL is required")
         parsed = urlsplit(self.database_url)
-        if parsed.scheme != "postgresql+psycopg":
+        if parsed.scheme not in DATABASE_SCHEMES:
             raise RuntimeError(
-                "KGM_COLLAB_DATABASE_URL must use postgresql+psycopg://"
+                "KGM_COLLAB_DATABASE_URL must use mysql+pymysql://"
             )
         if not parsed.hostname:
             raise RuntimeError("KGM_COLLAB_DATABASE_URL must include a host")

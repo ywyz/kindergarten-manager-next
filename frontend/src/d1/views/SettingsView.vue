@@ -7,7 +7,7 @@
  * their old headers and are listed, never rewritten); confirmed tokens are
  * never reused after an input change or a preview close.
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, apiPost, ApiError, pathSegment } from '../client'
 import type {
@@ -21,13 +21,67 @@ import AiSettingsPanel from './AiSettingsPanel.vue'
 import GameConfigPanel from './GameConfigPanel.vue'
 import CollaborationPanel from './CollaborationPanel.vue'
 
-const props = defineProps<{ context: LocalContext; frozen?: boolean; reloadContext?: () => Promise<LocalContext> }>()
+const props = defineProps<{
+  context: LocalContext
+  frozen?: boolean
+  section?: 'collaboration' | null
+  reloadContext?: () => Promise<LocalContext>
+}>()
 const emit = defineEmits<{
   (e: 'draft-targets', targets: SettingsDraftTarget[]): void
   (e: 'draft-active', active: boolean): void
   (e: 'leave', run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed'): void
   (e: 'open-maintenance'): void
+  (e: 'section', section: 'collaboration' | null): void
 }>()
+
+type SettingsSection = 'main' | 'collaboration'
+type SettingsGroup = 'backup' | 'terms' | 'calendar' | 'games' | 'ai'
+
+const activeSection = ref<SettingsSection>(
+  props.section === 'collaboration' ? 'collaboration' : 'main',
+)
+const expandedGroups = reactive<Record<SettingsGroup, boolean>>({
+  backup: false,
+  terms: false,
+  calendar: false,
+  games: false,
+  ai: false,
+})
+
+const TARGET_GROUPS: Partial<Record<SettingsDraftTargetKind, SettingsGroup>> = {
+  term: 'terms',
+  'new-term': 'terms',
+  override: 'calendar',
+  'game-config': 'games',
+  'ai-config': 'ai',
+  'ai-prompts': 'ai',
+}
+
+function setSettingsSection(section: SettingsSection): void {
+  activeSection.value = section
+  emit('section', section === 'collaboration' ? 'collaboration' : null)
+}
+
+function openCollaborationSection(): void {
+  setSettingsSection('collaboration')
+}
+
+function openMainSection(): void {
+  setSettingsSection('main')
+}
+
+function onGroupToggle(name: SettingsGroup, event: Event): void {
+  const target = event.target as HTMLDetailsElement | null
+  if (target) expandedGroups[name] = target.open
+}
+
+watch(
+  () => props.section,
+  (value) => {
+    activeSection.value = value === 'collaboration' ? 'collaboration' : 'main'
+  },
+)
 
 const GRADE_LABELS: Record<string, string> = { small: '小班', middle: '中班', large: '大班' }
 const STATE_LABELS: Record<string, string> = {
@@ -113,6 +167,8 @@ const gamePanelRef = ref<{ draftTargets?: () => SettingsDraftTargetKind[]; focus
 const collaborationPanelRef = ref<{
   draftTargets?: () => string[]
   pendingWrite?: () => unknown
+  pendingPromotion?: () => unknown
+  promotionStale?: () => boolean
   currentStatus?: () => { connected: boolean } | null
   currentPreview?: () => unknown
   currentPublishPreview?: () => unknown
@@ -163,6 +219,8 @@ interface PendingApplied {
   submitted: ConfigChange
 }
 let pendingAppliedMerge: PendingApplied | null = null
+
+const activeLocalTerm = computed(() => props.context.term)
 
 function currentTerm(termId: string) {
   return props.context.terms.find((term) => term.id === termId) ?? null
@@ -1103,19 +1161,49 @@ const FOCUS_SELECTORS: Record<SettingsDraftTargetKind, string> = {
 
 /**
  * Online collaboration has several actionable regions.  Pending receipts must
- * win: connected -> query controls; disconnected -> the original-account
- * credential field; otherwise focus the explicit preview/publish area.
+ * win: connected -> query controls; disconnected -> the normal one-time code
+ * input (the manual credential remains an explicit backup); otherwise focus
+ * the explicit preview/publish area.
  */
+function collaborationFocusSelector(
+  pending: boolean,
+  promotionPending: boolean,
+  connected: boolean,
+): string | null {
+  if (!pending && !promotionPending) return null
+  if (!connected) return '[data-d1="collaboration-redeem-code"]'
+  return promotionPending
+    ? '[data-d1="collaboration-query-promotion"]'
+    : '[data-d1="collaboration-pending-actions"] button'
+}
+
+function openDetailsAncestors(element: Element | null): void {
+  let node: Element | null = element
+  while (node) {
+    if (node.tagName === 'DETAILS') {
+      ;(node as HTMLDetailsElement).open = true
+    }
+    node = node.parentElement
+  }
+}
+
 function focusCollaborationDraft(): void {
+  if (typeof document === 'undefined') return
   const pending = Boolean(collaborationPanelRef.value?.pendingWrite?.())
+  const promotionPending = Boolean(
+    collaborationPanelRef.value?.pendingPromotion?.(),
+  )
   const connected = collaborationPanelRef.value?.currentStatus?.()?.connected === true
-  let selector = '[data-d1="collaboration"]'
-  if (pending) {
-    selector = connected
-      ? '[data-d1="collaboration-pending-actions"] button'
-      : '[data-d1="collaboration-credential"]'
-  } else if (document.querySelector('[data-d1="collaboration-class-unknown"]')) {
+  const pendingSelector = collaborationFocusSelector(
+    pending,
+    promotionPending,
+    connected,
+  )
+  let selector = pendingSelector ?? '[data-d1="collaboration"]'
+  if (!pendingSelector && document.querySelector('[data-d1="collaboration-class-unknown"]')) {
     selector = '[data-d1="collaboration-class-unknown"]'
+  } else if (collaborationPanelRef.value?.promotionStale?.()) {
+    selector = '[data-d1="collaboration-promotion-form"]'
   } else if (collaborationPanelRef.value?.currentPreview?.()) {
     selector = '[data-d1="collaboration-preview"]'
   } else if (collaborationPanelRef.value?.currentPublishPreview?.()) {
@@ -1123,17 +1211,42 @@ function focusCollaborationDraft(): void {
   }
   const element = document.querySelector(selector) as HTMLElement | null
   if (!element) return
+  openDetailsAncestors(element)
   element.scrollIntoView?.({ block: 'center' })
   if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
   element.focus?.()
 }
 
 /** Focus one structured target in this same instance; never remounts. */
-function focusTarget(target: SettingsDraftTarget): void {
+async function focusTarget(target: SettingsDraftTarget): Promise<void> {
   if (target.kind === 'online-collaboration') {
-    focusCollaborationDraft()
+    setSettingsSection('collaboration')
+    await nextTick()
+    if (typeof document !== 'undefined') {
+      openDetailsAncestors(
+        document.querySelector('[data-d1="collaboration"]'),
+      )
+      await nextTick()
+      focusCollaborationDraft()
+    }
     return
   }
+
+  setSettingsSection('main')
+  const group = TARGET_GROUPS[target.kind]
+  if (group) expandedGroups[group] = true
+  await nextTick()
+
+  if (target.kind === 'ai-config' || target.kind === 'ai-prompts') {
+    aiPanelRef.value?.focusDraftTarget?.(target.kind)
+    return
+  }
+  if (target.kind === 'game-config') {
+    gamePanelRef.value?.focusDraftTarget?.()
+    return
+  }
+  if (typeof document === 'undefined') return
+
   const selector =
     target.kind === 'term'
       ? target.id
@@ -1144,14 +1257,8 @@ function focusTarget(target: SettingsDraftTarget): void {
     ? (document.querySelector(selector) as HTMLElement | null)
     : null
   if (!element) return
-  if (target.kind === 'ai-config' || target.kind === 'ai-prompts') {
-    aiPanelRef.value?.focusDraftTarget?.(target.kind)
-    return
-  }
-  if (target.kind === 'game-config') {
-    gamePanelRef.value?.focusDraftTarget?.()
-    return
-  }
+  openDetailsAncestors(element)
+  await nextTick()
   element.scrollIntoView?.({ block: 'center' })
   if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
   element.focus?.()
@@ -1162,352 +1269,450 @@ function draftBlockingTargets(): SettingsDraftTarget[] {
   return draftTargets()
 }
 
-defineExpose({ draftTargets, focusTarget })
+defineExpose({
+  draftTargets,
+  focusTarget,
+  openCollaborationSection,
+  openMainSection,
+  collaborationFocusSelector,
+})
 </script>
 
 <template>
-  <div class="settings">
-    <div class="toolbar">
-      <h2>设置与配置维护</h2>
+  <div
+    class="settings"
+    :class="{ 'settings-collaboration-mode': activeSection === 'collaboration' }"
+  >
+    <div v-if="activeSection === 'collaboration'" class="toolbar focus-toolbar">
+      <div>
+        <h2>在线协作</h2>
+        <p class="muted">
+          输入管理员发的一次性码，连接后选择班级。
+        </p>
+      </div>
       <div class="actions">
-        <el-tag size="small" type="info">配置版本 v{{ props.context.config_version }}</el-tag>
+        <el-button size="small" data-d1="settings-section-main" :disabled="frozen" @click="openMainSection">
+          返回设置
+        </el-button>
         <el-button size="small" data-d1="back-workbench" :disabled="frozen" @click="backToWorkbench">
           返回工作台
         </el-button>
       </div>
     </div>
 
-    <el-card class="section" shadow="never" data-d1="backup-restore">
-      <template #header>备份与恢复</template>
-      <p class="muted">
-        创建完整本地备份，或从本地备份校验、预览并恢复。恢复前会自动保留完整保护副本。
-      </p>
-      <el-button data-d1="open-backup-restore" :disabled="frozen" @click="emit('open-maintenance')">
-        创建备份 / 从备份恢复
-      </el-button>
-    </el-card>
-
-    <el-alert
-      type="info"
-      :closable="false"
-      class="section"
-      title="普通姓名、园所、班级和学期修改点一次「确认修改」即先预览后应用；日期例外与批量/游戏配置仍保留预览确认。已有计划保留原表头，不会被改写。"
-    />
-    <el-alert v-if="errorText" type="error" :closable="false" class="section" data-d1="settings-error" :title="errorText" />
-    <el-alert v-if="applyResultText" type="success" :closable="false" class="section" data-d1="settings-applied" :title="applyResultText" />
-
-    <el-card class="section" shadow="never">
-      <template #header>姓名与园所</template>
-      <div class="fields">
-        <div class="field">
-          <label>姓名</label>
-          <el-input v-model="profileName" maxlength="80" :disabled="frozen" data-d1="settings-profile-name" />
+    <div :hidden="activeSection !== 'main'" class="settings-main">
+      <div class="toolbar">
+        <h2>设置</h2>
+        <div class="actions">
+          <el-button size="small" data-d1="back-workbench" :disabled="frozen" @click="backToWorkbench">
+            返回工作台
+          </el-button>
         </div>
-        <div class="field">
-          <label>园所名称（可清空）</label>
-          <el-input v-model="schoolName" maxlength="120" :disabled="frozen" data-d1="settings-school" />
-        </div>
-        <el-button data-d1="preview-profile" data-d1-confirm="confirm-profile" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeProfile())">
-          确认修改
-        </el-button>
       </div>
-    </el-card>
 
-    <el-card class="section" shadow="never">
-      <template #header>当前班级（升班沿用同一班级）</template>
-      <div class="fields">
-        <div class="field">
-          <label>班级名称</label>
-          <el-input v-model="className" maxlength="80" :disabled="frozen" data-d1="settings-class-name" />
-        </div>
-        <div class="field">
-          <label>年级</label>
-          <el-select v-model="classGrade" :disabled="frozen" data-d1="settings-class-grade">
-            <el-option label="小班" value="small" />
-            <el-option label="中班" value="middle" />
-            <el-option label="大班" value="large" />
-          </el-select>
-        </div>
-        <div class="field field-wide">
-          <label>班级教师姓名（每行一个，可留空；顺序和同名保留）</label>
-          <el-input
-            v-model="headerTeacherNamesText"
-            type="textarea"
-            :rows="3"
-            :disabled="frozen"
-            data-d1="settings-class-teachers"
-          />
-        </div>
-        <div class="field">
-          <label>保育员姓名（可清空）</label>
-          <el-input
-            v-model="caregiverName"
-            maxlength="80"
-            :disabled="frozen"
-            data-d1="settings-class-caregiver"
-          />
-        </div>
-        <el-button data-d1="confirm-class" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeClass())">
-          确认修改
-        </el-button>
-      </div>
-    </el-card>
+      <el-alert v-if="errorText" type="error" :closable="false" class="section" data-d1="settings-error" :title="errorText" />
+      <el-alert v-if="applyResultText" type="success" :closable="false" class="section" data-d1="settings-applied" :title="applyResultText" />
 
-    <el-card class="section" shadow="never">
-      <template #header>学期维护</template>
-      <div v-for="(form, index) in termForms" :key="form.id" class="term-row" data-d1="term-row" :data-term-id="form.id">
-        <el-input v-model="form.name" maxlength="80" class="term-name" :disabled="frozen" />
-        <el-date-picker
-          v-model="form.start_date"
-          type="date"
-          value-format="YYYY-MM-DD"
-          :clearable="false"
-          :disabled="frozen"
-          class="term-date"
-        />
-        <el-date-picker
-          v-model="form.end_date"
-          type="date"
-          value-format="YYYY-MM-DD"
-          :clearable="false"
-          :disabled="frozen"
-          class="term-date"
-        />
-        <el-button size="small" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmTermChange(form)">
-          确认修改
-        </el-button>
-      </div>
-      <div class="term-row new-term">
-        <el-input v-model="newTermName" maxlength="80" placeholder="新学期名称" class="term-name" :disabled="frozen" data-d1="new-term-name" />
-        <el-date-picker
-          v-model="newTermRange"
-          type="daterange"
-          value-format="YYYY-MM-DD"
-          start-placeholder="开始"
-          end-placeholder="结束"
-          :disabled="frozen"
-        />
-        <el-button size="small" data-d1="confirm-new-term" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmNewTerm">
-          确认新增
-        </el-button>
-      </div>
-      <p class="muted">学期闭区间不得重叠或共端点；修改起止日期会生成新的日历修订，已保存计划保留原周次。</p>
-    </el-card>
+      <el-card class="section" shadow="never" data-d1="settings-profile">
+        <template #header>姓名与园所</template>
+        <div class="fields">
+          <div class="field">
+            <label>姓名</label>
+            <el-input v-model="profileName" maxlength="80" :disabled="frozen" data-d1="settings-profile-name" />
+          </div>
+          <div class="field">
+            <label>园所名称（可清空）</label>
+            <el-input v-model="schoolName" maxlength="120" :disabled="frozen" data-d1="settings-school" />
+          </div>
+          <el-button data-d1="preview-profile" data-d1-confirm="confirm-profile" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeProfile())">
+            确认修改
+          </el-button>
+        </div>
+      </el-card>
 
-    <el-card class="section" shadow="never">
-      <template #header>日历例外（逐日配置）</template>
-      <div class="fields">
-        <div class="field">
-          <label>学期</label>
-          <el-select v-model="overrideTermId" :disabled="frozen" data-d1="override-term">
-            <el-option
-              v-for="term in props.context.terms"
-              :key="term.id"
-              :label="`${term.name}（${term.start_date} ~ ${term.end_date}）`"
-              :value="term.id"
+      <el-card class="section" shadow="never" data-d1="settings-current-class">
+        <template #header>当前本地班级（升班沿用同一班级）</template>
+        <div class="fields">
+          <div class="field">
+            <label>班级名称</label>
+            <el-input v-model="className" maxlength="80" :disabled="frozen" data-d1="settings-class-name" />
+          </div>
+          <div class="field">
+            <label>年级</label>
+            <el-select v-model="classGrade" :disabled="frozen" data-d1="settings-class-grade">
+              <el-option label="小班" value="small" />
+              <el-option label="中班" value="middle" />
+              <el-option label="大班" value="large" />
+            </el-select>
+          </div>
+          <div class="field field-wide">
+            <label>班级教师姓名（每行一个，可留空；顺序和同名保留）</label>
+            <el-input
+              v-model="headerTeacherNamesText"
+              type="textarea"
+              :rows="3"
+              :disabled="frozen"
+              data-d1="settings-class-teachers"
             />
-          </el-select>
+          </div>
+          <div class="field">
+            <label>保育员姓名（可清空）</label>
+            <el-input
+              v-model="caregiverName"
+              maxlength="80"
+              :disabled="frozen"
+              data-d1="settings-class-caregiver"
+            />
+          </div>
+          <el-button data-d1="confirm-class" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeClass())">
+            确认修改
+          </el-button>
         </div>
-        <div class="field">
-          <label>日期</label>
-          <el-date-picker
-            v-model="overrideDate"
-            type="date"
-            value-format="YYYY-MM-DD"
-            :clearable="false"
-            :disabled="frozen"
-            data-d1="override-date"
+      </el-card>
+
+      <el-card class="section" shadow="never" data-d1="settings-current-term">
+        <template #header>当前学期</template>
+        <template v-if="activeLocalTerm">
+          <p>
+            <strong>{{ activeLocalTerm.name }}</strong>
+          </p>
+          <p class="muted">
+            {{ activeLocalTerm.start_date }} ~ {{ activeLocalTerm.end_date }}（本地当前学期）
+          </p>
+        </template>
+        <p v-else class="muted">
+          当前没有生效学期（休假或学期之间）。可在下方「其他学期与新建」中维护。
+        </p>
+      </el-card>
+
+      <el-card class="section" shadow="never" data-d1="settings-open-collaboration-card">
+        <template #header>在线协作</template>
+        <p class="muted">
+          在线发布、加入/恢复、选班和升班与本地设置相互独立，不会自动上传本机配置。
+        </p>
+        <el-button data-d1="settings-open-collaboration" :disabled="frozen" @click="openCollaborationSection">
+          打开在线协作
+        </el-button>
+      </el-card>
+
+      <el-card v-if="previewData" class="section" shadow="never" data-d1="settings-preview">
+        <template #header>
+          <div class="preview-head">
+            <span>影响预览（确认后才会应用）</span>
+            <el-tag size="small" :type="previewData.changed ? 'warning' : 'info'">
+              {{ previewData.changed ? '有实际修改' : '无实际修改' }}
+            </el-tag>
+          </div>
+        </template>
+        <p v-for="(line, index) in beforeAfterText()" :key="index">{{ line }}</p>
+        <div v-if="previewData.calendar_diff.length" class="diff-block">
+          <h4>日期变化（前 {{ previewData.calendar_diff.length }} 项）</h4>
+          <el-table :data="previewData.calendar_diff.slice(0, 60)" size="small">
+            <el-table-column prop="date" label="日期" width="110" />
+            <el-table-column label="状态" width="180">
+              <template #default="{ row }">
+                {{ STATE_LABELS[row.before_state] || row.before_state }} →
+                {{ STATE_LABELS[row.after_state] || row.after_state }}
+              </template>
+            </el-table-column>
+            <el-table-column label="周次" width="120">
+              <template #default="{ row }">
+                {{ row.before_week ?? '—' }} → {{ row.after_week ?? '—' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="例外">
+              <template #default="{ row }">
+                {{ row.override_before ? `${STATE_LABELS[row.override_before.state] || row.override_before.state}（${row.override_before.reason}）` : '—' }}
+                →
+                {{ row.override_after ? `${STATE_LABELS[row.override_after.state] || row.override_after.state}（${row.override_after.reason}）` : '—' }}
+              </template>
+            </el-table-column>
+          </el-table>
+          <p v-if="previewData.calendar_diff.length > 60" class="muted">
+            仅显示前 60 项，共 {{ previewData.calendar_diff.length }} 项。
+          </p>
+        </div>
+        <div class="impact-block">
+          <h4>
+            已有日计划影响：保留旧表头 {{ previewData.impact.retained_header_count }} 条；本次涉及变化
+            {{ previewData.impact.affected_plans.length }} 条
+          </h4>
+          <el-table
+            v-if="previewData.impact.affected_plans.length"
+            :data="previewData.impact.affected_plans"
+            size="small"
+            data-d1="impact-plans"
+          >
+            <el-table-column prop="plan_date" label="日期" width="110" />
+            <el-table-column prop="content_version" label="内容版本" width="90" />
+            <el-table-column label="存储周次 → 新解释" width="150">
+              <template #default="{ row }">
+                {{ row.stored_week_number ?? '—' }} → {{ row.proposed_week_number ?? '—' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="原因">
+              <template #default="{ row }">
+                {{ impactReasonTextList(row.reasons, DAILY_IMPACT_REASON_LABELS) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="之后可否新建" width="110">
+              <template #default="{ row }">
+                {{ row.creation_eligible_after ? '可以' : '不可以' }}
+              </template>
+            </el-table-column>
+          </el-table>
+          <p v-else class="muted">本条修改不影响任何已保存日计划的日期解释。</p>
+          <h4 class="weekly-impact-head">
+            已有周计划影响：保留旧表头 {{ previewData.impact.weekly_retained_header_count }} 条；相关周
+            {{ previewData.impact.weekly_plans.length }} 条
+          </h4>
+          <el-table
+            v-if="previewData.impact.weekly_plans.length"
+            :data="previewData.impact.weekly_plans"
+            size="small"
+            data-d1="impact-weekly-plans"
+          >
+            <el-table-column prop="week_anchor_date" label="固定周锚点" width="120" />
+            <el-table-column prop="week_number_snapshot" label="创建周次" width="90" />
+            <el-table-column label="创建学期" width="220">
+              <template #default="{ row }">
+                {{ row.term_start_date }} ~ {{ row.term_end_date }}
+              </template>
+            </el-table-column>
+            <el-table-column label="版本" width="130">
+              <template #default="{ row }">
+                草稿 v{{ row.current_draft_version }} / 确认
+                {{ row.current_confirmed_version ?? '—' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="之后可否新建该周" width="140">
+              <template #default="{ row }">
+                {{ row.creation_eligible_after ? '可以' : '不可以' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="原因">
+              <template #default="{ row }">
+                {{ impactReasonTextList(row.reasons, WEEKLY_IMPACT_REASON_LABELS) }}
+              </template>
+            </el-table-column>
+          </el-table>
+          <p v-else class="muted">本条修改不涉及已保存的周计划。</p>
+          <p class="muted">
+            已保存计划仍可查看、编辑、确认与导出；日计划保留归属、周次、创建日历修订与表头，
+            周计划保留固定周锚点、创建学期／周次／日历与表头，不会按当前学期重排。
+          </p>
+        </div>
+        <div class="row">
+          <el-button data-d1="apply-preview" type="primary" :loading="applying" :disabled="frozen" @click="applyPreview">
+            确认应用
+          </el-button>
+          <el-button data-d1="cancel-preview" :disabled="applying || frozen" @click="clearPreview">
+            取消预览
+          </el-button>
+        </div>
+      </el-card>
+
+      <el-card v-if="awaitingContextVersion !== null || contextReloadFailed" class="section" shadow="never" data-d1="settings-context-pending">
+        <template #header>最新配置读取中</template>
+        <p class="muted">
+          <template v-if="contextReloadFailed">
+            最新配置读取失败：所有草稿仍保留，页面不会提交已知过期版本。
+          </template>
+          <template v-else>
+            上一项已提交，正在等待最新配置版本 {{ awaitingContextVersion }} 读取到位；期间不会提交新修改，草稿和输入保持不变。
+          </template>
+        </p>
+        <el-button data-d1="retry-context-read" :disabled="frozen" @click="retryContextRead">
+          重新读取配置
+        </el-button>
+      </el-card>
+
+      <el-card v-if="pendingConfirm" class="section" shadow="never" data-d1="settings-pending-confirm">
+        <template #header>提交结果未确认</template>
+        <p class="muted">
+          已提交的原始请求仍保持不变，页面不能离开、取消或改写它。请先核对回执；未找到回执时可明确用同一请求再次提交。
+        </p>
+        <div class="row">
+          <el-button data-d1="query-pending-confirm" :loading="applying" :disabled="applying" @click="queryPendingConfirm">
+            查询提交回执
+          </el-button>
+          <el-button data-d1="retry-pending-confirm" type="primary" :loading="applying" :disabled="applying || frozen" @click="retryPendingConfirm">
+            用同一请求再次提交
+          </el-button>
+        </div>
+      </el-card>
+
+      <details
+        class="settings-group"
+        data-d1="settings-group-terms"
+        :open="expandedGroups.terms"
+        @toggle="onGroupToggle('terms', $event)"
+      >
+        <summary>其他学期与新建 <span class="muted">学期名称、起止日期、新建</span></summary>
+        <el-card class="section group-card" shadow="never">
+          <template #header>学期维护</template>
+          <div v-for="(form, index) in termForms" :key="form.id" class="term-row" data-d1="term-row" :data-term-id="form.id">
+            <el-input v-model="form.name" maxlength="80" class="term-name" :disabled="frozen" />
+            <el-date-picker
+              v-model="form.start_date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              :clearable="false"
+              :disabled="frozen"
+              class="term-date"
+            />
+            <el-date-picker
+              v-model="form.end_date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              :clearable="false"
+              :disabled="frozen"
+              class="term-date"
+            />
+            <el-button size="small" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmTermChange(form)">
+              确认修改
+            </el-button>
+          </div>
+          <div class="term-row new-term">
+            <el-input v-model="newTermName" maxlength="80" placeholder="新学期名称" class="term-name" :disabled="frozen" data-d1="new-term-name" />
+            <el-date-picker
+              v-model="newTermRange"
+              type="daterange"
+              value-format="YYYY-MM-DD"
+              start-placeholder="开始"
+              end-placeholder="结束"
+              :disabled="frozen"
+            />
+            <el-button size="small" data-d1="confirm-new-term" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmNewTerm">
+              确认新增
+            </el-button>
+          </div>
+          <p class="muted">学期闭区间不得重叠或共端点；修改起止日期会生成新的日历修订，已保存计划保留原周次。</p>
+        </el-card>
+      </details>
+
+      <details
+        class="settings-group"
+        data-d1="settings-group-calendar"
+        :open="expandedGroups.calendar"
+        @toggle="onGroupToggle('calendar', $event)"
+      >
+        <summary>日历例外 <span class="muted">逐日上课/停课、撤销例外</span></summary>
+        <el-card class="section group-card" shadow="never">
+          <template #header>日历例外（逐日配置）</template>
+          <div class="fields">
+            <div class="field">
+              <label>学期</label>
+              <el-select v-model="overrideTermId" :disabled="frozen" data-d1="override-term">
+                <el-option
+                  v-for="term in props.context.terms"
+                  :key="term.id"
+                  :label="`${term.name}（${term.start_date} ~ ${term.end_date}）`"
+                  :value="term.id"
+                />
+              </el-select>
+            </div>
+            <div class="field">
+              <label>日期</label>
+              <el-date-picker
+                v-model="overrideDate"
+                type="date"
+                value-format="YYYY-MM-DD"
+                :clearable="false"
+                :disabled="frozen"
+                data-d1="override-date"
+              />
+            </div>
+            <div class="field">
+              <label>设置</label>
+              <el-select v-model="overrideState" :disabled="frozen" data-d1="override-state">
+                <el-option label="例外上课" value="teaching" />
+                <el-option label="例外停课" value="non_teaching" />
+                <el-option label="撤销例外" value="none" />
+              </el-select>
+            </div>
+            <div v-if="overrideState !== 'none'" class="field">
+              <label>原因（1–200 字）</label>
+              <el-input v-model="overrideReason" maxlength="200" :disabled="frozen" data-d1="override-reason" />
+            </div>
+            <el-button data-d1="preview-override" :loading="previewing" :disabled="frozen" @click="previewOverride">
+              预览修改
+            </el-button>
+          </div>
+          <p v-if="overrideTerm" class="muted">
+            当前学期范围：{{ overrideTerm.start_date }} ~ {{ overrideTerm.end_date }}；日期必须在该范围内。
+          </p>
+        </el-card>
+      </details>
+
+      <details
+        class="settings-group"
+        data-d1="settings-group-games"
+        :open="expandedGroups.games"
+        @toggle="onGroupToggle('games', $event)"
+      >
+        <summary>班级游戏配置 <span class="muted">本地配置、来源带入与预览确认</span></summary>
+        <GameConfigPanel
+          ref="gamePanelRef"
+          :frozen="frozen"
+          :committed-config-version="committedConfigVersion"
+          @draft-active="(value: boolean) => (gameDraftActive = value)"
+          @applied="() => requestReload()"
+        />
+      </details>
+
+      <details
+        class="settings-group"
+        data-d1="settings-group-ai"
+        :open="expandedGroups.ai"
+        @toggle="onGroupToggle('ai', $event)"
+      >
+        <summary>AI 供应商与提示词 <span class="muted">密钥、模型、个人指导与栏目提示词</span></summary>
+        <AiSettingsPanel ref="aiPanelRef" :frozen="frozen" @draft-active="(value: boolean) => (aiDraftActive = value)" />
+      </details>
+
+      <details
+        class="settings-group"
+        data-d1="settings-group-backup"
+        :open="expandedGroups.backup"
+        @toggle="onGroupToggle('backup', $event)"
+      >
+        <summary>备份与恢复 <span class="muted">完整备份、校验、预览与恢复</span></summary>
+        <el-card class="section group-card" shadow="never" data-d1="backup-restore">
+          <template #header>备份与恢复</template>
+          <p class="muted">
+            创建完整本地备份，或从本地备份校验、预览并恢复。恢复前会自动保留完整保护副本。
+          </p>
+          <el-button data-d1="open-backup-restore" :disabled="frozen" @click="emit('open-maintenance')">
+            创建备份 / 从备份恢复
+          </el-button>
+        </el-card>
+      </details>
+
+      <div class="section row">
+        <el-button data-d1="cancel-draft" :disabled="frozen" @click="cancelDraft">取消编辑（还原当前配置）</el-button>
+      </div>
+
+      <details class="settings-group settings-about" data-d1="settings-group-about">
+        <summary>版本与说明</summary>
+        <div class="section">
+          <el-tag size="small" type="info">配置版本 v{{ props.context.config_version }}</el-tag>
+          <el-alert
+            type="info"
+            :closable="false"
+            class="section"
+            title="普通姓名、园所、班级和学期修改点一次「确认修改」即先预览后应用；日期例外与批量/游戏配置仍保留预览确认。已有计划保留原表头，不会被改写。"
           />
         </div>
-        <div class="field">
-          <label>设置</label>
-          <el-select v-model="overrideState" :disabled="frozen" data-d1="override-state">
-            <el-option label="例外上课" value="teaching" />
-            <el-option label="例外停课" value="non_teaching" />
-            <el-option label="撤销例外" value="none" />
-          </el-select>
-        </div>
-        <div v-if="overrideState !== 'none'" class="field">
-          <label>原因（1–200 字）</label>
-          <el-input v-model="overrideReason" maxlength="200" :disabled="frozen" data-d1="override-reason" />
-        </div>
-        <el-button data-d1="preview-override" :loading="previewing" :disabled="frozen" @click="previewOverride">
-          预览修改
-        </el-button>
-      </div>
-      <p v-if="overrideTerm" class="muted">
-        当前学期范围：{{ overrideTerm.start_date }} ~ {{ overrideTerm.end_date }}；日期必须在该范围内。
-      </p>
-    </el-card>
+      </details>
+    </div>
 
-    <el-card v-if="previewData" class="section" shadow="never" data-d1="settings-preview">
-      <template #header>
-        <div class="preview-head">
-          <span>影响预览（确认后才会应用）</span>
-          <el-tag size="small" :type="previewData.changed ? 'warning' : 'info'">
-            {{ previewData.changed ? '有实际修改' : '无实际修改' }}
-          </el-tag>
-        </div>
-      </template>
-      <p v-for="(line, index) in beforeAfterText()" :key="index">{{ line }}</p>
-      <div v-if="previewData.calendar_diff.length" class="diff-block">
-        <h4>日期变化（前 {{ previewData.calendar_diff.length }} 项）</h4>
-        <el-table :data="previewData.calendar_diff.slice(0, 60)" size="small">
-          <el-table-column prop="date" label="日期" width="110" />
-          <el-table-column label="状态" width="180">
-            <template #default="{ row }">
-              {{ STATE_LABELS[row.before_state] || row.before_state }} →
-              {{ STATE_LABELS[row.after_state] || row.after_state }}
-            </template>
-          </el-table-column>
-          <el-table-column label="周次" width="120">
-            <template #default="{ row }">
-              {{ row.before_week ?? '—' }} → {{ row.after_week ?? '—' }}
-            </template>
-          </el-table-column>
-          <el-table-column label="例外">
-            <template #default="{ row }">
-              {{ row.override_before ? `${STATE_LABELS[row.override_before.state] || row.override_before.state}（${row.override_before.reason}）` : '—' }}
-              →
-              {{ row.override_after ? `${STATE_LABELS[row.override_after.state] || row.override_after.state}（${row.override_after.reason}）` : '—' }}
-            </template>
-          </el-table-column>
-        </el-table>
-        <p v-if="previewData.calendar_diff.length > 60" class="muted">
-          仅显示前 60 项，共 {{ previewData.calendar_diff.length }} 项。
-        </p>
-      </div>
-      <div class="impact-block">
-        <h4>
-          已有日计划影响：保留旧表头 {{ previewData.impact.retained_header_count }} 条；本次涉及变化
-          {{ previewData.impact.affected_plans.length }} 条
-        </h4>
-        <el-table
-          v-if="previewData.impact.affected_plans.length"
-          :data="previewData.impact.affected_plans"
-          size="small"
-          data-d1="impact-plans"
-        >
-          <el-table-column prop="plan_date" label="日期" width="110" />
-          <el-table-column prop="content_version" label="内容版本" width="90" />
-          <el-table-column label="存储周次 → 新解释" width="150">
-            <template #default="{ row }">
-              {{ row.stored_week_number ?? '—' }} → {{ row.proposed_week_number ?? '—' }}
-            </template>
-          </el-table-column>
-          <el-table-column label="原因">
-            <template #default="{ row }">
-              {{ impactReasonTextList(row.reasons, DAILY_IMPACT_REASON_LABELS) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="之后可否新建" width="110">
-            <template #default="{ row }">
-              {{ row.creation_eligible_after ? '可以' : '不可以' }}
-            </template>
-          </el-table-column>
-        </el-table>
-        <p v-else class="muted">本条修改不影响任何已保存日计划的日期解释。</p>
-        <h4 class="weekly-impact-head">
-          已有周计划影响：保留旧表头 {{ previewData.impact.weekly_retained_header_count }} 条；相关周
-          {{ previewData.impact.weekly_plans.length }} 条
-        </h4>
-        <el-table
-          v-if="previewData.impact.weekly_plans.length"
-          :data="previewData.impact.weekly_plans"
-          size="small"
-          data-d1="impact-weekly-plans"
-        >
-          <el-table-column prop="week_anchor_date" label="固定周锚点" width="120" />
-          <el-table-column prop="week_number_snapshot" label="创建周次" width="90" />
-          <el-table-column label="创建学期" width="220">
-            <template #default="{ row }">
-              {{ row.term_start_date }} ~ {{ row.term_end_date }}
-            </template>
-          </el-table-column>
-          <el-table-column label="版本" width="130">
-            <template #default="{ row }">
-              草稿 v{{ row.current_draft_version }} / 确认
-              {{ row.current_confirmed_version ?? '—' }}
-            </template>
-          </el-table-column>
-          <el-table-column label="之后可否新建该周" width="140">
-            <template #default="{ row }">
-              {{ row.creation_eligible_after ? '可以' : '不可以' }}
-            </template>
-          </el-table-column>
-          <el-table-column label="原因">
-            <template #default="{ row }">
-              {{ impactReasonTextList(row.reasons, WEEKLY_IMPACT_REASON_LABELS) }}
-            </template>
-          </el-table-column>
-        </el-table>
-        <p v-else class="muted">本条修改不涉及已保存的周计划。</p>
-        <p class="muted">
-          已保存计划仍可查看、编辑、确认与导出；日计划保留归属、周次、创建日历修订与表头，
-          周计划保留固定周锚点、创建学期／周次／日历与表头，不会按当前学期重排。
-        </p>
-      </div>
-      <div class="row">
-        <el-button data-d1="apply-preview" type="primary" :loading="applying" :disabled="frozen" @click="applyPreview">
-          确认应用
-        </el-button>
-        <el-button data-d1="cancel-preview" :disabled="applying || frozen" @click="clearPreview">
-          取消预览
-        </el-button>
-      </div>
-    </el-card>
-
-    <el-card v-if="awaitingContextVersion !== null || contextReloadFailed" class="section" shadow="never" data-d1="settings-context-pending">
-      <template #header>最新配置读取中</template>
-      <p class="muted">
-        <template v-if="contextReloadFailed">
-          最新配置读取失败：所有草稿仍保留，页面不会提交已知过期版本。
-        </template>
-        <template v-else>
-          上一项已提交，正在等待最新配置版本 {{ awaitingContextVersion }} 读取到位；期间不会提交新修改，草稿和输入保持不变。
-        </template>
-      </p>
-      <el-button data-d1="retry-context-read" :disabled="frozen" @click="retryContextRead">
-        重新读取配置
-      </el-button>
-    </el-card>
-    <el-card v-if="pendingConfirm" class="section" shadow="never" data-d1="settings-pending-confirm">
-      <template #header>提交结果未确认</template>
-      <p class="muted">
-        已提交的原始请求仍保持不变，页面不能离开、取消或改写它。请先核对回执；未找到回执时可明确用同一请求再次提交。
-      </p>
-      <div class="row">
-        <el-button data-d1="query-pending-confirm" :loading="applying" :disabled="applying" @click="queryPendingConfirm">
-          查询提交回执
-        </el-button>
-        <el-button data-d1="retry-pending-confirm" type="primary" :loading="applying" :disabled="applying || frozen" @click="retryPendingConfirm">
-          用同一请求再次提交
-        </el-button>
-      </div>
-    </el-card>
-    <AiSettingsPanel ref="aiPanelRef" :frozen="frozen" @draft-active="(value: boolean) => (aiDraftActive = value)" />
-    <GameConfigPanel
-      ref="gamePanelRef"
-      :frozen="frozen"
-      :committed-config-version="committedConfigVersion"
-      @draft-active="(value: boolean) => (gameDraftActive = value)"
-      @applied="() => requestReload()"
-    />
-    <el-alert
-      class="section"
-      title="下方为在线协作，和上方本地班级游戏配置相互独立：在线发布或带入不会改写本地 SQLite，本地配置也不会自动上传。首次打开只读取本地在线协作状态，不会自动连接外部服务。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
-    <CollaborationPanel
-      ref="collaborationPanelRef"
-      :frozen="frozen"
-      @draft-active="(value: boolean) => (collaborationDraftActive = value)"
-    />
-
-    <div class="section row">
-      <el-button data-d1="cancel-draft" :disabled="frozen" @click="cancelDraft">取消编辑（还原当前配置）</el-button>
+    <div :hidden="activeSection !== 'collaboration'" class="settings-collaboration">
+      <CollaborationPanel
+        ref="collaborationPanelRef"
+        :frozen="frozen"
+        @draft-active="(value: boolean) => (collaborationDraftActive = value)"
+      />
     </div>
   </div>
 </template>
@@ -1517,6 +1722,44 @@ defineExpose({ draftTargets, focusTarget })
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.focus-toolbar {
+  align-items: flex-start;
+  gap: 16px;
+}
+.focus-toolbar h2 {
+  margin-bottom: 4px;
+}
+.settings-main[hidden],
+.settings-collaboration[hidden] {
+  display: none !important;
+}
+.settings-group {
+  margin-top: 16px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+  background: var(--el-bg-color);
+}
+.settings-group > summary {
+  cursor: pointer;
+  padding: 12px 16px;
+  font-weight: 600;
+  list-style-position: inside;
+}
+.settings-group[open] > summary {
+  border-bottom: 1px solid var(--kgm-border);
+}
+.settings-group > summary .muted {
+  margin-left: 8px;
+  font-weight: 400;
+}
+.settings-group .group-card {
+  margin-top: 0;
+  border: 0;
+  box-shadow: none;
+}
+.settings-about {
+  margin-bottom: 16px;
 }
 .section {
   margin-top: 16px;

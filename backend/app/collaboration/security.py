@@ -31,6 +31,15 @@ _MAX_PREVIEW_TOKEN_CHARS = 4096
 _PREVIEW_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]+\.[0-9a-f]{64}")
 
 
+def normalize_utc(value: datetime | None) -> datetime | None:
+    """Treat naive database values as UTC; normalize aware values to UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class TeacherPrincipal:
     teacher_id: UUID
@@ -91,10 +100,8 @@ def authenticate(
         raise auth_required()
     token_row, teacher, school = row
     now = datetime.now(timezone.utc)
-    expires = token_row.expires_at
+    expires = normalize_utc(token_row.expires_at)
     if expires is not None:
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
         if expires <= now:
             session.rollback()
             raise auth_required()

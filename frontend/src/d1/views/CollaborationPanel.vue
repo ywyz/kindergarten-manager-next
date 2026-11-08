@@ -16,6 +16,7 @@ import {
   isCollaborationConflictError,
   isCollaborationResubmitUncommittedError,
   isCollaborationSessionInvalidError,
+  reconcilePromotionResult,
   type CollaborationClass,
   type CollaborationClassmate,
   type CollaborationConfirmInput,
@@ -23,6 +24,10 @@ import {
   type CollaborationConfig,
   type CollaborationMembership,
   type CollaborationPreview,
+  type CollaborationPromotionInput,
+  type CollaborationPromotionOverview,
+  type CollaborationPromotionResult,
+  type CollaborationRedeemResult,
   type CollaborationSaveInput,
   type CollaborationSaveResult,
   type CollaborationStatus,
@@ -49,6 +54,11 @@ const status = ref<CollaborationStatus>({
   message: '正在读取在线协作配置…',
 })
 const credential = ref('')
+const redeemCodeValue = ref('')
+const redeeming = ref(false)
+const redeemPurpose = ref<'join' | 'recovery' | null>(null)
+const redeemNotice = ref('')
+const recoveryNoClass = ref(false)
 const connecting = ref(false)
 const disconnecting = ref(false)
 const loadingDirectory = ref(false)
@@ -65,6 +75,36 @@ const preview = ref<CollaborationPreview | null>(null)
 const previewStale = ref(false)
 const previewingSourceId = ref('')
 const publishing = ref(false)
+const loadingPromotion = ref(false)
+const promotionOverview = ref<CollaborationPromotionOverview | null>(null)
+const promotionTargetGrade = ref<'small' | 'middle' | 'large'>('middle')
+const promotionTermId = ref('')
+const promotionConfirming = ref(false)
+const promotionStale = ref(false)
+const promotionQuerying = ref(false)
+const promotionNotice = ref('')
+interface PromotionReceiptView {
+  result: CollaborationPromotionResult
+  termName: string
+}
+const promotionReceipt = ref<PromotionReceiptView | null>(null)
+const promotionAuthorityUnread = ref(false)
+interface PendingPromotion {
+  requestId: string
+  body: CollaborationPromotionInput
+  classId: string
+  teacherId: string
+  schoolId: string
+}
+const pendingPromotion = ref<PendingPromotion | null>(null)
+const PROMOTION_GRADES: Array<{
+  value: 'small' | 'middle' | 'large'
+  label: string
+}> = [
+  { value: 'small', label: '小班' },
+  { value: 'middle', label: '中班' },
+  { value: 'large', label: '大班' },
+]
 
 interface PublishDraft {
   classId: string
@@ -139,15 +179,25 @@ function makeImportPending(
   }
 }
 
+const promotionBusy = computed(
+  () =>
+    loadingPromotion.value
+    || promotionConfirming.value
+    || promotionQuerying.value
+    || pendingPromotion.value !== null,
+)
 const draftActive = computed(
   () =>
     pendingWrite.value !== null
+    || pendingPromotion.value !== null
+    || promotionStale.value
     || preview.value !== null
     || publishPreview.value !== null
     || previewStale.value
     || previewingSourceId.value !== ''
     || publishing.value
-    || confirming.value,
+    || confirming.value
+    || promotionConfirming.value,
 )
 const draftTargets = computed(() => (draftActive.value ? ['online-collaboration'] : []))
 
@@ -170,6 +220,8 @@ const canDisconnect = computed(
     status.value.connected
     && !props.frozen
     && !pendingWrite.value
+    && !promotionBusy.value
+    && !promotionStale.value
     && !connecting.value
     && !disconnecting.value
     && !classTransition.value
@@ -185,6 +237,8 @@ const canSelectClass = computed(
     && !props.frozen
     && !classSelectionUnknown.value
     && !pendingWrite.value
+    && !promotionBusy.value
+    && !promotionStale.value
     && !connecting.value
     && !disconnecting.value
     && !classTransition.value
@@ -200,6 +254,7 @@ const canReadLocalPublish = computed(
     status.value.connected
     && !props.frozen
     && !pendingWrite.value
+    && !promotionBusy.value
     && !connecting.value
     && !disconnecting.value
     && !classTransition.value
@@ -216,6 +271,7 @@ const canConfirmPublish = computed(
     status.value.connected
     && !props.frozen
     && !pendingWrite.value
+    && !promotionBusy.value
     && !connecting.value
     && !disconnecting.value
     && !classTransition.value
@@ -244,6 +300,7 @@ const canConfirm = computed(
     && !previewStale.value
     && !props.frozen
     && !pendingWrite.value
+    && !promotionBusy.value
     && !connecting.value
     && !disconnecting.value
     && !classTransition.value
@@ -299,6 +356,15 @@ function advanceScope(): number {
 function clearCredential(): void {
   credential.value = ''
 }
+function clearPromotionDisplay(): void {
+  promotionOverview.value = null
+  promotionStale.value = false
+  promotionNotice.value = ''
+  promotionReceipt.value = null
+  promotionAuthorityUnread.value = false
+  promotionTermId.value = ''
+  promotionTargetGrade.value = 'middle'
+}
 function clearClassConfiguration(): void {
   membership.value = null
   classmates.value = []
@@ -307,11 +373,16 @@ function clearClassConfiguration(): void {
   previewStale.value = false
   publishPreview.value = null
   publishConflict.value = false
+  clearPromotionDisplay()
 }
 function clearSessionData(): void {
   classes.value = []
   classSelectionUnknown.value = false
   classSelectionUnknownMessage.value = ''
+  pendingPromotion.value = null
+  recoveryNoClass.value = false
+  redeemPurpose.value = null
+  redeemNotice.value = ''
   clearClassConfiguration()
 }
 function markClassStateUnknown(message: string): void {
@@ -327,9 +398,11 @@ function markDisconnected(): void {
   // no write is pending.
   scopeEpoch += 1
   clearCredential()
-  if (!pendingWrite.value) clearSessionData()
+  redeemCodeValue.value = ''
+  if (!pendingWrite.value && !pendingPromotion.value) clearSessionData()
   connecting.value = false
   disconnecting.value = false
+  redeeming.value = false
   loadingDirectory.value = false
   loadingClass.value = false
   selectingClassId.value = ''
@@ -337,6 +410,9 @@ function markDisconnected(): void {
   publishing.value = false
   confirming.value = false
   previewingSourceId.value = ''
+  loadingPromotion.value = false
+  promotionConfirming.value = false
+  promotionQuerying.value = false
   querying.value = false
   resubmitting.value = false
   status.value = {
@@ -434,6 +510,7 @@ async function loadDirectory(epoch: number): Promise<void> {
     previewStale.value = false
     publishPreview.value = null
     publishConflict.value = false
+    clearPromotionDisplay()
     if (currentMembership) {
       await loadClassData(epoch)
     } else {
@@ -451,6 +528,7 @@ async function connect(): Promise<void> {
   if (
     props.frozen
     || connecting.value
+    || redeeming.value
     || !statusLoaded.value
     || !status.value.configured
   ) return
@@ -460,7 +538,16 @@ async function connect(): Promise<void> {
     return
   }
   const pending = pendingWrite.value
-  if (pending && (!pending.teacherId || !pending.schoolId)) {
+  const promotionPending = pendingPromotion.value
+  const binding = pending
+    ? { teacherId: pending.teacherId, schoolId: pending.schoolId }
+    : promotionPending
+      ? {
+          teacherId: promotionPending.teacherId,
+          schoolId: promotionPending.schoolId,
+        }
+      : null
+  if (binding && (!binding.teacherId || !binding.schoolId)) {
     errorText.value = '待核对请求缺少原在线账号绑定，不能恢复；原请求和草稿仍保留'
     return
   }
@@ -469,12 +556,7 @@ async function connect(): Promise<void> {
   errorText.value = ''
   noticeText.value = ''
   try {
-    const result = await api.connect(
-      value,
-      pending
-        ? { teacherId: pending.teacherId, schoolId: pending.schoolId }
-        : null,
-    )
+    const result = await api.connect(value, binding)
     if (!current(epoch)) return
     if (pending && pendingWrite.value) {
       // The local proxy already verified /me against both IDs before it
@@ -483,7 +565,15 @@ async function connect(): Promise<void> {
       noticeText.value = '已重新连接原在线账号；原请求仍待核对，请只读查询或明确再次提交'
       return
     }
+    if (promotionPending && pendingPromotion.value) {
+      status.value = result
+      noticeText.value = '已重新连接原在线账号；原升班请求仍待核对，请只读查询原请求 ID'
+      return
+    }
     status.value = result
+    redeemPurpose.value = null
+    redeemNotice.value = ''
+    recoveryNoClass.value = false
     await loadDirectory(epoch)
     if (current(epoch) && status.value.connected) {
       noticeText.value = `已连接在线协作：${result.teacher?.display_name ?? '在线教师'}`
@@ -497,10 +587,69 @@ async function connect(): Promise<void> {
   }
 }
 
+async function redeemWithCode(): Promise<void> {
+  if (
+    props.frozen
+    || redeeming.value
+    || connecting.value
+    || status.value.connected
+    || pendingWrite.value
+    || pendingPromotion.value
+    || !statusLoaded.value
+    || !status.value.configured
+  ) {
+    if (status.value.connected) errorText.value = '请先断开当前在线协作，再兑换新的加入或恢复码'
+    return
+  }
+  const code = redeemCodeValue.value.trim()
+  if (!code) {
+    errorText.value = '请输入管理员签发的一次性加入码或恢复码'
+    return
+  }
+  const epoch = advanceScope()
+  redeeming.value = true
+  errorText.value = ''
+  noticeText.value = ''
+  redeemNotice.value = ''
+  recoveryNoClass.value = false
+  try {
+    const result: CollaborationRedeemResult = await api.redeem(code)
+    if (!current(epoch)) return
+    status.value = result
+    redeemPurpose.value = result.purpose
+    if (result.membership) {
+      membership.value = result.membership
+    }
+    await loadDirectory(epoch)
+    if (!current(epoch)) return
+    if (result.purpose === 'recovery' && !membership.value) {
+      recoveryNoClass.value = true
+      redeemNotice.value =
+        '恢复码已确认该教师身份，但服务端没有仍有效的原班级。请从本园班级目录中明确选择一个班级；不会自动选班。'
+    } else if (result.purpose === 'recovery') {
+      redeemNotice.value = `已恢复在线身份并进入仍有效的原班级：${membership.value?.class_name ?? ''}`
+    } else {
+      redeemNotice.value = '首次加入码已确认教师与园所。请从下方本园班级目录选择班级；不会自动选班。'
+    }
+    noticeText.value = '一次性码只在本机内存中提交；兑换成功后已清除输入，不写入本地数据库或浏览器存储'
+  } catch (err) {
+    if (!current(epoch)) return
+    handleError(
+      err,
+      '兑换码失败；若结果未知，请向管理员确认后使用新码，不会自动重发',
+    )
+  } finally {
+    redeemCodeValue.value = ''
+    if (current(epoch)) redeeming.value = false
+  }
+}
+
 async function disconnect(): Promise<void> {
   if (disconnecting.value) return
-  if (props.frozen || pendingWrite.value) {
-    if (pendingWrite.value) errorText.value = '在线写入仍待核对，不能断开或切换账号'
+  if (props.frozen || pendingWrite.value || pendingPromotion.value || promotionConfirming.value) {
+    if (pendingWrite.value || pendingPromotion.value) {
+      errorText.value = '在线写入仍待核对，不能断开或切换账号'
+    }
     return
   }
   const epoch = advanceScope()
@@ -525,6 +674,9 @@ async function reloadOnline(): Promise<void> {
   if (
     props.frozen
     || pendingWrite.value
+    || pendingPromotion.value
+    || promotionBusy.value
+    || promotionStale.value
     || connecting.value
     || disconnecting.value
     || publishing.value
@@ -576,6 +728,9 @@ async function selectClass(classId: string): Promise<void> {
     previewStale.value = false
     classSelectionUnknown.value = false
     classSelectionUnknownMessage.value = ''
+    recoveryNoClass.value = false
+    redeemNotice.value = ''
+    clearPromotionDisplay()
     await loadClassData(epoch)
     if (current(epoch)) noticeText.value = `已选择在线班级：${result.class_name}`
   } catch (err) {
@@ -625,6 +780,7 @@ async function leaveClass(): Promise<void> {
     previewStale.value = false
     classSelectionUnknown.value = false
     classSelectionUnknownMessage.value = ''
+    clearPromotionDisplay()
     noticeText.value = '已退出当前在线班级；本地配置未发生变化'
   } catch (err) {
     if (!current(epoch)) return
@@ -676,6 +832,280 @@ function applyConfirmResult(result: CollaborationConfirmResult): boolean {
     payload: result.payload,
   }
   return true
+}
+
+function shanghaiToday(): string {
+  const shifted = new Date(Date.now() + 8 * 60 * 60 * 1000)
+  return shifted.toISOString().slice(0, 10)
+}
+
+const selectedPromotionTerm = computed(() => {
+  const overview = promotionOverview.value
+  if (!overview) return null
+  return overview.terms.find((term) => term.term_id === promotionTermId.value) ?? null
+})
+const promotionTermEnded = computed(
+  () => selectedPromotionTerm.value !== null
+    && selectedPromotionTerm.value.end_date < shanghaiToday(),
+)
+const promotionTermOptions = computed(() => promotionOverview.value?.terms ?? [])
+const promotionReceiptGradeLabel = computed(() => {
+  const grade = promotionReceipt.value?.result.grade
+  return PROMOTION_GRADES.find((item) => item.value === grade)?.label ?? grade ?? ''
+})
+const promotionOverviewGradeLabel = computed(() => {
+  const grade = promotionOverview.value?.grade
+  return PROMOTION_GRADES.find((item) => item.value === grade)?.label ?? grade ?? ''
+})
+
+const canConfirmPromotion = computed(
+  () =>
+    status.value.connected
+    && membership.value !== null
+    && promotionOverview.value !== null
+    && promotionOverview.value.class_id === membership.value.class_id
+    && promotionTermId.value !== ''
+    && !promotionTermEnded.value
+    && !promotionStale.value
+    && !promotionAuthorityUnread.value
+    && !promotionBusy.value
+    && !props.frozen
+    && !pendingWrite.value
+    && !connecting.value
+    && !disconnecting.value
+    && !classTransition.value
+    && !publishing.value
+    && !confirming.value,
+)
+
+async function loadPromotion(): Promise<void> {
+  if (
+    props.frozen
+    || !status.value.connected
+    || !membership.value
+    || promotionBusy.value
+    || pendingWrite.value
+    || connecting.value
+    || disconnecting.value
+    || classTransition.value
+  ) {
+    return
+  }
+  const epoch = scopeEpoch
+  loadingPromotion.value = true
+  errorText.value = ''
+  promotionNotice.value = ''
+  try {
+    const overview = await api.getPromotion()
+    if (!current(epoch) || !membership.value) return
+    if (!applyAuthoritativeOverview(overview)) return
+    if (!PROMOTION_GRADES.some((grade) => grade.value === promotionTargetGrade.value)) {
+      promotionTargetGrade.value = overview.grade
+    }
+    if (!overview.terms.some((term) => term.term_id === promotionTermId.value)) {
+      const firstSelectable = overview.terms.find(
+        (term) => term.end_date >= shanghaiToday(),
+      )
+      promotionTermId.value = firstSelectable?.term_id ?? overview.terms[0]?.term_id ?? ''
+    }
+    promotionNotice.value = `已按服务端当前状态读取 ${overview.class_name}（v${overview.version}）；请选择目标年级和生效学期后明确确认。`
+  } catch (err) {
+    if (current(epoch)) {
+      // A failed authoritative read must not clear the last trusted display or
+      // a confirmed receipt; the teacher can re-read explicitly.
+      errorText.value = isCollaborationSessionInvalidError(err)
+        ? '读取升班信息失败：在线连接可能已失效；保留上一次可信显示，请重新连接后重读'
+        : collaborationErrorMessage(
+            err,
+            '读取升班信息失败：保留上一次可信显示，请稍后重读',
+          )
+    }
+  } finally {
+    if (current(epoch)) loadingPromotion.value = false
+  }
+}
+
+function applyAuthoritativeOverview(
+  overview: CollaborationPromotionOverview,
+): boolean {
+  const currentMembership = membership.value
+  if (!currentMembership) {
+    errorText.value = '升班信息缺少当前成员关系，未采用'
+    return false
+  }
+  if (
+    overview.class_id !== currentMembership.class_id
+  ) {
+    errorText.value = '升班信息属于其他在线班级，未采用'
+    return false
+  }
+  promotionOverview.value = overview
+  membership.value = {
+    ...currentMembership,
+    class_name: overview.class_name,
+  }
+  classes.value = classes.value.map((item) =>
+    item.class_id === overview.class_id
+      ? { ...item, display_name: overview.class_name }
+      : item,
+  )
+  promotionAuthorityUnread.value = false
+  promotionStale.value = false
+  return true
+}
+
+async function syncPromotionAfterReceipt(
+  result: CollaborationPromotionResult,
+  epoch: number,
+): Promise<boolean> {
+  const overview = promotionOverview.value
+  const currentMembership = membership.value
+  if (!overview || !currentMembership) {
+    errorText.value = '升班回执缺少当前班级上下文，未采用'
+    return false
+  }
+  if (result.class_id !== currentMembership.class_id) {
+    errorText.value = '升班回执属于其他在线班级，未更新当前显示'
+    return false
+  }
+  // Keep the receipt as an independent fact even if the authoritative read
+  // is temporarily unavailable.  Never substitute the receipt for GET state.
+  promotionReceipt.value = {
+    result,
+    termName:
+      overview.terms.find((term) => term.term_id === result.effective_term_id)
+        ?.name ?? result.effective_term_id,
+  }
+  promotionAuthorityUnread.value = true
+  try {
+    const authoritative = await api.getPromotion()
+    if (!current(epoch) || !membership.value) return false
+    if (
+      authoritative.class_id !== result.class_id
+      || authoritative.version < result.version
+    ) {
+      errorText.value = '升班回执已确认，但读取到的当前班级状态早于回执或身份不一致；保留上一次可信显示，请重新读取升班信息核对，不自动重发'
+      return false
+    }
+    const reconciled = reconcilePromotionResult({
+      overview: authoritative,
+      membership: membership.value,
+      classes: classes.value,
+      result,
+    })
+    if (!reconciled.accepted) {
+      errorText.value = '升班回执已确认，但读取到的当前班级状态与回执不一致；保留上一次可信显示，请重新读取升班信息核对'
+      return false
+    }
+    promotionOverview.value = reconciled.overview
+    membership.value = reconciled.membership
+    classes.value = reconciled.classes
+    promotionReceipt.value = reconciled.receipt
+    promotionTermId.value = result.effective_term_id
+    promotionStale.value = false
+    promotionAuthorityUnread.value = false
+    return true
+  } catch (err) {
+    if (!current(epoch)) return false
+    // Do not clear the last trusted current display or the receipt.  A failed
+    // read is not proof of a different class, and the teacher can explicitly
+    // re-read later.  The original write is never resent.
+    errorText.value = isCollaborationSessionInvalidError(err)
+      ? '升班回执已确认，但当前在线连接已失效；保留上一次可信显示和回执，请重新连接后重新读取升班信息核对，不自动重发'
+      : '升班回执已确认，但读取当前权威班级状态失败；保留上一次可信显示，请重新读取升班信息核对，不自动重发'
+    return false
+  }
+}
+
+async function confirmPromotion(): Promise<void> {
+  const overview = promotionOverview.value
+  const currentMembership = membership.value
+  if (!overview || !currentMembership || !canConfirmPromotion.value) return
+  const body: CollaborationPromotionInput = {
+    request_id: crypto.randomUUID(),
+    class_id: overview.class_id,
+    expected_version: overview.version,
+    target_grade: promotionTargetGrade.value,
+    effective_term_id: promotionTermId.value,
+  }
+  const epoch = scopeEpoch
+  promotionConfirming.value = true
+  errorText.value = ''
+  promotionNotice.value = ''
+  try {
+    const result = await api.promote(body)
+    if (!current(epoch)) return
+    if (result.request_id !== body.request_id) {
+      errorText.value = '升班回执的请求 ID 与当前确认不一致，未采用'
+      return
+    }
+    const synced = await syncPromotionAfterReceipt(result, epoch)
+    if (current(epoch) && synced) {
+      noticeText.value = '在线升班已确认；当前显示已按服务端当前状态同步；本地 SQLite 和历史确认快照未改变'
+    }
+  } catch (err) {
+    if (!current(epoch)) return
+    if (epoch !== scopeEpoch || collaborationWriteIndeterminate(err)) {
+      pendingPromotion.value = {
+        requestId: body.request_id,
+        body,
+        classId: body.class_id,
+        teacherId: status.value.teacher?.teacher_id ?? currentMembership.teacher_id,
+        schoolId: status.value.teacher?.school_id ?? currentMembership.school_id,
+      }
+      errorText.value = '升班结果未确认：已保留原请求 ID 和当前编辑，不能切换班级或断开；请只读查询原请求'
+      return
+    }
+    if (
+      err instanceof ApiError
+      && (err.status === 409 || isCollaborationConflictError(err))
+    ) {
+      promotionStale.value = true
+      errorText.value = '在线班级版本或学期已变化：当前目标年级和学期选择已保留，请重新读取并按新基准再次确认'
+      return
+    }
+    handleError(err, '确认在线升班失败')
+  } finally {
+    promotionConfirming.value = false
+  }
+}
+
+async function queryPendingPromotion(): Promise<void> {
+  const pending = pendingPromotion.value
+  if (!pending || promotionQuerying.value || props.frozen) return
+  promotionQuerying.value = true
+  errorText.value = ''
+  try {
+    const result = await api.getPromotionOperation(pending.requestId)
+    if (pendingPromotion.value !== pending) return
+    if (
+      result.request_id !== pending.requestId
+      || result.class_id !== pending.classId
+    ) {
+      errorText.value = '升班查询回执与当前待核对请求不一致，未采用'
+      return
+    }
+    pendingPromotion.value = null
+    const synced = await syncPromotionAfterReceipt(result, scopeEpoch)
+    if (alive && synced) {
+      noticeText.value = '已通过原请求 ID 确认在线升班结果，并按服务端当前状态同步显示'
+    }
+  } catch (err) {
+    if (pendingPromotion.value !== pending) return
+    if (
+      err instanceof ApiError
+      && (err.status === 404 || err.code === 'COLLABORATION_UPSTREAM_NOT_FOUND')
+    ) {
+      promotionNotice.value = '尚未查到升班回执；原请求仍待核对，不会自动重发'
+    } else if (isCollaborationSessionInvalidError(err)) {
+      markDisconnected()
+      errorText.value = '在线协作连接已失效或变化；原升班请求仍待核对，请用原账号重连后查询'
+    } else {
+      errorText.value = '查询升班结果暂不可用：原请求仍待核对，请稍后重试'
+    }
+  } finally {
+    promotionQuerying.value = false
+  }
 }
 
 async function previewLocalPublish(): Promise<void> {
@@ -845,6 +1275,7 @@ function canPreviewSource(mate: CollaborationClassmate): boolean {
     status.value.connected
     && !props.frozen
     && !pendingWrite.value
+    && !promotionBusy.value
     && !connecting.value
     && !disconnecting.value
     && !classTransition.value
@@ -1130,9 +1561,16 @@ defineExpose({
   currentPreview: () => preview.value,
   currentPublishPreview: () => publishPreview.value,
   pendingWrite: () => pendingWrite.value,
+  pendingPromotion: () => pendingPromotion.value,
+  currentPromotion: () => promotionOverview.value,
+  promotionStale: () => promotionStale.value,
   connect,
+  redeemWithCode,
   disconnect,
   reloadOnline,
+  loadPromotion,
+  confirmPromotion,
+  queryPendingPromotion,
   cancelPreview,
   cancelLocalPublish,
 })
@@ -1151,7 +1589,7 @@ defineExpose({
     </template>
 
     <el-alert
-      title="在线协作使用独立的在线配置；本地 SQLite、本地班级游戏设置和本地记录不会被自动上传。凭据只用于本次连接，保存在本机进程内存，不写入数据库或浏览器存储。"
+      title="在线协作与本地 SQLite 独立；兑换码和凭据只用于本次连接，不写入本地存储。"
       type="info"
       :closable="false"
       show-icon
@@ -1171,6 +1609,14 @@ defineExpose({
     >
       重新读取本地配置
     </el-button>
+    <el-alert
+      v-if="recoveryNoClass"
+      title="恢复码已确认教师身份，但服务端没有仍有效的原班级。请在本园班级目录中明确选择一个班级；不会自动选班。"
+      type="warning"
+      :closable="false"
+      show-icon
+      data-d1="collaboration-recovery-no-class"
+    />
     <el-alert
       v-if="classSelectionUnknown"
       :title="classSelectionUnknownMessage || '班级变更结果未确认：已停止使用旧班配置，不能继续读取或发布班级游戏配置。请重新读取园所班级目录核对后再操作。'"
@@ -1206,96 +1652,333 @@ defineExpose({
     </div>
 
     <section class="step" data-d1="collaboration-connect">
-      <h3>1. 连接在线协作</h3>
       <template v-if="!status.connected">
-        <p class="muted">输入部署方发给你的登录凭据。连接前会先验证在线身份。</p>
-        <div class="connect-row">
-          <el-input
-            v-model="credential"
-            type="password"
-            autocomplete="off"
-            placeholder="部署方提供的登录凭据"
-            :disabled="frozen || connecting || !statusLoaded || !status.configured"
-            data-d1="collaboration-credential"
-            @keyup.enter="connect"
-          />
-          <el-button
-            type="primary"
-            :loading="connecting"
-            :disabled="frozen || connecting || !statusLoaded || !status.configured || !credential.trim()"
-            data-d1="collaboration-connect-button"
-            @click="connect"
-          >
-            连接在线协作
-          </el-button>
+        <h3>连接在线协作</h3>
+        <div class="redeem-box" data-d1="collaboration-redeem">
+          <div class="connect-row">
+            <el-input
+              v-model="redeemCodeValue"
+              type="password"
+              autocomplete="off"
+              placeholder="管理员提供的加入码或恢复码"
+              :disabled="frozen || redeeming || connecting || !statusLoaded || !status.configured"
+              data-d1="collaboration-redeem-code"
+              @keyup.enter="redeemWithCode"
+            />
+            <el-button
+              type="primary"
+              :loading="redeeming"
+              :disabled="frozen || redeeming || connecting || !statusLoaded || !status.configured || !redeemCodeValue.trim()"
+              data-d1="collaboration-redeem-button"
+              @click="redeemWithCode"
+            >
+              兑换并连接
+            </el-button>
+          </div>
+          <p class="muted">加入码只确认教师和园所，随后选择班级；恢复码读取仍有效的原班。兑换码不会自动重发。</p>
         </div>
+        <details
+          class="low-frequency"
+          data-d1="collaboration-manual-credential"
+          :open="(pendingWrite !== null || pendingPromotion !== null) && !status.connected"
+        >
+          <summary>使用部署方手工凭据（低频）</summary>
+          <div class="connect-row">
+            <el-input
+              v-model="credential"
+              type="password"
+              autocomplete="off"
+              placeholder="部署方提供的登录凭据"
+              :disabled="frozen || connecting || redeeming || !statusLoaded || !status.configured"
+              data-d1="collaboration-credential"
+              @keyup.enter="connect"
+            />
+            <el-button
+              type="primary"
+              :loading="connecting"
+              :disabled="frozen || connecting || redeeming || !statusLoaded || !status.configured || !credential.trim()"
+              data-d1="collaboration-connect-button"
+              @click="connect"
+            >
+              手工凭据连接
+            </el-button>
+          </div>
+        </details>
       </template>
       <template v-else>
-        <p>
-          已连接：{{ status.teacher?.display_name ?? '在线教师' }}
-          <span class="muted">（{{ status.teacher?.school_name ?? '在线园所' }}）</span>
-        </p>
-        <el-button
-          size="small"
-          :loading="disconnecting"
-          :disabled="!canDisconnect"
-          data-d1="collaboration-disconnect"
-          @click="disconnect"
-        >
-          断开在线协作
-        </el-button>
+        <div class="current-line">
+          <span>已连接：{{ status.teacher?.display_name ?? '在线教师' }}</span>
+          <span class="muted">{{ status.teacher?.school_name ?? '在线园所' }}</span>
+          <el-button
+            size="small"
+            text
+            :loading="disconnecting"
+            :disabled="!canDisconnect"
+            data-d1="collaboration-disconnect"
+            @click="disconnect"
+          >
+            断开
+          </el-button>
+        </div>
+        <el-alert
+          v-if="redeemNotice"
+          :title="redeemNotice"
+          type="success"
+          :closable="false"
+          data-d1="collaboration-redeem-notice"
+        />
       </template>
     </section>
 
-    <template v-if="status.connected || pendingWrite">
+    <template v-if="status.connected || pendingWrite || pendingPromotion">
       <section class="step" data-d1="collaboration-classes">
-        <h3>2. 选择园所目录中的系统班级</h3>
-        <p class="muted">只使用服务端返回的真实班级 ID；显示名称仅用于辨认，不按同名班级配对。</p>
-        <el-button
-          size="small"
-          :loading="loadingDirectory"
-          :disabled="frozen || pendingWrite !== null || connecting || disconnecting"
-          data-d1="collaboration-load-classes"
-          @click="reloadOnline"
-        >
-          读取 / 刷新班级目录
-        </el-button>
-        <div v-if="classes.length" class="class-list">
-          <div v-for="item in classes" :key="item.class_id" class="class-row" data-d1="collaboration-class">
-            <span>{{ item.display_name }}</span>
-            <code class="class-id" :title="item.class_id">{{ item.class_id }}</code>
-            <el-tag v-if="membership?.class_id === item.class_id" size="small" type="success">当前班级</el-tag>
+        <div v-if="membership" class="membership" data-d1="collaboration-membership">
+          <div class="current-line">
+            <h3>当前班级：{{ membership.class_name }}</h3>
             <el-button
               size="small"
-              :loading="selectingClassId === item.class_id"
-              :disabled="!canSelectClass || membership?.class_id === item.class_id"
-              @click="selectClass(item.class_id)"
+              :loading="loadingDirectory"
+              :disabled="frozen || pendingWrite !== null || promotionBusy || promotionStale || connecting || disconnecting"
+              data-d1="collaboration-refresh"
+              @click="reloadOnline"
             >
-              选择此班
+              刷新
             </el-button>
           </div>
+          <details class="technical">
+            <summary>稳定班级 ID</summary>
+            <code class="class-id">{{ membership.class_id }}</code>
+          </details>
+          <p class="muted">同班老师由服务端按当前班级自动配对。</p>
+          <el-table
+            v-if="classmates.length"
+            :data="classmates"
+            size="small"
+            data-d1="collaboration-classmates"
+          >
+            <el-table-column prop="display_name" label="同班老师" min-width="140" />
+            <el-table-column label="在线配置版本" width="120">
+              <template #default="{ row }">
+                <span v-if="row.config_version > 0">v{{ row.config_version }}</span>
+                <span v-else class="muted">尚无配置</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="130">
+              <template #default="{ row }">
+                <el-button
+                  size="small"
+                  :loading="previewingSourceId === row.teacher_id"
+                  :disabled="!canPreviewSource(row)"
+                  @click="previewSource(row)"
+                >
+                  预览带入
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <p v-else class="muted">当前班级暂无其他同班老师。</p>
         </div>
-        <p v-else class="muted">尚未读取班级目录。</p>
-        <div v-if="membership" class="membership" data-d1="collaboration-membership">
-          <p>
-            当前在线班级：{{ membership.class_name }}
-            <span class="muted">（稳定 ID：{{ membership.class_id }}）</span>
-          </p>
+        <p v-else class="muted">尚未选择在线班级。</p>
+
+        <details
+          class="fold"
+          data-d1="collaboration-directory"
+          :open="!membership || classSelectionUnknown"
+        >
+          <summary>{{ membership ? '换班或退出当前班级' : '本园班级目录' }}</summary>
           <el-button
             size="small"
-            :loading="leavingClass"
-            :disabled="!canLeaveClass"
-            @click="leaveClass"
+            :loading="loadingDirectory"
+            :disabled="frozen || pendingWrite !== null || connecting || disconnecting"
+            data-d1="collaboration-load-classes"
+            @click="reloadOnline"
           >
-            退出当前在线班级
+            读取 / 刷新班级目录
+          </el-button>
+          <div v-if="classes.length" class="class-list">
+            <div v-for="item in classes" :key="item.class_id" class="class-row" data-d1="collaboration-class">
+              <span>{{ item.display_name }}</span>
+              <code class="class-id" :title="item.class_id">{{ item.class_id }}</code>
+              <el-tag v-if="membership?.class_id === item.class_id" size="small" type="success">当前班级</el-tag>
+              <el-button
+                size="small"
+                :loading="selectingClassId === item.class_id"
+                :disabled="!canSelectClass || membership?.class_id === item.class_id"
+                @click="selectClass(item.class_id)"
+              >
+                选择此班
+              </el-button>
+            </div>
+          </div>
+          <p v-else class="muted">尚未读取班级目录。</p>
+          <div v-if="membership" class="actions">
+            <el-button
+              size="small"
+              :loading="leavingClass"
+              :disabled="!canLeaveClass"
+              @click="leaveClass"
+            >
+              退出当前在线班级
+            </el-button>
+          </div>
+        </details>
+      </section>
+
+      <section v-if="membership" class="step" data-d1="collaboration-promotion">
+        <details
+          class="fold"
+          data-d1="collaboration-promotion-details"
+          :open="pendingPromotion !== null || promotionStale || promotionReceipt !== null"
+        >
+          <summary>在线升班：目标年级与生效学期</summary>
+          <p class="muted">升班只改变目标年级和生效学期，沿用稳定班级 ID；本地 SQLite 不变。</p>
+          <el-button
+            size="small"
+            :loading="loadingPromotion"
+            :disabled="frozen || pendingWrite !== null || promotionBusy || promotionStale || connecting || disconnecting || classTransition || publishing || confirming"
+            data-d1="collaboration-load-promotion"
+            @click="loadPromotion"
+          >
+            读取升班信息
+          </el-button>
+        <el-alert
+          v-if="pendingPromotion"
+          :title="`升班结果未确认（request_id：${pendingPromotion.requestId}）。原请求和编辑已保留；不能切换班级或断开，请只读查询原请求 ID。`"
+          type="warning"
+          :closable="false"
+          show-icon
+          data-d1="collaboration-promotion-pending"
+        />
+        <div v-if="pendingPromotion" class="actions">
+          <el-button
+            size="small"
+            :loading="promotionQuerying"
+            :disabled="frozen || promotionQuerying"
+            data-d1="collaboration-query-promotion"
+            @click="queryPendingPromotion"
+          >
+            只读查询原升班请求
           </el-button>
         </div>
-        <p v-else class="muted">请从上方目录选择一个班级。</p>
+        <div v-if="promotionOverview" class="promotion-form" data-d1="collaboration-promotion-form">
+          <p>
+            当前班级：{{ promotionOverview.class_name }}
+            <span class="muted">（稳定 ID：{{ promotionOverview.class_id }} · 版本 v{{ promotionOverview.version }}）</span>
+          </p>
+          <el-alert
+            v-if="promotionStale"
+            title="在线班级版本或学期已变化：当前目标年级和学期选择已保留，请重新读取升班信息后再次确认。"
+            type="warning"
+            :closable="false"
+            data-d1="collaboration-promotion-stale"
+          />
+          <el-alert
+            v-if="promotionTermEnded"
+            title="所选学期已结束，不能提交升班。当前选择已保留，请明确改选当前或将来学期。"
+            type="warning"
+            :closable="false"
+            data-d1="collaboration-promotion-term-ended"
+          />
+          <el-alert
+            v-if="promotionAuthorityUnread"
+            title="升班回执已确认，但当前权威班级状态尚未读取成功。页面保留上一次可信显示；请重新读取升班信息核对，不会自动重发。"
+            type="warning"
+            :closable="false"
+            data-d1="collaboration-promotion-authority-unread"
+          />
+          <div
+            v-if="promotionReceipt"
+            class="promotion-receipt"
+            data-d1="collaboration-promotion-receipt"
+          >
+            <p>
+              写入回执（独立）：{{ promotionReceipt.result.class_name }} ·
+              目标{{ promotionReceiptGradeLabel }}
+              · 版本 v{{ promotionReceipt.result.version }}
+            </p>
+            <p>回执学期：{{ promotionReceipt.termName }}</p>
+            <p class="muted">
+              当前页面班级以服务端 GET 升班信息为准：{{ promotionOverview.class_name }}
+              （{{ promotionOverviewGradeLabel }}，v{{ promotionOverview.version }}）
+            </p>
+          </div>
+          <div class="promotion-row">
+            <div>
+              <label>目标年级</label>
+              <el-select
+                v-model="promotionTargetGrade"
+                :disabled="frozen || promotionBusy || pendingWrite !== null || promotionStale"
+                data-d1="collaboration-promotion-grade"
+              >
+                <el-option
+                  v-for="grade in PROMOTION_GRADES"
+                  :key="grade.value"
+                  :label="grade.label"
+                  :value="grade.value"
+                />
+              </el-select>
+            </div>
+            <div>
+              <label>生效学期</label>
+              <el-select
+                v-model="promotionTermId"
+                :disabled="frozen || promotionBusy || pendingWrite !== null || promotionStale || !promotionOverview.terms.length"
+                data-d1="collaboration-promotion-term"
+              >
+                <el-option
+                  v-for="term in promotionTermOptions"
+                  :key="term.term_id"
+                  :label="`${term.name}（${term.start_date} 至 ${term.end_date}）`"
+                  :value="term.term_id"
+                  :disabled="term.end_date < shanghaiToday()"
+                />
+              </el-select>
+            </div>
+          </div>
+          <p v-if="!promotionOverview.terms.length" class="muted">
+            在线园所没有可选的有效学期，暂时不能确认升班。
+          </p>
+          <div class="actions">
+            <el-button
+              size="small"
+              type="primary"
+              :loading="promotionConfirming"
+              :disabled="!canConfirmPromotion"
+              data-d1="collaboration-confirm-promotion"
+              @click="confirmPromotion"
+            >
+              确认升班（一次提交）
+            </el-button>
+            <el-button
+              size="small"
+              :loading="loadingPromotion"
+              :disabled="frozen || promotionBusy || pendingWrite !== null"
+              data-d1="collaboration-reload-promotion"
+              @click="loadPromotion"
+            >
+              重新读取升班信息
+            </el-button>
+          </div>
+          <el-alert
+            v-if="promotionNotice"
+            :title="promotionNotice"
+            type="info"
+            :closable="false"
+            data-d1="collaboration-promotion-notice"
+          />
+        </div>
+          <p v-else class="muted">尚未读取升班信息。</p>
+        </details>
       </section>
 
       <section v-if="membership" class="step" data-d1="collaboration-game-config">
-        <h3>3. 在线班级游戏配置与同班老师</h3>
-        <p class="muted">在线配置与本地配置分开显示；在线写入只影响在线协作，不改写本地 SQLite。</p>
+        <details
+          class="fold"
+          data-d1="collaboration-game-config-details"
+          :open="pendingWrite !== null || preview !== null || publishPreview !== null || previewStale || publishing || confirming"
+        >
+          <summary>班级游戏配置与同班老师带入</summary>
+          <p class="muted">在线配置与本地 SQLite 分开；发布或带入只写在线配置。</p>
         <div v-if="onlineConfig" class="online-current" data-d1="collaboration-online-config">
           <p>本人当前在线配置 v{{ onlineConfig.config_version }}</p>
           <p v-if="onlineConfig.payload.locations.length">
@@ -1325,9 +2008,7 @@ defineExpose({
             读取本地配置并预览发布
           </el-button>
         </div>
-        <p class="muted">
-          只有点击上方按钮时才读取本地“班级游戏配置”。随后先显示预览，教师再次确认才写入在线配置；只发送地点、游戏范围和班级游戏指导，不会读取或上传日计划、幼儿档案、照片或 AI 内容。
-        </p>
+        <p class="muted">读取本地配置后先预览，教师再次确认才写入在线；只发送班级游戏字段。</p>
         <div v-if="publishPreview" class="preview publish-preview" data-d1="collaboration-publish-preview">
           <h4>本地配置发布预览（尚未写入）</h4>
           <p>
@@ -1386,36 +2067,6 @@ defineExpose({
             </el-button>
           </div>
         </div>
-
-        <h4>同班老师</h4>
-        <p class="muted">只显示服务端按当前班级自动配对的同班老师；班级关系由服务端重新检查。</p>
-        <el-table
-          v-if="classmates.length"
-          :data="classmates"
-          size="small"
-          data-d1="collaboration-classmates"
-        >
-          <el-table-column prop="display_name" label="同班老师" min-width="140" />
-          <el-table-column label="在线配置版本" width="120">
-            <template #default="{ row }">
-              <span v-if="row.config_version > 0">v{{ row.config_version }}</span>
-              <span v-else class="muted">尚无配置</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="130">
-            <template #default="{ row }">
-              <el-button
-                size="small"
-                :loading="previewingSourceId === row.teacher_id"
-                :disabled="!canPreviewSource(row)"
-                @click="previewSource(row)"
-              >
-                预览带入
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-        <p v-else class="muted">当前班级暂无其他同班老师。</p>
 
         <div v-if="preview" class="preview" data-d1="collaboration-preview">
           <h4>带入预览（尚未写入）</h4>
@@ -1483,7 +2134,7 @@ defineExpose({
             </el-button>
           </div>
         </div>
-
+        </details>
       </section>
     </template>
   </el-card>
@@ -1494,6 +2145,12 @@ defineExpose({
 .head { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .step { margin-top: 1rem; }
 .connect-row { display: flex; gap: 0.5rem; align-items: center; max-width: 620px; }
+.redeem-box { padding: 0.75rem; background: var(--el-fill-color-lighter); }
+.promotion-form { margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--el-border-color-lighter); }
+.promotion-receipt { margin-top: 0.75rem; padding: 0.6rem; background: var(--el-fill-color-lighter); }
+.promotion-row { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 0.75rem 0; }
+.promotion-row > div { min-width: 220px; flex: 1 1 240px; }
+.promotion-row label { display: block; margin-bottom: 0.35rem; color: var(--el-text-color-secondary); }
 .class-list { margin: 0.5rem 0; }
 .class-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; padding: 0.35rem 0; border-bottom: 1px solid var(--el-border-color-lighter); }
 .class-id { font-family: var(--el-font-family-mono, monospace); font-size: 0.75rem; color: var(--el-text-color-secondary); word-break: break-all; }

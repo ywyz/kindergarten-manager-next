@@ -41,6 +41,9 @@ from app.local.todo_api import todos_router
 from app.local.weekly_plan_api import weekly_plans_router
 from app.local.weekly_ai_api import weekly_ai_router
 from app.local.weekly_plan_export_api import weekly_exports_router
+from app.local.weekly_collaboration_export import (
+    router as weekly_collaboration_export_router,
+)
 
 SESSION_HEADER = "X-App-Session"
 LOCAL_HEALTH_PATH = "/api/local/health"
@@ -238,6 +241,7 @@ def create_local_app(
     app.include_router(weekly_ai_router)
     app.include_router(weekly_exports_router)
     app.include_router(collaboration_router)
+    app.include_router(weekly_collaboration_export_router)
     # Rate-limited and disabled entirely when the build has no fixed trust
     # source.  It runs after the app is fully built and never blocks launch.
     prompt_package.start_background_check()

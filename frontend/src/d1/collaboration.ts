@@ -74,6 +74,97 @@ export interface CollaborationStatus {
   message: string | null
 }
 
+export interface CollaborationRedeemResult extends CollaborationStatus {
+  purpose: 'join' | 'recovery'
+  membership: CollaborationMembership | null
+}
+
+export interface CollaborationPromotionTerm {
+  term_id: string
+  name: string
+  start_date: string
+  end_date: string
+}
+
+export interface CollaborationPromotionOverview {
+  class_id: string
+  class_name: string
+  grade: 'small' | 'middle' | 'large'
+  version: number
+  terms: CollaborationPromotionTerm[]
+}
+
+export interface CollaborationPromotionResult {
+  request_id: string
+  class_id: string
+  class_name: string
+  grade: 'small' | 'middle' | 'large'
+  version: number
+  effective_term_id: string
+  replayed: boolean
+}
+
+export interface CollaborationPromotionInput {
+  request_id: string
+  class_id: string
+  expected_version: number
+  target_grade: 'small' | 'middle' | 'large'
+  effective_term_id: string
+}
+
+export interface CollaborationPromotionReceipt {
+  result: CollaborationPromotionResult
+  termName: string
+}
+
+export interface CollaborationPromotionReconcile {
+  overview: CollaborationPromotionOverview
+  membership: CollaborationMembership
+  classes: CollaborationClass[]
+  receipt: CollaborationPromotionReceipt
+  accepted: boolean
+}
+
+/**
+ * Reconcile one promotion receipt with a fresh authoritative promotion read.
+ *
+ * The receipt itself never decides the current name/grade.  The GET promotion
+ * response is the authority for the current class, even when the receipt is
+ * for a future term or the desktop clock disagrees with the service.  An old
+ * receipt therefore cannot roll a newer authoritative name/version backwards;
+ * a read older than the receipt is rejected and the caller keeps its last
+ * trusted display.
+ */
+export function reconcilePromotionResult(args: {
+  overview: CollaborationPromotionOverview
+  membership: CollaborationMembership
+  classes: CollaborationClass[]
+  result: CollaborationPromotionResult
+}): CollaborationPromotionReconcile {
+  const { overview, membership, classes, result } = args
+  const termName =
+    overview.terms.find((item) => item.term_id === result.effective_term_id)
+      ?.name ?? result.effective_term_id
+  const receipt = { result, termName }
+  const accepted =
+    overview.class_id === result.class_id
+    && overview.version >= result.version
+  if (!accepted) {
+    return { overview, membership, classes, receipt, accepted: false }
+  }
+  return {
+    overview,
+    membership: { ...membership, class_name: overview.class_name },
+    classes: classes.map((item) =>
+      item.class_id === overview.class_id
+        ? { ...item, display_name: overview.class_name }
+        : item,
+    ),
+    receipt,
+    accepted: true,
+  }
+}
+
 export interface CollaborationConfig {
   class_id: string
   config_version: number
@@ -151,11 +242,15 @@ export interface CollaborationApi {
     credential: string,
     binding?: CollaborationRecoveryBinding | null,
   ): Promise<CollaborationStatus>
+  redeem(code: string): Promise<CollaborationRedeemResult>
   disconnect(): Promise<CollaborationStatus>
   classes(): Promise<CollaborationClass[]>
   membership(): Promise<CollaborationMembership | null>
   selectClass(classId: string): Promise<CollaborationMembership>
   leaveClass(): Promise<{ removed: boolean }>
+  getPromotion(): Promise<CollaborationPromotionOverview>
+  promote(input: CollaborationPromotionInput): Promise<CollaborationPromotionResult>
+  getPromotionOperation(requestId: string): Promise<CollaborationPromotionResult>
   classmates(): Promise<CollaborationClassmate[]>
   ownConfig(): Promise<CollaborationConfig>
   saveConfig(input: CollaborationSaveInput): Promise<CollaborationSaveResult>
@@ -219,6 +314,8 @@ export function createCollaborationApi(): CollaborationApi {
             }
           : {}),
       }),
+    redeem: (code) =>
+      apiPost<CollaborationRedeemResult>('/api/local/collaboration/redeem', { code }),
     disconnect: () => apiPost<CollaborationStatus>('/api/local/collaboration/disconnect'),
     classes: () => apiGet<CollaborationClass[]>('/api/local/collaboration/classes'),
     membership: async () => {
@@ -231,6 +328,14 @@ export function createCollaborationApi(): CollaborationApi {
       apiPut('/api/local/collaboration/class', { class_id: classId }),
     leaveClass: () =>
       apiDelete<{ removed: boolean }>('/api/local/collaboration/class', {}),
+    getPromotion: () =>
+      apiGet<CollaborationPromotionOverview>('/api/local/collaboration/promotion'),
+    promote: (input) =>
+      apiPost<CollaborationPromotionResult>('/api/local/collaboration/promotion', input),
+    getPromotionOperation: (requestId) =>
+      apiGet<CollaborationPromotionResult>(
+        `/api/local/collaboration/promotion/operations/${pathSegment(requestId)}`,
+      ),
     classmates: () => apiGet<CollaborationClassmate[]>('/api/local/collaboration/classmates'),
     ownConfig: () => apiGet<CollaborationConfig>('/api/local/collaboration/game-config'),
     saveConfig: (input) =>

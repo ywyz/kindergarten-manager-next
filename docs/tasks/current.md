@@ -1,71 +1,48 @@
-# Windows 教师手测逐项修复
+# 在线协作合成联调
 
-2026-11-07 教师已授权按 [反馈修复规格](../specs/desktop-teacher-feedback-repair.md) 开工。安装测试版 `v0.1.0-listening-test.20261107` 对应源码 `cfae26b9551589640bdf191710e6ba751ad91b66`。证据按编号写入 [本轮核查](../bootstrap/desktop-teacher-feedback-repair-review.md)。一对一倾听 L1–L4 的源码技术结论和测试机交接归 [原核查记录](../bootstrap/desktop-one-to-one-listening-review.md#2026-11-07-提交前补核与测试机授权)。
+2026-11-08，教师授权在上一轮教师反馈的源码与合成核查通过、实现会话停写后接续。上一轮交接和未验项见 [教师反馈核查](../bootstrap/desktop-teacher-feedback-repair-review.md)。本轮按 [在线协作 ADR](../adr/0005-optional-online-class-collaboration.md)、[教师确认的流程](../specs/desktop-teacher-feedback-repair.md#管理端登录教师发码和桌面升班)执行，证据记入 [联调核查](../bootstrap/online-collaboration-integration-review.md)。
 
-## 当前状态
+## 当前门槛
 
-2026-11-08，本轮授权的源码及合成核查已完成。当前本地迁移链经静态核查止于 `20261108_0016_local_listening_goal_suggest`。数据库测试和迁移执行暂缓。下一轮待验范围包括 #4 的同源候选构建和安装、#6 的正式来源及发布、原生 Windows 安装版、实际 Word／WPS 和 #17、#30 的现场供应商响应。各项证据和验收边界见 [本轮核查](../bootstrap/desktop-teacher-feedback-repair-review.md)。
+**第一至第四阶段均已通过合成联调独立复核。** 开发基线为 `codex/desktop-one-to-one-listening` 的 `c60c5457faf046ea66feb1c8816a8fd1be0db20c`，开工时工作树干净。原实现会话已停写，分工、反例、实测和待补项见 [联调核查](../bootstrap/online-collaboration-integration-review.md)。OpenCode 使用 build／`opencode-go/deepseek-v4.1-flash#max`，Command Go 使用 `deepseek/deepseek-v4.1-flash`／max。线上联调保留隔离测试站点和合成数据，供教师按正常路径复测。
 
-## 执行记录
+1. **MySQL 8.4、管理员登录与发码。** 上海 ECS 经 VPC 连接现有 RDS，独立测试库和专用账号，迁移与应用权限分别核对。迁移、稳定身份、版本并发、事务及约束在 MySQL 8.4 上实际运行。Command Go 交管理网页登录、发两类一次性码及真实服务端兑换。Codex 从页面给合成教师发码，复核教师和匿名者无发码权限、过期、重复及并发只能成功一次。桌面本地继续使用 SQLite。
+2. **选班、换机与升班。** 核实 `manager-next.ywyz.tech` 的 ESA 到独立 Caddy 站点 HTTPS 回源及 API 绕过缓存。两个隔离桌面档案同园同班自动配对，加入码只绑定教师与园所。用新档案兑换恢复码，直接进入原来仍有效的班级。桌面选择目标年级、生效学期并确认升班，两端沿用班级 ID，历史班名、学期及确认版本按原快照显示与导出。
+3. **周计划同步。** 按已确认的共享范围、备课活动引用和确认权限实施。双桌面按同周读取、交叉保存、并发冲突保留未提交输入、断线恢复及确认版导出验收。照片和 Word 文件留在本地。
+4. **提示词发布。** 用合成发布源和测试签名验证管理端草稿、预览、正式发布和回滚。桌面按渠道拉取并核验签名，下次 AI 执行使用有效新版，离线沿用最近可用版。版本包走独立可缓存静态路径，最新版本清单绕过缓存。
 
-1. 第一批 #37、#28、#10 已完成源码自动核查。#37 原生窗口关闭及原教师故障、#28 Windows 输入法待验。第二批 #1 完成源码与安装静态核查，实际 Windows 安装入口待验。#2 已完成组件、类型和独立 Edge 页面核查，Windows WebView2 安装版待验。
-2. #17、#30 已完成合成复现、错误归类回修和源码自动核查。连接与请求时限沿用开工值。现场供应商响应和教师故障待同源实测。原会话和首失败归 [本轮核查](../bootstrap/desktop-teacher-feedback-repair-review.md)，已结束项的写入责任不接续。
-3. Codex 每项先核定验收入口、文件和唯一写入者。由原 OpenCode 或 Command Go 实现、自测，Codex 独立审查和验证。发现反例交原写入者，复测后接续。OpenCode 固定 `build`／`opencode-go/deepseek-v4.1-flash#max`，Command Go 固定 `deepseek/deepseek-v4.1-flash`／`max`。
+每阶段经 Codex 独立复核通过才开始下一阶段。线上操作限独立测试库、专用账号和测试站点，凭据走受保护配置。每阶段记录实现者、实测、审核及待补项，最后给教师正常使用路径复测清单。
 
-2026-11-08 接续时沿用前轮工作树，#2 的原 OpenCode B 已停写。以下为各项派工和 Codex 审核结果。
+## 第二阶段接口边界
 
-| 条目 | 写入者 | 文件及验收 |
-| --- | --- | --- |
-| #3 | 原 Command Go，已停写 | 一次确认、晚输入和原回执、慢重读、读取 503 恢复及读到较新版后再确认通过实际 Edge 和组件核查。 |
-| #9 | 原 OpenCode B，已停写 | `frontend/src/d1/views/SetupView.vue`、`desktop/d1_main.py`。初始化 18 种组合、Edge 正常提交和已有自定义班名读取通过。原生安装版待验。 |
-| #11 | 原 Command Go，已停写 | 返回、备份、模拟宿主关闭、逐项定位、部分确认刷新和 AI 回执焦点均通过实际 Edge。类型与组件通过。 |
-| #12 | 原 OpenCode A，已停写 | 七列月历的组件、局部类型和实际 Edge 核查通过，原生窗口待验。 |
-| #14 | 原 OpenCode A，已停写 | 锁定依赖九项组件、类型和实际 Edge 对照通过。Windows 原生安装版待验。 |
-| #15 | 原 OpenCode A，已停写 | 直接编辑、空白浏览、首次保存和未知回执恢复均通过锁定依赖及实际 Edge 核查。原生安装版待验。 |
-| #19 | 原 OpenCode A，已停写 | 原始教案靠前，三个 AI 操作各在对应区并共用同一任务状态，实际 Edge 和锁定依赖回归通过。 |
-| #5、#8 首段服务端 | 原 OpenCode B，已停写 | `backend/app/collaboration/`、独立 PostgreSQL 初始 SQL 和驱动声明经两轮源码核查。桌面入口见下一行，数据库验证暂缓。 |
-| #5、#8 桌面接续 | 原 OpenCode B，已停写 | 独立组件、HTTPS 转接和设置页正常入口均通过静态复核。复用 #11 未决保护。数据库与线上验证暂缓。 |
-| #31 | 原 OpenCode B，已停写 | 周计划列表和编辑概览的短句与显式确认详情通过锁定依赖及实际 Edge 核查。原生安装版待验。 |
-| #32 | 原 OpenCode B，已停写 | 常规筛选、分页、跨年和缩短学期后的历史冻结周次通过源码、组件及 Edge 核查。本地接口未连库实测。 |
-| #33 | 原 OpenCode B，已停写 | 周次与周一共用身份、已有计划打开、非周一拒绝及关闭后的迟到预览已通过实际 Edge 核查。 |
-| #34 | 原 OpenCode B，已停写 | 单周／连续周、实际确认版本、预览竞争和保存未决时四条关闭路径均通过实际 Edge 与周套件核查。 |
-| #35 | 原 OpenCode B，已停写 | 实际新建后按回车保留主题和编辑页，明确保存只发一份 PATCH。五项周套件及 #34 回归通过。 |
-| #7 | 原 OpenCode A，已停写 | 粘贴解析、可编辑结构、一次应用、取消零写、晚输入、原回执及生产 worker 编码通过。数据库迁移与供应商实测暂缓。 |
-| #16 日计划普通候选首段 | 原 Command Go，已停写 | 拆分和其它活动均通过真实内联、一次采用、取消核查，原回执与迟到输入保护通过。重新生成、定向要求与其它模块接续。 |
-| #16 日计划普通候选接续 | 原 Command Go，已停写 | 拆分和其它活动明确重生、成功／失败／原回执，以及生产请求携带原候选的合法字段均通过。 |
-| #16 游戏观察普通候选 | 原 OpenCode B，已停写 | 一次采用、取消重开、迟到候选、旧回执、定向重生和已提交后只读恢复通过。等待重读时旧稿自动保存为零。 |
-| #16 周计划普通候选 | 原 OpenCode B，已停写 | 一次采用、未选编辑、畸形回执、重读零旧稿写入、再生失败／取消和生产字段白名单通过。 |
-| #21 | 原 Command Go，已停写 | 采用前后按环节对齐，新增、整段改写、纯重编号和正文十进制通过。真实 Edge 复核 #16 内联和取消零采用。 |
-| #20 | 原 Command Go，已停写 | 定向生成、原候选与教案绑定、精确任务 ID、失败／取消保留、原回执及旧提示词包均通过合成核查。 |
-| #23 | 原 Command Go，已停写 | 原文纠错、单环节合同、本地 Word 标红、旧 Web、真实空行及长文复核通过。新适龄无拆分基准时发送前提示。 |
-| #24 | 原 Command Go，已停写 | 结构性换行、混合路径和字面标记、旧候选显式采用、生产 Word 分段和有界扫描已通过。全前端及类型通过。 |
-| #22 | 原 OpenCode B，已停写 | 明确成功后浮窗并关闭。取消、失败与未决保留窗口。独立 Edge 和组件验证通过，原生安装版待验。 |
-| #18 | 原 OpenCode B，已停写 | 缺项直接导出、Word 按位留空、旧显式上下文冲突及保存恢复均通过合成验证。数据库测试暂缓。 |
-| #25 | 原 OpenCode B，已停写 | 生产 OOXML 的唯一下午户外位置、历史内容顺序和现有回执均通过合成核查。旧入口的默认映射和 #18 回归通过。 |
-| #26 | 原 OpenCode B，已停写 | 区域和户外精确占位、同词教师正文、历史转带及旧 Web 行为通过生产 OOXML 核查。实际 Word/WPS 待验。 |
-| #27 | 原 Command Go 首段，原 OpenCode B 回修，已停写 | 反思生成、取消零写、一次采用、旧档案补种、迟到回执和离开／关闭保护通过。0014 仅源码核查。 |
-| #38 | 原 OpenCode B，已停写 | 单周及连续周一处缺项提示、明确过期重读、生成与宿主各自未决、原冲突重试和四条关窗均通过实际 Edge。 |
-| #36 | 原 OpenCode B，已停写 | 六类中班合成请求、旧输入、范围防篡改及六个旧包散列通过。真实供应商待验。 |
-| #29 普通文件 | 原 OpenCode B，已停写 | 正常入口真实 WebView2 的合成路径投递和 Windows 原生 OLE 鼠标拖入各通过，原选择入口与未决回执通过。独立观察套件 68 项通过。资源管理器、微信来源及安装版待验。 |
-| #39 | 原 OpenCode A，已停写 | 批量选择、调换、原图保护、明确失败、提交未决与同键恢复通过 Edge 和纯文件核查。 |
-| #40 | 原 OpenCode A，已停写 | 横竖图与窄窗口、预览／AI 工作图／生产 Word 同向、同修订读取及提交未决的原回执通过。迁移仅源码核查。 |
-| #41、#42 | 原 OpenCode A，已停写 | 记录学期、作品日期交集、旧值、取消、一次保存及日期格式前后端一致性通过。 |
-| #43 专属合同和入口 | 原 OpenCode A，已停写 | 合成一至三图、空位、错位、跨领域和未知提交通过，中央接线见下一行。 |
-| #43 中央接线 | 原 OpenCode A，已停写 | 任务登记、生产执行帧、冻结图位、连续采用和备份、0015 迁移源码通过。 |
-| #44 本地采用链 | 原 OpenCode A，已停写 | 多选一次写入、同键重试、专用 503、缺字段或错身份回执、服务端正常化后的正文和旧单图均通过。#43 中央接线独立验收。 |
-| #45 观察目标 | 原 OpenCode A，已停写 | 空材料、编辑后一次采用、取消、切域和原票据恢复通过。生产 Word 保留历史区域；0016 仅静态核查。 |
-| #46 源码基线 | Codex 已核查 | 已有列表入口，实际 Edge 合成服务完成选择、调序、生成和一次假宿主保存。生产 Word 结构保持选择顺序。安装版待验。 |
-| #13 | 原 OpenCode B，已停写 | 工作台的新建、截止日、编辑、完成、重开、删除及宿主保护通过。提交和回滚双失败保留原票据，0013 仅源码核查。 |
-| #4 双渠道发现首段 | 原 OpenCode B，已停写 | 版本顺序、转正、规范身份、切换未决和双故障清除旧目标通过实际 Edge 及纯核查。预览包签名与安装交接另验。 |
-| #4 可信安装链源码 | 原 OpenCode B，已停写 | 合成签名、包身份、已装旧包与固定渠道的更新器复核通过。候选构建身份及安装实测待接续。 |
-| #4 候选打包源码 | 原 OpenCode B，已停写 | 正式／预览完整身份、0016 线性链、迁移文件字节、源码提交、目录和 ZIP 静态审核通过。实际候选待验。 |
-| #6 提示词功能包 | 原 OpenCode A，已停写 | 9 类可变文字、签名、预览兼容、缓存与个人回退、执行固定和启动顺序通过。42 项纯测试、实际 Edge 合成、完整前端及类型通过。 |
+- 复用阶段一 `POST /api/collaboration/redeem` 及既有选班、班友和配置带入入口。桌面本地代理通过同一受限 HTTPS 来源发兑换请求，在同一连接代次校验服务端教师身份后接入现有在线会话。加入不自动选班，恢复直接读取仍有效的原班。两类码及教师 token 只在受控请求和进程会话内使用。
+- 升班在 `/api/collaboration/me/class/promotion` 读取当前班级与学期、提交明确确认。读返回 `class_id`、`class_name`、`grade`、`version`、`terms`。学期项含 `term_id`、`name`、`start_date`、`end_date`。提交含 `request_id`、`class_id`、`expected_version`、`target_grade`、`effective_term_id`。回执含 `request_id`、`class_id`、`class_name`、`grade`、`version`、`effective_term_id`、`replayed`，可用 `GET /api/collaboration/me/class/promotion/operations/{request_id}` 查询。失效基准返回明确 409，未知提交只按原请求 ID 查回执。桌面沿用未决和关闭保护。
+- 生效学期采用在线园所的稳定学期 ID。班名在上海日期到达该学期时生效，提交回执显示新班名和生效学期。已有班级、老师身份、成员关系和确认快照均按稳定 ID 保留。原本地历史周计划通过现有显示和 Word 路径复核，在线周计划的共享合同和同步留到第三阶段。
 
-2026-11-08 电脑异常中断 #43、#16 游戏观察的原命令，未产生停写标记。保留已落盘源码与首轮日志，核对同一 HEAD、空暂存区和 92 份变更 Python 源码的 AST 后，分别用原会话、原互斥范围接续。Windows computer use 用新会话及隔离合成窗口重新验证。
+## 教师设置简化
 
-## 执行边界
+教师要求本轮同时简化整个设置页。默认先显示姓名与园所、当前班级和当前学期，其余设置按学期维护、日历、游戏、AI、备份恢复等用途收起。工作台提供明确的在线协作入口，打开后优先呈现当前所需的兑换、选班、班级状态或升班。手工凭据和低频配置按用途收起，保留既有功能。
 
-- 开工时目标分支 `codex/desktop-one-to-one-listening`，HEAD 与同名跟踪分支一致，index 空，已有教师反馈规格未跟踪。实际本地 Alembic 头为 `20261107_0010_local_listening_ai`。Windows x64 标准 GIL CPython 3.14.10，现有 `desktop/.venv-d1`，SQLAlchemy 2.0.54、Pillow 13.0.0。使用全新隔离合成根，禁 dotenv／pyc、使用 SQLAlchemy 纯 Python 并落实父子进程 loopback 守卫。
-- 先用假供应商，合成结果与教师现场分开记录。实际源码、自动、Windows 原生、Word、教师验收分列。历史测试机授权归对应旧交接，本轮应用真实 AI、旧包／安装包、部署、签名、发行及 Git 写入分别按实际授权。
-- 开工版安装打包和 E14 校验使用固定正式版身份及 `20261107_0010_local_listening_ai`。本轮接续完整版本、渠道和源码迁移链的统一静态核对。候选实际构建仍按独立授权、新来源 freeze 和安装验证交接。
-- 在线数据库本轮限于 [ADR 0005 首段](../adr/0005-optional-online-class-collaboration.md#首段班级和配置带入合同) 的 PostgreSQL 协作源码。规格中列出的后续 RDS MySQL 8.4 接入另行交付。本轮暂缓数据库开通、连库、迁移运行、厂商测试和联调。提示词功能包及验收见 [第 #6 条设计](../specs/desktop-teacher-feedback-repair.md#6-提示词功能包)。
+页面分组保持既有保存、影响预览和未决请求处理。收起的分组保留编辑状态。从关闭／离开提醒回到某个草稿时，先打开所在分组再定位。打开设置或协作入口沿用既有本地状态读取，老师明确操作后才连接在线服务。
+
+## 第三阶段已确认的产品范围
+
+- 同一在线班级的同周共享内容限晨谈、集体活动和游戏。其余栏目由该班一位教师在自己的本地档案填写。照片和 Word 文件保留在本地。
+- 老师从本人备课选择活动时，只共享活动名称和日期。备课正文和来源记录留在本地。
+- 任一仍有本班权限的老师可明确确认最新已保存的共享版本。
+
+服务端按在线园所、班级、学期及周一日期识别同一周。桌面在现有周计划入口显式进入本班共享周计划。共享稿只传按日期的晨谈、集体活动和现有游戏槽位所需的名称。由本人已保存备课带入时，只投影活动名称及日期。服务端拒绝额外字段，按当前成员关系授权，保存用显式基准版本和原请求 ID。
+
+教师遇到版本冲突或断线时保留本次输入，读取服务端版本后可核对并明确保存。未知写入按原请求查询。确认以具体已保存版本为基准，冻结当时的班名、学期、共享字段和确认版本。桌面在本地导出确认版，班级老师填写的本地栏目可随该本地文件输出。服务器只保存共享快照，桌面本地 SQLite 的原有周计划、历史版本和 Word 路径继续可用。
+
+### 第三阶段接口
+
+- 共享周路径为 `/api/collaboration/classes/{class_id}/weekly/{term_id}/{week_start}`。桌面受限代理沿用 `/api/local/collaboration` 前缀和相同后缀。班级及学期取在线 ID，`week_start` 是 ISO 周一。共享内容为 `{days, games}`。日项含 `date`、`morning_talk_topic`、`group_activity_theme`。游戏固定槽位 `collective_1`、`collective_2`、`free_choice_1`、`focus_area`，各槽为空或 `{name,date}`，手工项日期可空。服务器以校内学期范围及周校验日期。
+- GET 返回 `class_id, term_id, week_start, class_name, term_name, version, content, confirmation`，未创建的周稿版本为 0，`confirmation` 可空。POST `/save` 提交 `request_id, expected_version, content`，回同一读取形状加 `request_id, replayed`。POST `/confirm` 提交 `request_id, expected_version`，回冻结的确认形状加 `request_id, replayed`。确认形状含 `confirmation_id, confirmation_version, version, class_id, term_id, week_start, class_name, grade, term_name, content, confirmed_by, confirmed_at`。确认页可按 `GET /confirmations/{confirmation_id}` 重读，原操作可按 `GET /operations/{request_id}` 读取 `{request_id,kind,result}`。
+- 本地 Word 由 `GET /api/local/collaboration/classes/{class_id}/weekly/{term_id}/{week_start}/confirmations/{confirmation_id}/word` 生成，接受可选本地 `weekly_plan_id, local_draft_version` 查询参数作为一对。服务端确认版决定共享字段、班名和确认版本。本地选定的已保存周稿只补主题、栏目和材料。源端不接收本地周稿内容或文件。桌面用既有原生 Word 保存对话框。
+
+## 第四阶段接口
+
+- 管理端沿用管理员登录和 CSRF。基路径 `/api/collaboration/admin/prompt-releases`。GET 返回 `{editable,drafts,releases,latest}`，`editable` 为 `{task_type,fields}` 列表，`fields` 是字段名到当前正式指导文本的映射。草稿项 `{draft_id,notes,base_stable_sequence,changes}`。发布项 `{release_sequence,channel,draft_id,notes,rollback_of}`，可空字段用 `null`。`latest` 为 `{preview,stable}`，值为正整数或 `null`。POST `/drafts` 接 `{changes,notes}`，`changes` 为任务、字段到指导文本的映射。草稿冻结完整有效内容并记录其正式基准。POST `/preview` 接 `{draft_id}`，POST `/stable` 接 `{preview_sequence}`，POST `/rollback` 接 `{target_sequence,expected_stable_sequence}`，均回对应发布项。正式发布复用该预览的确切指导内容，拒绝已落后的草稿基准。回滚使用已发布正式版的指导内容，签出更高发布序号及对应默认修订。发布动作在事务中串行，不重复推进同一草稿或预览。
+- 完整包沿用已有 Ed25519 信封和可编辑字段白名单，结构、权限、模型和工具信息由本机程序决定。静态签名包位于 `/prompt-packages/{channel}/v{release_sequence}-{sha256}.json`，`sha256` 为包原始 UTF-8 字节摘要。清单位于同目录的 `latest.json`，严格字段为 `{format_version,channel,release_sequence,package_sha256,key_id,signature}`，格式版本为 `1`。清单签名为 Ed25519，输入 `b"kgm-prompt-manifest-v1\n"` 加不含 `signature` 的规范 JSON UTF-8，签名以标准 base64 表示。包 URL 由受信 HTTPS 源目录及签名字段构造。包字节摘要、信封签名、清单渠道、序号和 key id 全部核对，禁止重定向。`preview` 与 `stable` 是唯一渠道，测试客户端按固定构建信任读取一个渠道。
+- 版本包是不可变文件，发布前写入，已有同名文件仅允许同字节，清单在事务提交后才可见。版本文件 `Cache-Control: public, max-age=31536000, immutable`，清单、管理端和错误响应 `Cache-Control: no-store`。既有直链签名包保留兼容，测试信任由隔离运行配置注入。没有远程源的普通源码构建继续使用已有默认提示词。测试私钥仅在受保护测试服务配置，桌面只接收公钥。课堂设置页无需填写地址、密钥或切换渠道。

@@ -262,7 +262,13 @@ def initialize(
             if payload is None:  # pragma: no cover - unreachable by protocol
                 raise LocalStorageError()
             return payload, False
-        _create_initialized(session, normalized, candidates, library_version)
+        _create_initialized(
+            session,
+            normalized,
+            candidates,
+            library_version,
+            prompt_package_builtin_only=prompt_package_builtin_only,
+        )
         session.commit()
     except BaseException:
         rollback(session)
@@ -276,6 +282,8 @@ def _create_initialized(
     normalized: NormalizedInitialization,
     candidates: list[CalendarDayCandidate],
     library_version: str,
+    *,
+    prompt_package_builtin_only: bool = False,
 ) -> None:
     now = utc_now()
     profile_id = new_opaque_id()

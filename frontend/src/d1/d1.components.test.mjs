@@ -48,9 +48,10 @@ function resolveTsFile(spec, fromFile) {
 }
 
 class Harness {
-  constructor({ overrides = {}, fetchImpl } = {}) {
+  constructor({ overrides = {}, fetchImpl, document } = {}) {
     this.overrides = overrides
     this.fetchImpl = fetchImpl ?? (() => Promise.reject(new Error('no fetch')))
+    this.document = document
     this.messages = []
     this.mounted = []
     this.unmounts = []
@@ -97,6 +98,7 @@ class Harness {
       TextEncoder,
       crypto: { randomUUID: () => `uuid-${++harness.uuidSeq}` },
       window: windowProxy,
+      document: harness.document,
       fetch: (...args) => harness.fetchImpl(...args),
     }
   }
@@ -340,9 +342,10 @@ async function waitUntil(condition, what = 'condition') {
 // App.vue: close protocol (R1) and settings route (R5)
 // ---------------------------------------------------------------------------
 
-async function mountApp({ hostCalls, editor, fetchImpl } = {}) {
+async function mountApp({ hostCalls, editor, fetchImpl, document } = {}) {
   const host = hostCalls ?? hostApi()
   const harness = new Harness({
+    document,
     overrides: {
       './client': {
         apiGet: async (path) => {
@@ -1365,6 +1368,66 @@ async function mountWorkbench({ frozen = false } = {}) {
   return { state, emitted }
 }
 
+async function testWorkbenchCollaborationEntryTargetsFocusedSettings() {
+  const { state, emitted } = await mountWorkbench({ frozen: false })
+  state.openCollaboration()
+  assert.deepEqual(emitted.at(-1), ['open-settings', 'collaboration'])
+  state.openSettings()
+  assert.deepEqual(emitted.at(-1), ['open-settings'])
+  ok('settings: workbench collaboration entry reuses the normal settings route')
+}
+
+async function testDirectCollaborationSettingsUsesLeaveGuard() {
+  const app = await mountApp({})
+  app.state.view.value = { name: 'settings' }
+  app.state.settingsDraftActive.value = true
+  const blocked = await app.state.leaveForAction('settings', () =>
+    app.state.goSettings('collaboration'),
+  )
+  assert.equal(blocked, 'stayed')
+  assert.equal(app.state.view.value.name, 'settings')
+  assert.equal(app.state.view.value.section, undefined)
+  app.state.settingsDraftActive.value = false
+  const left = await app.state.leaveForAction('settings', () =>
+    app.state.goSettings('collaboration'),
+  )
+  assert.equal(left, 'left')
+  assert.equal(app.state.view.value.name, 'settings')
+  assert.equal(app.state.view.value.section, 'collaboration')
+  app.state.onSettingsSection(null)
+  assert.equal(app.state.view.value.name, 'settings')
+  assert.equal(app.state.view.value.section, undefined)
+  ok('settings: direct collaboration entry reuses the leave guard and section route')
+}
+
+async function testSettingsBlockedNoticeScrollsOnlyOnRefusal() {
+  const scrolls = []
+  const notice = {
+    scrollIntoView: (options) => scrolls.push(options),
+  }
+  const documentStub = {
+    querySelector: (selector) =>
+      selector === '[data-d1="blocked-draft-notice"]' ? notice : null,
+  }
+  const app = await mountApp({ document: documentStub })
+  app.state.view.value = { name: 'settings' }
+  app.state.settingsDraftActive.value = true
+  app.state.settingsDraftTargets.value = [{ kind: 'new-term' }]
+  const outcome = await app.state.leaveForAction('calendar', () => {
+    throw new Error('the blocked leave must not run')
+  })
+  await settle()
+  assert.equal(outcome, 'stayed')
+  assert.equal(app.state.view.value.name, 'settings')
+  assert.equal(scrolls.length, 1, 'the refused leave scrolls the existing notice into view')
+  assert.equal(scrolls[0].block, 'center')
+  // Draft target refresh is not a refusal: it must not fight the teacher's scroll.
+  app.state.settingsDraftTargets.value = [{ kind: 'class' }]
+  await settle()
+  assert.equal(scrolls.length, 1)
+  ok('settings: a refused leave reveals the existing notice once; edits do not re-scroll')
+}
+
 async function testCloseFreezeDisablesWorkbenchInteraction() {
   const { state, emitted } = await mountWorkbench({ frozen: true })
   const day = {
@@ -1379,6 +1442,7 @@ async function testCloseFreezeDisablesWorkbenchInteraction() {
   }
   state.clickDay(day)
   state.openSettings()
+  state.openCollaboration()
   state.openListItem({
     id: 'p1',
     plan_date: '2026-09-15',
@@ -2673,6 +2737,62 @@ async function testSettingsTargetsPerTermAndNoWrite() {
   ok('#11 settings targets list every dirty term by id and never write')
 }
 
+async function testSettingsGroupsStartCollapsedAndFocusExpandsAncestors() {
+  const { state, emitted } = await mountSettings()
+  assert.deepEqual(
+    { ...state.expandedGroups },
+    { backup: false, terms: false, calendar: false, games: false, ai: false },
+  )
+  state.newTermName.value = '新学期草稿'
+  state.overrideDate.value = '2026-09-20'
+  await settle()
+  await state.focusTarget({ kind: 'new-term' })
+  assert.equal(state.expandedGroups.terms, true)
+  await state.focusTarget({ kind: 'override' })
+  assert.equal(state.expandedGroups.calendar, true)
+  await state.focusTarget({ kind: 'ai-config' })
+  assert.equal(state.expandedGroups.ai, true)
+  await state.focusTarget({ kind: 'game-config' })
+  assert.equal(state.expandedGroups.games, true)
+  await state.focusTarget({ kind: 'online-collaboration' })
+  assert.equal(state.activeSection.value, 'collaboration')
+  assert.ok(
+    emitted.some((event) => event[0] === 'section' && event[1] === 'collaboration'),
+  )
+  state.openMainSection()
+  assert.equal(state.activeSection.value, 'main')
+  assert.ok(emitted.some((event) => event[0] === 'section' && event[1] === null))
+  ok('settings: purpose groups start collapsed and target focus opens the containing groups')
+}
+
+async function testCollaborationPendingFocusSelectsRedeemOrReceipt() {
+  const { state } = await mountSettings()
+  assert.equal(
+    state.collaborationFocusSelector(true, false, false),
+    '[data-d1="collaboration-redeem-code"]',
+  )
+  assert.equal(
+    state.collaborationFocusSelector(false, true, false),
+    '[data-d1="collaboration-redeem-code"]',
+  )
+  assert.equal(
+    state.collaborationFocusSelector(true, false, true),
+    '[data-d1="collaboration-pending-actions"] button',
+  )
+  assert.equal(
+    state.collaborationFocusSelector(false, true, true),
+    '[data-d1="collaboration-query-promotion"]',
+  )
+  assert.equal(state.collaborationFocusSelector(false, false, true), null)
+  const source = fs.readFileSync(
+    path.join(d1Dir, 'views/SettingsView.vue'),
+    'utf8',
+  )
+  assert.match(source, /输入管理员发的一次性码，连接后选择班级。/)
+  assert.doesNotMatch(source, /连接、发码、选班和写入均由下方明确操作发起/)
+  ok('settings: disconnected pending focus uses the one-time code input, not manual credentials')
+}
+
 // App.vue + real SettingsView: R17 settings-draft close protection (§16.3)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -2817,6 +2937,13 @@ async function testSettingsLeaveOffersPerTargetNotice() {
   assert.equal(settings.state.profileName.value, '待处理姓名')
   assert.equal(settings.state.className.value, '待处理班级')
   assert.equal(settings.state.termForms.value[0].name, '待处理学期')
+  assert.equal(settings.state.expandedGroups.terms, false)
+  await settings.state.focusTarget({ kind: 'term', id: 't1' })
+  assert.equal(
+    settings.state.expandedGroups.terms,
+    true,
+    'the notice target opens its collapsed term group',
+  )
   app.state.goToBlockedTarget(notice.targets[0])
   ok('#11 leave keeps the page, lists every target and warns without writing')
 }
@@ -3894,6 +4021,9 @@ const tests = [
   testCloseSaveFailureDeniesPendingRequest,
   testSettingsDraftBlocksClose,
   testSettingsBackNavigatesToWorkbench,
+  testWorkbenchCollaborationEntryTargetsFocusedSettings,
+  testDirectCollaborationSettingsUsesLeaveGuard,
+  testSettingsBlockedNoticeScrollsOnlyOnRefusal,
   testCloseLateReplyAfterCancelNotificationNeverRevives,
   testCloseWaitsForCompositionSettleBeforeCleanAllow,
   testCloseAbortedReleasesCoordinatorWhileReplyNeverReturns,
@@ -3932,6 +4062,8 @@ const tests = [
   testOneClickUnknownReceiptQueryResolvesSameRequest,
   testSecondOrdinaryConfirmWaitsForCommittedContext,
   testSettingsTargetsPerTermAndNoWrite,
+  testSettingsGroupsStartCollapsedAndFocusExpandsAncestors,
+  testCollaborationPendingFocusSelectsRedeemOrReceipt,
   testAiDraftTargetsCoverBusyAndPendingWrites,
   testSettingsLeaveOffersPerTargetNotice,
   testNoticeFollowsRemainingTargetsAfterPartialApply,

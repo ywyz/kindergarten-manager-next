@@ -57,6 +57,9 @@ MANIFEST_NAME = "package-files.json"
 SUMS_NAME = "SHA256SUMS.txt"
 MANIFEST_SCHEMA_VERSION = 1
 PILLOW_VERSION = "13.0.0"
+ONLINE_INTEGRATION_TEST_HOOK = (
+    d0_paths.REPO_ROOT / "desktop" / "e14_online_integration_test_hook.py"
+)
 
 TEMPLATE_DIR = d0_paths.BACKEND_ROOT / "app" / "assets" / "word_templates"
 LISTENING_TEMPLATE_DIR = (
@@ -169,6 +172,7 @@ SOURCE_GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "build": (
         "desktop/build_e14.py",
+        "desktop/e14_online_integration_test_hook.py",
         "desktop/build_d0.py",
         "desktop/verify_e14_package.py",
         "desktop/requirements-d1.in",
@@ -727,7 +731,12 @@ def require_no_sqlalchemy_cyextension(package_root: Path) -> None:
 
 
 def build_package(
-    dist_root: Path, frontend_dir: Path, work_dir: Path, spec_dir: Path
+    dist_root: Path,
+    frontend_dir: Path,
+    work_dir: Path,
+    spec_dir: Path,
+    *,
+    runtime_hook: Path | None = None,
 ) -> Path:
     print("== E14 PyInstaller onedir windowed package ==")
     separator = os_sep()
@@ -772,6 +781,13 @@ def build_package(
     ]
     for module in SQLALCHEMY_CYEXTENSION_MODULES:
         command.extend(["--exclude-module", module])
+    if runtime_hook is not None:
+        hook_path = Path(runtime_hook)
+        if not hook_path.is_file():
+            raise SystemExit(f"拒绝构建：runtime hook 不存在 {hook_path}")
+        if _has_reparse_component(hook_path):
+            raise SystemExit(f"拒绝构建：runtime hook 含 reparse 别名 {hook_path}")
+        command.extend(["--runtime-hook", str(hook_path.resolve())])
     command += [
         "--hidden-import",
         "chinese_calendar",
@@ -983,6 +999,15 @@ def require_listening_templates() -> None:
             raise SystemExit(f"拒绝构建：倾听模板文件缺失或不可读 {path}")
 
 
+def require_online_integration_hook() -> None:
+    """Require the fixed runtime hook only for the explicit test build."""
+    path = ONLINE_INTEGRATION_TEST_HOOK
+    if not path.is_file():
+        raise SystemExit(f"拒绝构建：缺少在线联调测试 runtime hook {path}")
+    if _has_reparse_component(path):
+        raise SystemExit(f"拒绝构建：runtime hook 含 reparse 别名 {path}")
+
+
 def install_package_metadata(
     package_root: Path,
     build_id: str,
@@ -1161,7 +1186,12 @@ def _basename_only(label: str, value: str) -> str:
     return value
 
 
-def write_portable_readme(path: Path, package_info: dict) -> None:
+def write_portable_readme(
+    path: Path,
+    package_info: dict,
+    *,
+    online_integration_test: bool = False,
+) -> None:
     text = f"""KGNext-E14 Windows 11 内部测试候选
 
 身份
@@ -1186,6 +1216,14 @@ def write_portable_readme(path: Path, package_info: dict) -> None:
 
 未验
 - 目标机实际运行、Word 逐页人工检查、真实 AI、WebDAV、签名和发行未验。
+"""
+    if online_integration_test:
+        text += """
+在线联调测试包
+- 仅用于合成园所、教师、班级、周计划和提示词，不得用于真实教师资料。
+- 双击本目录中的 KGNext-E14.exe 后，数据固定使用 %LOCALAPPDATA%\\KGNextOnlineIntegrationTest\\data，凭据固定使用 %LOCALAPPDATA%\\KGNextOnlineIntegrationTest\\credentials。
+- 已固定测试协作地址、stable 提示词渠道及测试公钥；教师无需填写地址、公钥或切换渠道。
+- 请完整解压本目录后再启动，不要只复制主 EXE；需要显式合成目录时仍可使用 --data 与 --credential-root。
 """
     _write_text_exclusive(path, text)
 
@@ -1216,6 +1254,7 @@ def write_portable_archive(
     readme_name: str = README_NAME,
     manifest_name: str = MANIFEST_NAME,
     sums_name: str = SUMS_NAME,
+    online_integration_test: bool = False,
 ) -> dict:
     """Write the deterministic outer README/manifest/sums/ZIP layout.
 
@@ -1264,7 +1303,11 @@ def write_portable_archive(
     if portable_dir.exists() and any(portable_dir.iterdir()):
         raise SystemExit(f"拒绝复用非空 portable-dir：{portable_dir}")
     portable_dir.mkdir(parents=True, exist_ok=True)
-    write_portable_readme(readme_path, package_info)
+    write_portable_readme(
+        readme_path,
+        package_info,
+        online_integration_test=online_integration_test,
+    )
     manifest = build_manifest_payload(package_root, package_info)
     _write_text_exclusive(
         manifest_path,
@@ -1344,7 +1387,24 @@ def main() -> int:
         action="store_true",
         help="validate all write targets and exit without building or writing",
     )
+    parser.add_argument(
+        "--online-integration-test",
+        action="store_true",
+        help=(
+            "build the isolated online-integration test package; requires an "
+            "explicit preview --version and --channel preview"
+        ),
+    )
     args = parser.parse_args()
+
+    if args.online_integration_test:
+        if not args.version or args.channel != "preview":
+            print(
+                "拒绝：--online-integration-test 必须显式提供 "
+                "--version（preview 形状）和 --channel preview",
+                file=sys.stderr,
+            )
+            return 2
 
     try:
         release_version, release_channel = resolve_release_identity(
@@ -1412,6 +1472,8 @@ def main() -> int:
     if not TEMPLATE_DIR.is_dir():
         raise SystemExit(f"拒绝构建：缺少 Word 模板目录 {TEMPLATE_DIR}")
     require_listening_templates()
+    if args.online_integration_test:
+        require_online_integration_hook()
 
     # The first freeze must cover the *entire* write chain, including Vite and
     # PyInstaller. It therefore runs before any frontend output is touched.
@@ -1429,7 +1491,15 @@ def main() -> int:
         build_frontend(frontend)
 
     package_root = build_package(
-        dist_root.resolve(), frontend.resolve(), work_dir.resolve(), spec_dir.resolve()
+        dist_root.resolve(),
+        frontend.resolve(),
+        work_dir.resolve(),
+        spec_dir.resolve(),
+        runtime_hook=(
+            ONLINE_INTEGRATION_TEST_HOOK
+            if args.online_integration_test
+            else None
+        ),
     )
     pruned = prune_package_caches(package_root)
     build_id = str(uuid.uuid4())
@@ -1454,7 +1524,12 @@ def main() -> int:
             migration_files=migration_files,
             migration_head=migration_head,
         )
-        portable = write_portable_archive(package_root, portable_dir, info)
+        portable = write_portable_archive(
+            package_root,
+            portable_dir,
+            info,
+            online_integration_test=args.online_integration_test,
+        )
     else:
         # Keep the historical 4-argument call/CLI behavior when no portable
         # output is requested.  The authorized portable build always passes
@@ -1566,6 +1641,8 @@ def main() -> int:
                 "frontend_file_count": frontend_file_count,
             }
         )
+    if args.online_integration_test:
+        output["online_integration_test"] = True
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 

@@ -6,7 +6,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-一对一倾听开发分支为 `codex/desktop-one-to-one-listening`。唯一执行入口为 [当前任务](docs/tasks/current.md)。Windows 教师反馈修复已完成本轮授权的源码和合成核查，待验项目见 [本轮核查](docs/bootstrap/desktop-teacher-feedback-repair-review.md)。一对一倾听 L1–L4 的源码结论及原 Windows 11 测试机补验归 [原核查记录](docs/bootstrap/desktop-one-to-one-listening-review.md)。关闭／恢复专项及历史白屏、Word 差异归 [原测试机记录](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。
+开发分支为 `codex/desktop-one-to-one-listening`。唯一执行入口为 [当前任务](docs/tasks/current.md)，在线协作四阶段合成核查见 [联调结果](docs/bootstrap/online-collaboration-integration-review.md)。Windows 教师反馈修复的源码和合成核查及待验项目见 [教师反馈核查](docs/bootstrap/desktop-teacher-feedback-repair-review.md)。一对一倾听 L1–L4 的源码结论及原 Windows 11 测试机补验归 [原核查记录](docs/bootstrap/desktop-one-to-one-listening-review.md)。关闭／恢复专项及历史白屏、Word 差异归 [原测试机记录](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。
 
 Codex 维护正式规格和审核记录。已结束轮次的写入白名单与原生会话权限归各轮结果，后续工作按当轮责任执行。
 
@@ -16,9 +16,9 @@ Codex 维护正式规格和审核记录。已结束轮次的写入白名单与�
 
 当前架构以 [ARCHITECTURE.md](ARCHITECTURE.md)、[ADR](docs/adr/)及[模块Contract](docs/modules/)为准：Vue3／TypeScript／Vite／Element Plus；Python／FastAPI；SQLAlchemy2／Alembic＋SQLite；pywebview／WebView2与PyInstaller当前桌面路径。WebDAV保留为后续一致性快照接续方向；数据库业务版本及确认快照为历史权威，Git不作业务存储。
 
-本地模式面向教师个人，先 Windows 11、Win10 后验。使用一个本地档案及全新数据。班级维护／同班升班、多学期及旧计划编辑已确认，多班新增／切换后置。可选在线协作按 [ADR 0005](docs/adr/0005-optional-online-class-collaboration.md) 独立管理。首段由教师自主选班，同园同班自动配对，班级游戏配置经预览和确认后带入。数据库验证暂缓。
+本地模式面向教师个人，先 Windows 11、Win10 后验。使用一个本地档案及全新数据。班级维护／同班升班、多学期及旧计划编辑已确认，多班新增／切换后置。可选在线协作按 [ADR 0005](docs/adr/0005-optional-online-class-collaboration.md) 独立管理。教师自主选班，同园同班自动配对，班级游戏配置经预览和确认后带入。在线数据库按当前任务的隔离合成门槛验证。
 
-日计划、游戏观察、周计划已有各自的产品规格和验证记录。周计划支持手工制作、本人来源、确认版本 Word，以及分别发起游戏、栏目和材料 AI 操作。周计划中的搭班集体活动和晨间谈话仍由制作者填写。人数、缺勤／退费、拍照点名等另定。应用供应商是 DeepSeek 官方与 MiMo 标准 API，开发 Go 套餐只用于开发工具。
+日计划、游戏观察、周计划已有各自的产品规格和验证记录。周计划支持手工制作、本人来源、确认版本 Word，以及分别发起游戏、栏目和材料 AI 操作。可选在线班级的同周共享晨谈、集体活动和游戏，其他栏目由一位老师在本地填写。人数、缺勤／退费、拍照点名等另定。应用供应商是 DeepSeek 官方与 MiMo 标准 API，开发 Go 套餐只用于开发工具。
 
 ## 权限与文件责任
 

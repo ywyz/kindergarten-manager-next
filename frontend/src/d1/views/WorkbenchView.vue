@@ -35,7 +35,7 @@ const emit = defineEmits<{
   (e: 'open-observations'): void
   (e: 'open-weekly-plans'): void
   (e: 'open-listening', termId?: string): void
-  (e: 'open-settings'): void
+  (e: 'open-settings', section?: 'collaboration'): void
   (e: 'check-update'): void
   (e: 'reload-context'): Promise<LocalContext>
   (e: 'busy', value: boolean): void
@@ -320,6 +320,11 @@ async function openSettings(): Promise<void> {
   emit('open-settings')
 }
 
+function openCollaboration(): void {
+  if (frozenNow()) return
+  emit('open-settings', 'collaboration')
+}
+
 function openListening(): void {
   if (frozenNow()) return
   emit('open-listening', termFilter.value ?? undefined)
@@ -370,6 +375,9 @@ defineExpose({ reload: load })
         </el-button>
         <el-button data-d1="open-listening" :disabled="frozen" @click="openListening">
           一对一倾听
+        </el-button>
+        <el-button data-d1="open-collaboration" :disabled="frozen" @click="openCollaboration">
+          在线协作
         </el-button>
         <el-button data-d1="open-weekly-plans" :disabled="frozen" @click="emit('open-weekly-plans')">
           周计划

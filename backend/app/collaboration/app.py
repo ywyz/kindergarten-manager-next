@@ -10,13 +10,17 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
+from .admin_api import router as admin_router
 from .api import router
+from .class_promotion_api import router as class_promotion_router
 from .config import CollaborationSettings
 from .errors import CollaborationError
+from .prompt_release_api import admin_router as prompt_release_admin_router
+from .prompt_release_api import package_router as prompt_release_package_router
+from .weekly_plan_api import router as weekly_plan_router
 
 
 def _no_store_headers() -> dict[str, str]:
@@ -28,12 +32,9 @@ def create_collaboration_app(
 ) -> FastAPI:
     resolved = settings or CollaborationSettings.from_env()
     resolved.validate()
-    engine = create_engine(
-        resolved.database_url,
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=0,
-    )
+    from .db import create_collaboration_engine
+
+    engine = create_collaboration_engine(resolved)
     session_factory = sessionmaker(
         bind=engine,
         autoflush=False,
@@ -52,7 +53,11 @@ def create_collaboration_app(
     @app.middleware("http")
     async def no_store_middleware(request: Request, call_next):
         response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
+        # Prompt release version files deliberately override this with an
+        # immutable public cache lifetime; all other responses, including
+        # manifests and errors, remain no-store.
+        if "cache-control" not in response.headers:
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     @app.exception_handler(CollaborationError)
@@ -135,4 +140,9 @@ def create_collaboration_app(
         )
 
     app.include_router(router)
+    app.include_router(admin_router)
+    app.include_router(class_promotion_router)
+    app.include_router(weekly_plan_router)
+    app.include_router(prompt_release_admin_router)
+    app.include_router(prompt_release_package_router)
     return app

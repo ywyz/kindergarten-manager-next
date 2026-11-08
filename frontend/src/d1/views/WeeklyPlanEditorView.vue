@@ -27,6 +27,7 @@ import {
 import { WeeklyEditorController, weeklySaveNotice } from '../weekly-editor'
 import WeeklyExportDialog from './WeeklyExportDialog.vue'
 import WeeklyAiPanel from './WeeklyAiPanel.vue'
+import WeeklyCollaborationPanel from './WeeklyCollaborationPanel.vue'
 
 const props = withDefaults(defineProps<{
   planId: string
@@ -65,6 +66,9 @@ const blocking = ref<BlockingDraft | null>(null)
 const composing = ref(false)
 const refreshPreviewData = ref<WeeklyRefreshPreview | null>(null)
 const refreshPreviewMeta = ref<{ identity: string; revision: number; sequence: number } | null>(null)
+const sharedOpen = ref(false)
+const sharedBusy = ref(false)
+const sharedBlocking = ref<BlockingDraft | null>(null)
 const confirmOpen = ref(false)
 const confirmPreview = ref<WeeklyConfirmationPreview | null>(null)
 const ackMissing = ref(false)
@@ -125,8 +129,11 @@ function syncState(): void {
   unknown.value = controller.hasUnknown()
   factsPending.value = controller.isFactsPending()
   factsStale.value = controller.factsAreStale()
-  busy.value = controller.isBusy() || exportBusy.value || aiBusy.value
-  blocking.value = controller.blockingDraft() ?? aiBlocking.value ?? (exportBusy.value ? { kind: 'weekly', message: '周计划导出仍在进行，请等待结果后再离开' } : null)
+  busy.value = controller.isBusy() || exportBusy.value || aiBusy.value || sharedBusy.value
+  blocking.value = controller.blockingDraft()
+    ?? aiBlocking.value
+    ?? sharedBlocking.value
+    ?? (exportBusy.value ? { kind: 'weekly', message: '周计划导出仍在进行，请等待结果后再离开' } : null)
   if (bridge) emit('busy', { identity: bridge.identity(), busy: busy.value })
 }
 function makeBridge(): LeaveEditor {
@@ -183,6 +190,9 @@ function resetForContext(): void {
   exportBusy.value = false
   aiBusy.value = false
   aiBlocking.value = null
+  sharedOpen.value = false
+  sharedBusy.value = false
+  sharedBlocking.value = null
   blocking.value = null
   refreshPreviewData.value = null
   refreshPreviewMeta.value = null
@@ -478,6 +488,8 @@ function onAiFocusArea(): void {
   })
 }
 function onExportBusy(value: boolean): void { exportBusy.value = value; syncState() }
+function onSharedBusy(value: boolean): void { sharedBusy.value = value; syncState() }
+function onSharedBlocking(value: BlockingDraft | null): void { sharedBlocking.value = value; syncState() }
 defineExpose({ resetForContext })
 </script>
 
@@ -487,6 +499,13 @@ defineExpose({ resetForContext })
       <div><el-button :disabled="disabled" @click="emit('back')">返回列表</el-button><h2>周计划编辑</h2></div>
       <div class="actions">
         <el-button :disabled="disabled || busy" @click="save">保存</el-button>
+        <el-button
+          data-d1="weekly-shared-open"
+          :disabled="disabled || loading || !detail"
+          @click="sharedOpen = true"
+        >
+          共享本周
+        </el-button>
         <el-button :disabled="disabled || busy" @click="refreshPreview">刷新来源预览</el-button>
         <el-button type="primary" :disabled="disabled || busy" @click="openConfirmation">确认</el-button>
         <el-button type="primary" :disabled="disabled || busy" @click="openExport">导出</el-button>
@@ -616,6 +635,16 @@ defineExpose({ resetForContext })
         <el-button type="primary" :disabled="disabled || busy" @click="confirmTarget">确认此目标</el-button>
       </template>
     </el-dialog>
+
+    <WeeklyCollaborationPanel
+      v-if="detail"
+      v-model:open="sharedOpen"
+      :local-detail="detail"
+      :host="weeklyHost"
+      :disabled="disabled || loading"
+      @busy="onSharedBusy"
+      @blocking="onSharedBlocking"
+    />
 
     <WeeklyExportDialog v-if="detail" v-model:open="exportOpen" :plan-id="detail.plan.id" mode="single" :confirmation="exportConfirmation" :disabled="disabled" :host="weeklyHost" @busy="onExportBusy" />
   </section>

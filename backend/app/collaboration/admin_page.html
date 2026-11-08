@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>在线协作管理</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f4f6f8; color: #1f2933; }
+    header { background: #1f4e5f; color: #fff; padding: 16px 24px; }
+    header h1 { margin: 0; font-size: 1.2rem; }
+    main { max-width: 880px; margin: 24px auto; padding: 0 16px 48px; }
+    section { background: #fff; border: 1px solid #d9e2e8; border-radius: 8px; padding: 20px; margin-bottom: 18px; }
+    h2 { margin: 0 0 14px; font-size: 1rem; }
+    label { display: block; margin: 10px 0 4px; font-size: .9rem; }
+    input, select, button { font: inherit; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid #b8c5ce; border-radius: 5px; background: #fff; }
+    textarea { font: inherit; resize: vertical; }
+    button { margin-top: 12px; padding: 9px 16px; border: 0; border-radius: 5px; background: #1f6f7a; color: #fff; cursor: pointer; }
+    button.secondary { background: #5f6b73; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+    .row > div { flex: 1 1 220px; }
+    .hidden { display: none; }
+    .error { color: #a61b1b; white-space: pre-wrap; margin-top: 10px; }
+    .muted { color: #5f6b73; font-size: .88rem; }
+    pre.code { margin-top: 14px; padding: 14px; background: #eef4f6; border: 1px dashed #7ca6ad; border-radius: 5px; white-space: pre-wrap; word-break: break-all; font-size: 1rem; }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .release-panel { background: #fff; border: 1px solid #d9e2e8; border-radius: 8px; padding: 16px 20px; margin-bottom: 18px; }
+    .release-panel > summary { cursor: pointer; font-weight: 700; }
+    .release-panel[open] > summary { margin-bottom: 14px; }
+    .list-block { margin: 12px 0; }
+    .release-row { border-top: 1px solid #e3eaee; padding: 10px 0; }
+    .release-row:first-child { border-top: 0; }
+    .release-preview { margin-top: 14px; padding: 12px; background: #eef4f6; border: 1px solid #b8d0d5; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <header><h1>在线协作管理</h1></header>
+  <main>
+    <section id="login-panel">
+      <h2>管理员登录</h2>
+      <form id="login-form" method="post" action="/admin" autocomplete="on">
+        <label for="username">管理员账号</label>
+        <input id="username" name="username" autocomplete="username" required maxlength="80">
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096">
+        <button type="submit" id="login-button">登录</button>
+      </form>
+      <p class="error" id="login-error" role="alert"></p>
+      <p class="muted">管理员登录独立于教师身份。密码只在本页提交给服务端，不进入网址。</p>
+    </section>
+
+    <div id="admin-area" class="hidden">
+      <section>
+        <div class="toolbar">
+          <p class="muted" id="admin-name"></p>
+          <button class="secondary" id="logout-button" type="button">退出登录</button>
+        </div>
+      </section>
+      <section>
+        <h2>签发一次性兑换码</h2>
+        <div class="row">
+          <div>
+            <label for="school">园所</label>
+            <select id="school"></select>
+          </div>
+          <div>
+            <label for="teacher">教师</label>
+            <select id="teacher"></select>
+          </div>
+          <div>
+            <label for="purpose">用途</label>
+            <select id="purpose">
+              <option value="join">首次加入（绑定教师和园所，不选班）</option>
+              <option value="recovery">换机恢复（读取仍有效的原班关系）</option>
+            </select>
+          </div>
+        </div>
+        <button id="issue-button" type="button">签发一次性码</button>
+        <p class="error" id="issue-error" role="alert"></p>
+        <div id="code-result" class="hidden">
+          <p class="muted">兑换码只显示一次，请通过安全渠道交给教师；本页不写入日志或网址。</p>
+          <pre class="code" id="issued-code"></pre>
+          <p class="muted" id="issued-meta"></p>
+        </div>
+      </section>
+
+      <details id="prompt-release-panel" class="release-panel">
+        <summary>提示词发布</summary>
+        <div id="prompt-release-body">
+          <p class="muted">
+            打开后才读取提示词发布状态。这里只编辑允许的任务和字段，不配置密码、地址、签名或私钥。
+          </p>
+          <p id="prompt-latest" class="muted"></p>
+          <p class="error" id="prompt-error" role="alert"></p>
+          <p class="muted" id="prompt-notice"></p>
+
+          <h3>编辑并加入草稿</h3>
+          <div class="row">
+            <div>
+              <label for="prompt-task">任务</label>
+              <select id="prompt-task"></select>
+            </div>
+            <div>
+              <label for="prompt-field">字段</label>
+              <select id="prompt-field"></select>
+            </div>
+          </div>
+          <label for="prompt-text">指导文字</label>
+          <textarea id="prompt-text" rows="6"></textarea>
+          <div class="toolbar">
+            <button type="button" id="prompt-stage">加入本次草稿修改</button>
+            <button type="button" class="secondary" id="prompt-clear">清除本次修改</button>
+          </div>
+          <div id="prompt-staged" class="list-block"></div>
+          <label for="prompt-notes">草稿说明</label>
+          <input id="prompt-notes" maxlength="500" placeholder="可选：说明本次调整">
+          <div class="toolbar">
+            <button type="button" id="prompt-save-draft">保存草稿</button>
+            <span class="muted" id="prompt-draft-hint"></span>
+          </div>
+
+          <h3>草稿</h3>
+          <div id="prompt-drafts" class="list-block"></div>
+
+          <div id="prompt-preview" class="release-preview hidden">
+            <h3>预览发布</h3>
+            <p id="prompt-preview-meta" class="muted"></p>
+            <pre id="prompt-preview-content" class="code"></pre>
+            <button type="button" id="prompt-publish">正式发布此预览内容</button>
+          </div>
+
+          <h3>正式历史与回滚</h3>
+          <div id="prompt-releases" class="list-block"></div>
+          <div id="prompt-rollback" class="release-preview hidden">
+            <p id="prompt-rollback-meta" class="muted"></p>
+            <button type="button" id="prompt-confirm-rollback">确认回滚到该正式版</button>
+            <button type="button" class="secondary" id="prompt-cancel-rollback">取消回滚</button>
+          </div>
+        </div>
+      </details>
+    </div>
+  </main>
+  <script>
+    (function () {
+      "use strict";
+      var state = {
+        csrf: "",
+        schools: [],
+        teachers: [],
+        promptLoaded: false,
+        promptBusy: false,
+        prompt: null,
+        promptChanges: Object.create(null),
+        promptPreview: null,
+        promptPreviewDraft: null,
+        promptPendingRollback: null
+      };
+      var loginPanel = document.getElementById("login-panel");
+      var adminArea = document.getElementById("admin-area");
+      var loginForm = document.getElementById("login-form");
+      var loginError = document.getElementById("login-error");
+      var loginButton = document.getElementById("login-button");
+      var schoolSelect = document.getElementById("school");
+      var teacherSelect = document.getElementById("teacher");
+      var purposeSelect = document.getElementById("purpose");
+      var issueButton = document.getElementById("issue-button");
+      var issueError = document.getElementById("issue-error");
+      var codeBox = document.getElementById("code-result");
+      var codeText = document.getElementById("issued-code");
+      var codeMeta = document.getElementById("issued-meta");
+      var adminName = document.getElementById("admin-name");
+      var promptPanel = document.getElementById("prompt-release-panel");
+      var promptLatest = document.getElementById("prompt-latest");
+      var promptError = document.getElementById("prompt-error");
+      var promptNotice = document.getElementById("prompt-notice");
+      var promptTask = document.getElementById("prompt-task");
+      var promptField = document.getElementById("prompt-field");
+      var promptText = document.getElementById("prompt-text");
+      var promptStage = document.getElementById("prompt-stage");
+      var promptClear = document.getElementById("prompt-clear");
+      var promptStaged = document.getElementById("prompt-staged");
+      var promptNotes = document.getElementById("prompt-notes");
+      var promptSaveDraft = document.getElementById("prompt-save-draft");
+      var promptDraftHint = document.getElementById("prompt-draft-hint");
+      var promptDrafts = document.getElementById("prompt-drafts");
+      var promptPreviewBox = document.getElementById("prompt-preview");
+      var promptPreviewMeta = document.getElementById("prompt-preview-meta");
+      var promptPreviewContent = document.getElementById("prompt-preview-content");
+      var promptPublish = document.getElementById("prompt-publish");
+      var promptReleases = document.getElementById("prompt-releases");
+      var promptRollbackBox = document.getElementById("prompt-rollback");
+      var promptRollbackMeta = document.getElementById("prompt-rollback-meta");
+      var promptConfirmRollback = document.getElementById("prompt-confirm-rollback");
+      var promptCancelRollback = document.getElementById("prompt-cancel-rollback");
+
+      function readCookie(name) {
+        var prefix = name + "=";
+        var parts = document.cookie ? document.cookie.split("; ") : [];
+        for (var i = 0; i < parts.length; i += 1) {
+          if (parts[i].indexOf(prefix) === 0) {
+            return decodeURIComponent(parts[i].slice(prefix.length));
+          }
+        }
+        return "";
+      }
+
+      async function request(path, options) {
+        var opts = options || {};
+        var headers = { "Accept": "application/json" };
+        if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+        if (state.csrf) headers["X-CSRF-Token"] = state.csrf;
+        var response = await fetch(path, {
+          method: opts.method || "GET",
+          headers: headers,
+          credentials: "same-origin",
+          body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
+        });
+        var text = await response.text();
+        var data = null;
+        if (text) {
+          try { data = JSON.parse(text); } catch (_err) { data = null; }
+        }
+        if (!response.ok) {
+          var error = new Error("请求失败");
+          error.status = response.status;
+          error.payload = data;
+          throw error;
+        }
+        return data;
+      }
+
+      function errorText(err) {
+        if (err && err.payload && err.payload.error && err.payload.error.message) {
+          return err.payload.error.message;
+        }
+        return "请求失败，请稍后重试";
+      }
+
+      function showLogin() {
+        state.csrf = "";
+        state.promptLoaded = false;
+        state.prompt = null;
+        state.promptChanges = Object.create(null);
+        state.promptPreview = null;
+        state.promptPreviewDraft = null;
+        state.promptPendingRollback = null;
+        if (promptPanel) promptPanel.open = false;
+        adminArea.classList.add("hidden");
+        loginPanel.classList.remove("hidden");
+      }
+
+      function showAdmin(username) {
+        adminName.textContent = "当前管理员：" + username;
+        loginPanel.classList.add("hidden");
+        adminArea.classList.remove("hidden");
+      }
+
+      async function loadSession() {
+        state.csrf = readCookie("kgm_admin_csrf");
+        try {
+          var data = await request("/api/collaboration/admin/session");
+          showAdmin(data.username);
+          await loadSchools();
+        } catch (err) {
+          showLogin();
+        }
+      }
+
+      async function loadSchools() {
+        var data = await request("/api/collaboration/admin/schools");
+        state.schools = data || [];
+        schoolSelect.textContent = "";
+        state.schools.forEach(function (school) {
+          var option = document.createElement("option");
+          option.value = school.school_id;
+          option.textContent = school.name;
+          schoolSelect.appendChild(option);
+        });
+        await loadTeachers();
+      }
+
+      async function loadTeachers() {
+        state.teachers = [];
+        teacherSelect.textContent = "";
+        if (!schoolSelect.value) return;
+        var data = await request(
+          "/api/collaboration/admin/schools/" +
+            encodeURIComponent(schoolSelect.value) + "/teachers"
+        );
+        state.teachers = data || [];
+        state.teachers.forEach(function (teacher) {
+          var option = document.createElement("option");
+          option.value = teacher.teacher_id;
+          option.textContent = teacher.active
+            ? teacher.display_name
+            : teacher.display_name + "（已停用，不可发码）";
+          option.disabled = !teacher.active;
+          teacherSelect.appendChild(option);
+        });
+      }
+
+      function hasOwn(object, key) {
+        return Object.prototype.hasOwnProperty.call(object, key);
+      }
+
+      function setPromptMessages(error, notice) {
+        promptError.textContent = error || "";
+        promptNotice.textContent = notice || "";
+      }
+
+      function promptTaskInfo(taskType) {
+        if (!state.prompt || !Array.isArray(state.prompt.editable)) return null;
+        for (var i = 0; i < state.prompt.editable.length; i += 1) {
+          if (state.prompt.editable[i].task_type === taskType) {
+            return state.prompt.editable[i];
+          }
+        }
+        return null;
+      }
+
+      function promptFieldNames(taskType) {
+        var task = promptTaskInfo(taskType);
+        if (!task || !task.fields || typeof task.fields !== "object") return [];
+        return Object.keys(task.fields);
+      }
+
+      function promptCurrentText(taskType, fieldName) {
+        var task = promptTaskInfo(taskType);
+        if (!task || !task.fields || !hasOwn(task.fields, fieldName)) return "";
+        var value = task.fields[fieldName];
+        return typeof value === "string" ? value : "";
+      }
+
+      function promptStagedText(taskType, fieldName) {
+        if (!hasOwn(state.promptChanges, taskType)) return null;
+        var fields = state.promptChanges[taskType];
+        if (!fields || !hasOwn(fields, fieldName)) return null;
+        return fields[fieldName];
+      }
+
+      function promptCountChanges() {
+        var count = 0;
+        Object.keys(state.promptChanges).forEach(function (taskType) {
+          count += Object.keys(state.promptChanges[taskType] || {}).length;
+        });
+        return count;
+      }
+
+      function promptNumber(value) {
+        return typeof value === "number" && Number.isInteger(value) && value > 0
+          ? value
+          : null;
+      }
+
+      function promptBaseLabel(value) {
+        var sequence = promptNumber(value);
+        return sequence === null
+          ? "尚无正式版（内置默认）"
+          : "正式版 v" + String(sequence);
+      }
+
+      function fillPromptText() {
+        var taskType = promptTask.value;
+        var fieldName = promptField.value;
+        if (!taskType || !fieldName) {
+          promptText.value = "";
+          return;
+        }
+        var staged = promptStagedText(taskType, fieldName);
+        promptText.value = staged !== null ? staged : promptCurrentText(taskType, fieldName);
+      }
+
+      function populatePromptFields() {
+        var taskType = promptTask.value;
+        var names = promptFieldNames(taskType);
+        var previous = promptField.value;
+        promptField.textContent = "";
+        names.forEach(function (fieldName) {
+          var option = document.createElement("option");
+          option.value = fieldName;
+          option.textContent = fieldName;
+          promptField.appendChild(option);
+        });
+        if (names.indexOf(previous) >= 0) promptField.value = previous;
+        fillPromptText();
+      }
+
+      function populatePromptTasks() {
+        var previous = promptTask.value;
+        promptTask.textContent = "";
+        var editable = state.prompt && Array.isArray(state.prompt.editable)
+          ? state.prompt.editable
+          : [];
+        editable.forEach(function (task) {
+          var option = document.createElement("option");
+          option.value = task.task_type;
+          option.textContent = task.task_type;
+          promptTask.appendChild(option);
+        });
+        var values = editable.map(function (task) { return task.task_type; });
+        if (values.indexOf(previous) >= 0) promptTask.value = previous;
+        populatePromptFields();
+      }
+
+      function renderStagedChanges() {
+        promptStaged.textContent = "";
+        var count = promptCountChanges();
+        promptDraftHint.textContent = count
+          ? "本次草稿包含 " + count + " 项字段修改"
+          : "尚未加入字段修改";
+        if (!count) {
+          var empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "尚未加入字段修改。";
+          promptStaged.appendChild(empty);
+          return;
+        }
+        Object.keys(state.promptChanges).forEach(function (taskType) {
+          var fields = state.promptChanges[taskType] || {};
+          Object.keys(fields).forEach(function (fieldName) {
+            var row = document.createElement("div");
+            row.className = "release-row";
+            var title = document.createElement("p");
+            title.textContent = taskType + " / " + fieldName;
+            var value = document.createElement("p");
+            value.className = "muted";
+            value.textContent = fields[fieldName];
+            var actions = document.createElement("div");
+            var edit = document.createElement("button");
+            edit.type = "button";
+            edit.className = "secondary";
+            edit.textContent = "编辑此修改";
+            edit.addEventListener("click", function () {
+              promptTask.value = taskType;
+              populatePromptFields();
+              promptField.value = fieldName;
+              fillPromptText();
+            });
+            var remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "secondary";
+            remove.textContent = "移除";
+            remove.addEventListener("click", function () {
+              if (hasOwn(state.promptChanges, taskType)) {
+                delete state.promptChanges[taskType][fieldName];
+                if (!Object.keys(state.promptChanges[taskType]).length) {
+                  delete state.promptChanges[taskType];
+                }
+              }
+              renderStagedChanges();
+              fillPromptText();
+            });
+            actions.appendChild(edit);
+            actions.appendChild(remove);
+            row.appendChild(title);
+            row.appendChild(value);
+            row.appendChild(actions);
+            promptStaged.appendChild(row);
+          });
+        });
+      }
+
+      function draftChangeSummary(draft) {
+        var changes = draft && draft.changes && typeof draft.changes === "object"
+          ? draft.changes
+          : {};
+        var count = 0;
+        Object.keys(changes).forEach(function (taskType) {
+          count += Object.keys(changes[taskType] || {}).length;
+        });
+        return count;
+      }
+
+      function renderDrafts() {
+        promptDrafts.textContent = "";
+        var drafts = state.prompt && Array.isArray(state.prompt.drafts)
+          ? state.prompt.drafts
+          : [];
+        if (!drafts.length) {
+          var empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "尚无草稿。";
+          promptDrafts.appendChild(empty);
+          return;
+        }
+        drafts.forEach(function (draft) {
+          var row = document.createElement("div");
+          row.className = "release-row";
+          var title = document.createElement("p");
+          title.textContent =
+            "草稿 " + String(draft.draft_id) +
+            " · 正式基准：" + promptBaseLabel(draft.base_stable_sequence) +
+            " · " + draftChangeSummary(draft) + " 项修改";
+          var notes = document.createElement("p");
+          notes.className = "muted";
+          notes.textContent = draft.notes ? "说明：" + draft.notes : "无说明";
+          var stale = document.createElement("p");
+          stale.className = "muted";
+          var latestStable = state.prompt && state.prompt.latest
+            ? promptNumber(state.prompt.latest.stable)
+            : null;
+          if (promptNumber(draft.base_stable_sequence) === null) {
+            stale.textContent = latestStable === null
+              ? "尚无正式版；本次草稿基于内置默认。"
+              : "草稿基于内置默认，当前正式版为 v" + latestStable + "；预览或正式发布可能被服务端拒绝。";
+          } else {
+            stale.textContent = latestStable !== null
+              && draft.base_stable_sequence !== latestStable
+              ? "草稿基准与当前正式版不一致；预览或正式发布可能被服务端拒绝。"
+              : "草稿基准为当前正式版。";
+          }
+          var previewButton = document.createElement("button");
+          previewButton.type = "button";
+          previewButton.textContent = "预览此草稿";
+          previewButton.addEventListener("click", function () {
+            previewDraft(draft);
+          });
+          row.appendChild(title);
+          row.appendChild(notes);
+          row.appendChild(stale);
+          row.appendChild(previewButton);
+          promptDrafts.appendChild(row);
+        });
+      }
+
+      function effectivePromptText(draft) {
+        var lines = [];
+        var changes = draft && draft.changes && typeof draft.changes === "object"
+          ? draft.changes
+          : {};
+        var editable = state.prompt && Array.isArray(state.prompt.editable)
+          ? state.prompt.editable
+          : [];
+        editable.forEach(function (task) {
+          var fields = task.fields && typeof task.fields === "object" ? task.fields : {};
+          Object.keys(fields).forEach(function (fieldName) {
+            var changed = changes[task.task_type]
+              && hasOwn(changes[task.task_type], fieldName)
+              ? changes[task.task_type][fieldName]
+              : fields[fieldName];
+            lines.push(task.task_type + " / " + fieldName + "：");
+            lines.push(typeof changed === "string" ? changed : "");
+            lines.push("");
+          });
+        });
+        Object.keys(changes).forEach(function (taskType) {
+          var fields = changes[taskType] || {};
+          Object.keys(fields).forEach(function (fieldName) {
+            var known = promptTaskInfo(taskType)
+              && hasOwn(promptTaskInfo(taskType).fields, fieldName);
+            if (known) return;
+            lines.push(taskType + " / " + fieldName + "：");
+            lines.push(String(fields[fieldName]));
+            lines.push("");
+          });
+        });
+        return lines.join("\n");
+      }
+
+      function renderPreview() {
+        var preview = state.promptPreview;
+        if (!preview) {
+          promptPreviewBox.classList.add("hidden");
+          promptPreviewMeta.textContent = "";
+          promptPreviewContent.textContent = "";
+          promptPublish.disabled = true;
+          return;
+        }
+        promptPreviewBox.classList.remove("hidden");
+        var draft = state.promptPreviewDraft;
+        promptPreviewMeta.textContent =
+          "预览渠道 v" + String(preview.release_sequence) +
+          " · 草稿 " + String(preview.draft_id || (draft ? draft.draft_id : "")) +
+          " · 正式基准：" + promptBaseLabel(draft ? draft.base_stable_sequence : null) +
+          (draft && draft.notes ? " · 说明：" + draft.notes : "");
+        promptPreviewContent.textContent = effectivePromptText(draft);
+        promptPublish.disabled = false;
+      }
+
+      function renderRollback() {
+        var pending = state.promptPendingRollback;
+        if (!pending) {
+          promptRollbackBox.classList.add("hidden");
+          promptRollbackMeta.textContent = "";
+          return;
+        }
+        promptRollbackBox.classList.remove("hidden");
+        promptRollbackMeta.textContent =
+          "将回滚到正式版 v" + String(pending.target_sequence) +
+          "；预期当前正式版 v" + String(pending.expected_stable_sequence) +
+          "。服务端会创建新的更高正式发布序号。";
+      }
+
+      function renderReleases() {
+        promptReleases.textContent = "";
+        var releases = state.prompt && Array.isArray(state.prompt.releases)
+          ? state.prompt.releases
+          : [];
+        if (!releases.length) {
+          var empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "尚无发布历史。";
+          promptReleases.appendChild(empty);
+          return;
+        }
+        var latestStable = state.prompt && state.prompt.latest
+          ? promptNumber(state.prompt.latest.stable)
+          : null;
+        releases.forEach(function (release) {
+          var row = document.createElement("div");
+          row.className = "release-row";
+          var title = document.createElement("p");
+          title.textContent =
+            (release.channel === "stable" ? "正式渠道" : "预览渠道") +
+            " · 发布序号 v" + String(release.release_sequence);
+          var detail = document.createElement("p");
+          detail.className = "muted";
+          var parts = [];
+          if (release.notes) parts.push("说明：" + release.notes);
+          if (release.draft_id) parts.push("草稿：" + String(release.draft_id));
+          if (release.rollback_of !== null && release.rollback_of !== undefined) {
+            parts.push("回滚自 v" + String(release.rollback_of));
+          }
+          detail.textContent = parts.length ? parts.join(" · ") : "无补充说明";
+          row.appendChild(title);
+          row.appendChild(detail);
+          if (
+            release.channel === "stable" &&
+            latestStable !== null &&
+            release.release_sequence !== latestStable
+          ) {
+            var button = document.createElement("button");
+            button.type = "button";
+            button.className = "secondary";
+            button.textContent = "选择回滚到此正式版";
+            button.addEventListener("click", function () {
+              state.promptPendingRollback = {
+                target_sequence: release.release_sequence,
+                expected_stable_sequence: latestStable
+              };
+              renderRollback();
+            });
+            row.appendChild(button);
+          }
+          promptReleases.appendChild(row);
+        });
+      }
+
+      function renderPrompt() {
+        var latest = state.prompt && state.prompt.latest ? state.prompt.latest : {};
+        var preview = promptNumber(latest.preview);
+        var stable = promptNumber(latest.stable);
+        promptLatest.textContent =
+          "预览渠道：" + (preview === null ? "无" : "v" + preview) +
+          " · 正式渠道：" + (stable === null ? "无" : "v" + stable);
+        populatePromptTasks();
+        renderStagedChanges();
+        renderDrafts();
+        renderReleases();
+        renderPreview();
+        renderRollback();
+      }
+
+      async function loadPromptReleases(keepPreview, force) {
+        if (state.promptBusy && !force) return;
+        state.promptBusy = true;
+        setPromptMessages("", "");
+        try {
+          var data = await request("/api/collaboration/admin/prompt-releases");
+          state.prompt = data;
+          state.promptLoaded = true;
+          if (!keepPreview) {
+            state.promptPreview = null;
+            state.promptPreviewDraft = null;
+            state.promptPendingRollback = null;
+          }
+          renderPrompt();
+        } catch (err) {
+          setPromptMessages(errorText(err), "");
+          if (err && err.status === 401) showLogin();
+        } finally {
+          state.promptBusy = false;
+        }
+      }
+
+      async function savePromptDraft() {
+        if (state.promptBusy) return;
+        if (!promptCountChanges()) {
+          setPromptMessages("请先加入至少一项字段修改。", "");
+          return;
+        }
+        state.promptBusy = true;
+        setPromptMessages("", "");
+        try {
+          await request("/api/collaboration/admin/prompt-releases/drafts", {
+            method: "POST",
+            body: {
+              changes: state.promptChanges,
+              notes: promptNotes.value.trim()
+            }
+          });
+          state.promptChanges = Object.create(null);
+          promptNotes.value = "";
+          state.promptPreview = null;
+          state.promptPreviewDraft = null;
+          await loadPromptReleases(false, true);
+          promptNotice.textContent = "草稿已保存。";
+        } catch (err) {
+          setPromptMessages(errorText(err), "");
+        } finally {
+          state.promptBusy = false;
+        }
+      }
+
+      async function previewDraft(draft) {
+        if (state.promptBusy) return;
+        state.promptBusy = true;
+        setPromptMessages("", "");
+        try {
+          var release = await request(
+            "/api/collaboration/admin/prompt-releases/preview",
+            { method: "POST", body: { draft_id: draft.draft_id } }
+          );
+          await loadPromptReleases(true, true);
+          state.promptPreview = release;
+          state.promptPreviewDraft = draft;
+          renderPreview();
+          promptNotice.textContent = "已生成预览渠道版本，请核对内容后再正式发布。";
+        } catch (err) {
+          setPromptMessages(errorText(err), "");
+        } finally {
+          state.promptBusy = false;
+        }
+      }
+
+      async function publishPreview() {
+        var preview = state.promptPreview;
+        if (!preview || state.promptBusy) return;
+        if (!window.confirm("确认将预览渠道 v" + String(preview.release_sequence) + " 的准确内容发布到正式渠道？")) return;
+        state.promptBusy = true;
+        setPromptMessages("", "");
+        try {
+          await request("/api/collaboration/admin/prompt-releases/stable", {
+            method: "POST",
+            body: { preview_sequence: preview.release_sequence }
+          });
+          state.promptPreview = null;
+          state.promptPreviewDraft = null;
+          await loadPromptReleases(false, true);
+          promptNotice.textContent = "已正式发布该预览内容。";
+        } catch (err) {
+          setPromptMessages(errorText(err), "");
+        } finally {
+          state.promptBusy = false;
+        }
+      }
+
+      async function confirmPromptRollback() {
+        var pending = state.promptPendingRollback;
+        if (!pending || state.promptBusy) return;
+        state.promptBusy = true;
+        setPromptMessages("", "");
+        try {
+          await request("/api/collaboration/admin/prompt-releases/rollback", {
+            method: "POST",
+            body: {
+              target_sequence: pending.target_sequence,
+              expected_stable_sequence: pending.expected_stable_sequence
+            }
+          });
+          state.promptPendingRollback = null;
+          await loadPromptReleases(false, true);
+          promptNotice.textContent = "已按原正式版内容创建新的正式发布。";
+        } catch (err) {
+          setPromptMessages(errorText(err), "");
+        } finally {
+          state.promptBusy = false;
+        }
+      }
+
+      promptPanel.addEventListener("toggle", function () {
+        if (promptPanel.open && !state.promptLoaded) {
+          void loadPromptReleases(false);
+        }
+      });
+      promptTask.addEventListener("change", populatePromptFields);
+      promptField.addEventListener("change", fillPromptText);
+      promptStage.addEventListener("click", function () {
+        var taskType = promptTask.value;
+        var fieldName = promptField.value;
+        if (!taskType || !fieldName) {
+          setPromptMessages("请选择任务和字段。", "");
+          return;
+        }
+        if (!state.promptChanges[taskType]) state.promptChanges[taskType] = Object.create(null);
+        state.promptChanges[taskType][fieldName] = promptText.value;
+        setPromptMessages("", "");
+        renderStagedChanges();
+      });
+      promptClear.addEventListener("click", function () {
+        state.promptChanges = Object.create(null);
+        setPromptMessages("", "");
+        renderStagedChanges();
+        fillPromptText();
+      });
+      promptSaveDraft.addEventListener("click", function () {
+        void savePromptDraft();
+      });
+      promptPublish.addEventListener("click", function () {
+        void publishPreview();
+      });
+      promptConfirmRollback.addEventListener("click", function () {
+        void confirmPromptRollback();
+      });
+      promptCancelRollback.addEventListener("click", function () {
+        state.promptPendingRollback = null;
+        renderRollback();
+      });
+
+      loginForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        loginError.textContent = "";
+        loginButton.disabled = true;
+        try {
+          await request("/api/collaboration/admin/login", {
+            method: "POST",
+            body: {
+              username: document.getElementById("username").value,
+              password: document.getElementById("password").value
+            }
+          });
+          state.csrf = readCookie("kgm_admin_csrf");
+          await loadSession();
+        } catch (err) {
+          loginError.textContent = errorText(err);
+        } finally {
+          loginButton.disabled = false;
+        }
+      });
+
+      document.getElementById("logout-button").addEventListener("click", async function () {
+        try {
+          await request("/api/collaboration/admin/logout", { method: "POST" });
+        } catch (_err) {
+          // A failed logout still returns the page to the login state; the
+          // session cookie is HttpOnly and the server remains authoritative.
+        }
+        showLogin();
+      });
+
+      schoolSelect.addEventListener("change", function () {
+        loadTeachers().catch(function (err) {
+          issueError.textContent = errorText(err);
+        });
+      });
+
+      issueButton.addEventListener("click", async function () {
+        issueError.textContent = "";
+        codeBox.classList.add("hidden");
+        codeText.textContent = "";
+        codeMeta.textContent = "";
+        if (!schoolSelect.value || !teacherSelect.value) {
+          issueError.textContent = "请选择园所和教师";
+          return;
+        }
+        issueButton.disabled = true;
+        try {
+          var data = await request("/api/collaboration/admin/codes", {
+            method: "POST",
+            body: {
+              school_id: schoolSelect.value,
+              teacher_id: teacherSelect.value,
+              purpose: purposeSelect.value
+            }
+          });
+          codeText.textContent = data.code;
+          codeMeta.textContent =
+            "教师：" + data.teacher_name +
+            "；类型：" + (data.purpose === "join" ? "首次加入" : "换机恢复") +
+            "；有效期至：" + data.expires_at;
+          codeBox.classList.remove("hidden");
+        } catch (err) {
+          issueError.textContent = errorText(err);
+        } finally {
+          issueButton.disabled = false;
+        }
+      });
+
+      loadSession();
+    }());
+  </script>
+</body>
+</html>

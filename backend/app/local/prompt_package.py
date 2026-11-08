@@ -65,6 +65,8 @@ PACKAGED_SOURCE_URL = ""
 PACKAGED_KEY_ID = ""
 PACKAGED_PUBLIC_KEY_B64 = ""
 PACKAGED_CLIENT_VERSION = "0.1.0"
+PACKAGED_CHANNEL = ""
+PACKAGE_CHANNELS = ("preview", "stable")
 
 # First-release package allowlist.  It is deliberately narrower than every
 # registered task: reflection, listening group notes, listening goal suggestion
@@ -166,10 +168,15 @@ class PackageTrust:
     source_url: str | None
     keys: Mapping[str, bytes]
     client_version: str = PACKAGED_CLIENT_VERSION
+    channel: str | None = None
 
     @property
     def configured(self) -> bool:
-        return bool(self.source_url and self.keys)
+        return bool(
+            self.source_url
+            and self.keys
+            and (self.channel is None or self.channel in PACKAGE_CHANNELS)
+        )
 
     @property
     def key_ids(self) -> tuple[str, ...]:
@@ -190,10 +197,21 @@ def packaged_trust() -> PackageTrust:
     source = PACKAGED_SOURCE_URL.strip() or None
     if source is not None and len(source) > MAX_SOURCE_URL_CHARS:
         source = None
+    if PACKAGED_CHANNEL and PACKAGED_CHANNEL not in PACKAGE_CHANNELS:
+        # A release build that names an unknown channel must fail closed
+        # instead of silently reading the channel root as a direct package.
+        return PackageTrust(
+            source_url=None,
+            keys={},
+            client_version=PACKAGED_CLIENT_VERSION,
+            channel=None,
+        )
+    channel = PACKAGED_CHANNEL or None
     return PackageTrust(
         source_url=source,
         keys=keys,
         client_version=PACKAGED_CLIENT_VERSION,
+        channel=channel,
     )
 
 
@@ -747,8 +765,10 @@ __all__ = [
     "PAYLOAD_SCHEMA_VERSION",
     "MAX_PACKAGE_BYTES",
     "PACKAGE_OPEN_GUIDANCE_FIELDS",
+    "PACKAGE_CHANNELS",
     "PACKAGE_OPEN_TASK_TYPES",
     "PACKAGE_TASK_TYPES",
+    "PACKAGED_CHANNEL",
     "PACKAGED_CLIENT_VERSION",
     "PackageBundle",
     "PackageTrust",

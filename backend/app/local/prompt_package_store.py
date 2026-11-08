@@ -8,13 +8,16 @@ and assets; this cache directory stays in the data root.
 Writes are atomic (same-directory temp file + ``os.replace``).  A package is
 first written as ``pending.package.json`` and its metadata recorded; only after
 the database registration/head update succeeds does it become
-``active.package.json`` and the accepted ledger advance.  A crash at any point
-therefore leaves either the old active package or a pending package that the
-next startup can verify and apply again.
+``active.package.json`` and the accepted ledger advance.  A channel cache also
+records the exact signed manifest that admitted the package
+(``pending.manifest.json`` / ``active.manifest.json``) plus its digest in the
+state, so an offline restart cannot classify a copied package merely by its
+directory name or an unsigned metadata field.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -24,11 +27,14 @@ from typing import Any
 
 from app.local.base import utc_now
 from app.local.prompt_package import MAX_PACKAGE_BYTES, VerifiedPackage
+from app.local.prompt_package_manifest import MAX_MANIFEST_BYTES
 
 STATE_VERSION = 1
 STATE_NAME = "state.json"
 ACTIVE_NAME = "active.package.json"
 PENDING_NAME = "pending.package.json"
+ACTIVE_MANIFEST_NAME = "active.manifest.json"
+PENDING_MANIFEST_NAME = "pending.manifest.json"
 
 
 def _empty_state() -> dict[str, Any]:
@@ -90,11 +96,18 @@ def _atomic_write(path: Path, data: bytes) -> None:
         raise
 
 
-def package_metadata(package: VerifiedPackage) -> dict[str, Any]:
+def package_metadata(
+    package: VerifiedPackage,
+    *,
+    channel: str | None = None,
+    manifest_sha256: str | None = None,
+) -> dict[str, Any]:
     return {
+        "channel": channel,
         "release_sequence": package.release_sequence,
         "content_sha256": package.content_sha256,
         "raw_sha256": package.raw_sha256,
+        "manifest_sha256": manifest_sha256,
         "published_at": package.published_at,
         "notes": package.notes,
         "key_id": package.key_id,
@@ -113,11 +126,16 @@ def package_metadata(package: VerifiedPackage) -> dict[str, Any]:
 
 
 class PromptPackageStore:
-    def __init__(self, root: str | Path):
-        self.root = Path(root)
+    def __init__(self, root: str | Path, *, channel: str | None = None):
+        if channel is not None and channel not in ("preview", "stable"):
+            raise ValueError("unknown prompt package channel")
+        self.channel = channel
+        self.root = Path(root) / channel if channel else Path(root)
         self.state_path = self.root / STATE_NAME
         self.active_path = self.root / ACTIVE_NAME
         self.pending_path = self.root / PENDING_NAME
+        self.active_manifest_path = self.root / ACTIVE_MANIFEST_NAME
+        self.pending_manifest_path = self.root / PENDING_MANIFEST_NAME
 
     def read_state(self) -> dict[str, Any]:
         value = _read_json(self.state_path)
@@ -149,27 +167,68 @@ class PromptPackageStore:
     def load_pending_raw(self) -> bytes | None:
         return self._load_raw(self.pending_path)
 
+    def load_active_manifest(self) -> bytes | None:
+        return self._load_raw(
+            self.active_manifest_path, maximum=MAX_MANIFEST_BYTES
+        )
+
+    def load_pending_manifest(self) -> bytes | None:
+        return self._load_raw(
+            self.pending_manifest_path, maximum=MAX_MANIFEST_BYTES
+        )
+
     @staticmethod
-    def _load_raw(path: Path) -> bytes | None:
+    def _load_raw(path: Path, *, maximum: int = MAX_PACKAGE_BYTES) -> bytes | None:
         try:
             data = path.read_bytes()
         except (FileNotFoundError, OSError):
             return None
-        if len(data) > MAX_PACKAGE_BYTES:
+        if len(data) > maximum:
             return None
         return data
 
-    def stage_pending(self, raw: bytes, package: VerifiedPackage) -> None:
+    @staticmethod
+    def _unlink(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _manifest_digest(manifest_raw: bytes) -> str:
+        return hashlib.sha256(manifest_raw).hexdigest()
+
+    def stage_pending(
+        self,
+        raw: bytes,
+        package: VerifiedPackage,
+        *,
+        manifest_raw: bytes | None = None,
+    ) -> None:
+        if self.channel is not None and manifest_raw is None:
+            raise ValueError(
+                "channel prompt package requires its signed manifest"
+            )
+        if manifest_raw is not None:
+            _atomic_write(self.pending_manifest_path, manifest_raw)
+        else:
+            self._unlink(self.pending_manifest_path)
         _atomic_write(self.pending_path, raw)
         state = self.read_state()
-        state["pending"] = package_metadata(package)
+        state["pending"] = package_metadata(
+            package,
+            channel=self.channel,
+            manifest_sha256=(
+                self._manifest_digest(manifest_raw)
+                if manifest_raw is not None
+                else None
+            ),
+        )
         self.write_state(state)
 
     def clear_pending(self) -> None:
-        try:
-            self.pending_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        self._unlink(self.pending_path)
+        self._unlink(self.pending_manifest_path)
         state = self.read_state()
         if state["pending"] is not None:
             state["pending"] = None
@@ -180,11 +239,28 @@ class PromptPackageStore:
         raw: bytes,
         package: VerifiedPackage,
         *,
+        manifest_raw: bytes | None = None,
         clear_pending: bool = True,
     ) -> None:
+        if self.channel is not None and manifest_raw is None:
+            raise ValueError(
+                "channel prompt package requires its signed manifest"
+            )
+        if manifest_raw is not None:
+            _atomic_write(self.active_manifest_path, manifest_raw)
+        else:
+            self._unlink(self.active_manifest_path)
         _atomic_write(self.active_path, raw)
         state = self.read_state()
-        meta = package_metadata(package)
+        meta = package_metadata(
+            package,
+            channel=self.channel,
+            manifest_sha256=(
+                self._manifest_digest(manifest_raw)
+                if manifest_raw is not None
+                else None
+            ),
+        )
         state["active"] = meta
         state["accepted"] = {
             "release_sequence": package.release_sequence,
@@ -196,10 +272,8 @@ class PromptPackageStore:
             state["pending"] = None
         self.write_state(state)
         if clear_pending:
-            try:
-                self.pending_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            self._unlink(self.pending_path)
+            self._unlink(self.pending_manifest_path)
 
     def record_check(self, result: dict[str, Any]) -> None:
         state = self.read_state()

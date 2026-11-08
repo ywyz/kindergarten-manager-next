@@ -7,7 +7,7 @@
  * (close / switch date / switch term / back to calendar / settings) go
  * through one coordinator; a failed or conflicted save keeps the page.
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, ApiError, apiPatch, setSessionToken } from './client'
 import { todoStore } from './todos'
@@ -73,7 +73,7 @@ type View =
   | { name: 'weekly-editor'; planId: string }
   | { name: 'listening-records'; termId?: string }
   | { name: 'listening-editor'; recordId: string }
-  | { name: 'settings' }
+  | { name: 'settings'; section?: 'collaboration' }
 
 let pageTicket = ''
 const bootState = ref<'connecting' | 'uninitialized' | 'ready' | 'error'>(
@@ -465,10 +465,28 @@ const describeSaveFailure = (outcome: SaveOutcome): string => {
   }
 }
 
+/**
+ * Make a blocked settings action visibly fail at the top of the page. This is
+ * called only when an action is refused, never for ordinary field edits or
+ * draft-target refreshes, so it does not fight scrolling or focus.
+ */
+function scrollBlockedDraftNoticeIntoView(): void {
+  void nextTick().then(() => {
+    if (typeof document === 'undefined') return
+    const element = document.querySelector(
+      '[data-d1="blocked-draft-notice"]',
+    ) as HTMLElement | null
+    element?.scrollIntoView?.({ block: 'center' })
+  })
+}
+
 /** Keep one shell-mounted notice for the exact structured draft. */
 function notifyBlockedDraft(draft: BlockingDraft): void {
   const targets = draft.targets ?? []
   blockedDraftNotice.value = targets.length > 0 ? { ...draft, targets } : null
+  if (blockedDraftNotice.value?.kind === 'settings') {
+    scrollBlockedDraftNoticeIntoView()
+  }
 }
 
 function blockedTargetKey(target: SettingsDraftTarget): string {
@@ -508,7 +526,9 @@ function goToBlockedTarget(target: SettingsDraftTarget): void {
     return
   }
   if (blockedDraftNotice.value?.kind !== 'settings') return
-  void leaveForAction('settings', goSettings).then((outcome) => {
+  void leaveForAction('settings', () =>
+    goSettings(target.kind === 'online-collaboration' ? 'collaboration' : undefined),
+  ).then((outcome) => {
     if (outcome !== 'left') return
     setTimeout(() => focusSettingsTarget(target), 0)
   })
@@ -832,10 +852,24 @@ function onSettingsLeave(
   void leaveForAction('calendar', run)
 }
 
-async function goSettings(): Promise<'left' | 'stayed'> {
+async function goSettings(
+  section?: 'collaboration',
+): Promise<'left' | 'stayed'> {
   clearListeningState()
-  view.value = { name: 'settings' }
+  view.value = section
+    ? { name: 'settings', section }
+    : { name: 'settings' }
   return 'left'
+}
+
+function openSettingsView(section?: 'collaboration'): void {
+  void leaveForAction('settings', () => goSettings(section))
+}
+
+function onSettingsSection(section: 'collaboration' | null): void {
+  view.value = section
+    ? { name: 'settings', section }
+    : { name: 'settings' }
 }
 
 async function openEditor(
@@ -1912,7 +1946,7 @@ onMounted(() => {
         @open-weekly-plans="() => void openWeeklyPlansFromWorkbench()"
         @open-observations="openObservationsFromWorkbench"
         @open-listening="(termId) => void openListeningFromWorkbench(termId)"
-        @open-settings="() => void leaveForAction('settings', goSettings)"
+        @open-settings="openSettingsView"
         @check-update="openUpdateManual"
         @reload-context="reloadContext"
       />
@@ -2011,9 +2045,11 @@ onMounted(() => {
         ref="settingsViewRef"
         :context="context!"
         :frozen="closeLocked"
+        :section="view.section ?? null"
         :reload-context="reloadContext"
         @draft-active="(active) => settingsDraftActive = active"
         @draft-targets="(targets) => settingsDraftTargets = targets"
+        @section="onSettingsSection"
         @leave="onSettingsLeave"
         @open-maintenance="openMaintenance"
       />

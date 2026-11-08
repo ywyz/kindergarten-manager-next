@@ -1,5 +1,8 @@
 # Independent runtime additions for the optional online collaboration service.
 # FastAPI, SQLAlchemy, Pydantic and Uvicorn are already declared by
-# backend/pyproject.toml; PostgreSQL requires psycopg 3.
+# backend/pyproject.toml.  The collaboration target is MySQL 8.4 through
+# PyMySQL; the RSA extra supplies the auth plugin dependency.  Versions are
+# pinned to the existing backend lock; this file does not replace that lock.
 # Not installed or synced by this slice.
-psycopg[binary]>=3.2,<4
+PyMySQL[rsa]==1.2.3
+cryptography==50.0.2
