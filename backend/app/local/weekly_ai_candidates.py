@@ -304,6 +304,7 @@ def _item(
         "eligibility": "eligible",
         "available_targets": [TARGETS.get(candidate.task_type, "")],
         "create_operation_id": input_row.create_operation_id,
+        "source_revision": input_row.source_revision,
         "created_at": candidate.created_at.isoformat(),
     }
 

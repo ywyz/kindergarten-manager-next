@@ -152,6 +152,7 @@ export interface HostApi {
   }) => Promise<SaveWeeklyExportResult>
   get_app_identity?: () => Promise<AppIdentity>
   check_for_update?: () => Promise<UpdateStatus>
+  set_update_channel?: (channel: string) => Promise<UpdateStatus>
   start_update_download?: () => Promise<UpdateStatus>
   cancel_update_download?: () => Promise<UpdateStatus>
   install_update?: () => Promise<{

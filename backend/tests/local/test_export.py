@@ -285,20 +285,26 @@ class ExportR18FormatTests(ExportTestBase):
 
 
 class ExportAckTests(ExportTestBase):
-    def test_missing_ack_flow_and_context_change(self):
+    def test_normal_export_without_ack_and_explicit_context_binding(self):
         plan = self.create_plan("2026-09-01")  # empty content: many missing
-        status, payload = self.export({"from": "2026-09-01", "to": "2026-09-01"})
-        self.assertEqual(status, 409, payload)
-        error = payload["error"]
-        self.assertEqual(error["code"], "EXPORT_ACK_REQUIRED")
-        details = error["details"]
-        self.assertEqual(details["reason"], "missing")
-        self.assertEqual(details["facts"][0]["daily_plan_id"], plan["id"])
-        expected = details["expected_context"]
-        self.assertEqual(expected["versions"][0]["content_version"], 1)
-        self.assertGreater(expected["missing_count"], 0)
+        # Normal {from,to}: one request reaches the file path; missing fields
+        # remain in place as empty mapped values and no acknowledgement is
+        # requested.
+        status, headers, body = self.export_binary(
+            {"from": "2026-09-01", "to": "2026-09-01"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body[:2], b"PK")
+        self.assertIn("filename*=UTF-8''", headers["content-disposition"])
+        self.assertEqual(
+            self.client.get(f"/api/daily-plans/{plan['id']}")[1][
+                "current_content_version"
+            ],
+            1,
+        )
 
-        # ack without the context can never bypass confirmation.
+        # Legacy explicit ack validation remains: ack without its complete
+        # context can never bypass anything.
         status, payload = self.export(
             {
                 "from": "2026-09-01",
@@ -309,8 +315,26 @@ class ExportAckTests(ExportTestBase):
         self.assertEqual(status, 422, payload)
         self.assertEqual(payload["error"]["code"], "VALIDATION_ERROR")
 
+        # Supplying an old/wrong context is still refused, and the current
+        # context is returned for an explicit retry; it never substitutes the
+        # current output.
+        status, payload = self.export(
+            {
+                "from": "2026-09-01",
+                "to": "2026-09-01",
+                "expected_context": {},
+            }
+        )
+        self.assertEqual(status, 409, payload)
+        error = payload["error"]
+        self.assertEqual(error["code"], "EXPORT_ACK_REQUIRED")
+        self.assertEqual(error["details"]["reason"], "context_changed")
+        expected = error["details"]["expected_context"]
+        self.assertEqual(expected["versions"][0]["content_version"], 1)
+        self.assertGreater(expected["missing_count"], 0)
+
         # Fill everything so the missing set becomes empty; the old context is
-        # still refused (context_changed) and a fresh confirmation succeeds.
+        # still refused because its versions/missing fingerprint changed.
         status, detail = self.client.get(f"/api/daily-plans/{plan['id']}")
         self.assertEqual(status, 200)
         filled = {
@@ -368,6 +392,7 @@ class ExportAckTests(ExportTestBase):
             },
         )
         self.assertEqual(status, 200, saved)
+
         status, payload = self.export(
             {
                 "from": "2026-09-01",
@@ -394,37 +419,22 @@ class ExportAckTests(ExportTestBase):
         self.assertEqual(status, 200)
         self.assertIn("反思", docx_text(body))
 
-    def test_ack_confirmed_empty_content_exports_with_empty_columns(self):
+    def test_normal_missing_content_exports_without_ack(self):
         plan = self.create_plan("2026-09-01")
-        status, payload = self.export({"from": "2026-09-01", "to": "2026-09-01"})
-        self.assertEqual(status, 409)
-        expected = payload["error"]["details"]["expected_context"]
         status, headers, body = self.export_binary(
-            {
-                "from": "2026-09-01",
-                "to": "2026-09-01",
-                "ack_missing": True,
-                "expected_context": expected,
-            }
+            {"from": "2026-09-01", "to": "2026-09-01"}
         )
         self.assertEqual(status, 200)
-        # A real DOCX that opens as a ZIP; empty columns stay empty.
+        # A real DOCX that opens as a ZIP; empty columns stay empty and the
+        # saved content version is untouched.
         self.assertEqual(body[:2], b"PK")
         self.assertEqual(plan["current_content_version"], 1)
 
     def test_export_never_saves_or_bumps_versions(self):
         plan = self.create_plan("2026-09-01", raw_lesson_plan="原稿")
         before = self.client.get(f"/api/daily-plans/{plan['id']}")[1]
-        status, payload = self.export({"from": "2026-09-01", "to": "2026-09-01"})
-        self.assertEqual(status, 409)  # empty sections -> ack needed
-        expected = payload["error"]["details"]["expected_context"]
         status, headers, body = self.export_binary(
-            {
-                "from": "2026-09-01",
-                "to": "2026-09-01",
-                "ack_missing": True,
-                "expected_context": expected,
-            }
+            {"from": "2026-09-01", "to": "2026-09-01"}
         )
         self.assertEqual(status, 200)
         after = self.client.get(f"/api/daily-plans/{plan['id']}")[1]
@@ -435,9 +445,6 @@ class ExportAckTests(ExportTestBase):
 
     def test_generation_failure_is_500_without_internals(self):
         self.create_plan("2026-09-01", raw_lesson_plan="内容")
-        status, payload = self.export({"from": "2026-09-01", "to": "2026-09-01"})
-        self.assertEqual(status, 409)
-        expected = payload["error"]["details"]["expected_context"]
         import app.local.export_service as export_service
 
         with mock.patch.object(
@@ -446,12 +453,7 @@ class ExportAckTests(ExportTestBase):
             side_effect=RuntimeError("synthetic-internal-detail"),
         ):
             status, payload = self.export(
-                {
-                    "from": "2026-09-01",
-                    "to": "2026-09-01",
-                    "ack_missing": True,
-                    "expected_context": expected,
-                }
+                {"from": "2026-09-01", "to": "2026-09-01"}
             )
         self.assertEqual(status, 500, payload)
         self.assertEqual(payload["error"]["code"], "EXPORT_GENERATION_FAILED")
@@ -465,8 +467,17 @@ class ExportSnapshotTests(ExportTestBase):
         plan = self.create_plan(
             "2026-09-01", adopted_content={"reflection": "旧快照反思"}
         )
-        status, payload = self.export({"from": "2026-09-01", "to": "2026-09-01"})
+        # Legacy worker keeps an explicit valid context; obtain the current
+        # context through a deliberately stale context (never used as output).
+        status, payload = self.export(
+            {
+                "from": "2026-09-01",
+                "to": "2026-09-01",
+                "expected_context": {},
+            }
+        )
         self.assertEqual(status, 409)
+        self.assertEqual(payload["error"]["details"]["reason"], "context_changed")
         expected = payload["error"]["details"]["expected_context"]
 
         spec = self.worker_spec("export_snapshot")

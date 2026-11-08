@@ -28,13 +28,19 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
+from app.daily_process_contract import (
+    DailyProcessContractError,
+    normalize_daily_candidate,
+    validate_adapt_change,
+    validate_split_cleanup,
+)
 from app.local import ai_inputs, ai_transport
 from app.local.base import utc_now
 from app.local.errors import (
@@ -71,6 +77,7 @@ from app.local.models import (
     LocalWeeklyPlan,
     LocalWeeklyPlanContent,
 )
+from app.local import config_ai_contracts
 from app.local.prompt_bundles import (
     PACKAGE_CONTRACT_VERSION,
     TASK_TYPES,
@@ -78,6 +85,7 @@ from app.local.prompt_bundles import (
     canonical_json,
     validate_candidate,
 )
+from app.local.profile_service import require_context
 from app.local.tx import begin_immediate, read_scope, rollback
 
 LIVE_STATUSES = ("pending", "claimed", "dispatching", "retry_wait")
@@ -103,6 +111,7 @@ def _supports_task_contract(task_type: object, contract_version: object) -> bool
         task_type in TASK_TYPES
         or task_type in OBSERVATION_TASK_TYPES
         or task_type in LISTENING_TASK_TYPES
+        or task_type in config_ai_contracts.TASK_TYPES
     ):
         return (
             type(contract_version) is int
@@ -122,6 +131,25 @@ MAX_LIST_LIMIT = 100
 CERTAINTY_NOT_SENT = "not_sent"
 CERTAINTY_RESPONSE = "response_received"
 CERTAINTY_UNKNOWN = "unknown"
+
+_CLASSIFIED_FAILURE_TASKS = frozenset({
+    "daily_lesson_split",
+    "game_observation_generate",
+})
+_FOUR_COLUMN_TASK = "game_observation_generate"
+
+_INCOMPLETE_TRANSFER_DETAILS = frozenset({
+    ai_transport.DETAIL["malformed_frame"],
+    ai_transport.DETAIL["incomplete_body"],
+    ai_transport.DETAIL["length_mismatch"],
+})
+_WIRE_FRAMING_DETAILS = frozenset({
+    ai_transport.DETAIL["duplicate_header"],
+    ai_transport.DETAIL["bad_transfer_encoding"],
+    ai_transport.DETAIL["bad_content_encoding"],
+    ai_transport.DETAIL["length_conflict"],
+    ai_transport.DETAIL["bad_content_length"],
+})
 
 # Reasons that mean the task may already have reached the provider.
 _SENT_REASONS = frozenset(
@@ -317,6 +345,30 @@ def peek_operation(
         return _replay(receipt, operation_kind, fingerprint)
 
 
+def _normalize_optional_text(
+    value: object, field: str, max_length: int
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise LocalValidationError(f"{field} 必须是字符串")
+    text = value.strip()
+    if text == "":
+        return None
+    if len(text) > max_length:
+        raise LocalValidationError(f"{field} 超过长度上限")
+    return text
+
+
+def require_adapt_baseline(payload: dict[str, Any]) -> str:
+    value = payload.get("split_baseline_process")
+    if not isinstance(value, str) or not value.strip():
+        raise LocalValidationError(
+            "缺少已保存的拆分基准：请先完成教案拆分并保存，再进行适龄调整"
+        )
+    return value
+
+
 def _preflight_size(
     runtime: Any,
     session: Session,
@@ -324,6 +376,9 @@ def _preflight_size(
     target_grade: object,
     plan_id: str,
     holiday_provider: ai_inputs.HolidayProvider | None,
+    base_candidate_id: str | None = None,
+    revision_instruction: str | None = None,
+    implementation_materials: str | None = None,
 ) -> None:
     """Refuse an over-limit *serialized* request before creating anything.
 
@@ -341,7 +396,12 @@ def _preflight_size(
             task_type=task_type,
             target_grade=target_grade,
             holiday_provider=holiday_provider,
+            base_candidate_id=base_candidate_id,
+            revision_instruction=revision_instruction,
+            implementation_materials=implementation_materials,
         )
+        if task_type == "daily_process_adapt":
+            require_adapt_baseline(projected.payload)
         state, config, _credential = _read_config(session)
         model = config.model if config is not None else ""
         head, version = _current_prompt(session, state.profile_id if state else "", task_type)
@@ -605,6 +665,9 @@ def create_task(
     request_id: object,
     holiday_provider: ai_inputs.HolidayProvider | None = None,
     runtime: Any | None = None,
+    base_candidate_id: object = None,
+    revision_instruction: object = None,
+    implementation_materials: object = None,
 ) -> tuple[dict[str, Any], bool]:
     """Submit one task; return ``(TaskOut, created)``."""
     if task_type not in TASK_TYPES:
@@ -616,16 +679,36 @@ def create_task(
     ):
         raise LocalValidationError("expected_content_version 必须是正整数")
     rid = _normalize_request_id(request_id)
-
-    fingerprint = _fingerprint(
-        OP_CREATE,
-        {
-            "plan_id": plan_id,
-            "task_type": task_type,
-            "expected_content_version": expected_content_version,
-            "target_grade": target_grade,
-        },
+    base = _normalize_optional_text(base_candidate_id, "base_candidate_id", 64)
+    instruction = _normalize_optional_text(
+        revision_instruction, "revision_instruction", 500
     )
+    materials = _normalize_optional_text(
+        implementation_materials, "implementation_materials", 5000
+    )
+    if task_type == "daily_reflection_generate":
+        if base is not None or instruction is not None:
+            raise LocalValidationError("反思生成不接受原候选或定向修改要求")
+        if materials is None:
+            raise LocalValidationError("请先填写活动实施材料，再生成反思")
+    else:
+        if materials is not None:
+            raise LocalValidationError("该任务不接受活动实施材料")
+        if instruction is not None and base is None:
+            raise LocalValidationError("定向修改要求必须绑定原候选")
+    fingerprint_payload: dict[str, Any] = {
+        "plan_id": plan_id,
+        "task_type": task_type,
+        "expected_content_version": expected_content_version,
+        "target_grade": target_grade,
+    }
+    if base is not None:
+        fingerprint_payload["base_candidate_id"] = base
+    if instruction is not None:
+        fingerprint_payload["revision_instruction"] = instruction
+    if materials is not None:
+        fingerprint_payload["implementation_materials"] = materials
+    fingerprint = _fingerprint(OP_CREATE, fingerprint_payload)
     # Receipt priority: a committed re-send is read back before anything else,
     # including the executor/credential readiness checks.
     with read_scope(session):
@@ -637,7 +720,17 @@ def create_task(
 
     if runtime is not None:
         _preflight_ready(runtime, session, task_type)
-        _preflight_size(runtime, session, task_type, target_grade, plan_id, holiday_provider)
+        _preflight_size(
+            runtime,
+            session,
+            task_type,
+            target_grade,
+            plan_id,
+            holiday_provider,
+            base_candidate_id=base,
+            revision_instruction=instruction,
+            implementation_materials=materials,
+        )
 
     begin_immediate(session)
     try:
@@ -651,6 +744,21 @@ def create_task(
         plan, content = _load_plan_and_content(session, plan_id)
         if content.version != expected_content_version:
             raise LocalVersionConflict(details={"current_content_version": content.version})
+        if base is not None:
+            from app.local import ai_candidates
+
+            candidate = ai_candidates._require_candidate(session, plan, base)
+            if candidate.task_type != task_type:
+                raise LocalValidationError("原候选任务类型与本次重新生成不一致")
+            source_input = session.get(LocalAIInput, candidate.input_id)
+            if source_input is None:
+                raise LocalValidationError("原候选来源不可用")
+            if source_input.content_version != expected_content_version:
+                raise LocalValidationError("原候选绑定的保存内容版本与本次请求不一致")
+            if not ai_inputs.dependency_matches(
+                session, plan=plan, content=content, input_row=source_input
+            ):
+                raise LocalValidationError("原候选的真实来源或拆分基准已变化")
         active = session.scalars(
             select(LocalAITask).where(
                 LocalAITask.source_kind == "daily_plan",
@@ -671,7 +779,12 @@ def create_task(
             task_type=task_type,
             target_grade=target_grade,
             holiday_provider=holiday_provider,
+            base_candidate_id=base,
+            revision_instruction=instruction,
+            implementation_materials=materials,
         )
+        if task_type == "daily_process_adapt":
+            require_adapt_baseline(projected.payload)
         now = _now()
         input_id = new_opaque_id()
         session.add(
@@ -1025,6 +1138,22 @@ def cancel_task(
 
 
 def _revalidate_source(session: Session, task: LocalAITask) -> bool:
+    if task.source_kind == "class_game_config":
+        if task.task_type != config_ai_contracts.TASK_TYPE:
+            return False
+        inp = session.get(LocalAIInput, task.input_id)
+        if inp is None or inp.source_kind != "class_game_config":
+            return False
+        try:
+            context = require_context(session, date.today())
+        except Exception:  # noqa: BLE001 - missing/invalid profile is not a stale source
+            return False
+        return (
+            context.school_class is not None
+            and context.settings is not None
+            and inp.source_id == context.school_class.id
+            and inp.source_revision == context.settings.config_version
+        )
     if task.source_kind == "one_to_one_listening":
         from app.local import listening_ai_inputs
 
@@ -1487,25 +1616,45 @@ def _render_system_text(
     ]
     per_task: dict[str, list[str]] = {
         "daily_lesson_split": [
-            "只从教师提供的原始教案中摘取内容，不得补写或编造教案里没有的环节。",
+            "只从教师提供的原始教案中摘取内容，不得补写或编造教案里没有的环节；原始教案本身保持原样。",
+            "若输入含 revision_instruction，只能用于整理或清理原教案已有文字，不得据此补写原教案没有的环节或事实。",
+            "base_candidate 是上一候选的只读文字参照，不是原始教案事实；不得把候选内容冒充原教案、跨计划/任务引用或据此补写未提供的内容。",
             "原始教案未写到的字段返回空字符串，不要猜测。",
-            "原文已有可识别条目时，只整理这些已有条目的编号和换行；保留原文语句、顺序和教学含义，不为列表扩写、补写或改写原文事实。",
+            "原文已有可识别条目时，只整理已有条目的编号和换行；只清理常见的明显错字、错标点和误入的英文字母。",
+            "语义不确定、需要改写才能通顺或无法确认是否为笔误的内容，保留原文，交教师核对；不擅自选择改写哪一段。",
+            "保留原文语句、顺序和教学含义，不为列表扩写、补写或改写原文事实。",
         ],
         "daily_process_adapt": [
-            "输入为一份已保存的活动过程；请按目标年级调整其年龄适宜性，可以改写表达、步骤和难度。",
-            "输出完整的调整后过程；最终过程按实际步骤分行并用阿拉伯数字编号，数量按实际，不强凑三条。",
-            "每个环节都要写出教师可直接说的具体话语：关键处包含引导语、提问和教师的预设回应或支持语，简短自然、衔接操作、适合目标年龄。",
-            "补充教师话语时保持目标年级适宜的活动难度，不因话语增加认知或表达要求；回应可写成条件式建议，不虚构已经发生的课堂事实或幼儿实际回答，不要求扩成全程逐字稿。",
-            "即使无需年龄适宜性调整，也保留原教学内容、整理编号和换行，并为每个环节补齐教师可直接说的具体话语。",
-            "保留活动主题和主要教学意图，不要编造已经发生的课堂事实。",
+            "输入包含已保存的拆分基准过程与教师已保存过程；两者都是真实基准，不得改写基准本身。",
+            "只允许修改一个已有环节，或新增一个环节；修改与新增只能选其一。",
+            "除这一个环节外，其余环节必须逐字保留教师已保存过程的原字、原序和换行；仅编号顺延不算修改。",
+            "新增或修改的环节可调整年龄适宜性并写教师可直接说的话，但不得虚构课堂事实；其他环节不要补写教师话语。",
+            "输出完整过程，按实际步骤真实换行并编号；数量按实际，不强凑三条。",
+            "如果无法安全识别环节结构或无法确定只改哪一处，返回输入的教师已保存过程并保持原样，交教师核对；不要擅自选择多个环节。",
         ],
         "daily_other_activities": [
             "可以根据日期、周次、班级年级、可用游戏配置和当前日计划，提出新的游戏与活动建议。",
+            "若输入含 revision_instruction，只能在现有候选板块/游戏组结构内调整，不得绕过结构、编造日计划事实或新增未提供的板块。",
+            "base_candidate 是上一候选的只读文字参照，不是日计划事实；不得复制出未提供的板块、冒用其它计划/任务内容或把候选说成已保存记录。",
             "晨间游戏的一项集体与一项自选/自主均为户外活动，不含区域游戏、室内或专用室活动；优先使用 game_config 中 kind=outdoor 的场地及限制，没有户外配置时只给一般户外建议并明确未结合配置，不冒充已配置场地。",
             "其他板块仍可使用各自适用的区域、专用室或户外配置。",
             "集体活动为空时，按现有信息给出一般性建议，并说明未结合班级游戏配置。",
             "不伪造日计划引用或真实活动事实；不输出“一日活动反思”。",
             "节日信息仅供参考，不强制安排节日活动。",
+        ],
+        "daily_reflection_generate": [
+            "plan_snapshot 是教师已保存的日计划，只表示原定安排；implementation_materials 是教师提供的活动实施材料，只表示教师明确说已经发生的情况。",
+            "计划中的活动步骤不能改写成已经实施的事实；材料没有提到的幼儿反应、对话、结果、困难或时间不得补写。",
+            "只输出一段可直接编辑的反思正文，不输出标题、列表、审核说明或候选元数据。",
+            "材料不足以支持具体判断时，只写材料能够支持的内容，并明确还需教师补充观察；不要用计划内容替代实施事实，也不要声称已经发生的课堂。",
+            "保留材料中的教师原意、活动名称、人数、材料名称和关键细节；不引入未提供的姓名、班级或家庭信息。",
+        ],
+        "class_game_config_extract": [
+            "只从教师粘贴的班级游戏配置文字中提取区域、专用室、户外场地及限制/指导，不得补写或猜测。",
+            "locations 只列出原文中有名称的地点；kind 只能是 area、special_room、outdoor；name 保留原文；guidance 可空。",
+            "game_scope 与 guidance 分别对应游戏范围和通用限制/指导；原文未提到的返回 null，不得用空字符串冒充已填写。",
+            "无法判断地点类型或名称时不要输出该地点，交给教师手工补充；不按星期排班，不虚构材料库存或活动事实。",
+            "不输出 Markdown、解释或额外字段；只返回一个符合 output_contract 的 JSON 对象。",
         ],
         "game_observation_generate": [
             "根据记录类型、基本资料、已有四栏正文、全部有序照片及简短说明，一次生成四个栏目；四个栏目都必须返回，暂无可写内容时使用空字符串，评价分析必须是五个领域齐全的对象。",
@@ -1521,6 +1670,15 @@ def _render_system_text(
             "AI补写的对话和动作只作为候选，不是已核实事实，不得写成“记录显示”“只能确定”等已证实表述，也不得声称从静态照片听到了原话。审核提示、候选／AI补写／待核实等标记只由应用候选区独立 metadata 提供，不得写进目标正文。",
         ],
     }
+    if task_type in (
+        "daily_lesson_split",
+        "daily_process_adapt",
+        "daily_other_activities",
+        "daily_reflection_generate",
+    ):
+        common.append(
+            "日计划 AI 文字的换行只转义一层：JSON 解码后，编号各项和“师：/幼：”等话语段落必须是真实换行；不得输出字面反斜杠+n、双层转义或把多段串成一行。"
+        )
     return canonical_json(
         {
             "task_type": task_type,
@@ -2205,21 +2363,63 @@ def _finish_attempt(attempt: LocalAIAttempt, state: str, result: dict[str, Any],
         attempt.duration_ms = duration_ms
 
 
+def validate_daily_candidate_contract(
+    task_type: str,
+    candidate: dict[str, Any],
+    payload: dict[str, Any],
+    dependencies: dict[str, Any],
+) -> None:
+    """#23 final gate for split cleanup and one-step adapt candidates."""
+    try:
+        if task_type == "daily_lesson_split":
+            group = candidate.get("group_activity") or {}
+            validate_split_cleanup(
+                str(payload.get("raw_lesson_plan") or ""),
+                [value for value in group.values() if isinstance(value, str)],
+            )
+        elif task_type == "daily_process_adapt":
+            baseline = payload.get("split_baseline_process")
+            if not isinstance(baseline, str):
+                reference = dependencies.get("split_baseline")
+                if isinstance(reference, dict):
+                    baseline = reference.get("group_activity_process")
+            if not isinstance(baseline, str) or not baseline.strip():
+                # Historical in-flight tasks created before #23 may have no
+                # baseline; new tasks are blocked before submission instead.
+                return
+            validate_adapt_change(
+                baseline,
+                str(payload.get("process_source") or ""),
+                str(candidate.get("process") or ""),
+            )
+    except DailyProcessContractError as exc:
+        raise CandidateInvalid(str(exc)) from None
+
+
 def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now: datetime) -> bool:
     text = result.get("candidate_text")
     if not isinstance(text, str):
         return finalize_failure(session, claim, result, now)
+    input_row = session.get(LocalAIInput, claim.input_id)
     try:
         if claim.source_kind == "one_to_one_listening":
             from app.local import listening_ai_contracts
 
             parsed = ai_transport.parse_strict_json_object(text)
-            validated = listening_ai_contracts.validate_candidate(
-                claim.task_type, parsed
-            )
             inp = session.get(LocalAIInput, claim.input_id)
             if inp is None:
                 raise ValueError("input_missing")
+            expected_positions = None
+            if claim.task_type == listening_ai_contracts.TASK_GROUP:
+                expected_positions = tuple(
+                    int(item.get("position"))
+                    for item in dict(inp.payload_json or {}).get("groups") or []
+                )
+            validated = listening_ai_contracts.validate_candidate(
+                claim.task_type,
+                parsed,
+                expected_positions=expected_positions,
+            )
             if claim.task_type == listening_ai_contracts.TASK_DOMAIN:
                 expected_ids = [
                     item.get("item_id")
@@ -2251,10 +2451,39 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
                 validated = weekly_ai_contracts.parse_column_candidate(
                     text, task_type=claim.task_type
                 )
+        elif claim.source_kind == "class_game_config":
+            from app.local import config_service
+
+            parsed = ai_transport.parse_strict_json_object(text)
+            try:
+                candidate = config_ai_contracts.validate_candidate(parsed)
+                validated = config_service.normalize_class_games_candidate(candidate)
+            except Exception as exc:  # noqa: BLE001 - map all candidate failures
+                raise CandidateInvalid(str(exc)) from None
         else:
             parsed = ai_transport.parse_strict_json_object(text)
             validated = validate_candidate(claim.task_type, parsed)
-    except (ValueError, CandidateInvalid):
+            validated = normalize_daily_candidate(claim.task_type, validated)
+            if input_row is not None and claim.task_type in (
+                "daily_lesson_split",
+                "daily_process_adapt",
+            ):
+                validate_daily_candidate_contract(
+                    claim.task_type,
+                    validated,
+                    dict(input_row.payload_json or {}),
+                    dict(input_row.dependencies_json or {}),
+                )
+    except CandidateInvalid:
+        invalid = dict(result)
+        invalid["kind"] = "output_invalid"
+        invalid["reason"] = (
+            "candidate_contract_invalid"
+            if claim.task_type == _FOUR_COLUMN_TASK
+            else "output_invalid"
+        )
+        return finalize_failure(session, claim, invalid, now)
+    except ValueError:
         invalid = dict(result)
         invalid["kind"] = "output_invalid"
         invalid["reason"] = "output_invalid"
@@ -2313,6 +2542,30 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
         raise
 
 
+def _classified_failure_reason(claim: Claim, result: dict[str, Any]) -> str | None:
+    if claim.task_type not in _CLASSIFIED_FAILURE_TASKS:
+        return None
+    kind = result.get("kind") or ai_transport.UNKNOWN
+    detail = result.get("detail")
+    if not isinstance(detail, str):
+        return None
+    if kind == ai_transport.OUTPUT_INVALID and claim.task_type == _FOUR_COLUMN_TASK:
+        if detail == ai_transport.DETAIL["reasoning_only"]:
+            return "reasoning_only"
+        if detail == ai_transport.DETAIL["output_length"]:
+            return "output_length"
+    if kind in (ai_transport.UNKNOWN, ai_transport.PROVIDER_ERROR):
+        if detail == ai_transport.DETAIL["response_header_timeout"]:
+            return "response_header_timeout"
+        if detail == ai_transport.DETAIL["malformed_response"]:
+            return "malformed_response"
+        if detail in _INCOMPLETE_TRANSFER_DETAILS:
+            return "incomplete_transfer"
+        if detail in _WIRE_FRAMING_DETAILS:
+            return "wire_framing_invalid"
+    return None
+
+
 def finalize_failure(
     session: Session,
     claim: Claim,
@@ -2323,6 +2576,11 @@ def finalize_failure(
 ) -> bool:
     kind = result.get("kind") or ai_transport.UNKNOWN
     reason = result.get("reason")
+    classified_reason = _classified_failure_reason(claim, result)
+    if classified_reason is not None:
+        result = dict(result)
+        result["reason"] = classified_reason
+        reason = classified_reason
     sent = bool(result.get("sent"))
 
     if kind == "stopped":
@@ -2345,7 +2603,7 @@ def finalize_failure(
     if kind == ai_transport.RATE_LIMITED:
         return _end_paused(session, claim, result, now, reason="rate_limited", certainty=CERTAINTY_UNKNOWN, block=False)
     if kind == ai_transport.PROVIDER_ERROR:
-        return _end_unknown(session, claim, result, now, reason="provider_error")
+        return _end_unknown(session, claim, result, now, reason=reason or "provider_error")
     if kind == ai_transport.UNKNOWN:
         return _end_unknown(session, claim, result, now, reason=reason or "timeout_after_dispatch")
     if kind == ai_transport.TLS_INVALID:
@@ -2361,7 +2619,7 @@ def finalize_failure(
     if kind == ai_transport.OUTPUT_INVALID:
         # A complete, successfully received but invalid model output *is* a
         # definite response.
-        return _end_failed(session, claim, result, now, reason="output_invalid", certainty=CERTAINTY_RESPONSE)
+        return _end_failed(session, claim, result, now, reason=reason or "output_invalid", certainty=CERTAINTY_RESPONSE)
     if kind == ai_transport.NOT_SENT:
         return _end_failed(session, claim, result, now, reason=reason or "connection_unavailable", certainty=CERTAINTY_NOT_SENT)
     return _end_unknown(session, claim, result, now, reason=reason or "provider_error")

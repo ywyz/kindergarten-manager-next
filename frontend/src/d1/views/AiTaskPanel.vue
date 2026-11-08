@@ -38,16 +38,32 @@ const props = defineProps<{
   saveCurrent: () => Promise<SaveOutcome>
   pollVisibleMs?: number
   pollHiddenMs?: number
+  /**
+   * #19: optional in-page anchors for the three per-type action rows. When a
+   * target is supplied the row is teleported beside its related field; when it
+   * is absent the row stays inline, preserving standalone panel usage. Task
+   * state, receipts, polling and gating stay in this single component.
+   */
+  splitTarget?: HTMLElement | null
+  processTarget?: HTMLElement | null
+  otherTarget?: HTMLElement | null
 }>()
 
 const emit = defineEmits<{
-  (e: 'open-candidate', candidateId: string): void
+  (e: 'open-candidate', candidateId: string, taskType: TaskType): void
   (e: 'open-guidance', taskType: TaskType): void
   (e: 'draft-active', active: boolean): void
 }>()
 
 const GRADE_LABELS: Record<Grade, string> = { small: '小班', middle: '中班', large: '大班' }
 const PAGE_LIMIT = 100
+
+const rowTargets = computed<Record<TaskType, HTMLElement | null>>(() => ({
+  daily_lesson_split: props.splitTarget ?? null,
+  daily_process_adapt: props.processTarget ?? null,
+  daily_other_activities: props.otherTarget ?? null,
+  daily_reflection_generate: null,
+}))
 
 const targetGrade = ref<Grade>(props.planGrade)
 const tasks = ref<AiTask[]>([])
@@ -863,7 +879,7 @@ function handleActionError(taskId: string, err: unknown): void {
 }
 
 function viewCandidate(task: AiTask): void {
-  if (task.candidate_id) emit('open-candidate', task.candidate_id)
+  if (task.candidate_id) emit('open-candidate', task.candidate_id, task.task_type)
 }
 
 function guidanceLabel(taskType: TaskType): string {
@@ -955,39 +971,47 @@ onBeforeUnmount(() => {
       </el-select>
       <span class="muted">默认使用本计划年级；仅影响本次候选。</span>
     </div>
-    <div class="type-row" v-for="type in TASK_TYPES" :key="type">
-      <div class="type-head">
-        <strong>{{ TASK_TYPE_LABELS[type] }}</strong>
-        <el-tag size="small" type="info">{{ guidanceLabel(type) }}</el-tag>
-        <el-tag v-if="latestByType[type]" size="small" :type="isLiveTask(latestByType[type]!) ? 'warning' : 'info'">
-          最近：{{ taskStatusLabel(latestByType[type]!.status) }}
-        </el-tag>
-        <el-button size="small" text data-d1="open-guidance" @click="emit('open-guidance', type)">
-          查看/编辑指导
-        </el-button>
-      </div>
-      <div class="trigger-row">
-        <el-button
-          size="small"
-          :type="type === 'daily_lesson_split' ? 'primary' : 'default'"
-          :loading="!!creating[type]"
-          :disabled="frozen || !!blockedReason(type)"
-          :data-d1="`ai-trigger-${type}`"
-          @click="trigger(type)"
-        >
-          发起{{ TASK_TYPE_LABELS[type] }}
-        </el-button>
-        <template v-if="pendingCreates[type]">
-          <el-button size="small" type="warning" :data-d1="`ai-query-create-${type}`" @click="queryCreate(type)">
-            查询提交结果
+    <div
+      v-for="type in TASK_TYPES"
+      :key="type"
+      class="type-row"
+      :class="{ 'type-row-teleported': !!rowTargets[type] }"
+      :data-d1="`ai-row-${type}`"
+    >
+      <Teleport :to="rowTargets[type] ?? 'body'" :disabled="!rowTargets[type]">
+        <div class="type-head">
+          <strong>{{ TASK_TYPE_LABELS[type] }}</strong>
+          <el-tag size="small" type="info">{{ guidanceLabel(type) }}</el-tag>
+          <el-tag v-if="latestByType[type]" size="small" :type="isLiveTask(latestByType[type]!) ? 'warning' : 'info'">
+            最近：{{ taskStatusLabel(latestByType[type]!.status) }}
+          </el-tag>
+          <el-button size="small" text data-d1="open-guidance" @click="emit('open-guidance', type)">
+            查看/编辑指导
           </el-button>
-          <el-button size="small" type="danger" :loading="!!creating[type]" :data-d1="`ai-resubmit-create-${type}`" @click="resubmitCreate(type)">
-            重试原提交（同一请求）
+        </div>
+        <div class="trigger-row">
+          <el-button
+            size="small"
+            :type="type === 'daily_lesson_split' ? 'primary' : 'default'"
+            :loading="!!creating[type]"
+            :disabled="frozen || !!blockedReason(type)"
+            :data-d1="`ai-trigger-${type}`"
+            @click="trigger(type)"
+          >
+            发起{{ TASK_TYPE_LABELS[type] }}
           </el-button>
-        </template>
-        <span class="muted hint">{{ TASK_TYPE_HINTS[type] }}</span>
-      </div>
-      <el-alert v-if="createError[type]" type="warning" :closable="false" :title="createError[type]" />
+          <template v-if="pendingCreates[type]">
+            <el-button size="small" type="warning" :data-d1="`ai-query-create-${type}`" @click="queryCreate(type)">
+              查询提交结果
+            </el-button>
+            <el-button size="small" type="danger" :loading="!!creating[type]" :data-d1="`ai-resubmit-create-${type}`" @click="resubmitCreate(type)">
+              重试原提交（同一请求）
+            </el-button>
+          </template>
+          <span class="muted hint">{{ TASK_TYPE_HINTS[type] }}</span>
+        </div>
+        <el-alert v-if="createError[type]" type="warning" :closable="false" :title="createError[type]" />
+      </Teleport>
     </div>
 
     <el-alert v-if="errorText" type="warning" :closable="false" class="section" data-d1="ai-task-error" :title="errorText" />
@@ -1134,6 +1158,11 @@ onBeforeUnmount(() => {
   border-top: 1px dashed var(--kgm-border);
   padding-top: 8px;
   margin-bottom: 6px;
+}
+/* The row content lives in a #19 field anchor; keep the in-panel slot out of
+   the flow (Teleport leaves only its start/end comment markers here). */
+.type-row-teleported {
+  display: none;
 }
 .type-head {
   display: flex;

@@ -33,7 +33,9 @@ function detail() { return { plan: { id: 'p1', term_id: 't1', week_anchor_date: 
 const calls = []
 const actionCalls = []
 let failGamesOnce = false
+let failColumnsOnce = false
 let failAdoptOnce = false
+let malformedAdoptShape = ''
 let failActionOnce = false
 let taskOperationWrongPlan = false
 let saveMode = 'unchanged'
@@ -70,24 +72,25 @@ const task2 = { ...task, task_id: 't2', target: 'key_week_focus', task_type: 'ke
 const createOut = { request_id: 'req-test', operation_kind: 'games', weekly_plan_id: 'p1', draft: { id: 'd1', version: 8 }, tasks: [{ target: 'games', task_id: 't1' }], replayed: false }
 const candidate = { candidate_id: 'c1', task_id: 't1', target: 'games', candidate_hash: 'ch1', eligibility: 'eligible', available_targets: ['games'], create_operation_id: null, data: { outdoor_game_slots: { collective_1: { source_kind: 'daily_plan', name: '爬行', shared_objectives: '目标' } } }, basis: {}, warnings: [], unavailable_inputs: [] }
 const preview = { preview_token: 'pt1', expires_at: '2026-11-03T00:00:00Z', weekly_plan_id: 'p1', draft: { id: 'd1', version: 8 }, selections: [{ candidate_id: 'c1', target: 'games' }], before: { games: '旧' }, after: { games: '新' }, warnings: [] }
-const adopted = { operation_id: 'op1', request_id: 'req-adopt', status: 'committed', weekly_plan_id: 'p1', draft: { id: 'd1', version: 9, content_hash: 'h9' }, selections: [{ candidate_id: 'c1', target: 'games' }], changed: true, replayed: false }
+const adopted = { operation_id: 'op1', request_id: 'req-adopt', status: 'committed', weekly_plan_id: 'p1', draft: { id: 'd1', version: 9, content_hash: 'b'.repeat(64) }, selections: [{ candidate_id: 'c1', target: 'games' }], changed: true, replayed: false }
 const aiStub = {
   WEEKLY_AI_COLUMNS: ['key_week_focus', 'environment_setup', 'habit_culture', 'home_cooperation'],
   candidateLines: (value) => [`候选：${value.data.outdoor_game_slots.collective_1.name}`],
+  weeklyEditSignature: (value) => JSON.stringify(value),
   groupStatus: () => 'outcome_unknown',
   groupStatusLabel: () => '结果待核对',
   previewLines: (before, after) => ['采用前：' + JSON.stringify(before), '采用后：' + JSON.stringify(after)],
   projectWeeklyAiError: (error) => ({ message: String(error), retry: String(error).includes('offline') ? 'query' : 'none' }),
   createWeeklyAiApi: () => ({
     games: async (planId, body) => { calls.push({ kind: 'games', planId, body: clone(body) }); if (failGamesOnce) { failGamesOnce = false; throw new Error('offline') }; return clone(createOut) },
-    columns: async (planId, body) => { calls.push({ kind: 'columns', planId, body: clone(body) }); return { request_id: 'req-2', operation_kind: 'columns', weekly_plan_id: 'p1', draft: { id: 'd1', version: 8 }, tasks: [{ target: 'key_week_focus', task_id: 't2' }], replayed: false } },
-    materials: async () => ({ request_id: 'req-3', operation_kind: 'materials', weekly_plan_id: 'p1', draft: { id: 'd1', version: 8 }, tasks: [], replayed: false }),
+    columns: async (planId, body) => { calls.push({ kind: 'columns', planId, body: clone(body) }); if (failColumnsOnce) { failColumnsOnce = false; throw new Error('offline') }; return { request_id: 'req-2', operation_kind: 'columns', weekly_plan_id: 'p1', draft: { id: 'd1', version: 8 }, tasks: [{ target: 'key_week_focus', task_id: 't2' }], replayed: false } },
+    materials: async (planId, body) => { calls.push({ kind: 'materials', planId, body: clone(body) }); return { request_id: body.request_id, operation_kind: 'materials', weekly_plan_id: planId, draft: { id: 'd1', version: body.expected_draft_version }, tasks: [], replayed: false } },
     tasks: async (_planId, query = {}) => { if (tasksErrorOnce) { tasksErrorOnce = false; throw new Error('raw tasks error') }; if (taskDelay && taskGate) await taskGate; if (taskPageMode) return query.cursor ? { items: [task2], next_cursor: null } : { items: [task], next_cursor: 'next' }; if (taskReturnAll) return { items: [task, task2], next_cursor: null }; return { items: [task], next_cursor: null } },
     candidates: async () => ({ items: [candidate, { ...candidate, candidate_id: 'c2', task_id: 't2', target: 'key_week_focus', available_targets: ['key_week_focus'], data: { text: '新批候选' } }], next_cursor: null }),
     candidate: async (_planId, candidateId) => { if (candidateErrorOnce) { candidateErrorOnce = false; throw new Error('raw candidate error') }; if (oldDetailDelay && candidateId === 'c1') { await oldDetailGate; if (oldDetailFail) throw new Error('raw old detail error') }; return candidateId === 'c2' ? { ...candidate, candidate_id: 'c2', task_id: 't2', target: 'key_week_focus', available_targets: ['key_week_focus'], data: { text: '新批候选' } } : clone(candidate) },
     adoptionPreview: async (planId, body) => { calls.push({ kind: 'preview', planId, body: clone(body) }); if (mutateSessionOnPreview) { mutateSessionOnPreview = false; sessionValue = 3 }; return clone(preview) },
-    adopt: async (planId, body) => { calls.push({ kind: 'adopt', planId, body: clone(body) }); if (failAdoptOnce) { failAdoptOnce = false; throw new Error('offline') }; return clone(adopted) },
-    operation: async (planId, requestId) => requestId === 'req-test' ? { request_id: 'req-test', operation_kind: 'games', status: 'committed', result: clone(createOut) } : { request_id: 'req-adopt', operation_kind: 'adopt', status: 'committed', result: clone(adopted) },
+    adopt: async (planId, body) => { calls.push({ kind: 'adopt', planId, body: clone(body) }); if (failAdoptOnce) { failAdoptOnce = false; throw new Error('offline') }; if (malformedAdoptShape === 'null-selections') return { ...clone(adopted), request_id: body.request_id, selections: null }; if (malformedAdoptShape === 'missing-draft') return { ...clone(adopted), request_id: body.request_id, draft: null }; return { ...clone(adopted), request_id: body.request_id } },
+    operation: async (planId, requestId) => requestId === 'req-test' ? { request_id: 'req-test', operation_kind: 'games', status: 'committed', result: clone(createOut) } : { request_id: requestId, operation_kind: 'weekly_ai_adopt', status: 'committed', result: { ...clone(adopted), request_id: requestId } },
     taskOperation: async (requestId) => ({ request_id: requestId, operation_kind: 'ai_task_retry', result: { ...task, source_kind: 'weekly_plan', source_id: 'p1', weekly_plan_id: taskOperationWrongPlan ? 'other-plan' : 'p1' }, committed_at: '2026-11-03T00:00:00Z' }),
     progress: async () => ({ state: '只读' }), cancel: async () => { actionCalls.push('cancel'); return task }, resume: async () => { actionCalls.push('resume'); return task }, retry: async () => { actionCalls.push('retry'); if (failActionOnce) { failActionOnce = false; throw new Error('offline') }; return task },
   }),
@@ -96,7 +99,7 @@ const weeklyStub = { newWeeklyRequestId: () => 'req-test', createWeeklyApi: () =
 const mod = { exports: {} }
 const mounted = []
 const vueStub = { ...vue, onMounted: (fn) => mounted.push(fn), onBeforeUnmount: (fn) => unmounts.push(fn) }
-const requireStub = (spec) => { if (spec === 'vue') return vueStub; if (spec === '../weekly-ai') return aiStub; if (spec === '../client') return { getSessionEpoch: () => sessionValue }; if (spec === '../weekly') return weeklyStub; if (spec === '../leave') return {}; throw new Error(`unexpected ${spec}`) }
+const requireStub = (spec) => { if (spec === 'vue') return vueStub; if (spec === '../weekly-ai') return aiStub; if (spec === '../client') return { getSessionEpoch: () => sessionValue }; if (spec === '../weekly') return weeklyStub; if (spec === '../leave') return {}; if (spec === '../operations') return { isIndeterminate: (error) => error?.status === 0 || (typeof error?.status === 'number' && error.status >= 500) }; throw new Error(`unexpected ${spec}`) }
 const js = ts.transpileModule(compiled, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }, fileName: viewFile }).outputText
 vm.runInNewContext(js, { module: mod, exports: mod.exports, require: requireStub, console, Date, JSON, Math, Promise, URLSearchParams, crypto: { randomUUID: () => 'uuid' } }, { filename: viewFile })
 const emitted = []
@@ -207,7 +210,7 @@ assert.equal(state.candidates.value.length, 2)
   state.retryAckByTask.value = { t1: true }
   const first = state.create('games')
   const second = state.create('columns')
-  const preview = state.openPreview()
+  const preview = state.adoptCandidates([state.candidates.value[0]])
   const blockedCancel = state.action(task, 'cancel')
   const blockedRetry = state.action(task, 'retry')
   assert.equal(actionCalls.length, 0)
@@ -229,31 +232,15 @@ assert.equal(state.candidates.value.length, 2)
   let releaseSave
   saveGate = new Promise((resolve) => { releaseSave = resolve })
   const beforeActions = actionCalls.length
-  const opening = state.openPreview()
+  const opening = state.adoptCandidates([state.candidates.value[0]])
   const blocked = state.action(task, 'cancel')
   releaseSave()
   await Promise.all([opening, blocked])
   assert.equal(actionCalls.length, beforeActions)
-  state.closePreview()
   await state.action(task, 'cancel')
   assert.equal(actionCalls.length, beforeActions + 1)
   saveGate = null
   ok('openPreview pre-save flight also blocks task actions, then releases normally')
-}
-{
-  const adoptBefore = calls.filter((item) => item.kind === 'adopt').length
-  state.selectedKeys.value = ['c1:games']
-  await state.openPreview()
-  let releaseSave
-  saveGate = new Promise((resolve) => { releaseSave = resolve })
-  const creating = state.create('games')
-  await state.adopt()
-  assert.equal(calls.filter((item) => item.kind === 'adopt').length, adoptBefore)
-  releaseSave()
-  await creating
-  saveGate = null
-  state.closePreview()
-  ok('explicit adopt is also blocked while a pre-save panel flight is active')
 }
 {
   await state.create('games')
@@ -282,60 +269,19 @@ assert.equal(state.candidates.value.length, 2)
   ok('accepted new batch never relabels old candidates and shows pending until a successful read')
 }
 {
-  state.selectedKeys.value = ['c1:games']
-  await state.openPreview()
+  const c1 = state.candidates.value.find((item) => item.candidate_id === 'c1')
+  await state.adoptCandidates([c1])
   assert.equal(calls.find((item) => item.kind === 'preview').body.expected_draft_version, 8)
-  assert.deepEqual(calls.find((item) => item.kind === 'preview').body.selections, [{ candidate_id: 'c1', target: 'games' }])
-  assert.ok(state.blocking.value)
-  await state.adopt()
+  const previewSelection = calls.find((item) => item.kind === 'preview').body.selections[0]
+  assert.equal(previewSelection.candidate_id, 'c1')
+  assert.equal(previewSelection.target, 'games')
+  assert.ok(previewSelection.edit)
+  assert.ok(emitted.some(([name, value]) => name === 'blocking' && value !== null))
   assert.equal(calls.find((item) => item.kind === 'adopt').body.preview_token, 'pt1')
   assert.equal(reconcileArgs[3].version, 9)
   assert.equal(state.blocking.value, null)
   assert.ok(emitted.some(([name, value]) => name === 'blocking' && value !== null))
   ok('panel preview adopts explicitly, GETs by identity, reconciles accepted draft and clears blocking')
-}
-{
-  state.selectedKeys.value = ['c1:games']
-  await state.openPreview()
-  const before = calls.filter((item) => item.kind === 'adopt').length
-  state.selectedKeys.value = []
-  await state.adopt()
-  assert.equal(calls.filter((item) => item.kind === 'adopt').length, before)
-  assert.ok(state.error.value.includes('选择'))
-  state.closePreview()
-  ok('changing the actual preview selection after preview produces zero adopt calls')
-}
-{
-  state.selectedKeys.value = ['c1:games']
-  await state.openPreview()
-  const oldController = props.controller
-  props.controller = { ...fakeController }
-  const before = calls.filter((item) => item.kind === 'adopt').length
-  await state.adopt()
-  assert.equal(calls.filter((item) => item.kind === 'adopt').length, before)
-  props.controller = oldController
-  state.closePreview()
-  ok('a genuinely replaced controller drops an old preview instead of adopting it')
-}
-{
-  state.selectedKeys.value = ['c1:games']
-  await state.openPreview()
-  let releaseGet
-  getGate = new Promise((resolve) => { releaseGet = resolve })
-  getDelay = true
-  const priorReconcile = reconcileArgs
-  const adopting = state.adopt()
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  sessionValue = 3
-  releaseGet()
-  await adopting
-  assert.equal(reconcileArgs, priorReconcile)
-  sessionValue = 2
-  getDelay = false
-  getGate = null
-  state.pendingAdopt.value = null
-  state.closePreview()
-  ok('adopt GET that returns after the session generation changed never reconciles')
 }
 {
   failGamesOnce = true
@@ -369,11 +315,10 @@ assert.equal(state.candidates.value.length, 2)
   ok('lost create query resolves the original receipt without re-sending the create body')
 }
 {
-  state.selectedKeys.value = ['c1:games']
-  await state.openPreview()
+  const c1 = state.candidates.value.find((item) => item.candidate_id === 'c1')
   failAdoptOnce = true
   const before = calls.filter((item) => item.kind === 'adopt').length
-  await state.adopt()
+  await state.adoptCandidates([c1])
   assert.ok(state.pendingAdopt.value)
   await state.retryAdopt()
   assert.equal(state.pendingAdopt.value, null)
@@ -427,9 +372,9 @@ assert.equal(state.candidates.value.length, 2)
   ok('wrong-week task action receipt never clears the original ticket')
 }
 {
-  state.selectedKeys.value = ['c1:games']
+  const c1 = state.candidates.value.find((item) => item.candidate_id === 'c1')
   mutateSessionOnPreview = true
-  await state.openPreview()
+  await state.adoptCandidates([c1])
   assert.equal(state.preview.value, null)
   assert.equal(state.aiBusy.value, false)
   sessionValue = 2
@@ -479,6 +424,351 @@ assert.equal(state.candidates.value.length, 2)
   assert.equal(actual.isDirty(), true)
   ok('save in flight keeps later SFC material input and does not expose stored body')
 }
+function focusController(planId, options = {}) {
+  const live = content()
+  live.focus_area = options.focus ?? null
+  let version = options.version ?? 5
+  let dirty = Boolean(options.dirty)
+  let saveIndex = 0
+  const outcomes = options.saveOutcomes ?? ['saved']
+  const saves = []
+  return {
+    saves,
+    controller: {
+      identity: () => `${planId}:1`,
+      saveCurrent: async () => {
+        const outcome = outcomes[Math.min(saveIndex, outcomes.length - 1)]
+        saveIndex += 1
+        saves.push({ version, focus: Boolean(live.focus_area) })
+        if (outcome === 'saved') { version += 1; dirty = false }
+        return outcome
+      },
+      getContent: () => clone(live),
+      isDirty: () => dirty,
+      hasUnknown: () => Boolean(options.unknown),
+      getLastFailure: () => options.lastFailure ?? null,
+      savedDraftRef: () => ({ id: 'd1', version, content_hash: `h${version}` }),
+      snapshot: () => ({ identity: `${planId}:1`, input_revision: 1, sequence: 1 }),
+      beginExternalBusy: () => () => {},
+      reconcileExternalDraft: () => 'applied',
+      updateContent: (mutator) => { mutator(live) },
+    },
+    setFocus(value) { live.focus_area = value; dirty = true },
+    setDirty(value) { dirty = value },
+  }
+}
+function mountPanel(panelProps, panelEmitted = []) {
+  const reactiveProps = vue.shallowReactive({ disabled: false, profileEpoch: 1, sessionEpoch: 2, ...panelProps })
+  const panelState = mod.exports.default.setup(reactiveProps, { expose() {}, emit: (...args) => panelEmitted.push(args) })
+  mounted[mounted.length - 1]()
+  return panelState
+}
+const focusChoice = {
+  source_kind: 'daily_plan', manual_item_id: null,
+  daily_plan_id: 'dp2', content_id: 'c2', content_version: 1, content_hash: 'h2',
+  section: 'post_group_games', group_id: 'g2', game_id: 'game2',
+  context_kind: 'area', area: '积木区', name: '第二周重点', objectives: '目标',
+  guidance: '指导', support_strategy: '支持',
+}
+function p2Detail() { const value = detail(); value.plan.id = 'p2'; return value }
+
+{
+  const target = focusController('p2', { version: 5 })
+  const panelEmitted = []
+  const panelState = mountPanel({ controller: target.controller, planId: 'p2', detail: p2Detail(), focusSelected: false }, panelEmitted)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const before = calls.filter((item) => item.kind === 'materials').length
+  await panelState.create('materials')
+  assert.equal(calls.filter((item) => item.kind === 'materials').length, before)
+  assert.equal(target.saves.length, 0)
+  assert.equal(panelState.materialsFocusReady.value, false)
+  assert.match(panelState.error.value, /重点区域/)
+  panelState.requestFocusArea()
+  assert.ok(panelEmitted.some(([name]) => name === 'focus-area'))
+  ok('no live focus blocks materials before any save or POST and offers the focus-area action')
+}
+{
+  const target = focusController('p2u', { version: 5, dirty: true, focus: focusChoice })
+  const panelState = mountPanel({ controller: target.controller, planId: 'p2u', detail: p2Detail(), focusSelected: true })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(panelState.materialsFocusReady.value, true)
+  const before = calls.filter((item) => item.kind === 'materials').length
+  await panelState.create('materials')
+  assert.equal(target.saves.length, 1)
+  const submitted = calls.filter((item) => item.kind === 'materials').slice(before)
+  assert.equal(submitted.length, 1)
+  assert.equal(submitted[0].planId, 'p2u')
+  assert.equal(submitted[0].body.expected_draft_version, 6)
+  assert.equal(submitted[0].body.request_id, 'req-test')
+  ok('unsaved live focus is saved first; materials then posts only to the second plan with the new saved version')
+}
+{
+  const target = focusController('p2f', {
+    version: 3, dirty: true, focus: focusChoice, saveOutcomes: ['failed'],
+    lastFailure: { code: 'LOCAL_STORAGE_ERROR', message: '本地存储异常，当前输入已保留', retry: 'retry' },
+  })
+  const panelState = mountPanel({ controller: target.controller, planId: 'p2f', detail: p2Detail(), focusSelected: true })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const before = calls.filter((item) => item.kind === 'materials').length
+  await panelState.create('materials')
+  assert.equal(target.saves.length, 1)
+  assert.equal(calls.filter((item) => item.kind === 'materials').length, before)
+  assert.match(panelState.error.value, /本地存储异常/)
+  assert.match(panelState.error.value, /当前输入已保留/)
+  ok('materials pre-save failure surfaces the projected write reason and sends no AI request')
+}
+{
+  // Exact reviewed race: a theme-only save is already in flight; the teacher
+  // chooses a valid focus late; materials shares the earlier savePromise.
+  const raceDetail = p2Detail()
+  raceDetail.plan.id = 'p2r'
+  raceDetail.plan.current_draft_version = 8
+  const saveInputs = []
+  const saveQueue = []
+  let lastDraft = clone(raceDetail.draft)
+  const raceApi = {
+    save: (planId, input) => {
+      saveInputs.push({ planId, input: clone(input) })
+      const entry = {}
+      entry.promise = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject })
+      saveQueue.push(entry)
+      return entry.promise
+    },
+    get: async () => ({ ...clone(raceDetail), draft: clone(lastDraft) }),
+  }
+  let request = 0
+  const controller = new actualEditor.WeeklyEditorController({
+    detail: raceDetail, api: raceApi, editorEpoch: 4,
+    settle: async () => {},
+    requestId: () => `race-${++request}`,
+  })
+  const raceProps = vue.shallowReactive({ controller, planId: 'p2r', detail: raceDetail, focusSelected: false, disabled: false, profileEpoch: 1, sessionEpoch: 2 })
+  const raceState = mountPanel(raceProps)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  controller.updateContent((draft) => { draft.theme = '赛跑主题' })
+  const manual = controller.saveCurrent()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(saveInputs.length, 1)
+  assert.equal(saveInputs[0].input.patch.theme, '赛跑主题')
+  assert.equal('focus_area' in saveInputs[0].input.patch, false)
+
+  controller.updateContent((draft) => { draft.focus_area = focusChoice })
+  raceProps.focusSelected = true
+  const creating = raceState.create('materials')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(saveInputs.length, 1)
+
+  const v9Content = clone(raceDetail.draft.content)
+  v9Content.theme = '赛跑主题'
+  v9Content.focus_area = null
+  lastDraft = { id: 'race-draft', version: 9, content_hash: 'race-h9', content: v9Content }
+  saveQueue[0].resolve({ request_id: saveInputs[0].input.request_id, status: 'committed', weekly_plan_id: 'p2r', draft: clone(lastDraft), confirmation: null, replayed: false })
+  await manual
+  await creating
+
+  assert.equal(controller.getContent().focus_area.name, '第二周重点')
+  assert.equal(controller.getDetail().draft.content.focus_area, null)
+  assert.equal(saveInputs.length, 1)
+  assert.match(raceState.error.value, /尚未保存/)
+  assert.match(raceState.error.value, /保存/)
+  const beforeMaterials = calls.filter((item) => item.kind === 'materials').length
+  assert.equal(calls.filter((item) => item.kind === 'materials').length, beforeMaterials)
+
+  const recovery = controller.saveCurrent(); await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(saveInputs.length, 2)
+  assert.equal(saveInputs[1].input.expected_draft_version, 9)
+  assert.equal(saveInputs[1].input.patch.focus_area.daily_plan_id, 'dp2')
+  assert.equal(saveInputs[1].input.patch.focus_area.game_id, 'game2')
+  const v10Content = clone(v9Content)
+  v10Content.focus_area = clone(focusChoice)
+  lastDraft = { id: 'race-draft', version: 10, content_hash: 'race-h10', content: v10Content }
+  saveQueue[1].resolve({ request_id: saveInputs[1].input.request_id, status: 'committed', weekly_plan_id: 'p2r', draft: clone(lastDraft), confirmation: null, replayed: false })
+  await recovery
+  assert.equal(controller.isDirty(), false)
+
+  await raceState.create('materials')
+  const submitted = calls.filter((item) => item.kind === 'materials').slice(beforeMaterials)
+  assert.equal(submitted.length, 1)
+  assert.equal(submitted[0].planId, 'p2r')
+  assert.equal(submitted[0].body.expected_draft_version, 10)
+  assert.equal(submitted.some((item) => item.planId === 'p1'), false)
+  ok('late focus during a shared theme save blocks materials and keeps input until explicit save-then-retry on p2')
+}
+const panelProps = vue.shallowReactive({ controller: fakeController, planId: 'p1', detail: detail(), disabled: false, profileEpoch: 1, sessionEpoch: 2 })
+const panelState = mod.exports.default.setup(panelProps, { expose() {}, emit: () => {} })
+await panelState.refreshBatch()
+{
+  const c1 = panelState.candidates.value.find((item) => item.candidate_id === 'c1')
+  assert.ok(c1)
+  const beforeAdopt = calls.filter((item) => item.kind === 'adopt').length
+  panelState.setEditField(c1, 'slot.collective_1.name', '老师改名')
+  panelState.setEditField(c1, 'slot.collective_1.shared_objectives', '老师目标')
+  assert.equal(panelState.candidateEditDirty(c1), true)
+  await panelState.adoptCandidates([c1])
+  const previewCall = calls.filter((item) => item.kind === 'preview').at(-1)
+  assert.equal(previewCall.body.selections[0].candidate_id, 'c1')
+  assert.equal(previewCall.body.selections[0].edit.outdoor_game_slots.collective_1.name, '老师改名')
+  assert.equal(previewCall.body.selections[0].edit.outdoor_game_slots.collective_1.shared_objectives, '老师目标')
+  assert.equal(calls.filter((item) => item.kind === 'adopt').length, beforeAdopt + 1)
+  assert.equal(panelState.preview.value, null)
+  assert.ok(reconcileArgs)
+  ok('inline games edit is previewed and adopted in one click')
+}
+{
+  const c1 = panelState.candidates.value.find((item) => item.candidate_id === 'c1')
+  const before = calls.length
+  panelState.setEditField(c1, 'slot.collective_1.name', '不采用的名字')
+  panelState.resetCandidateEdit(c1)
+  assert.equal(panelState.candidateEditDirty(c1), false)
+  assert.equal(calls.length, before)
+  ok('cancel candidate edit clears local content with zero writes')
+}
+{
+  const c2 = panelState.candidates.value.find((item) => item.candidate_id === 'c2')
+  panelState.setEditField(c2, 'text', '老师改后的栏目')
+  await panelState.adoptCandidates([c2])
+  const previewCall = calls.filter((item) => item.kind === 'preview').at(-1)
+  assert.deepEqual(previewCall.body.selections[0].edit, { text: '老师改后的栏目' })
+  ok('column candidate edit is bound to the exact target')
+}
+{
+  const materials = {
+    ...panelState.candidates.value[0],
+    candidate_id: 'c3',
+    task_id: 't3',
+    target: 'materials',
+    available_targets: ['materials'],
+    data: { items: [{ text: '原材料', origin: 'extracted', evidence_refs: [] }] },
+  }
+  panelState.candidates.value = [materials]
+  panelState.syncCandidateEdits()
+  panelState.setEditField(materials, 'item.0.text', '老师改后的材料')
+  await panelState.adoptCandidates([materials])
+  const previewCall = calls.filter((item) => item.kind === 'preview').at(-1)
+  assert.deepEqual(previewCall.body.selections[0].edit, { items: [{ text: '老师改后的材料' }] })
+  ok('material item edit keeps the item slot and sends text only')
+}
+{
+  const c2 = panelState.candidates.value.find((item) => item.candidate_id === 'c2')
+  panelState.regenerateInstructions.value = { c2: '请更简洁' }
+  const before = calls.length
+  await panelState.regenerateCandidate(c2)
+  const columnCall = calls.slice(before).find((item) => item.kind === 'columns')
+  assert.equal(columnCall.body.base_candidate_id, 'c2')
+  assert.equal(columnCall.body.revision_instruction, '请更简洁')
+  assert.deepEqual(columnCall.body.selected_fields, ['key_week_focus'])
+  assert.equal(panelState.pendingCreate.value, null)
+  assert.equal(panelState.regeneratedNotice.value, 'c2')
+  ok('regeneration binds the candidate, target, saved version and instruction')
+}
+{
+  const c2 = panelState.candidates.value.find((item) => item.candidate_id === 'c2')
+  const before = panelState.candidates.value.length
+  failColumnsOnce = true
+  await panelState.regenerateCandidate(c2)
+  assert.equal(panelState.candidates.value.length, before)
+  assert.ok(panelState.pendingCreate.value)
+  panelState.pendingCreate.value = null
+  ok('failed regeneration keeps the old candidate and pending ticket')
+}
+
+
+{
+  const props2 = vue.shallowReactive({ controller: fakeController, planId: 'p1', detail: detail(), disabled: false, profileEpoch: 1, sessionEpoch: 2 })
+  const panel2 = mod.exports.default.setup(props2, { expose() {}, emit: () => {} })
+  await panel2.refreshBatch()
+  const c1 = panel2.candidates.value.find((item) => item.candidate_id === 'c1')
+  let releaseSave
+  saveGate = new Promise((resolve) => { releaseSave = resolve })
+  saveMode = 'unchanged'
+  panel2.setEditField(c1, 'slot.collective_1.name', '点击时的名字')
+  const beforePreview = calls.filter((item) => item.kind === 'preview').length
+  const flow = panel2.adoptCandidates([c1])
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  panel2.setEditField(c1, 'slot.collective_1.name', '保存期间改变的名字')
+  releaseSave()
+  await flow
+  saveGate = null
+  assert.equal(calls.filter((item) => item.kind === 'preview').length, beforePreview)
+  assert.match(panel2.error.value, /保存期间候选编辑已变化/)
+  ok('a slow protective save cannot adopt a later candidate edit')
+}
+{
+  const props3 = vue.shallowReactive({ controller: fakeController, planId: 'p1', detail: detail(), disabled: false, profileEpoch: 1, sessionEpoch: 2 })
+  const panel3 = mod.exports.default.setup(props3, { expose() {}, emit: () => {} })
+  await panel3.refreshBatch()
+  const c1 = panel3.candidates.value.find((item) => item.candidate_id === 'c1')
+  let releaseSave
+  saveGate = new Promise((resolve) => { releaseSave = resolve })
+  saveMode = 'unchanged'
+  panel3.regenerateInstructions.value = { c1: '点击时的要求' }
+  const beforeColumns = calls.filter((item) => item.kind === 'columns').length
+  const flow = panel3.regenerateCandidate(c1)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  panel3.regenerateInstructions.value = { c1: '保存期间改变的要求' }
+  releaseSave()
+  await flow
+  saveGate = null
+  assert.equal(calls.filter((item) => item.kind === 'columns').length, beforeColumns)
+  assert.match(panel3.error.value, /保存期间定向要求已变化/)
+  ok('a slow protective save cannot regenerate with later instruction text')
+}
+
+
+{
+  const props4 = vue.shallowReactive({ controller: fakeController, planId: 'p1', detail: detail(), disabled: false, profileEpoch: 1, sessionEpoch: 2 })
+  const panel4 = mod.exports.default.setup(props4, { expose() {}, emit: () => {} })
+  await panel4.refreshBatch()
+  const c1 = panel4.candidates.value.find((item) => item.candidate_id === 'c1')
+  const c2 = panel4.candidates.value.find((item) => item.candidate_id === 'c2')
+  panel4.selectedKeys.value = ['c1:games', 'c2:key_week_focus']
+  panel4.setEditField(c1, 'slot.collective_1.name', '采用 c1 的名字')
+  panel4.setEditField(c2, 'text', 'c2 保留的手改')
+  await panel4.adoptCandidates([c1])
+  assert.equal(panel4.candidateEditDirty(c2), true)
+  assert.equal(panel4.editField(c2, 'text'), 'c2 保留的手改')
+  assert.ok(panel4.selectedKeys.value.includes('c2:key_week_focus'))
+  assert.equal(panel4.candidateEditDirty(c1), false)
+  ok('adopting one same-batch candidate keeps the other edits and selection')
+}
+{
+  const props5 = vue.shallowReactive({ controller: fakeController, planId: 'p1', detail: detail(), disabled: false, profileEpoch: 1, sessionEpoch: 2 })
+  const panel5 = mod.exports.default.setup(props5, { expose() {}, emit: () => {} })
+  await panel5.refreshBatch()
+  const c1 = panel5.candidates.value.find((item) => item.candidate_id === 'c1')
+  panel5.selectedKeys.value = ['c1:games']
+  malformedAdoptShape = 'null-selections'
+  const before = calls.filter((item) => item.kind === 'adopt').length
+  await panel5.adoptCandidates([c1])
+  assert.equal(calls.filter((item) => item.kind === 'adopt').length, before + 1)
+  assert.ok(panel5.pendingAdopt.value)
+  assert.match(panel5.error.value, /回执与当前请求不一致/)
+  panel5.pendingAdopt.value = null
+  malformedAdoptShape = ''
+  ok('an HTTP 200 null selections receipt keeps the pending ticket')
+}
+{
+  const props6 = vue.shallowReactive({ controller: fakeController, planId: 'p1', detail: detail(), disabled: false, profileEpoch: 1, sessionEpoch: 2 })
+  const panel6 = mod.exports.default.setup(props6, { expose() {}, emit: () => {} })
+  await panel6.refreshBatch()
+  const c1 = panel6.candidates.value.find((item) => item.candidate_id === 'c1')
+  panel6.selectedKeys.value = ['c1:games']
+  malformedAdoptShape = 'missing-draft'
+  await panel6.adoptCandidates([c1])
+  assert.ok(panel6.pendingAdopt.value)
+  assert.match(panel6.error.value, /回执与当前请求不一致/)
+  panel6.pendingAdopt.value = null
+  malformedAdoptShape = ''
+  ok('an HTTP 200 receipt without draft keeps the pending ticket')
+}
+
+assert.match(source, /前往重点区域/)
+assert.match(source, /刷新来源预览/)
+assert.match(source, /日计划/)
+assert.match(compiled, /materialsFocusReady/)
+ok('panel source gates materials on live focus and exposes a concrete focus-area action')
+
 assert.equal(source.includes('v-html'), false)
 assert.equal(source.includes('JSON.stringify'), false)
 ok('panel source interpolates teacher text without v-html or JSON dump')

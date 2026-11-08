@@ -30,6 +30,7 @@ from app.local import (
 from app.local.errors import (
     LocalAiNotFound,
     LocalAiOperationNotFound,
+    LocalError,
     LocalStorageError,
     LocalValidationError,
     LocalVersionConflict,
@@ -43,12 +44,28 @@ from app.local.models import (
 )
 from app.local.normalize import normalize_request_id
 from app.local.prompt_bundles import canonical_json
-from app.local.tx import begin_immediate, read_scope, rollback
+from app.local.tx import begin_immediate, read_scope
 
 OP = "listening_ai_adopt"
 ADOPTION_TTL_SECONDS = 600
 MAX_TOKENS = 64
 TEXT_TARGETS = ("overall_evaluation", "support_strategy")
+
+
+class ListeningAIAdoptionCommitUncertain(LocalError):
+    """The adoption write may have committed but its result was not confirmed."""
+
+    code = "LISTENING_AI_ADOPTION_COMMIT_UNCERTAIN"
+    status_code = 503
+    message = "倾听 AI 采用提交结果不确定，请用原请求核对回执"
+
+
+def _safe_rollback(session: Session) -> None:
+    """Best-effort cleanup; a rollback failure must not mask the real result."""
+    try:
+        session.rollback()
+    except Exception:  # noqa: BLE001 - preserve the primary exception
+        pass
 
 
 def _digest(value: Any) -> str:
@@ -151,6 +168,27 @@ def _current_targets(session: Session, profile_id: str, inp: LocalAIInput) -> tu
     if domain is None:
         raise LocalStorageError("倾听领域缺失")
     groups = sorted(domain["groups"], key=lambda item: item["position"])
+    if inp.task_type == listening_ai_contracts.TASK_GOAL:
+        return dto, {"goal": (domain.get("goal") or "").strip()}
+    if inp.task_type == listening_ai_contracts.TASK_GROUP:
+        positions = [
+            int(item["position"])
+            for item in dict(inp.payload_json or {}).get("groups") or []
+        ]
+        by_position = {
+            int(group["position"]): group for group in groups
+        }
+        current = {}
+        for position in positions:
+            group = by_position.get(position)
+            if group is None:
+                raise LocalStorageError("倾听图位缺失")
+            current[
+                listening_ai_contracts.group_note_target_key(
+                    inp.listening_domain, position
+                )
+            ] = (group.get("listening_text") or "").strip()
+        return dto, current
     group_text = None
     if inp.listening_group_id:
         group = next(
@@ -226,6 +264,50 @@ def preview(
                 "current": current["listening_text"],
             }
             targets = ["listening_text"]
+        elif candidate.task_type == listening_ai_contracts.TASK_GOAL:
+            proposed = {
+                "goal": raw.get("goal") or "",
+                "uncertainties": list(raw.get("uncertainties") or []),
+                "current": current["goal"],
+            }
+            targets = ["goal"]
+        elif candidate.task_type == listening_ai_contracts.TASK_GROUP:
+            input_positions = [
+                int(item["position"])
+                for item in dict(inp.payload_json or {}).get("groups") or []
+            ]
+            by_position = {
+                int(item["position"]): item for item in raw.get("groups") or []
+            }
+            if set(by_position) != set(input_positions):
+                raise LocalStorageError("倾听 AI 多图位候选与输入不一致")
+            proposed = {
+                "groups": [
+                    {
+                        "target": listening_ai_contracts.group_note_target_key(
+                            inp.listening_domain, position
+                        ),
+                        "position": position,
+                        "text": by_position[position].get("text") or "",
+                        "uncertainties": list(
+                            by_position[position].get("uncertainties") or []
+                        ),
+                        "current": current.get(
+                            listening_ai_contracts.group_note_target_key(
+                                inp.listening_domain, position
+                            ),
+                            "",
+                        ),
+                    }
+                    for position in input_positions
+                ]
+            }
+            targets = [
+                listening_ai_contracts.group_note_target_key(
+                    inp.listening_domain, position
+                )
+                for position in input_positions
+            ]
         else:
             by_id = {
                 item["item_id"]: item for item in raw.get("items") or []
@@ -295,6 +377,49 @@ def preview(
     }
 
 
+def group_note_updates(
+    *,
+    domain: str,
+    input_positions: Sequence[int],
+    groups: Sequence[Mapping[str, Any]],
+    selected: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Pure mapping from validated group-note selections to patch updates.
+
+    Only positions that were actually sent can be adopted, and each target is
+    resolved back to the current group id by position.  Unselected positions
+    never appear in the result.
+    """
+    target_positions = {
+        listening_ai_contracts.group_note_target_key(
+            domain, int(position)
+        ): int(position)
+        for position in input_positions
+    }
+    by_position = {
+        int(group["position"]): group for group in groups
+    }
+    updates: list[dict[str, Any]] = []
+    for item in selected:
+        target = str(item["target"])
+        position = target_positions.get(target)
+        if position is None:
+            raise LocalValidationError("多图位正文采用目标不属于候选")
+        group = by_position.get(position)
+        if group is None:
+            raise LocalStorageError("倾听图位缺失")
+        updates.append(
+            {
+                "target": target,
+                "position": position,
+                "group_id": str(group["group_id"]),
+                "value": str(item["value"]).strip(),
+            }
+        )
+    updates.sort(key=lambda update: update["position"])
+    return updates
+
+
 def _selections(task_type: str, selections: object) -> list[dict[str, Any]]:
     if not isinstance(selections, list) or not selections:
         raise LocalValidationError("请选择至少一个采用目标")
@@ -312,6 +437,23 @@ def _selections(task_type: str, selections: object) -> list[dict[str, Any]]:
             value = item.get("value")
             if not isinstance(value, str) or len(value) > 20_000:
                 raise LocalValidationError("倾听正文不合法")
+            result.append({"target": target, "value": value})
+        elif task_type == listening_ai_contracts.TASK_GOAL:
+            if target != "goal" or set(item) != {"target", "value"}:
+                raise LocalValidationError("观察目标采用目标不合法")
+            value = item.get("value")
+            if (
+                not isinstance(value, str)
+                or len(value) > listening_ai_contracts.MAX_GOAL
+            ):
+                raise LocalValidationError("观察目标不合法")
+            result.append({"target": target, "value": value})
+        elif task_type == listening_ai_contracts.TASK_GROUP:
+            if set(item) != {"target", "value"}:
+                raise LocalValidationError("多图位正文采用目标不合法")
+            value = item.get("value")
+            if not isinstance(value, str) or len(value) > 20_000:
+                raise LocalValidationError("多图位正文不合法")
             result.append({"target": target, "value": value})
         elif target in TEXT_TARGETS:
             if set(item) != {"target", "value"}:
@@ -450,6 +592,7 @@ def adopt(
                 raise LocalValidationError("采用目标已被修改，请重新预览")
     patch: dict[str, Any] = {}
     adopted: list[dict[str, Any]] = []
+    group_updates: list[dict[str, Any]] = []
     before_hashes: dict[str, str] = {}
     after_hashes: dict[str, str] = {}
     if task_type == listening_ai_contracts.TASK_NOTE:
@@ -469,6 +612,43 @@ def adopt(
             item["value"].strip()
         )
         adopted.append({"target": "listening_text", "value": item["value"].strip()})
+    elif task_type == listening_ai_contracts.TASK_GOAL:
+        item = selected[0]
+        patch = {"goal": item["value"].strip() or None}
+        before_hashes["goal"] = payload["target_hashes"]["goal"]
+        after_hashes["goal"] = listening_ai_contracts.value_hash(
+            item["value"].strip()
+        )
+        adopted.append({"target": "goal", "value": item["value"].strip()})
+    elif task_type == listening_ai_contracts.TASK_GROUP:
+        input_positions = [
+            int(group["position"])
+            for group in dict(inp.payload_json or {}).get("groups") or []
+        ]
+        updates = group_note_updates(
+            domain=inp.listening_domain,
+            input_positions=input_positions,
+            groups=dto["groups"],
+            selected=selected,
+        )
+        patch_groups: list[dict[str, Any]] = []
+        for update in updates:
+            text = update["value"]
+            patch_groups.append(
+                {
+                    "group_id": update["group_id"],
+                    "listening_text": text or None,
+                }
+            )
+            before_hashes[update["target"]] = payload["target_hashes"][
+                update["target"]
+            ]
+            after_hashes[update["target"]] = listening_ai_contracts.value_hash(
+                text
+            )
+            adopted.append(dict(update))
+            group_updates.append(dict(update))
+        patch["groups"] = patch_groups
     else:
         evaluation: dict[str, int | None] = {}
         for item in selected:
@@ -495,11 +675,12 @@ def adopt(
     if not patch:
         raise LocalValidationError("没有可采用的字段")
     now = ai_task_service._now()
-    begin_immediate(session)
+    commit_started = False
     try:
+        begin_immediate(session)
         existing = _receipt(session, profile_id, rid)
         if existing is not None:
-            rollback(session)
+            _safe_rollback(session)
             replay = dict(existing.result_json or {})
             if existing.operation_kind != OP or existing.request_fingerprint != fingerprint:
                 raise LocalValidationError("同一请求已用于不同倾听 AI 采用")
@@ -512,7 +693,22 @@ def adopt(
             raise LocalVersionConflict(
                 details={"current_revision": dto_now["revision"]}
             )
-        scope_key = inp.listening_group_id or "__domain__"
+        if task_type == listening_ai_contracts.TASK_GROUP:
+            by_position_now = {
+                int(group["position"]): group for group in dto_now["groups"]
+            }
+            for item in adopted:
+                group_now = by_position_now.get(int(item["position"]))
+                if (
+                    group_now is None
+                    or group_now["group_id"] != item["group_id"]
+                ):
+                    raise LocalValidationError(
+                        "倾听图文组已变化，请重新预览"
+                    )
+            scope_key = "__group_notes__"
+        else:
+            scope_key = inp.listening_group_id or "__domain__"
         for item in selected:
             target = item["target"]
             existing_adoption = session.scalars(
@@ -549,6 +745,8 @@ def adopt(
             "adopted": adopted,
             "replayed": False,
         }
+        if task_type == listening_ai_contracts.TASK_GROUP:
+            result["group_updates"] = group_updates
         operation_id = new_opaque_id()
         session.add(
             LocalAIOperation(
@@ -594,10 +792,13 @@ def adopt(
                 revision_after=revision_after,
                 now=now,
             )
+        commit_started = True
         session.commit()
         return result
-    except BaseException:
-        rollback(session)
+    except BaseException as exc:
+        _safe_rollback(session)
+        if commit_started:
+            raise ListeningAIAdoptionCommitUncertain() from exc
         raise
 
 
@@ -669,4 +870,10 @@ def read_operation(
         }
 
 
-__all__ = ["OP", "adopt", "preview", "reset_tokens"]
+__all__ = [
+    "ListeningAIAdoptionCommitUncertain",
+    "OP",
+    "adopt",
+    "preview",
+    "reset_tokens",
+]

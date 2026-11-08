@@ -16,9 +16,12 @@ from app.local.errors import LocalAiInputTooLarge, LocalStorageError
 from app.local.listening_ai_contracts import (
     INPUT_SCHEMA_VERSION,
     TASK_DOMAIN,
+    TASK_GOAL,
+    TASK_GROUP,
     TASK_NOTE,
     TASK_TYPES,
     ListeningAIContractError,
+    group_note_target_key as listening_group_note_target_key,
     validate_input,
     value_hash,
 )
@@ -84,6 +87,7 @@ def _prepare_ai_image(payload: bytes, metadata: dict[str, Any]) -> dict[str, Any
                 "height": int(working.height),
                 "source_hash": prepared["source_sha256"],
                 "orientation": prepared.get("orientation"),
+                "rotation_quarters": prepared.get("rotation_quarters", 0),
             }
     except LocalAiInputTooLarge:
         raise
@@ -120,6 +124,7 @@ def _read_photo(
         "width": prepared["width"],
         "height": prepared["height"],
         "orientation": prepared["orientation"],
+        "rotation_quarters": prepared.get("rotation_quarters", 0),
         "source_bytes": len(payload),
         "work_bytes": len(prepared["data"]),
         **({"data": prepared["data"]} if include_data else {}),
@@ -213,6 +218,10 @@ def project(
         raise ListeningAIContractError("倾听小组任务缺少 group_id")
     if task_type == TASK_DOMAIN and group_id is not None:
         raise ListeningAIContractError("领域评价任务不得绑定小组")
+    if task_type == TASK_GROUP and group_id is not None:
+        raise ListeningAIContractError("多图位整理不得绑定单个小组")
+    if task_type == TASK_GOAL and group_id is not None:
+        raise ListeningAIContractError("观察目标不得绑定单个小组")
     dto, domain_dto, template = _load(
         session, profile_id, record_id, domain
     )
@@ -226,6 +235,20 @@ def project(
         selected_groups = [group for group in groups if group["group_id"] == group_id]
         if len(selected_groups) != 1:
             raise LocalStorageError("倾听小组不存在")
+    elif task_type == TASK_GROUP:
+        selected_groups = [group for group in groups if group.get("asset_id")]
+        if not 1 <= len(selected_groups) <= 3:
+            raise ListeningAIContractError("本领域没有可发送的有效照片图位")
+    elif task_type == TASK_GOAL:
+        selected_groups = [
+            group
+            for group in groups
+            if group.get("asset_id") or (group.get("listening_text") or "").strip()
+        ]
+        if not 1 <= len(selected_groups) <= 3:
+            raise ListeningAIContractError(
+                "本领域没有可发送的已保存文字或照片材料"
+            )
     stored = stored_photos or {}
     for group in selected_groups:
         current_asset = group.get("asset_id")
@@ -285,6 +308,110 @@ def project(
             "template_sha256": template.sha256,
             "photos": photos,
             "photo_only": payload["photo_only"],
+            "source_revision": dto["revision"],
+        }
+    elif task_type == TASK_GROUP:
+        payload_groups = []
+        for group in selected_groups:
+            photo = photo_by_group.get(group["group_id"])
+            if photo is None:
+                raise ListeningAIContractError("倾听图片来源已变化")
+            payload_groups.append(
+                {
+                    "position": int(group["position"]),
+                    "work_date": (group.get("work_date") or "").strip() or None,
+                    "listening_text": (
+                        group.get("listening_text") or ""
+                    ).strip()
+                    or None,
+                    "photo": _wire_photo(photo),
+                }
+            )
+        payload = {
+            "schema_version": INPUT_SCHEMA_VERSION,
+            "mode": "group_notes",
+            "domain": domain,
+            "domain_label": listening_templates.DOMAIN_LABELS[domain],
+            "grade": dto["grade"],
+            "grade_label": listening_templates.GRADE_LABELS[dto["grade"]],
+            "template_version": template.version,
+            "template_sha256": template.sha256,
+            "groups": payload_groups,
+        }
+        target_hashes = {
+            listening_group_note_target_key(domain, int(group["position"])): value_hash(
+                (group.get("listening_text") or "").strip()
+            )
+            for group in selected_groups
+        }
+        dependencies = {
+            "wire_schema_version": AI_SCHEMA_VERSION,
+            "internal_schema_version": AI_SCHEMA_VERSION,
+            "record_id": record_id,
+            "domain": domain,
+            "group_id": None,
+            "group_positions": [
+                int(group["position"]) for group in selected_groups
+            ],
+            "template_version": template.version,
+            "template_sha256": template.sha256,
+            "photos": photos,
+            "source_revision": dto["revision"],
+        }
+    elif task_type == TASK_GOAL:
+        payload_groups = []
+        for group in selected_groups:
+            photo = photo_by_group.get(group["group_id"])
+            payload_groups.append(
+                {
+                    "position": int(group["position"]),
+                    "work_date": (group.get("work_date") or "").strip() or None,
+                    "listening_text": (
+                        group.get("listening_text") or ""
+                    ).strip()
+                    or None,
+                    "photo": _wire_photo(photo),
+                }
+            )
+        payload_items = [
+            {
+                "item_id": item.item_id,
+                "level1": item.level1,
+                "level2": item.level2,
+                "requirement": item.requirement,
+                "standards": dict(item.standards),
+            }
+            for item in template.items
+        ]
+        goal = (domain_dto.get("goal") or "").strip() or None
+        payload = {
+            "schema_version": INPUT_SCHEMA_VERSION,
+            "mode": "goal_suggest",
+            "domain": domain,
+            "domain_label": listening_templates.DOMAIN_LABELS[domain],
+            "grade": dto["grade"],
+            "grade_label": listening_templates.GRADE_LABELS[dto["grade"]],
+            "template_version": template.version,
+            "template_sha256": template.sha256,
+            "goal": goal,
+            "groups": payload_groups,
+            "items": payload_items,
+        }
+        target_hashes = {
+            "goal": value_hash(goal or ""),
+        }
+        dependencies = {
+            "wire_schema_version": AI_SCHEMA_VERSION,
+            "internal_schema_version": AI_SCHEMA_VERSION,
+            "record_id": record_id,
+            "domain": domain,
+            "group_id": None,
+            "group_positions": [
+                int(group["position"]) for group in selected_groups
+            ],
+            "template_version": template.version,
+            "template_sha256": template.sha256,
+            "photos": photos,
             "source_revision": dto["revision"],
         }
     else:
@@ -414,6 +541,28 @@ def revalidate_source(session: Session, task: Any) -> bool:
         return False
     if task.task_type == TASK_DOMAIN and len(photos) > MAX_DOMAIN_PHOTOS:
         return False
+    if task.task_type == TASK_GROUP:
+        positions = [
+            int(group["position"])
+            for group in dict(inp.payload_json or {}).get("groups") or []
+        ]
+        if (
+            not 1 <= len(positions) <= MAX_DOMAIN_PHOTOS
+            or len(photos) != len(positions)
+            or deps.get("group_positions") != positions
+        ):
+            return False
+    if task.task_type == TASK_GOAL:
+        positions = [
+            int(group["position"])
+            for group in dict(inp.payload_json or {}).get("groups") or []
+        ]
+        if (
+            not 1 <= len(positions) <= MAX_DOMAIN_PHOTOS
+            or len(photos) > MAX_DOMAIN_PHOTOS
+            or deps.get("group_positions") != positions
+        ):
+            return False
     return True
 
 

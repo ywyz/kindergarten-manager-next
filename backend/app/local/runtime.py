@@ -446,6 +446,15 @@ class LocalRuntime:
         # Set when the package prompt-bundle sync fails at startup: only the AI
         # prompt endpoints consult it, so the manual path stays fully usable.
         self.prompt_sync_error: str | None = None
+        # Installed by the app factory: after a restore swaps the database
+        # family, the verified prompt-package cache must be checked and
+        # re-applied to the restored heads.  The callback records its own
+        # status and never blocks reopen.
+        self.prompt_package_restore_hook: object | None = None
+        self.prompt_package_service: object | None = None
+        # Until a verified package cache is applied, a brand-new profile must
+        # seed from the build's built-in defaults.
+        self.prompt_package_builtin_only: bool = True
         # Set by the startup restore resolver before migrations/prompt sync.
         self.restore_notice: dict | None = None
         # Fixed per-app weekly export manager and its (launch, scope) binding.
@@ -1113,6 +1122,12 @@ class LocalRuntime:
             self._rotate_weekly_tokens()
             self._invalidate_weekly_attempts()
             self._sync_prompt_bundles_best_effort()
+            hook = self.prompt_package_restore_hook
+            if callable(hook):
+                try:
+                    hook()
+                except Exception:  # noqa: BLE001 - package failure never blocks reopen
+                    pass
             return inspection
         except BaseException:
             self._session_factory = None

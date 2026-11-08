@@ -25,9 +25,14 @@ def build_d1_app(
     session_token: str,
     frontend_dir: str | Path | None = None,
     executor: object | None = None,
+    prompt_package_client_version: str | None = None,
 ) -> FastAPI:
     app = create_local_app(
-        port=port, session_token=session_token, runtime=runtime, executor=executor
+        port=port,
+        session_token=session_token,
+        runtime=runtime,
+        executor=executor,
+        prompt_package_client_version=prompt_package_client_version,
     )
     dist = Path(frontend_dir).resolve() if frontend_dir else d1_paths.frontend_dist()
     index = dist / "d1.html"

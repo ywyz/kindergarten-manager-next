@@ -41,6 +41,36 @@ CONTEXT_KINDS = ("area", "outdoor", "special_room")
 GRADES = ("small", "middle", "large")
 TARGETS = ("games", *contracts.COLUMN_FIELDS, "materials")
 TASK_TARGETS = dict(contracts.TASK_TARGETS)
+GRADE_LABELS = {"small": "小班", "middle": "中班", "large": "大班"}
+WEEKLY_STAGE = "kindergarten"
+WEEKLY_STAGE_LABEL = "幼儿园"
+WEEKLY_AGE_GUIDANCE = (
+    "本任务属于幼儿园周计划；所有活动、表述、材料和家园建议必须符合本班幼儿"
+    "年龄适宜性，避免小学化、中学化、考试、作业或学科训练场景。"
+)
+
+
+def _weekly_context(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Program-owned minimal week context from the validated raw manifest.
+
+    It intentionally carries no profile/class/term IDs, teacher names or other
+    internal identifiers; only the kindergarten stage, class grade, term bounds
+    and the current Monday-Sunday week range.
+    """
+    anchor = date.fromisoformat(raw["week_anchor_date"])
+    grade = raw["header"]["grade"]
+    return {
+        "stage": WEEKLY_STAGE,
+        "stage_label": WEEKLY_STAGE_LABEL,
+        "grade": grade,
+        "grade_label": GRADE_LABELS[grade],
+        "term_start": raw["term_start"],
+        "term_end": raw["term_end"],
+        "week_number": raw["week_number"],
+        "week_start": anchor.isoformat(),
+        "week_end": (anchor + timedelta(days=6)).isoformat(),
+        "age_guidance": WEEKLY_AGE_GUIDANCE,
+    }
 
 RAW_KEYS = frozenset(
     {
@@ -1142,6 +1172,7 @@ def _games_payload(
         "schema_version": 1,
         "task_type": "weekly_games_select",
         "grade": raw["header"]["grade"],
+        "weekly_context": _weekly_context(raw),
         "days": days,
         "config": _config_payload(raw["game_config"], config_handles),
     }
@@ -1176,6 +1207,7 @@ def _focus_payload(raw: Mapping[str, Any], content: Mapping[str, Any]) -> dict:
         "schema_version": 1,
         "task_type": "weekly_key_week_focus",
         "grade": raw["header"]["grade"],
+        "weekly_context": _weekly_context(raw),
         "theme": content["theme"],
         "days": days,
         "teacher_text": content["weekly_columns"]["key_week_focus"],
@@ -1194,6 +1226,7 @@ def _environment_payload(
         "schema_version": 1,
         "task_type": "weekly_environment_setup",
         "grade": raw["header"]["grade"],
+        "weekly_context": _weekly_context(raw),
         "theme": content["theme"],
         "selection": _selected_payload(selected, handles),
         "config": _config_payload(config, config_handles),
@@ -1228,6 +1261,7 @@ def _habit_payload(raw: Mapping[str, Any], content: Mapping[str, Any]) -> dict:
         "schema_version": 1,
         "task_type": "weekly_habit_culture",
         "grade": raw["header"]["grade"],
+        "weekly_context": _weekly_context(raw),
         "theme": content["theme"],
         "days": days,
         "teacher_text": content["weekly_columns"]["habit_culture"],
@@ -1270,6 +1304,7 @@ def _home_payload(
         "schema_version": 1,
         "task_type": "weekly_home_cooperation",
         "grade": raw["header"]["grade"],
+        "weekly_context": _weekly_context(raw),
         "theme": content["theme"],
         "group_activities": group_activities,
         "teacher_entered": teacher_entered,
@@ -1299,6 +1334,7 @@ def _materials_payload(
         "schema_version": 1,
         "task_type": "weekly_materials_generate",
         "grade": raw["header"]["grade"],
+        "weekly_context": _weekly_context(raw),
         "selection": _material_selected_payload(
             selected_basis, handles, ref_to_handle
         ),
@@ -1664,10 +1700,218 @@ def target_hash(content: Mapping[str, Any], target: object) -> str:
     ).hexdigest()
 
 
+REVISION_INSTRUCTION_MAX_CHARS = 500
+REQUEST_EXTRA_KEYS = frozenset({"base_candidate", "revision_instruction"})
+
+
+def minimal_candidate_value(target: str, candidate_value: Mapping[str, Any]) -> dict:
+    """Original suggestion as a minimal text body, without local source ids."""
+    value = dict(candidate_value)
+    if target in contracts.COLUMN_FIELDS:
+        text = value.get("text")
+        if not isinstance(text, str):
+            _fail("原候选栏目正文不可用", "base_candidate.text")
+        return {"text": text}
+    if target == "materials":
+        items = value.get("items")
+        if not isinstance(items, list):
+            _fail("原候选材料项不可用", "base_candidate.items")
+        result = []
+        for index, item in enumerate(items):
+            if not isinstance(item, Mapping):
+                _fail("原候选材料项不可用", f"base_candidate.items[{index}]")
+            text = item.get("text")
+            origin = item.get("origin")
+            if not isinstance(text, str) or not isinstance(origin, str):
+                _fail("原候选材料项不可用", f"base_candidate.items[{index}]")
+            result.append({"text": text, "origin": origin})
+        return {"items": result}
+    if target != "games":
+        _fail("target 非法", "target")
+    slots = value.get("outdoor_game_slots")
+    if not isinstance(slots, Mapping):
+        _fail("原候选游戏槽不可用", "base_candidate.outdoor_game_slots")
+    minimal_slots: dict[str, Any] = {}
+    for key in contracts.OUTDOOR_KEYS:
+        item = slots.get(key)
+        if not isinstance(item, Mapping):
+            minimal_slots[key] = None
+            continue
+        minimal_slots[key] = {
+            "name": item.get("name"),
+            "shared_objectives": item.get("shared_objectives") or "",
+            "guidance_points": item.get("guidance_points") or "",
+            "focus_guidance": item.get("focus_guidance") or "",
+        }
+    focus = value.get("focus_area")
+    minimal_focus = None
+    if isinstance(focus, Mapping):
+        minimal_focus = {
+            "name": focus.get("name"),
+            "objectives": focus.get("objectives") or "",
+            "guidance": focus.get("guidance") or "",
+            "support_strategy": focus.get("support_strategy") or "",
+        }
+    return {
+        "outdoor_game_slots": minimal_slots,
+        "focus_area": minimal_focus,
+    }
+
+
+def validate_base_candidate(task_type: str, value: object) -> dict:
+    """Validate the minimal original suggestion by task and legal fields."""
+    if task_type not in contracts.TASK_TARGETS:
+        _fail("base_candidate task_type 不合法", "base_candidate.task_type")
+    if not isinstance(value, Mapping):
+        _fail("base_candidate 必须是对象", "base_candidate")
+    data = dict(value)
+    target = contracts.TASK_TARGETS[task_type]
+    if target in contracts.COLUMN_FIELDS:
+        if set(data) != {"text"}:
+            _fail("base_candidate 栏目字段不合法", "base_candidate")
+        contracts._text(
+            data.get("text"),
+            "base_candidate.text",
+            maximum=contracts.MAX_AI_TEXT_CHARS,
+            nonempty=True,
+        )
+        return data
+    if target == "materials":
+        if set(data) != {"items"}:
+            _fail("base_candidate 材料字段不合法", "base_candidate")
+        items = data.get("items")
+        if not isinstance(items, list) or len(items) > contracts.MAX_MATERIAL_ITEMS:
+            _fail("base_candidate.items 不合法", "base_candidate.items")
+        total = 0
+        for index, item in enumerate(items):
+            path = f"base_candidate.items[{index}]"
+            if not isinstance(item, Mapping) or set(item) != {"text", "origin"}:
+                _fail("base_candidate 材料项字段不合法", path)
+            text = contracts._text(
+                item.get("text"),
+                f"{path}.text",
+                maximum=contracts.MAX_MATERIAL_ITEM_TEXT,
+                nonempty=True,
+            )
+            if item.get("origin") not in ("extracted", "suggested"):
+                _fail("base_candidate 材料项 origin 不合法", f"{path}.origin")
+            total += len(text) + (1 if index else 0)
+        if total > contracts.MAX_MATERIAL_SYNTHESIS:
+            _fail("base_candidate 材料正文超限", "base_candidate.items")
+        return data
+    if target != "games":
+        _fail("base_candidate target 不合法", "base_candidate")
+    if set(data) != {"outdoor_game_slots", "focus_area"}:
+        _fail("base_candidate 游戏字段不合法", "base_candidate")
+    slots = data.get("outdoor_game_slots")
+    if not isinstance(slots, Mapping) or set(slots) != set(contracts.OUTDOOR_KEYS):
+        _fail("base_candidate 游戏槽不合法", "base_candidate.outdoor_game_slots")
+    names: set[str] = set()
+    for key in contracts.OUTDOOR_KEYS:
+        item = slots.get(key)
+        path = f"base_candidate.outdoor_game_slots.{key}"
+        if item is None:
+            continue
+        if not isinstance(item, Mapping) or set(item) != {
+            "name",
+            "shared_objectives",
+            "guidance_points",
+            "focus_guidance",
+        }:
+            _fail("base_candidate 游戏槽字段不合法", path)
+        name = contracts._text(
+            item.get("name"),
+            f"{path}.name",
+            maximum=contracts.MAX_NAME_CHARS,
+            nonempty=True,
+        )
+        if key in ("collective_1", "collective_2"):
+            if name in names:
+                _fail("base_candidate 集体游戏名称重复", path)
+            names.add(name)
+        for field in ("shared_objectives", "guidance_points", "focus_guidance"):
+            contracts._text(
+                item.get(field),
+                f"{path}.{field}",
+                maximum=contracts.MAX_AI_TEXT_CHARS,
+            )
+    focus = data.get("focus_area")
+    if focus is not None:
+        if not isinstance(focus, Mapping) or set(focus) != {
+            "name",
+            "objectives",
+            "guidance",
+            "support_strategy",
+        }:
+            _fail("base_candidate 重点区域字段不合法", "base_candidate.focus_area")
+        contracts._text(
+            focus.get("name"),
+            "base_candidate.focus_area.name",
+            maximum=contracts.MAX_NAME_CHARS,
+            nonempty=True,
+        )
+        for field in ("objectives", "guidance", "support_strategy"):
+            contracts._text(
+                focus.get(field),
+                f"base_candidate.focus_area.{field}",
+                maximum=contracts.MAX_AI_TEXT_CHARS,
+            )
+    return data
+
+
+def _normalize_request_extras(
+    *,
+    base_candidate: object,
+    revision_instruction: object,
+    task_type: str | None = None,
+) -> tuple[dict | None, str | None]:
+    base = dict(base_candidate) if isinstance(base_candidate, Mapping) else base_candidate
+    if base is not None and not isinstance(base, dict):
+        _fail("base_candidate 必须是对象", "base_candidate")
+    if revision_instruction is None:
+        instruction = None
+    elif not isinstance(revision_instruction, str):
+        _fail("revision_instruction 必须是字符串", "revision_instruction")
+    else:
+        instruction = revision_instruction.strip() or None
+        if instruction is not None and len(instruction) > REVISION_INSTRUCTION_MAX_CHARS:
+            _fail("revision_instruction 超过长度上限", "revision_instruction")
+    if instruction is not None and base is None:
+        _fail("定向修改要求必须绑定原候选", "revision_instruction")
+    if base is not None:
+        if task_type is None:
+            _fail("base_candidate 缺少任务类型", "base_candidate")
+        validate_base_candidate(task_type, base)
+    return base, instruction
+
+
+def _with_request_extras(
+    payload: dict[str, Any],
+    base_candidate: object,
+    revision_instruction: object,
+    *,
+    task_type: str | None = None,
+) -> dict[str, Any]:
+    base, instruction = _normalize_request_extras(
+        base_candidate=base_candidate,
+        revision_instruction=revision_instruction,
+        task_type=task_type,
+    )
+    result = dict(payload)
+    if base is not None:
+        result["base_candidate"] = copy.deepcopy(base)
+    if instruction is not None:
+        result["revision_instruction"] = instruction
+    return result
+
+
 def project_weekly_input(
     task_type: object,
     raw_manifest: Mapping[str, Any],
     saved_content: Mapping[str, Any],
+    *,
+    base_candidate: object = None,
+    revision_instruction: object = None,
 ) -> ProjectedWeeklyInput:
     """Project one frozen weekly task input from A's raw manifest."""
     if task_type not in contracts.TASK_TARGETS:
@@ -1758,6 +2002,9 @@ def project_weekly_input(
     business = build_business_dependency_view(dependencies)
     if set(business) != set(BUSINESS_DEPENDENCY_KEYS):
         _fail("dependencies 业务键不匹配", "dependencies")
+    payload = _with_request_extras(
+        payload, base_candidate, revision_instruction, task_type=task_type
+    )
     if _size(payload) > MAX_PAYLOAD_BYTES:
         _fail("模型 payload 超过 1MiB", "payload", code="WEEKLY_CONTENT_TOO_LARGE")
     if _size(dependencies) > MAX_DEPENDENCIES_BYTES:
@@ -2033,8 +2280,13 @@ def _stored_raw_like(
             "end": calendar["window_end"],
             "days": copy.deepcopy(calendar["days"]),
         }
+    source_manifest = frozen["source_manifest"]
     return {
-        "header": {"grade": frozen["source_manifest"]["header"]["grade"]},
+        "header": {"grade": source_manifest["header"]["grade"]},
+        "week_anchor_date": source_manifest["week_anchor_date"],
+        "week_number": source_manifest["week_number"],
+        "term_start": source_manifest["term_start"],
+        "term_end": source_manifest["term_end"],
         "days": [by_date[key] for key in sorted(by_date)],
         "game_config": _stored_config_from_basis(business.get("config"), frozen),
         "calendar_window": calendar_window,
@@ -2210,6 +2462,17 @@ def _stored_payload_compare(
     if _size(actual) > MAX_PAYLOAD_BYTES:
         _stored_fail("存储输入 payload 超限", "payload")
     expected_copy = copy.deepcopy(dict(expected))
+    if "weekly_context" not in actual:
+        # Backward compatibility: inputs persisted before the program-owned
+        # week context was introduced have no weekly_context key.  They must
+        # still validate against the exact legacy payload, and the stored
+        # shape is returned unchanged so receipt/candidate chain comparisons
+        # remain identical.  A present context is always checked exactly.
+        legacy_expected = copy.deepcopy(expected_copy)
+        legacy_expected.pop("weekly_context", None)
+        if _canonical(actual) != _canonical(legacy_expected):
+            _stored_fail("存储输入 payload 与投影不一致", "payload")
+        return copy.deepcopy(actual)
     if _canonical(actual) != _canonical(expected_copy):
         _stored_fail("存储输入 payload 与投影不一致", "payload")
     return expected_copy
@@ -2353,6 +2616,17 @@ def _validate_stored_weekly_input_impl(
     expected_business = build_business_dependency_view(expected_dependencies)
     if _canonical(expected_business) != _canonical(business):
         _stored_fail("存储输入 dependencies 与投影不一致", "dependencies")
+    stored_extras = {
+        key: dict(payload).get(key)
+        for key in REQUEST_EXTRA_KEYS
+        if isinstance(payload, Mapping) and key in payload
+    }
+    expected_payload = _with_request_extras(
+        expected_payload,
+        stored_extras.get("base_candidate"),
+        stored_extras.get("revision_instruction"),
+        task_type=task_type,
+    )
     expected_payload = _stored_payload_compare(
         task_type=task_type,
         payload=payload,

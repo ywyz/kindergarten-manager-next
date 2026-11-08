@@ -304,6 +304,21 @@ def _normalize_class_games(change: dict) -> dict:
     }
 
 
+def normalize_class_games_candidate(value: dict) -> dict:
+    """Validate an AI-extracted class-games candidate with the real rules.
+
+    The candidate has no ``kind`` envelope; this wrapper adds it only for the
+    shared normalizer, then returns the flat three-field candidate the editor
+    and the existing preview/apply path already understand.
+    """
+    normalized = _normalize_class_games({"kind": "class_games", **value})
+    return {
+        "locations": normalized["locations"],
+        "game_scope": normalized["game_scope"],
+        "guidance": normalized["guidance"],
+    }
+
+
 def _game_payload(normalized: dict) -> dict:
     """Build the immutable stored game payload from a normalized change.
 

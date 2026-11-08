@@ -12,13 +12,22 @@
  * - the initial load is guarded: fields are disabled until their first read
  *   completes, so a late initial response cannot overwrite user text;
  * - the config secret is cleared only when it still equals the submitted one;
- * - a close freeze disables all inputs and mutating methods.
+ * - a close freeze disables all inputs and mutating methods;
+ * - the prompt-package card is read/manual-check only: it never blocks manual
+ *   work and an unconfigured source performs no network.
  */
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, apiPatch, apiPost, ApiError, pathSegment } from '../client'
 import { queryAiReceipt, receiptMessage, isIndeterminate } from '../operations'
-import type { AiConfig, Prompt, PromptDefault, PromptList, TaskType } from '../types'
+import type {
+  AiConfig,
+  Prompt,
+  PromptDefault,
+  PromptList,
+  PromptPackageStatus,
+  TaskType,
+} from '../types'
 import { TASK_TYPE_LABELS, TASK_TYPES, displayFieldLabel } from '../ai'
 
 const props = defineProps<{ frozen?: boolean }>()
@@ -59,6 +68,93 @@ const busy = ref('')
 const errorText = ref('')
 const messageText = ref('')
 const pendingWrites = ref<PendingWrite[]>([])
+const promptPackage = ref<PromptPackageStatus | null>(null)
+const promptPackageChecking = ref(false)
+let promptLoadSeq = 0
+let promptLoadInFlight: Promise<void> | null = null
+
+const PROMPT_PACKAGE_LABELS: Record<string, string> = {
+  unconfigured: '来源未配置',
+  idle: '待检查',
+  checking: '正在检查',
+  updated: '已更新',
+  no_update: '已是最新',
+  package: '使用已验证功能包',
+  builtin: '使用内置文字',
+  cache_missing: '缓存缺失',
+  cache_invalid: '缓存校验失败',
+  cache_stale: '缓存序号过旧',
+  cache_reused: '已恢复缓存包',
+  offline: '网络不可用',
+  invalid: '校验失败',
+  incompatible: '版本不兼容',
+  rollback_rejected: '已拒绝旧包',
+  sequence_conflict: '序号冲突',
+  identity_conflict: '内容冲突',
+  rejected: '未启用',
+  failed: '启用失败',
+}
+
+function promptPackageStateLabel(): string {
+  const value = promptPackage.value
+  if (!value) return '正在读取…'
+  return PROMPT_PACKAGE_LABELS[value.state] ?? value.state
+}
+
+function promptPackageVersionText(): string {
+  const value = promptPackage.value
+  if (!value) return ''
+  if (value.active_source !== 'package' || value.release_sequence === null) {
+    return '内置文字'
+  }
+  return `功能包 r${value.release_sequence}`
+}
+
+async function loadPromptPackage(): Promise<void> {
+  try {
+    promptPackage.value = await apiGet<PromptPackageStatus>(
+      '/api/local/ai/prompt-package',
+    )
+  } catch (err) {
+    errorText.value =
+      err instanceof ApiError
+        ? err.message
+        : `读取提示词功能包状态失败：${String(err)}`
+  }
+}
+
+async function checkPromptPackage(): Promise<void> {
+  if (guard() || promptPackageChecking.value) return
+  promptPackageChecking.value = true
+  errorText.value = ''
+  messageText.value = ''
+  const beforeSequence = promptPackage.value?.release_sequence ?? null
+  const beforeActiveSource = promptPackage.value?.active_source ?? null
+  try {
+    const next = await apiPost<PromptPackageStatus>(
+      '/api/local/ai/prompt-package/check',
+    )
+    promptPackage.value = next
+    // A package update or cache fallback changes the server-side effective
+    // default.  Re-read the prompts once through the existing merge path;
+    // unsaved edits win, viewed defaults and unresolved receipts are left
+    // untouched.
+    if (
+      next.release_sequence !== beforeSequence ||
+      next.active_source !== beforeActiveSource
+    ) {
+      await loadPrompts(true)
+    }
+    ElMessage.info(next.message)
+  } catch (err) {
+    errorText.value =
+      err instanceof ApiError
+        ? err.message
+        : `检查提示词更新失败：${String(err)}`
+  } finally {
+    promptPackageChecking.value = false
+  }
+}
 
 function promptFor(taskType: TaskType): Prompt | null {
   return prompts.value.find((prompt) => prompt.task_type === taskType) ?? null
@@ -95,6 +191,39 @@ const promptsDirty = computed(() => {
   return false
 })
 
+/** Structured blocking targets for the settings shell (never parsed text). */
+function draftTargets(): string[] {
+  const targets: string[] = []
+  const pendingKeys = pendingWrites.value.map((write) => write.key)
+  const busyKey = busy.value
+  const promptBusy =
+    busyKey.startsWith('prompt-') ||
+    busyKey.startsWith('default-') ||
+    busyKey.startsWith('accept-') ||
+    busyKey.startsWith('reject-') ||
+    busyKey.startsWith('adapt-')
+  const configBusy = busyKey === 'config' || busyKey === 'clear'
+  if (
+    configDirty.value ||
+    configBusy ||
+    pendingKeys.some((key) => key === 'config' || key === 'clear')
+  ) {
+    targets.push('ai-config')
+  }
+  if (
+    promptsDirty.value ||
+    promptBusy ||
+    pendingKeys.some((key) =>
+      ['prompt-', 'default-', 'accept-', 'reject-', 'adapt-'].some((prefix) =>
+        key.startsWith(prefix),
+      ),
+    )
+  ) {
+    targets.push('ai-prompts')
+  }
+  return targets
+}
+
 const draftActive = computed(
   () => configDirty.value || promptsDirty.value || busy.value !== '' || pendingWrites.value.length > 0,
 )
@@ -126,34 +255,48 @@ async function loadConfig(): Promise<void> {
   }
 }
 
-/** Load the three prompts, preserving unsent guidance edits (R08). */
-async function loadPrompts(): Promise<void> {
-  try {
-    const data = await apiGet<PromptList>('/api/local/ai/prompts')
-    prompts.value = data.items
-    const nextLive: Record<string, Record<string, string>> = { ...promptGuides.value }
-    const nextConfirmed: Record<string, Record<string, string>> = { ...confirmedGuides.value }
-    for (const prompt of data.items) {
-      const serverMap = guidanceFromPrompt(prompt)
-      const live = promptGuides.value[prompt.task_type]
-      const confirmed = confirmedGuides.value[prompt.task_type]
-      if (!live || !confirmed) {
-        nextLive[prompt.task_type] = { ...serverMap }
-      } else {
-        const merged = { ...live }
-        for (const key of Object.keys(serverMap)) {
-          if ((live[key] ?? '') === (confirmed[key] ?? '')) merged[key] = serverMap[key]
-          else if (!(key in live)) merged[key] = serverMap[key]
+/** Load the prompts, preserving unsent guidance edits (R08). */
+async function loadPrompts(force = false): Promise<void> {
+  if (!force && promptLoadInFlight) return promptLoadInFlight
+  const seq = ++promptLoadSeq
+  const task = (async () => {
+    try {
+      const data = await apiGet<PromptList>('/api/local/ai/prompts')
+      // A newer load (for example the one started after a package update) owns
+      // the state; a late older response must not overwrite it.
+      if (seq !== promptLoadSeq) return
+      prompts.value = data.items
+      const nextLive: Record<string, Record<string, string>> = { ...promptGuides.value }
+      const nextConfirmed: Record<string, Record<string, string>> = { ...confirmedGuides.value }
+      for (const prompt of data.items) {
+        const serverMap = guidanceFromPrompt(prompt)
+        const live = promptGuides.value[prompt.task_type]
+        const confirmed = confirmedGuides.value[prompt.task_type]
+        if (!live || !confirmed) {
+          nextLive[prompt.task_type] = { ...serverMap }
+        } else {
+          const merged = { ...live }
+          for (const key of Object.keys(serverMap)) {
+            if ((live[key] ?? '') === (confirmed[key] ?? '')) merged[key] = serverMap[key]
+            else if (!(key in live)) merged[key] = serverMap[key]
+          }
+          nextLive[prompt.task_type] = merged
         }
-        nextLive[prompt.task_type] = merged
+        nextConfirmed[prompt.task_type] = { ...serverMap }
       }
-      nextConfirmed[prompt.task_type] = { ...serverMap }
+      promptGuides.value = nextLive
+      confirmedGuides.value = nextConfirmed
+      promptsLoaded.value = true
+    } catch (err) {
+      if (seq !== promptLoadSeq) return
+      errorText.value = err instanceof ApiError ? err.message : `读取指导设置失败：${String(err)}`
     }
-    promptGuides.value = nextLive
-    confirmedGuides.value = nextConfirmed
-    promptsLoaded.value = true
-  } catch (err) {
-    errorText.value = err instanceof ApiError ? err.message : `读取指导设置失败：${String(err)}`
+  })()
+  promptLoadInFlight = task
+  try {
+    await task
+  } finally {
+    if (promptLoadInFlight === task) promptLoadInFlight = null
   }
 }
 
@@ -558,10 +701,14 @@ onMounted(() => {
     configDirty: () => configDirty.value,
     promptsDirty: () => promptsDirty.value,
     draftActive: () => draftActive.value,
+    draftTargets: () => draftTargets(),
     pendingWrites: () => pendingWrites.value.map((write) => ({ key: write.key, requestId: write.body.request_id })),
     errorText: () => errorText.value,
     messageText: () => messageText.value,
     prompts: () => prompts.value,
+    promptPackage: () => promptPackage.value,
+    promptPackageChecking: () => promptPackageChecking.value,
+    checkPromptPackage: () => checkPromptPackage(),
     promptGuide: (taskType: TaskType) => promptGuides.value[taskType] ?? {},
     confirmedGuide: (taskType: TaskType) => confirmedGuides.value[taskType] ?? {},
     defaults: (taskType: TaskType) => defaults.value[taskType] ?? null,
@@ -585,18 +732,46 @@ onMounted(() => {
     queryWrite: (key: string) => queryWrite(key),
     resubmitWrite: (key: string) => resubmitWrite(key),
     discardDrafts: () => discardDrafts(),
-    reload: () => Promise.all([loadConfig(), loadPrompts()]),
+    reload: () =>
+      Promise.all([loadConfig(), loadPrompts(), loadPromptPackage()]),
   }
   void loadConfig()
   void loadPrompts()
+  void loadPromptPackage()
 })
 
 onBeforeUnmount(() => {
   // The component is gone (leaving was only allowed when nothing was pending):
-  // release the parent's draft flag.
+  // release the parent's draft flag and ignore a late prompt read.
+  promptLoadSeq += 1
   emit('draft-active', false)
   delete (window as unknown as { __d1AiSettings?: object }).__d1AiSettings
 })
+/** Prefer the matching unresolved receipt, then the region/control itself. */
+function focusDraftTarget(kind: string): void {
+  const prefixes = kind === 'ai-prompts'
+    ? ['prompt-', 'default-', 'accept-', 'reject-', 'adapt-']
+    : ['config', 'clear']
+  const receipt = Array.from(
+    document.querySelectorAll('[data-d1="ai-pending-write"]'),
+  ).find((card) => {
+    const key = card.getAttribute('data-ai-write-key') ?? ''
+    return prefixes.some((prefix) =>
+      prefix.endsWith('-') ? key.startsWith(prefix) : key === prefix,
+    )
+  })
+  const selector =
+    kind === 'ai-prompts' ? '[data-d1="ai-prompts"]' : '[data-d1="ai-base-url"]'
+  const element =
+    (receipt as HTMLElement | undefined) ??
+    (document.querySelector(selector) as HTMLElement | null)
+  if (!element) return
+  element.scrollIntoView?.({ block: 'center' })
+  if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
+  element.focus?.()
+}
+
+defineExpose({ draftTargets, focusDraftTarget })
 </script>
 
 <template>
@@ -628,13 +803,58 @@ onBeforeUnmount(() => {
         配置版本 v{{ config.ai_config_version }} · 密钥已保存：{{ config.has_secret ? '是' : '否' }}
       </span>
     </div>
-    <el-card v-for="write in pendingWrites" :key="write.key" shadow="never" class="pending-card" data-d1="ai-pending-write">
+    <el-card v-for="write in pendingWrites" :key="write.key" shadow="never" class="pending-card" data-d1="ai-pending-write" :data-ai-write-key="write.key">
       <span class="muted">未决写入：{{ write.label }}（请求 {{ String(write.body.request_id).slice(0, 8) }}…）</span>
       <div class="row">
         <el-button size="small" type="warning" @click="queryWrite(write.key)">查询提交结果</el-button>
         <el-button size="small" type="danger" @click="resubmitWrite(write.key)">重试原提交（同一请求）</el-button>
       </div>
     </el-card>
+  </el-card>
+
+  <el-card class="section" shadow="never" data-d1="ai-prompt-package">
+    <template #header>提示词功能包（默认指导）</template>
+    <p class="muted">
+      只更新程序已登记任务的默认指导文字；输入输出结构、周计划栏目、图片、模型、预算和权限仍由程序固定。
+      有个人修改的字段沿用个人文字；已开始的任务继续使用开始时的版本。
+    </p>
+    <div class="row" data-d1="ai-prompt-package-status">
+      <el-tag size="small" :type="promptPackage?.configured ? 'success' : 'info'">
+        {{ promptPackageStateLabel() }}
+      </el-tag>
+      <span class="muted">{{ promptPackageVersionText() }}</span>
+      <span v-if="promptPackage?.published_at" class="muted">
+        发布于 {{ promptPackage.published_at }}
+      </span>
+      <span v-if="promptPackage?.last_checked_at" class="muted">
+        最近检查 {{ promptPackage.last_checked_at }}
+      </span>
+    </div>
+    <p v-if="promptPackage?.notes" class="muted" data-d1="ai-prompt-package-notes">
+      变更说明：{{ promptPackage.notes }}
+    </p>
+    <p class="muted" data-d1="ai-prompt-package-message">
+      {{ promptPackage?.message ?? '正在读取提示词功能包状态…' }}
+    </p>
+    <p v-if="promptPackage && !promptPackage.configured" class="muted">
+      当前源码未配置正式发布来源；检查操作不会发起网络请求，继续使用内置或已验证文字。
+    </p>
+    <p v-else-if="promptPackage?.package_tasks.length" class="muted">
+      本包快照 {{ promptPackage.package_tasks.length }} 项，其中
+      {{ promptPackage.allowed_tasks.length }} 项有可更新文字。
+    </p>
+    <div class="row">
+      <el-button
+        type="primary"
+        size="small"
+        data-d1="ai-prompt-package-check"
+        :loading="promptPackageChecking"
+        :disabled="frozen || promptPackageChecking"
+        @click="checkPromptPackage"
+      >
+        检查提示词更新
+      </el-button>
+    </div>
   </el-card>
 
   <el-card class="section" shadow="never" data-d1="ai-prompts">

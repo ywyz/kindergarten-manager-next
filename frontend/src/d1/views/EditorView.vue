@@ -18,10 +18,13 @@ import {
   ref,
 } from 'vue'
 import { ElMessage } from 'element-plus'
-import { apiGet, apiPatch, apiPost, ApiError, pathSegment } from '../client'
+import { apiGet, apiPatch, apiPost, apiPostWithStatus, ApiError, pathSegment } from '../client'
+import { queryAiReceipt, receiptMessage, isIndeterminate } from '../operations'
 import {
   buildSavePayload,
   baselineFromPlan,
+  contentProjection,
+  normalizeRaw,
   applyServerIdentity,
   isDirty as isDirtyFormula,
   markTemp,
@@ -35,7 +38,7 @@ import {
   type PlanContentForm,
 } from '../../daily-plan-content'
 import type { AdoptedContent } from '../../types'
-import type { DailyPlan, Grade, LocalContext } from '../types'
+import type { AiTask, DailyPlan, Grade, LocalContext, TaskType } from '../types'
 import type { SaveOutcome, BlockingDraft } from '../leave'
 import ExportDialog from './ExportDialog.vue'
 import AiTaskPanel from './AiTaskPanel.vue'
@@ -85,6 +88,27 @@ interface IndeterminateState {
   submitted: string
 }
 
+interface DraftCreateUnknown {
+  planDate: string
+  /** Canonical JSON of the create payload. */
+  submitted: string
+  /** Form captured at submit time for identity backfill. */
+  submittedForm: PlanContentForm
+  /** Configuration version used by the original create request. */
+  expectedConfigVersion: number | null
+  /** Set after an explicit original-content retry returned CONFIG_VERSION_CONFLICT. */
+  configConflict: boolean
+  /** Latest configuration version reported by that conflict, when supplied. */
+  latestConfigVersion: number | null
+  /** Version sent by the latest explicit recovery attempt; pinned after an unknown result. */
+  sentConfigVersion: number | null
+}
+
+interface DraftBaseline {
+  raw: string
+  content: string
+}
+
 type Phase =
   | 'loading'
   | 'ready'
@@ -102,6 +126,11 @@ const plan = ref<DailyPlan | null>(null)
 const form = ref<PlanContentForm>(emptyContentForm())
 const rawLessonPlan = ref('')
 const baseline = ref<EditorBaseline | null>(null)
+const draftActive = ref(false)
+const draftBaseline = ref<DraftBaseline | null>(null)
+const draftCreateUnknown = ref<DraftCreateUnknown | null>(null)
+const draftRecoveryBusy = ref(false)
+const editorKey = ref('')
 const errorText = ref('')
 const locked = ref(false)
 const composing = ref(false)
@@ -114,6 +143,18 @@ const exportOpen = ref(false)
 const candidateOpen = ref(false)
 const candidateId = ref('')
 const candidateDraftActive = ref(false)
+/** #16: ordinary daily candidates render beside their own editing region. */
+const candidateInline = ref(false)
+const candidateInlineTarget = ref<HTMLElement | null>(null)
+/**
+ * #19: anchors for the three daily-plan AI actions. The single AiTaskPanel
+ * keeps task state/polling; its per-type rows are teleported beside the raw
+ * lesson input, the collective-activity process and the other-activity area.
+ */
+const splitTarget = ref<HTMLElement | null>(null)
+const processTarget = ref<HTMLElement | null>(null)
+const otherTarget = ref<HTMLElement | null>(null)
+const reflectionTarget = ref<HTMLElement | null>(null)
 /** D3-A: history dialog and its restore write protection. */
 const historyOpen = ref(false)
 const historyBusy = ref(false)
@@ -121,8 +162,16 @@ const historySettling = ref(false)
 const conflictNotice = ref('')
 
 let inFlight: Promise<SaveResult> | null = null
+let draftReconcileSeq = 0
 
 const dirty = computed(() => {
+  if (draftActive.value) {
+    if (!draftBaseline.value) return false
+    return (
+      normalizeRaw(rawLessonPlan.value) !== draftBaseline.value.raw ||
+      contentProjection(form.value) !== draftBaseline.value.content
+    )
+  }
   if (!baseline.value) return false
   return isDirtyFormula(form.value, rawLessonPlan.value, baseline.value)
 })
@@ -168,16 +217,127 @@ function touchEpoch(): void {
   editEpoch.value += 1
 }
 
-function applyPlan(next: DailyPlan): void {
+function applyPlan(next: DailyPlan, options: { preserveEditorKey?: boolean } = {}): void {
   plan.value = next
   form.value = serverToForm(next.content.adopted_content)
   rawLessonPlan.value = next.content.raw_lesson_plan ?? ''
   baseline.value = baselineFromPlan(next)
+  draftActive.value = false
+  draftBaseline.value = null
+  draftCreateUnknown.value = null
+  if (!options.preserveEditorKey) editorKey.value = next.id
   conflict.value = null
   conflictNotice.value = ''
   indeterminate.value = null
   errorText.value = ''
   phase.value = 'ready'
+}
+
+function startDraft(): void {
+  plan.value = null
+  form.value = emptyContentForm()
+  rawLessonPlan.value = ''
+  baseline.value = null
+  draftActive.value = true
+  draftBaseline.value = {
+    raw: '',
+    content: contentProjection(form.value),
+  }
+  draftCreateUnknown.value = null
+  editorKey.value = `draft:${props.planDate}`
+  conflict.value = null
+  conflictNotice.value = ''
+  indeterminate.value = null
+  errorText.value = ''
+  phase.value = 'ready'
+}
+
+function stableContent(value: unknown): string {
+  const walk = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(walk)
+    if (!input || typeof input !== 'object') return input
+    const output: Record<string, unknown> = {}
+    for (const key of Object.keys(input as Record<string, unknown>).sort()) {
+      // Server-issued group/game ids and in-memory temp keys are not content
+      // differences; a legal id backfill must not look like another draft.
+      if (key === 'group_id' || key === 'game_id' || key === '_tmp') continue
+      output[key] = walk((input as Record<string, unknown>)[key])
+    }
+    return output
+  }
+  return JSON.stringify(walk(value))
+}
+
+function submittedDraftPayload(state: DraftCreateUnknown): {
+  raw_lesson_plan: string
+  adopted_content: AdoptedContent
+} {
+  return JSON.parse(state.submitted) as {
+    raw_lesson_plan: string
+    adopted_content: AdoptedContent
+  }
+}
+
+function draftConfigReady(state: DraftCreateUnknown): boolean {
+  if (!state.configConflict) return true
+  const contextVersion = props.context.config_version
+  if (typeof contextVersion !== 'number') return false
+  if (state.latestConfigVersion !== null) return contextVersion >= state.latestConfigVersion
+  return contextVersion !== state.expectedConfigVersion
+}
+
+function serverMatchesDraftSubmission(server: DailyPlan, state: DraftCreateUnknown): boolean {
+  const submitted = submittedDraftPayload(state)
+  return (
+    normalizeRaw(server.content.raw_lesson_plan) === normalizeRaw(submitted.raw_lesson_plan) &&
+    stableContent(server.content.adopted_content) === stableContent(submitted.adopted_content)
+  )
+}
+
+function liveMatchesDraftSubmission(state: DraftCreateUnknown): boolean {
+  const submitted = submittedDraftPayload(state)
+  return (
+    normalizeRaw(rawLessonPlan.value) === normalizeRaw(submitted.raw_lesson_plan) &&
+    JSON.stringify(form.value) === JSON.stringify(state.submittedForm)
+  )
+}
+
+function applyConfirmedDraft(server: DailyPlan, state: DraftCreateUnknown): void {
+  if (liveMatchesDraftSubmission(state)) {
+    applyPlan(server, { preserveEditorKey: true })
+    ElMessage.success('已确认服务端创建了本次草稿')
+    return
+  }
+  // The receipt rebases only the original submitted create. Later text,
+  // structure and temporary-key positions stay live; only server-issued group
+  // and game ids are backfilled onto the still-matching temporary objects.
+  applyServerBaselineKeepingInput(server)
+  applyServerIdentity(form.value, state.submittedForm, server.content.adopted_content)
+  draftActive.value = false
+  draftBaseline.value = null
+  draftCreateUnknown.value = null
+  indeterminate.value = null
+  conflict.value = null
+  errorText.value = '已确认创建；核对前后的新输入仍保留，请再次保存'
+  phase.value = 'ready'
+  ElMessage.success('已确认服务端创建了本次草稿')
+  ElMessage.warning('核对期间的新输入仍保留，请再次保存')
+}
+
+function enterExistingCreateConflict(existing: DailyPlan, notice: string): void {
+  plan.value = existing
+  baseline.value = baselineFromPlan(existing)
+  draftActive.value = false
+  draftBaseline.value = null
+  draftCreateUnknown.value = null
+  indeterminate.value = null
+  conflict.value = {
+    attemptedVersion: existing.current_content_version,
+    server: existing,
+  }
+  conflictNotice.value = notice
+  errorText.value = ''
+  phase.value = 'conflict'
 }
 
 function applyServerBaselineKeepingInput(next: DailyPlan): void {
@@ -190,11 +350,20 @@ async function load(): Promise<void> {
   errorText.value = ''
   try {
     if (props.initialMode === 'create') {
-      const created = await apiPost<DailyPlan>('/api/daily-plans', {
-        plan_date: props.planDate,
-        expected_config_version: props.context.config_version,
-      })
-      applyPlan(created)
+      try {
+        const existing = await apiGet<DailyPlan>(
+          `/api/daily-plans/by-date?date=${encodeURIComponent(props.planDate)}`,
+        )
+        applyPlan(existing)
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          startDraft()
+          return
+        }
+        errorText.value =
+          err instanceof ApiError ? err.message : `读取日计划失败：${String(err)}`
+        phase.value = 'failed'
+      }
       return
     }
     const found = props.planId
@@ -279,7 +448,9 @@ async function saveCurrent(): Promise<SaveOutcome> {
     const result = await inFlight
     return result.status
   }
-  if (!plan.value || !baseline.value) return 'failed'
+  if (draftCreateUnknown.value || draftRecoveryBusy.value) return 'indeterminate'
+  if (!draftActive.value && (!plan.value || !baseline.value)) return 'failed'
+  if (draftActive.value && !draftBaseline.value) return 'failed'
   if (conflict.value) return 'conflict'
   if (indeterminate.value) {
     // The result of the previous submission is still unverified: a normal
@@ -307,7 +478,93 @@ async function runGuardedSave(): Promise<SaveResult> {
   return performSave()
 }
 
+async function performCreate(): Promise<SaveResult> {
+  const snapshotEpoch = editEpoch.value
+  const submittedForm = JSON.parse(JSON.stringify(form.value)) as PlanContentForm
+  const payload = buildSavePayload(form.value, rawLessonPlan.value)
+  const submitted = JSON.stringify(payload)
+  locked.value = true
+  phase.value = 'saving'
+  try {
+    const response = await apiPostWithStatus<DailyPlan>('/api/daily-plans', {
+      plan_date: props.planDate,
+      raw_lesson_plan: payload.raw_lesson_plan,
+      adopted_content: payload.adopted_content,
+      expected_config_version: props.context.config_version,
+    })
+    if (response.status === 200) {
+      // Another writer already created the same day. Keep the local form and
+      // server identity for an explicit compare/discard/resubmit decision;
+      // never present the other version as this draft's successful save.
+      enterExistingCreateConflict(
+        response.data,
+        '同日计划已在其他窗口创建：本地输入已保留，请比较服务端内容后选择放弃本地或基于最新版本重新提交。',
+      )
+      return { status: 'conflict', message: conflictNotice.value }
+    }
+    const created = response.data
+    if (editEpoch.value === snapshotEpoch) {
+      applyPlan(created, { preserveEditorKey: true })
+    } else {
+      // Late input during the create: keep the live form, adopt the server
+      // baseline and backfill only submitted temporary identities.
+      applyServerBaselineKeepingInput(created)
+      applyServerIdentity(form.value, submittedForm, created.content.adopted_content)
+      draftActive.value = false
+      draftBaseline.value = null
+      draftCreateUnknown.value = null
+      conflict.value = null
+      indeterminate.value = null
+      errorText.value = ''
+      phase.value = 'ready'
+    }
+    return { status: 'saved', version: created.current_content_version }
+  } catch (err) {
+    if (err instanceof ApiError) {
+      if (err.code === 'CONFIG_VERSION_CONFLICT') {
+        emit('refresh-context')
+        errorText.value = '配置已更新：请重新读取当前日期状态后再保存，当前输入已保留'
+        phase.value = 'save_failed'
+        return { status: 'failed', message: errorText.value }
+      }
+      if (err.status === 0) {
+        draftCreateUnknown.value = {
+          planDate: props.planDate,
+          submitted,
+          submittedForm: JSON.parse(JSON.stringify(submittedForm)) as PlanContentForm,
+          expectedConfigVersion: props.context.config_version,
+          configConflict: false,
+          latestConfigVersion: null,
+          sentConfigVersion: null,
+        }
+        errorText.value = '创建结果待核对：请先读取同日计划，不会自动重发'
+        phase.value = 'save_failed'
+        return { status: 'indeterminate', message: err.message }
+      }
+      errorText.value = err.message
+      phase.value = 'save_failed'
+      return { status: 'failed', message: err.message }
+    }
+    draftCreateUnknown.value = {
+      planDate: props.planDate,
+      submitted,
+      submittedForm: JSON.parse(JSON.stringify(submittedForm)) as PlanContentForm,
+      expectedConfigVersion: props.context.config_version,
+      configConflict: false,
+      latestConfigVersion: null,
+      sentConfigVersion: null,
+    }
+    errorText.value = '创建结果待核对：请先读取同日计划，不会自动重发'
+    phase.value = 'save_failed'
+    return { status: 'indeterminate', message: String(err) }
+  } finally {
+    locked.value = false
+  }
+}
+
 async function performSave(): Promise<SaveResult> {
+  if (draftActive.value) return performCreate()
+  if (!plan.value || !baseline.value) return { status: 'failed' }
   const current = plan.value!
   const expectedVersion = current.current_content_version
   locked.value = true
@@ -444,7 +701,123 @@ async function resubmitWithLatest(): Promise<void> {
   }
 }
 
+function requestLatestConfig(): void {
+  if (props.frozen) return
+  errorText.value = '正在重新读取最新配置；不会发送新的创建请求'
+  emit('refresh-context')
+}
+
+async function resubmitDraftCreate(): Promise<void> {
+  const state = draftCreateUnknown.value
+  if (!state || draftRecoveryBusy.value || locked.value || props.frozen) return
+  const generation = ++draftReconcileSeq
+  const contextVersion = props.context.config_version
+  let sendVersion: number | null
+  if (!state.configConflict) {
+    sendVersion = state.expectedConfigVersion
+  } else if (state.sentConfigVersion !== null) {
+    // An explicit attempt under a new version returned unknown. Pin the
+    // version that was actually sent; later context movement must not drift
+    // until a fresh explicit CONFIG_VERSION_CONFLICT arrives.
+    sendVersion = state.sentConfigVersion
+  } else {
+    if (!draftConfigReady(state)) {
+      errorText.value =
+        '最新配置尚未读取完成：原提交内容与当前输入仍保留，请点击“重新读取最新配置”，读取完成后再提交；不会自动重发'
+      return
+    }
+    sendVersion = contextVersion
+  }
+  draftRecoveryBusy.value = true
+  try {
+    const submitted = submittedDraftPayload(state)
+    const response = await apiPostWithStatus<DailyPlan>('/api/daily-plans', {
+      plan_date: state.planDate,
+      raw_lesson_plan: submitted.raw_lesson_plan,
+      adopted_content: submitted.adopted_content,
+      expected_config_version: sendVersion,
+    })
+    if (generation !== draftReconcileSeq || draftCreateUnknown.value !== state) return
+    if (response.status === 200) {
+      // create-or-open returned an existing same-day record. It is this
+      // attempt only when the actual saved draft matches the original
+      // submission (server-issued ids ignored); otherwise compare explicitly.
+      if (serverMatchesDraftSubmission(response.data, state)) {
+        applyConfirmedDraft(response.data, state)
+      } else {
+        enterExistingCreateConflict(
+          response.data,
+          '同日计划已存在：原提交内容与当前输入均保留，请比较服务端内容后选择。',
+        )
+      }
+      return
+    }
+    applyConfirmedDraft(response.data, state)
+  } catch (err) {
+    if (generation !== draftReconcileSeq || draftCreateUnknown.value !== state) return
+    if (err instanceof ApiError && err.code === 'CONFIG_VERSION_CONFLICT') {
+      const latest = err.details?.config_version
+      draftCreateUnknown.value = {
+        ...state,
+        configConflict: true,
+        latestConfigVersion: typeof latest === 'number' ? latest : null,
+        sentConfigVersion: null,
+      }
+      emit('refresh-context')
+      errorText.value =
+        '配置已更新：原提交内容与当前输入仍保留；请点击“重新读取最新配置”，读取完成后再点击“按原提交内容重新创建”，不会自动重发'
+    } else if (err instanceof ApiError) {
+      if (err.status === 0) {
+        if (state.configConflict) {
+          draftCreateUnknown.value = { ...state, sentConfigVersion: sendVersion }
+        }
+        errorText.value =
+          '恢复请求结果仍未确认：原提交与当前输入均保留，不会自动重发'
+      } else {
+        errorText.value = err.message
+      }
+    } else {
+      if (state.configConflict) {
+        draftCreateUnknown.value = { ...state, sentConfigVersion: sendVersion }
+      }
+      errorText.value =
+        '恢复请求结果仍未确认：原提交与当前输入均保留，不会自动重发'
+    }
+  } finally {
+    draftRecoveryBusy.value = false
+  }
+}
+
 async function reconcileIndeterminate(): Promise<void> {
+  const draftState = draftCreateUnknown.value
+  if (draftState) {
+    if (draftRecoveryBusy.value) return
+    const generation = ++draftReconcileSeq
+    try {
+      const server = await apiGet<DailyPlan>(
+        `/api/daily-plans/by-date?date=${encodeURIComponent(draftState.planDate)}`,
+      )
+      if (generation !== draftReconcileSeq || draftCreateUnknown.value !== draftState) return
+      if (server.plan_date === draftState.planDate && serverMatchesDraftSubmission(server, draftState)) {
+        applyConfirmedDraft(server, draftState)
+        return
+      }
+      enterExistingCreateConflict(
+        server,
+        '同日计划已存在且内容与本次未确认的创建不同：本地输入已保留，请比较后选择。',
+      )
+    } catch (err) {
+      if (generation !== draftReconcileSeq || draftCreateUnknown.value !== draftState) return
+      if (err instanceof ApiError && err.status === 404) {
+        errorText.value =
+          '尚未查到同日计划：原始创建请求仍保留，不会自动重发；可使用“按原提交内容重新创建”'
+        return
+      }
+      errorText.value =
+        err instanceof ApiError ? err.message : `读取同日计划失败：${String(err)}`
+    }
+    return
+  }
   const state = indeterminate.value
   if (!state) return
   try {
@@ -560,31 +933,126 @@ const planGrade = computed<Grade>(() => (plan.value?.grade as Grade) ?? 'middle'
 const hasRaw = computed(() => rawLessonPlan.value.trim() !== '')
 const hasProcess = computed(() => form.value.group_activity.process.trim() !== '')
 
+// #27: the reflection task is independent from the three AiTaskPanel rows. The
+// teacher supplies the only evidence of what actually happened in class; the
+// saved plan remains a separate, read-only original arrangement.
+const REFLECTION_TASK_TYPE: TaskType = 'daily_reflection_generate'
+const reflectionMaterials = ref('')
+const reflectionTask = ref<AiTask | null>(null)
+const reflectionBusy = ref(false)
+const reflectionRequestActive = ref(false)
+const reflectionError = ref('')
+const reflectionQuerying = ref(false)
+const reflectionPending = ref<{
+  requestId: string
+  planId: string
+  body: Record<string, unknown>
+} | null>(null)
+
 let editorAlive = true
+let reflectionTaskEpoch = 0
+let reflectionRefreshSeq = 0
+
+function setReflectionTask(next: AiTask): void {
+  const previous = reflectionTask.value
+  if (
+    !previous
+    || previous.id !== next.id
+    || previous.candidate_id !== next.candidate_id
+    || previous.input_summary?.content_version
+      !== next.input_summary?.content_version
+  ) {
+    reflectionTaskEpoch += 1
+  }
+  reflectionTask.value = next
+  // A task replacement/refresh invalidates any older refresh still waiting.
+  reflectionRefreshSeq += 1
+}
+
+function reflectionTaskMatches(
+  task: AiTask,
+  planId: string,
+  body: Record<string, unknown>,
+): boolean {
+  return (
+    task.plan_id === planId
+    && task.task_type === REFLECTION_TASK_TYPE
+    && task.input_summary?.content_version === body.expected_content_version
+  )
+}
+
+interface CandidateOpenPin {
+  planId: string
+  taskId?: string
+  taskEpoch?: number
+  taskType?: TaskType
+  contentVersion?: number | null
+}
 
 /**
  * Open a candidate only after the current body is safely saved (R10): a
  * failed/indeterminate save, a new input during the save or a close freeze
  * means no preview/adopt may start. The candidate preview then re-previews
  * with the real saved version before adopting.
+ *
+ * ``pin`` binds the later preview to the exact task/candidate/plan/type and
+ * source generation observed when the teacher clicked. A task replaced while
+ * the pre-open save is in flight can therefore never open its stale candidate.
  */
-async function openCandidate(id: string): Promise<void> {
+async function openCandidate(
+  id: string,
+  taskType?: string,
+  force = false,
+  pin?: CandidateOpenPin,
+): Promise<void> {
+  if (pin && (!plan.value || plan.value.id !== pin.planId)) return
+  if (
+    pin
+    && (pin.taskType !== undefined && taskType !== pin.taskType
+      || pin.taskId !== undefined && reflectionTask.value?.id !== pin.taskId
+      || pin.taskEpoch !== undefined && reflectionTaskEpoch !== pin.taskEpoch)
+  ) {
+    return
+  }
   if (locked.value || props.frozen) {
     ElMessage.warning('窗口正在关闭或正在保存：暂不能打开候选')
+    return
+  }
+  if (!plan.value) {
+    ElMessage.warning('草稿尚未保存：请先保存并创建日计划后再使用候选')
     return
   }
   if (historyRestoreBlocked.value) {
     ElMessage.warning('历史恢复正在提交或结果待核对：暂不能打开候选')
     return
   }
-  if (candidateDraftActive.value) {
+  if (candidateDraftActive.value && !force) {
     ElMessage.warning('候选预览有未采用的编辑：请先处理当前候选')
     return
   }
   const planAtStart = plan.value?.id ?? ''
+  const epochAtStart = reflectionTaskEpoch
+  const pinStillCurrent = (): boolean => {
+    if (!pin) return true
+    return (
+      planAtStart === pin.planId
+      && plan.value?.id === pin.planId
+      && reflectionTaskEpoch === epochAtStart
+      && (pin.taskEpoch === undefined || reflectionTaskEpoch === pin.taskEpoch)
+      && (pin.taskId === undefined || reflectionTask.value?.id === pin.taskId)
+      && (pin.taskId === undefined || reflectionTask.value?.candidate_id === id)
+      && (pin.contentVersion == null
+        || reflectionTask.value?.input_summary?.content_version
+          === pin.contentVersion)
+    )
+  }
   const outcome = await saveCurrent()
   if (!editorAlive) return
   if (props.frozen || locked.value || plan.value?.id !== planAtStart) return
+  if (!pinStillCurrent()) {
+    ElMessage.warning('反思任务已更新：未打开旧候选，请重新打开当前候选')
+    return
+  }
   if (outcome !== 'saved' && outcome !== 'unchanged') {
     ElMessage.warning('正文未保存成功：请先处理保存结果再打开候选')
     return
@@ -595,8 +1063,242 @@ async function openCandidate(id: string): Promise<void> {
     ElMessage.warning('正文仍有未保存输入：请先保存后再打开候选')
     return
   }
+  if (!pinStillCurrent()) {
+    ElMessage.warning('反思任务已更新：未打开旧候选，请重新打开当前候选')
+    return
+  }
   candidateId.value = id
+  candidateInline.value =
+    taskType === 'daily_lesson_split' ||
+    taskType === 'daily_other_activities' ||
+    taskType === REFLECTION_TASK_TYPE
+  candidateInlineTarget.value =
+    taskType === 'daily_other_activities'
+      ? otherTarget.value
+      : taskType === REFLECTION_TASK_TYPE
+        ? reflectionTarget.value
+        : splitTarget.value
   candidateOpen.value = true
+}
+
+function reflectionStatusText(): string {
+  if (reflectionPending.value) {
+    return '反思任务提交结果尚未确定：当前反思与已保存版本保持不变，不会自动重发。'
+  }
+  const task = reflectionTask.value
+  if (!task) return ''
+  if (task.status === 'succeeded' && task.candidate_id) {
+    return `反思候选已生成（任务 ${task.id.slice(0, 8)}…）：尚未采用，当前反思与已保存版本保持不变。`
+  }
+  if (task.status === 'failed') return '反思生成失败：当前反思与已保存版本已保留，未自动重试。'
+  if (task.status === 'cancelled') return '反思生成已取消：当前反思与已保存版本已保留。'
+  if (task.status === 'outcome_unknown') {
+    return '反思生成结果未知：当前反思与已保存版本已保留，未自动重发；可查询原任务。'
+  }
+  return `反思任务已受理（${task.status}）：后台生成期间当前反思与已保存版本保持不变。`
+}
+
+async function submitReflectionBody(
+  planId: string,
+  requestId: string,
+  body: Record<string, unknown>,
+  preservePending = false,
+): Promise<void> {
+  reflectionRequestActive.value = true
+  try {
+    const created = await apiPost<AiTask>(
+      `/api/daily-plans/${pathSegment(planId)}/ai-tasks`,
+      body,
+    )
+    if (!editorAlive || !plan.value || plan.value.id !== planId) return
+    if (reflectionPending.value && reflectionPending.value.requestId !== requestId) {
+      return
+    }
+    if (!reflectionTaskMatches(created, planId, body)) {
+      reflectionPending.value = { requestId, planId, body }
+      reflectionError.value =
+        '反思任务回执与当前计划、任务类型或保存版本不一致：已保留原请求，请查询原回执核对'
+      return
+    }
+    reflectionPending.value = null
+    setReflectionTask(created)
+    reflectionError.value = ''
+  } catch (err) {
+    if (isIndeterminate(err)) {
+      reflectionPending.value = { requestId, planId, body }
+      reflectionError.value = preservePending
+        ? '原请求仍未确认：同键重试失败，已保留原票据；请查询原回执或再次重试'
+        : '反思任务提交结果未知：已保留原请求，当前反思与已保存版本未改变；请查询或按同一请求重试。'
+      return
+    }
+    if (preservePending && reflectionPending.value?.requestId === requestId) {
+      reflectionError.value =
+        '原请求仍未确认：同键重试失败，已保留原票据；请查询原回执或再次重试'
+      return
+    }
+    reflectionPending.value = null
+    reflectionError.value =
+      err instanceof ApiError ? err.message : `发起反思任务失败：${String(err)}`
+  } finally {
+    reflectionRequestActive.value = false
+  }
+}
+
+async function createReflectionTask(): Promise<void> {
+  if (reflectionBusy.value || reflectionPending.value) return
+  if (locked.value || props.frozen) {
+    reflectionError.value = '窗口正在关闭：未发起反思任务'
+    return
+  }
+  if (!plan.value) {
+    reflectionError.value = '草稿尚未保存：请先保存并创建日计划后再生成反思'
+    return
+  }
+  const materials = reflectionMaterials.value.trim()
+  if (materials === '') {
+    reflectionError.value = '请先填写活动实施材料：没有实施材料时不生成，避免编造已发生的课堂'
+    return
+  }
+  const planAtStart = plan.value.id
+  reflectionBusy.value = true
+  reflectionError.value = ''
+  try {
+    const outcome = await saveCurrent()
+    if (!editorAlive || plan.value?.id !== planAtStart) return
+    if (outcome !== 'saved' && outcome !== 'unchanged') {
+      reflectionError.value = '正文未保存成功：未发起反思任务，请先处理保存结果'
+      return
+    }
+    await nextTick()
+    if (!editorAlive || props.frozen || dirty.value || plan.value?.id !== planAtStart) {
+      reflectionError.value = '正文仍有未保存输入或窗口正在关闭：未发起反思任务'
+      return
+    }
+    const requestId = crypto.randomUUID()
+    const body = {
+      request_id: requestId,
+      task_type: REFLECTION_TASK_TYPE,
+      expected_content_version: plan.value.current_content_version,
+      target_grade: planGrade.value,
+      implementation_materials: materials,
+    }
+    await submitReflectionBody(planAtStart, requestId, body)
+  } finally {
+    reflectionBusy.value = false
+  }
+}
+
+async function refreshReflectionTask(): Promise<void> {
+  const task = reflectionTask.value
+  const planId = plan.value?.id
+  if (!task || !planId || reflectionQuerying.value) return
+  const seq = ++reflectionRefreshSeq
+  reflectionQuerying.value = true
+  reflectionError.value = ''
+  try {
+    const next = await apiGet<AiTask>(`/api/local/ai/tasks/${pathSegment(task.id)}`)
+    if (seq !== reflectionRefreshSeq) return
+    if (!plan.value || plan.value.id !== planId) return
+    if (reflectionTask.value?.id !== task.id) return
+    if (
+      next.id !== task.id
+      || next.plan_id !== planId
+      || next.task_type !== REFLECTION_TASK_TYPE
+      || next.input_summary?.content_version
+        !== task.input_summary?.content_version
+    ) {
+      reflectionError.value =
+        '刷新回执与当前反思任务、计划、类型或保存版本不一致：未替换当前候选'
+      return
+    }
+    setReflectionTask(next)
+  } catch (err) {
+    if (seq !== reflectionRefreshSeq) return
+    reflectionError.value =
+      err instanceof ApiError ? err.message : `读取反思任务失败：${String(err)}`
+  } finally {
+    reflectionQuerying.value = false
+  }
+}
+
+async function queryReflectionCreate(): Promise<void> {
+  const pending = reflectionPending.value
+  if (!pending || !plan.value || reflectionQuerying.value) return
+  reflectionQuerying.value = true
+  try {
+    const query = await queryAiReceipt(pending.requestId)
+    if (reflectionPending.value?.requestId !== pending.requestId) return
+    if (!plan.value || plan.value.id !== pending.planId) {
+      reflectionError.value =
+        '原请求属于另一份日计划：已保留原票据，请回到原计划核对'
+      return
+    }
+    if (query.state === 'found' && query.result) {
+      const result = query.result as unknown as AiTask
+      if (reflectionTaskMatches(result, pending.planId, pending.body)) {
+        reflectionPending.value = null
+        setReflectionTask(result)
+        reflectionError.value = ''
+        return
+      }
+      reflectionError.value =
+        '原回执与当前计划、任务类型或保存版本不一致：已保留原票据，请核对'
+      return
+    }
+    reflectionError.value = receiptMessage(query)
+  } finally {
+    reflectionQuerying.value = false
+  }
+}
+
+async function resubmitReflectionCreate(): Promise<void> {
+  const pending = reflectionPending.value
+  if (!pending || reflectionBusy.value || reflectionQuerying.value) return
+  if (!plan.value) return
+  if (plan.value.id !== pending.planId) {
+    reflectionError.value =
+      '原请求属于另一份日计划：已保留原票据，请回到原计划核对'
+    return
+  }
+  reflectionBusy.value = true
+  reflectionError.value = ''
+  try {
+    await submitReflectionBody(
+      pending.planId,
+      pending.requestId,
+      pending.body,
+      true,
+    )
+  } finally {
+    reflectionBusy.value = false
+  }
+}
+
+function openReflectionCandidate(): void {
+  const task = reflectionTask.value
+  if (
+    !task?.candidate_id
+    || !plan.value
+    || task.plan_id !== plan.value.id
+    || task.task_type !== REFLECTION_TASK_TYPE
+  ) {
+    return
+  }
+  void openCandidate(task.candidate_id, REFLECTION_TASK_TYPE, false, {
+    planId: plan.value.id,
+    taskId: task.id,
+    taskEpoch: reflectionTaskEpoch,
+    taskType: REFLECTION_TASK_TYPE,
+    contentVersion: task.input_summary?.content_version ?? null,
+  })
+}
+
+/** Closing the inline card ends this local candidate edit (zero writes). */
+function onCandidateOpen(value: boolean): void {
+  candidateOpen.value = value
+  if (value) return
+  candidateId.value = ''
+  candidateDraftActive.value = false
 }
 
 function onCandidateDraft(active: boolean): void {
@@ -611,6 +1313,10 @@ function onCandidateDraft(active: boolean): void {
 async function openHistory(): Promise<void> {
   if (locked.value || props.frozen) {
     ElMessage.warning('窗口正在关闭或正在保存：暂不能打开历史')
+    return
+  }
+  if (!plan.value) {
+    ElMessage.warning('草稿尚未保存：请先保存并创建日计划后再打开历史')
     return
   }
   if (historyRestoreBlocked.value) {
@@ -782,7 +1488,9 @@ function goSettings(): void {
 function onDateChange(value: string | null): void {
   if (!value || value === props.planDate) return
   leave('date', () => {
-    emit('open-editor', value, 'open')
+    // The new date is resolved by the editor's create mode: an existing
+    // record opens by date, otherwise the same editable unsaved draft opens.
+    emit('open-editor', value, 'create')
     return 'left'
   })
 }
@@ -790,8 +1498,14 @@ function onDateChange(value: string | null): void {
 // -- lifecycle -----------------------------------------------------------------
 
 const bridge: EditorBridge = {
-  isDirty: () => dirty.value,
-  identity: () => (plan.value ? `${plan.value.id}:${editEpoch.value}` : 'none'),
+  // Unresolved create/unknown/conflict states remain a leave barrier even if
+  // the live form was edited back to its initial value.
+  isDirty: () =>
+    dirty.value ||
+    draftCreateUnknown.value !== null ||
+    indeterminate.value !== null ||
+    conflict.value !== null,
+  identity: () => (editorKey.value ? `${editorKey.value}:${editEpoch.value}` : 'none'),
   settle: () => settleComposition(),
   saveCurrent,
   blockingDraft: () =>
@@ -801,7 +1515,18 @@ const bridge: EditorBridge = {
           message:
             '候选预览有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开',
         }
-      : historyRestoreBlocked.value
+      : reflectionPending.value
+        ? {
+            kind: 'history',
+            message:
+              '反思任务提交结果未确认：原请求和票据仍在，请先查询回执或同键恢复后再离开',
+          }
+        : reflectionRequestActive.value
+          ? {
+              kind: 'history',
+              message: '反思任务正在提交：请等待结果后再离开当前页面',
+            }
+          : historyRestoreBlocked.value
         ? {
             kind: 'history',
             message:
@@ -817,6 +1542,9 @@ onMounted(() => {
   ;(window as unknown as { __d1Editor?: object }).__d1Editor = {
     phase: () => phase.value,
     dirty: () => dirty.value,
+    draft: () => draftActive.value,
+    createUnknown: () => draftCreateUnknown.value !== null,
+    identity: () => bridge.identity(),
     composing: () => composing.value,
     settle: () => settleComposition(),
     version: () => plan.value?.current_content_version ?? null,
@@ -892,6 +1620,19 @@ onMounted(() => {
     candidateDraftActive: () => candidateDraftActive.value,
     candidateOpen: () => candidateOpen.value,
     candidateId: () => candidateId.value,
+    reflectionMaterials: () => reflectionMaterials.value,
+    setReflectionMaterials: (value: string) => {
+      reflectionMaterials.value = value
+    },
+    reflectionTask: () => reflectionTask.value,
+    reflectionPending: () => reflectionPending.value,
+    reflectionRequestActive: () => reflectionRequestActive.value,
+    reflectionError: () => reflectionError.value,
+    createReflectionTask: () => createReflectionTask(),
+    refreshReflectionTask: () => refreshReflectionTask(),
+    queryReflectionCreate: () => queryReflectionCreate(),
+    resubmitReflectionCreate: () => resubmitReflectionCreate(),
+    openReflectionCandidate: () => openReflectionCandidate(),
     blockingDraft: () => bridge.blockingDraft?.() ?? null,
     openCandidate: (id: string) => openCandidate(id),
     onCandidateAdopted: (result: { plan_id: string; content_version: number }, epoch: number) =>
@@ -969,12 +1710,12 @@ onBeforeUnmount(() => {
           data-d1="editor-date"
           @change="onDateChange"
         />
-        <el-button size="small" :disabled="props.frozen" data-d1="open-export" @click="exportOpen = true">
+        <el-button size="small" :disabled="props.frozen || !plan" data-d1="open-export" @click="exportOpen = true">
           导出 Word
         </el-button>
         <el-button
           size="small"
-          :disabled="props.frozen || historyRestoreBlocked"
+          :disabled="props.frozen || !plan || historyRestoreBlocked"
           data-d1="open-history"
           @click="openHistory"
         >
@@ -1017,21 +1758,43 @@ onBeforeUnmount(() => {
       <p class="muted">创建后内容为空；所有栏目均可留空保存。</p>
     </el-card>
 
-    <template v-else-if="plan">
+    <template v-else-if="plan || draftActive">
       <el-card class="section">
         <div class="meta">
-          <span>班级：{{ plan.class_name }}（{{ GRADE_LABELS[plan.grade] || plan.grade }}）</span>
-          <span>园所：{{ plan.school_name || '（未填写）' }}</span>
-          <span>{{ weekLabel }}</span>
-          <span>内容版本：v{{ plan.current_content_version }}</span>
-          <span>更新时间：{{ plan.updated_at }}</span>
-          <el-tag v-if="dirty" size="small" type="warning" data-d1="dirty">未保存</el-tag>
+          <span>班级：{{ plan?.class_name ?? props.context.class?.name ?? '（未填写）' }}（{{ GRADE_LABELS[plan?.grade ?? props.context.class?.grade ?? 'middle'] || plan?.grade || props.context.class?.grade }}）</span>
+          <span>园所：{{ plan?.school_name || props.context.school_name || '（未填写）' }}</span>
+          <span v-if="plan">{{ weekLabel }}</span>
+          <span v-if="plan">内容版本：v{{ plan.current_content_version }}</span>
+          <span v-if="plan">更新时间：{{ plan.updated_at }}</span>
+          <span v-else>未保存草稿</span>
+          <el-tag v-if="draftActive" size="small" type="warning" data-d1="draft">草稿未保存</el-tag>
+          <el-tag v-else-if="dirty" size="small" type="warning" data-d1="dirty">未保存</el-tag>
           <el-tag v-else size="small" type="success">已同步</el-tag>
           <el-tag v-if="props.frozen || locked" size="small" type="info">已锁定</el-tag>
         </div>
       </el-card>
 
+      <!-- #19: raw lesson input leads the editable daily plan, in both saved
+           and unsaved-draft states. Its adjacent anchor receives the split row
+           from the single AiTaskPanel below. -->
+      <el-card class="section" data-d1="raw-lesson">
+        <template #header>原始教案（可选）</template>
+        <el-input
+          v-model="rawLessonPlan"
+          type="textarea"
+          :rows="6"
+          :disabled="editDisabled"
+          placeholder="可粘贴原始教案全文；留空即为空"
+        />
+        <div
+          ref="splitTarget"
+          class="ai-action-anchor"
+          data-d1="ai-slot-daily_lesson_split"
+        ></div>
+      </el-card>
+
       <AiTaskPanel
+        v-if="plan"
         :plan-id="plan.id"
         :plan-grade="planGrade"
         :content-version="plan.current_content_version"
@@ -1039,8 +1802,19 @@ onBeforeUnmount(() => {
         :has-process="hasProcess"
         :frozen="props.frozen"
         :save-current="saveCurrent"
-        @open-candidate="openCandidate"
+        :split-target="splitTarget"
+        :process-target="processTarget"
+        :other-target="otherTarget"
+        @open-candidate="(id: string, taskType: TaskType) => openCandidate(id, taskType)"
         @open-guidance="openGuidance"
+      />
+      <el-alert
+        v-if="draftActive"
+        type="info"
+        :closable="false"
+        class="section"
+        data-d1="draft-notice"
+        title="未保存草稿：此处可直接编辑；只有有改动时，保存、返回、切换日期或关窗才会创建当天计划；原样浏览不写库。"
       />
 
       <el-alert
@@ -1093,16 +1867,37 @@ onBeforeUnmount(() => {
       </el-alert>
 
       <el-alert
-        v-if="indeterminate && phase === 'save_failed'"
+        v-if="(indeterminate || draftCreateUnknown) && phase === 'save_failed'"
         type="warning"
         :closable="false"
         class="section"
         data-d1="indeterminate"
         title="保存结果待核对：未确认服务端是否已保存，不会自动重发"
       >
+        <p v-if="errorText" class="muted">{{ errorText }}</p>
+        <p v-if="draftCreateUnknown?.configConflict" class="muted">
+          配置版本已变化：请点击“重新读取最新配置”，读取完成后再点击“按原提交内容重新创建”，不会自动重发。
+        </p>
         <div class="row">
-          <el-button data-d1="reconcile" @click="reconcileIndeterminate">
+          <el-button
+            v-if="draftCreateUnknown?.configConflict"
+            data-d1="reload-config"
+            :disabled="props.frozen"
+            @click="requestLatestConfig"
+          >
+            重新读取最新配置
+          </el-button>
+          <el-button data-d1="reconcile" :disabled="draftRecoveryBusy" @click="reconcileIndeterminate">
             读取服务端核对
+          </el-button>
+          <el-button
+            v-if="draftCreateUnknown"
+            data-d1="resubmit-draft-create"
+            :loading="draftRecoveryBusy"
+            :disabled="props.frozen"
+            @click="resubmitDraftCreate"
+          >
+            按原提交内容重新创建
           </el-button>
         </div>
       </el-alert>
@@ -1120,6 +1915,13 @@ onBeforeUnmount(() => {
       <el-card class="section">
         <template #header>晨间 · 体能大循环</template>
         <p class="fixed-label">固定栏目：<strong>{{ MORNING_EXERCISE_LABEL }}</strong></p>
+        <!-- The other-activities row generates the morning / talk / post-game
+             / afternoon boards, so it sits at the head of the activity area. -->
+        <div
+          ref="otherTarget"
+          class="ai-action-anchor"
+          data-d1="ai-slot-daily_other_activities"
+        ></div>
         <div v-for="(group, gi) in form.morning_games" :key="group.group_id || (group as any)._tmp || `m-${gi}`" class="group-block">
           <div class="group-head">
             <el-tag size="small">
@@ -1177,6 +1979,11 @@ onBeforeUnmount(() => {
           <div class="field"><label>难点</label><el-input v-model="form.group_activity.difficult_points" type="textarea" :rows="2" :disabled="editDisabled" /></div>
         </div>
         <div class="field"><label>过程</label><el-input v-model="form.group_activity.process" type="textarea" :rows="5" :disabled="editDisabled" /></div>
+        <div
+          ref="processTarget"
+          class="ai-action-anchor"
+          data-d1="ai-slot-daily_process_adapt"
+        ></div>
       </el-card>
 
       <el-card class="section">
@@ -1226,17 +2033,96 @@ onBeforeUnmount(() => {
       <el-card class="section">
         <template #header>反思</template>
         <el-input v-model="form.reflection" type="textarea" :rows="4" :disabled="editDisabled" />
-      </el-card>
-
-      <el-card class="section">
-        <template #header>原始教案（可选）</template>
-        <el-input
-          v-model="rawLessonPlan"
-          type="textarea"
-          :rows="6"
-          :disabled="editDisabled"
-          placeholder="可粘贴原始教案全文；留空即为空"
-        />
+        <div
+          ref="reflectionTarget"
+          class="ai-action-anchor"
+          data-d1="ai-slot-daily_reflection_generate"
+        ></div>
+        <div class="reflection-ai" data-d1="reflection-ai">
+          <div class="field">
+            <label>活动实施材料（必填：只写实际发生的活动情况）</label>
+            <el-input
+              v-model="reflectionMaterials"
+              type="textarea"
+              :rows="3"
+              maxlength="5000"
+              show-word-limit
+              placeholder="例如：幼儿分成四组，用纸杯搭桥；两组成功，一组反复倒塌后改用宽底座；教师提示后大部分幼儿能说出“底座要稳”。"
+              :disabled="editDisabled"
+              data-d1="reflection-materials"
+            />
+          </div>
+          <p class="muted reflection-hint">
+            已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。
+          </p>
+          <div class="row">
+            <template v-if="reflectionPending">
+              <el-button
+                size="small"
+                type="warning"
+                :loading="reflectionQuerying"
+                data-d1="reflection-query"
+                @click="queryReflectionCreate"
+              >
+                查询提交结果
+              </el-button>
+              <el-button
+                size="small"
+                type="danger"
+                :loading="reflectionBusy"
+                data-d1="reflection-resubmit"
+                @click="resubmitReflectionCreate"
+              >
+                重试原提交（同一请求）
+              </el-button>
+            </template>
+            <el-button
+              v-else
+              size="small"
+              type="primary"
+              :loading="reflectionBusy"
+              :disabled="editDisabled || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
+              data-d1="reflection-generate"
+              @click="createReflectionTask"
+            >
+              生成反思候选
+            </el-button>
+            <el-button
+              v-if="reflectionTask"
+              size="small"
+              :loading="reflectionQuerying"
+              data-d1="reflection-refresh"
+              @click="refreshReflectionTask"
+            >
+              刷新任务
+            </el-button>
+            <el-button
+              v-if="reflectionTask?.candidate_id"
+              size="small"
+              type="success"
+              data-d1="reflection-open-candidate"
+              @click="openReflectionCandidate"
+            >
+              打开反思候选
+            </el-button>
+          </div>
+          <el-alert
+            v-if="reflectionTask"
+            class="section"
+            type="info"
+            :closable="false"
+            data-d1="reflection-task-status"
+            :title="reflectionStatusText()"
+          />
+          <el-alert
+            v-if="reflectionError"
+            class="section"
+            type="warning"
+            :closable="false"
+            data-d1="reflection-error"
+            :title="reflectionError"
+          />
+        </div>
       </el-card>
 
       <div class="row footer">
@@ -1250,7 +2136,8 @@ onBeforeUnmount(() => {
           保存
         </el-button>
         <span v-if="phase === 'conflict'" class="muted">请先处理上方的版本冲突</span>
-        <span v-else class="muted">内容版本 v{{ plan.current_content_version }}</span>
+        <span v-else-if="plan" class="muted">内容版本 v{{ plan.current_content_version }}</span>
+        <span v-else class="muted">未保存草稿</span>
       </div>
     </template>
 
@@ -1265,15 +2152,20 @@ onBeforeUnmount(() => {
 
     <CandidatePreview
       v-if="plan && candidateId"
-      v-model:open="candidateOpen"
+      :open="candidateOpen"
       :plan-id="plan.id"
       :candidate-id="candidateId"
       :content-version="plan.current_content_version"
       :disabled="locked || props.frozen"
       :save-body="saveCurrent"
       :capture-epoch="captureEpoch"
+      :inline="candidateInline"
+      :inline-target="candidateInlineTarget"
+      @update:open="onCandidateOpen"
       @adopted="(result, epoch) => onCandidateAdopted(result, epoch)"
       @draft-active="onCandidateDraft"
+      @open-candidate="(next) => openCandidate(next, 'daily_process_adapt')"
+      @open-regenerated="(next, type) => openCandidate(next, type, true)"
     />
 
     <HistoryPanel
@@ -1367,6 +2259,22 @@ onBeforeUnmount(() => {
 }
 .footer {
   margin-top: 20px;
+}
+/* #19: empty anchors collapse while the AI panel is absent (unsaved draft);
+   once the row is teleported in, the separator keeps it visually attached to
+   the field it operates on. */
+.ai-action-anchor {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--kgm-border);
+}
+.reflection-hint {
+  margin: 8px 0 4px;
+  color: var(--kgm-muted);
+  font-size: 0.82rem;
+}
+.ai-action-anchor:empty {
+  display: none;
 }
 .conflict-body h4 {
   margin: 12px 0 6px;

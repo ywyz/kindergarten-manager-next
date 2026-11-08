@@ -193,7 +193,7 @@ def test_all_six_payloads_follow_task_whitelists_and_handles():
         task: inputs.project_weekly_input(task, raw, content) for task in inputs.TASK_TARGETS
     }
     games = snapshots["weekly_games_select"]
-    assert set(games.payload) == {"schema_version", "task_type", "grade", "days", "config"}
+    assert set(games.payload) == {"schema_version", "task_type", "grade", "weekly_context", "days", "config"}
     assert all("theme" not in day for day in games.payload["days"])
     assert set(games.server_manifest["handles"]) == {"c1", "m1", "m2", "m3", "m4", "p1", "p2"}
 
@@ -202,6 +202,7 @@ def test_all_six_payloads_follow_task_whitelists_and_handles():
         "schema_version",
         "task_type",
         "grade",
+        "weekly_context",
         "theme",
         "days",
         "teacher_text",
@@ -214,6 +215,7 @@ def test_all_six_payloads_follow_task_whitelists_and_handles():
         "schema_version",
         "task_type",
         "grade",
+        "weekly_context",
         "theme",
         "selection",
         "config",
@@ -222,6 +224,15 @@ def test_all_six_payloads_follow_task_whitelists_and_handles():
     assert environment.payload["selection"]["focus_area"]["source_handle"] == "p1"
 
     habit = snapshots["weekly_habit_culture"]
+    assert set(habit.payload) == {
+        "schema_version",
+        "task_type",
+        "grade",
+        "weekly_context",
+        "theme",
+        "days",
+        "teacher_text",
+    }
     assert set(habit.payload["days"][0]) == {
         "date",
         "morning_talk_topic",
@@ -242,6 +253,7 @@ def test_all_six_payloads_follow_task_whitelists_and_handles():
         "schema_version",
         "task_type",
         "grade",
+        "weekly_context",
         "theme",
         "group_activities",
         "teacher_entered",
@@ -252,9 +264,23 @@ def test_all_six_payloads_follow_task_whitelists_and_handles():
     assert "活动过程" not in json.dumps(home.payload, ensure_ascii=False)
 
     materials = snapshots["weekly_materials_generate"]
-    assert set(materials.payload) == {"schema_version", "task_type", "grade", "selection", "config"}
+    assert set(materials.payload) == {"schema_version", "task_type", "grade", "weekly_context", "selection", "config"}
     assert "theme" not in materials.payload
     assert materials.payload["selection"]["focus_area"]["source_handle"] == "p1"
+
+    for projection in snapshots.values():
+        context = projection.payload["weekly_context"]
+        assert context["stage"] == "kindergarten"
+        assert context["stage_label"] == "幼儿园"
+        assert context["grade"] == "small"
+        assert context["grade_label"] == "小班"
+        assert context["term_start"] == "2026-09-01"
+        assert context["term_end"] == "2026-09-30"
+        assert context["week_number"] == 2
+        assert context["week_start"] == "2026-09-07"
+        assert context["week_end"] == "2026-09-13"
+        assert "幼儿园" in context["age_guidance"]
+        assert "年龄" in context["age_guidance"]
 
     for projection in snapshots.values():
         assert projection.as_row_kwargs().keys() == {
@@ -588,6 +614,37 @@ def test_validate_stored_input_roundtrip_six_tasks():
     raw = make_raw(snapshot, content)
     for task in inputs.TASK_TARGETS:
         _roundtrip(task, raw, content)
+
+
+def test_validate_stored_input_accepts_legacy_payload_without_weekly_context():
+    snapshot, content = selected_content()
+    raw = make_raw(snapshot, content)
+    for task in inputs.TASK_TARGETS:
+        projected = inputs.project_weekly_input(task, raw, content)
+        legacy = copy.deepcopy(projected.payload)
+        legacy.pop("weekly_context")
+        validated = inputs.validate_stored_weekly_input(
+            task,
+            legacy,
+            projected.dependencies,
+            content,
+            plan_identity=projected.server_manifest["plan"],
+        )
+        assert validated.payload == legacy
+        assert "weekly_context" not in validated.payload
+        assert validated.dependency_hash == projected.dependency_hash
+        assert validated.target_hashes == projected.target_hashes
+
+        forged = copy.deepcopy(projected.payload)
+        forged["weekly_context"]["term_start"] = "2020-01-01"
+        with pytest.raises(contracts.WeeklyAIContractError):
+            inputs.validate_stored_weekly_input(
+                task,
+                forged,
+                projected.dependencies,
+                content,
+                plan_identity=projected.server_manifest["plan"],
+            )
 
 
 def test_validate_stored_input_roundtrip_no_daily_sources():
@@ -979,3 +1036,348 @@ def test_home_calendar_boundaries_weekend_dedup_and_coverage():
     with pytest.raises(contracts.WeeklyAIContractError) as exc_info:
         inputs.validate_raw_manifest(shifted)
     assert exc_info.value.field_path == "calendar_window"
+
+
+# ---------------------------------------------------------------------------
+# #16 ordinary candidate editing, provenance and directed regeneration
+# ---------------------------------------------------------------------------
+
+from app.local import weekly_ai_adoption as adoption
+from app.local import weekly_ai_service
+from app.local.errors import LocalValidationError
+
+
+def test_edited_column_updates_draft_but_keeps_original_provenance():
+    snapshot, content = selected_content()
+    raw = make_raw(snapshot, content)
+    field = "key_week_focus"
+    task = contracts.COLUMN_TASK[field]
+    projection = inputs.project_weekly_input(task, raw, content)
+    original = contracts.parse_column_candidate(
+        json.dumps({"text": "原 AI 文本"}, ensure_ascii=False), task_type=task
+    )
+    edited = {"text": "老师改后的文本"}
+    adopted = w.apply_weekly_ai_adoption(
+        content,
+        target=field,
+        candidate_value=original,
+        edited_value=edited,
+        adoption=_adoption(content, projection, candidate_value=original),
+        basis=_basis(projection),
+    )
+    assert adopted["weekly_columns"][field] == "老师改后的文本"
+    provenance = adopted["ai_provenance"][field]
+    assert provenance["adopted_value"] == {"text": "原 AI 文本"}
+    assert provenance["manual_edited"] is True
+    assert provenance["candidate_id"] == "candidate-1"
+
+
+def test_edited_games_changes_only_legal_text_and_marks_manual_edited():
+    snapshot, content = selected_content()
+    raw = make_raw(snapshot, content)
+    projection = inputs.project_weekly_input("weekly_games_select", raw, content)
+    candidate = contracts.parse_games_candidate(
+        json.dumps(
+            {
+                "outdoor_game_slots": {
+                    "collective_1": {"kind": "source", "source_handle": "m1"},
+                    "collective_2": {
+                        "kind": "ai_supplement",
+                        "name": "新游戏",
+                        "shared_objectives": "目标",
+                        "guidance_points": "指导",
+                        "focus_guidance": "重点",
+                        "basis_handles": ["c1"],
+                    },
+                    "free_choice_1": None,
+                },
+                "focus_area": {"kind": "source", "source_handle": "p1"},
+            },
+            ensure_ascii=False,
+        ),
+        server_manifest=projection.server_manifest,
+    )
+    edited = copy.deepcopy(candidate)
+    edited["outdoor_game_slots"]["collective_2"]["name"] = "老师改名"
+    adopted = w.apply_weekly_ai_adoption(
+        content,
+        target="games",
+        candidate_value=candidate,
+        edited_value=edited,
+        adoption=_adoption(content, projection, candidate_value=candidate),
+        basis=_basis(projection),
+        ai_item_ids={"collective_2": "ai-item-1"},
+    )
+    assert adopted["outdoor_game_slots"]["collective_2"]["name"] == "老师改名"
+    assert adopted["outdoor_game_slots"]["collective_1"] == candidate["outdoor_game_slots"]["collective_1"]
+    provenance = adopted["ai_provenance"]["games"]
+    assert provenance["adopted_value"]["outdoor_game_slots"]["collective_2"]["name"] == "新游戏"
+    assert provenance["manual_edited"] is True
+
+
+def test_edited_materials_updates_text_but_keeps_original_items_and_edited_flag():
+    snapshot, content = selected_content()
+    raw = make_raw(snapshot, content)
+    projection = inputs.project_weekly_input("weekly_materials_generate", raw, content)
+    handle = sorted(
+        key
+        for key, entry in projection.server_manifest["handles"].items()
+        if entry["kind"] in ("morning_game", "post_group_game")
+    )[0]
+    quote = projection.server_manifest["handles"][handle]["name"]
+    original = {
+        "items": [
+            {
+                "text": "原材料",
+                "origin": "extracted",
+                "evidence_refs": [
+                    {
+                        "source_handle": handle,
+                        "field_path": "name",
+                        "start": 0,
+                        "end": len(quote),
+                        "quote": quote,
+                    }
+                ],
+            }
+        ]
+    }
+    edited = copy.deepcopy(original)
+    edited["items"][0]["text"] = "老师改后的材料"
+    adopted = w.apply_weekly_ai_adoption(
+        content,
+        target="materials",
+        candidate_value=original,
+        edited_value=edited,
+        adoption=_adoption(content, projection, candidate_value=original),
+        basis=_basis(projection),
+        server_manifest=projection.server_manifest,
+    )
+    assert adopted["materials"] == "老师改后的材料"
+    provenance = adopted["materials_provenance"]
+    assert provenance["items"][0]["text"] == "原材料"
+    assert provenance["original_text"] == "原材料"
+    assert provenance["edited"] is True
+
+
+def test_candidate_edit_rejects_structure_and_source_fields():
+    with pytest.raises(LocalValidationError):
+        adoption._apply_candidate_edit(
+            "games",
+            {
+                "outdoor_game_slots": {
+                    "collective_1": {"name": "原名"},
+                    "collective_2": None,
+                    "free_choice_1": None,
+                },
+                "focus_area": None,
+            },
+            {"outdoor_game_slots": {"collective_1": {"source_handle": "m1"}}},
+        )
+    with pytest.raises(LocalValidationError):
+        adoption._apply_candidate_edit(
+            "key_week_focus", {"text": "原文本"}, {"text": "改", "extra": "x"}
+        )
+    with pytest.raises(LocalValidationError):
+        adoption._apply_candidate_edit(
+            "materials",
+            {"items": [{"text": "原文", "origin": "suggested", "evidence_refs": []}]},
+            {"items": [{"text": "改", "origin": "extracted"}]},
+        )
+
+
+def test_weekly_create_identity_omits_absent_fields_and_keeps_old_receipts():
+    old, base, instruction = weekly_ai_service.weekly_create_identity(
+        plan_id="plan-1",
+        expected_draft_version=3,
+        operation_kind=weekly_ai_service.GAMES,
+        targets=["games"],
+    )
+    assert base is None and instruction is None
+    assert "base_candidate_id" not in old
+    assert "revision_instruction" not in old
+    legacy = {
+        "weekly_plan_id": "plan-1",
+        "expected_draft_version": 3,
+        "operation_kind": weekly_ai_service.GAMES,
+        "selected_fields": ["games"],
+    }
+    assert weekly_ai_service._fingerprint(
+        weekly_ai_service.GAMES, old
+    ) == weekly_ai_service._fingerprint(weekly_ai_service.GAMES, legacy)
+    new, base, instruction = weekly_ai_service.weekly_create_identity(
+        plan_id="plan-1",
+        expected_draft_version=3,
+        operation_kind=weekly_ai_service.GAMES,
+        targets=["games"],
+        base_candidate_id="  candidate-1  ",
+        revision_instruction="  请更简洁  ",
+    )
+    assert base == "candidate-1"
+    assert instruction == "请更简洁"
+    assert new["base_candidate_id"] == "candidate-1"
+    assert new["revision_instruction"] == "请更简洁"
+    with pytest.raises(LocalValidationError):
+        weekly_ai_service.weekly_create_identity(
+            plan_id="plan-1",
+            expected_draft_version=3,
+            operation_kind=weekly_ai_service.GAMES,
+            targets=["games"],
+            revision_instruction="只给指令",
+        )
+
+
+def test_projection_with_base_and_instruction_keeps_business_hash():
+    snapshot, content = selected_content()
+    raw = make_raw(snapshot, content)
+    normal = inputs.project_weekly_input("weekly_key_week_focus", raw, content)
+    directed = inputs.project_weekly_input(
+        "weekly_key_week_focus",
+        raw,
+        content,
+        base_candidate={"text": "原建议"},
+        revision_instruction="请更简洁",
+    )
+    assert directed.payload["base_candidate"] == {"text": "原建议"}
+    assert directed.payload["revision_instruction"] == "请更简洁"
+    assert directed.dependencies == normal.dependencies
+    assert directed.dependency_hash == normal.dependency_hash
+    validated = inputs.validate_stored_weekly_input(
+        "weekly_key_week_focus",
+        directed.payload,
+        directed.dependencies,
+        content,
+        plan_identity=directed.server_manifest["plan"],
+    )
+    assert validated.payload == directed.payload
+    assert validated.dependency_hash == directed.dependency_hash
+
+
+def test_preview_selection_accepts_exact_edit_patch_and_rejects_duplicates():
+    selected, edits = adoption._selections(
+        [
+            {
+                "candidate_id": "c1",
+                "target": "games",
+                "edit": {"focus_area": {"name": "老师改后的重点"}},
+            }
+        ]
+    )
+    assert selected == [{"candidate_id": "c1", "target": "games"}]
+    assert edits == {"c1": {"focus_area": {"name": "老师改后的重点"}}}
+    with pytest.raises(LocalValidationError):
+        adoption._selections(
+            [
+                {"candidate_id": "c1", "target": "games"},
+                {"candidate_id": "c1", "target": "key_week_focus"},
+            ]
+        )
+    with pytest.raises(LocalValidationError):
+        adoption._selections(
+            [{"candidate_id": "c1", "target": "games", "extra": "x"}]
+        )
+
+
+def test_weekly_preview_schema_accepts_only_the_weekly_edit_field():
+    from app.local.schemas import WeeklyAIAdoptionPreviewIn
+
+    value = WeeklyAIAdoptionPreviewIn(
+        expected_draft_version=8,
+        selections=[
+            {
+                "candidate_id": "c1",
+                "target": "games",
+                "edit": {"focus_area": {"name": "老师改后的重点"}},
+            }
+        ],
+    )
+    assert value.selections[0].edit == {"focus_area": {"name": "老师改后的重点"}}
+    with pytest.raises(Exception):
+        WeeklyAIAdoptionPreviewIn(
+            expected_draft_version=8,
+            selections=[{"candidate_id": "c1", "target": "games", "unknown": "x"}],
+        )
+
+
+def test_base_candidate_validation_rejects_extra_and_oversize_fields():
+    with pytest.raises(contracts.WeeklyAIContractError):
+        inputs.validate_base_candidate(
+            "weekly_key_week_focus", {"text": "原建议", "profile_id": "private"}
+        )
+    with pytest.raises(contracts.WeeklyAIContractError):
+        inputs.validate_base_candidate(
+            "weekly_key_week_focus", {"text": ""}
+        )
+    with pytest.raises(contracts.WeeklyAIContractError):
+        inputs.validate_base_candidate(
+            "weekly_materials_generate",
+            {
+                "items": [
+                    {"text": "x" * (contracts.MAX_MATERIAL_ITEM_TEXT + 1), "origin": "suggested"}
+                ]
+            },
+        )
+    inputs.validate_base_candidate(
+        "weekly_key_week_focus", {"text": "合法原建议"}
+    )
+    inputs.validate_base_candidate(
+        "weekly_materials_generate",
+        {"items": [{"text": "合法材料", "origin": "extracted"}]},
+    )
+
+
+def test_stored_directed_input_rejects_forged_base_candidate_fields():
+    snapshot, content = selected_content()
+    raw = make_raw(snapshot, content)
+    directed = inputs.project_weekly_input(
+        "weekly_key_week_focus",
+        raw,
+        content,
+        base_candidate={"text": "合法原建议"},
+        revision_instruction="请更简洁",
+    )
+    forged = copy.deepcopy(directed.payload)
+    forged["base_candidate"] = {
+        "text": "SYNTHETIC_FORGED_PRIVATE_VALUE",
+        "profile_id": "private-profile",
+    }
+    with pytest.raises(contracts.WeeklyAIContractError):
+        inputs.validate_stored_weekly_input(
+            "weekly_key_week_focus",
+            forged,
+            directed.dependencies,
+            content,
+            plan_identity=directed.server_manifest["plan"],
+        )
+
+
+def test_minimal_candidate_value_hides_local_source_identity():
+    games = {
+        "outdoor_game_slots": {
+            "collective_1": {
+                "source_kind": "morning_game",
+                "source_handle": "m1",
+                "name": "原游戏",
+                "shared_objectives": "目标",
+                "guidance_points": "指导",
+                "focus_guidance": "重点",
+            },
+            "collective_2": None,
+            "free_choice_1": None,
+        },
+        "focus_area": None,
+    }
+    minimal = inputs.minimal_candidate_value("games", games)
+    assert "source_handle" not in json.dumps(minimal, ensure_ascii=False)
+    assert minimal["outdoor_game_slots"]["collective_1"]["name"] == "原游戏"
+    materials = {
+        "items": [
+            {
+                "text": "材料",
+                "origin": "extracted",
+                "evidence_refs": [{"source_handle": "m1", "quote": "x"}],
+            }
+        ]
+    }
+    material_minimal = inputs.minimal_candidate_value("materials", materials)
+    assert material_minimal == {"items": [{"text": "材料", "origin": "extracted"}]}

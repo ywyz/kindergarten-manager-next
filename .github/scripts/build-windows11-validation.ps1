@@ -247,6 +247,9 @@ if ([string]$packageInfo.database_revision -ne [string]$freeze.database_revision
 if ([string]$packageInfo.source_commit -ne $commit) {
     Fail 'package-info source commit mismatch'
 }
+if ([string]$packageInfo.source_commit -ne [string]$freeze.commit) {
+    Fail 'package-info source commit does not match source freeze'
+}
 
 $portableManifestPath = Join-Path $portableDir 'package-files.json'
 $portableSumsPath = Join-Path $portableDir 'SHA256SUMS.txt'
@@ -289,6 +292,15 @@ if ([string]$buildIdentity.python -ne '3.14.10') {
 }
 if ([string]$buildIdentity.platform -ne 'windows' -or [string]$buildIdentity.arch -ne 'x64') {
     Fail 'build_identity platform/arch mismatch'
+}
+if ([string]$buildIdentity.app_id -ne 'kindergarten-manager-next') {
+    Fail 'build_identity app_id mismatch'
+}
+if ([string]$buildIdentity.app_name -ne 'KindergartenManager') {
+    Fail 'build_identity app_name mismatch'
+}
+if ([string]$buildIdentity.package_format -ne 'pyinstaller-onedir-zip-v1') {
+    Fail 'build_identity package_format mismatch'
 }
 if ([string]$portableManifest.source_freeze_digest -ne [string]$freeze.before.digest) {
     Fail 'portable manifest freeze digest mismatch'
@@ -635,6 +647,7 @@ $summary = [ordered]@{
         build_id = [string]$packageInfo.build_id
         database_revision = [string]$packageInfo.database_revision
         source_freeze_digest = [string]$freeze.before.digest
+        source_freeze_commit = [string]$freeze.commit
         source_freeze_stable = [bool]$freeze.stable
         source_freeze_file_count = @($freeze.before.files).Count
         frontend_output_digest = [string]$freeze.frontend_output_digest

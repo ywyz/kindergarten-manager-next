@@ -699,20 +699,23 @@ def create_observation_ai_task(
 ):
     with storage_errors():
         profile_id = _profile_id(session)
+        fingerprint_payload, _base_id, _instruction = (
+            observation_ai_service.observation_create_identity(
+                profile_id=profile_id,
+                observation_id=observation_id,
+                task_type=data.task_type,
+                expected_revision=data.expected_revision,
+                expected_hash=data.expected_hash,
+                target=data.target,
+                base_candidate_id=data.base_candidate_id,
+                revision_instruction=data.revision_instruction,
+            )
+        )
         peek = ai_task_service.peek_operation(
             session,
             request_id=data.request_id,
             operation_kind=observation_ai_service.OP_CREATE,
-            payload={
-                "source_kind": "game_observation",
-                "source_id": observation_id,
-                "profile_id": profile_id,
-                "observation_id": observation_id,
-                "task_type": data.task_type,
-                "expected_revision": data.expected_revision,
-                "expected_hash": data.expected_hash,
-                "target": data.target,
-            },
+            payload=fingerprint_payload,
         )
     if peek is not None:
         return peek
@@ -728,6 +731,8 @@ def create_observation_ai_task(
             expected_hash=data.expected_hash,
             target=data.target,
             request_id=data.request_id,
+            base_candidate_id=data.base_candidate_id,
+            revision_instruction=data.revision_instruction,
         )
         executor.notify()
     return result
@@ -1013,6 +1018,7 @@ def preview_observation_adoption(
                 expected_hash=data.expected_hash,
                 selected_targets=data.selected_targets,
                 request_id=data.request_id,
+                edited_candidate=data.edited_candidate,
             )
         except LocalError as exc:
             raise _map_ai_error(exc) from exc

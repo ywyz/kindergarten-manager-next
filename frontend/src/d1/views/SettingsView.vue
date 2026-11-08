@@ -16,12 +16,14 @@ import type {
   ConfigPreview,
   LocalContext,
 } from '../types'
+import type { SettingsDraftTarget, SettingsDraftTargetKind } from '../leave'
 import AiSettingsPanel from './AiSettingsPanel.vue'
 import GameConfigPanel from './GameConfigPanel.vue'
+import CollaborationPanel from './CollaborationPanel.vue'
 
-const props = defineProps<{ context: LocalContext; frozen?: boolean }>()
+const props = defineProps<{ context: LocalContext; frozen?: boolean; reloadContext?: () => Promise<LocalContext> }>()
 const emit = defineEmits<{
-  (e: 'reload-context'): Promise<LocalContext>
+  (e: 'draft-targets', targets: SettingsDraftTarget[]): void
   (e: 'draft-active', active: boolean): void
   (e: 'leave', run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed'): void
   (e: 'open-maintenance'): void
@@ -100,10 +102,21 @@ const previewing = ref(false)
 const applying = ref(false)
 const errorText = ref('')
 const applyResultText = ref('')
+const committedConfigVersion = ref<{ from: number; to: number } | null>(null)
 const confirmedContext = ref<LocalContext>(props.context)
 /** D2 W5: AI settings and class-game panels own their own unsaved drafts. */
 const aiDraftActive = ref(false)
 const gameDraftActive = ref(false)
+const collaborationDraftActive = ref(false)
+const aiPanelRef = ref<{ draftTargets?: () => SettingsDraftTargetKind[]; focusDraftTarget?: (kind?: string) => void } | null>(null)
+const gamePanelRef = ref<{ draftTargets?: () => SettingsDraftTargetKind[]; focusDraftTarget?: (kind?: string) => void } | null>(null)
+const collaborationPanelRef = ref<{
+  draftTargets?: () => string[]
+  pendingWrite?: () => unknown
+  currentStatus?: () => { connected: boolean } | null
+  currentPreview?: () => unknown
+  currentPublishPreview?: () => unknown
+} | null>(null)
 let pendingRequestId = ''
 /**
  * Input version: bumped by every local input change / preview cancel /
@@ -114,6 +127,32 @@ let pendingRequestId = ''
 let inputSeq = 0
 /** Preview binding: the input version and configuration version it confirmed. */
 let previewBinding: { seq: number; configVersion: number | null } | null = null
+/**
+ * A one-click confirm that has sent apply but not yet resolved. The whole
+ * original request (id, body and submitted change) is frozen here: later
+ * input, a context reload or a frozen prop must never change what a retry
+ * re-submits. Only an explicit receipt query or the same-request retry may
+ * clear it.
+ */
+interface PendingConfirm {
+  requestId: string
+  expectedVersion: number
+  body: Record<string, unknown>
+  change: ConfigChange
+  submitted: ConfigChange
+}
+const pendingConfirm = ref<PendingConfirm | null>(null)
+/**
+ * After a successful apply the server may already be at a newer configuration
+ * version while the parent's context re-read is still in flight. The next
+ * ordinary confirm is queued until that exact version is re-read; it must
+ * never post the known-old expected_config_version.
+ */
+const awaitingContextVersion = ref<number | null>(null)
+const queuedConfirm = ref<{change: ConfigChange; submit: () => ConfigChange} | null>(null)
+const contextReloadFailed = ref(false)
+let reloadRequestedFor: number | null = null
+let resyncAfterReload = false
 /**
  * The change applied but not yet reflected in the context: the reload merge
  * only rebases the fields that still carry the submitted values, keeping any
@@ -165,12 +204,20 @@ const draftActive = computed(() => {
   }
   if (newTermName.value || newTermRange.value.length === 2) return true
   if (overrideDate.value || overrideReason.value) return true
-  if (previewData.value) return true
+  if (previewData.value || pendingConfirm.value || queuedConfirm.value) return true
   if (aiDraftActive.value || gameDraftActive.value) return true
+  if (collaborationDraftActive.value) return true
   return false
 })
 
 watch(draftActive, (value) => emit('draft-active', value), { immediate: true })
+
+/** The shell uses this ordered list; it never writes to the page. */
+watch(
+  () => [draftActive.value, confirmedContext.value, termForms.value, profileName.value, schoolName.value, className.value, classGrade.value, caregiverName.value, newTermName.value, newTermRange.value, overrideDate.value, overrideReason.value, pendingConfirm.value, awaitingContextVersion.value, contextReloadFailed.value, previewData.value, aiPanelRef.value?.draftTargets?.(), gamePanelRef.value?.draftTargets?.(), collaborationPanelRef.value?.draftTargets?.()],
+  () => emit('draft-targets', draftTargets()),
+  { deep: true, immediate: true },
+)
 
 function clearPreview(): void {
   previewData.value = null
@@ -273,16 +320,19 @@ function changeStillBound(normalizedChange: ConfigChange): boolean {
 watch(
   () => props.context,
   (fresh) => {
+    const expected = awaitingContextVersion.value
+    if (expected !== null && (fresh.config_version ?? 0) < expected) return
     confirmedContext.value = fresh
     clearPreview()
     const pending = pendingAppliedMerge
     if (pending) {
       pendingAppliedMerge = null
       mergeAppliedBaseline(fresh, pending)
-      return
+    } else if (!draftActive.value && !queuedConfirm.value) {
+      // No pending draft: safe to re-sync every field from the fresh context.
+      syncFormsFrom(fresh)
     }
-    // No pending draft: safe to re-sync every field from the fresh context.
-    if (!draftActive.value) syncFormsFrom(fresh)
+    if (settleContextVersion(fresh) === 'exact') flushQueuedConfirm()
   },
 )
 
@@ -389,8 +439,99 @@ watch(termForms, () => clearPreview(), { deep: true })
 watch([newTermName, newTermRange], () => clearPreview())
 watch([overrideTermId, overrideDate, overrideState, overrideReason], () => clearPreview())
 
+
+/** Read through the awaitable parent callback; never rely on emit() return. */
+function invokeContextReload(): Promise<LocalContext> {
+  if (typeof props.reloadContext === 'function') return props.reloadContext()
+  return Promise.reject(new Error('reload_callback_missing'))
+}
+
+/**
+ * Request the committed configuration re-read and keep the page in a visible
+ * waiting state until the parent's context prop reaches that version. A
+ * failed read never clears drafts or unblocks a write; the teacher can retry
+ * the read explicitly.
+ */
+/**
+ * One settlement rule for every successful context read.
+ *
+ * - stale (older than the committed wait): consume nothing, keep the gate.
+ * - exact: release the gate and let an already-queued ordinary confirm run.
+ * - newer: release the gate, cancel the queued click (the teacher confirms
+ *   again on the new snapshot) and keep every draft.
+ */
+function settleContextVersion(fresh: LocalContext): 'stale' | 'exact' | 'newer' | 'none' {
+  const expected = awaitingContextVersion.value
+  if (expected === null) return 'none'
+  const version = fresh.config_version ?? expected
+  if (version < expected) return 'stale'
+  awaitingContextVersion.value = null
+  reloadRequestedFor = null
+  contextReloadFailed.value = false
+  if (version > expected) {
+    if (queuedConfirm.value) {
+      queuedConfirm.value = null
+      errorText.value =
+        '配置已有更新版本：请基于最新配置再次确认本次修改。'
+    }
+    return 'newer'
+  }
+  return 'exact'
+}
+function requestContextReload(expectedVersion?: number): void {
+  if (typeof expectedVersion === 'number') {
+    awaitingContextVersion.value = expectedVersion
+    if (reloadRequestedFor !== expectedVersion) {
+      reloadRequestedFor = expectedVersion
+      contextReloadFailed.value = false
+      void invokeContextReload().then(
+        (fresh) => {
+          if (settleContextVersion(fresh) === 'exact') flushQueuedConfirm()
+        },
+        () => {
+          contextReloadFailed.value = true
+          if (queuedConfirm.value) {
+            errorText.value =
+              '最新配置读取失败：修改尚未提交，草稿仍保留；请重新读取配置后再确认。'
+          }
+        },
+      )
+    }
+    return
+  }
+  reloadRequestedFor = null
+  awaitContextVersionOnManualRead()
+}
+
+function flushQueuedConfirm(): void {
+  const queued = queuedConfirm.value
+  if (queued && awaitingContextVersion.value === null) {
+    queuedConfirm.value = null
+    void runQueuedConfirm(queued)
+  }
+}
+
 function requestReload(): void {
-  emit('reload-context')
+  // Legacy preview/error paths only refresh the parent context; they never
+  // consume a committed-version gate or queue an ordinary confirm.
+  if (typeof props.reloadContext === 'function') {
+    void props.reloadContext().catch(() => undefined)
+    return
+  }
+}
+
+
+function awaitContextVersionOnManualRead(): void {
+  void invokeContextReload().then(
+    (fresh) => {
+      if (settleContextVersion(fresh) === 'exact') flushQueuedConfirm()
+    },
+    () => {
+      contextReloadFailed.value = true
+      errorText.value =
+        '最新配置读取失败：所有草稿仍保留；请重新读取配置后再确认。'
+    },
+  )
 }
 
 function changeProfile(): ConfigChange {
@@ -414,7 +555,7 @@ function changeClass(): ConfigChange {
 }
 
 async function previewChange(change: ConfigChange): Promise<void> {
-  if (props.frozen) return
+  if (props.frozen || pendingConfirm.value) return
   if (previewing.value || applying.value) return
   const seq = inputSeq
   const configVersion = props.context.config_version
@@ -493,6 +634,206 @@ async function previewOverride(): Promise<void> {
   })
 }
 
+/**
+ * One-click ordinary confirm: preview and then apply inside the same teacher
+ * action. The preview passes the same input/context/frozen binding as the
+ * two-step flow; only then is its token used for apply.
+ */
+async function confirmChange(change: ConfigChange, submit: () => ConfigChange = () => change): Promise<void> {
+  if (props.frozen || pendingConfirm.value) return
+  if (awaitingContextVersion.value !== null) {
+    queuedConfirm.value = { change, submit }
+    errorText.value =
+      '上一项已提交，正在等最新配置读取完成：期间不会提交已知过期版本。'
+    requestContextReload(awaitingContextVersion.value)
+    return
+  }
+  if (previewing.value || applying.value) return
+  const seq = inputSeq
+  const configVersion = props.context.config_version
+  previewing.value = true
+  errorText.value = ''
+  applyResultText.value = ''
+  try {
+    const preview = await apiPost<ConfigPreview>('/api/local/config/preview', {
+      expected_config_version: configVersion,
+      change,
+    })
+    if (
+      props.frozen ||
+      seq !== inputSeq ||
+      configVersion !== props.context.config_version ||
+      !changeStillBound(preview.normalized_change)
+    ) {
+      return
+    }
+    if (!preview.changed) {
+      ElMessage.info('没有实际修改')
+      return
+    }
+    const submitted = submit()
+    const requestId = crypto.randomUUID()
+    const body = {
+      request_id: requestId,
+      expected_config_version: preview.expected_config_version,
+      change: preview.normalized_change,
+      preview_token: preview.preview_token,
+    }
+    pendingConfirm.value = {
+      requestId,
+      expectedVersion: preview.expected_config_version,
+      body,
+      change: preview.normalized_change,
+      submitted,
+    }
+    previewing.value = false
+    await submitPendingConfirm()
+  } catch (err) {
+    if (seq !== inputSeq) {
+      if (
+        err instanceof ApiError &&
+        (err.code === 'CONFIG_VERSION_CONFLICT' || err.code === 'CONFIG_PREVIEW_STALE')
+      ) {
+        requestReload()
+      }
+      return
+    }
+    handleConfigError(err)
+  } finally {
+    previewing.value = false
+  }
+}
+/** Send the frozen body (first attempt or the explicit same-request retry). */
+async function submitPendingConfirm(): Promise<void> {
+  const pending = pendingConfirm.value
+  if (!pending || applying.value) return
+  applying.value = true
+  errorText.value = ''
+  try {
+    const result = await apiPost<ConfigApplyResult>(
+      '/api/local/config/apply',
+      pending.body,
+    )
+    finishPendingConfirm(pending, result)
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 0) {
+      errorText.value =
+        '提交结果未知：可查询提交回执，或用同一请求再次提交。原始请求内容保持不变。'
+      return
+    }
+    pendingConfirm.value = null
+    handleConfigError(err)
+  } finally {
+    applying.value = false
+  }
+}
+
+/** Explicit retry of the unresolved request, with the same id and body. */
+async function retryPendingConfirm(): Promise<void> {
+  if (props.frozen || !pendingConfirm.value || applying.value) return
+  await submitPendingConfirm()
+}
+/** Existing receipt query: resolve or prove missing for the frozen request. */
+async function queryPendingConfirm(): Promise<void> {
+  const pending = pendingConfirm.value
+  if (!pending || applying.value) return
+  applying.value = true
+  errorText.value = ''
+  try {
+    const result = await apiGet<ConfigApplyResult>(
+      `/api/local/config/operations/${pathSegment(pending.requestId)}`,
+    )
+    if (
+      !result ||
+      result.request_id !== pending.requestId ||
+      (result.status !== 'applied' && result.status !== 'unchanged') ||
+      typeof result.config_version !== 'number'
+    ) {
+      errorText.value =
+        '回执与原始请求不一致或格式不可用：原请求仍未确认，不能用它改写或丢弃。'
+      return
+    }
+    finishPendingConfirm(pending, result)
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'CONFIG_OPERATION_NOT_FOUND') {
+      errorText.value =
+        '尚未查到该提交的回执：不能用新请求代替；请保留原请求并明确重试或稍后再查。'
+      return
+    }
+    errorText.value =
+      '回执查询失败：原请求仍未确认；请查询或使用同一请求再次提交。'
+  } finally {
+    applying.value = false
+  }
+}
+
+
+/** Run the queued ordinary confirm only after the committed version is read. */
+async function runQueuedConfirm(queued: { change: ConfigChange; submit: () => ConfigChange }): Promise<void> {
+  await confirmChange(queued.change, queued.submit)
+}
+
+/** Manual recovery for a failed configuration re-read; drafts stay intact. */
+function retryContextRead(): void {
+  if (props.frozen) return
+  contextReloadFailed.value = false
+  awaitContextVersionOnManualRead()
+}
+function finishPendingConfirm(pending: PendingConfirm, result: ConfigApplyResult): void {
+  if (pendingConfirm.value !== pending) return
+  pendingConfirm.value = null
+  applyResultText.value = describeApplyResult(result)
+  if (
+    result.status === 'applied' &&
+    result.config_version === pending.expectedVersion + 1
+  ) {
+    committedConfigVersion.value = {
+      from: pending.expectedVersion,
+      to: result.config_version,
+    }
+  }
+  pendingAppliedMerge = {
+    change: pending.change,
+    submitted: pending.submitted,
+  }
+  clearPreview()
+  requestContextReload(result.config_version)
+}
+function termChange(form: TermForm): ConfigChange {
+  return {
+    kind: 'term_update',
+    term_id: form.id,
+    name: form.name,
+    start_date: form.start_date,
+    end_date: form.end_date,
+  }
+}
+
+function currentTermChange(form: TermForm): ConfigChange | null {
+  return currentChangeFor(termChange(form))
+}
+
+async function confirmTermChange(form: TermForm): Promise<void> {
+  await confirmChange(termChange(form), () => currentTermChange(form) ?? termChange(form))
+}
+
+async function confirmNewTerm(): Promise<void> {
+  if (props.frozen || pendingConfirm.value) return
+  if (!newTermName.value.trim() || newTermRange.value.length !== 2) {
+    errorText.value = '请填写学期名称与起止日期'
+    return
+  }
+  const change: ConfigChange = {
+    kind: 'term_create',
+    name: newTermName.value,
+    start_date: newTermRange.value[0],
+    end_date: newTermRange.value[1],
+  }
+  await confirmChange(
+    change,
+    () => currentChangeFor(change) ?? change,
+  )
+}
 function handleConfigError(err: unknown): void {
   if (err instanceof ApiError) {
     if (err.code === 'CONFIG_VERSION_CONFLICT') {
@@ -551,6 +892,20 @@ async function applyPreview(): Promise<void> {
       preview_token: preview.preview_token,
     })
     applyResultText.value = describeApplyResult(result)
+    // The game panel stays mounted with the old cached class-games snapshot
+    // while the context reload is still in flight. A successful ordinary
+    // setting apply is a known local commit, so it can advance that cached
+    // version without a class-games re-read. Only the exact adjacent commit
+    // is shared; any external change still has to conflict on preview.
+    if (
+      result.status === 'applied' &&
+      result.config_version === preview.expected_config_version + 1
+    ) {
+      committedConfigVersion.value = {
+        from: preview.expected_config_version,
+        to: result.config_version,
+      }
+    }
     // Only the fields of this change are rebased once the fresh context
     // lands; other drafts and inputs typed during the apply are preserved.
     pendingAppliedMerge = {
@@ -607,7 +962,11 @@ function termById(termId: string) {
 }
 
 function backToWorkbench(): void {
-  if (props.frozen) return
+  if (props.frozen || pendingConfirm.value || awaitingContextVersion.value !== null) {
+    errorText.value =
+      '提交结果或最新配置尚未确认：请完成回执处理与配置重读后再离开。'
+    return
+  }
   emit('leave', () => 'left')
 }
 
@@ -632,6 +991,16 @@ onMounted(() => {
     classDraft: () => className.value,
     previewProfile: () => previewChange(changeProfile()),
     applyPreview: () => applyPreview(),
+    confirmProfile: () => confirmChange(changeProfile()),
+    pendingConfirm: () => pendingConfirm.value !== null,
+    queryPendingConfirm: () => queryPendingConfirm(),
+    retryPendingConfirm: () => retryPendingConfirm(),
+    awaitingContextVersion: () => awaitingContextVersion.value,
+    queuedConfirm: () => queuedConfirm.value !== null,
+    contextReloadFailed: () => contextReloadFailed.value,
+    retryContextRead: () => retryContextRead(),
+    draftTargets: () => draftTargets(),
+    focusTarget: (target: SettingsDraftTarget) => focusTarget(target),
     cancelDraft: () => cancelDraft(),
     back: () => backToWorkbench(),
   }
@@ -642,6 +1011,11 @@ onBeforeUnmount(() => {
 })
 
 function cancelDraft(): void {
+  if (pendingConfirm.value || awaitingContextVersion.value !== null) {
+    errorText.value =
+      '提交结果或最新配置尚未确认：先完成回执处理与配置重读，不能取消丢弃原请求或草稿。'
+    return
+  }
   if (props.frozen) return
   profileName.value = confirmedContext.value.profile?.display_name ?? ''
   schoolName.value = confirmedContext.value.school_name ?? ''
@@ -666,6 +1040,129 @@ function cancelDraft(): void {
   applyResultText.value = ''
   ElMessage.info('已取消编辑，未应用任何修改')
 }
+/** Ordered structured targets for the current blocking draft (no parsing). */
+function draftTargets(): SettingsDraftTarget[] {
+  const targets: SettingsDraftTarget[] = []
+  const confirmed = confirmedContext.value
+  if (
+    profileName.value !== (confirmed.profile?.display_name ?? '') ||
+    schoolName.value !== (confirmed.school_name ?? '')
+  ) targets.push({ kind: 'profile' })
+  if (
+    className.value !== (confirmed.class?.name ?? '') ||
+    classGrade.value !== (confirmed.class?.grade ?? 'middle') ||
+    parsedHeaderTeacherNames(headerTeacherNamesText.value).join('\n') !==
+      (confirmed.class?.header_teacher_names ?? []).join('\n') ||
+    (caregiverName.value.trim() || '') !== (confirmed.class?.caregiver_name ?? '')
+  ) targets.push({ kind: 'class' })
+  for (const form of termForms.value) {
+    const term = confirmed.terms.find((item) => item.id === form.id)
+    if (
+      !term ||
+      form.name !== term.name ||
+      form.start_date !== term.start_date ||
+      form.end_date !== term.end_date
+    ) targets.push({ kind: 'term', id: form.id })
+  }
+  if (newTermName.value || newTermRange.value.length === 2) targets.push({ kind: 'new-term' })
+  if (overrideDate.value || overrideReason.value) targets.push({ kind: 'override' })
+  if (pendingConfirm.value) targets.push({ kind: 'pending-confirm' })
+  if (awaitingContextVersion.value !== null || contextReloadFailed.value) {
+    targets.push({ kind: 'context-read' })
+  }
+  if (previewData.value) targets.push({ kind: 'preview' })
+  for (const target of aiPanelRef.value?.draftTargets?.() ?? []) {
+    if (!targets.some((item) => item.kind === target)) targets.push({ kind: target })
+  }
+  if (gamePanelRef.value?.draftTargets?.().includes('game-config')) {
+    targets.push({ kind: 'game-config' })
+  }
+  if (
+    collaborationDraftActive.value
+    || collaborationPanelRef.value?.draftTargets?.().includes('online-collaboration')
+  ) {
+    targets.push({ kind: 'online-collaboration' })
+  }
+  return targets
+}
+
+const FOCUS_SELECTORS: Record<SettingsDraftTargetKind, string> = {
+  profile: '[data-d1="settings-profile-name"]',
+  class: '[data-d1="settings-class-name"]',
+  term: '[data-d1="term-row"] .term-name input',
+  'new-term': '[data-d1="new-term-name"]',
+  override: '[data-d1="override-date"]',
+  preview: '[data-d1="settings-preview"]',
+  'pending-confirm': '[data-d1="settings-pending-confirm"]',
+  'context-read': '[data-d1="settings-context-pending"]',
+  'ai-config': '[data-d1="ai-base-url"]',
+  'ai-prompts': '[data-d1="ai-prompts"]',
+  'game-config': '[data-d1="game-config"]',
+  'online-collaboration': '[data-d1="collaboration"]',
+}
+
+/**
+ * Online collaboration has several actionable regions.  Pending receipts must
+ * win: connected -> query controls; disconnected -> the original-account
+ * credential field; otherwise focus the explicit preview/publish area.
+ */
+function focusCollaborationDraft(): void {
+  const pending = Boolean(collaborationPanelRef.value?.pendingWrite?.())
+  const connected = collaborationPanelRef.value?.currentStatus?.()?.connected === true
+  let selector = '[data-d1="collaboration"]'
+  if (pending) {
+    selector = connected
+      ? '[data-d1="collaboration-pending-actions"] button'
+      : '[data-d1="collaboration-credential"]'
+  } else if (document.querySelector('[data-d1="collaboration-class-unknown"]')) {
+    selector = '[data-d1="collaboration-class-unknown"]'
+  } else if (collaborationPanelRef.value?.currentPreview?.()) {
+    selector = '[data-d1="collaboration-preview"]'
+  } else if (collaborationPanelRef.value?.currentPublishPreview?.()) {
+    selector = '[data-d1="collaboration-publish-preview"]'
+  }
+  const element = document.querySelector(selector) as HTMLElement | null
+  if (!element) return
+  element.scrollIntoView?.({ block: 'center' })
+  if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
+  element.focus?.()
+}
+
+/** Focus one structured target in this same instance; never remounts. */
+function focusTarget(target: SettingsDraftTarget): void {
+  if (target.kind === 'online-collaboration') {
+    focusCollaborationDraft()
+    return
+  }
+  const selector =
+    target.kind === 'term'
+      ? target.id
+        ? `[data-d1="term-row"][data-term-id="${CSS.escape(target.id)}"] .term-name input`
+        : '[data-d1="term-row"] .term-name input'
+      : FOCUS_SELECTORS[target.kind]
+  const element = selector
+    ? (document.querySelector(selector) as HTMLElement | null)
+    : null
+  if (!element) return
+  if (target.kind === 'ai-config' || target.kind === 'ai-prompts') {
+    aiPanelRef.value?.focusDraftTarget?.(target.kind)
+    return
+  }
+  if (target.kind === 'game-config') {
+    gamePanelRef.value?.focusDraftTarget?.()
+    return
+  }
+  element.scrollIntoView?.({ block: 'center' })
+  if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
+  element.focus?.()
+}
+
+/** The App-facing projection of the current blocking state. */
+function draftBlockingTargets(): SettingsDraftTarget[] {
+  return draftTargets()
+}
+
+defineExpose({ draftTargets, focusTarget })
 </script>
 
 <template>
@@ -694,7 +1191,7 @@ function cancelDraft(): void {
       type="info"
       :closable="false"
       class="section"
-      title="所有修改都需要先预览影响并确认后才会应用；已有计划保留原表头，不会被改写。"
+      title="普通姓名、园所、班级和学期修改点一次「确认修改」即先预览后应用；日期例外与批量/游戏配置仍保留预览确认。已有计划保留原表头，不会被改写。"
     />
     <el-alert v-if="errorText" type="error" :closable="false" class="section" data-d1="settings-error" :title="errorText" />
     <el-alert v-if="applyResultText" type="success" :closable="false" class="section" data-d1="settings-applied" :title="applyResultText" />
@@ -710,8 +1207,8 @@ function cancelDraft(): void {
           <label>园所名称（可清空）</label>
           <el-input v-model="schoolName" maxlength="120" :disabled="frozen" data-d1="settings-school" />
         </div>
-        <el-button data-d1="preview-profile" :loading="previewing" :disabled="frozen" @click="previewChange(changeProfile())">
-          预览修改
+        <el-button data-d1="preview-profile" data-d1-confirm="confirm-profile" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeProfile())">
+          确认修改
         </el-button>
       </div>
     </el-card>
@@ -750,15 +1247,15 @@ function cancelDraft(): void {
             data-d1="settings-class-caregiver"
           />
         </div>
-        <el-button data-d1="preview-class" :loading="previewing" :disabled="frozen" @click="previewChange(changeClass())">
-          预览修改
+        <el-button data-d1="confirm-class" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeClass())">
+          确认修改
         </el-button>
       </div>
     </el-card>
 
     <el-card class="section" shadow="never">
       <template #header>学期维护</template>
-      <div v-for="(form, index) in termForms" :key="form.id" class="term-row" data-d1="term-row">
+      <div v-for="(form, index) in termForms" :key="form.id" class="term-row" data-d1="term-row" :data-term-id="form.id">
         <el-input v-model="form.name" maxlength="80" class="term-name" :disabled="frozen" />
         <el-date-picker
           v-model="form.start_date"
@@ -776,12 +1273,12 @@ function cancelDraft(): void {
           :disabled="frozen"
           class="term-date"
         />
-        <el-button size="small" :loading="previewing" :disabled="frozen" @click="previewTermChange(form)">
-          预览修改
+        <el-button size="small" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmTermChange(form)">
+          确认修改
         </el-button>
       </div>
       <div class="term-row new-term">
-        <el-input v-model="newTermName" maxlength="80" placeholder="新学期名称" class="term-name" :disabled="frozen" />
+        <el-input v-model="newTermName" maxlength="80" placeholder="新学期名称" class="term-name" :disabled="frozen" data-d1="new-term-name" />
         <el-date-picker
           v-model="newTermRange"
           type="daterange"
@@ -790,8 +1287,8 @@ function cancelDraft(): void {
           end-placeholder="结束"
           :disabled="frozen"
         />
-        <el-button size="small" data-d1="preview-new-term" :loading="previewing" :disabled="frozen" @click="previewNewTerm">
-          预览新增
+        <el-button size="small" data-d1="confirm-new-term" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmNewTerm">
+          确认新增
         </el-button>
       </div>
       <p class="muted">学期闭区间不得重叠或共端点；修改起止日期会生成新的日历修订，已保存计划保留原周次。</p>
@@ -960,11 +1457,53 @@ function cancelDraft(): void {
       </div>
     </el-card>
 
-    <AiSettingsPanel :frozen="frozen" @draft-active="(value: boolean) => (aiDraftActive = value)" />
+    <el-card v-if="awaitingContextVersion !== null || contextReloadFailed" class="section" shadow="never" data-d1="settings-context-pending">
+      <template #header>最新配置读取中</template>
+      <p class="muted">
+        <template v-if="contextReloadFailed">
+          最新配置读取失败：所有草稿仍保留，页面不会提交已知过期版本。
+        </template>
+        <template v-else>
+          上一项已提交，正在等待最新配置版本 {{ awaitingContextVersion }} 读取到位；期间不会提交新修改，草稿和输入保持不变。
+        </template>
+      </p>
+      <el-button data-d1="retry-context-read" :disabled="frozen" @click="retryContextRead">
+        重新读取配置
+      </el-button>
+    </el-card>
+    <el-card v-if="pendingConfirm" class="section" shadow="never" data-d1="settings-pending-confirm">
+      <template #header>提交结果未确认</template>
+      <p class="muted">
+        已提交的原始请求仍保持不变，页面不能离开、取消或改写它。请先核对回执；未找到回执时可明确用同一请求再次提交。
+      </p>
+      <div class="row">
+        <el-button data-d1="query-pending-confirm" :loading="applying" :disabled="applying" @click="queryPendingConfirm">
+          查询提交回执
+        </el-button>
+        <el-button data-d1="retry-pending-confirm" type="primary" :loading="applying" :disabled="applying || frozen" @click="retryPendingConfirm">
+          用同一请求再次提交
+        </el-button>
+      </div>
+    </el-card>
+    <AiSettingsPanel ref="aiPanelRef" :frozen="frozen" @draft-active="(value: boolean) => (aiDraftActive = value)" />
     <GameConfigPanel
+      ref="gamePanelRef"
       :frozen="frozen"
+      :committed-config-version="committedConfigVersion"
       @draft-active="(value: boolean) => (gameDraftActive = value)"
       @applied="() => requestReload()"
+    />
+    <el-alert
+      class="section"
+      title="下方为在线协作，和上方本地班级游戏配置相互独立：在线发布或带入不会改写本地 SQLite，本地配置也不会自动上传。首次打开只读取本地在线协作状态，不会自动连接外部服务。"
+      type="info"
+      :closable="false"
+      show-icon
+    />
+    <CollaborationPanel
+      ref="collaborationPanelRef"
+      :frozen="frozen"
+      @draft-active="(value: boolean) => (collaborationDraftActive = value)"
     />
 
     <div class="section row">

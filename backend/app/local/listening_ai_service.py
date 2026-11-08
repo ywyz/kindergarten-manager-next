@@ -34,7 +34,14 @@ from app.local.tx import begin_immediate, read_scope, rollback
 SOURCE_KIND = "one_to_one_listening"
 OP_NOTE_CREATE = "listening_ai_note_create"
 OP_DOMAIN_CREATE = "listening_ai_domain_create"
-OP_KINDS = (OP_NOTE_CREATE, OP_DOMAIN_CREATE)
+OP_GROUP_CREATE = "listening_ai_group_notes_create"
+OP_GOAL_CREATE = "listening_ai_goal_suggest_create"
+OP_KINDS = (
+    OP_NOTE_CREATE,
+    OP_DOMAIN_CREATE,
+    OP_GROUP_CREATE,
+    OP_GOAL_CREATE,
+)
 
 
 def _digest(value: Any) -> str:
@@ -46,6 +53,10 @@ def _op_kind(task_type: str) -> str:
         return OP_NOTE_CREATE
     if task_type == listening_ai_contracts.TASK_DOMAIN:
         return OP_DOMAIN_CREATE
+    if task_type == listening_ai_contracts.TASK_GROUP:
+        return OP_GROUP_CREATE
+    if task_type == listening_ai_contracts.TASK_GOAL:
+        return OP_GOAL_CREATE
     raise LocalValidationError("不支持的倾听 AI 任务类型")
 
 
@@ -462,9 +473,19 @@ def require_candidate_chain(
     ):
         raise LocalStorageError("倾听 AI 候选执行绑定不一致")
     raw = dict(candidate.raw_candidate_json or {})
+    expected_positions = None
+    if candidate.task_type == listening_ai_contracts.TASK_GROUP:
+        if candidate.listening_group_id is not None:
+            raise LocalStorageError("倾听 AI 多图位候选绑定不一致")
+        expected_positions = tuple(
+            int(item.get("position"))
+            for item in dict(inp.payload_json or {}).get("groups") or []
+        )
     try:
         validated = listening_ai_contracts.validate_candidate(
-            candidate.task_type, raw
+            candidate.task_type,
+            raw,
+            expected_positions=expected_positions,
         )
     except listening_ai_contracts.ListeningAIContractError:
         raise LocalStorageError("倾听 AI 候选结构损坏") from None

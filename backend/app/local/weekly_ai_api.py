@@ -65,13 +65,23 @@ def _specs(operation_kind: str, selected_fields: list[str] | None = None):
     return [weekly_ai_service.WeeklyTaskSpec(task_type, target) for target, task_type in pairs]
 
 
-def _payload(plan_id: str, operation_kind: str, expected: int, specs) -> dict[str, Any]:
-    return {
-        "weekly_plan_id": plan_id,
-        "expected_draft_version": expected,
-        "operation_kind": operation_kind,
-        "selected_fields": [spec.target for spec in specs],
-    }
+def _payload(
+    plan_id: str,
+    operation_kind: str,
+    expected: int,
+    specs,
+    base_candidate_id: Any = None,
+    revision_instruction: Any = None,
+) -> dict[str, Any]:
+    payload, _base_id, _instruction = weekly_ai_service.weekly_create_identity(
+        plan_id=plan_id,
+        expected_draft_version=expected,
+        operation_kind=operation_kind,
+        targets=[spec.target for spec in specs],
+        base_candidate_id=base_candidate_id,
+        revision_instruction=revision_instruction,
+    )
+    return payload
 
 
 def _create(
@@ -85,7 +95,16 @@ def _create(
     session: Session,
 ):
     specs = _specs(operation_kind, selected_fields)
-    payload = _payload(plan_id, operation_kind, data.expected_draft_version, specs)
+    base_candidate_id = getattr(data, "base_candidate_id", None)
+    revision_instruction = getattr(data, "revision_instruction", None)
+    payload = _payload(
+        plan_id,
+        operation_kind,
+        data.expected_draft_version,
+        specs,
+        base_candidate_id=base_candidate_id,
+        revision_instruction=revision_instruction,
+    )
     profile_id = _profile_id(session)
     with storage_errors():
         replay = weekly_ai_service.peek_create_operation(
@@ -112,6 +131,8 @@ def _create(
             expected_draft_version=data.expected_draft_version,
             operation_kind=operation_kind,
             task_specs=specs,
+            base_candidate_id=base_candidate_id,
+            revision_instruction=revision_instruction,
         )
         executor.notify()
     if not created:

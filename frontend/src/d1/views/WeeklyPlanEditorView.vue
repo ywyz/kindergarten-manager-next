@@ -4,7 +4,6 @@ import type { BlockingDraft, LeaveEditor, SaveOutcome } from '../leave'
 import type { HostApi } from '../bridge'
 import {
   createWeeklyApi,
-  createWeeklyExportApi,
   fetchWeeklySourceDate,
   formatFrozenWeeklyTarget,
   formatWeeklyFact,
@@ -16,7 +15,6 @@ import {
   type WeeklyConfirmationSummary,
   type WeeklyDetail,
   type WeeklyDraftContent,
-  type WeeklyExportPreview,
   type WeeklyFocusArea,
   type WeeklyFocusChoice,
   type WeeklyGameChoice,
@@ -26,8 +24,7 @@ import {
   type WeeklySlot,
   type WeeklySourceCandidate,
 } from '../weekly'
-import { WeeklyEditorController } from '../weekly-editor'
-import WeeklyHistoryPanel from './WeeklyHistoryPanel.vue'
+import { WeeklyEditorController, weeklySaveNotice } from '../weekly-editor'
 import WeeklyExportDialog from './WeeklyExportDialog.vue'
 import WeeklyAiPanel from './WeeklyAiPanel.vue'
 
@@ -70,16 +67,12 @@ const refreshPreviewData = ref<WeeklyRefreshPreview | null>(null)
 const refreshPreviewMeta = ref<{ identity: string; revision: number; sequence: number } | null>(null)
 const confirmOpen = ref(false)
 const confirmPreview = ref<WeeklyConfirmationPreview | null>(null)
-const confirmExportFlow = ref(false)
-const exportFlowGuard = ref<{ identity: string; revision: number; sequence: number } | null>(null)
 const ackMissing = ref(false)
 const ackStale = ref(false)
 const confirmNote = ref('')
-const historyOpen = ref(false)
 const exportOpen = ref(false)
-const exportMode = ref<'current' | 'previous' | 'range'>('current')
 const exportConfirmation = ref<WeeklyConfirmationSummary | null>(null)
-const exportInitialPreview = ref<WeeklyExportPreview | null>(null)
+const focusCard = ref<HTMLElement | null>(null)
 const weeklyHost = computed<HostApi | null>(() => props.host)
 const sourceCandidates = computed(() => detail.value?.source_candidates ?? [])
 const factsPending = ref(false)
@@ -97,6 +90,14 @@ const confirmDateNotice = ref('')
 let confirmDateGeneration = 0
 
 const facts = computed(() => detail.value?.facts ?? { missing: [], stale_sources: [], warnings: [] })
+
+function overviewMissingLabel(count: number | undefined): string {
+  if (!count || count < 1) return ''
+  return count === 1 ? '有一项未填写' : '多项未填写'
+}
+function overviewStaleLabel(count: number | undefined): string {
+  return count && count > 0 ? '来源有变化' : ''
+}
 
 function releaseComposition(): void {
   composing.value = false
@@ -133,7 +134,7 @@ function makeBridge(): LeaveEditor {
     isDirty: () => controller?.isDirty() ?? false,
     identity: () => controller?.identity() ?? `${props.planId}:${editorEpoch}`,
     settle: () => settleComposition(),
-    saveCurrent: (): Promise<SaveOutcome> => controller?.saveCurrent() ?? Promise.resolve('unchanged'),
+    saveCurrent: (): Promise<SaveOutcome> => saveForLeave(),
     blockingDraft: () => blocking.value,
   }
 }
@@ -188,11 +189,7 @@ function resetForContext(): void {
   confirmOpen.value = false
   confirmPreview.value = null
   confirmDateGeneration += 1
-  confirmExportFlow.value = false
-  exportFlowGuard.value = null
-  historyOpen.value = false
   exportOpen.value = false
-  exportInitialPreview.value = null
   exportConfirmation.value = null
   releaseComposition()
   loadError.value = ''
@@ -368,28 +365,40 @@ function differenceText(item: Record<string, unknown>): string {
   return formatWeeklyFact({ code: String(item.code ?? ''), field_path: String(item.field_path ?? '') })
 }
 
-async function save(): Promise<SaveOutcome | null> {
-  if (!controller || props.disabled) return null
-  const outcome = await controller.saveCurrent()
-  syncState()
-  if (controller) detail.value = controller.getDetail()
-  if (outcome === 'saved' || outcome === 'unchanged') notice.value = '已保存'
-  else if (outcome === 'conflict') notice.value = '周计划版本冲突，已保留本地输入'
-  else if (outcome === 'indeterminate') notice.value = '保存结果未确认，请核对原请求'
-  else notice.value = '保存失败，已保留本地输入'
+async function saveForLeave(): Promise<SaveOutcome> {
+  if (!controller) return 'unchanged'
+  const current = controller
+  const identity = current.identity()
+  const outcome = await current.saveCurrent()
+  if (controller === current && current.identity() === identity) {
+    syncState()
+    detail.value = current.getDetail()
+    notice.value = weeklySaveNotice(outcome, current.getLastFailure())
+  }
   return outcome
 }
+
+async function save(): Promise<SaveOutcome | null> {
+  if (!controller || props.disabled) return null
+  return saveForLeave()
+}
 async function queryOperation(): Promise<void> {
-  if (!controller) return
-  const result = await controller.queryOperation()
+  const current = controller
+  if (!current) return
+  const identity = current.identity()
+  const result = await current.queryOperation()
+  if (controller !== current || current.identity() !== identity) return
   syncState()
   notice.value = result ? '已核对原提交结果' : '尚未查到结果，原始请求仍保留'
 }
 async function retryOriginal(): Promise<void> {
-  if (!controller || props.disabled) return
-  const result = await controller.retryOriginalOperation()
+  const current = controller
+  if (!current || props.disabled) return
+  const identity = current.identity()
+  const result = await current.retryOriginalOperation()
+  if (controller !== current || current.identity() !== identity) return
   syncState()
-  notice.value = result ? '原请求已提交成功' : '原请求仍未确认'
+  notice.value = result ? '原请求已提交成功' : (current.getLastFailure()?.message ?? '原请求仍未确认')
 }
 async function refreshPreview(): Promise<void> {
   if (!controller || props.disabled) return
@@ -428,8 +437,6 @@ async function openConfirmation(): Promise<void> {
   try {
     confirmPreview.value = await controller.confirmationPreview()
     void loadConfirmDates(confirmPreview.value.target)
-    confirmExportFlow.value = false
-    exportFlowGuard.value = null
     ackMissing.value = false
     ackStale.value = false
     confirmNote.value = ''
@@ -437,82 +444,40 @@ async function openConfirmation(): Promise<void> {
   } catch (error) { notice.value = projectWeeklyError(error).message }
   syncState()
 }
-async function startCurrentExport(): Promise<void> {
-  if (!controller || props.disabled || busy.value || controller.hasUnknown()) return
-  const current = controller
-  const identity = current.identity()
-  await current.settle()
-  if (controller !== current || current.identity() !== identity) { notice.value = '周计划上下文已变化'; return }
-  const revision = current.snapshot().input_revision
-  if (controller !== current || current.identity() !== identity || current.snapshot().input_revision !== revision) { notice.value = '周计划已变化，已停止当前确认导出'; return }
-  const saved = await current.saveCurrent()
-  if (controller !== current || (saved !== 'saved' && saved !== 'unchanged') || current.isDirty() || current.hasUnknown()) { syncState(); notice.value = current.hasUnknown() ? '保存结果未确认，不导出旧稿' : '当前稿未保存，已停止导出'; return }
-  let preview: WeeklyConfirmationPreview
-  try { preview = await current.confirmationPreview() } catch (error) { notice.value = projectWeeklyError(error).message; return }
-  if (controller !== current || current.identity() !== identity || current.isDirty() || current.snapshot().input_revision !== revision) { notice.value = '周计划已变化，已停止当前确认导出'; return }
-  syncState()
-  confirmPreview.value = preview
-  void loadConfirmDates(preview.target)
-  confirmExportFlow.value = true
-  const after = current.snapshot()
-  exportFlowGuard.value = { identity: after.identity, revision: after.input_revision, sequence: after.sequence }
-  ackMissing.value = false
-  ackStale.value = false
-  confirmNote.value = ''
-  confirmOpen.value = true
-}
 
 async function confirmTarget(): Promise<void> {
   if (busy.value) return
   if (!controller || !confirmPreview.value || props.disabled) return
   const current = controller
-  const preview = confirmPreview.value
-  const exporting = confirmExportFlow.value
-  const guard = exportFlowGuard.value
-  if (exporting && guard) {
-    const before = current.snapshot()
-    if (before.identity !== guard.identity || before.input_revision !== guard.revision || before.sequence !== guard.sequence) {
-      confirmOpen.value = false
-      notice.value = '确认目标已变化，未导出旧稿'
-      return
-    }
-  }
-  const outcome = await current.confirm(preview, { ack_missing: ackMissing.value, ack_stale: ackStale.value, note: confirmNote.value || null })
+  const outcome = await current.confirm(confirmPreview.value, {
+    ack_missing: ackMissing.value,
+    ack_stale: ackStale.value,
+    note: confirmNote.value || null,
+  })
   if (controller !== current) return
   syncState()
   detail.value = current.getDetail()
   if (outcome.result !== 'saved') { notice.value = outcome.message ?? '确认未完成'; return }
   confirmOpen.value = false
-  if (!exporting || !guard) { notice.value = '已确认当前稿'; return }
-  const confirmation = outcome.write?.confirmation
-  const now = current.snapshot()
-  if (!confirmation || now.identity !== guard.identity || now.input_revision !== guard.revision) { notice.value = '确认目标已变化，未导出旧稿'; return }
-  if (confirmation.draft_version !== preview.target.draft_version || confirmation.snapshot_hash !== preview.target_hash) { notice.value = '确认回执与目标不一致，未导出旧稿'; return }
-  const exportGuard = current.snapshot()
-  let exportPreview: WeeklyExportPreview
-  try { exportPreview = await createWeeklyExportApi().preview({ mode: 'single', weekly_plan_id: props.planId, confirmation_id: confirmation.id }) }
-  catch (error) { notice.value = projectWeeklyError(error).message; return }
-  if (controller !== current || current.identity() !== exportGuard.identity || current.snapshot().input_revision !== exportGuard.input_revision || current.snapshot().sequence !== exportGuard.sequence) { notice.value = '周计划已变化，未打开旧确认导出'; return }
-  exportInitialPreview.value = exportPreview
-  exportConfirmation.value = confirmation
-  exportMode.value = 'current'
-  exportOpen.value = true
-  notice.value = '已确认当前稿，可生成 Word'
+  notice.value = '已确认当前稿，可导出'
 }
 
-function openHistory(): void { if (!props.disabled) historyOpen.value = true }
-function openExport(mode: 'current' | 'previous' | 'range', confirmation: WeeklyConfirmationSummary | null = null): void {
+function openExport(): void {
   if (props.disabled) return
-  if (mode === 'current') { void startCurrentExport(); return }
-  exportInitialPreview.value = null
-  exportMode.value = mode
-  exportConfirmation.value = confirmation
+  exportConfirmation.value = detail.value?.confirmed ?? null
   exportOpen.value = true
 }
 function onAiBusy(value: boolean): void { aiBusy.value = value; syncState() }
 function onAiBlocking(value: BlockingDraft | null): void { aiBlocking.value = value; syncState() }
+function onAiFocusArea(): void {
+  void nextTick(() => {
+    const element = focusCard.value
+    if (!element) return
+    element.scrollIntoView?.({ block: 'center' })
+    element.focus()
+  })
+}
 function onExportBusy(value: boolean): void { exportBusy.value = value; syncState() }
-function onHistoryExport(confirmation: WeeklyConfirmationSummary): void { historyOpen.value = false; openExport('previous', confirmation) }
 defineExpose({ resetForContext })
 </script>
 
@@ -523,10 +488,8 @@ defineExpose({ resetForContext })
       <div class="actions">
         <el-button :disabled="disabled || busy" @click="save">保存</el-button>
         <el-button :disabled="disabled || busy" @click="refreshPreview">刷新来源预览</el-button>
-        <el-button :disabled="disabled || busy" @click="openConfirmation">确认</el-button>
-        <el-button :disabled="disabled" @click="openHistory">历史确认</el-button>
-        <el-button :disabled="disabled || busy" @click="openExport('current')">导出当前确认</el-button>
-        <el-button :disabled="disabled || busy" @click="openExport('range')">按日期范围导出已确认周</el-button>
+        <el-button type="primary" :disabled="disabled || busy" @click="openConfirmation">确认</el-button>
+        <el-button type="primary" :disabled="disabled || busy" @click="openExport">导出</el-button>
         <el-button v-if="unknown" :disabled="disabled" @click="queryOperation">核对原提交</el-button>
         <el-button v-if="unknown" :disabled="disabled" @click="retryOriginal">明确再次提交原请求</el-button>
       </div>
@@ -541,14 +504,14 @@ defineExpose({ resetForContext })
       title="原生周导出尚未就绪；查看、编辑和确认仍可正常使用" type="info" :closable="false" />
 
     <template v-if="detail && content">
-    <WeeklyAiPanel v-if="controller" :controller="controller" :plan-id="planId" :detail="detail" :disabled="disabled || loading" :profile-epoch="profileEpoch" :session-epoch="sessionEpoch" @busy="onAiBusy" @blocking="onAiBlocking" />
+    <WeeklyAiPanel v-if="controller" :controller="controller" :plan-id="planId" :detail="detail" :focus-selected="Boolean(content.focus_area)" :disabled="disabled || loading" :profile-epoch="profileEpoch" :session-epoch="sessionEpoch" @busy="onAiBusy" @blocking="onAiBlocking" @focus-area="onAiFocusArea" />
       <el-card shadow="never" class="block">
         <h3>{{ detail.plan.header.class_name }} · {{ detail.plan.week_anchor_date }}</h3>
         <p>{{ detail.plan.header.school_name }} · 第 {{ detail.plan.week_number_snapshot }} 周 ·
           教师 {{ detail.plan.header.header_teacher_names.join('、') || '（空）' }} ·
           保育员 {{ detail.plan.header.caregiver_name || '（空）' }}</p>
         <p>已存 v{{ detail.plan.current_draft_version }} · 已确认 v{{ detail.plan.current_confirmed_version ?? '—' }}</p>
-        <el-form label-width="90px"><el-form-item label="主题">
+        <el-form label-width="90px" @submit.prevent><el-form-item label="主题">
           <el-input :model-value="content.theme" :disabled="disabled" @update:model-value="updateTheme" />
         </el-form-item></el-form>
       </el-card>
@@ -590,13 +553,16 @@ defineExpose({ resetForContext })
         </div>
       </el-card>
 
-      <el-card shadow="never" class="block">
-        <h3>重点区域</h3><p>{{ content.focus_area ? focusText(content.focus_area) : '未选择' }}</p>
-        <el-button size="small" :disabled="disabled" @click="clearFocus">清空重点区域</el-button>
-        <div v-for="candidate in focusCandidates()" :key="candidateKey(candidate)" class="candidate">
-          <span>{{ candidateText(candidate) }}</span><el-button size="small" :disabled="disabled" @click="applyFocusCandidate(candidate)">采用此重点区域</el-button>
-        </div>
-      </el-card>
+      <div ref="focusCard" class="focus-anchor" tabindex="-1">
+        <el-card shadow="never" class="block">
+          <h3>重点区域</h3><p>{{ content.focus_area ? focusText(content.focus_area) : '未选择' }}</p>
+          <el-button size="small" :disabled="disabled" @click="clearFocus">清空重点区域</el-button>
+          <p v-if="!focusCandidates().length" class="muted">暂无重点区域来源；请先保存对应日计划，再点“刷新来源预览”后选择。</p>
+          <div v-for="candidate in focusCandidates()" :key="candidateKey(candidate)" class="candidate">
+            <span>{{ candidateText(candidate) }}</span><el-button size="small" :disabled="disabled" @click="applyFocusCandidate(candidate)">采用此重点区域</el-button>
+          </div>
+        </el-card>
+      </div>
 
       <el-card shadow="never" class="block">
         <h3>四周栏目</h3>
@@ -608,12 +574,10 @@ defineExpose({ resetForContext })
         </el-form>
       </el-card>
 
-      <el-card v-if="facts.missing.length || facts.stale_sources.length" shadow="never" class="block">
+      <el-card v-if="overviewMissingLabel(facts.missing.length) || overviewStaleLabel(facts.stale_sources.length)" shadow="never" class="block">
         <h3>缺项与来源变化</h3>
-        <ul>
-          <li v-for="fact in facts.missing" :key="'m' + fact.code + fact.field_path">{{ formatWeeklyFact(fact) }}</li>
-          <li v-for="fact in facts.stale_sources" :key="'s' + fact.code + fact.field_path">{{ formatWeeklyFact(fact) }}</li>
-        </ul>
+        <p v-if="overviewMissingLabel(facts.missing.length)">{{ overviewMissingLabel(facts.missing.length) }}</p>
+        <p v-if="overviewStaleLabel(facts.stale_sources.length)">{{ overviewStaleLabel(facts.stale_sources.length) }}</p>
       </el-card>
 
       <el-card v-if="refreshPreviewData" shadow="never" class="block">
@@ -653,8 +617,7 @@ defineExpose({ resetForContext })
       </template>
     </el-dialog>
 
-    <WeeklyHistoryPanel v-if="detail" v-model:open="historyOpen" :plan-id="detail.plan.id" :disabled="disabled" :host="weeklyHost" @close="historyOpen = false" @export-confirmation="onHistoryExport" />
-    <WeeklyExportDialog v-if="detail" v-model:open="exportOpen" :plan-id="detail.plan.id" :mode="exportMode" :confirmation="exportConfirmation" :initial-preview="exportInitialPreview" :disabled="disabled" :host="weeklyHost" @busy="onExportBusy" />
+    <WeeklyExportDialog v-if="detail" v-model:open="exportOpen" :plan-id="detail.plan.id" mode="single" :confirmation="exportConfirmation" :disabled="disabled" :host="weeklyHost" @busy="onExportBusy" />
   </section>
 </template>
 
@@ -663,6 +626,8 @@ defineExpose({ resetForContext })
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
 .actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .block { margin: 0.75rem 0; border-color: var(--kgm-border); background: var(--kgm-surface); }
+.focus-anchor:focus { outline: 2px solid var(--kgm-accent); outline-offset: 4px; }
+.focus-anchor:focus .block { border-color: var(--kgm-accent); }
 .source-line, .muted { color: var(--kgm-muted); margin-bottom: 0.25rem; }
 .candidate { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0.35rem 0; }
 .manual-fields { display: grid; gap: 0.35rem; margin-top: 0.4rem; }

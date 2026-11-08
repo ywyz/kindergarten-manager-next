@@ -65,11 +65,11 @@ function toError(status: number, body: unknown): ApiError {
   return new ApiError(status, message, code, error?.details)
 }
 
-async function request<T>(
+async function requestWithStatus<T>(
   method: string,
   path: string,
   body?: unknown,
-): Promise<T> {
+): Promise<{ status: number; data: T }> {
   const headers: Record<string, string> = { 'cache-control': 'no-store' }
   if (sessionToken !== null) headers[SESSION_HEADER] = sessionToken
   let response: Response
@@ -103,7 +103,15 @@ async function request<T>(
       `响应无法解析：结果未知（HTTP ${response.status}）`,
     )
   }
-  return payload as T
+  return { status: response.status, data: payload as T }
+}
+
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  return (await requestWithStatus<T>(method, path, body)).data
 }
 
 export function apiGet<T>(path: string): Promise<T> {
@@ -112,6 +120,15 @@ export function apiGet<T>(path: string): Promise<T> {
 
 export function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return request<T>('POST', path, body ?? {})
+}
+
+/** POST that keeps the real HTTP status for callers that must distinguish
+ * create (201) from an existing same-day record (200). */
+export function apiPostWithStatus<T>(
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; data: T }> {
+  return requestWithStatus<T>('POST', path, body ?? {})
 }
 
 export function apiPatch<T>(path: string, body: unknown): Promise<T> {

@@ -32,6 +32,7 @@ from app.local.errors import (
     LocalWeeklyVersionConflict,
 )
 from app.local.models import (
+    LocalAICandidate,
     LocalAIOperation,
     LocalAIInput,
     LocalAITask,
@@ -57,6 +58,60 @@ OP_KINDS = (GAMES, COLUMNS, MATERIALS, ADOPT)
 class WeeklyTaskSpec:
     task_type: str
     target: str
+
+
+_REVISION_INSTRUCTION_MAX_CHARS = 500
+
+
+def _normalize_optional_text(value: Any, field: str, maximum: int) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise LocalValidationError(f"{field} 必须是字符串")
+    text = value.strip()
+    if text == "":
+        return None
+    if len(text) > maximum:
+        raise LocalValidationError(f"{field} 超过长度上限")
+    return text
+
+
+def weekly_create_identity(
+    *,
+    plan_id: str,
+    expected_draft_version: int,
+    operation_kind: str,
+    targets: Sequence[str],
+    base_candidate_id: Any = None,
+    revision_instruction: Any = None,
+) -> tuple[dict[str, Any], str | None, str | None]:
+    """Shared create fingerprint; optional keys appear only when supplied."""
+    base_id = _normalize_optional_text(
+        base_candidate_id, "base_candidate_id", 64
+    )
+    instruction = _normalize_optional_text(
+        revision_instruction,
+        "revision_instruction",
+        _REVISION_INSTRUCTION_MAX_CHARS,
+    )
+    if instruction is not None and base_id is None:
+        raise LocalValidationError("定向修改要求必须绑定原候选")
+    order = ("key_week_focus", "environment_setup", "habit_culture", "home_cooperation")
+    selected = list(targets)
+    canonical_targets = [target for target in order if target in selected] + [
+        target for target in selected if target not in order
+    ]
+    payload: dict[str, Any] = {
+        "weekly_plan_id": plan_id,
+        "expected_draft_version": expected_draft_version,
+        "operation_kind": operation_kind,
+        "selected_fields": canonical_targets,
+    }
+    if base_id is not None:
+        payload["base_candidate_id"] = base_id
+    if instruction is not None:
+        payload["revision_instruction"] = instruction
+    return payload, base_id, instruction
 
 
 def _fingerprint(operation_kind: str, payload: dict[str, Any]) -> str:
@@ -218,6 +273,8 @@ def create_weekly_tasks(
     expected_draft_version: object,
     operation_kind: str,
     task_specs: Sequence[WeeklyTaskSpec],
+    base_candidate_id: Any = None,
+    revision_instruction: Any = None,
 ) -> tuple[dict[str, Any], bool]:
     if operation_kind not in CREATE_KINDS:
         raise LocalValidationError("operation_kind 不合法")
@@ -234,12 +291,16 @@ def create_weekly_tasks(
     canonical_targets = [target for target in order if target in selected] + [
         target for target in selected if target not in order
     ]
-    payload = {
-        "weekly_plan_id": plan_id,
-        "expected_draft_version": expected_draft_version,
-        "operation_kind": operation_kind,
-        "selected_fields": canonical_targets,
-    }
+    payload, base_id, instruction = weekly_create_identity(
+        plan_id=plan_id,
+        expected_draft_version=expected_draft_version,
+        operation_kind=operation_kind,
+        targets=canonical_targets,
+        base_candidate_id=base_candidate_id,
+        revision_instruction=revision_instruction,
+    )
+    if base_id is not None and len(task_specs) != 1:
+        raise LocalValidationError("定向重新生成只能绑定一个候选和目标")
     fingerprint = _fingerprint(operation_kind, payload)
 
     with read_scope(session):
@@ -288,11 +349,52 @@ def create_weekly_tasks(
 
         raw = weekly_ai_sources.load_raw_manifest(session, plan=plan, content=content)
         batch_hash = weekly_ai_sources.raw_manifest_hash(raw)
+        base_value = None
+        if base_id is not None:
+            spec = task_specs[0]
+            candidate = session.get(LocalAICandidate, base_id)
+            if candidate is None:
+                raise LocalAiNotFound("未找到该原候选")
+            _raw, _execution, base_input = weekly_ai_candidates.require_chain(
+                session, plan=plan, candidate=candidate
+            )
+            if weekly_ai_candidates.TARGETS.get(candidate.task_type) != spec.target:
+                raise LocalValidationError("原候选目标与本次重新生成不一致")
+            if (
+                base_input.source_revision != expected_draft_version
+                or base_input.weekly_draft_id != content.id
+            ):
+                raise LocalValidationError(
+                    "原候选绑定的保存草稿版本与本次请求不一致"
+                )
+            state = weekly_ai_candidates.eligibility(
+                session,
+                plan=plan,
+                content=content,
+                candidate=candidate,
+                input_row=base_input,
+            )
+            if state == "contract_obsolete":
+                raise LocalWeeklyAiContractObsolete()
+            if state != "eligible":
+                raise LocalWeeklyAiSourceChanged()
+            from app.local import weekly_ai_adoption
+
+            base_value = weekly_ai_inputs.minimal_candidate_value(
+                spec.target,
+                weekly_ai_adoption._candidate_value(
+                    candidate, base_input, spec.target
+                ),
+            )
         projections = []
         for spec in task_specs:
             try:
                 projection = weekly_ai_inputs.project_weekly_input(
-                    spec.task_type, raw, content.content_json
+                    spec.task_type,
+                    raw,
+                    content.content_json,
+                    base_candidate=base_value,
+                    revision_instruction=instruction,
                 )
             except weekly_ai_contracts.WeeklyAIContractError as exc:
                 code = getattr(exc, "code", "")

@@ -52,6 +52,11 @@ from app.local.observation_validation import (
     missing_fields,
     warnings as observation_warnings,
 )
+from app.local.prompt_bundles import (
+    CandidateInvalid,
+    validate_candidate,
+    validate_input,
+)
 
 OBSERVATION_INPUT_SCHEMA_VERSION = 1
 INTERNAL_INPUT_SCHEMA_VERSION = 1
@@ -96,6 +101,64 @@ REWRITE_CONTEXT = {
         "analysis_evaluation",
     ),
 }
+# The frozen observation input contract stays authority for the business
+# fields.  Regeneration additionally sends only the original candidate body
+# and the teacher's instruction; these two fields are explicitly projected
+# into the worker request and are never read as business columns.
+REQUEST_EXTRA_KEYS = frozenset({"base_candidate", "revision_instruction"})
+REVISION_INSTRUCTION_MAX_CHARS = 500
+
+
+def normalize_revision_instruction(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise CandidateInvalid("revision_instruction 必须是字符串")
+    text = value.strip()
+    if text == "":
+        return None
+    if len(text) > REVISION_INSTRUCTION_MAX_CHARS:
+        raise CandidateInvalid("revision_instruction 超过长度上限")
+    return text
+
+
+def normalize_base_candidate(
+    task_type: str, value: Any
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise CandidateInvalid("base_candidate 必须是对象")
+    try:
+        return validate_candidate(task_type, value)
+    except CandidateInvalid as exc:
+        raise CandidateInvalid(f"base_candidate 无效：{exc}") from None
+
+
+def validate_observation_input(task_type: str, payload: Any) -> dict:
+    """Validate the frozen business payload plus the bounded request extras.
+
+    The provider still receives the frozen V07 columns.  Regeneration adds
+    only ``base_candidate`` and ``revision_instruction``; every unknown field
+    still fails through the frozen input model.
+    """
+    if not isinstance(payload, dict):
+        raise CandidateInvalid("输入必须是 JSON 对象")
+    base = normalize_base_candidate(task_type, payload.get("base_candidate"))
+    instruction = normalize_revision_instruction(payload.get("revision_instruction"))
+    if instruction is not None and base is None:
+        raise CandidateInvalid("revision_instruction 必须绑定 base_candidate")
+    business = {
+        key: value for key, value in payload.items() if key not in REQUEST_EXTRA_KEYS
+    }
+    try:
+        validated = validate_input(task_type, business)
+    except CandidateInvalid:
+        raise
+    if base is not None and task_type == "game_observation_rewrite":
+        if base.get("target") != validated.get("target"):
+            raise CandidateInvalid("base_candidate 的重写目标与原请求不一致")
+    return validated
 
 
 def _digest(value: Any) -> str:
@@ -290,6 +353,8 @@ def _build_send_payload(
     task_type: str,
     target: str | None,
     *,
+    base_candidate: dict[str, Any] | None = None,
+    revision_instruction: str | None = None,
     dependency_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     send: dict[str, Any] = {}
@@ -311,6 +376,10 @@ def _build_send_payload(
             send["rewrite_source"] = _current_value(payload, target)
         for context in REWRITE_CONTEXT[target]:
             send[context] = _current_value(payload, context)
+    if revision_instruction is not None:
+        send["revision_instruction"] = revision_instruction
+    if base_candidate is not None:
+        send["base_candidate"] = base_candidate
     if dependency_overrides:
         for key, value in dependency_overrides.items():
             send[key] = value
@@ -327,6 +396,8 @@ def project_input(
     record: Any | None = None,
     draft: Any | None = None,
     manifest: list[dict[str, Any]] | None = None,
+    base_candidate: Any = None,
+    revision_instruction: Any = None,
     dependency_overrides: dict[str, Any] | None = None,
 ) -> ProjectedObservationInput:
     if task_type not in OBSERVATION_TASK_TYPES:
@@ -336,6 +407,21 @@ def project_input(
             raise LocalAiInputInvalid("生成任务不接受重写目标")
     elif target not in TARGETS:
         raise LocalAiInputInvalid("重写目标不合法")
+    try:
+        normalized_base = normalize_base_candidate(task_type, base_candidate)
+        normalized_instruction = normalize_revision_instruction(
+            revision_instruction
+        )
+    except CandidateInvalid as exc:
+        raise LocalAiInputInvalid(str(exc)) from None
+    if normalized_instruction is not None and normalized_base is None:
+        raise LocalAiInputInvalid("定向修改要求必须绑定原候选")
+    if (
+        normalized_base is not None
+        and task_type == "game_observation_rewrite"
+        and normalized_base.get("target") != target
+    ):
+        raise LocalAiInputInvalid("原候选重写目标与本次请求不一致")
     if record is None or draft is None or manifest is None:
         record, draft, manifest = load_current_ai_manifest(
             session, profile_id=profile_id, observation_id=observation_id
@@ -352,8 +438,14 @@ def project_input(
         manifest,
         task_type,
         target,
+        base_candidate=normalized_base,
+        revision_instruction=normalized_instruction,
         dependency_overrides=dependency_overrides,
     )
+    try:
+        validate_observation_input(task_type, send)
+    except CandidateInvalid as exc:
+        raise LocalAiInputInvalid(str(exc)) from None
     target_hashes = {
         key: value_hash(_current_value(payload, key))
         for key in (TARGETS if task_type == "game_observation_generate" else (target,))

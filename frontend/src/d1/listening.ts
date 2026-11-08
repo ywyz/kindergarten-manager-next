@@ -110,6 +110,8 @@ export interface ListeningRecordDetail {
   created_at: string
   updated_at: string
   domains: ListeningDomainState[]
+  /** Same read transaction as `revision`; asset id -> manual quarters. */
+  rotations?: Record<string, number>
 }
 
 export interface ListeningTemplateItem {
@@ -161,7 +163,28 @@ export interface ListeningPhotoResult {
   old_asset_id: string | null
   revision: number
   changed: boolean
+  rotation_quarters?: number
   saved_at?: string
+}
+
+export interface ListeningRotateResult {
+  record_id: string
+  domain: ListeningDomain
+  group_id: string
+  asset_id: string
+  revision: number
+  old_rotation_quarters: number
+  rotation_quarters: number
+  orientation: number | null
+  changed: boolean
+  saved_at?: string
+}
+
+export interface ListeningRotationsResponse {
+  record_id: string
+  revision?: number
+  rotations: Record<string, number>
+  orientations?: Record<string, number | null>
 }
 
 export interface ListeningRemoveResult {
@@ -173,6 +196,451 @@ export interface ListeningRemoveResult {
   revision: number
   changed: boolean
   saved_at?: string
+}
+
+/** Batch import limits mirror the reviewed single-photo technical envelope. */
+export const MAX_BATCH_PHOTOS = 15
+export const MAX_BATCH_PHOTO_BYTES = 25 * 1024 * 1024
+export const MAX_BATCH_TOTAL_BYTES = 75 * 1024 * 1024
+
+export interface ListeningBatchFileInfo {
+  name: string
+  size: number
+}
+
+export interface ListeningBatchAssignment {
+  domain: ListeningDomain
+  groupId: string
+  slotLabel: string
+  fileIndex: number
+  displayName: string
+  size: number
+}
+
+export interface ListeningBatchPlan {
+  assignments: ListeningBatchAssignment[]
+  totalBytes: number
+}
+
+export type ListeningBatchPlanResult =
+  | { ok: true; plan: ListeningBatchPlan }
+  | { ok: false; reason: string }
+
+function batchSizeReason(files: ListeningBatchFileInfo[]): string | null {
+  let total = 0
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index]
+    const label = `第 ${index + 1} 张照片「${file.name || '未命名'}」`
+    if (!Number.isFinite(file.size) || file.size <= 0) {
+      return `${label}为空文件`
+    }
+    if (file.size > MAX_BATCH_PHOTO_BYTES) {
+      return `${label}超过 25 MB 单张上限`
+    }
+    total += file.size
+  }
+  if (total > MAX_BATCH_TOTAL_BYTES) {
+    return `本批照片合计 ${Math.ceil(total / (1024 * 1024))} MB，超过 75 MB 总请求上限`
+  }
+  return null
+}
+
+/**
+ * Plan a whole batch against currently empty slots only.
+ *
+ * Order is the visible domain order, then this selection's file order, then
+ * each domain's empty-slot order. Existing photos are never candidates, so a
+ * plan can only fill empty positions; capacity overflow is a hard refusal.
+ */
+export function planListeningPhotoBatch(
+  files: ListeningBatchFileInfo[],
+  forms: Partial<Record<ListeningDomain, ListeningDomainState>>,
+): ListeningBatchPlanResult {
+  if (files.length < 1) {
+    return { ok: false, reason: '请一次选择 1～15 张照片' }
+  }
+  if (files.length > MAX_BATCH_PHOTOS) {
+    return {
+      ok: false,
+      reason: `一次最多选择 ${MAX_BATCH_PHOTOS} 张照片，本次选择了 ${files.length} 张`,
+    }
+  }
+  const sizeReason = batchSizeReason(files)
+  if (sizeReason) return { ok: false, reason: sizeReason }
+
+  const slots: Array<{
+    domain: ListeningDomain
+    groupId: string
+    slotLabel: string
+  }> = []
+  for (const domain of LISTENING_DOMAINS) {
+    const groups = forms[domain]?.groups ?? []
+    const empty = groups
+      .filter((group) => group.asset_id === null)
+      .slice(0, 3)
+    empty.forEach((group) => {
+      const position = groups.findIndex((item) => item.group_id === group.group_id)
+      slots.push({
+        domain,
+        groupId: group.group_id,
+        slotLabel: `${DOMAIN_LABELS[domain]}领域第 ${position + 1} 组`,
+      })
+    })
+  }
+  if (slots.length === 0) {
+    return {
+      ok: false,
+      reason: '当前记录没有空余图位；已有照片不会被替换，请先移除照片或减少选择',
+    }
+  }
+  if (slots.length < files.length) {
+    return {
+      ok: false,
+      reason: `当前只有 ${slots.length} 个空余图位，本批选择了 ${files.length} 张；已有照片不会被替换，请减少照片或先移除已有照片`,
+    }
+  }
+  const assignments = files.map((file, index) => {
+    const slot = slots[index]
+    return {
+      domain: slot.domain,
+      groupId: slot.groupId,
+      slotLabel: slot.slotLabel,
+      fileIndex: index,
+      displayName: file.name || `photo-${index + 1}`,
+      size: file.size,
+    }
+  })
+  return {
+    ok: true,
+    plan: {
+      assignments,
+      totalBytes: files.reduce((sum, file) => sum + file.size, 0),
+    },
+  }
+}
+
+export type ListeningBatchSelectionCheck =
+  | { ok: true }
+  | { ok: false; reason: string }
+
+/**
+ * Revalidate the teacher's current preview against live record forms.
+ *
+ * The locked target set must still be unique, belong to this record and match
+ * the currently empty slots exactly. This function never mutates selections;
+ * callers keep the preview visible and surface the reason.
+ */
+export function validateListeningBatchSelection(
+  assignments: ListeningBatchAssignment[],
+  files: ListeningBatchFileInfo[],
+  forms: Partial<Record<ListeningDomain, ListeningDomainState>>,
+): ListeningBatchSelectionCheck {
+  const plan = planListeningPhotoBatch(files, forms)
+  if (!plan.ok) return plan
+  if (assignments.length !== files.length) {
+    return {
+      ok: false,
+      reason: '本批照片落位数量不一致，已保留本批选择；请重新预览后再试',
+    }
+  }
+  const locked = new Set<string>()
+  const fileIndexes = new Set<number>()
+  for (const assignment of assignments) {
+    const key = `${assignment.domain}:${assignment.groupId}`
+    if (locked.has(key)) {
+      return {
+        ok: false,
+        reason: '本批照片落位重复，已保留本批选择；请重新预览后再试',
+      }
+    }
+    locked.add(key)
+    if (
+      !Number.isInteger(assignment.fileIndex) ||
+      assignment.fileIndex < 0 ||
+      assignment.fileIndex >= files.length ||
+      fileIndexes.has(assignment.fileIndex)
+    ) {
+      return {
+        ok: false,
+        reason: '本批照片与落位对应关系失效，已保留本批选择；请重新预览后再试',
+      }
+    }
+    fileIndexes.add(assignment.fileIndex)
+  }
+  const expected = new Set(
+    plan.plan.assignments.map(
+      (assignment) => `${assignment.domain}:${assignment.groupId}`,
+    ),
+  )
+  if (
+    locked.size !== expected.size ||
+    [...expected].some((target) => !locked.has(target))
+  ) {
+    return {
+      ok: false,
+      reason:
+        '预览落位已失效或目标图位已有照片，已保留本批选择；请重新预览后再试',
+    }
+  }
+  return { ok: true }
+}
+
+/**
+ * Swap the target slots of two planned files. The target set is unchanged, so
+ * a swap can never exceed a domain's three slots or touch an existing photo.
+ */
+export function swapListeningBatchTargets(
+  assignments: ListeningBatchAssignment[],
+  fromIndex: number,
+  toIndex: number,
+): ListeningBatchAssignment[] {
+  if (
+    fromIndex === toIndex ||
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= assignments.length ||
+    toIndex >= assignments.length
+  ) {
+    return assignments.map((assignment) => ({ ...assignment }))
+  }
+  return assignments.map((assignment, index) => {
+    if (index === fromIndex) {
+      return {
+        ...assignment,
+        domain: assignments[toIndex].domain,
+        groupId: assignments[toIndex].groupId,
+        slotLabel: assignments[toIndex].slotLabel,
+      }
+    }
+    if (index === toIndex) {
+      return {
+        ...assignment,
+        domain: assignments[fromIndex].domain,
+        groupId: assignments[fromIndex].groupId,
+        slotLabel: assignments[fromIndex].slotLabel,
+      }
+    }
+    return { ...assignment }
+  })
+}
+
+export interface ListeningBatchItemResult {
+  domain: ListeningDomain
+  group_id: string
+  asset_id: string
+  old_asset_id: string | null
+  content_hash: string
+  format: string
+  width: number
+  height: number
+  orientation: number | null
+  rotation_quarters?: number
+  byte_size: number
+}
+
+export interface ListeningBatchResult {
+  record_id: string
+  revision: number
+  changed: boolean
+  saved_at?: string
+  items: ListeningBatchItemResult[]
+}
+
+export interface ListeningBatchEntry {
+  domain: ListeningDomain
+  groupId: string
+  file: File
+}
+
+/** Strict 0–3 quarter-turn value; null means the caller supplied garbage. */
+export function rotationQuarters(value: unknown): number | null {
+  return typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 3
+    ? value
+    : null
+}
+
+/** One teacher click: -1 = left/counter-clockwise, +1 = right/clockwise. */
+export function rotatePhotoQuarters(
+  current: number,
+  direction: -1 | 1,
+): number {
+  const base = rotationQuarters(current) ?? 0
+  return ((base + direction) % 4 + 4) % 4
+}
+
+export function rotationTransform(quarters: number): string {
+  const value = rotationQuarters(quarters) ?? 0
+  return value === 0 ? '' : `rotate(${value * 90}deg)`
+}
+
+export interface ListeningMonth {
+  year: number
+  month: number
+}
+
+export interface ListeningDateIssue {
+  groupId: string
+  position: number
+  value: string
+  reason: string
+}
+
+export interface ListeningDateRange {
+  min: string
+  max: string
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+/** Strict YYYY-MM; legacy free text returns null and is never reformatted. */
+export function parseListeningMonth(value: unknown): ListeningMonth | null {
+  if (typeof value !== 'string') return null
+  const match = /^([0-9]{4})-([0-9]{2})$/.exec(value)
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2])
+  if (!Number.isInteger(year) || year < 1 || month < 1 || month > 12) {
+    return null
+  }
+  return { year, month }
+}
+
+/** Strict YYYY-MM-DD; legacy free text returns null. */
+export function parseListeningDate(value: unknown): {
+  year: number
+  month: number
+  day: number
+  iso: string
+} | null {
+  if (typeof value !== 'string') return null
+  const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(value)
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    year < 1 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1
+  ) {
+    return null
+  }
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  if (day > lastDay) return null
+  return { year, month, day, iso: match[0] }
+}
+
+export function termMonthRange(
+  termStart: string,
+  termEnd: string,
+): ListeningDateRange | null {
+  const start = parseListeningDate(termStart)
+  const end = parseListeningDate(termEnd)
+  if (!start || !end || start.iso > end.iso) return null
+  return {
+    min: `${start.iso.slice(0, 7)}`,
+    max: `${end.iso.slice(0, 7)}`,
+  }
+}
+
+export function workDateRange(
+  termStart: string,
+  termEnd: string,
+  observationMonth: string,
+): ListeningDateRange | null {
+  const month = parseListeningMonth(observationMonth)
+  const start = parseListeningDate(termStart)
+  const end = parseListeningDate(termEnd)
+  if (!month || !start || !end || start.iso > end.iso) return null
+  const first = `${month.year}-${pad2(month.month)}-01`
+  const lastDay = new Date(
+    Date.UTC(month.year, month.month, 0),
+  ).getUTCDate()
+  const last = `${month.year}-${pad2(month.month)}-${pad2(lastDay)}`
+  const min = first > start.iso ? first : start.iso
+  const max = last < end.iso ? last : end.iso
+  return min <= max ? { min, max } : null
+}
+
+/**
+ * Local per-group warnings for the current observation month.
+ *
+ * A legacy work-date text is retained but flagged as undecidable; the teacher
+ * must explicitly replace it with a date or clear it before a month change is
+ * saved.
+ */
+export function listeningDateIssues(
+  observationDate: string | null | undefined,
+  groups: ListeningGroup[],
+  termStart: string,
+  termEnd: string,
+): ListeningDateIssue[] {
+  const month = parseListeningMonth(observationDate)
+  if (!month) return []
+  const range = workDateRange(termStart, termEnd, observationDate ?? '')
+  const issues: ListeningDateIssue[] = []
+  groups.forEach((group, index) => {
+    const value = normalizeText(group.work_date)
+    if (!value) return
+    const position = group.position ?? index
+    if (!range) {
+      issues.push({
+        groupId: group.group_id,
+        position,
+        value,
+        reason: '观察月与学期没有可用日期',
+      })
+      return
+    }
+    const date = parseListeningDate(value)
+    if (!date) {
+      issues.push({
+        groupId: group.group_id,
+        position,
+        value,
+        reason: '原作品日期不是规范日期，请选择日期替换或清空',
+      })
+      return
+    }
+    if (date.iso < range.min || date.iso > range.max) {
+      issues.push({
+        groupId: group.group_id,
+        position,
+        value,
+        reason: `作品日期不在 ${range.min}～${range.max} 交集内`,
+      })
+    }
+  })
+  return issues
+}
+
+export function dateFieldsChanged(
+  current: ListeningDomainState,
+  baseline: ListeningDomainState,
+): boolean {
+  if (
+    normalizeText(current.observation_date) !==
+    normalizeText(baseline.observation_date)
+  ) {
+    return true
+  }
+  return current.groups.some((group) => {
+    const saved = baseline.groups.find(
+      (item) => item.group_id === group.group_id,
+    )
+    return (
+      normalizeText(group.work_date) !== normalizeText(saved?.work_date)
+    )
+  })
 }
 
 export interface ListeningOrderResult {
@@ -227,6 +695,10 @@ export interface ListeningApi {
     groupId: string,
     form: FormData,
   ): Promise<ListeningPhotoResult>
+  uploadPhotoBatch(
+    recordId: string,
+    form: FormData,
+  ): Promise<ListeningBatchResult>
   reorder(
     recordId: string,
     domain: ListeningDomain,
@@ -241,6 +713,15 @@ export interface ListeningApi {
     requestId: string,
     expectedRevision: number,
   ): Promise<ListeningRemoveResult>
+  getRotations?(recordId: string): Promise<ListeningRotationsResponse>
+  rotatePhoto(
+    recordId: string,
+    domain: ListeningDomain,
+    groupId: string,
+    requestId: string,
+    expectedRevision: number,
+    rotationQuarters: number,
+  ): Promise<ListeningRotateResult>
   getOperation(recordId: string, requestId: string): Promise<ListeningOperationReceipt>
   loadAsset(recordId: string, assetId: string, signal?: AbortSignal): Promise<Blob>
 }
@@ -305,6 +786,12 @@ export const listeningApi: ListeningApi = {
       form,
     )
   },
+  uploadPhotoBatch(recordId, form) {
+    return apiUpload<ListeningBatchResult>(
+      `${API_ROOT}/records/${pathSegment(recordId)}/photos/batch`,
+      form,
+    )
+  },
   reorder(recordId, domain, requestId, expectedRevision, groupIds) {
     return apiPost<ListeningOrderResult>(
       `${API_ROOT}/records/${pathSegment(recordId)}/domains/${domain}/photos/order`,
@@ -321,6 +808,28 @@ export const listeningApi: ListeningApi = {
       {
         request_id: requestId,
         expected_revision: expectedRevision,
+      },
+    )
+  },
+  getRotations(recordId) {
+    return apiGet<ListeningRotationsResponse>(
+      `${API_ROOT}/records/${pathSegment(recordId)}/photos/rotations`,
+    )
+  },
+  rotatePhoto(
+    recordId,
+    domain,
+    groupId,
+    requestId,
+    expectedRevision,
+    rotationQuarters,
+  ) {
+    return apiPost<ListeningRotateResult>(
+      `${API_ROOT}/records/${pathSegment(recordId)}/domains/${domain}/photos/${pathSegment(groupId)}/rotate`,
+      {
+        request_id: requestId,
+        expected_revision: expectedRevision,
+        rotation_quarters: rotationQuarters,
       },
     )
   },
@@ -533,6 +1042,7 @@ export function createListeningState(
     templates: {},
     forms: {},
     baselines: {},
+    rotations: {},
     domain,
     name: '',
     nameBaseline: '',
@@ -550,7 +1060,7 @@ export function createListeningState(
 }
 
 export interface PendingUnknown {
-  kind: 'name' | 'domain' | 'order' | 'photo' | 'remove'
+  kind: 'name' | 'domain' | 'order' | 'photo' | 'batch' | 'rotate' | 'remove'
   requestId: string
   expectedRevision: number
   label: string
@@ -564,6 +1074,8 @@ export interface ListeningSessionState {
   templates: Partial<Record<ListeningDomain, ListeningTemplate>>
   forms: Partial<Record<ListeningDomain, ListeningDomainState>>
   baselines: Partial<Record<ListeningDomain, ListeningDomainState>>
+  /** asset id -> teacher manual clockwise quarter turns (0–3). */
+  rotations: Record<string, number>
   domain: ListeningDomain
   name: string
   nameBaseline: string
@@ -615,16 +1127,83 @@ export class ListeningSession {
     return this.state.templates[domain]
   }
 
+  private normalizedRotationMap(
+    source: unknown,
+  ): Record<string, number> {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      throw new Error('照片方向记录不合法')
+    }
+    const normalized: Record<string, number> = {}
+    for (const [assetId, value] of Object.entries(
+      source as Record<string, unknown>,
+    )) {
+      const quarters = rotationQuarters(value)
+      if (!assetId || quarters === null) {
+        throw new Error('照片方向记录不合法')
+      }
+      normalized[assetId] = quarters
+    }
+    return normalized
+  }
+
+  /**
+   * Resolve the direction map against the exact same record revision.
+   *
+   * New backends include `rotations` in the record DTO's read transaction.
+   * For an older projection, a separate rotation GET is accepted only when
+   * its revision matches; otherwise both record and direction are re-read.
+   */
+  private async consistentRecordAndRotations(
+    initial: ListeningRecordDetail,
+  ): Promise<{
+    record: ListeningRecordDetail
+    rotations: Record<string, number>
+  }> {
+    if (initial.rotations !== undefined) {
+      return {
+        record: initial,
+        rotations: this.normalizedRotationMap(initial.rotations),
+      }
+    }
+    if (!this.api.getRotations) {
+      return { record: initial, rotations: {} }
+    }
+    let record = initial
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await this.api.getRotations(this.state.recordId)
+      if (response.record_id !== record.record_id) {
+        throw new Error('照片方向记录身份不一致')
+      }
+      const rotations = this.normalizedRotationMap(response.rotations)
+      if (
+        response.revision === undefined ||
+        response.revision === record.revision
+      ) {
+        return { record, rotations }
+      }
+      record = await this.api.getRecord(this.state.recordId)
+      if (record.rotations !== undefined) {
+        return {
+          record,
+          rotations: this.normalizedRotationMap(record.rotations),
+        }
+      }
+    }
+    throw new Error('照片方向与记录修订不一致，请重新进入记录')
+  }
+
   async load(): Promise<boolean> {
     const seq = ++this.state.loadSeq
     this.state.busy = true
     this.state.error = ''
     try {
-      const [record, templates] = await Promise.all([
-        this.api.getRecord(this.state.recordId),
-        this.api.getTemplates(this.state.recordId),
-      ])
+      const initial = await this.api.getRecord(this.state.recordId)
+      const templates = await this.api.getTemplates(this.state.recordId)
       if (seq !== this.state.loadSeq) return false
+      const snapshot = await this.consistentRecordAndRotations(initial)
+      if (seq !== this.state.loadSeq) return false
+      const record = snapshot.record
+      const normalizedRotations = snapshot.rotations
       if (
         templates.record_id !== undefined &&
         templates.record_id !== record.record_id
@@ -666,6 +1245,7 @@ export class ListeningSession {
       this.state.record = record
       this.state.forms = forms
       this.state.baselines = baselines
+      this.state.rotations = normalizedRotations
       this.state.templates = boundTemplates
       this.state.name = record.child_name
       this.state.nameBaseline = record.child_name
@@ -708,6 +1288,22 @@ export class ListeningSession {
     this.state.editEpoch += 1
   }
 
+  /** Explicit cancel of local observation/work-date edits; never autosaves. */
+  restoreDateBaseline(domain = this.state.domain): boolean {
+    const form = this.state.forms[domain]
+    const baseline = this.state.baselines[domain]
+    if (!form || !baseline) return false
+    form.observation_date = baseline.observation_date
+    for (const group of form.groups) {
+      const saved = baseline.groups.find(
+        (item) => item.group_id === group.group_id,
+      )
+      if (saved) group.work_date = saved.work_date
+    }
+    this.state.editEpoch += 1
+    return true
+  }
+
   applyConfirmedAdoption(
     domain: ListeningDomain,
     revision: number,
@@ -718,6 +1314,7 @@ export class ListeningSession {
     if (!baseline || !form || !Number.isInteger(revision) || revision < 1) return
     const clean: Record<string, unknown> = {}
     for (const field of [
+      'goal',
       'overall_evaluation',
       'support_strategy',
     ] as const) {
@@ -1062,7 +1659,11 @@ export class ListeningSession {
       this.state.error = error.message || '内容版本冲突'
       return 'conflict'
     }
-    if (isApiError(error) && error.status === 0) {
+    if (
+      isApiError(error) &&
+      (error.status === 0 ||
+        this.isUncertainCommitFailure(error, pending.kind))
+    ) {
       this.state.unknown = {
         kind: pending.kind,
         requestId: pending.requestId,
@@ -1078,13 +1679,39 @@ export class ListeningSession {
     return 'failed'
   }
 
-  private handleRetryError(error: unknown): SaveOutcome {
+  private isUncertainCommitFailure(
+    error: unknown,
+    kind: PendingUnknown['kind'] | undefined,
+  ): boolean {
+    if (!isApiError(error) || error.status !== 503) return false
+    if (error.code === 'LISTENING_BATCH_COMMIT_UNCERTAIN') return true
+    return (
+      kind === 'rotate' &&
+      error.code === 'LISTENING_ROTATION_COMMIT_UNCERTAIN'
+    )
+  }
+
+  private handleRetryError(
+    error: unknown,
+    kind?: PendingUnknown['kind'],
+  ): SaveOutcome {
+    if (kind === 'batch' || kind === 'rotate') {
+      // A retry failure only proves this retry did not succeed. The original
+      // request may still have committed, so keep its id, target and version
+      // until the original receipt can be checked.
+      this.state.error =
+        '重试未成功，原请求结果仍待核对；请核对原回执或再次重试原请求'
+      return 'indeterminate'
+    }
     if (isApiError(error) && error.status === 409) {
       this.state.unknown = null
       this.state.error = error.message || '内容版本冲突'
       return 'conflict'
     }
-    if (isApiError(error) && error.status === 0) {
+    if (
+      isApiError(error) &&
+      (error.status === 0 || this.isUncertainCommitFailure(error, kind))
+    ) {
       this.state.error = '保存结果仍未知；原请求保留，可再次重试或核对回执'
       return 'indeterminate'
     }
@@ -1159,6 +1786,9 @@ export class ListeningSession {
       if (lifecycle !== this.state.lifecycle) return 'indeterminate'
       this.state.revision = result.revision
       group.asset_id = result.asset_id
+      if (result.old_asset_id) delete this.state.rotations[result.old_asset_id]
+      this.state.rotations[result.asset_id] =
+        rotationQuarters(result.rotation_quarters) ?? 0
       const baseline = this.state.baselines[domain]
       const savedGroup = baseline?.groups.find((item) => item.group_id === groupId)
       if (savedGroup) savedGroup.asset_id = result.asset_id
@@ -1183,6 +1813,11 @@ export class ListeningSession {
             if (lifecycle !== this.state.lifecycle) return 'indeterminate'
             this.state.revision = result.revision
             group.asset_id = result.asset_id
+            if (result.old_asset_id) {
+              delete this.state.rotations[result.old_asset_id]
+            }
+            this.state.rotations[result.asset_id] =
+              rotationQuarters(result.rotation_quarters) ?? 0
             const baseline = this.state.baselines[domain]
             const savedGroup = baseline?.groups.find(
               (item) => item.group_id === groupId,
@@ -1197,6 +1832,231 @@ export class ListeningSession {
           }
         },
         describe: () => '照片上传结果未知；可用原请求重试（不会自动新建记录）',
+      })
+    } finally {
+      if (lifecycle === this.state.lifecycle) this.state.busy = false
+    }
+  }
+
+  /**
+   * Persist one manual display rotation (absolute quarters, clockwise).
+   *
+   * The original asset bytes and hash never change; preview CSS and the Word/AI
+   * working image both apply EXIF first and this value afterwards.
+   */
+  async rotatePhoto(groupId: string, target: number): Promise<SaveOutcome> {
+    const normalized = rotationQuarters(target)
+    if (normalized === null) {
+      this.state.error = '照片方向必须是 0～3 个四分之一圈'
+      return 'failed'
+    }
+    const lifecycle = this.state.lifecycle
+    const domain = this.state.domain
+    const form = this.state.forms[domain]
+    const group = form?.groups.find((item) => item.group_id === groupId)
+    if (!group?.asset_id) {
+      this.state.error = '该图位尚未上传照片'
+      return 'failed'
+    }
+    const assetId = group.asset_id
+    if ((this.state.rotations[assetId] ?? 0) === normalized) {
+      return 'unchanged'
+    }
+    const saved = await this.saveCurrent()
+    if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+    if (saved !== 'saved' && saved !== 'unchanged') return saved
+    const currentGroup = this.state.forms[domain]?.groups.find(
+      (item) => item.group_id === groupId,
+    )
+    if (currentGroup?.asset_id !== assetId) {
+      this.state.error = '照片在保存期间发生变化，请重试'
+      return 'failed'
+    }
+    const requestId = newRequestId()
+    const expectedRevision = this.state.revision
+    const apply = (result: ListeningRotateResult): void => {
+      this.state.revision = result.revision
+      this.state.rotations[result.asset_id] = result.rotation_quarters
+      this.state.error = ''
+    }
+    this.state.busy = true
+    try {
+      const result = await this.api.rotatePhoto(
+        this.state.recordId,
+        domain,
+        groupId,
+        requestId,
+        expectedRevision,
+        normalized,
+      )
+      if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+      apply(result)
+      return result.changed ? 'saved' : 'unchanged'
+    } catch (error) {
+      if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+      return this.handleSaveError(error, {
+        kind: 'rotate',
+        requestId,
+        expectedRevision,
+        label: '照片方向',
+        retry: async () => {
+          if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+          try {
+            const result = await this.api.rotatePhoto(
+              this.state.recordId,
+              domain,
+              groupId,
+              requestId,
+              expectedRevision,
+              normalized,
+            )
+            if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+            apply(result)
+            this.state.unknown = null
+            return result.changed ? 'saved' : 'unchanged'
+          } catch (retryError) {
+            if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+            return this.handleRetryError(retryError, 'rotate')
+          }
+        },
+        describe: () => '照片方向保存结果未知；可用原请求重试',
+      })
+    } finally {
+      if (lifecycle === this.state.lifecycle) this.state.busy = false
+    }
+  }
+
+  /**
+   * Save 1–15 selected files as one protected operation.
+   *
+   * The whole batch carries one request id, one expected revision and one
+   * revision increment. A replay/retry reuses the exact same multipart body;
+   * an invalid plan returns before any save or upload, so it cannot leave a
+   * partial association or replace an existing photo.
+   */
+  async importPhotoBatch(entries: ListeningBatchEntry[]): Promise<SaveOutcome> {
+    if (entries.length === 0) return 'unchanged'
+    if (entries.length > MAX_BATCH_PHOTOS) {
+      this.state.error = `一次最多选择 ${MAX_BATCH_PHOTOS} 张照片`
+      return 'failed'
+    }
+    const seenGroups = new Set<string>()
+    let totalBytes = 0
+    for (const entry of entries) {
+      if (seenGroups.has(entry.groupId)) {
+        this.state.error = '本批照片落位重复，请重新预览后再保存'
+        return 'failed'
+      }
+      seenGroups.add(entry.groupId)
+      const group = this.state.forms[entry.domain]?.groups.find(
+        (item) => item.group_id === entry.groupId,
+      )
+      if (!group) {
+        this.state.error = '目标图位不属于当前记录，请重新预览'
+        return 'failed'
+      }
+      if (group.asset_id !== null) {
+        this.state.error = '目标图位已有照片，已有照片不会被替换，请重新预览'
+        return 'failed'
+      }
+      if (!entry.file || entry.file.size <= 0) {
+        this.state.error = '本批照片含空文件，请重新选择'
+        return 'failed'
+      }
+      if (entry.file.size > MAX_BATCH_PHOTO_BYTES) {
+        this.state.error = '单张照片超过 25 MB 上限，请压缩后重试'
+        return 'failed'
+      }
+      totalBytes += entry.file.size
+    }
+    if (totalBytes > MAX_BATCH_TOTAL_BYTES) {
+      this.state.error = '本批照片合计超过 75 MB 总请求上限，请减少照片'
+      return 'failed'
+    }
+
+    const lifecycle = this.state.lifecycle
+    const saved = await this.saveCurrent()
+    if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+    if (saved !== 'saved' && saved !== 'unchanged') return saved
+    const requestId = newRequestId()
+    const expectedRevision = this.state.revision
+    const buildForm = () => {
+      const data = new FormData()
+      data.set('request_id', requestId)
+      data.set('expected_revision', String(expectedRevision))
+      data.set(
+        'assignments',
+        JSON.stringify(
+          entries.map((entry, index) => ({
+            index,
+            domain: entry.domain,
+            group_id: entry.groupId,
+            display_name: entry.file.name || `photo-${index + 1}`,
+          })),
+        ),
+      )
+      entries.forEach((entry, index) => {
+        data.set(
+          `file_${index}`,
+          entry.file,
+          entry.file.name || `photo-${index + 1}`,
+        )
+      })
+      return data
+    }
+    const apply = (result: ListeningBatchResult): void => {
+      this.state.revision = result.revision
+      for (const item of result.items) {
+        const form = this.state.forms[item.domain]
+        const group = form?.groups.find(
+          (candidate) => candidate.group_id === item.group_id,
+        )
+        if (group) group.asset_id = item.asset_id
+        this.state.rotations[item.asset_id] =
+          rotationQuarters(item.rotation_quarters) ?? 0
+        const baseline = this.state.baselines[item.domain]
+        const savedGroup = baseline?.groups.find(
+          (candidate) => candidate.group_id === item.group_id,
+        )
+        if (savedGroup) savedGroup.asset_id = item.asset_id
+      }
+    }
+    this.state.busy = true
+    try {
+      const result = await this.api.uploadPhotoBatch(
+        this.state.recordId,
+        buildForm(),
+      )
+      if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+      apply(result)
+      this.state.error = ''
+      return result.changed ? 'saved' : 'unchanged'
+    } catch (error) {
+      if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+      return this.handleSaveError(error, {
+        kind: 'batch',
+        requestId,
+        expectedRevision,
+        label: '整批照片',
+        retry: async () => {
+          if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+          try {
+            const result = await this.api.uploadPhotoBatch(
+              this.state.recordId,
+              buildForm(),
+            )
+            if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+            apply(result)
+            this.state.unknown = null
+            this.state.error = ''
+            return result.changed ? 'saved' : 'unchanged'
+          } catch (retryError) {
+            if (lifecycle !== this.state.lifecycle) return 'indeterminate'
+            return this.handleRetryError(retryError, 'batch')
+          }
+        },
+        describe: () =>
+          '整批照片保存结果未知；可用原请求重试（不会重复、覆盖或部分写入）',
       })
     } finally {
       if (lifecycle === this.state.lifecycle) this.state.busy = false
@@ -1226,6 +2086,7 @@ export class ListeningSession {
       if (lifecycle !== this.state.lifecycle) return 'indeterminate'
       this.state.revision = result.revision
       group.asset_id = null
+      if (result.old_asset_id) delete this.state.rotations[result.old_asset_id]
       const baseline = this.state.baselines[domain]
       const savedGroup = baseline?.groups.find(
         (item) => item.group_id === groupId,
@@ -1253,6 +2114,9 @@ export class ListeningSession {
             if (lifecycle !== this.state.lifecycle) return 'indeterminate'
             this.state.revision = result.revision
             group.asset_id = null
+            if (result.old_asset_id) {
+              delete this.state.rotations[result.old_asset_id]
+            }
             const baseline = this.state.baselines[domain]
             const savedGroup = baseline?.groups.find(
               (item) => item.group_id === groupId,
@@ -1284,6 +2148,7 @@ export class ListeningSession {
     this.state.templates = {}
     this.state.forms = {}
     this.state.baselines = {}
+    this.state.rotations = {}
     this.state.name = ''
     this.state.nameBaseline = ''
     this.state.revision = 0

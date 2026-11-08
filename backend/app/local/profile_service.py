@@ -54,8 +54,8 @@ from app.local.models import (
 )
 from app.local.normalize import NormalizedInitialization
 from app.local.prompt_bundles import (
+    INITIAL_REQUIRED_TASK_TYPES,
     REGISTERED_TASK_TYPES,
-    TASK_TYPES,
     effective_prompt_seed,
 )
 from app.local.tx import begin_immediate, read_scope, rollback
@@ -239,6 +239,8 @@ def initialize(
     session: Session,
     normalized: NormalizedInitialization,
     as_of_date: date | None = None,
+    *,
+    prompt_package_builtin_only: bool = False,
 ) -> tuple[dict, bool]:
     """Create the single local profile atomically; returns (payload, created)."""
     target = as_of_date if as_of_date is not None else date.today()
@@ -393,7 +395,8 @@ def _create_initialized(
     initial_seed = effective_prompt_seed(
         session,
         task_types=REGISTERED_TASK_TYPES,
-        required_task_types=TASK_TYPES,
+        required_task_types=INITIAL_REQUIRED_TASK_TYPES,
+        builtin_only=prompt_package_builtin_only,
     )
 
     for task_type, seed in initial_seed.items():

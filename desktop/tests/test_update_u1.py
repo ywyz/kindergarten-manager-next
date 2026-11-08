@@ -1418,6 +1418,13 @@ def test_bridge_guards_and_no_install_endpoint():
         def cancel(self):
             return {"state": "cancelled", "install_available": False}
 
+        def set_channel(self, channel):
+            return {
+                "state": "idle",
+                "check_channel": channel,
+                "install_available": False,
+            }
+
     host = d1_host_api.D1HostApi(launch_token="t", update_manager=FakeManager())
     assert host.get_update_state()["error_code"] == "BRIDGE_NOT_READY"
     assert host.page_ready({"bridge_protocol": d1_host_api.BRIDGE_PROTOCOL})["accepted"] is True
@@ -1425,4 +1432,127 @@ def test_bridge_guards_and_no_install_endpoint():
     assert host.check_for_update()["state"] == "checking"
     assert host.start_update_download()["state"] == "downloading"
     assert host.cancel_update_download()["state"] == "cancelled"
+    assert host.set_update_channel("preview")["check_channel"] == "preview"
+    assert "set_update_channel" in d1_host_api.BRIDGE_ALLOWED_ENDPOINTS
     assert "request_update_install" not in d1_host_api.BRIDGE_ALLOWED_ENDPOINTS
+
+
+def test_bridge_channel_switch_is_blocked_during_install_handoff():
+    class FakeManager:
+        identity = CURRENT
+
+        def state(self):
+            return {"state": "ready", "install_available": True}
+
+        def set_channel(self, channel):
+            raise AssertionError("busy handoff must not reach the manager")
+
+    class FakeCoordinator:
+        def install_available(self):
+            return False
+
+        def state(self):
+            return {
+                "install_state": "pending",
+                "install_available": False,
+            }
+
+    host = d1_host_api.D1HostApi(
+        launch_token="t",
+        update_manager=FakeManager(),
+        install_coordinator=FakeCoordinator(),
+    )
+    assert host.page_ready({"bridge_protocol": d1_host_api.BRIDGE_PROTOCOL})["accepted"] is True
+    result = host.set_update_channel("preview")
+    assert result["channel_switch_error"] == "UPDATE_CHANNEL_SWITCH_BUSY"
+    assert result["install_state"] == "pending"
+
+
+def test_preview_identity_parses_with_full_version_and_channel(tmp_path):
+    from update_identity import (
+        is_preview_version,
+        load_app_identity,
+        version_key,
+    )
+
+    identity = {
+        "app_id": "kindergarten-manager-next",
+        "app_name": "KindergartenManager",
+        "channel": "preview",
+        "version": "0.1.0-listening-test.20261107",
+        "build_id": str(uuid.uuid4()),
+        "package_format": "pyinstaller-onedir-zip-v1",
+        "platform": "windows",
+        "arch": "x64",
+        "python": "3.14.10",
+        "database_revision": CURRENT.database_revision,
+    }
+    path = tmp_path / "preview-identity.json"
+    path.write_text(json.dumps(identity), encoding="utf-8")
+    loaded = load_app_identity(
+        database_revision=CURRENT.database_revision,
+        path=path,
+        require_packaged=True,
+    )
+    assert loaded is not None
+    assert loaded.channel == "preview"
+    assert loaded.version == "0.1.0-listening-test.20261107"
+    assert is_preview_version(loaded.version) is True
+    assert version_key("0.1.0") > version_key(loaded.version)
+    assert version_key("0.2.0-listening-test.3") > version_key(loaded.version)
+    assert version_key("0.2.0-listening-test.10") > version_key(
+        "0.2.0-listening-test.3"
+    )
+    for bad in (
+        "0.1.0-listening-test.10\n",
+        "0.1.0-listening-test.1٢",
+        "0.1.0\n",
+        "0.1٢.0",
+    ):
+        with pytest.raises(ValueError):
+            version_key(bad)
+        bad_identity = dict(identity)
+        bad_identity["version"] = bad
+        bad_path = tmp_path / f"bad-{uuid.uuid4().hex}.json"
+        bad_path.write_text(json.dumps(bad_identity), encoding="utf-8")
+        assert (
+            load_app_identity(
+                database_revision=CURRENT.database_revision,
+                path=bad_path,
+                require_packaged=True,
+            )
+            is None
+        ), bad
+
+
+def test_installed_identity_channel_and_version_shape_must_match(tmp_path):
+    from update_identity import load_app_identity
+
+    base = {
+        "app_id": "kindergarten-manager-next",
+        "app_name": "KindergartenManager",
+        "channel": "stable",
+        "version": "0.1.0",
+        "build_id": str(uuid.uuid4()),
+        "package_format": "pyinstaller-onedir-zip-v1",
+        "platform": "windows",
+        "arch": "x64",
+        "python": "3.14.10",
+        "database_revision": CURRENT.database_revision,
+    }
+    variants = [
+        {"channel": "preview", "version": "0.1.0"},
+        {"channel": "stable", "version": "0.1.0-listening-test.1"},
+        {"channel": "preview", "version": "0.2.0-listening-test.1"},
+    ]
+    expected = [False, False, True]
+    for index, (variant, valid) in enumerate(zip(variants, expected)):
+        data = {**base, **variant}
+        path = tmp_path / f"identity-shape-{index}.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        loaded = load_app_identity(
+            database_revision=CURRENT.database_revision,
+            path=path,
+            require_packaged=True,
+        )
+        assert (loaded is not None) is valid, variant

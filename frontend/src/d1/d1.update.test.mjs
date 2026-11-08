@@ -238,6 +238,30 @@ const DomTagStub = {
   },
 }
 
+const DomRadioGroupStub = {
+  props: { modelValue: String, disabled: Boolean },
+  setup(props, { slots, attrs }) {
+    return () =>
+      vue.h(
+        'div',
+        { ...attrs, 'data-disabled': props.disabled ? 'true' : 'false' },
+        slots.default?.() ?? [],
+      )
+  },
+}
+
+const DomRadioButtonStub = {
+  props: { value: String, disabled: Boolean },
+  setup(props, { slots, attrs }) {
+    return () =>
+      vue.h(
+        'button',
+        { ...attrs, disabled: !!props.disabled },
+        slots.default?.() ?? [],
+      )
+  },
+}
+
 const DomProgressStub = {
   props: { percentage: Number, status: String },
   setup(props) {
@@ -331,6 +355,11 @@ function status(overrides = {}) {  return {
     error_message: null,
     install_available: false,
     download_id: null,
+    installed_channel: 'stable',
+    check_channel: 'stable',
+    available_channels: ['stable', 'preview'],
+    channel_switch_available: true,
+    channel_switch_error: null,
     ...overrides,
   }
 }
@@ -367,6 +396,8 @@ async function mountPanel(props = {}) {
         onCancel: () => emitted.push(['cancel']),
         onRetry: () => emitted.push(['retry']),
         onInstall: () => emitted.push(['install']),
+        onSwitchChannel: (channel) => emitted.push(['switch-channel', channel]),
+        onRefresh: () => emitted.push(['refresh']),
         ...props,
       }),
   })
@@ -375,6 +406,8 @@ async function mountPanel(props = {}) {
   app.component('el-alert', DomAlertStub)
   app.component('el-tag', DomTagStub)
   app.component('el-progress', DomProgressStub)
+  app.component('el-radio-group', DomRadioGroupStub)
+  app.component('el-radio-button', DomRadioButtonStub)
   const mountEl = { type: 'element', tag: 'div', text: '', props: {}, children: [], parent: null }
   app.mount(mountEl)
   await settle()
@@ -742,6 +775,376 @@ async function testNoReleaseAndUnavailableDownload() {
   ok('update GitHub: no formal Release and discovered-but-unavailable are distinct')
 }
 
+async function testPanelShowsInstalledAndCheckChannelsSeparately() {
+  const preview = status({
+    current: {
+      ...status().current,
+      channel: 'preview',
+      version: '0.1.0-listening-test.20261107',
+    },
+    installed_channel: 'preview',
+    check_channel: 'stable',
+    available_channels: ['stable', 'preview'],
+    channel_switch_available: true,
+  })
+  const { mountEl, emitted } = await mountPanel({ status: preview })
+  const text = nodeText(mountEl)
+  assert.match(text, /已安装版本：v0\.1\.0-listening-test\.20261107/)
+  assert.match(text, /当前渠道：预览版/)
+  assert.match(text, /检查渠道/)
+  const group = byD1(mountEl, 'update-channel-group')
+  assert.ok(group)
+  assert.equal(group.props['data-disabled'], 'false')
+  group.props.onChange('preview')
+  assert.deepEqual(emitted.at(-1), ['switch-channel', 'preview'])
+  ok('update #4: installed version/channel and check preference are separate and switch explicitly')
+}
+
+async function testPanelChannelSwitchDisabledWhileBusyOrHandoff() {
+  for (const value of [
+    status({ state: 'checking', channel_switch_available: false }),
+    status({ state: 'ready', install_state: 'pending', install_available: true }),
+  ]) {
+    const { mountEl, emitted } = await mountPanel({ status: value })
+    const group = byD1(mountEl, 'update-channel-group')
+    assert.equal(group.props['data-disabled'], 'true')
+    group.props.onChange('preview')
+    assert.equal(emitted.filter((item) => item[0] === 'switch-channel').length, 0)
+  }
+  ok('update #4: channel switching is blocked during checking or install handoff')
+}
+
+async function testPanelPreviewAndIncompleteStates() {
+  const previewTarget = {
+    ...target,
+    channel: 'preview',
+    version: '0.2.0-listening-test.3',
+  }
+  const preview = await mountPanel({
+    status: status({
+      state: 'available',
+      target: previewTarget,
+      check_channel: 'preview',
+      installed_channel: 'preview',
+      error_code: 'UPDATE_PREVIEW_TRUST_PENDING',
+      reason: 'UPDATE_PREVIEW_TRUST_PENDING',
+      download_available: false,
+    }),
+  })
+  assert.match(nodeText(byD1(preview.mountEl, 'update-target')), /预览版/)
+  assert.ok(byD1(preview.mountEl, 'update-unavailable'))
+  assert.equal(byButton(preview.mountEl, 'update-download'), null)
+  assert.match(nodeText(preview.mountEl), /签名清单和关闭交接审核后开放/)
+
+  const incomplete = await mountPanel({
+    status: status({
+      state: 'incomplete',
+      check_channel: 'preview',
+      reason: 'UPDATE_CHECK_INCOMPLETE',
+      channel_switch_available: true,
+    }),
+  })
+  assert.ok(byD1(incomplete.mountEl, 'update-incomplete'))
+  assert.ok(byButton(incomplete.mountEl, 'update-retry'))
+  ok('update #4: preview target is discoverable without download; incomplete pagination is explicit')
+}
+
+async function testPanelLocksAllEntriesWhileSwitchCommits() {
+  const { mountEl, emitted } = await mountPanel({
+    status: status({ state: 'available', target }),
+    operationBusy: true,
+    switching: true,
+  })
+  assert.ok(byD1(mountEl, 'update-switching'))
+  assert.equal(await evaluateDisabled(mountEl, 'update-check'), true)
+  assert.equal(byButton(mountEl, 'update-download'), null)
+  assert.equal(byButton(mountEl, 'update-install'), null)
+  const group = byD1(mountEl, 'update-channel-group')
+  assert.equal(group.props['data-disabled'], 'true')
+  group.props.onChange('preview')
+  assert.equal(emitted.filter((item) => item[0] === 'switch-channel').length, 0)
+  ok('update #4: a channel switch commit locks check, download, install and a second switch')
+}
+
+function evaluateDisabled(root, value) {
+  const node = byButton(root, value)
+  return node?.props?.disabled === true
+}
+
+async function testPanelStableBelowInstalledNotice() {
+  const { mountEl } = await mountPanel({
+    status: status({
+      state: 'up_to_date',
+      reason: 'UPDATE_STABLE_BELOW_INSTALLED',
+      check_channel: 'stable',
+      installed_channel: 'preview',
+      current: {
+        ...status().current,
+        channel: 'preview',
+        version: '0.2.0-listening-test.5',
+      },
+    }),
+  })
+  const notice = byD1(mountEl, 'update-channel-notice')
+  assert.ok(notice)
+  assert.match(nodeText(notice), /等待匹配或更高的正式版/)
+  ok('update #4: a lower stable release is explained without pretending the channel is current')
+}
+
+async function testAppChannelSwitchDropsTargetAndIgnoresOldRefresh() {
+  const gate = deferred()
+  let stateCalls = 0
+  let switchCalls = 0
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () => status({ state: 'available', target }),
+    get_update_state: async () => {
+      stateCalls += 1
+      if (stateCalls === 1) return gate.promise
+      return status({ state: 'idle', target: null, check_channel: 'preview' })
+    },
+    set_update_channel: async (channel) => {
+      switchCalls += 1
+      assert.equal(channel, 'preview')
+      return status({ state: 'idle', target: null, check_channel: 'preview' })
+    },
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateState()?.state === 'available', 'available')
+    const older = app.refreshUpdate()
+    await app.switchUpdateChannel('preview')
+    assert.equal(switchCalls, 1)
+    assert.equal(app.updateState().state, 'idle')
+    assert.equal(app.updateState().target, null)
+    assert.equal(app.updateState().check_channel, 'preview')
+    gate.resolve(status({ state: 'available', target }))
+    await older
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(app.updateState().state, 'idle')
+    assert.equal(app.updateState().target, null)
+    ok('update #4: channel switch clears the old target and a late refresh cannot restore it')
+  } finally {
+    harness.unmount()
+  }
+}
+
+async function testAppSwitchCommitLocksCheckDownloadAndInstall() {
+  const switchGate = deferred()
+  let checkCalls = 0
+  let switchCalls = 0
+  let downloadCalls = 0
+  let installCalls = 0
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () => {
+      checkCalls += 1
+      return status({ state: 'available', target })
+    },
+    set_update_channel: async (channel) => {
+      switchCalls += 1
+      await switchGate.promise
+      return status({ state: 'idle', target: null, check_channel: channel })
+    },
+    get_update_state: async () => status({ state: 'idle', target: null, check_channel: 'preview' }),
+    start_update_download: async () => {
+      downloadCalls += 1
+      return status({ state: 'downloading', target })
+    },
+    install_update: async () => {
+      installCalls += 1
+      return { accepted: false, reason: 'UPDATE_INSTALL_UNAVAILABLE' }
+    },
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateState()?.state === 'available', 'available')
+    const switching = app.switchUpdateChannel('preview')
+    await settle()
+    assert.equal(app.updateSwitching(), true)
+    await app.checkUpdate()
+    await app.downloadUpdate()
+    await app.installUpdate()
+    await app.switchUpdateChannel('stable')
+    assert.equal(checkCalls, 1)
+    assert.equal(downloadCalls, 0)
+    assert.equal(installCalls, 0)
+    assert.equal(switchCalls, 1)
+    switchGate.resolve()
+    await switching
+    assert.equal(app.updateSwitching(), false)
+    assert.equal(app.updateState().state, 'idle')
+    assert.equal(app.updateState().target, null)
+    assert.equal(app.updateState().check_channel, 'preview')
+    ok('update #4: switch commit synchronously locks check/download/install/second switch')
+  } finally {
+    harness.unmount()
+  }
+}
+
+async function testAppSwitchBridgeFailureReconcilesActualHostChannel() {
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () => status({ state: 'available', target }),
+    set_update_channel: async () => {
+      throw new Error('synthetic lost switch reply')
+    },
+    get_update_state: async () =>
+      status({ state: 'idle', target: null, check_channel: 'preview' }),
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateState()?.state === 'available', 'available')
+    await app.switchUpdateChannel('preview')
+    assert.equal(app.updateSwitching(), false)
+    assert.equal(app.updateState().state, 'idle')
+    assert.equal(app.updateState().target, null)
+    assert.equal(app.updateState().check_channel, 'preview')
+    assert.equal(app.updateState().channel_switch_error, null)
+    ok('update #4: a lost switch reply re-reads and applies the actual host channel')
+  } finally {
+    harness.unmount()
+  }
+}
+
+async function testPanelSwitchUnknownHidesOldTargetAndOffersRecovery() {
+  const { mountEl, emitted } = await mountPanel({
+    status: status({
+      state: 'switch_unknown',
+      reason: 'UPDATE_CHANNEL_SWITCH_UNKNOWN',
+      target: null,
+      download_available: false,
+      channel_switch_available: false,
+      channel_switch_error: 'UPDATE_CHANNEL_SWITCH_UNKNOWN',
+    }),
+  })
+  assert.ok(byD1(mountEl, 'update-switch-unknown'))
+  assert.equal(byButton(mountEl, 'update-download'), null)
+  assert.equal(byButton(mountEl, 'update-install'), null)
+  assert.equal(byD1(mountEl, 'update-target'), null)
+  const group = byD1(mountEl, 'update-channel-group')
+  assert.equal(group.props['data-disabled'], 'true')
+  const refresh = byButton(mountEl, 'update-refresh')
+  const recheck = byButton(mountEl, 'update-recheck')
+  assert.ok(refresh)
+  assert.ok(recheck)
+  refresh.props.onClick({})
+  assert.deepEqual(emitted.at(-1), ['refresh'])
+  recheck.props.onClick({})
+  assert.deepEqual(emitted.at(-1), ['check'])
+  ok('update #4: unknown host channel hides the old target and offers refresh/recheck')
+}
+
+async function testAppSwitchAndReadLossClearsTargetUntilRecovery() {
+  let stateCalls = 0
+  let checkPreview = false
+  const previewTarget = {
+    ...target,
+    channel: 'preview',
+    version: '0.2.0-listening-test.10',
+  }
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () =>
+      checkPreview
+        ? status({
+            state: 'available',
+            target: previewTarget,
+            check_channel: 'preview',
+            download_available: false,
+            reason: 'UPDATE_PREVIEW_TRUST_PENDING',
+            error_code: 'UPDATE_PREVIEW_TRUST_PENDING',
+          })
+        : status({ state: 'available', target }),
+    set_update_channel: async () => {
+      throw new Error('synthetic lost switch reply')
+    },
+    get_update_state: async () => {
+      stateCalls += 1
+      if (stateCalls <= 2) throw new Error('synthetic lost state reply')
+      return status({
+        state: 'idle',
+        target: null,
+        check_channel: 'preview',
+        channel_switch_available: true,
+      })
+    },
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateState()?.state === 'available', 'available')
+    await app.switchUpdateChannel('preview')
+    const unknown = app.updateState()
+    assert.equal(unknown.state, 'switch_unknown')
+    assert.equal(unknown.target, null)
+    assert.equal(unknown.download_available, false)
+    assert.equal(unknown.channel_switch_available, false)
+    assert.equal(unknown.channel_switch_error, 'UPDATE_CHANNEL_SWITCH_UNKNOWN')
+    assert.equal(app.updateSwitching(), false)
+
+    await app.refreshUpdate()
+    assert.equal(app.updateState().state, 'switch_unknown')
+    assert.equal(app.updateState().target, null)
+
+    await app.refreshUpdate()
+    assert.equal(app.updateState().state, 'idle')
+    assert.equal(app.updateState().target, null)
+    assert.equal(app.updateState().check_channel, 'preview')
+    assert.equal(app.updateState().channel_switch_available, true)
+    assert.equal(app.updateState().channel_switch_error, null)
+
+    checkPreview = true
+    await app.checkUpdate()
+    assert.equal(app.updateState().state, 'available')
+    assert.equal(app.updateState().target.version, '0.2.0-listening-test.10')
+    assert.equal(app.updateState().target.channel, 'preview')
+    assert.equal(app.updateState().download_available, false)
+    ok('update #4: lost switch and read replies clear the target, then recover on preview only')
+  } finally {
+    harness.unmount()
+  }
+}
+
+async function testAppSwitchFailureReadsExactOldStateNormally() {
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () => status({ state: 'available', target }),
+    set_update_channel: async () => {
+      throw new Error('synthetic lost switch reply')
+    },
+    get_update_state: async () =>
+      status({ state: 'available', target, check_channel: 'stable' }),
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateState()?.state === 'available', 'available')
+    await app.switchUpdateChannel('preview')
+    assert.equal(app.updateState().state, 'available')
+    assert.equal(app.updateState().target.version, '0.2.0')
+    assert.equal(app.updateState().check_channel, 'stable')
+    assert.equal(app.updateState().channel_switch_available, true)
+    assert.equal(app.updateState().channel_switch_error, 'UPDATE_CHANNEL_SWITCH_FAILED')
+    ok('update #4: an exact old host state is shown normally after a lost switch reply')
+  } finally {
+    harness.unmount()
+  }
+}
+
 const tests = [
   testReadyInstallConfirmation,
   testAvailableShowsTargetAndDownload,
@@ -756,6 +1159,17 @@ const tests = [
   testAppEchoesUpdatePlanInPageReady,
   testAppInstallIntentOnlyAfterHostAccepts,
   testAppInstallRejectedClearsIntent,
+  testPanelShowsInstalledAndCheckChannelsSeparately,
+  testPanelChannelSwitchDisabledWhileBusyOrHandoff,
+  testPanelPreviewAndIncompleteStates,
+  testPanelStableBelowInstalledNotice,
+  testAppChannelSwitchDropsTargetAndIgnoresOldRefresh,
+  testPanelLocksAllEntriesWhileSwitchCommits,
+  testAppSwitchCommitLocksCheckDownloadAndInstall,
+  testAppSwitchBridgeFailureReconcilesActualHostChannel,
+  testPanelSwitchUnknownHidesOldTargetAndOffersRecovery,
+  testAppSwitchAndReadLossClearsTargetUntilRecovery,
+  testAppSwitchFailureReadsExactOldStateNormally,
 ]
 
 for (const test of tests) {

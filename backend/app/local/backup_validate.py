@@ -1409,7 +1409,14 @@ def _listening_ai_chain(connection: sqlite3.Connection) -> None:
             row[2] == row[3]
             and (
                 (row[6] == "listening_note_draft" and row[5] is not None)
-                or (row[6] == "listening_domain_evaluate" and row[5] is None)
+                or (
+                    row[6] in (
+                        "listening_domain_evaluate",
+                        "listening_group_notes",
+                        "listening_goal_suggest",
+                    )
+                    and row[5] is None
+                )
             ),
             "倾听输入归属",
         )
@@ -1440,6 +1447,52 @@ def _listening_ai_chain(connection: sqlite3.Connection) -> None:
             len(photos) <= (1 if row[6] == "listening_note_draft" else 3),
             "倾听输入图片数",
         )
+        is_group_material = row[6] in (
+            "listening_group_notes",
+            "listening_goal_suggest",
+        )
+        payload_groups = (
+            list(payload.get("groups") or []) if is_group_material else []
+        )
+        photo_by_position: dict[int, Any] = {}
+        if is_group_material:
+            positions = []
+            for group in payload_groups:
+                require(
+                    isinstance(group, dict)
+                    and isinstance(group.get("position"), int)
+                    and not isinstance(group.get("position"), bool),
+                    "倾听输入冻结图位",
+                )
+                positions.append(int(group["position"]))
+            require(
+                positions == sorted(set(positions))
+                and 1 <= len(positions) <= 3,
+                "倾听输入冻结图位",
+            )
+            require(
+                deps.get("group_positions") == positions,
+                "倾听输入冻结图位",
+            )
+            photo_by_position = {
+                int(item.get("position")): item
+                for item in photos
+                if isinstance(item, dict)
+                and isinstance(item.get("position"), int)
+                and not isinstance(item.get("position"), bool)
+            }
+            if row[6] == "listening_group_notes":
+                require(len(photos) == len(positions), "倾听输入图片数")
+                require(
+                    set(photo_by_position) == set(positions),
+                    "倾听输入冻结图位",
+                )
+            else:
+                require(len(photos) <= len(positions), "倾听输入图片数")
+                require(
+                    set(photo_by_position).issubset(set(positions)),
+                    "倾听输入冻结图位",
+                )
         expected_dep = digest(
             {
                 "payload": payload,
@@ -1475,6 +1528,26 @@ def _listening_ai_chain(connection: sqlite3.Connection) -> None:
                 and (row[5] is None or item.get("group_id") == row[5]),
                 "倾听输入图片归属",
             )
+            if row[6] in (
+                "listening_group_notes",
+                "listening_goal_suggest",
+            ):
+                group_id = item.get("group_id")
+                require(
+                    isinstance(group_id, str) and bool(group_id),
+                    "倾听历史小组身份",
+                )
+                group = connection.execute(
+                    "SELECT record_id, domain FROM local_listening_photo_groups "
+                    "WHERE id=?",
+                    (group_id,),
+                ).fetchone()
+                require(
+                    group is not None
+                    and group[0] == row[3]
+                    and group[1] == row[4],
+                    "倾听历史小组身份",
+                )
             asset = connection.execute(
                 "SELECT record_id, content_hash FROM local_listening_assets WHERE id=?",
                 (item.get("asset_id"),),
@@ -1493,32 +1566,89 @@ def _listening_ai_chain(connection: sqlite3.Connection) -> None:
             require(False, "倾听模板")
         require(template.sha256 == payload.get("template_sha256"), "倾听模板散列")
         item_ids = [item.item_id for item in template.items]
-        expected_targets = (
-            {"listening_text"}
-            if row[6] == "listening_note_draft"
-            else {"overall_evaluation", "support_strategy", *item_ids}
-        )
+        if row[6] == "listening_note_draft":
+            expected_targets = {"listening_text"}
+        elif row[6] == "listening_domain_evaluate":
+            expected_targets = {
+                "overall_evaluation",
+                "support_strategy",
+                *item_ids,
+            }
+        elif row[6] == "listening_group_notes":
+            expected_targets = {
+                listening_ai_contracts.group_note_target_key(
+                    row[4], int(group["position"])
+                )
+                for group in payload_groups
+            }
+        else:
+            expected_targets = {"goal"}
         require(
             set(targets) == expected_targets
             and all(isinstance(value, str) and len(value) == 64 for value in targets.values()),
             "倾听目标散列",
         )
+        if row[6] == "listening_group_notes":
+            for group in payload_groups:
+                target = listening_ai_contracts.group_note_target_key(
+                    row[4], int(group["position"])
+                )
+                expected = listening_ai_contracts.value_hash(
+                    (group.get("listening_text") or "").strip()
+                )
+                require(
+                    targets.get(target) == expected,
+                    "倾听目标散列来源",
+                )
+        if row[6] == "listening_goal_suggest":
+            require(
+                targets.get("goal")
+                == listening_ai_contracts.value_hash(
+                    (payload.get("goal") or "").strip()
+                ),
+                "倾听目标散列来源",
+            )
         if row[6] == "listening_domain_evaluate":
             require(
                 [item.get("item_id") for item in payload.get("items") or []]
                 == item_ids,
                 "倾听领域项目集",
             )
-        wire_photos = (
-            [payload.get("photo")]
-            if row[6] == "listening_note_draft"
-            else [group.get("photo") for group in payload.get("groups") or []]
-        )
+        if row[6] == "listening_note_draft":
+            wire_photos = [payload.get("photo")]
+        elif row[6] == "listening_domain_evaluate":
+            wire_photos = [
+                group.get("photo") for group in payload.get("groups") or []
+            ]
+        else:
+            wire_photos = [group.get("photo") for group in payload_groups]
         require(
             sorted(item.get("work_hash") for item in wire_photos if item is not None)
             == sorted(item.get("work_hash") for item in photos),
             "倾听输入图片散列",
         )
+        if row[6] == "listening_group_notes":
+            for group in payload_groups:
+                photo = group.get("photo")
+                dependency = photo_by_position.get(int(group["position"]))
+                require(
+                    isinstance(photo, dict)
+                    and dependency is not None
+                    and photo.get("work_hash") == dependency.get("work_hash"),
+                    "倾听输入图片散列",
+                )
+        if row[6] == "listening_goal_suggest":
+            for group in payload_groups:
+                photo = group.get("photo")
+                if photo is None:
+                    continue
+                dependency = photo_by_position.get(int(group["position"]))
+                require(
+                    isinstance(photo, dict)
+                    and dependency is not None
+                    and photo.get("work_hash") == dependency.get("work_hash"),
+                    "倾听输入图片散列",
+                )
     tasks = {
         row[0]: row
         for row in connection.execute(
@@ -1582,13 +1712,28 @@ def _listening_ai_chain(connection: sqlite3.Connection) -> None:
             and task[7] == row[9],
             "倾听候选归属",
         )
+        inp = inputs.get(row[8])
+        require(inp is not None, "倾听候选输入")
+        expected_positions = None
+        if row[9] == "listening_group_notes":
+            try:
+                payload = json.loads(inp[8])
+                expected_positions = tuple(
+                    int(group["position"])
+                    for group in payload.get("groups") or []
+                )
+            except (TypeError, ValueError, KeyError):
+                require(False, "倾听候选冻结图位")
         try:
             raw = json.loads(row[11])
-            validated = listening_ai_contracts.validate_candidate(row[9], raw)
+            validated = listening_ai_contracts.validate_candidate(
+                row[9],
+                raw,
+                expected_positions=expected_positions,
+            )
         except Exception:
             require(False, "倾听候选合同")
         require(digest(raw) == row[12], "倾听候选散列")
-        inp = inputs.get(row[8])
         if row[9] == "listening_domain_evaluate":
             payload = json.loads(inp[8])
             expected_ids = [item.get("item_id") for item in payload.get("items") or []]
@@ -1608,9 +1753,14 @@ def _listening_ai_chain(connection: sqlite3.Connection) -> None:
     by_target: dict[tuple[str, str, str, str], list[Any]] = {}
     for row in adoption_rows:
         candidate = candidates.get(row[7])
+        require(candidate is not None, "倾听采用归属")
+        expected_scope = (
+            "__group_notes__"
+            if candidate[9] == "listening_group_notes"
+            else row[4] if row[4] is not None else "__domain__"
+        )
         require(
-            candidate is not None
-            and candidate[1] == row[1]
+            candidate[1] == row[1]
             and candidate[4] == row[2]
             and candidate[5] == row[2]
             and candidate[6] == row[3]
@@ -1622,7 +1772,7 @@ def _listening_ai_chain(connection: sqlite3.Connection) -> None:
             and type(row[12]) is int
             and row[11] >= 1
             and row[12] >= row[11]
-            and row[5] == (row[4] if row[4] is not None else "__domain__"),
+            and row[5] == expected_scope,
             "倾听采用归属",
         )
         operation = connection.execute(
@@ -1652,7 +1802,107 @@ def _listening_ai_chain(connection: sqlite3.Connection) -> None:
             value.get("value") if "value" in value else value.get("stars")
         )
         require(expected_hash == row[10], "倾听采用值散列")
-        by_target.setdefault((row[2], row[3], row[5], row[6]), []).append(row)
+        if candidate[9] == "listening_group_notes":
+            position = value.get("position")
+            group_id = value.get("group_id")
+            text = value.get("value")
+            require(
+                isinstance(position, int)
+                and not isinstance(position, bool)
+                and 0 <= position <= 2
+                and isinstance(group_id, str)
+                and bool(group_id)
+                and isinstance(text, str)
+                and row[6]
+                == listening_ai_contracts.group_note_target_key(
+                    row[3], position
+                ),
+                "倾听采用图位回执",
+            )
+            frozen_input = inputs.get(row[8])
+            require(frozen_input is not None, "倾听采用图位回执")
+            try:
+                frozen_payload = json.loads(frozen_input[8])
+                frozen_deps = json.loads(frozen_input[9])
+                frozen_targets = json.loads(frozen_input[11])
+            except (TypeError, ValueError):
+                require(False, "倾听采用图位回执")
+            frozen_groups = [
+                item
+                for item in frozen_deps.get("photos") or []
+                if isinstance(item, dict)
+                and item.get("position") == position
+                and item.get("group_id") == group_id
+            ]
+            require(
+                len(frozen_groups) == 1,
+                "倾听采用图位小组",
+            )
+            frozen_payload_groups = [
+                item
+                for item in frozen_payload.get("groups") or []
+                if isinstance(item, dict)
+                and item.get("position") == position
+            ]
+            require(
+                len(frozen_payload_groups) == 1,
+                "倾听采用冻结图位",
+            )
+            frozen_text = (
+                frozen_payload_groups[0].get("listening_text") or ""
+            ).strip()
+            require(
+                row[9] == frozen_targets.get(row[6])
+                == listening_ai_contracts.value_hash(frozen_text),
+                "倾听采用历史目标散列",
+            )
+            group = connection.execute(
+                "SELECT record_id, domain FROM local_listening_photo_groups "
+                "WHERE id=?",
+                (group_id,),
+            ).fetchone()
+            require(
+                group is not None
+                and group[0] == row[2]
+                and group[1] == row[3],
+                "倾听采用小组归属",
+            )
+            updates = result.get("group_updates")
+            require(
+                isinstance(updates, list)
+                and any(
+                    isinstance(update, dict)
+                    and update.get("target") == row[6]
+                    and update.get("position") == position
+                    and update.get("group_id") == group_id
+                    and update.get("value") == text
+                    for update in updates
+                ),
+                "倾听采用图位回执",
+            )
+        elif candidate[9] == "listening_goal_suggest":
+            text = value.get("value")
+            require(
+                row[6] == "goal" and isinstance(text, str),
+                "倾听目标回执",
+            )
+            frozen_input = inputs.get(row[8])
+            require(frozen_input is not None, "倾听目标回执")
+            try:
+                frozen_payload = json.loads(frozen_input[8])
+                frozen_targets = json.loads(frozen_input[11])
+            except (TypeError, ValueError):
+                require(False, "倾听目标回执")
+            frozen_goal = (frozen_payload.get("goal") or "").strip()
+            require(
+                row[9] == frozen_targets.get("goal")
+                == listening_ai_contracts.value_hash(frozen_goal),
+                "倾听目标历史散列",
+            )
+        else:
+            by_target.setdefault(
+                (row[2], row[3], row[5], row[6]), []
+            ).append(row)
     for rows in by_target.values():
         rows.sort(key=lambda item: item[12])
         input_row = inputs.get(rows[0][8])

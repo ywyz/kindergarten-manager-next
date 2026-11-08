@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,7 +24,7 @@ import update_helper
 import update_install
 import update_manifest
 import update_service
-from update_identity import AppIdentity
+from update_identity import AppIdentity, is_preview_version
 from update_manifest import ManifestError, canonical_json
 from update_trust import ReleaseConfigError, ReleaseSource, load_release_source
 
@@ -80,6 +81,7 @@ def _manifest_bytes(
     tag: str = "v0.2.0",
     *,
     version: str = "0.2.0",
+    channel: str | None = None,
     package_size: int = 1234,
     package_sha256: str = "a" * 64,
     package_url: str | None = None,
@@ -87,7 +89,7 @@ def _manifest_bytes(
 ) -> bytes:
     payload = {
         "app_id": CURRENT.app_id,
-        "channel": CURRENT.channel,
+        "channel": channel or CURRENT.channel,
         "version": version,
         "build_id": build_id or str(uuid.uuid4()),
         "platform": "windows",
@@ -252,11 +254,16 @@ def test_manifest_binding_and_config_roundtrip(tmp_path: Path):
     )
     source = update_github.manifest_source(release, {"test-key": PUBLIC})
     manifest = SimpleNamespace(
+        channel=release.channel,
         version="0.2.0",
         package_url=update_github.expected_package_url(release),
     )
     update_github.validate_manifest_binding(manifest, release)
-    bad = SimpleNamespace(version="0.2.1", package_url=manifest.package_url)
+    bad = SimpleNamespace(
+        channel=release.channel,
+        version="0.2.1",
+        package_url=manifest.package_url,
+    )
     with pytest.raises(ManifestError):
         update_github.validate_manifest_binding(bad, release)
     path = tmp_path / "update_release.json"
@@ -574,7 +581,10 @@ def test_github_manager_bad_signature_fails_closed(monkeypatch, tmp_path):
 
 
 def _make_package(
-    tmp_path: Path, *, version: str = "0.2.0"
+    tmp_path: Path,
+    *,
+    version: str = "0.2.0",
+    channel: str | None = None,
 ) -> tuple[Path, str, str, int]:
     build_id = str(uuid.uuid4())
     root = "KindergartenManager"
@@ -587,7 +597,7 @@ def _make_package(
     identity = {
         "app_id": CURRENT.app_id,
         "app_name": CURRENT.app_name,
-        "channel": CURRENT.channel,
+        "channel": channel or CURRENT.channel,
         "version": version,
         "build_id": build_id,
         "package_format": CURRENT.package_format,
@@ -607,7 +617,7 @@ def _make_package(
         "schema_version": 1,
         "app_id": CURRENT.app_id,
         "app_name": CURRENT.app_name,
-        "channel": CURRENT.channel,
+        "channel": channel or CURRENT.channel,
         "version": version,
         "build_id": build_id,
         "package_format": CURRENT.package_format,
@@ -688,7 +698,13 @@ def test_github_late_check_after_shutdown_does_not_publish(monkeypatch, tmp_path
     assert manager.state()["target"] is None
 
 
-def _helper_plan(tmp_path: Path, manifest: bytes, package: Path) -> SimpleNamespace:
+def _helper_plan(
+    tmp_path: Path,
+    manifest: bytes,
+    package: Path,
+    *,
+    current_version: str | None = None,
+) -> SimpleNamespace:
     payload = json.loads(manifest)["payload"]
     metadata = tmp_path / "update_metadata.json"
     metadata.write_text(json.dumps({"raw": manifest.decode("utf-8")}), encoding="utf-8")
@@ -709,15 +725,27 @@ def _helper_plan(tmp_path: Path, manifest: bytes, package: Path) -> SimpleNamesp
             "database_revision",
         )
     }
+    installed_version = current_version or CURRENT.version
+    current_identity = CURRENT.as_dict()
+    current_identity["version"] = installed_version
+    current_identity["channel"] = (
+        "preview" if is_preview_version(installed_version) else "stable"
+    )
+    install_root = tmp_path / "program"
+    app = install_root / "KindergartenManager"
+    (app / "_internal").mkdir(parents=True, exist_ok=True)
+    (app / "_internal" / "build_identity.json").write_text(
+        json.dumps(current_identity, ensure_ascii=False),
+        encoding="utf-8",
+    )
     return SimpleNamespace(
         release_config="",
         metadata_path=str(metadata),
         package_zip=str(package),
         state_dir=str(tmp_path / "state"),
-        current={
-            "version": CURRENT.version,
-            "database_revision": CURRENT.database_revision,
-        },
+        install_root=str(install_root),
+        install_app_dir=str(app),
+        current=current_identity,
         target=target,
     )
 
@@ -1338,3 +1366,656 @@ def test_product_loader_only_keys_or_missing_still_discovers(monkeypatch, tmp_pa
     assert state2["target"]["version"] == "0.2.0"
     assert state2["reason"] == "UPDATE_TRUST_UNCONFIGURED"
     assert state2["download_available"] is False
+
+
+PREVIEW_CURRENT = AppIdentity(
+    **{
+        **CURRENT.as_dict(),
+        "channel": "preview",
+        "version": "0.1.0-listening-test.20261107",
+    }
+)
+
+
+def _preview_list(tags: list[str]) -> bytes:
+    return json.dumps(
+        [
+            _release(tag, prerelease=True, assets=True)
+            for tag in tags
+        ],
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def test_preview_release_list_filters_markers_and_keeps_latest_missing_assets():
+    raw = json.dumps(
+        [
+            _release("v0.2.0-listening-test.3", prerelease=True),
+            _release("v0.2.0-listening-test.10", prerelease=True, assets=False),
+            _release("v0.2.0", prerelease=False),
+            _release("v0.2.0-listening-test.99", draft=True, prerelease=True),
+            _release("v0.2.1", prerelease=True),
+            _release("v0.2.0-preview.1", prerelease=True),
+        ],
+        ensure_ascii=False,
+    ).encode("utf-8")
+    releases, item_count, preview_count = update_github.parse_preview_release_page(raw)
+    assert item_count == 6
+    assert preview_count == 2
+    assert [release.version for release in releases] == [
+        "0.2.0-listening-test.3",
+        "0.2.0-listening-test.10",
+    ]
+    selected = update_github.select_preview_release(
+        releases, PREVIEW_CURRENT.version
+    )
+    assert selected is not None
+    assert selected.version == "0.2.0-listening-test.10"
+    assert selected.assets_complete is False
+    assert selected.missing_assets == (update_github.MANIFEST_ASSET,)
+    assert update_github.select_preview_release(releases, "0.2.0") is None
+    bad_tags = [
+        "v0.1.0-listening-test.10\n",
+        "v0.1.0-listening-test.1٢",
+    ]
+    for bad_tag in bad_tags:
+        bad_releases, bad_count, bad_preview = update_github.parse_preview_release_page(
+            json.dumps(
+                [_release(bad_tag, prerelease=True)], ensure_ascii=False
+            ).encode("utf-8")
+        )
+        assert bad_count == 1
+        assert bad_preview == 0
+        assert bad_releases == []
+    with pytest.raises(ManifestError) as bad_stable:
+        update_github.parse_latest_release(
+            json.dumps(_release("v0.2.0\n")).encode(), CURRENT.version
+        )
+    assert bad_stable.value.code == "UPDATE_METADATA_INVALID"
+    with pytest.raises(ManifestError) as bad_current:
+        update_github.select_preview_release(releases, "0.2.0\n")
+    assert bad_current.value.code == "UPDATE_METADATA_INVALID"
+    with pytest.raises(ManifestError):
+        update_github.select_preview_release(
+            [SimpleNamespace(version="0.2.0\n")], CURRENT.version
+        )
+
+
+def test_manifest_binding_rejects_non_ascii_or_trailing_newline_versions():
+    release = update_github.parse_latest_release(
+        json.dumps(_release("v0.2.0")).encode(), CURRENT.version
+    )
+    for bad_version in ("0.2.0\n", "0.2٢.0"):
+        manifest = SimpleNamespace(
+            channel=release.channel,
+            version=bad_version,
+            package_url=update_github.expected_package_url(release),
+        )
+        with pytest.raises(ManifestError) as caught:
+            update_github.validate_manifest_binding(manifest, release)
+        assert caught.value.code == "UPDATE_METADATA_INVALID"
+        with pytest.raises(ManifestError) as helper:
+            update_github.validate_github_manifest_for_version(
+                manifest, release.version
+            )
+        assert helper.value.code == "UPDATE_METADATA_INVALID"
+
+
+def test_stable_release_comparison_allows_same_base_promotion_and_blocks_downgrade():
+    release = update_github.parse_latest_release(
+        json.dumps(_release("v0.1.0")).encode(), PREVIEW_CURRENT.version
+    )
+    assert release.version == "0.1.0"
+
+    higher_preview = AppIdentity(
+        **{
+            **CURRENT.as_dict(),
+            "channel": "preview",
+            "version": "0.2.0-listening-test.5",
+        }
+    )
+    with pytest.raises(ManifestError) as below:
+        update_github.parse_latest_release(
+            json.dumps(_release("v0.1.0")).encode(), higher_preview.version
+        )
+    assert below.value.code == "UPDATE_STABLE_BELOW_INSTALLED"
+
+
+def test_preview_manager_discovers_switches_to_stable_and_persists_preference(
+    monkeypatch, tmp_path
+):
+    preference = tmp_path / "channel-preference.json"
+    manager = update_service.UpdateManager(
+        PREVIEW_CURRENT,
+        source=_source(),
+        enabled=True,
+        staging_root=tmp_path / "preview-staging",
+        allow_install=False,
+        channel_preference_path=preference,
+    )
+    assert manager.state()["check_channel"] == "preview"
+    assert manager.state()["available_channels"] == ["stable", "preview"]
+
+    def fake_open(source, url, read_timeout=update_service.READ_TIMEOUT, *, deadline=None):
+        if url == update_github.GITHUB_API_ORIGIN + update_github.GITHUB_API_PATH:
+            return None, _Response(200, json.dumps(_release("v0.1.0")).encode()), _Sock()
+        if "?per_page=100&page=1" in url:
+            return (
+                None,
+                _Response(
+                    200,
+                    _preview_list(
+                        [
+                            "v0.2.0-listening-test.3",
+                            "v0.2.0-listening-test.10",
+                        ]
+                    ),
+                ),
+                _Sock(),
+            )
+        if "0.2.0-listening-test.10" in url:
+            return (
+                None,
+                _Response(
+                    200,
+                    _manifest_bytes(
+                        tag="v0.2.0-listening-test.10",
+                        version="0.2.0-listening-test.10",
+                        channel="preview",
+                    ),
+                ),
+                _Sock(),
+            )
+        return (
+            None,
+            _Response(200, _manifest_bytes(tag="v0.1.0", version="0.1.0")),
+            _Sock(),
+        )
+
+    monkeypatch.setattr(update_service, "_open_url", fake_open)
+    manager.check()
+    preview_state = _wait_state(manager, "available")
+    assert preview_state["target"]["version"] == "0.2.0-listening-test.10"
+    assert preview_state["target"]["channel"] == "preview"
+    assert preview_state["reason"] is None
+    assert preview_state["download_available"] is False
+
+    switched = manager.set_channel("stable")
+    assert switched["check_channel"] == "stable"
+    assert switched["target"] is None
+    assert switched["state"] == "idle"
+    assert preference.is_file()
+    assert json.loads(preference.read_text(encoding="utf-8"))["channel"] == "stable"
+
+    manager.check()
+    stable_state = _wait_state(manager, "available")
+    assert stable_state["target"]["version"] == "0.1.0"
+    assert stable_state["target"]["channel"] == "stable"
+    assert stable_state["download_available"] is False
+
+    reopened = update_service.UpdateManager(
+        PREVIEW_CURRENT,
+        source=_source(),
+        enabled=True,
+        staging_root=tmp_path / "other-staging",
+        allow_install=False,
+        channel_preference_path=preference,
+    )
+    assert reopened.state()["check_channel"] == "stable"
+
+
+def test_preview_manager_reports_incomplete_no_release_and_busy_switch(
+    monkeypatch, tmp_path
+):
+    def full_page(source, url, read_timeout=update_service.READ_TIMEOUT, *, deadline=None):
+        page = int(url.rsplit("page=", 1)[1])
+        tags = [
+            f"v0.2.0-listening-test.{page * 100 + index}"
+            for index in range(100)
+        ]
+        return None, _Response(200, _preview_list(tags)), _Sock()
+
+    manager = update_service.UpdateManager(
+        PREVIEW_CURRENT,
+        source=_source(),
+        enabled=True,
+        staging_root=tmp_path / "incomplete-staging",
+        allow_install=False,
+        channel_preference_path=tmp_path / "incomplete-pref.json",
+    )
+    monkeypatch.setattr(update_service, "_open_url", full_page)
+    manager.check()
+    state = _wait_state(manager, "incomplete")
+    assert state["reason"] == "UPDATE_CHECK_INCOMPLETE"
+    assert state["target"] is None
+
+    empty = update_service.UpdateManager(
+        PREVIEW_CURRENT,
+        source=_source(),
+        enabled=True,
+        staging_root=tmp_path / "empty-staging",
+        allow_install=False,
+        channel_preference_path=tmp_path / "empty-pref.json",
+    )
+    monkeypatch.setattr(
+        update_service,
+        "_open_url",
+        lambda *args, **kwargs: (None, _Response(200, b"[]"), _Sock()),
+    )
+    empty.check()
+    empty_state = _wait_state(empty, "no_release")
+    assert empty_state["reason"] == "UPDATE_NO_RELEASE"
+
+    failure = update_service.UpdateManager(
+        PREVIEW_CURRENT,
+        source=_source(),
+        enabled=True,
+        staging_root=tmp_path / "failure-staging",
+        allow_install=False,
+        channel_preference_path=tmp_path / "failure-pref.json",
+    )
+    monkeypatch.setattr(
+        update_service,
+        "_open_url",
+        lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()),
+    )
+    failure.check()
+    failure_state = _wait_state(failure, "failed")
+    assert failure_state["error_code"] == "UPDATE_DOWNLOAD_TIMEOUT"
+
+    gate = threading.Event()
+
+    def blocked(source, url, read_timeout=update_service.READ_TIMEOUT, *, deadline=None):
+        gate.wait(5.0)
+        if url == update_github.GITHUB_API_ORIGIN + update_github.GITHUB_API_PATH:
+            return None, _Response(200, json.dumps(_release("v0.2.0")).encode()), _Sock()
+        return None, _Response(200, _manifest_bytes()), _Sock()
+
+    busy = update_service.UpdateManager(
+        CURRENT,
+        source=_source(),
+        enabled=True,
+        staging_root=tmp_path / "busy-staging",
+        allow_install=False,
+        channel_preference_path=tmp_path / "busy-pref.json",
+    )
+    monkeypatch.setattr(update_service, "_open_url", blocked)
+    busy.check()
+    busy_switch = busy.set_channel("preview")
+    assert busy_switch["check_channel"] == "stable"
+    assert busy_switch["channel_switch_error"] == "UPDATE_CHANNEL_SWITCH_BUSY"
+    gate.set()
+    _wait_state(busy, "available")
+
+
+def test_signed_manifest_uses_real_preview_identity_and_channel_ordering():
+    preview_source = replace(_source(), channel="preview")
+    stable_source = _source()
+    preview_current = PREVIEW_CURRENT.version
+
+    stable_from_preview = update_manifest.parse_signed_manifest(
+        _manifest_bytes(tag="v0.1.0", version="0.1.0", channel="stable"),
+        stable_source,
+        preview_current,
+        CURRENT.database_revision,
+    )
+    assert stable_from_preview.version == "0.1.0"
+
+    preview_next = update_manifest.parse_signed_manifest(
+        _manifest_bytes(
+            tag="v0.2.0-listening-test.10",
+            version="0.2.0-listening-test.10",
+            channel="preview",
+        ),
+        preview_source,
+        preview_current,
+        CURRENT.database_revision,
+    )
+    assert preview_next.channel == "preview"
+    assert preview_next.version == "0.2.0-listening-test.10"
+
+    cross_channel_higher = update_manifest.parse_signed_manifest(
+        _manifest_bytes(
+            tag="v0.2.0-listening-test.10",
+            version="0.2.0-listening-test.10",
+            channel="preview",
+        ),
+        preview_source,
+        "0.1.0",
+        CURRENT.database_revision,
+    )
+    assert cross_channel_higher.version == "0.2.0-listening-test.10"
+
+    with pytest.raises(ManifestError) as same_base_preview:
+        update_manifest.parse_signed_manifest(
+            _manifest_bytes(
+                tag="v0.1.0-listening-test.10",
+                version="0.1.0-listening-test.10",
+                channel="preview",
+            ),
+            preview_source,
+            "0.1.0",
+            CURRENT.database_revision,
+        )
+    assert same_base_preview.value.code == "UPDATE_NO_NEW_VERSION"
+
+    higher_preview = AppIdentity(
+        **{
+            **CURRENT.as_dict(),
+            "channel": "preview",
+            "version": "0.2.0-listening-test.5",
+        }
+    )
+    with pytest.raises(ManifestError) as lower_stable:
+        update_manifest.parse_signed_manifest(
+            _manifest_bytes(tag="v0.1.0", version="0.1.0", channel="stable"),
+            stable_source,
+            higher_preview.version,
+            CURRENT.database_revision,
+        )
+    assert lower_stable.value.code == "UPDATE_NO_NEW_VERSION"
+
+    with pytest.raises(ManifestError) as wrong_channel:
+        update_manifest.parse_signed_manifest(
+            _manifest_bytes(
+                tag="v0.2.0-listening-test.10",
+                version="0.2.0-listening-test.10",
+                channel="preview",
+            ),
+            stable_source,
+            preview_current,
+            CURRENT.database_revision,
+        )
+    assert wrong_channel.value.code == "UPDATE_METADATA_INVALID"
+
+
+def test_manifest_binding_matches_channel_tag_and_fixed_asset_url():
+    releases, _, _ = update_github.parse_preview_release_page(
+        json.dumps([_release("v0.2.0-listening-test.10", prerelease=True)]).encode()
+    )
+    release = releases[0]
+    manifest = SimpleNamespace(
+        channel="preview",
+        version="0.2.0-listening-test.10",
+        package_url=update_github.expected_package_url(release),
+    )
+    update_github.validate_manifest_binding(manifest, release)
+
+    for bad in (
+        SimpleNamespace(channel="stable", version=manifest.version, package_url=manifest.package_url),
+        SimpleNamespace(channel="preview", version="0.2.0-listening-test.9", package_url=manifest.package_url),
+        SimpleNamespace(
+            channel="preview",
+            version=manifest.version,
+            package_url=f"/{update_github.GITHUB_REPO}/releases/download/v0.2.0-listening-test.9/{update_github.PACKAGE_ASSET}",
+        ),
+    ):
+        with pytest.raises(ManifestError):
+            update_github.validate_manifest_binding(bad, release)
+    with pytest.raises(ManifestError):
+        update_github.validate_github_manifest_for_version(
+            SimpleNamespace(
+                channel="preview",
+                version=manifest.version,
+                package_url=manifest.package_url,
+            ),
+            "0.2.0-listening-test.9",
+        )
+
+
+def test_preview_release_source_accepts_matching_tag_and_rejects_channel_mismatch():
+    releases, _, _ = update_github.parse_preview_release_page(
+        json.dumps([_release("v0.2.0-listening-test.10", prerelease=True)]).encode()
+    )
+    release = releases[0]
+    source = update_github.manifest_source(release, {"test-key": PUBLIC})
+    source.validate()
+    assert source.channel == "preview"
+    assert source.github_tag == "v0.2.0-listening-test.10"
+    for bad in (
+        replace(source, channel="stable"),
+        replace(source, github_tag="v0.2.0"),
+        replace(source, github_tag="v0.2.0-listening-test.010"),
+        replace(source, github_tag="v0.2.0-listening-test.10\n"),
+    ):
+        with pytest.raises(ReleaseConfigError):
+            bad.validate()
+
+
+def test_preview_manifest_rejects_untrusted_signature():
+    raw = _manifest_bytes(
+        tag="v0.2.0-listening-test.10",
+        version="0.2.0-listening-test.10",
+        channel="preview",
+    )
+    other = Ed25519PrivateKey.generate()
+    other_public = other.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    with pytest.raises(ManifestError) as caught:
+        update_manifest.parse_signed_manifest(
+            raw,
+            replace(_source({"test-key": other_public}), channel="preview"),
+            PREVIEW_CURRENT.version,
+            CURRENT.database_revision,
+        )
+    assert caught.value.code == "UPDATE_METADATA_UNTRUSTED"
+
+
+def test_preview_package_identity_mismatch_is_rejected(monkeypatch, tmp_path):
+    bad_package, build_id, sha, size = _make_package(
+        tmp_path,
+        version="0.2.0-listening-test.10",
+        channel="stable",
+    )
+    manifest = _manifest_bytes(
+        tag="v0.2.0-listening-test.10",
+        version="0.2.0-listening-test.10",
+        channel="preview",
+        package_size=size,
+        package_sha256=sha,
+        build_id=build_id,
+    )
+    plan = _helper_plan(
+        tmp_path,
+        manifest,
+        bad_package,
+        current_version=PREVIEW_CURRENT.version,
+    )
+    config = tmp_path / "updater-preview-bad" / "update_release.json"
+    config.parent.mkdir(parents=True)
+    _write_github_config(config, PUBLIC)
+    monkeypatch.setattr(update_helper, "_trusted_release_config_path", lambda: config)
+    loaded = update_helper._load_manifest(plan, verification_context=False)
+    with pytest.raises(ManifestError) as caught:
+        update_helper._verify_saved_package(plan, loaded)
+    assert caught.value.code == "UPDATE_PACKAGE_INVALID"
+
+
+def test_preview_manager_downloads_signed_preview_and_verifies_package(monkeypatch, tmp_path):
+    package, build_id, sha, size = _make_package(
+        tmp_path,
+        version="0.2.0-listening-test.10",
+        channel="preview",
+    )
+    package_bytes = package.read_bytes()
+    manifest = _manifest_bytes(
+        tag="v0.2.0-listening-test.10",
+        version="0.2.0-listening-test.10",
+        channel="preview",
+        package_size=size,
+        package_sha256=sha,
+        build_id=build_id,
+    )
+    preview_tag = "v0.2.0-listening-test.10"
+
+    def fake_open(source, url, read_timeout=update_service.READ_TIMEOUT, *, deadline=None):
+        if "?per_page=100&page=1" in url:
+            return None, _Response(200, _preview_list([
+                "v0.2.0-listening-test.3",
+                preview_tag,
+            ])), _Sock()
+        if f"/releases/download/{preview_tag}/" in url and url.endswith(
+            update_github.MANIFEST_ASSET
+        ):
+            return None, _Response(200, manifest), _Sock()
+        if f"/releases/download/{preview_tag}/" in url and url.endswith(
+            update_github.PACKAGE_ASSET
+        ):
+            return None, _Response(200, package_bytes), _Sock()
+        raise AssertionError(f"unexpected update URL {url}")
+
+    monkeypatch.setattr(update_service, "_open_url", fake_open)
+    manager = update_service.UpdateManager(
+        PREVIEW_CURRENT,
+        source=_source(),
+        enabled=True,
+        staging_root=tmp_path / "preview-download-staging",
+        allow_install=True,
+        channel_preference_path=tmp_path / "preview-preference.json",
+    )
+    try:
+        manager.check()
+        available = _wait_state(manager, "available", timeout=8.0)
+        assert available["target"]["channel"] == "preview"
+        assert available["target"]["version"] == preview_tag[1:]
+        assert available["download_available"] is True
+
+        manager.download()
+        ready = _wait_state(manager, "ready", timeout=8.0)
+        assert ready["target"]["channel"] == "preview"
+        assert ready["target"]["build_id"] == build_id
+        payload = manager.install_payload()
+        assert payload["manifest"].channel == "preview"
+        assert payload["manifest"].version == preview_tag[1:]
+    finally:
+        manager.shutdown()
+
+
+def test_product_helper_allows_same_base_preview_to_stable_promotion(
+    monkeypatch, tmp_path
+):
+    package, build_id, sha, size = _make_package(
+        tmp_path,
+        version="0.1.0",
+        channel="stable",
+    )
+    manifest = _manifest_bytes(
+        tag="v0.1.0",
+        version="0.1.0",
+        channel="stable",
+        package_size=size,
+        package_sha256=sha,
+        build_id=build_id,
+    )
+    plan = _helper_plan(
+        tmp_path,
+        manifest,
+        package,
+        current_version=PREVIEW_CURRENT.version,
+    )
+    config = tmp_path / "updater-promotion" / "update_release.json"
+    config.parent.mkdir(parents=True)
+    _write_github_config(config, PUBLIC)
+    monkeypatch.setattr(update_helper, "_trusted_release_config_path", lambda: config)
+    loaded = update_helper._load_manifest(plan, verification_context=False)
+    assert loaded.channel == "stable"
+    assert loaded.version == "0.1.0"
+    verified = update_helper._verify_saved_package(plan, loaded)
+    assert (verified.root / "KindergartenManager.exe").is_file()
+
+
+def test_product_helper_rejects_low_version_plan_against_actual_old_package(
+    monkeypatch, tmp_path
+):
+    package, build_id, sha, size = _make_package(
+        tmp_path,
+        version="0.1.0",
+        channel="stable",
+    )
+    manifest = _manifest_bytes(
+        tag="v0.1.0",
+        version="0.1.0",
+        channel="stable",
+        package_size=size,
+        package_sha256=sha,
+        build_id=build_id,
+    )
+    plan = _helper_plan(
+        tmp_path,
+        manifest,
+        package,
+        current_version="0.2.0",
+    )
+    config = tmp_path / "updater-low" / "update_release.json"
+    config.parent.mkdir(parents=True)
+    _write_github_config(config, PUBLIC)
+    monkeypatch.setattr(update_helper, "_trusted_release_config_path", lambda: config)
+    with pytest.raises(ManifestError) as caught:
+        update_helper._load_manifest(plan, verification_context=False)
+    assert caught.value.code == "UPDATE_NO_NEW_VERSION"
+
+
+def test_product_helper_rejects_changed_actual_old_package_identity(
+    monkeypatch, tmp_path
+):
+    package, build_id, sha, size = _make_package(
+        tmp_path,
+        version="0.2.0",
+        channel="stable",
+    )
+    manifest = _manifest_bytes(
+        tag="v0.2.0",
+        version="0.2.0",
+        channel="stable",
+        package_size=size,
+        package_sha256=sha,
+        build_id=build_id,
+    )
+    plan = _helper_plan(tmp_path, manifest, package, current_version="0.1.0")
+    changed = CURRENT.as_dict()
+    changed["version"] = "0.2.0"
+    changed["channel"] = "stable"
+    (Path(plan.install_app_dir) / "_internal" / "build_identity.json").write_text(
+        json.dumps(changed, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    config = tmp_path / "updater-changed" / "update_release.json"
+    config.parent.mkdir(parents=True)
+    _write_github_config(config, PUBLIC)
+    monkeypatch.setattr(update_helper, "_trusted_release_config_path", lambda: config)
+    with pytest.raises(update_install.InstallPlanError) as caught:
+        update_helper._load_manifest(plan, verification_context=False)
+    assert caught.value.code == "INSTALL_CURRENT_IDENTITY_MISMATCH"
+
+
+def test_product_helper_reverifies_preview_target_and_package_identity(monkeypatch, tmp_path):
+    package, build_id, sha, size = _make_package(
+        tmp_path,
+        version="0.2.0-listening-test.10",
+        channel="preview",
+    )
+    manifest = _manifest_bytes(
+        tag="v0.2.0-listening-test.10",
+        version="0.2.0-listening-test.10",
+        channel="preview",
+        package_size=size,
+        package_sha256=sha,
+        build_id=build_id,
+    )
+    plan = _helper_plan(
+        tmp_path,
+        manifest,
+        package,
+        current_version=PREVIEW_CURRENT.version,
+    )
+    config = tmp_path / "updater-preview" / "update_release.json"
+    config.parent.mkdir(parents=True)
+    _write_github_config(config, PUBLIC)
+    monkeypatch.setattr(update_helper, "_trusted_release_config_path", lambda: config)
+
+    loaded = update_helper._load_manifest(plan, verification_context=False)
+    assert loaded.channel == "preview"
+    assert loaded.version == "0.2.0-listening-test.10"
+    verified = update_helper._verify_saved_package(plan, loaded)
+    assert (verified.root / "KindergartenManager.exe").is_file()

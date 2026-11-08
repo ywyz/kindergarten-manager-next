@@ -18,8 +18,11 @@ CONTRACT_VERSION = 1
 INPUT_SCHEMA_VERSION = 1
 TASK_NOTE = "listening_note_draft"
 TASK_DOMAIN = "listening_domain_evaluate"
-TASK_TYPES = (TASK_NOTE, TASK_DOMAIN)
+TASK_GROUP = "listening_group_notes"
+TASK_GOAL = "listening_goal_suggest"
+TASK_TYPES = (TASK_NOTE, TASK_DOMAIN, TASK_GROUP, TASK_GOAL)
 MAX_TEXT = 20_000
+MAX_GOAL = 4_000
 MAX_BASIS = 2_000
 MAX_UNCERTAINTIES = 10
 MAX_ITEM_COUNT = 100
@@ -87,6 +90,56 @@ class _DomainItem(_Strict):
     level2: StrictStr
     requirement: StrictStr
     standards: dict[StrictStr, StrictStr]
+
+
+class _GroupNoteOut(_Strict):
+    position: StrictInt = Field(..., ge=0, le=2)
+    text: StrictStr = Field(..., max_length=MAX_TEXT)
+    uncertainties: list[StrictStr] = Field(..., max_length=MAX_UNCERTAINTIES)
+
+
+class _GroupNotesOut(_Strict):
+    mode: StrictStr
+    groups: list[_GroupNoteOut] = Field(..., min_length=1, max_length=3)
+
+
+class _GroupNoteInputGroup(_Strict):
+    position: StrictInt = Field(..., ge=0, le=2)
+    work_date: StrictStr | None
+    listening_text: StrictStr | None
+    photo: _PhotoIn
+
+
+class _GroupNotesInput(_Strict):
+    schema_version: StrictInt
+    mode: StrictStr
+    domain: StrictStr
+    domain_label: StrictStr
+    grade: StrictStr
+    grade_label: StrictStr
+    template_version: StrictStr
+    template_sha256: StrictStr
+    groups: list[_GroupNoteInputGroup] = Field(..., min_length=1, max_length=3)
+
+
+class _GoalInput(_Strict):
+    schema_version: StrictInt
+    mode: StrictStr
+    domain: StrictStr
+    domain_label: StrictStr
+    grade: StrictStr
+    grade_label: StrictStr
+    template_version: StrictStr
+    template_sha256: StrictStr
+    goal: StrictStr | None = Field(None, max_length=MAX_GOAL)
+    groups: list[_DomainGroup] = Field(..., max_length=3)
+    items: list[_DomainItem] = Field(..., max_length=MAX_ITEM_COUNT)
+
+
+class _GoalOut(_Strict):
+    mode: StrictStr
+    goal: StrictStr = Field(..., max_length=MAX_GOAL)
+    uncertainties: list[StrictStr] = Field(..., max_length=MAX_UNCERTAINTIES)
 
 
 class _DomainInput(_Strict):
@@ -214,6 +267,99 @@ _DOMAIN_OUTPUT_SCHEMA = {
     "required": ["overall_evaluation", "support_strategy", "items"],
     "additionalProperties": False,
 }
+_GROUP_NOTES_INPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "mode": {"type": "string", "const": "group_notes"},
+        "domain": {"type": "string"},
+        "domain_label": {"type": "string"},
+        "grade": {"type": "string", "enum": ["small", "middle", "large"]},
+        "grade_label": {"type": "string"},
+        "template_version": {"type": "string"},
+        "template_sha256": {"type": "string"},
+        "groups": {"type": "array", "minItems": 1, "maxItems": 3},
+    },
+    "required": [
+        "schema_version",
+        "mode",
+        "domain",
+        "domain_label",
+        "grade",
+        "grade_label",
+        "template_version",
+        "template_sha256",
+        "groups",
+    ],
+    "additionalProperties": False,
+}
+_GROUP_NOTES_OUTPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "mode": {"type": "string", "const": "group_notes"},
+        "groups": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "position": {"type": "integer", "minimum": 0, "maximum": 2},
+                    "text": {"type": "string"},
+                    "uncertainties": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["position", "text", "uncertainties"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["mode", "groups"],
+    "additionalProperties": False,
+}
+_GOAL_INPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "mode": {"type": "string", "const": "goal_suggest"},
+        "domain": {"type": "string"},
+        "domain_label": {"type": "string"},
+        "grade": {"type": "string", "enum": ["small", "middle", "large"]},
+        "grade_label": {"type": "string"},
+        "template_version": {"type": "string"},
+        "template_sha256": {"type": "string"},
+        "goal": {"type": ["string", "null"]},
+        "groups": {"type": "array", "minItems": 1, "maxItems": 3},
+        "items": {"type": "array"},
+    },
+    "required": [
+        "schema_version",
+        "mode",
+        "domain",
+        "domain_label",
+        "grade",
+        "grade_label",
+        "template_version",
+        "template_sha256",
+        "goal",
+        "groups",
+        "items",
+    ],
+    "additionalProperties": False,
+}
+_GOAL_OUTPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "mode": {"type": "string", "const": "goal_suggest"},
+        "goal": {"type": "string"},
+        "uncertainties": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["mode", "goal", "uncertainties"],
+    "additionalProperties": False,
+}
 _GUIDANCE_NOTE = {
     "text": (
         "根据教师已保存的本组倾听记录和/或作品照片，起草可直接放回“一对一倾听记录”栏的正文。"
@@ -237,6 +383,27 @@ _GUIDANCE_DOMAIN = {
 }
 
 
+_GUIDANCE_GOAL = {
+    "goal": (
+        "依据当前领域已保存的教师文字、作品照片、已知年级和绑定模板要求，起草一条可直接放回“目标”栏的观察目标。"
+        "只使用输入材料中可见或已保存的事实，不得推断幼儿原话、观察时长、现场问答、因果关系或未出现的经过。"
+        "目标应具体、可观察、适合教师后续核实；材料不足时写空字符串并在 uncertainties 中提出简短核实问题。"
+    ),
+    "uncertainties": "列出需要教师核实的简短问题；没有则返回空数组。不要输出姓名、文件名、记录编号或图片编号。",
+}
+
+
+_GUIDANCE_GROUP = {
+    "mode": "group_notes",
+    "groups": (
+        "按输入 groups 的实际 position 逐图位返回，不增加、遗漏、重复或重排图位。"
+        "每组只写照片中可见的画面事实和教师已保存的日期/文字，不得推断幼儿原话、观察时长、"
+        "现场问答、因果关系或未出现的经过；信息不足时写空字符串并在 uncertainties 中列出需要教师核实的简短问题。"
+        "空槽不会出现在输入中，也不得为未发送图位返回内容。"
+    ),
+}
+
+
 def bundle_definitions() -> list[dict[str, Any]]:
     return [
         {
@@ -251,7 +418,29 @@ def bundle_definitions() -> list[dict[str, Any]]:
             "output_schema_json": _DOMAIN_OUTPUT_SCHEMA,
             "guidance_defaults_json": _GUIDANCE_DOMAIN,
         },
+        {
+            "task_type": TASK_GROUP,
+            "input_schema_json": _GROUP_NOTES_INPUT_SCHEMA,
+            "output_schema_json": _GROUP_NOTES_OUTPUT_SCHEMA,
+            "guidance_defaults_json": _GUIDANCE_GROUP,
+        },
+        {
+            "task_type": TASK_GOAL,
+            "input_schema_json": _GOAL_INPUT_SCHEMA,
+            "output_schema_json": _GOAL_OUTPUT_SCHEMA,
+            "guidance_defaults_json": _GUIDANCE_GOAL,
+        },
     ]
+
+
+def group_notes_bundle_definition() -> dict[str, Any]:
+    """Focused helper for the group-note bundle (also in bundle_definitions)."""
+    return {
+        "task_type": TASK_GROUP,
+        "input_schema_json": _GROUP_NOTES_INPUT_SCHEMA,
+        "output_schema_json": _GROUP_NOTES_OUTPUT_SCHEMA,
+        "guidance_defaults_json": _GUIDANCE_GROUP,
+    }
 
 
 def _safe_summary(exc: ValidationError) -> str:
@@ -263,12 +452,22 @@ def _safe_summary(exc: ValidationError) -> str:
     return "; ".join(parts[:24]) or "invalid"
 
 
-def validate_candidate(task_type: str, candidate: dict[str, Any]) -> dict[str, Any]:
+def validate_candidate(
+    task_type: str,
+    candidate: dict[str, Any],
+    *,
+    expected_positions: tuple[int, ...] | None = None,
+) -> dict[str, Any]:
     if task_type not in TASK_TYPES:
         raise ListeningAIContractError("未知倾听 AI 任务类型")
     if not isinstance(candidate, dict):
         raise ListeningAIContractError("候选必须是 JSON 对象")
-    model = _NoteOut if task_type == TASK_NOTE else _DomainOut
+    model = {
+        TASK_NOTE: _NoteOut,
+        TASK_DOMAIN: _DomainOut,
+        TASK_GROUP: _GroupNotesOut,
+        TASK_GOAL: _GoalOut,
+    }[task_type]
     try:
         parsed = model.model_validate(candidate)
     except ValidationError as exc:
@@ -284,13 +483,32 @@ def validate_candidate(task_type: str, candidate: dict[str, Any]) -> dict[str, A
             ids.append(item["item_id"])
         if len(ids) != len(set(ids)):
             raise ListeningAIContractError("候选评价项重复")
+    if task_type == TASK_GROUP:
+        if value.get("mode") != "group_notes":
+            raise ListeningAIContractError("多图位候选模式不合法")
+        positions = [item["position"] for item in value["groups"]]
+        if not positions or len(positions) != len(set(positions)):
+            raise ListeningAIContractError("多图位候选图位重复或为空")
+        if any(position < 0 or position > 2 for position in positions):
+            raise ListeningAIContractError("多图位候选图位不合法")
+        if expected_positions is not None and tuple(positions) != tuple(
+            expected_positions
+        ):
+            raise ListeningAIContractError("多图位候选图位与发送图位不一致")
+    if task_type == TASK_GOAL and value.get("mode") != "goal_suggest":
+        raise ListeningAIContractError("观察目标候选模式不合法")
     return value
 
 
 def validate_input(task_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     if task_type not in TASK_TYPES or not isinstance(payload, dict):
         raise ListeningAIContractError("倾听 AI 输入不合法")
-    model = _NoteInput if task_type == TASK_NOTE else _DomainInput
+    model = {
+        TASK_NOTE: _NoteInput,
+        TASK_DOMAIN: _DomainInput,
+        TASK_GROUP: _GroupNotesInput,
+        TASK_GOAL: _GoalInput,
+    }[task_type]
     try:
         parsed = model.model_validate(payload)
     except ValidationError as exc:
@@ -298,7 +516,12 @@ def validate_input(task_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     payload = parsed.model_dump(mode="json")
     if payload.get("schema_version") != INPUT_SCHEMA_VERSION:
         raise ListeningAIContractError("倾听 AI 输入版本不合法")
-    expected_mode = "group_note" if task_type == TASK_NOTE else "domain_evaluate"
+    expected_mode = {
+        TASK_NOTE: "group_note",
+        TASK_DOMAIN: "domain_evaluate",
+        TASK_GROUP: "group_notes",
+        TASK_GOAL: "goal_suggest",
+    }[task_type]
     if payload.get("mode") != expected_mode:
         raise ListeningAIContractError("倾听 AI 输入模式不合法")
     for key in ("domain", "domain_label", "grade", "grade_label", "template_version", "template_sha256"):
@@ -312,6 +535,39 @@ def validate_input(task_type: str, payload: dict[str, Any]) -> dict[str, Any]:
             raise ListeningAIContractError("本组没有可发送的材料")
         if bool(payload.get("photo_only")) != bool(photo is not None and not payload.get("listening_text")):
             raise ListeningAIContractError("仅图草案标记不一致")
+    elif task_type == TASK_GROUP:
+        groups = payload.get("groups") or []
+        if not 1 <= len(groups) <= 3:
+            raise ListeningAIContractError("多图位输入必须包含 1～3 个图位")
+        positions = [group["position"] for group in groups]
+        if positions != sorted(set(positions)):
+            raise ListeningAIContractError("多图位输入图位必须唯一并保持顺序")
+        for group in groups:
+            if group.get("photo") is None:
+                raise ListeningAIContractError("空图位不得发送")
+    elif task_type == TASK_GOAL:
+        groups = payload.get("groups") or []
+        if not 1 <= len(groups) <= 3:
+            raise ListeningAIContractError("观察目标输入必须包含 1～3 个有效材料图位")
+        positions = [group["position"] for group in groups]
+        if positions != sorted(set(positions)):
+            raise ListeningAIContractError("观察目标输入图位必须唯一并保持顺序")
+        if any(
+            not (group.get("listening_text") or group.get("photo"))
+            for group in groups
+        ):
+            raise ListeningAIContractError("观察目标输入包含空材料图位")
+        photos = sum(1 for group in groups if group.get("photo") is not None)
+        if photos > 3:
+            raise ListeningAIContractError("观察目标图片超过三张")
+        item_ids = []
+        for item in payload.get("items") or []:
+            item_id = item["item_id"]
+            if not item_id or item_id in item_ids:
+                raise ListeningAIContractError("观察目标模板项不合法")
+            item_ids.append(item_id)
+            if set(item["standards"]) != {"1", "2", "3"}:
+                raise ListeningAIContractError("观察目标标准不合法")
     else:
         groups = payload["groups"]
         items = payload["items"]
@@ -338,9 +594,17 @@ def validate_input(task_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def group_note_target_key(domain: str, position: int) -> str:
+    return f"{domain}_{position}"
+
+
 def target_keys(task_type: str, item_ids: list[str]) -> tuple[str, ...]:
     if task_type == TASK_NOTE:
         return ("listening_text",)
+    if task_type == TASK_GROUP:
+        return ()
+    if task_type == TASK_GOAL:
+        return ("goal",)
     return ("overall_evaluation", "support_strategy", *item_ids)
 
 

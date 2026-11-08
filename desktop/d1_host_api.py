@@ -85,6 +85,7 @@ BRIDGE_ALLOWED_ENDPOINTS = frozenset(
         "get_bootstrap",
         "get_app_identity",
         "check_for_update",
+        "set_update_channel",
         "start_update_download",
         "cancel_update_download",
         "install_update",
@@ -2071,6 +2072,28 @@ class D1HostApi:
                 "error_message": "检查更新失败",
                 "install_available": False,
             }
+
+    def set_update_channel(self, channel: object = None) -> dict:
+        if not self._page_ready or self._update_manager is None:
+            return self._update_state_or_error()
+        coordinator = self._install_coordinator
+        if coordinator is not None:
+            try:
+                install_free = bool(coordinator.install_available())
+            except Exception:  # noqa: BLE001 - unknown handoff is not free
+                install_free = False
+            if not install_free:
+                result = self._update_state_or_error()
+                result["channel_switch_error"] = "UPDATE_CHANNEL_SWITCH_BUSY"
+                return result
+        try:
+            return self._merge_install_state(
+                self._update_manager.set_channel(channel)
+            )
+        except Exception:  # noqa: BLE001 - bridge never raises
+            result = self._update_state_or_error()
+            result["channel_switch_error"] = "UPDATE_CHANNEL_SWITCH_FAILED"
+            return result
 
     def start_update_download(self) -> dict:
         if not self._page_ready or self._update_manager is None:

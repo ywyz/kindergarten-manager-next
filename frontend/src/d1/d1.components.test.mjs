@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { compileScript, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 
 const d1Dir = path.dirname(fileURLToPath(import.meta.url))
 const frontendDir = path.resolve(d1Dir, '..', '..')
@@ -2100,7 +2101,580 @@ async function testTermCreateApplyListsNewTermAndKeepsDrafts() {
 }
 
 // ---------------------------------------------------------------------------
+// SettingsView.vue: one-click ordinary confirm (#3)
+// ---------------------------------------------------------------------------
+
+function previewPayload(change, overrides = {}) {
+  return {
+    expected_config_version: 1,
+    normalized_change: change,
+    changed: true,
+    preview_token: 'token-1',
+    expires_at: 'x',
+    before: null,
+    after: null,
+    calendar_diff: [],
+    impact: { retained_header_count: 0, affected_plans: [], counts: {} },
+    ...overrides,
+  }
+}
+
+function appliedPayload(body) {
+  return {
+    status: 'applied',
+    request_id: body.request_id,
+    config_version: 2,
+    changed: true,
+    affected_plan_ids: [],
+    calendar_revision_id: null,
+  }
+}
+
+async function testOrdinaryConfirmPreviewThenOneApply() {
+  const { state, posts, props } = await mountSettings({
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) return previewPayload(body.change)
+      if (path.endsWith('/apply')) return appliedPayload(body)
+      throw new Error(`unexpected ${path}`)
+    },
+  })
+  state.profileName.value = '李老师'
+  state.schoolName.value = '新园所'
+  await vue.nextTick()
+  await state.confirmChange({
+    kind: 'profile',
+    display_name: '李老师',
+    school_name: '新园所',
+  })
+  assert.deepEqual(
+    posts.map((post) => (post.path.endsWith('/preview') ? 'preview' : 'apply')),
+    ['preview', 'apply'],
+  )
+  assert.equal(state.pendingConfirm.value, null)
+  assert.equal(state.previewData.value, null, 'no ordinary preview card is rendered')
+  assert.match(state.applyResultText.value, /新配置版本 2/)
+  props.context = contextFixture({
+    profile: { id: 'u1', display_name: '李老师' },
+    school_name: '新园所',
+    config_version: 2,
+  })
+  await settle()
+  assert.equal(state.className.value, '中一班')
+  assert.equal(state.draftActive.value, false)
+  ok('#3 ordinary settings: one click previews then applies exactly once')
+}
+async function testTermUpdateConfirmPreviewThenApply() {
+  const { state, posts } = await mountSettings({
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) return previewPayload(body.change)
+      return appliedPayload(body)
+    },
+  })
+  const form = state.termForms.value[0]
+  form.end_date = '2026-10-31'
+  await vue.nextTick()
+  await state.confirmTermChange(form)
+  assert.equal(posts.filter((post) => post.path.endsWith('/apply')).length, 1)
+  assert.equal(posts[1].body.change.kind, 'term_update')
+  assert.equal(posts[1].body.change.end_date, '2026-10-31')
+  assert.deepEqual(posts[1].body.change, posts[0].body.change)
+  ok('#3 term update: one click uses the same normalized change for apply')
+}
+
+async function testCalendarExceptionKeepsTwoStepPreview() {
+  const { state } = await mountSettings({
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) return previewPayload(body.change)
+      return appliedPayload(body)
+    },
+  })
+  state.overrideDate.value = '2026-09-20'
+  state.overrideReason.value = '调休上课'
+  await vue.nextTick()
+  await state.previewOverride()
+  assert.ok(state.previewData.value, 'the exception preview stays two-step')
+  assert.equal(state.pendingConfirm.value, null)
+  ok('#3 calendar exception keeps the existing two-step preview')
+}
+async function testChangedInputDuringOneClickPreviewSendsNoApply() {
+  const gate = deferred()
+  const { state, posts } = await mountSettings({
+    postImpl: (path) => {
+      if (path.endsWith('/preview')) return gate.promise
+      throw new Error('apply must not run after changed input')
+    },
+  })
+  state.profileName.value = '李老师'
+  state.schoolName.value = '示范幼儿园'
+  await vue.nextTick()
+  const request = state.confirmChange({
+    kind: 'profile',
+    display_name: '李老师',
+    school_name: '示范幼儿园',
+  })
+  await settle()
+  state.schoolName.value = '预览期间的新园所'
+  gate.resolve(previewPayload({
+    kind: 'profile',
+    display_name: '李老师',
+    school_name: '示范幼儿园',
+  }))
+  await request
+  assert.equal(posts.filter((post) => post.path.endsWith('/apply')).length, 0)
+  assert.equal(state.pendingConfirm.value, null)
+  assert.equal(state.previewData.value, null)
+  ok('#3 changed input during preview discards the stale response before apply')
+}
+async function testOneClickKnownConflictKeepsDraft() {
+  const { state, posts } = await mountSettings({
+    postImpl: async (path) => {
+      if (path.endsWith('/preview')) {
+        throw new ApiError(409, '版本冲突', 'CONFIG_VERSION_CONFLICT')
+      }
+      throw new Error('apply must not run after a known conflict')
+    },
+  })
+  state.className.value = '冲突期间保留的班级草稿'
+  await vue.nextTick()
+  await state.confirmChange({
+    kind: 'profile',
+    display_name: '李老师',
+    school_name: '示范幼儿园',
+  })
+  assert.equal(posts.filter((post) => post.path.endsWith('/apply')).length, 0)
+  assert.equal(state.pendingConfirm.value, null)
+  assert.match(state.errorText.value, /配置已被其他操作更新/)
+  assert.equal(state.className.value, '冲突期间保留的班级草稿')
+  ok('#3 known conflict is distinct from unknown: no apply, draft kept')
+}
+async function testOneClickUnknownKeepsSameRequestAndRetries() {
+  const gate = deferred()
+  const applies = []
+  const { state } = await mountSettings({
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) return previewPayload(body.change)
+      applies.push(body)
+      if (applies.length === 1) {
+        await gate.promise
+        throw new ApiError(0, 'network reset')
+      }
+      return appliedPayload(body)
+    },
+  })
+  state.profileName.value = '李老师'
+  state.schoolName.value = '示范幼儿园'
+  await vue.nextTick()
+  const request = state.confirmChange({
+    kind: 'profile',
+    display_name: '李老师',
+    school_name: '示范幼儿园',
+  })
+  await waitUntil(
+    () => state.pendingConfirm.value !== null,
+    'one-click apply reached the unresolved gate',
+  )
+  state.className.value = '提交后的独立班级草稿'
+  gate.resolve()
+  await request
+  assert.equal(state.pendingConfirm.value !== null, true, 'unknown keeps the request')
+  assert.equal(state.draftActive.value, true)
+  assert.match(state.errorText.value, /提交结果未知/)
+  // The user leaves/cancels while unresolved: neither may discard the request.
+  state.backToWorkbench()
+  state.cancelDraft()
+  assert.equal(state.pendingConfirm.value !== null, true)
+  await state.retryPendingConfirm()
+  assert.equal(applies.length, 2)
+  assert.equal(applies[1].request_id, applies[0].request_id)
+  assert.deepEqual(applies[1].change, applies[0].change)
+  assert.equal(applies[1].preview_token, applies[0].preview_token)
+  assert.equal(state.pendingConfirm.value, null)
+  assert.equal(state.className.value, '提交后的独立班级草稿')
+  ok('#3 unknown keeps one immutable request; same-request retry keeps later drafts')
+}
+async function testOneClickUnknownReceiptQueryNeverClearsMismatch() {
+  const applies = []
+  const { state } = await mountSettings({
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) return previewPayload(body.change)
+      applies.push(body)
+      throw new ApiError(0, 'network reset')
+    },
+  })
+  state.profileName.value = '李老师'
+  await vue.nextTick()
+  await state.confirmChange({
+    kind: 'profile',
+    display_name: '李老师',
+    school_name: '示范幼儿园',
+  })
+  assert.equal(applies.length, 1)
+  assert.equal(state.pendingConfirm.value !== null, true)
+  await state.queryPendingConfirm()
+  // mountSettings answers GET with the context fixture, which is not an apply
+  // receipt for this request: it must stay unresolved.
+  assert.equal(state.pendingConfirm.value !== null, true)
+  assert.match(state.errorText.value, /回执/)
+  ok('#3 a mismatched/non-receipt query never clears the unresolved request')
+}
+async function testOneClickUnknownReceiptQueryResolvesSameRequest() {
+  const applies = []
+  let receipt = null
+  const harness = new Harness({
+    overrides: {
+      '../client': {
+        apiGet: async (path) => {
+          if (String(path).includes('/operations/')) return receipt
+          return contextFixture()
+        },
+        apiPost: async (path, body) => {
+          if (path.endsWith('/preview')) return previewPayload(body.change)
+          applies.push(body)
+          if (!receipt) {
+            receipt = {
+              status: 'applied',
+              request_id: body.request_id,
+              config_version: 2,
+              changed: true,
+              affected_plan_ids: [],
+              calendar_revision_id: null,
+            }
+            throw new ApiError(0, 'network reset')
+          }
+          return appliedPayload(body)
+        },
+        ApiError,
+        pathSegment: (value) => encodeURIComponent(value),
+      },
+    },
+  })
+  const { state } = harness.setup('views/SettingsView.vue', {
+    context: contextFixture(),
+    frozen: false,
+  })
+  state.className.value = '独立班级草稿'
+  state.profileName.value = '李老师'
+  await vue.nextTick()
+  await state.confirmChange({
+    kind: 'profile',
+    display_name: '李老师',
+    school_name: '示范幼儿园',
+  })
+  assert.equal(applies.length, 1)
+  assert.equal(state.pendingConfirm.value !== null, true)
+  await state.queryPendingConfirm()
+  assert.equal(state.pendingConfirm.value, null)
+  assert.match(state.applyResultText.value, /新配置版本 2/)
+  assert.equal(state.className.value, '独立班级草稿')
+  ok('#3 the existing receipt query resolves the same request and keeps the draft')
+}
+async function mountSettingsWithReload({ context = vue.reactive(contextFixture()), postImpl }) {
+  const harness = new Harness({
+    overrides: {
+      '../client': {
+        apiGet: async () => context,
+        apiPost: async (path, body) => postImpl(path, body),
+        ApiError,
+        pathSegment: (value) => encodeURIComponent(value),
+      },
+    },
+  })
+  const component = harness.loadSfc('views/SettingsView.vue')
+  const emitted = []
+  const reloads = []
+  const props = vue.reactive({
+    context,
+    frozen: false,
+    reloadContext: () => new Promise((resolve, reject) => reloads.push({ resolve, reject })),
+  })
+  const state = component.setup(props, {
+    expose() {},
+    emit: (...args) => emitted.push(args),
+  })
+  return { harness, state, props, emitted, reloads }
+}
+async function testSecondOrdinaryConfirmWaitsForCommittedContext() {
+  const context = vue.reactive(contextFixture())
+  const previews = []
+  const applies = []
+  const { state, reloads } = await mountSettingsWithReload({
+    context,
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) {
+        previews.push(body)
+        if (body.expected_config_version !== context.config_version) {
+          throw new ApiError(409, '版本冲突', 'CONFIG_VERSION_CONFLICT')
+        }
+        return previewPayload(body.change, { expected_config_version: body.expected_config_version })
+      }
+      applies.push(body)
+      if (body.expected_config_version !== context.config_version) {
+        throw new ApiError(409, '版本冲突', 'CONFIG_VERSION_CONFLICT')
+      }
+      context.config_version += 1
+      context.profile.display_name = body.change.display_name
+      context.school_name = body.change.school_name
+      return {
+        status: 'applied',
+        request_id: body.request_id,
+        config_version: context.config_version,
+        changed: true,
+        affected_plan_ids: [],
+        calendar_revision_id: null,
+      }
+    },
+  })
+  state.profileName.value = '延迟期间第一次设置'
+  state.schoolName.value = '合成园所'
+  await vue.nextTick()
+  const first = state.confirmChange({
+    kind: 'profile',
+    display_name: '延迟期间第一次设置',
+    school_name: '合成园所',
+  })
+  await waitUntil(() => reloads.length === 1, 'first apply requested a context reload')
+  await first
+  assert.equal(context.config_version, 2)
+  assert.equal(state.awaitingContextVersion.value, 2)
+  state.className.value = '延迟期间第二次设置'
+  await vue.nextTick()
+  await state.confirmChange({
+    kind: 'current_class',
+    name: '延迟期间第二次设置',
+    grade: 'middle',
+    header_teacher_names: [],
+    caregiver_name: null,
+  })
+  assert.equal(previews.length, 1, 'no second preview may post the known-old version')
+  assert.equal(applies.length, 1)
+  assert.notEqual(state.queuedConfirm.value, null)
+  assert.match(state.errorText.value, /正在等最新配置读取完成/)
+  reloads[0].resolve(context)
+  await settle()
+  await waitUntil(() => previews.length === 2 && applies.length === 2, 'queued confirm ran after the re-read')
+  assert.equal(previews[1].expected_config_version, 2)
+  assert.equal(previews[1].change.kind, 'current_class')
+  assert.equal(applies[1].expected_config_version, 2)
+  assert.equal(state.queuedConfirm.value, null)
+  // The second apply starts its own reload request; resolve that re-read too.
+  await waitUntil(() => reloads.length === 2, 'second apply requested its own reload')
+  reloads[1].resolve(context)
+  await settle()
+  assert.equal(state.awaitingContextVersion.value, null)
+  ok('#3 a second ordinary confirm waits for the committed context and posts v2')
+}
+
+// ---------------------------------------------------------------------------
+async function testFailedContextRereadKeepsQueuedDraft() {
+  const context = vue.reactive(contextFixture())
+  const previews = []
+  const applies = []
+  const { state, reloads } = await mountSettingsWithReload({
+    context,
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) {
+        previews.push(body)
+        return previewPayload(body.change, { expected_config_version: body.expected_config_version })
+      }
+      applies.push(body)
+      context.config_version += 1
+      context.profile.display_name = body.change.display_name
+      context.school_name = body.change.school_name
+      return {
+        status: 'applied',
+        request_id: body.request_id,
+        config_version: context.config_version,
+        changed: true,
+        affected_plan_ids: [],
+        calendar_revision_id: null,
+      }
+    },
+  })
+  state.profileName.value = '首次设置'
+  state.schoolName.value = '合成园所'
+  await vue.nextTick()
+  const first = state.confirmChange({
+    kind: 'profile',
+    display_name: '首次设置',
+    school_name: '合成园所',
+  })
+  await waitUntil(() => reloads.length === 1, 'first apply asked for the context')
+  await first
+  state.className.value = '读取失败期间的班级草稿'
+  await vue.nextTick()
+  await state.confirmChange({
+    kind: 'current_class',
+    name: '读取失败期间的班级草稿',
+    grade: 'middle',
+    header_teacher_names: [],
+    caregiver_name: null,
+  })
+  const before = applies.length
+  reloads[0].reject(new Error('read failed'))
+  await settle()
+  assert.equal(state.contextReloadFailed.value, true)
+  assert.equal(applies.length, before, 'a failed read must not submit the queued change')
+  assert.equal(state.className.value, '读取失败期间的班级草稿')
+  assert.equal(state.queuedConfirm.value !== null, true)
+  // Manual recovery: a successful read of v2 then completes the queued click.
+  state.retryContextRead()
+  await waitUntil(() => reloads.length === 2, 'manual re-read started')
+  reloads[1].resolve(context)
+  await settle()
+  await waitUntil(() => applies.length === before + 1, 'queued change applies after manual re-read')
+  assert.equal(applies.at(-1).expected_config_version, 2)
+  assert.equal(state.className.value, '读取失败期间的班级草稿')
+  ok('#3 a failed context re-read keeps the queued change and drafts; manual re-read completes it')
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+async function testHigherVersionReloadRequiresFreshConfirm() {
+  const context = vue.reactive(contextFixture())
+  const previews = []
+  const applies = []
+  const { state, reloads } = await mountSettingsWithReload({
+    context,
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) {
+        previews.push(body)
+        return previewPayload(body.change, { expected_config_version: body.expected_config_version })
+      }
+      applies.push(body)
+      context.config_version += 1
+      return {
+        status: 'applied',
+        request_id: body.request_id,
+        config_version: context.config_version,
+        changed: true,
+        affected_plan_ids: [],
+        calendar_revision_id: null,
+      }
+    },
+  })
+  state.profileName.value = '第一次'
+  await vue.nextTick()
+  const first = state.confirmChange({ kind: 'profile', display_name: '第一次', school_name: '示范幼儿园' })
+  await waitUntil(() => reloads.length === 1, 'first reload requested')
+  await first
+  state.className.value = '待确认班级'
+  await vue.nextTick()
+  await state.confirmChange({ kind: 'current_class', name: '待确认班级', grade: 'middle', header_teacher_names: [], caregiver_name: null })
+  assert.equal(applies.length, 1)
+  // A different legitimate commit (class games) reached v3 while the read was pending.
+  Object.assign(context, contextFixture({ config_version: 3 }))
+  reloads[0].resolve(context)
+  await settle()
+  assert.equal(applies.length, 1, 'a newer snapshot must not auto-apply the queued change')
+  assert.equal(previews.length, 1)
+  assert.match(state.errorText.value, /请基于最新配置再次确认/)
+  assert.equal(state.className.value, '待确认班级')
+  assert.equal(state.awaitingContextVersion.value, null)
+  // The next explicit click must preview against the visible v3 snapshot.
+  await state.confirmChange({ kind: 'current_class', name: '待确认班级', grade: 'middle', header_teacher_names: [], caregiver_name: null })
+  await settle()
+  assert.equal(previews.length, 2)
+  assert.equal(previews[1].expected_config_version, 3)
+  assert.equal(applies.at(-1).expected_config_version, 3)
+  assert.equal(context.config_version, 4)
+  ok('#3 a higher-version re-read releases the gate; the next click previews/applies at v3')
+}
+async function testOlderLateReadNeverClearsGate() {
+  const context = vue.reactive(contextFixture())
+  const previews = []
+  const { state, reloads } = await mountSettingsWithReload({
+    context,
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) {
+        previews.push(body)
+        return previewPayload(body.change, { expected_config_version: body.expected_config_version })
+      }
+      context.config_version += 1
+      return {
+        status: 'applied',
+        request_id: body.request_id,
+        config_version: context.config_version,
+        changed: true,
+        affected_plan_ids: [],
+        calendar_revision_id: null,
+      }
+    },
+  })
+  state.profileName.value = '第一次'
+  await vue.nextTick()
+  const first = state.confirmChange({ kind: 'profile', display_name: '第一次', school_name: '示范幼儿园' })
+  await waitUntil(() => reloads.length === 1, 'first reload requested')
+  await first
+  state.className.value = '旧读取期间的班级草稿'
+  await vue.nextTick()
+  await state.confirmChange({ kind: 'current_class', name: '旧读取期间的班级草稿', grade: 'middle', header_teacher_names: [], caregiver_name: null })
+  // A late response for the previous version must not consume the gate.
+  reloads[0].resolve(contextFixture({ config_version: 1 }))
+  await settle()
+  assert.equal(state.awaitingContextVersion.value, 2)
+  assert.equal(state.queuedConfirm.value !== null, true)
+  assert.equal(previews.length, 1)
+  ok('#3 an older late read never clears the committed-version gate or loses the queued draft')
+}
+async function testAiDraftTargetsCoverBusyAndPendingWrites() {
+  const harness = new Harness({
+    overrides: {
+      '../client': { apiGet: async () => null, apiPatch: async () => null, apiPost: async () => null, ApiError, pathSegment: (v) => v },
+      '../operations': { queryAiReceipt: async () => ({ state: 'missing' }), receiptMessage: () => '', isIndeterminate: () => false },
+    },
+  })
+  const { state } = harness.setup('views/AiSettingsPanel.vue', {})
+  state.busy.value = 'clear'
+  assert.equal(state.draftTargets().join(','), 'ai-config')
+  state.busy.value = 'adapt-daily_lesson_split'
+  assert.equal(state.draftTargets().join(','), 'ai-prompts')
+  state.busy.value = 'default-other_activities_generate'
+  assert.equal(state.draftTargets().join(','), 'ai-prompts')
+  state.busy.value = ''
+  state.pendingWrites.value = [{ key: 'clear', label: '清除密钥', method: 'POST', path: '/x', body: { request_id: 'r1' }, kind: 'clear' }]
+  assert.equal(state.draftTargets().join(','), 'ai-config')
+  state.pendingWrites.value = [{ key: 'adapt-daily_lesson_split', label: '适配', method: 'POST', path: '/x', body: { request_id: 'r2' }, kind: 'adapt' }]
+  assert.equal(state.draftTargets().join(','), 'ai-prompts')
+  harness.unmount()
+  ok('#11 AI busy and unresolved writes project onto their own settings region')
+}
+
+async function testSettingsTargetsPerTermAndNoWrite() {
+  const context = vue.reactive(contextFixture({
+    terms: [
+      { id: 't1', name: '第一学期', start_date: '2026-09-01', end_date: '2026-09-30', current_calendar_revision_id: 'r1' },
+      { id: 't2', name: '第二学期', start_date: '2026-10-01', end_date: '2027-01-31', current_calendar_revision_id: 'r2' },
+      { id: 't3', name: '第三学期', start_date: '2027-02-01', end_date: '2027-06-30', current_calendar_revision_id: 'r3' },
+    ],
+  }))
+  const { state, posts } = await mountSettings({
+    context,
+    postImpl: async () => {
+      throw new Error('leave diagnostics must not write')
+    },
+  })
+  state.profileName.value = '待处理姓名'
+  state.className.value = '待处理班级'
+  state.termForms.value[1].name = '改过的第二学期'
+  state.termForms.value[2].name = '改过的第三学期'
+  await settle()
+  const targets = state.draftTargets()
+  assert.equal(
+    targets
+      .filter((target) => target.kind === 'term')
+      .map((target) => `${target.kind}:${target.id}`)
+      .join(','),
+    'term:t2,term:t3',
+    'each edited term is a distinct stable target',
+  )
+  assert.ok(targets.some((target) => target.kind === 'profile'))
+  assert.ok(targets.some((target) => target.kind === 'class'))
+  assert.equal(posts.length, 0, 'listing targets must not write')
+  ok('#11 settings targets list every dirty term by id and never write')
+}
+
 // App.vue + real SettingsView: R17 settings-draft close protection (§16.3)
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
 async function mountAppWithRealSettings({ hostCalls, postImpl } = {}) {
@@ -2123,6 +2697,9 @@ async function mountAppWithRealSettings({ hostCalls, postImpl } = {}) {
       if (event[0] === 'draft-active') {
         app.state.settingsDraftActive.value = event[1]
       }
+      if (event[0] === 'draft-targets') {
+        app.state.settingsDraftTargets.value = event[1]
+      }
     }
     return emittedPush(...items)
   }
@@ -2136,6 +2713,112 @@ async function mountAppWithRealSettings({ hostCalls, postImpl } = {}) {
     { flush: 'sync' },
   )
   return { app, settings }
+}
+
+async function testBackupEntryAndCloseRecheckOfferSameTargets() {
+  const host = hostApi()
+  host.closeHost.begin('C1')
+  const { app, settings } = await mountAppWithRealSettings({
+    hostCalls: host,
+    postImpl: async () => {
+      throw new Error('no write expected')
+    },
+  })
+  settings.state.profileName.value = '待处理姓名'
+  await settle()
+  app.state.openMaintenance()
+  assert.equal(app.state.maintenanceOpen.value, false)
+  assert.ok(app.state.blockedDraftNotice.value, 'backup entry keeps the structured notice')
+  assert.equal(app.state.blockedDraftNotice.value.kind, 'settings')
+  assert.equal(
+    app.state.blockedDraftNotice.value.targets.map((target) => target.kind).join(','),
+    'profile',
+  )
+  settings.state.className.value = '待处理班级'
+  await settle()
+  app.state.blockedDraftNotice.value = null
+  const close = app.state.onRequestClose('C1')
+  await settle()
+  await waitUntil(
+    () => app.state.blockedDraftNotice.value !== null,
+    'close recheck publishes targets',
+  )
+  host.closeHost.end('C1', 'canceled')
+  app.state.resolveCloseTaskChoice('keep_waiting')
+  await close
+  assert.ok(app.state.blockedDraftNotice.value)
+  assert.equal(
+    app.state.blockedDraftNotice.value.targets.map((target) => target.kind).join(','),
+    'profile,class',
+  )
+  assert.equal(settings.state.profileName.value, '待处理姓名')
+  assert.equal(settings.state.className.value, '待处理班级')
+  ok('#11 backup entry and close recheck publish the same structured targets')
+}
+
+async function testNoticeFollowsRemainingTargetsAfterPartialApply() {
+  const context = contextFixture()
+  const { app, settings } = await mountAppWithRealSettings({
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) return previewFor(body)
+      if (path.endsWith('/apply')) return appliedFor(body, 2)
+      throw new Error('unexpected path ' + path)
+    },
+  })
+  app.state.settingsDraftTargets.value = [
+    { kind: 'profile' },
+    { kind: 'class' },
+  ]
+  app.state.settingsDraftActive.value = true
+  app.state.notifyBlockedDraft({
+    kind: 'settings',
+    message: '设置修改尚未确认',
+    targets: [{ kind: 'profile' }, { kind: 'class' }],
+  })
+  await settle()
+  app.state.settingsDraftTargets.value = [{ kind: 'class' }]
+  await settle()
+  const notice = app.state.blockedDraftNotice.value
+  assert.ok(notice, 'the notice stays while one target remains')
+  assert.equal(
+    notice.targets.map((target) => target.kind).join(','),
+    'class',
+    'the resolved profile target disappears',
+  )
+  app.state.settingsDraftTargets.value = []
+  await settle()
+  assert.equal(app.state.blockedDraftNotice.value, null, 'the last resolved target clears the notice')
+  ok('#11 notice follows the remaining structured targets')
+}
+
+async function testSettingsLeaveOffersPerTargetNotice() {
+  const posts = []
+  const { app, settings } = await mountAppWithRealSettings({
+    postImpl: async (path, body) => {
+      posts.push({ path, body })
+      throw new Error('no write expected')
+    },
+  })
+  settings.state.profileName.value = '待处理姓名'
+  settings.state.className.value = '待处理班级'
+  settings.state.termForms.value[0].name = '待处理学期'
+  await settle()
+  const outcome = await app.state.leaveForAction('settings', () => 'left')
+  assert.equal(outcome, 'stayed')
+  const notice = app.state.blockedDraftNotice.value
+  assert.ok(notice, 'the shell keeps the structured blocking notice')
+  assert.equal(notice.kind, 'settings')
+  assert.equal(
+    (notice.targets ?? []).map((target) => `${target.kind}:${target.id ?? ''}`).join(','),
+    'profile:,class:,term:t1',
+  )
+  assert.equal(posts.length, 0, 'the notice must not write')
+  assert.equal(app.state.view.value.name, 'settings', 'the page stays mounted')
+  assert.equal(settings.state.profileName.value, '待处理姓名')
+  assert.equal(settings.state.className.value, '待处理班级')
+  assert.equal(settings.state.termForms.value[0].name, '待处理学期')
+  app.state.goToBlockedTarget(notice.targets[0])
+  ok('#11 leave keeps the page, lists every target and warns without writing')
 }
 
 async function testCloseSettingsDraftDuringWaitStaysAndKeepsDraft() {
@@ -2493,7 +3176,7 @@ function busyEvents(emitted) {
 async function testExportPendingKeepsMutexUntilExplicitReconciliation() {
   let fetchCalls = 0
   const saveCalls = []
-  const { host, state, emitted } = await mountExport({
+  const { harness, host, state, emitted } = await mountExport({
     fetchImpl: async () => {
       fetchCalls += 1
       return exportResponse()
@@ -2531,14 +3214,19 @@ async function testExportPendingKeepsMutexUntilExplicitReconciliation() {
   await state.queryLastResult()
   assert.equal(state.phase.value, 'saved')
   assert.equal(busyEvents(emitted).at(-1), false)
-  ok('export: pending keeps busy, refuses re-export/close, query resolves it')
-
-  // After a terminal query the close works.
-  state.close()
+  // The query recovery path reaches the same single saved entry: one toast
+  // and one automatic close, with no second write or close request.
   assert.equal(
     emitted.filter((event) => event[0] === 'update:open').length,
     1,
+    'saved query closes the current export dialog exactly once',
   )
+  assert.equal(
+    harness.messages.filter((message) => message === '文件已保存').length,
+    1,
+    'saved query shows exactly one saved toast',
+  )
+  ok('export: pending keeps busy, refuses re-export/close, query resolves it and closes once')
 }
 
 async function testExportUnknownRequiresExplicitFileCheck() {
@@ -2578,7 +3266,7 @@ async function testExportUnknownRequiresExplicitFileCheck() {
 async function testExportPendingOnlyAllowsReadOnlyQueries() {
   let fetchCalls = 0
   let saveCalls = 0
-  const { host, state, emitted } = await mountExport({
+  const { harness, host, state, emitted } = await mountExport({
     fetchImpl: async () => {
       fetchCalls += 1
       return exportResponse()
@@ -2631,9 +3319,13 @@ async function testExportPendingOnlyAllowsReadOnlyQueries() {
   assert.equal(state.unresolvedKind.value, null)
   await settle()
   assert.equal(busyEvents(emitted).at(-1), false)
-  state.close()
   assert.equal(
     emitted.filter((event) => event[0] === 'update:open').length,
+    1,
+    'the terminal query closes the dialog once',
+  )
+  assert.equal(
+    harness.messages.filter((message) => message === '文件已保存').length,
     1,
   )
   ok('export: pending allows read-only queries only, never the file-check unlock')
@@ -2720,6 +3412,49 @@ async function testExportLostBridgeReplyKeepsMutex() {
   ok('export: a lost bridge reply resolves to unknown and keeps the mutex')
 }
 
+async function testExportNormalRequestHasNoAckAndReachesHostOnce() {
+  let fetchCalls = 0
+  let exportBody = null
+  const saveCalls = []
+  const { harness, state, emitted } = await mountExport({
+    fetchImpl: async (_url, options) => {
+      fetchCalls += 1
+      exportBody = JSON.parse(options.body)
+      return exportResponse()
+    },
+    saveDocx: async (payload) => {
+      saveCalls.push(payload)
+      return { status: 'saved', filename: '正常导出.docx', bytes: 3 }
+    },
+  })
+  state.setMode('day')
+  await vue.nextTick()
+  await state.runExport()
+  assert.equal(fetchCalls, 1, 'normal missing-content style export is one request')
+  assert.deepEqual(exportBody, {
+    from: '2026-09-15',
+    to: '2026-09-15',
+  })
+  assert.equal(saveCalls.length, 1, 'one request reaches one host save')
+  assert.equal(state.phase.value, 'saved')
+  assert.equal(
+    emitted.filter((event) => event[0] === 'update:open').length,
+    1,
+  )
+  assert.equal(
+    harness.messages.filter((message) => message === '文件已保存').length,
+    1,
+  )
+  const source = fs.readFileSync(
+    path.join(d1Dir, 'views/ExportDialog.vue'),
+    'utf8',
+  )
+  assert.equal(source.includes('export-ack'), false)
+  assert.equal(source.includes('ack_missing'), false)
+  assert.equal(source.includes('expected_context'), false)
+  ok('export: normal request has no separate missing ack and reaches the host once')
+}
+
 async function testExportTerminalResultsReleaseMutex() {
   for (const [status, phase] of [
     ['saved', 'saved'],
@@ -2729,15 +3464,25 @@ async function testExportTerminalResultsReleaseMutex() {
       'save_failed',
     ],
   ]) {
-    const { state, emitted } = await mountExport({
+    const { harness, state, emitted } = await mountExport({
       fetchImpl: async () => exportResponse(),
       saveDocx: async () => ({ status, message: '注入失败' }),
     })
     await state.runExport()
     assert.equal(state.phase.value, phase, status)
     assert.equal(busyEvents(emitted).at(-1), false, status)
+    assert.equal(
+      emitted.filter((event) => event[0] === 'update:open').length,
+      status === 'saved' ? 1 : 0,
+      `${status}: only explicit saved closes the dialog`,
+    )
+    assert.equal(
+      harness.messages.filter((message) => message === '文件已保存').length,
+      status === 'saved' ? 1 : 0,
+      `${status}: only explicit saved shows the saved toast`,
+    )
   }
-  ok('export: terminal results release the mutex (saved/canceled/failed)')
+  ok('export: terminal results release the mutex; only saved closes and toasts once')
 }
 
 async function testExportLateQueryFromOldOperationNeverTouchesNewPending() {
@@ -2748,7 +3493,7 @@ async function testExportLateQueryFromOldOperationNeverTouchesNewPending() {
   const saveIds = []
   const delayedQ1 = deferred()
   let queriesForA = 0
-  const { host, state, emitted } = await mountExport({
+  const { harness, host, state, emitted, props } = await mountExport({
     fetchImpl: async () => {
       fetchCalls += 1
       return exportResponse()
@@ -2772,6 +3517,25 @@ async function testExportLateQueryFromOldOperationNeverTouchesNewPending() {
   await state.queryLastResult()
   assert.equal(state.phase.value, 'saved', 'Q2 resolves the old operation')
   assert.equal(state.nativeBusy.value, false)
+  assert.equal(
+    emitted.filter((event) => event[0] === 'update:open').length,
+    1,
+    'A saved closes its own dialog once',
+  )
+  assert.equal(
+    harness.messages.filter((message) => message === '文件已保存').length,
+    1,
+    'A saved shows one toast',
+  )
+  const closesAfterA = emitted.filter(
+    (event) => event[0] === 'update:open',
+  ).length
+
+  // The parent closes and reopens for a new operation.
+  props.open = false
+  await vue.nextTick()
+  props.open = true
+  await vue.nextTick()
 
   // New export B: authoritatively pending, own request id.
   await state.runExport()
@@ -2794,7 +3558,16 @@ async function testExportLateQueryFromOldOperationNeverTouchesNewPending() {
 
   // B keeps its id/mutex: no close, no range change, no third save.
   state.close()
-  assert.equal(emitted.filter((event) => event[0] === 'update:open').length, 0)
+  assert.equal(
+    emitted.filter((event) => event[0] === 'update:open').length,
+    closesAfterA,
+    'A saved already closed; B pending has no extra close',
+  )
+  assert.equal(
+    harness.messages.filter((message) => message === '文件已保存').length,
+    1,
+    'a late old saved reply never duplicates the saved toast',
+  )
   state.setMode('month')
   await vue.nextTick()
   assert.equal(state.mode.value, 'week')
@@ -3031,6 +3804,84 @@ async function testExportRetiredQueryFailureNeverTouchesNewOperation() {
 }
 
 // ---------------------------------------------------------------------------
+// D1 entry locale (#2)
+// ---------------------------------------------------------------------------
+
+async function testD1EntryUsesChineseElementPlusLocale() {
+  const mainSource = fs.readFileSync(path.join(d1Dir, 'main.ts'), 'utf8')
+  assert.match(
+    mainSource,
+    /import zhCn from 'element-plus\/es\/locale\/lang\/zh-cn'/,
+  )
+  assert.match(
+    mainSource,
+    /app\.use\(ElementPlus,\s*\{\s*locale:\s*zhCn\s*\}\)/,
+  )
+
+  const datepicker = zhCn.el.datepicker
+  assert.equal(zhCn.name, 'zh-cn')
+  assert.deepEqual(Object.values(datepicker.months), [
+    '一月',
+    '二月',
+    '三月',
+    '四月',
+    '五月',
+    '六月',
+    '七月',
+    '八月',
+    '九月',
+    '十月',
+    '十一月',
+    '十二月',
+  ])
+  assert.deepEqual(datepicker.weeks, {
+    sun: '日',
+    mon: '一',
+    tue: '二',
+    wed: '三',
+    thu: '四',
+    fri: '五',
+    sat: '六',
+  })
+  assert.deepEqual(
+    {
+      now: datepicker.now,
+      today: datepicker.today,
+      confirm: datepicker.confirm,
+      cancel: datepicker.cancel,
+      clear: datepicker.clear,
+    },
+    {
+      now: '此刻',
+      today: '今天',
+      confirm: '确定',
+      cancel: '取消',
+      clear: '清空',
+    },
+  )
+
+  const setupSource = fs.readFileSync(
+    path.join(d1Dir, 'views/SetupView.vue'),
+    'utf8',
+  )
+  const settingsSource = fs.readFileSync(
+    path.join(d1Dir, 'views/SettingsView.vue'),
+    'utf8',
+  )
+  for (const source of [setupSource, settingsSource]) {
+    assert.match(source, /<el-date-picker/)
+    assert.match(source, /value-format="YYYY-MM-DD"/)
+    assert.match(source, /type="daterange"/)
+  }
+  assert.match(settingsSource, /type="date"/)
+  assert.match(setupSource, /value\.range\.length !== 2/)
+  assert.match(setupSource, /请选择学期起止日期/)
+  assert.match(settingsSource, /newTermRange\.value\.length !== 2/)
+  assert.match(settingsSource, /请填写学期名称与起止日期/)
+  ok('D1 entry installs the locked Element Plus zh-CN locale for date panels')
+}
+
+// ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
@@ -3071,11 +3922,29 @@ const tests = [
   testCloseGateTimeoutStillRechecksBeforeAllow,
   testCloseGateLateInputStaysAndKeepsInput,
   testCloseGateCompositionInputSettlesBeforeDecision,
+  testOrdinaryConfirmPreviewThenOneApply,
+  testTermUpdateConfirmPreviewThenApply,
+  testCalendarExceptionKeepsTwoStepPreview,
+  testChangedInputDuringOneClickPreviewSendsNoApply,
+  testOneClickKnownConflictKeepsDraft,
+  testOneClickUnknownKeepsSameRequestAndRetries,
+  testOneClickUnknownReceiptQueryNeverClearsMismatch,
+  testOneClickUnknownReceiptQueryResolvesSameRequest,
+  testSecondOrdinaryConfirmWaitsForCommittedContext,
+  testSettingsTargetsPerTermAndNoWrite,
+  testAiDraftTargetsCoverBusyAndPendingWrites,
+  testSettingsLeaveOffersPerTargetNotice,
+  testNoticeFollowsRemainingTargetsAfterPartialApply,
+  testBackupEntryAndCloseRecheckOfferSameTargets,
+  testFailedContextRereadKeepsQueuedDraft,
+  testHigherVersionReloadRequiresFreshConfirm,
+  testOlderLateReadNeverClearsGate,
   testLatePreviewNeverRestoresOldConfirmation,
   testApplyRefusedWhenInputsChangedAfterConfirmation,
   testApplyMergesOnlyAppliedFieldsKeepingOtherDrafts,
   testLateInputDuringApplyIsPreserved,
   testTermCreateApplyListsNewTermAndKeepsDrafts,
+  testD1EntryUsesChineseElementPlusLocale,
   testCloseSettingsDraftDuringWaitStaysAndKeepsDraft,
   testCloseSettingsPreviewDuringWaitStays,
   testCloseSettingsDraftAfterFailedWaitStays,
@@ -3087,6 +3956,7 @@ const tests = [
   testExportUnconfirmedOnlyRequeries,
   testExportScopeChangeDuringGenerationRestoresControls,
   testExportLostBridgeReplyKeepsMutex,
+  testExportNormalRequestHasNoAckAndReachesHostOnce,
   testExportTerminalResultsReleaseMutex,
   testExportLateQueryFromOldOperationNeverTouchesNewPending,
   testExportSameOperationOutOfOrderNeverRollsBack,

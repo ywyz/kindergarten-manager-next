@@ -1,0 +1,242 @@
+"""#23 daily process contract and Word redline tests (pure, no database)."""
+
+from __future__ import annotations
+
+import unittest
+
+from app.daily_process_contract import (
+    DailyProcessContractError,
+    validate_adapt_change,
+    validate_split_cleanup,
+)
+from app.services.word_export_mapping import diff_process
+
+BASE = "1. 导入\n师：说说颜色。\n2. 探索\n师：比较两片叶子。\n3. 回顾\n师：分享发现。"
+SAVED = BASE
+TWO = "1. 导入\n师：指一指红色。\n2. 探索\n师：拿着同色叶子。\n3. 回顾\n师：分享发现。"
+
+
+def changed(index: int, text: str, process: str = BASE) -> str:
+    steps = process.split("\n")
+    lines = process.split("\n")
+    starts = [i for i, line in enumerate(lines) if line[:1].isdigit()]
+    start = starts[index]
+    end = starts[index + 1] if index + 1 < len(starts) else len(lines)
+    lines[start:end] = text.split("\n")
+    return "\n".join(lines)
+
+
+class SplitCleanupTests(unittest.TestCase):
+    def test_obvious_typo_punctuation_and_stray_letter_pass(self):
+        fields = [
+            "导入",
+            "说说颜色",
+            "探索",
+            "比较两片叶子",
+            "回顾",
+            "分享发现",
+        ]
+        validate_split_cleanup(
+            "1. 导入\n师：说说颜色。\n2. 探锁\n师：比较两片叶子。abc\n3. 回顾\n师：分享发现。",
+            fields,
+        )
+
+    def test_semantic_rewrite_is_rejected(self):
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(
+                "1. 导入\n师：说说颜色。\n2. 探索\n师：比较两片叶子。",
+                ["导入", "请幼儿观察并讨论秋天的树叶颜色和形状", "探索", "完全不同的新活动"],
+            )
+
+    def test_field_order_and_unrelated_material_pass(self):
+        extra = "设计意图：通过树叶比较感知秋天颜色变化，鼓励同伴分享观察结果。" * 8
+        raw = (
+            extra
+            + "\n活动过程：1. 导入\n师：看看树叶。\n2. 探索\n师：说说颜色。\n"
+            + "活动目标：认识树叶颜色。\n活动主题：秋天的树叶\n活动准备：落叶、卡纸。"
+        )
+        validate_split_cleanup(
+            raw,
+            [
+                "秋天的树叶",
+                "认识树叶颜色。",
+                "落叶、卡纸。",
+                "",
+                "",
+                "1. 导入\n师：看看树叶。\n2. 探索\n师：说说颜色。",
+            ],
+        )
+
+    def test_legitimate_letters_kept_and_new_ones_rejected(self):
+        raw = "活动主题：认识 ABC 卡\n活动准备：3 张卡纸。"
+        validate_split_cleanup(raw, ["认识 ABC 卡", "3 张卡纸。"])
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(raw, ["认识 XYZ 卡"])
+
+
+class AdaptOneStepTests(unittest.TestCase):
+    def test_one_modified_step_passes(self):
+        final = changed(1, "2. 探索\n师：请找两片相同形状的叶子。")
+        validate_adapt_change(BASE, SAVED, final)
+
+    def test_one_added_step_passes(self):
+        final = (
+            "1. 导入\n师：说说颜色。\n2. 新增安全提示\n师：先摸一摸再拿。\n"
+            "3. 探索\n师：比较两片叶子。\n4. 回顾\n师：分享发现。"
+        )
+        validate_adapt_change(BASE, SAVED, final)
+
+    def test_two_modified_steps_are_rejected(self):
+        final = (
+            "1. 导入\n师：指一指红色。\n2. 探索\n师：拿着同色叶子。\n"
+            "3. 回顾\n师：分享发现。"
+        )
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(BASE, SAVED, final)
+
+    def test_pure_renumber_is_not_a_change(self):
+        renumbered = "2. 导入\n师：说说颜色。\n3. 探索\n师：比较两片叶子。\n4. 回顾\n师：分享发现。"
+        validate_adapt_change(BASE, SAVED, renumbered)
+
+    def test_removal_or_reorder_is_rejected(self):
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(BASE, SAVED, "1. 导入\n师：说说颜色。")
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(
+                BASE,
+                SAVED,
+                "1. 探索\n师：比较两片叶子。\n2. 导入\n师：说说颜色。\n3. 回顾\n师：分享发现。",
+            )
+
+    def test_unidentifiable_structure_fails(self):
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(BASE, "只有一个环节", "只改一个环节")
+
+class ProductionGateTests(unittest.TestCase):
+    def test_gate_rejects_two_changes_and_accepts_one(self):
+        from app.local.ai_task_service import validate_daily_candidate_contract
+        from app.local.prompt_bundles import CandidateInvalid
+
+        payload = {
+            "process_source": SAVED,
+            "split_baseline_process": BASE,
+        }
+        with self.assertRaises(CandidateInvalid):
+            validate_daily_candidate_contract(
+                "daily_process_adapt", {"process": TWO}, payload, {}
+            )
+
+        validate_daily_candidate_contract(
+            "daily_process_adapt",
+            {"process": changed(1, "2. 探索\n师：请找相同形状的叶子。")},
+            payload,
+            {},
+        )
+
+
+class NewlineAndSingleStepTests(unittest.TestCase):
+    def test_single_numbered_step_can_change(self):
+        validate_adapt_change(
+            "1. 探索\n师：看看叶子的颜色。",
+            "1. 探索\n师：看看叶子的颜色。",
+            "1. 探索\n师：指一指绿色叶子。",
+        )
+
+    def test_internal_line_break_change_is_a_change(self):
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(
+                BASE,
+                SAVED,
+                "1. 热身\n师：站起来做示范。\n2. 探索 师：看一看。\n3. 回顾\n师：说一说。",
+            )
+
+    def test_crlf_and_lf_are_the_same(self):
+        validate_adapt_change(BASE, SAVED, BASE.replace("\n", "\r\n"))
+
+
+class WordWholeStepRedlineTests(unittest.TestCase):
+    def test_modified_and_added_steps_are_red_as_whole_steps(self):
+        final = (
+            "1. 导入\n师：说说颜色。\n2. 探索\n师：请找相同形状的叶子。\n"
+            "3. 新增安全提示\n师：先摸一摸。\n4. 回顾\n师：分享发现。"
+        )
+        result = diff_process(BASE, final, step_aware=True)
+        red = "".join(run["text"] for run in result["runs"] if run["red"])
+        plain = "".join(run["text"] for run in result["runs"] if not run["red"])
+        self.assertIn("2. 探索\n师：请找相同形状的叶子。", red)
+        self.assertIn("3. 新增安全提示\n师：先摸一摸。", red)
+        self.assertNotIn("导入", red)
+        self.assertIn("1. 导入\n师：说说颜色。", plain)
+        self.assertIn("4. 回顾\n师：分享发现。", plain)
+
+    def test_word_runs_are_exact_text_with_real_newlines(self):
+        final = "1. 热身\n师：站起来做示范。\n2. 探索\n师：看一看。\n3. 回顾\n师：说一说。"
+        result = diff_process(BASE, final, step_aware=True)
+        flat = "".join(run["text"] for run in result["runs"])
+        self.assertEqual(flat, final)
+        self.assertNotIn("\\n", flat)
+
+    def test_pure_renumber_has_no_red(self):
+        renumbered = "2. 导入\n师：说说颜色。\n3. 探索\n师：比较两片叶子。\n4. 回顾\n师：分享发现。"
+        result = diff_process(BASE, renumbered, step_aware=True)
+        self.assertFalse(any(run["red"] for run in result["runs"]))
+
+    def test_unnumbered_legacy_path_is_unchanged(self):
+        result = diff_process("慢慢倒入水。", "快速倒入水。")
+        red = "".join(run["text"] for run in result["runs"] if run["red"])
+        self.assertEqual(red, "快速")
+
+
+class DefaultWebAndBoundsTests(unittest.TestCase):
+    def test_default_web_diff_keeps_old_character_behavior(self):
+        final = "1. 导入\n师：指一指绿叶。\n2. 探索\n师：说说颜色。"
+        result = diff_process(BASE, final)
+        red = "".join(run["text"] for run in result["runs"] if run["red"])
+        self.assertIn("指一指绿", red)
+        self.assertNotEqual(red, "1. 导入\n师：指一指绿叶。")
+
+    def test_step_aware_single_step_reds_the_whole_step(self):
+        base = "1. 探索\n师：看看叶子的颜色。"
+        final = "1. 探索\n师：指一指绿色叶子。"
+        result = diff_process(base, final, step_aware=True)
+        red = "".join(run["text"] for run in result["runs"] if run["red"])
+        self.assertEqual(red, "1. 探索\n师：指一指绿色叶子。")
+
+    def test_long_field_check_is_bounded(self):
+        import time
+
+        intro = "教学背景环境课程目标支架主题材料准备叙事帮助幼儿讨论交往" * 45
+        field = "观察过程教师提问幼儿仔细比较秋天叶子" * 90
+        teacher = field[:400] + "数" + field[401:]
+        started = time.perf_counter()
+        validate_split_cleanup(intro + "活动过程：" + field, [teacher])
+        self.assertLess(time.perf_counter() - started, 2.0)
+
+    def test_new_adapt_without_baseline_is_blocked_before_send(self):
+        from app.local.ai_task_service import require_adapt_baseline
+        from app.local.errors import LocalValidationError
+
+        with self.assertRaises(LocalValidationError):
+            require_adapt_baseline({"process_source": SAVED})
+
+
+class ModelRuleTests(unittest.TestCase):
+    def test_task_rules_contain_23_constraints(self):
+        import json
+        from app.local.ai_task_service import _render_system_text
+
+        split = json.loads(_render_system_text("daily_lesson_split", 1, {}, {}))
+        adapt = json.loads(_render_system_text("daily_process_adapt", 1, {}, {}))
+        self.assertTrue(
+            any("只清理常见的明显错字" in rule for rule in split["instructions"])
+        )
+        self.assertTrue(
+            any("只允许修改一个已有环节" in rule for rule in adapt["instructions"])
+        )
+        self.assertTrue(
+            any("仅编号顺延不算修改" in rule for rule in adapt["instructions"])
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

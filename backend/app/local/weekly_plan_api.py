@@ -92,6 +92,7 @@ def _query_date(value: str | None, label: str) -> date | None:
 @weekly_plans_router.get("", response_model=dict[str, Any])
 def weekly_list(
     term_id: str | None = None,
+    week_number: int | None = Query(default=None, ge=1),
     from_date: str | None = Query(default=None, alias="from"),
     to_date: str | None = Query(default=None, alias="to"),
     cursor: str | None = None,
@@ -103,6 +104,7 @@ def weekly_list(
             session,
             profile_id=_profile_id(session),
             term_id=term_id,
+            week_number=week_number,
             from_date=_query_date(from_date, "from"),
             to_date=_query_date(to_date, "to"),
             cursor=cursor,

@@ -812,6 +812,7 @@ def list_plans(
     *,
     profile_id: str,
     term_id: str | None = None,
+    week_number: int | None = None,
     from_date: date | None = None,
     to_date: date | None = None,
     cursor: str | None = None,
@@ -820,6 +821,14 @@ def list_plans(
     if isinstance(limit, bool) or not isinstance(limit, int):
         raise LocalValidationError("limit 不合法")
     limit = max(1, min(limit, MAX_LIST_LIMIT))
+    if week_number is not None and (
+        isinstance(week_number, bool)
+        or not isinstance(week_number, int)
+        or week_number < 1
+    ):
+        raise LocalValidationError("week_number 不合法")
+    if week_number is not None and not term_id:
+        raise LocalValidationError("按周筛选必须指定学期")
     with read_scope(session):
         context = require_context(session, date.today())
         assert context.school_class is not None
@@ -829,6 +838,30 @@ def list_plans(
         )
         if term_id is not None:
             query = query.where(LocalWeeklyPlan.term_id == term_id)
+        term_week_numbers: list[int] | None = None
+        if term_id is not None:
+            # A separate complete aggregate, independent of the current
+            # page/cursor and week/date filters.  The UI unions this with
+            # the current term calendar so a frozen week that falls outside
+            # a later shortened range remains selectable.
+            term_week_numbers = sorted(
+                session.scalars(
+                    select(LocalWeeklyPlan.week_number_snapshot)
+                    .where(
+                        LocalWeeklyPlan.profile_id == profile_id,
+                        LocalWeeklyPlan.class_id == context.school_class.id,
+                        LocalWeeklyPlan.term_id == term_id,
+                    )
+                    .distinct()
+                ).all()
+            )
+        if week_number is not None:
+            # Filter the frozen display identity, not a fresh calculation
+            # from the current term boundary.  Existing plans keep the
+            # week number shown in the list even after a term range change.
+            query = query.where(
+                LocalWeeklyPlan.week_number_snapshot == week_number
+            )
         if from_date is not None:
             query = query.where(LocalWeeklyPlan.week_anchor_date >= from_date)
         if to_date is not None:
@@ -868,7 +901,13 @@ def list_plans(
             next_cursor = base64.urlsafe_b64encode(
                 f"{last.week_anchor_date.isoformat()}\x00{last.id}".encode("utf-8")
             ).rstrip(b"=").decode("ascii")
-        return {"items": items, "next_cursor": next_cursor}
+        result: dict[str, Any] = {
+            "items": items,
+            "next_cursor": next_cursor,
+        }
+        if term_week_numbers is not None:
+            result["term_week_numbers"] = term_week_numbers
+        return result
 
 
 def get_detail(session: Session, *, profile_id: str, plan_id: str) -> dict:

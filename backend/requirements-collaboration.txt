@@ -1,0 +1,5 @@
+# Independent runtime additions for the optional online collaboration service.
+# FastAPI, SQLAlchemy, Pydantic and Uvicorn are already declared by
+# backend/pyproject.toml; PostgreSQL requires psycopg 3.
+# Not installed or synced by this slice.
+psycopg[binary]>=3.2,<4

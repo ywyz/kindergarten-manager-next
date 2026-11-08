@@ -65,9 +65,25 @@ export interface LeaveEditor {
   blockingDraft?: () => BlockingDraft | null
 }
 
+export type SettingsDraftTargetKind =
+  | 'profile' | 'class' | 'term' | 'new-term' | 'override'
+  | 'preview' | 'pending-confirm' | 'context-read'
+  | 'ai-config' | 'ai-prompts'
+  | 'game-config'
+  | 'online-collaboration'
+
+export interface SettingsDraftTarget {
+  kind: SettingsDraftTargetKind
+  /** Stable identity for per-item targets (e.g. the edited term id). */
+  id?: string
+}
+
+
 export interface BlockingDraft {
   kind: 'candidate' | 'settings' | 'history' | 'material' | 'weekly' | 'listening'
   message: string
+  /** Structured, ordered places the user can act on (never parsed text). */
+  targets?: SettingsDraftTarget[]
 }
 
 export interface LeaveHooks {
@@ -76,6 +92,8 @@ export interface LeaveHooks {
   /** Human-readable reason for a failed leave (used by the UI). */
   describeFailure?: (outcome: SaveOutcome) => string
   onFailure?: (message: string) => void
+  /** Structured blocking draft: lets the shell offer per-target actions. */
+  onBlocked?: (draft: BlockingDraft) => void
 }
 
 interface ActiveLeave {
@@ -220,6 +238,7 @@ export class LeaveCoordinator {
   }
 
   private stayForDraft(draft: BlockingDraft): LeaveOutcome {
+    this.hooks.onBlocked?.(draft)
     this.hooks.onFailure?.(draft.message)
     return 'stayed'
   }

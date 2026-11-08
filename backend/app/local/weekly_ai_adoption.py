@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import secrets
 import threading
@@ -23,6 +24,7 @@ from app.local import (
 )
 from app.local.errors import (
     LocalAiNotFound,
+    LocalError,
     LocalStorageError,
     LocalValidationError,
     LocalWeeklyAiContractObsolete,
@@ -48,6 +50,14 @@ from app.local.tx import begin_immediate, read_scope, rollback
 ADOPTION_TTL_SECONDS = 600
 MAX_TOKENS = 64
 OP = "weekly_ai_adopt"
+
+
+class WeeklyAiAdoptionPending(LocalError):
+    """The write boundary may have committed but cannot be proven clean."""
+
+    code = "WEEKLY_AI_ADOPTION_COMMIT_UNCERTAIN"
+    status_code = 503
+    message = "采用已提交或结果待核对；请只读查询原采用"
 
 
 def _digest(value: Any) -> str:
@@ -112,14 +122,23 @@ def _content(session: Session, plan: LocalWeeklyPlan) -> LocalWeeklyPlanContent:
     return row
 
 
-def _selections(value: object) -> list[dict[str, str]]:
+def _selections(
+    value: object,
+) -> tuple[list[dict[str, str]], dict[str, dict[str, Any]]]:
     if not isinstance(value, list) or not value:
         raise LocalValidationError("selections 必须是非空列表")
     result: list[dict[str, str]] = []
+    edits: dict[str, dict[str, Any]] = {}
     seen_targets: set[str] = set()
     seen_candidates: set[str] = set()
     for item in value:
-        if not isinstance(item, Mapping) or set(item) != {"candidate_id", "target"}:
+        if not isinstance(item, Mapping):
+            raise LocalValidationError("selection 字段不合法")
+        keys = set(item)
+        if keys not in (
+            {"candidate_id", "target"},
+            {"candidate_id", "target", "edit"},
+        ):
             raise LocalValidationError("selection 字段不合法")
         candidate_id = item.get("candidate_id")
         target = item.get("target")
@@ -129,10 +148,15 @@ def _selections(value: object) -> list[dict[str, str]]:
             raise LocalValidationError("target 不合法")
         if candidate_id in seen_candidates or target in seen_targets:
             raise LocalValidationError("selection 重复")
+        edit = item.get("edit")
+        if edit is not None:
+            if not isinstance(edit, Mapping):
+                raise LocalValidationError("selection.edit 必须是对象")
+            edits[candidate_id] = dict(edit)
         seen_candidates.add(candidate_id)
         seen_targets.add(target)
         result.append({"candidate_id": candidate_id, "target": target})
-    return result
+    return result, edits
 
 
 def _basis(input_row: LocalAIInput) -> dict[str, Any]:
@@ -162,6 +186,163 @@ def _candidate_value(
     if target in weekly_ai_contracts.COLUMN_FIELDS:
         return {"text": raw.get("text", "")}
     return raw
+
+
+_GAME_SLOT_EDIT_FIELDS = (
+    "name",
+    "shared_objectives",
+    "guidance_points",
+    "focus_guidance",
+)
+_FOCUS_EDIT_FIELDS = (
+    "name",
+    "objectives",
+    "guidance",
+    "support_strategy",
+)
+
+
+def _edit_text(
+    value: object,
+    path: str,
+    *,
+    maximum: int,
+    nonempty: bool = False,
+) -> str:
+    if not isinstance(value, str):
+        raise LocalValidationError(f"{path} 必须是字符串")
+    if "\x00" in value:
+        raise LocalValidationError(f"{path} 不得包含 NUL")
+    if len(value) > maximum:
+        raise LocalValidationError(f"{path} 超过长度上限")
+    if nonempty and not value.strip():
+        raise LocalValidationError(f"{path} 不能为空")
+    return value
+
+
+def _apply_candidate_edit(
+    target: str,
+    candidate_value: Mapping[str, Any],
+    edit: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply only the legal editable fields; source identity stays untouched."""
+    original = copy.deepcopy(dict(candidate_value))
+    if edit is None:
+        return original
+    if not isinstance(edit, Mapping):
+        raise LocalValidationError("edit 必须是对象")
+    if target in weekly_ai_contracts.COLUMN_FIELDS:
+        if set(edit) != {"text"}:
+            raise LocalValidationError("周栏目编辑字段不合法")
+        return {
+            "text": _edit_text(
+                edit.get("text"),
+                "edit.text",
+                maximum=weekly_ai_contracts.MAX_AI_TEXT_CHARS,
+                nonempty=True,
+            )
+        }
+    if target == "materials":
+        if set(edit) != {"items"}:
+            raise LocalValidationError("材料编辑字段不合法")
+        edited_items = edit.get("items")
+        original_items = original.get("items")
+        if not isinstance(edited_items, list) or not isinstance(original_items, list):
+            raise LocalValidationError("材料编辑 items 不合法")
+        if len(edited_items) != len(original_items):
+            raise LocalValidationError("材料项数量不可编辑")
+        result_items: list[dict[str, Any]] = []
+        for index, (raw_item, original_item) in enumerate(
+            zip(edited_items, original_items)
+        ):
+            if not isinstance(raw_item, Mapping) or set(raw_item) != {"text"}:
+                raise LocalValidationError(f"材料项 {index} 只允许编辑 text")
+            if not isinstance(original_item, Mapping):
+                raise LocalValidationError("原材料项损坏")
+            item = copy.deepcopy(dict(original_item))
+            item["text"] = _edit_text(
+                raw_item.get("text"),
+                f"edit.items[{index}].text",
+                maximum=weekly_ai_contracts.MAX_MATERIAL_ITEM_TEXT,
+                nonempty=True,
+            )
+            result_items.append(item)
+        return {**original, "items": result_items}
+    if target != "games":
+        raise LocalValidationError("target 不合法")
+    if not set(edit).issubset({"outdoor_game_slots", "focus_area"}):
+        raise LocalValidationError("周游戏编辑字段不合法")
+    slots_edit = edit.get("outdoor_game_slots")
+    if slots_edit is not None:
+        if not isinstance(slots_edit, Mapping):
+            raise LocalValidationError("游戏槽编辑必须是对象")
+        if not set(slots_edit).issubset(set(weekly_ai_contracts.OUTDOOR_KEYS)):
+            raise LocalValidationError("游戏槽编辑键不合法")
+        slots = original.get("outdoor_game_slots")
+        if not isinstance(slots, Mapping):
+            raise LocalValidationError("原游戏槽损坏")
+        for key, fields in slots_edit.items():
+            if not isinstance(fields, Mapping):
+                raise LocalValidationError(f"游戏槽 {key} 编辑必须是对象")
+            allowed = (
+                set(_GAME_SLOT_EDIT_FIELDS)
+                if key != "focus_area"
+                else set(_FOCUS_EDIT_FIELDS)
+            )
+            if not set(fields).issubset(allowed):
+                raise LocalValidationError(f"游戏槽 {key} 编辑字段不合法")
+            original_item = slots.get(key)
+            if not isinstance(original_item, Mapping):
+                raise LocalValidationError(f"游戏槽 {key} 没有可编辑内容")
+            item = copy.deepcopy(dict(original_item))
+            if "name" in fields:
+                item["name"] = _edit_text(
+                    fields["name"],
+                    f"edit.outdoor_game_slots.{key}.name",
+                    maximum=weekly_ai_contracts.MAX_NAME_CHARS,
+                    nonempty=True,
+                )
+            for field in _GAME_SLOT_EDIT_FIELDS[1:]:
+                if field in fields:
+                    item[field] = _edit_text(
+                        fields[field],
+                        f"edit.outdoor_game_slots.{key}.{field}",
+                        maximum=weekly_ai_contracts.MAX_AI_TEXT_CHARS,
+                    )
+            slots = {**dict(slots), key: item}
+        original["outdoor_game_slots"] = dict(slots)
+        seen_names: set[str] = set()
+        for key in ("collective_1", "collective_2"):
+            item = original["outdoor_game_slots"].get(key)
+            name = item.get("name") if isinstance(item, Mapping) else None
+            if isinstance(name, str) and name.strip():
+                if name in seen_names:
+                    raise LocalValidationError("同类别同名游戏不能占两个集体槽")
+                seen_names.add(name)
+    focus_edit = edit.get("focus_area")
+    if focus_edit is not None:
+        if not isinstance(focus_edit, Mapping):
+            raise LocalValidationError("重点区域编辑必须是对象")
+        if not set(focus_edit).issubset(set(_FOCUS_EDIT_FIELDS)):
+            raise LocalValidationError("重点区域编辑字段不合法")
+        focus = original.get("focus_area")
+        if not isinstance(focus, Mapping):
+            raise LocalValidationError("原重点区域没有可编辑内容")
+        item = copy.deepcopy(dict(focus))
+        for field in _FOCUS_EDIT_FIELDS:
+            if field in focus_edit:
+                item[field] = _edit_text(
+                    focus_edit[field],
+                    f"edit.focus_area.{field}",
+                    maximum=(
+                        weekly_ai_contracts.MAX_NAME_CHARS
+                        if field == "name"
+                        else weekly_ai_contracts.MAX_AI_TEXT_CHARS
+                    ),
+                    nonempty=field == "name",
+                )
+        original["focus_area"] = item
+    return original
 
 
 def _ai_ids(
@@ -198,6 +379,7 @@ def _apply(
     profile_id: str,
     adopted_at: str,
     ai_ids_by_target: Mapping[str, Mapping[str, str]] | None = None,
+    edited_values: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     content = previous
     for selected in selections:
@@ -227,6 +409,7 @@ def _apply(
             content,
             target=target,
             candidate_value=_candidate_value(candidate, input_row, target),
+            edited_value=(edited_values or {}).get(candidate.id),
             adoption=adoption,
             basis=_basis(input_row),
             server_manifest=weekly_ai_inputs.server_manifest_from_dependencies(
@@ -267,7 +450,7 @@ def preview_adoption(
     launch_id: str,
     session_scope_hash: str,
 ) -> dict[str, Any]:
-    selected = _selections(selections)
+    selected, edits = _selections(selections)
     if isinstance(expected_draft_version, bool) or not isinstance(expected_draft_version, int):
         raise LocalValidationError("expected_draft_version 必须是正整数")
     with read_scope(session):
@@ -277,6 +460,7 @@ def preview_adoption(
             raise LocalWeeklyVersionConflict(details={"draft_version": content.version})
         candidates: dict[str, LocalAICandidate] = {}
         inputs: dict[str, LocalAIInput] = {}
+        edited_values: dict[str, dict[str, Any]] = {}
         operation_id: str | None = None
         draft_id: str | None = None
         input_draft_id: str | None = None
@@ -313,6 +497,11 @@ def preview_adoption(
                 raise LocalWeeklyAiRequestConflict(details={"reason": "cross_batch"})
             candidates[candidate.id] = candidate
             inputs[candidate.id] = inp
+            edited_values[candidate.id] = _apply_candidate_edit(
+                item["target"],
+                _candidate_value(candidate, inp, item["target"]),
+                edits.get(candidate.id),
+            )
         new_id = new_opaque_id()
         new_version = content.version + 1
         ai_ids = _ai_ids(selected, candidates)
@@ -326,6 +515,7 @@ def preview_adoption(
             profile_id=profile_id,
             adopted_at=datetime.now(timezone.utc).isoformat(),
             ai_ids_by_target=ai_ids,
+            edited_values=edited_values,
         )
         before, after = _before_after(content.content_json, new_content, [x["target"] for x in selected])
         target_hashes = _target_hashes(content.content_json, [x["target"] for x in selected])
@@ -345,6 +535,11 @@ def preview_adoption(
                 "dependency_hashes": {cid: inputs[cid].dependency_hash for cid in inputs},
                 "target_hashes": target_hashes,
                 "after_hashes": after_hashes,
+                "edits": copy.deepcopy(edits),
+                "edited_value_hashes": {
+                    candidate_id: _digest(value)
+                    for candidate_id, value in edited_values.items()
+                },
                 "operation_id": operation_id,
                 "batch_snapshot_hash": batch_hash,
                 "ai_item_ids": ai_ids,
@@ -454,6 +649,7 @@ def adopt(
             raise LocalWeeklyVersionConflict(details={"draft_version": content.version})
         candidates: dict[str, LocalAICandidate] = {}
         inputs: dict[str, LocalAIInput] = {}
+        edited_values: dict[str, dict[str, Any]] = {}
         for item in selected:
             candidate = session.get(LocalAICandidate, item["candidate_id"])
             if candidate is None:
@@ -481,6 +677,15 @@ def adopt(
                 raise LocalWeeklyAiSourceChanged()
             candidates[candidate.id] = candidate
             inputs[candidate.id] = inp
+            edited_values[candidate.id] = _apply_candidate_edit(
+                item["target"],
+                _candidate_value(candidate, inp, item["target"]),
+                (payload.get("edits") or {}).get(candidate.id),
+            )
+            if "edited_value_hashes" in payload and _digest(
+                edited_values[candidate.id]
+            ) != (payload.get("edited_value_hashes") or {}).get(candidate.id):
+                raise LocalWeeklyAiPreviewExpired(details={"reason": "edit_changed"})
         if _target_hashes(content.content_json, [x["target"] for x in selected]) != payload.get("target_hashes"):
             raise LocalWeeklyAiTargetChanged()
         new_id = new_opaque_id()
@@ -496,6 +701,7 @@ def adopt(
             profile_id=profile_id,
             adopted_at=adopted_at,
             ai_ids_by_target=payload.get("ai_item_ids") or {},
+            edited_values=edited_values,
         )
         if _target_hashes(new_content, [x["target"] for x in selected]) != payload.get("after_hashes"):
             raise LocalWeeklyAiSourceChanged()
@@ -562,11 +768,28 @@ def adopt(
                     created_at=now,
                 )
             )
-        session.commit()
-        _TOKENS.consume(preview_token)
+        try:
+            session.commit()
+        except BaseException as exc:
+            try:
+                rollback(session)
+            except BaseException:
+                # Never replace the original commit outcome with a rollback
+                # failure; both paths remain a dedicated pending receipt.
+                pass
+            raise WeeklyAiAdoptionPending() from exc
+        try:
+            _TOKENS.consume(preview_token)
+        except BaseException:
+            # The business commit is final; token eviction is best-effort.
+            pass
         return result
     except BaseException:
-        rollback(session)
+        try:
+            rollback(session)
+        except BaseException:
+            # Never replace the original failure with a rollback failure.
+            pass
         raise
 
 
@@ -574,6 +797,7 @@ __all__ = [
     "ADOPTION_TTL_SECONDS",
     "MAX_TOKENS",
     "OP",
+    "WeeklyAiAdoptionPending",
     "adopt",
     "preview_adoption",
     "reset_tokens",

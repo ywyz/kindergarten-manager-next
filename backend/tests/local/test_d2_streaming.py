@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 import uuid
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -140,6 +141,14 @@ class _TimeoutSock(_FakeSock):
     def makefile(self, *args, **kwargs) -> _TimeoutReader:
         return _TimeoutReader(self._response, self._after)
 
+class _HeaderTimeoutReader(_Reader):
+    def readline(self, size: int = -1) -> bytes:
+        raise socket.timeout("simulated header timeout")
+
+class _HeaderTimeoutSock(_FakeSock):
+    def makefile(self, *args, **kwargs) -> _HeaderTimeoutReader:
+        return _HeaderTimeoutReader(b"")
+
 
 def _http(body: bytes, *, content_type: str, chunked: bool = False) -> bytes:
     if chunked:
@@ -195,6 +204,80 @@ class StreamParserTests(unittest.TestCase):
             model="m", system_text="s", user_text="u"
         )
         self.assertIn(b'"stream":true', body)
+
+    def test_post_send_header_timeout_is_unknown(self):
+        sock = _HeaderTimeoutSock(b"")
+        prepared = ai_transport.Prepared(
+            sock=sock,
+            host="api.example.com",
+            netloc="api.example.com",
+            path="/v1/chat/completions",
+            request_bytes=b"POST /v1/chat/completions HTTP/1.1\r\n\r\n",
+        )
+        result = ai_transport.send(
+            prepared, deadline_ms=ai_transport.now_ticks() + 30_000
+        )
+        self.assertEqual(result.kind, ai_transport.UNKNOWN)
+        self.assertEqual(result.reason, "timeout_after_dispatch")
+        self.assertEqual(result.detail, ai_transport.DETAIL["response_header_timeout"])
+        self.assertTrue(result.sent)
+        self.assertIsNone(result.http_status)
+        self.assertEqual(sock.sent, 1)
+
+    def test_received_malformed_response_is_not_a_header_timeout(self):
+        sock = _FakeSock(b"not-http\r\n\r\n")
+        prepared = ai_transport.Prepared(
+            sock=sock,
+            host="api.example.com",
+            netloc="api.example.com",
+            path="/v1/chat/completions",
+            request_bytes=b"POST /v1/chat/completions HTTP/1.1\r\n\r\n",
+        )
+        result = ai_transport.send(
+            prepared, deadline_ms=ai_transport.now_ticks() + 30_000
+        )
+        self.assertEqual(result.kind, ai_transport.PROVIDER_ERROR)
+        self.assertEqual(result.detail, ai_transport.DETAIL["malformed_response"])
+        self.assertTrue(result.sent)
+        self.assertEqual(sock.sent, 1)
+
+    def test_clean_framed_reasoning_without_terminal_is_reasoning_only(self):
+        result, sock = _send(
+            _event({"choices": [{"delta": {"reasoning_content": "只有推理"}}]})
+        )
+        self.assertEqual(result.kind, ai_transport.OUTPUT_INVALID)
+        self.assertEqual(result.detail, ai_transport.DETAIL["reasoning_only"])
+        self.assertEqual(sock.sent, 1)
+
+    def test_completed_chunked_reasoning_without_terminal_is_reasoning_only(self):
+        result, sock = _send(
+            _event({"choices": [{"delta": {"reasoning_content": "只有推理"}}]}),
+            chunked=True,
+        )
+        self.assertEqual(result.kind, ai_transport.OUTPUT_INVALID)
+        self.assertEqual(result.detail, ai_transport.DETAIL["reasoning_only"])
+        self.assertEqual(sock.sent, 1)
+
+    def test_incomplete_reasoning_body_remains_unknown(self):
+        response = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+            b"Content-Length: 9999\r\n\r\n"
+            + _event({"choices": [{"delta": {"reasoning_content": "只有推理"}}]})
+        )
+        sock = _FakeSock(response)
+        prepared = ai_transport.Prepared(
+            sock=sock,
+            host="api.example.com",
+            netloc="api.example.com",
+            path="/v1/chat/completions",
+            request_bytes=b"POST /v1/chat/completions HTTP/1.1\r\n\r\n",
+        )
+        result = ai_transport.send(
+            prepared, deadline_ms=ai_transport.now_ticks() + 30_000
+        )
+        self.assertEqual(result.kind, ai_transport.UNKNOWN)
+        self.assertEqual(result.detail, ai_transport.DETAIL["incomplete_body"])
+        self.assertEqual(sock.sent, 1)
 
     def test_split_utf8_and_crlf_with_reasoning_content_separation(self):
         body = b"".join(
@@ -1125,6 +1208,86 @@ def _claim(task_id: str, execution_id: str, attempt_id: str):
         (),
         {"task_id": task_id, "execution_id": execution_id, "attempt_id": attempt_id},
     )()
+
+
+class PostSendFailureClassificationTests(ExecutorCase):
+    def test_timeout_malformed_and_incomplete_are_distinct_unknowns(self):
+        self.configure_ai()
+        from app.local import ai_task_service
+        from app.local.base import utc_now
+        from tests.local.support import query_scalar
+
+        cases = [
+            ({"kind": ai_transport.UNKNOWN, "sent": True, "detail": ai_transport.DETAIL["response_header_timeout"]}, "response_header_timeout"),
+            ({"kind": ai_transport.PROVIDER_ERROR, "sent": True, "detail": ai_transport.DETAIL["malformed_response"]}, "malformed_response"),
+            ({"kind": ai_transport.PROVIDER_ERROR, "sent": True, "detail": ai_transport.DETAIL["duplicate_header"]}, "wire_framing_invalid"),
+            ({"kind": ai_transport.PROVIDER_ERROR, "sent": True, "detail": ai_transport.DETAIL["malformed_frame"]}, "incomplete_transfer"),
+        ]
+        for index, (outcome, expected) in enumerate(cases):
+            with self.subTest(expected=expected):
+                plan = self.make_plan(plan_date=date(2026, 9, 7 + index))
+                task = self.create_split(plan["id"])
+                claim = ai_task_service.claim_next(
+                    self.runtime,
+                    now=utc_now(),
+                    started_ticks=ai_transport.now_ticks(),
+                )
+                self.assertIsNotNone(claim)
+                assert claim is not None
+                ai_task_service.commit_dispatch_mark(self.session, claim, utc_now())
+                ai_task_service.finalize_failure(self.session, claim, outcome, utc_now())
+                row = self.task_row(task["id"])
+                self.assertEqual(row["status"], "outcome_unknown")
+                self.assertEqual(row["reason"], expected)
+                self.assertEqual(
+                    query_scalar(
+                        self.db,
+                        "SELECT evidence_code FROM local_ai_attempts WHERE execution_id = ? ORDER BY rowid DESC LIMIT 1",
+                        (claim.execution_id,),
+                    ),
+                    expected,
+                )
+
+class ClassificationScopeTests(unittest.TestCase):
+    def test_new_reasons_are_scoped_and_detail_is_sanitized(self):
+        from types import SimpleNamespace
+        from app.local import ai_task_service, ai_transport
+
+        def classify(task_type, kind, detail):
+            return ai_task_service._classified_failure_reason(
+                SimpleNamespace(task_type=task_type),
+                {"kind": kind, "detail": detail},
+            )
+
+        self.assertEqual(
+            classify("daily_lesson_split", ai_transport.PROVIDER_ERROR, "malformed_response"),
+            "malformed_response",
+        )
+        self.assertEqual(
+            classify("daily_lesson_split", ai_transport.OUTPUT_INVALID, "reasoning_only"),
+            None,
+        )
+        self.assertEqual(
+            classify("daily_lesson_split", ai_transport.OUTPUT_INVALID, "output_length"),
+            None,
+        )
+        self.assertEqual(
+            classify("game_observation_generate", ai_transport.OUTPUT_INVALID, "reasoning_only"),
+            "reasoning_only",
+        )
+        for task_type in (
+            "weekly_games_select",
+            "one_to_one_listening",
+            "daily_other_activities",
+            "game_observation_rewrite",
+        ):
+            with self.subTest(task_type=task_type):
+                self.assertIsNone(
+                    classify(task_type, ai_transport.PROVIDER_ERROR, "malformed_response")
+                )
+        self.assertIsNone(
+            classify("daily_lesson_split", ai_transport.PROVIDER_ERROR, {"raw": "not-a-code"})
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

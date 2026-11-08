@@ -123,6 +123,10 @@ DETAIL = {
     "length_mismatch": "length_mismatch",
     "incomplete_body": "incomplete_body",
     "malformed_frame": "malformed_frame",
+    "malformed_response": "malformed_response",
+    "response_header_timeout": "response_header_timeout",
+    "reasoning_only": "reasoning_only",
+    "output_length": "output_length",
     "redirect": "redirect",
     "invalid_json_envelope": "invalid_json_envelope",
     "invalid_candidate_json": "invalid_candidate_json",
@@ -384,11 +388,29 @@ WEEKLY_TEXT_TASK_TYPES = frozenset(
     }
 )
 DAILY_TEXT_TASK_TYPES = frozenset(
-    {"daily_lesson_split", "daily_process_adapt", "daily_other_activities"}
+    {
+        "daily_lesson_split",
+        "daily_process_adapt",
+        "daily_other_activities",
+        "daily_reflection_generate",
+    }
 )
 LISTENING_TEXT_TASK_TYPES = frozenset(
-    {"listening_note_draft", "listening_domain_evaluate"}
+    {
+        "listening_note_draft",
+        "listening_domain_evaluate",
+        "listening_goal_suggest",
+    }
 )
+LISTENING_VISION_TASK_TYPES = frozenset(
+    {
+        "listening_note_draft",
+        "listening_domain_evaluate",
+        "listening_group_notes",
+        "listening_goal_suggest",
+    }
+)
+CONFIG_TEXT_TASK_TYPES = frozenset({"class_game_config_extract"})
 
 
 @dataclass(frozen=True)
@@ -427,6 +449,15 @@ LISTENING_TEXT_RESPONSE_BUDGET = ResponseBudget(
     result_ipc_max_bytes=6 * 1_048_576 + 16 * 1024,
     require_terminal=True,
 )
+CONFIG_TEXT_RESPONSE_BUDGET = ResponseBudget(
+    max_tokens=8_192,
+    wire_max_bytes=4 * 1024 * 1024,
+    content_max_bytes=1_048_576,
+    event_max_bytes=2 * 1_048_576 + 16 * 1024,
+    buffer_max_bytes=2 * 1_048_576 + 16 * 1024,
+    result_ipc_max_bytes=2 * 1_048_576 + 16 * 1024,
+    require_terminal=True,
+)
 
 
 def text_response_budget(
@@ -447,6 +478,10 @@ def text_response_budget(
         if source_kind is not None and source_kind != "one_to_one_listening":
             return None
         return LISTENING_TEXT_RESPONSE_BUDGET
+    if task_type in CONFIG_TEXT_TASK_TYPES:
+        if source_kind is not None and source_kind != "class_game_config":
+            return None
+        return CONFIG_TEXT_RESPONSE_BUDGET
     return None
 
 
@@ -824,7 +859,22 @@ def send(
     provider_request_id: str | None = None
     length: int | None = None
     try:
-        response.begin()
+        try:
+            response.begin()
+        except (socket.timeout, TimeoutError):
+            return TransportResult(
+                UNKNOWN,
+                reason="timeout_after_dispatch",
+                sent=True,
+                detail=DETAIL["response_header_timeout"],
+            )
+        except (http.client.HTTPException, ValueError, OSError):
+            return TransportResult(
+                PROVIDER_ERROR,
+                reason="provider_error",
+                sent=True,
+                detail=DETAIL["malformed_response"],
+            )
         status = response.status
         provider_request_id = _sanitize_token(
             response.getheader("x-request-id") or response.getheader("openai-request-id"),
@@ -958,6 +1008,7 @@ def _read_stream(
     }
     done = False
     body_bytes = 0
+    reasoning_seen = False
 
     def emit(reasoning: str, content: str) -> None:
         if on_progress is None:
@@ -977,6 +1028,7 @@ def _read_stream(
 
     def apply_event(event_text: str) -> str | None:
         """Apply one data event; return an error detail or ``__done__``."""
+        nonlocal reasoning_seen
         if event_text.strip() == "[DONE]":
             return "__done__"
         try:
@@ -1013,6 +1065,8 @@ def _read_stream(
         stopped_before = state["finish_reason"] is not None
         finish_reason = choice.get("finish_reason")
         if finish_reason is not None:
+            if finish_reason == "length":
+                return DETAIL["output_length"]
             if finish_reason != "stop":
                 return DETAIL["unexpected_finish"]
             state["finish_reason"] = "stop"
@@ -1055,6 +1109,7 @@ def _read_stream(
         if stopped_before and (reasoning or content):
             return DETAIL["stream_invalid"]
         if reasoning:
+            reasoning_seen = True
             emit(reasoning, "")
         if content:
             content_parts.append(content)
@@ -1219,6 +1274,24 @@ def _read_stream(
             provider_request_id=provider_request_id,
             detail=DETAIL["incomplete_body"],
         )
+    clean_terminal_framing = (
+        (expected_length is not None and body_bytes == expected_length)
+        or (chunked and bool(getattr(response, "isclosed", lambda: True)()))
+    )
+    if (
+        state["finish_reason"] != "stop"
+        and reasoning_seen
+        and not "".join(content_parts).strip()
+        and clean_terminal_framing
+    ):
+        return TransportResult(
+            OUTPUT_INVALID,
+            reason="output_invalid",
+            sent=True,
+            http_status=200,
+            provider_request_id=provider_request_id,
+            detail=DETAIL["reasoning_only"],
+        )
     if state["finish_reason"] != "stop":
         # [DONE] alone, a truncated stream, or a missing normal finish is not a
         # complete answer, regardless of any partial content received.
@@ -1240,6 +1313,15 @@ def _read_stream(
             detail=DETAIL["stream_truncated"],
         )
     content = "".join(content_parts)
+    if not content.strip() and reasoning_seen:
+        return TransportResult(
+            OUTPUT_INVALID,
+            reason="output_invalid",
+            sent=True,
+            http_status=200,
+            provider_request_id=provider_request_id,
+            detail=DETAIL["reasoning_only"],
+        )
     if len(content.encode("utf-8")) > limits.content_max_bytes:
         return TransportResult(
             OUTPUT_INVALID,
@@ -1323,7 +1405,12 @@ def _parse_success(
     if not isinstance(choice, dict):
         return TransportResult(OUTPUT_INVALID, reason="output_invalid", sent=sent, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["choices_count"])
     if choice.get("finish_reason") != "stop":
-        return TransportResult(OUTPUT_INVALID, reason="output_invalid", sent=sent, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["unexpected_finish"])
+        finish_detail = (
+            DETAIL["output_length"]
+            if choice.get("finish_reason") == "length"
+            else DETAIL["unexpected_finish"]
+        )
+        return TransportResult(OUTPUT_INVALID, reason="output_invalid", sent=sent, http_status=200, provider_request_id=provider_request_id, detail=finish_detail)
     message = choice.get("message")
     if not isinstance(message, dict):
         return TransportResult(OUTPUT_INVALID, reason="output_invalid", sent=sent, http_status=200, provider_request_id=provider_request_id, detail=DETAIL["choices_count"])
@@ -1377,6 +1464,7 @@ __all__ = [
     "WEEKLY_TEXT_RESPONSE_BUDGET",
     "WEEKLY_TEXT_TASK_TYPES",
     "LISTENING_TEXT_TASK_TYPES",
+    "LISTENING_VISION_TASK_TYPES",
     "text_response_budget",
     "TransportResult",
     "VISION_ATTEMPT_BUDGET_MS",

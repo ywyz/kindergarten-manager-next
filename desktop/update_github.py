@@ -1,9 +1,14 @@
 """Fixed GitHub Releases discovery and asset binding for product updates.
 
 The public product source is the official GitHub REST endpoint for the fixed
-repository. The API response is discovery only: a release is not installable
-until the signed manifest asset verifies with the embedded Ed25519 keys and its
-package URL is bound to the same release tag/asset.
+repository. The formal channel uses ``/releases/latest``; the preview channel
+uses a bounded ``/releases`` list and only admits non-draft, explicitly
+prerelease ``X.Y.Z-listening-test.N`` tags. The API response is discovery only:
+a release is not installable until the signed manifest asset verifies with the
+embedded Ed25519 keys and its package URL is bound to the same release
+tag/asset. Preview manifest/download verification remains a later reviewed
+slice; preview discovery never turns a GitHub Release into an installable
+package by itself.
 """
 
 from __future__ import annotations
@@ -17,14 +22,18 @@ from urllib.parse import urlsplit
 from update_manifest import (
     MAX_RELEASE_NOTES,
     ManifestError,
-    semver,
     strict_json_loads,
 )
+from update_identity import is_preview_version, version_key
 from update_trust import ReleaseConfigError, ReleaseSource
 
 GITHUB_REPO = "ywyz/kindergarten-manager-next"
 GITHUB_API_ORIGIN = "https://api.github.com"
 GITHUB_API_PATH = f"/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_PATH = f"/repos/{GITHUB_REPO}/releases"
+PREVIEW_RELEASES_PER_PAGE = 100
+PREVIEW_RELEASES_MAX_PAGES = 3
+MAX_RELEASES_PAGE_BYTES = 8 * 1024 * 1024
 GITHUB_DOWNLOAD_ORIGIN = "https://github.com"
 GITHUB_ASSET_HOST = "release-assets.githubusercontent.com"
 MANIFEST_ASSET = "update-manifest-windows-x64.json"
@@ -32,13 +41,20 @@ PACKAGE_ASSET = "KindergartenManager-windows-x64.zip"
 MAX_API_BYTES = 256 * 1024
 MAX_GITHUB_REDIRECTS = 3
 MAX_CDN_QUERY = 2048
-_TAG_RE = re.compile(r"^v?([0-9]+)\.([0-9]+)\.([0-9]+)$")
+# Full-match, ASCII-only forms.  ``$`` also matches before a trailing newline
+# and ``\d`` matches Unicode decimal digits; neither belongs in a release tag.
+_TAG_RE = re.compile(r"v?([0-9]+)\.([0-9]+)\.([0-9]+)")
+_PREVIEW_TAG_RE = re.compile(
+    r"v?((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+    r"-listening-test\.(0|[1-9][0-9]*)"
+)
+_RELEASES_QUERY_RE = re.compile(r"per_page=100&page=(?:[1-9][0-9]*)")
 # GitHub release assets redirect to a fixed host. The observed production
 # shape is ``/github-production-release-asset/<tenant>/<uuid>``; the older
 # ``github-production-release-asset-<tenant>`` prefix is retained as a strict
 # compatibility shape, never as a wildcard.
 _CDN_PATH_RE = re.compile(
-    r"^/github-production-release-asset(?:-[0-9a-f]{4,})?/[0-9]+/[0-9a-f-]{8,}$"
+    r"/github-production-release-asset(?:-[0-9a-f]{4,})?/[0-9]+/[0-9a-f-]{8,}"
 )
 
 
@@ -51,6 +67,7 @@ class GitHubRelease:
     assets: dict[str, str]
     assets_complete: bool
     missing_assets: tuple[str, ...]
+    channel: str = "stable"
 
 
 def _release_notes(value: object) -> str:
@@ -60,6 +77,27 @@ def _release_notes(value: object) -> str:
     if len(raw) <= MAX_RELEASE_NOTES:
         return value
     return raw[:MAX_RELEASE_NOTES].decode("utf-8", "ignore")
+
+
+def _release_assets(data: dict) -> tuple[dict[str, str], tuple[str, ...]]:
+    assets_raw = data.get("assets")
+    if not isinstance(assets_raw, list):
+        raise ManifestError("UPDATE_METADATA_INVALID", "Release assets 不合法")
+    assets: dict[str, str] = {}
+    for item in assets_raw:
+        if not isinstance(item, dict):
+            raise ManifestError("UPDATE_METADATA_INVALID", "Release asset 项不合法")
+        name = item.get("name")
+        url = item.get("browser_download_url")
+        if not isinstance(name, str) or not isinstance(url, str) or not url:
+            raise ManifestError("UPDATE_METADATA_INVALID", "Release asset 名称或地址不合法")
+        if name in assets:
+            raise ManifestError("UPDATE_ASSETS_DUPLICATE", "Release 含重复资产名")
+        assets[name] = url
+    missing = tuple(
+        name for name in (MANIFEST_ASSET, PACKAGE_ASSET) if name not in assets
+    )
+    return assets, missing
 
 
 def parse_latest_release(raw: bytes, current_version: str) -> GitHubRelease:
@@ -81,28 +119,22 @@ def parse_latest_release(raw: bytes, current_version: str) -> GitHubRelease:
     if draft or prerelease:
         raise ManifestError("UPDATE_NO_RELEASE", "最新 Release 不是正式版本")
     tag = data.get("tag_name")
-    if not isinstance(tag, str) or not _TAG_RE.match(tag):
+    if not isinstance(tag, str) or not _TAG_RE.fullmatch(tag):
         raise ManifestError("UPDATE_METADATA_INVALID", "Release tag 不是三段数值 SemVer")
     version = tag[1:] if tag.startswith("v") else tag
-    if semver(version) <= semver(current_version):
+    try:
+        target_key = version_key(version)
+        current_key = version_key(current_version)
+    except ValueError:
+        raise ManifestError("UPDATE_METADATA_INVALID", "版本不是正式版或预览版形状") from None
+    if target_key <= current_key:
+        if is_preview_version(current_version):
+            raise ManifestError(
+                "UPDATE_STABLE_BELOW_INSTALLED",
+                "正式渠道暂无匹配或高于已安装预览版的正式版本",
+            )
         raise ManifestError("UPDATE_NO_NEW_VERSION", "当前已是最新版本")
-    assets_raw = data.get("assets")
-    if not isinstance(assets_raw, list):
-        raise ManifestError("UPDATE_METADATA_INVALID", "Release assets 不合法")
-    assets: dict[str, str] = {}
-    for item in assets_raw:
-        if not isinstance(item, dict):
-            raise ManifestError("UPDATE_METADATA_INVALID", "Release asset 项不合法")
-        name = item.get("name")
-        url = item.get("browser_download_url")
-        if not isinstance(name, str) or not isinstance(url, str) or not url:
-            raise ManifestError("UPDATE_METADATA_INVALID", "Release asset 名称或地址不合法")
-        if name in assets:
-            raise ManifestError("UPDATE_ASSETS_DUPLICATE", "Release 含重复资产名")
-        assets[name] = url
-    missing = tuple(
-        name for name in (MANIFEST_ASSET, PACKAGE_ASSET) if name not in assets
-    )
+    assets, missing = _release_assets(data)
     return GitHubRelease(
         tag=tag,
         version=version,
@@ -111,7 +143,87 @@ def parse_latest_release(raw: bytes, current_version: str) -> GitHubRelease:
         assets=assets,
         assets_complete=not missing,
         missing_assets=missing,
+        channel="stable",
     )
+
+
+def parse_preview_release_page(
+    raw: bytes,
+) -> tuple[list[GitHubRelease], int, int]:
+    """Parse one bounded ``/releases`` page for preview candidates.
+
+    Returns ``(preview_releases, item_count, preview_count)``.  Drafts,
+    non-prerelease records and tags outside the first-segment preview shape
+    are skipped, so a marker/version mismatch never becomes a candidate.
+    """
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        raise ManifestError("UPDATE_METADATA_INVALID", "GitHub Release 列表为空")
+    if len(raw) > MAX_RELEASES_PAGE_BYTES:
+        raise ManifestError("UPDATE_METADATA_INVALID", "GitHub Release 列表超过大小上限")
+    try:
+        data = strict_json_loads(bytes(raw))
+    except ManifestError:
+        raise
+    if not isinstance(data, list):
+        raise ManifestError("UPDATE_METADATA_INVALID", "GitHub Release 列表不是数组")
+    releases: list[GitHubRelease] = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ManifestError("UPDATE_METADATA_INVALID", "GitHub Release 项不合法")
+        draft = item.get("draft")
+        prerelease = item.get("prerelease")
+        if not isinstance(draft, bool) or not isinstance(prerelease, bool):
+            raise ManifestError(
+                "UPDATE_METADATA_INVALID", "Release draft/prerelease 必须是布尔值"
+            )
+        if draft or not prerelease:
+            continue
+        tag = item.get("tag_name")
+        if not isinstance(tag, str):
+            raise ManifestError("UPDATE_METADATA_INVALID", "Release tag 不是字符串")
+        match = _PREVIEW_TAG_RE.fullmatch(tag)
+        if match is None:
+            # A prerelease with a non-preview tag is not a candidate; it must
+            # not be relabelled from a plain tag or an unrelated suffix.
+            continue
+        version = tag[1:] if tag.startswith("v") else tag
+        assets, missing = _release_assets(item)
+        releases.append(
+            GitHubRelease(
+                tag=tag,
+                version=version,
+                published_at=str(item.get("published_at") or ""),
+                release_notes=_release_notes(item.get("body")),
+                assets=assets,
+                assets_complete=not missing,
+                missing_assets=missing,
+                channel="preview",
+            )
+        )
+    return releases, len(data), len(releases)
+
+
+def select_preview_release(
+    releases: list[GitHubRelease], current_version: str
+) -> GitHubRelease | None:
+    """Pick the highest strictly-newer preview; missing assets are kept."""
+    try:
+        current_key = version_key(current_version)
+    except ValueError:
+        raise ManifestError("UPDATE_METADATA_INVALID", "已安装版本形状不合法") from None
+    try:
+        eligible = [
+            release
+            for release in releases
+            if version_key(release.version) > current_key
+        ]
+    except ValueError:
+        raise ManifestError(
+            "UPDATE_METADATA_INVALID", "预览版本形状不合法"
+        ) from None
+    if not eligible:
+        return None
+    return max(eligible, key=lambda release: version_key(release.version))
 
 
 def _test_fields(
@@ -221,6 +333,7 @@ def manifest_source(
             f"/{GITHUB_REPO}/releases/download/{release.tag}/{MANIFEST_ASSET}"
         ),
         public_keys=dict(public_keys),
+        channel=release.channel,
         provider="github",
         github_repo=GITHUB_REPO,
         github_tag=release.tag,
@@ -240,7 +353,16 @@ def expected_package_url(release: GitHubRelease) -> str:
 
 
 def validate_manifest_binding(manifest, release: GitHubRelease) -> None:
-    if semver(manifest.version) != semver(release.version):
+    if manifest.channel != release.channel:
+        raise ManifestError("UPDATE_METADATA_INVALID", "签名清单渠道与 Release 不一致")
+    try:
+        manifest_key = version_key(manifest.version)
+        release_key = version_key(release.version)
+    except ValueError:
+        raise ManifestError(
+            "UPDATE_METADATA_INVALID", "签名清单或 Release 版本形状不合法"
+        ) from None
+    if manifest_key != release_key:
         raise ManifestError("UPDATE_METADATA_INVALID", "签名清单版本与 Release tag 不一致")
     expected = expected_package_url(release)
     if manifest.package_url != expected:
@@ -254,7 +376,14 @@ def validate_github_manifest_for_version(manifest, version: str) -> None:
     key. Its own version must match the plan target, and its signed package
     path must be one of the two fixed tag spellings for that version.
     """
-    if semver(manifest.version) != semver(version):
+    try:
+        manifest_key = version_key(manifest.version)
+        target_key = version_key(version)
+    except ValueError:
+        raise ManifestError(
+            "UPDATE_METADATA_INVALID", "签名清单或安装目标版本形状不合法"
+        ) from None
+    if manifest_key != target_key:
         raise ManifestError("UPDATE_METADATA_INVALID", "签名清单版本与安装目标不一致")
     allowed = {
         f"/{GITHUB_REPO}/releases/download/{tag}/{PACKAGE_ASSET}"
@@ -281,9 +410,14 @@ def validate_github_url(source: ReleaseSource, url: str) -> str:
     if "\\" in parts.path or ".." in parts.path.split("/"):
         raise ReleaseConfigError("GitHub 更新路径不合法")
     if host == "api.github.com":
-        if parts.path != GITHUB_API_PATH or parts.query:
-            raise ReleaseConfigError("GitHub API 路径不是固定 latest 资源")
-        return url
+        if parts.path == GITHUB_API_PATH and not parts.query:
+            return url
+        if (
+            parts.path == GITHUB_RELEASES_PATH
+            and _RELEASES_QUERY_RE.fullmatch(parts.query)
+        ):
+            return url
+        raise ReleaseConfigError("GitHub API 路径不是固定 latest/列表资源")
     if host == "github.com":
         if source.github_tag is None:
             raise ReleaseConfigError("GitHub 下载缺少固定 tag")
@@ -297,7 +431,7 @@ def validate_github_url(source: ReleaseSource, url: str) -> str:
     if host == GITHUB_ASSET_HOST:
         if GITHUB_ASSET_HOST not in source.allowed_redirect_hosts:
             raise ReleaseConfigError("该 GitHub 来源不允许 CDN 跳转")
-        if not _CDN_PATH_RE.match(parts.path):
+        if not _CDN_PATH_RE.fullmatch(parts.path):
             raise ReleaseConfigError("GitHub CDN 资产路径不合法")
         if len(parts.query) > MAX_CDN_QUERY:
             raise ReleaseConfigError("GitHub CDN 查询过长")
@@ -335,6 +469,10 @@ def public_ipv4_or_ipv6(host: str) -> str:
 __all__ = [
     "GITHUB_API_ORIGIN",
     "GITHUB_API_PATH",
+    "GITHUB_RELEASES_PATH",
+    "MAX_RELEASES_PAGE_BYTES",
+    "PREVIEW_RELEASES_MAX_PAGES",
+    "PREVIEW_RELEASES_PER_PAGE",
     "GITHUB_ASSET_HOST",
     "GITHUB_REPO",
     "GitHubRelease",
@@ -345,7 +483,9 @@ __all__ = [
     "load_github_source",
     "manifest_source",
     "parse_latest_release",
+    "parse_preview_release_page",
     "public_ipv4_or_ipv6",
+    "select_preview_release",
     "validate_github_manifest_for_version",
     "validate_github_url",
     "validate_manifest_binding",

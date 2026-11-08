@@ -274,6 +274,9 @@ def _warnings(
     elif task_type == "daily_process_adapt":
         if edited.get("process") == "":
             out.append("过程为空字符串，采用后将清空活动过程")
+    elif task_type == "daily_reflection_generate":
+        if edited.get("reflection") == "":
+            out.append("反思为空字符串，采用后将清空反思")
     else:
         for target in selected:
             value = edited.get(target)
@@ -307,6 +310,8 @@ def _merge(
         group = dict(base.get("group_activity") or {})
         group["process"] = edited["process"]
         base["group_activity"] = group
+    elif task_type == "daily_reflection_generate":
+        base["reflection"] = edited["reflection"]
     else:
         for board in selected:
             base[board] = copy.deepcopy(edited[board])

@@ -11,11 +11,15 @@ import {
   canDownloadUpdate,
   canInstallUpdate,
   canRetryUpdate,
+  canSwitchUpdateChannel,
   formatBytes,
   isUpdateBusy,
+  updateChannelLabel,
+  updateChannelNotice,
   updateErrorText,
   updateProgressText,
   updateStateLabel,
+  type UpdateChannel,
   type UpdateStatus,
 } from '../update'
 
@@ -23,6 +27,8 @@ const props = defineProps<{
   open: boolean
   status: UpdateStatus | null
   frozen?: boolean
+  operationBusy?: boolean
+  switching?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -32,17 +38,42 @@ const emit = defineEmits<{
   (e: 'cancel'): void
   (e: 'retry'): void
   (e: 'install'): void
+  (e: 'switch-channel', channel: UpdateChannel): void
+  (e: 'refresh'): void
 }>()
 
 const busy = computed(() => isUpdateBusy(props.status))
 const currentVersion = computed(() => props.status?.current?.version ?? '—')
 const target = computed(() => props.status?.target)
+const installedChannel = computed(() =>
+  updateChannelLabel(
+    props.status?.installed_channel ?? props.status?.current?.channel,
+  ),
+)
+const checkChannel = computed<UpdateChannel>(() =>
+  props.status?.check_channel === 'preview' ? 'preview' : 'stable',
+)
+const availableChannels = computed(
+  () => props.status?.available_channels ?? ['stable'],
+)
+const channelSwitchDisabled = computed(
+  () =>
+    props.frozen
+    || props.operationBusy === true
+    || !canSwitchUpdateChannel(props.status),
+)
+const channelNotice = computed(() => updateChannelNotice(props.status))
+const targetChannel = computed(() => updateChannelLabel(target.value?.channel))
 const stateLabel = computed(() => updateStateLabel(props.status))
 const errorText = computed(() => updateErrorText(props.status))
 const progressText = computed(() => updateProgressText(props.status))
 const progressPercent = computed(() => props.status?.progress.percent ?? 0)
 const showError = computed(() => props.status?.state === 'failed')
 const showNoRelease = computed(() => props.status?.state === 'no_release')
+const showIncomplete = computed(() => props.status?.state === 'incomplete')
+const showSwitchUnknown = computed(
+  () => props.status?.state === 'switch_unknown',
+)
 const downloadUnavailable = computed(
   () =>
     props.status?.state === 'available' &&
@@ -59,13 +90,19 @@ const unavailableTitle = computed(() => {
   if (props.status?.error_code === 'UPDATE_TRUST_UNCONFIGURED') {
     return '发现新版，但尚未配置发行公钥'
   }
+  if (props.status?.error_code === 'UPDATE_PREVIEW_TRUST_PENDING') {
+    return '发现预览版；下载与安装待签名清单和关闭交接审核后开放'
+  }
   return '发现新版，但当前暂不可安全下载'
 })
 const showUnconfigured = computed(
   () => props.status?.state === 'unconfigured' || props.status?.state === 'disabled',
 )
 const installAvailable = computed(
-  () => !props.frozen && canInstallUpdate(props.status),
+  () =>
+    !props.frozen
+    && props.operationBusy !== true
+    && canInstallUpdate(props.status),
 )
 const confirmInstallOpen = ref(false)
 
@@ -86,6 +123,12 @@ function onDialogValue(value: boolean): void {
   if (!value) close()
   else emit('update:open', true)
 }
+
+function requestChannel(value: string | number | boolean | undefined): void {
+  const channel = value === 'preview' ? 'preview' : 'stable'
+  if (channel === checkChannel.value || channelSwitchDisabled.value) return
+  emit('switch-channel', channel)
+}
 </script>
 
 <template>
@@ -98,9 +141,53 @@ function onDialogValue(value: boolean): void {
     @update:model-value="onDialogValue"
   >
     <div class="update-head">
-      <span>当前版本：<strong>v{{ currentVersion }}</strong></span>
+      <span>已安装版本：<strong>v{{ currentVersion }}</strong></span>
+      <span class="muted">当前渠道：{{ installedChannel }}</span>
       <el-tag size="small" type="info">{{ stateLabel }}</el-tag>
     </div>
+
+    <div class="channel-row" data-d1="update-channel">
+      <span>检查渠道</span>
+      <el-radio-group
+        :model-value="checkChannel"
+        :disabled="channelSwitchDisabled"
+        data-d1="update-channel-group"
+        @change="requestChannel"
+      >
+        <el-radio-button
+          value="stable"
+          data-d1="update-channel-stable"
+        >
+          正式版
+        </el-radio-button>
+        <el-radio-button
+          value="preview"
+          :disabled="!availableChannels.includes('preview')"
+          data-d1="update-channel-preview"
+        >
+          预览版
+        </el-radio-button>
+      </el-radio-group>
+      <span class="muted">检查偏好；不改变已安装版本</span>
+    </div>
+
+    <el-alert
+      v-if="props.switching"
+      type="info"
+      :closable="false"
+      class="section"
+      data-d1="update-switching"
+      title="正在切换检查渠道；完成前已暂停检查、下载、安装和再次切换"
+    />
+
+    <el-alert
+      v-if="channelNotice"
+      type="info"
+      :closable="false"
+      class="section"
+      data-d1="update-channel-notice"
+      :title="channelNotice"
+    />
 
     <el-alert
       v-if="showUnconfigured"
@@ -115,7 +202,7 @@ function onDialogValue(value: boolean): void {
 
     <template v-if="target">
       <div class="release-meta" data-d1="update-target">
-        <p><strong>新版本：v{{ target.version }}</strong></p>
+        <p><strong>新版本：v{{ target.version }}（{{ targetChannel }}）</strong></p>
         <p v-if="target.build_id" class="muted">构建 {{ target.build_id }} · 平台 {{ target.platform }}/{{ target.arch }}</p>
         <p v-if="target.package_size" class="muted">包大小：{{ formatBytes(target.package_size) }}</p>
       </div>
@@ -171,7 +258,7 @@ function onDialogValue(value: boolean): void {
       :closable="false"
       class="section"
       data-d1="update-up-to-date"
-      title="当前已是最新版本"
+      title="已到该渠道最新版本"
     />
 
     <el-alert
@@ -180,7 +267,45 @@ function onDialogValue(value: boolean): void {
       :closable="false"
       class="section"
       data-d1="update-no-release"
-      title="GitHub 尚无正式 Release；不影响本地使用"
+      :title="`${updateChannelLabel(checkChannel)}渠道尚无 Release；不影响本地使用`"
+    />
+
+    <el-alert
+      v-if="showSwitchUnknown"
+      type="warning"
+      :closable="false"
+      class="section"
+      data-d1="update-switch-unknown"
+      title="切换结果待核对：宿主当前检查渠道和可下载目标未知，旧目标已暂停"
+    >
+      <div class="update-actions">
+        <el-button
+          size="small"
+          data-d1="update-refresh"
+          :disabled="props.frozen || props.operationBusy"
+          @click="emit('refresh')"
+        >
+          只读刷新宿主状态
+        </el-button>
+        <el-button
+          size="small"
+          type="primary"
+          data-d1="update-recheck"
+          :disabled="props.frozen || props.operationBusy"
+          @click="emit('check')"
+        >
+          重新检查
+        </el-button>
+      </div>
+    </el-alert>
+
+    <el-alert
+      v-if="showIncomplete"
+      type="warning"
+      :closable="false"
+      class="section"
+      data-d1="update-incomplete"
+      title="预览渠道发布列表未取全；本次检查不完整，请稍后重新检查"
     />
 
     <el-alert
@@ -196,14 +321,14 @@ function onDialogValue(value: boolean): void {
       <div class="footer">
         <el-button
           data-d1="update-check"
-          :disabled="props.frozen || !canCheckUpdate(props.status)"
+          :disabled="props.frozen || props.operationBusy || !canCheckUpdate(props.status)"
           :loading="props.status?.state === 'checking'"
           @click="emit('check')"
         >
           检查更新
         </el-button>
         <el-button
-          v-if="canDownloadUpdate(props.status)"
+          v-if="canDownloadUpdate(props.status) && !props.operationBusy"
           type="primary"
           data-d1="update-download"
           :disabled="props.frozen"
@@ -220,7 +345,7 @@ function onDialogValue(value: boolean): void {
           取消下载
         </el-button>
         <el-button
-          v-if="canRetryUpdate(props.status)"
+          v-if="canRetryUpdate(props.status) && !props.operationBusy"
           data-d1="update-retry"
           :disabled="props.frozen"
           @click="emit('retry')"
@@ -267,6 +392,13 @@ function onDialogValue(value: boolean): void {
   gap: 12px;
   flex-wrap: wrap;
 }
+.channel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
 .release-meta p {
   margin: 4px 0;
 }
@@ -287,6 +419,12 @@ function onDialogValue(value: boolean): void {
 }
 .section {
   margin-top: 12px;
+}
+.update-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
 }
 .muted {
   color: var(--kgm-muted);

@@ -40,6 +40,10 @@ TOTAL_DOWNLOAD_SECONDS = 30 * 60.0
 CHUNK = 64 * 1024
 MAX_REDIRECTS = 0
 MAX_GITHUB_REDIRECTS = update_github.MAX_GITHUB_REDIRECTS
+UPDATE_CHANNELS = ("stable", "preview")
+PREVIEW_PAGE_SIZE = update_github.PREVIEW_RELEASES_PER_PAGE
+PREVIEW_MAX_PAGES = update_github.PREVIEW_RELEASES_MAX_PAGES
+CHANNEL_PREFERENCE_NAME = "channel-preference.json"
 
 
 class UpdateError(RuntimeError):
@@ -52,6 +56,42 @@ class UpdateError(RuntimeError):
 class UpdateCancelled(UpdateError):
     def __init__(self):
         super().__init__("UPDATE_CANCELLED", "更新下载已取消")
+
+
+def _read_channel_preference(path: Path) -> str | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    channel = data.get("channel")
+    return channel if channel in UPDATE_CHANNELS else None
+
+
+def _write_channel_preference(path: Path, channel: str) -> None:
+    """Atomically persist the local check preference outside the data root."""
+    parent = path.parent
+    ensure_safe_path(parent)
+    parent.mkdir(parents=True, exist_ok=True)
+    ensure_safe_path(path)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    data = json.dumps(
+        {"schema_version": 1, "channel": channel},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    try:
+        with tmp.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -357,6 +397,7 @@ class UpdateManager:
         data_dir: str | Path | None = None,
         credential_root: str | Path | None = None,
         allow_install: bool = True,
+        channel_preference_path: str | Path | None = None,
     ):
         self.identity = identity
         self.source = source
@@ -372,6 +413,12 @@ class UpdateManager:
             Path(staging_root) if staging_root is not None else _default_staging_root()
         )
         self.allow_install = bool(allow_install)
+        self._channel_preference_path = (
+            Path(channel_preference_path)
+            if channel_preference_path is not None
+            else self.staging_root.parent / CHANNEL_PREFERENCE_NAME
+        )
+        self._channel_error: str | None = None
         self._release: update_github.GitHubRelease | None = None
         self._manifest_source: ReleaseSource | None = None
         self._lock = threading.RLock()
@@ -393,6 +440,7 @@ class UpdateManager:
         self._closed = False
         self._generation = 0
         self._validate_initial_state()
+        self._channel = self._initial_channel()
 
     def _validate_initial_state(self) -> None:
         if not self.enabled:
@@ -414,6 +462,29 @@ class UpdateManager:
         if not self.source.configured:
             self._state = "unconfigured"
             self._reason = "UPDATE_CHANNEL_UNCONFIGURED"
+
+    def _available_channels(self) -> tuple[str, ...]:
+        if self.source is not None and self.source.provider == "github":
+            return UPDATE_CHANNELS
+        if self.source is not None and self.source.channel in UPDATE_CHANNELS:
+            return (self.source.channel,)
+        return ("stable",)
+
+    def _initial_channel(self) -> str:
+        preferred = _read_channel_preference(self._channel_preference_path)
+        available = self._available_channels()
+        if preferred in available:
+            return preferred
+        if self.identity.channel in available:
+            return self.identity.channel
+        return available[0]
+
+    def _channel_switch_available(self) -> bool:
+        return not self._closed and self._state not in (
+            "checking",
+            "downloading",
+            "verifying",
+        )
 
     @staticmethod
     def _paths_overlap(left: Path, right: Path) -> bool:
@@ -442,7 +513,7 @@ class UpdateManager:
                 release = self._release
                 target = {
                     "app_id": "kindergarten-manager-next",
-                    "channel": "stable",
+                    "channel": release.channel,
                     "version": release.version,
                     "build_id": "",
                     "platform": "windows",
@@ -473,9 +544,54 @@ class UpdateManager:
                 "download_available": bool(self._manifest and self.allow_install),
                 "allow_install": self.allow_install,
                 "download_id": self._download_id,
+                "installed_channel": self.identity.channel,
+                "check_channel": self._channel,
+                "available_channels": list(self._available_channels()),
+                "channel_switch_available": self._channel_switch_available(),
+                "channel_switch_error": self._channel_error,
             }
 
     def state(self) -> dict[str, Any]:
+        return self._snapshot()
+
+    def set_channel(self, channel: object) -> dict[str, Any]:
+        if not isinstance(channel, str) or channel not in UPDATE_CHANNELS:
+            with self._lock:
+                self._channel_error = "UPDATE_CHANNEL_INVALID"
+            return self._snapshot()
+        with self._lock:
+            if self._closed:
+                return self._snapshot()
+            if channel not in self._available_channels():
+                self._channel_error = "UPDATE_CHANNEL_UNAVAILABLE"
+                return self._snapshot()
+            if not self._channel_switch_available():
+                self._channel_error = "UPDATE_CHANNEL_SWITCH_BUSY"
+                return self._snapshot()
+            if channel == self._channel:
+                self._channel_error = None
+                return self._snapshot()
+            try:
+                _write_channel_preference(self._channel_preference_path, channel)
+            except (OSError, PathSafetyError):
+                self._channel_error = "UPDATE_CHANNEL_PREFERENCE_WRITE"
+                return self._snapshot()
+            self._channel = channel
+            self._generation += 1
+            self._release = None
+            self._manifest = None
+            self._manifest_source = None
+            self._metadata_raw = None
+            self._progress_downloaded = 0
+            self._progress_total = 0
+            self._staging_dir = None
+            self._download_id = None
+            if self._state not in ("disabled", "unconfigured", "closed"):
+                self._state = "idle"
+            self._reason = "UPDATE_CHANNEL_SWITCHED"
+            self._error_code = None
+            self._error_message = None
+            self._channel_error = None
         return self._snapshot()
 
     def install_payload(self) -> dict[str, Any]:
@@ -512,6 +628,7 @@ class UpdateManager:
             self._reason = reason
             self._error_code = error_code
             self._error_message = error_message
+            self._channel_error = None
 
     def _is_current(self, generation: int) -> bool:
         with self._lock:
@@ -537,6 +654,7 @@ class UpdateManager:
             self._reason = reason
             self._error_code = error_code
             self._error_message = error_message
+            self._channel_error = None
             if manifest is not None:
                 self._manifest = manifest
             if downloaded is not None:
@@ -561,19 +679,28 @@ class UpdateManager:
             self._reason = None
             self._error_code = None
             self._error_message = None
+            self._channel_error = None
             self._generation += 1
             generation = self._generation
+            channel = self._channel
             self._thread = threading.Thread(
                 target=self._check_worker,
-                args=(generation,),
+                args=(generation, channel),
                 daemon=True,
             )
             self._thread.start()
         return self._snapshot()
 
-    def _check_worker(self, generation: int) -> None:
+    def _check_worker(self, generation: int, channel: str) -> None:
         if self.source is not None and self.source.provider == "github":
-            self._check_github(generation, time.monotonic() + self.total_timeout)
+            if channel == "preview":
+                self._check_github_preview(
+                    generation, time.monotonic() + self.total_timeout
+                )
+            else:
+                self._check_github(
+                    generation, time.monotonic() + self.total_timeout
+                )
             return
         conn = None
         response = None
@@ -676,6 +803,7 @@ class UpdateManager:
     def _check_github(self, generation: int, deadline: float) -> None:
         conn = response = sock = None
         conn2 = response2 = sock2 = None
+        release = None
         try:
             assert self.source is not None
             with self._lock:
@@ -803,7 +931,26 @@ class UpdateManager:
                 self._error_message = None
         except ManifestError as exc:
             if exc.code == "UPDATE_NO_NEW_VERSION":
-                self._publish(generation, "up_to_date")
+                if release is not None:
+                    # The selected Release was strictly newer, but its signed
+                    # manifest claims an equal/older version: this is a
+                    # mismatch, not a genuine up-to-date result.
+                    self._publish(
+                        generation,
+                        "failed",
+                        error_code="UPDATE_METADATA_INVALID",
+                        error_message="签名清单版本未高于当前版本或与 Release 不一致",
+                    )
+                else:
+                    self._publish(
+                        generation, "up_to_date", reason="UPDATE_NO_NEW_VERSION"
+                    )
+            elif exc.code == "UPDATE_STABLE_BELOW_INSTALLED":
+                self._publish(
+                    generation,
+                    "up_to_date",
+                    reason="UPDATE_STABLE_BELOW_INSTALLED",
+                )
             elif exc.code == "UPDATE_NO_RELEASE":
                 self._publish(
                     generation,
@@ -849,6 +996,236 @@ class UpdateManager:
         finally:
             _close_io(response=response2, sock=sock2, conn=conn2)
             _close_io(response=response, sock=sock, conn=conn)
+
+    def _check_github_preview(self, generation: int, deadline: float) -> None:
+        releases: list[update_github.GitHubRelease] = []
+        preview_count = 0
+        complete = False
+        conn2 = response2 = sock2 = None
+        try:
+            assert self.source is not None and self.source.provider == "github"
+            with self._lock:
+                if self._closed or generation != self._generation:
+                    return
+                self._release = None
+                self._manifest = None
+                self._manifest_source = None
+                self._metadata_raw = None
+                self._progress_downloaded = 0
+                self._progress_total = 0
+            for page in range(1, PREVIEW_MAX_PAGES + 1):
+                conn = response = sock = None
+                try:
+                    url = (
+                        f"{update_github.GITHUB_API_ORIGIN}"
+                        f"{update_github.GITHUB_RELEASES_PATH}"
+                        f"?per_page={PREVIEW_PAGE_SIZE}&page={page}"
+                    )
+                    conn, response, sock = _open_url(
+                        self.source,
+                        url,
+                        self.read_timeout,
+                        deadline=deadline,
+                    )
+                    if response.status == 404:
+                        if page == 1:
+                            self._publish(
+                                generation,
+                                "no_release",
+                                reason="UPDATE_NO_RELEASE",
+                            )
+                            return
+                        complete = True
+                        break
+                    if response.status in (403, 429):
+                        self._publish(
+                            generation,
+                            "failed",
+                            error_code="UPDATE_RATE_LIMITED",
+                            error_message="GitHub API 限流或暂时拒绝请求，请稍后重试",
+                        )
+                        return
+                    if response.status != 200:
+                        raise UpdateError(
+                            "UPDATE_METADATA_UNAVAILABLE",
+                            f"GitHub Release 列表 HTTP {response.status}",
+                        )
+                    raw = _read_exact(
+                        response,
+                        update_github.MAX_RELEASES_PAGE_BYTES,
+                        sock=sock,
+                        deadline=deadline,
+                        read_timeout=self.read_timeout,
+                    )
+                finally:
+                    _close_io(response=response, sock=sock, conn=conn)
+                if not self._is_current(generation):
+                    return
+                page_releases, item_count, page_preview_count = (
+                    update_github.parse_preview_release_page(raw)
+                )
+                releases.extend(page_releases)
+                preview_count += page_preview_count
+                if item_count < PREVIEW_PAGE_SIZE:
+                    complete = True
+                    break
+            if not complete:
+                self._publish(
+                    generation,
+                    "incomplete",
+                    reason="UPDATE_CHECK_INCOMPLETE",
+                    error_code="UPDATE_CHECK_INCOMPLETE",
+                    error_message="预览渠道发布列表未取全，本次检查不完整",
+                )
+                return
+            if preview_count == 0:
+                self._publish(
+                    generation,
+                    "no_release",
+                    reason="UPDATE_NO_RELEASE",
+                )
+                return
+            selected = update_github.select_preview_release(
+                releases, self.identity.version
+            )
+            if selected is None:
+                self._publish(
+                    generation,
+                    "up_to_date",
+                    reason="UPDATE_NO_NEW_VERSION",
+                )
+                return
+            with self._lock:
+                if self._closed or generation != self._generation:
+                    return
+                self._release = selected
+                self._manifest = None
+                self._manifest_source = None
+                self._metadata_raw = None
+                self._state = "available"
+                self._progress_downloaded = 0
+                self._progress_total = 0
+                self._reason = None
+                self._error_code = None
+                self._error_message = None
+            if not selected.assets_complete:
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        return
+                    self._reason = "UPDATE_ASSETS_MISSING"
+                    self._error_code = "UPDATE_ASSETS_MISSING"
+                    self._error_message = "该预览 Release 缺少固定清单或完整包资产"
+                return
+            if not self.source.public_keys:
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        return
+                    self._reason = "UPDATE_TRUST_UNCONFIGURED"
+                    self._error_code = "UPDATE_TRUST_UNCONFIGURED"
+                    self._error_message = "尚未配置发行公钥；无法验证预览签名清单"
+                return
+            manifest_source = update_github.manifest_source(
+                selected,
+                self.source.public_keys,
+                test_only=self.source.test_only,
+                ca_pem=self.source.ca_pem,
+                connect_host=self.source.connect_host,
+                connect_port=self.source.connect_port,
+                server_hostname=self.source.server_hostname,
+            )
+            conn2, response2, sock2 = _open_url(
+                manifest_source,
+                manifest_source.metadata_url(),
+                self.read_timeout,
+                deadline=deadline,
+            )
+            if response2.status == 404:
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        return
+                    self._release = selected
+                    self._manifest = None
+                    self._state = "available"
+                    self._reason = "UPDATE_ASSETS_MISSING"
+                    self._error_code = "UPDATE_ASSETS_MISSING"
+                    self._error_message = "该预览 Release 的签名清单资产不可用；暂不可下载"
+                return
+            if response2.status != 200:
+                raise UpdateError(
+                    "UPDATE_METADATA_UNAVAILABLE",
+                    f"GitHub 预览签名清单 HTTP {response2.status}",
+                )
+            manifest_raw = _read_exact(
+                response2,
+                MAX_METADATA_BYTES,
+                sock=sock2,
+                deadline=deadline,
+                read_timeout=self.read_timeout,
+            )
+            manifest = parse_signed_manifest(
+                manifest_raw,
+                manifest_source,
+                self.identity.version,
+                self.identity.database_revision,
+            )
+            update_github.validate_manifest_binding(manifest, selected)
+            with self._lock:
+                if self._closed or generation != self._generation:
+                    return
+                self._release = selected
+                self._manifest = manifest
+                self._manifest_source = manifest_source
+                self._metadata_raw = manifest_raw
+                self._state = "available"
+                self._reason = None
+                self._error_code = None
+                self._error_message = None
+        except ManifestError as exc:
+            if exc.code == "UPDATE_NO_NEW_VERSION":
+                self._publish(
+                    generation,
+                    "failed",
+                    error_code="UPDATE_METADATA_INVALID",
+                    error_message="签名清单版本未高于当前版本或与预览 Release 不一致",
+                )
+            else:
+                self._publish(
+                    generation,
+                    "failed",
+                    error_code=exc.code,
+                    error_message=exc.message,
+                )
+        except (TimeoutError, socket.timeout):
+            self._publish(
+                generation,
+                "failed",
+                error_code="UPDATE_DOWNLOAD_TIMEOUT",
+                error_message="GitHub 预览检查响应超过总期限",
+            )
+        except UpdateError as exc:
+            self._publish(
+                generation,
+                "failed",
+                error_code=exc.code,
+                error_message=exc.message,
+            )
+        except Exception:  # noqa: BLE001 - bounded user-facing failure
+            if self._is_current(generation) and time.monotonic() > deadline:
+                self._publish(
+                    generation,
+                    "failed",
+                    error_code="UPDATE_DOWNLOAD_TIMEOUT",
+                    error_message="GitHub 预览检查响应超过总期限",
+                )
+            else:
+                self._publish(
+                    generation,
+                    "failed",
+                    error_code="UPDATE_CHECK_FAILED",
+                    error_message="检查 GitHub 预览版更新失败",
+                )
+        finally:
+            _close_io(response=response2, sock=sock2, conn=conn2)
 
     def download(self) -> dict[str, Any]:
         with self._lock:

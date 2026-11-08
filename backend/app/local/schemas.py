@@ -521,6 +521,50 @@ class LocalClassGamesOut(BaseModel):
     change: dict[str, Any]
 
 
+class LocalConfigAITaskCreateIn(BaseModel):
+    """Start one class-game-config extraction on the formal AI lifecycle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(..., min_length=1, max_length=36)
+    expected_config_version: int = Field(..., ge=1, strict=True)
+    source_text: str = Field(..., min_length=1, max_length=20_000)
+
+    @field_validator("source_text")
+    @classmethod
+    def _source_text_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("source_text 不能只包含空白")
+        return value
+
+
+class LocalConfigAITaskOut(BaseModel):
+    task_id: str
+    source_kind: Literal["class_game_config"]
+    status: str
+    reason: str | None
+    processing_certainty: str | None
+    candidate_id: str | None
+    allowed_actions: list[str]
+    retry_requires_ack: bool
+    config_version: int | None
+    created_at: str | None
+    updated_at: str | None
+
+
+class LocalConfigAILatestOut(BaseModel):
+    task: LocalConfigAITaskOut | None
+
+
+class LocalConfigAICandidateOut(BaseModel):
+    candidate_id: str
+    task_id: str
+    task_type: Literal["class_game_config_extract"]
+    raw_candidate: dict[str, Any]
+    source: dict[str, Any]
+    created_at: str | None
+
+
 class LocalAppearanceOut(BaseModel):
     """Appearance preference; version is independent of config_version."""
 
@@ -777,11 +821,43 @@ class LocalPromptAdaptIn(BaseModel):
     guidance: dict[str, str]
 
 
+class LocalPromptPackageTaskOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_type: str
+    contract_version: int
+    default_revision: int
+
+
+class LocalPromptPackageStatusOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    configured: bool
+    state: str
+    active_source: str
+    release_sequence: int | None = None
+    published_at: str | None = None
+    notes: str | None = None
+    last_checked_at: str | None = None
+    last_result: str | None = None
+    message: str
+    allowed_tasks: list[str]
+    package_tasks: list[LocalPromptPackageTaskOut]
+    pending_sequence: int | None = None
+    client_version: str
+    prompt_sync_error: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # D2 W3 AI tasks (engineering spec §5.1-§5.2)
 # ---------------------------------------------------------------------------
 
-AI_TASK_TYPES = ("daily_lesson_split", "daily_process_adapt", "daily_other_activities")
+AI_TASK_TYPES = (
+    "daily_lesson_split",
+    "daily_process_adapt",
+    "daily_other_activities",
+    "daily_reflection_generate",
+)
 
 
 class LocalAITaskCreateIn(BaseModel):
@@ -789,10 +865,32 @@ class LocalAITaskCreateIn(BaseModel):
 
     request_id: str
     task_type: Literal[
-        "daily_lesson_split", "daily_process_adapt", "daily_other_activities"
+        "daily_lesson_split",
+        "daily_process_adapt",
+        "daily_other_activities",
+        "daily_reflection_generate",
     ]
     expected_content_version: int = Field(..., ge=1, strict=True)
     target_grade: Literal["small", "middle", "large"]
+    # #20: adapt regeneration binds the original candidate and an optional
+    # teacher instruction; both are immutable task inputs.
+    base_candidate_id: str | None = Field(default=None, min_length=1, max_length=64)
+    revision_instruction: str | None = Field(default=None, max_length=500)
+    # #27: teacher-provided implementation material is the only evidence the
+    # model may use for what actually happened in class.
+    implementation_materials: str | None = Field(default=None, max_length=5000)
+
+    @field_validator(
+        "base_candidate_id",
+        "revision_instruction",
+        "implementation_materials",
+    )
+    @classmethod
+    def _strip_optional_adapt_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
 
 
 class LocalAITaskActionIn(BaseModel):
@@ -1087,6 +1185,8 @@ class LocalObservationAITaskCreateIn(BaseModel):
         "analysis_evaluation",
         "support_strategy",
     ] | None = None
+    base_candidate_id: str | None = Field(default=None, min_length=1, max_length=64)
+    revision_instruction: str | None = Field(default=None, max_length=500)
 
 
 class LocalObservationAIAdoptionPreviewIn(BaseModel):
@@ -1096,6 +1196,10 @@ class LocalObservationAIAdoptionPreviewIn(BaseModel):
     expected_revision: int = Field(..., ge=1, strict=True)
     expected_hash: str = Field(..., min_length=64, max_length=64)
     selected_targets: list[str]
+    # #16: the teacher-edited full candidate. Omitted keeps the legacy raw
+    # candidate values for older clients, but when present every field is
+    # validated against the frozen output contract.
+    edited_candidate: dict[str, Any] | None = None
 
 
 class LocalObservationAIAdoptionIn(BaseModel):
@@ -1241,6 +1345,8 @@ class WeeklyAIGamesCreateIn(BaseModel):
 
     request_id: str
     expected_draft_version: int = Field(..., ge=1, strict=True)
+    base_candidate_id: str | None = Field(default=None, min_length=1, max_length=64)
+    revision_instruction: str | None = Field(default=None, max_length=500)
 
 
 class WeeklyAIColumnsCreateIn(BaseModel):
@@ -1249,6 +1355,8 @@ class WeeklyAIColumnsCreateIn(BaseModel):
     request_id: str
     expected_draft_version: int = Field(..., ge=1, strict=True)
     selected_fields: list[WeeklyColumnKey] = Field(..., min_length=1, max_length=4)
+    base_candidate_id: str | None = Field(default=None, min_length=1, max_length=64)
+    revision_instruction: str | None = Field(default=None, max_length=500)
 
 
 class WeeklyAIMaterialsCreateIn(BaseModel):
@@ -1256,6 +1364,8 @@ class WeeklyAIMaterialsCreateIn(BaseModel):
 
     request_id: str
     expected_draft_version: int = Field(..., ge=1, strict=True)
+    base_candidate_id: str | None = Field(default=None, min_length=1, max_length=64)
+    revision_instruction: str | None = Field(default=None, max_length=500)
 
 
 class WeeklyAICreateTaskOut(BaseModel):
@@ -1323,6 +1433,7 @@ class WeeklyAICandidateListItemOut(BaseModel):
     eligibility: str
     available_targets: list[str]
     create_operation_id: str | None = None
+    source_revision: int | None = None
     created_at: str | None = None
 
 
@@ -1347,6 +1458,10 @@ class WeeklyAISelectionIn(BaseModel):
 
     candidate_id: str
     target: WeeklyAITarget
+    # #16: optional teacher edit for this selected target. The server keeps
+    # source handles and material provenance authoritative; only the shapes
+    # accepted by the weekly target contract are applied.
+    edit: dict[str, Any] | None = None
 
 
 class WeeklyAISelectionOut(BaseModel):

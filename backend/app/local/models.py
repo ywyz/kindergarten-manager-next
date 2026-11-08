@@ -718,11 +718,13 @@ class LocalPromptBundle(LocalBase):
     __table_args__ = (
         CheckConstraint(
             "task_type IN ('daily_lesson_split', 'daily_process_adapt', "
-            "'daily_other_activities', 'game_observation_generate', "
+            "'daily_other_activities', 'daily_reflection_generate', 'game_observation_generate', "
             "'game_observation_rewrite', 'weekly_games_select', "
             "'weekly_key_week_focus', 'weekly_environment_setup', "
             "'weekly_habit_culture', 'weekly_home_cooperation', "
-            "'weekly_materials_generate')",
+            "'weekly_materials_generate', 'class_game_config_extract', "
+            "'listening_note_draft', 'listening_domain_evaluate', "
+            "'listening_group_notes', 'listening_goal_suggest')",
             name="ck_local_prompt_bundles_task_type",
         ),
         CheckConstraint(
@@ -904,21 +906,23 @@ class LocalAIInput(LocalBase):
         ),
         CheckConstraint(
             "task_type IN ('daily_lesson_split', 'daily_process_adapt', "
-            "'daily_other_activities', 'game_observation_generate', "
+            "'daily_other_activities', 'daily_reflection_generate', 'game_observation_generate', "
             "'game_observation_rewrite', 'weekly_games_select', "
             "'weekly_key_week_focus', 'weekly_environment_setup', "
             "'weekly_habit_culture', 'weekly_home_cooperation', "
-            "'weekly_materials_generate')",
+            "'weekly_materials_generate', 'class_game_config_extract', "
+            "'listening_note_draft', 'listening_domain_evaluate', "
+            "'listening_group_notes', 'listening_goal_suggest')",
             name="ck_local_ai_inputs_task_type",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config')",
             name="ck_local_ai_inputs_source_kind",
         ),
         CheckConstraint(
             "(source_kind = 'daily_plan' "
             "AND task_type IN ('daily_lesson_split', 'daily_process_adapt', "
-            "'daily_other_activities') "
+            "'daily_other_activities', 'daily_reflection_generate') "
             "AND daily_plan_id IS NOT NULL "
             "AND content_id IS NOT NULL "
             "AND content_version IS NOT NULL "
@@ -956,7 +960,34 @@ class LocalAIInput(LocalBase):
             "AND weekly_plan_id IS NOT NULL AND weekly_draft_id IS NOT NULL "
             "AND source_revision IS NOT NULL "
             "AND typeof(source_revision) = 'integer' AND source_revision >= 1 "
-            "AND create_operation_id IS NOT NULL)",
+            "AND create_operation_id IS NOT NULL) "
+            "OR "
+            "(source_kind = 'one_to_one_listening' "
+            "AND task_type IN ('listening_note_draft', 'listening_domain_evaluate', "
+            "'listening_group_notes') "
+            "AND daily_plan_id IS NULL AND content_id IS NULL "
+            "AND content_version IS NULL AND target_grade IS NULL "
+            "AND observation_id IS NULL AND source_id = listening_record_id "
+            "AND listening_record_id IS NOT NULL AND listening_domain IS NOT NULL "
+            "AND ((task_type = 'listening_note_draft' AND listening_group_id IS NOT NULL) "
+            "OR (task_type IN ('listening_domain_evaluate', 'listening_group_notes', "
+            "'listening_goal_suggest') AND listening_group_id IS NULL)) "
+            "AND source_revision IS NOT NULL "
+            "AND typeof(source_revision) = 'integer' AND source_revision >= 1 "
+            "AND weekly_plan_id IS NULL AND weekly_draft_id IS NULL "
+            "AND create_operation_id IS NOT NULL) "
+            "OR "
+            "(source_kind = 'class_game_config' "
+            "AND task_type = 'class_game_config_extract' "
+            "AND daily_plan_id IS NULL AND content_id IS NULL "
+            "AND content_version IS NULL AND target_grade IS NULL "
+            "AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL AND weekly_draft_id IS NULL "
+            "AND listening_record_id IS NULL AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL "
+            "AND create_operation_id IS NULL "
+            "AND source_revision IS NOT NULL "
+            "AND typeof(source_revision) = 'integer' AND source_revision >= 1)",
             name="ck_local_ai_inputs_source_match",
         ),
         CheckConstraint(
@@ -1067,13 +1098,13 @@ class LocalAITask(LocalBase):
             name="ck_local_ai_tasks_status",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config')",
             name="ck_local_ai_tasks_source_kind",
         ),
         CheckConstraint(
             "(source_kind = 'daily_plan' "
             "AND task_type IN ('daily_lesson_split', 'daily_process_adapt', "
-            "'daily_other_activities') "
+            "'daily_other_activities', 'daily_reflection_generate') "
             "AND daily_plan_id IS NOT NULL "
             "AND observation_id IS NULL "
             "AND weekly_plan_id IS NULL "
@@ -1093,7 +1124,24 @@ class LocalAITask(LocalBase):
             "'weekly_home_cooperation', 'weekly_materials_generate') "
             "AND daily_plan_id IS NULL AND observation_id IS NULL "
             "AND weekly_plan_id IS NOT NULL "
-            "AND source_id = weekly_plan_id)",
+            "AND source_id = weekly_plan_id) "
+            "OR "
+            "(source_kind = 'one_to_one_listening' "
+            "AND task_type IN ('listening_note_draft', 'listening_domain_evaluate', "
+            "'listening_group_notes') "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL AND source_id = listening_record_id "
+            "AND listening_record_id IS NOT NULL AND listening_domain IS NOT NULL "
+            "AND ((task_type = 'listening_note_draft' AND listening_group_id IS NOT NULL) "
+            "OR (task_type IN ('listening_domain_evaluate', 'listening_group_notes', "
+            "'listening_goal_suggest') AND listening_group_id IS NULL))) "
+            "OR "
+            "(source_kind = 'class_game_config' "
+            "AND task_type = 'class_game_config_extract' "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL "
+            "AND listening_record_id IS NULL AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)",
             name="ck_local_ai_tasks_source_match",
         ),
         CheckConstraint(
@@ -1176,6 +1224,60 @@ class LocalAITask(LocalBase):
                 "('pending', 'claimed', 'dispatching', 'retry_wait')"
             ),
         ),
+        Index(
+            "uq_local_ai_tasks_active_per_config_type",
+            "profile_id", "source_kind", "source_id", "task_type",
+            unique=True,
+            sqlite_where=text(
+                "source_kind = 'class_game_config' AND status IN "
+                "('pending', 'claimed', 'dispatching', 'retry_wait')"
+            ),
+        ),
+        Index(
+            "uq_local_ai_tasks_active_listening_note",
+            "profile_id", "listening_record_id", "listening_domain",
+            "listening_group_id", "task_type",
+            unique=True,
+            sqlite_where=text(
+                "source_kind = 'one_to_one_listening' "
+                "AND task_type = 'listening_note_draft' "
+                "AND listening_group_id IS NOT NULL "
+                "AND status IN ('pending', 'claimed', 'dispatching', 'retry_wait')"
+            ),
+        ),
+        Index(
+            "uq_local_ai_tasks_active_listening_domain",
+            "profile_id", "listening_record_id", "listening_domain", "task_type",
+            unique=True,
+            sqlite_where=text(
+                "source_kind = 'one_to_one_listening' "
+                "AND task_type = 'listening_domain_evaluate' "
+                "AND listening_group_id IS NULL "
+                "AND status IN ('pending', 'claimed', 'dispatching', 'retry_wait')"
+            ),
+        ),
+        Index(
+            "uq_local_ai_tasks_active_listening_group_notes",
+            "profile_id", "listening_record_id", "listening_domain", "task_type",
+            unique=True,
+            sqlite_where=text(
+                "source_kind = 'one_to_one_listening' "
+                "AND task_type = 'listening_group_notes' "
+                "AND listening_group_id IS NULL "
+                "AND status IN ('pending', 'claimed', 'dispatching', 'retry_wait')"
+            ),
+        ),
+        Index(
+            "uq_local_ai_tasks_active_listening_goal",
+            "profile_id", "listening_record_id", "listening_domain", "task_type",
+            unique=True,
+            sqlite_where=text(
+                "source_kind = 'one_to_one_listening' "
+                "AND task_type = 'listening_goal_suggest' "
+                "AND listening_group_id IS NULL "
+                "AND status IN ('pending', 'claimed', 'dispatching', 'retry_wait')"
+            ),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -1236,13 +1338,13 @@ class LocalAIExecution(LocalBase):
             name="ck_local_ai_executions_state",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config')",
             name="ck_local_ai_executions_source_kind",
         ),
         CheckConstraint(
             "(source_kind = 'daily_plan' "
             "AND task_type IN ('daily_lesson_split', 'daily_process_adapt', "
-            "'daily_other_activities') "
+            "'daily_other_activities', 'daily_reflection_generate') "
             "AND daily_plan_id IS NOT NULL "
             "AND observation_id IS NULL "
             "AND weekly_plan_id IS NULL "
@@ -1262,7 +1364,24 @@ class LocalAIExecution(LocalBase):
             "'weekly_home_cooperation', 'weekly_materials_generate') "
             "AND daily_plan_id IS NULL AND observation_id IS NULL "
             "AND weekly_plan_id IS NOT NULL "
-            "AND source_id = weekly_plan_id)",
+            "AND source_id = weekly_plan_id) "
+            "OR "
+            "(source_kind = 'one_to_one_listening' "
+            "AND task_type IN ('listening_note_draft', 'listening_domain_evaluate', "
+            "'listening_group_notes') "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL AND source_id = listening_record_id "
+            "AND listening_record_id IS NOT NULL AND listening_domain IS NOT NULL "
+            "AND ((task_type = 'listening_note_draft' AND listening_group_id IS NOT NULL) "
+            "OR (task_type IN ('listening_domain_evaluate', 'listening_group_notes', "
+            "'listening_goal_suggest') AND listening_group_id IS NULL))) "
+            "OR "
+            "(source_kind = 'class_game_config' "
+            "AND task_type = 'class_game_config_extract' "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL "
+            "AND listening_record_id IS NULL AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)",
             name="ck_local_ai_executions_source_match",
         ),
         CheckConstraint(
@@ -1452,13 +1571,13 @@ class LocalAICandidate(LocalBase):
             name="ck_local_ai_candidates_schema_version",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config')",
             name="ck_local_ai_candidates_source_kind",
         ),
         CheckConstraint(
             "(source_kind = 'daily_plan' "
             "AND task_type IN ('daily_lesson_split', 'daily_process_adapt', "
-            "'daily_other_activities') "
+            "'daily_other_activities', 'daily_reflection_generate') "
             "AND daily_plan_id IS NOT NULL "
             "AND observation_id IS NULL "
             "AND weekly_plan_id IS NULL "
@@ -1478,7 +1597,24 @@ class LocalAICandidate(LocalBase):
             "'weekly_home_cooperation', 'weekly_materials_generate') "
             "AND daily_plan_id IS NULL AND observation_id IS NULL "
             "AND weekly_plan_id IS NOT NULL "
-            "AND source_id = weekly_plan_id)",
+            "AND source_id = weekly_plan_id) "
+            "OR "
+            "(source_kind = 'one_to_one_listening' "
+            "AND task_type IN ('listening_note_draft', 'listening_domain_evaluate', "
+            "'listening_group_notes') "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL AND source_id = listening_record_id "
+            "AND listening_record_id IS NOT NULL AND listening_domain IS NOT NULL "
+            "AND ((task_type = 'listening_note_draft' AND listening_group_id IS NOT NULL) "
+            "OR (task_type IN ('listening_domain_evaluate', 'listening_group_notes', "
+            "'listening_goal_suggest') AND listening_group_id IS NULL))) "
+            "OR "
+            "(source_kind = 'class_game_config' "
+            "AND task_type = 'class_game_config_extract' "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND weekly_plan_id IS NULL "
+            "AND listening_record_id IS NULL AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)",
             name="ck_local_ai_candidates_source_match",
         ),
         CheckConstraint(
@@ -2680,7 +2816,7 @@ class LocalListeningAIAdoption(LocalBase):
         ),
         CheckConstraint(
             "target_key IN ('listening_text', 'overall_evaluation', "
-            "'support_strategy') OR target_key GLOB 'health_[0-9]*' "
+            "'support_strategy', 'goal') OR target_key GLOB 'health_[0-9]*' "
             "OR target_key GLOB 'language_[0-9]*' "
             "OR target_key GLOB 'social_[0-9]*' "
             "OR target_key GLOB 'science_[0-9]*' "
@@ -3379,6 +3515,11 @@ class LocalListeningAsset(LocalBase):
             "(typeof(orientation) = 'integer' AND orientation BETWEEN 1 AND 8)",
             name="ck_local_listening_assets_orientation",
         ),
+        CheckConstraint(
+            "typeof(rotation_quarters) = 'integer' "
+            "AND rotation_quarters BETWEEN 0 AND 3",
+            name="ck_local_listening_assets_rotation",
+        ),
         ForeignKeyConstraint(
             ["record_id"],
             ["local_listening_records.id"],
@@ -3404,6 +3545,9 @@ class LocalListeningAsset(LocalBase):
     width: Mapped[int] = mapped_column(Integer, nullable=False)
     height: Mapped[int] = mapped_column(Integer, nullable=False)
     orientation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rotation_quarters: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=utc_now, nullable=False
     )
@@ -3515,3 +3659,8 @@ class LocalListeningOperation(LocalBase):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=utc_now, nullable=False
     )
+
+
+# Personal todo tables live in their own module but join the shared local
+# metadata so the single migration chain and backup fingerprints see them.
+from app.local import todo_models as _todo_models  # noqa: E402,F401

@@ -5,29 +5,33 @@ profile; clients never send profile/class/term ownership fields for an
 existing record.  The routes adapt the reviewed listening service and asset
 module without creating a second business state machine.
 
-Photo import uses the same strictly bounded single-file multipart envelope as
-the observation API; the runtime dependency set intentionally does not include
-``python-multipart``.
+Single-photo import uses the same strictly bounded single-file multipart
+envelope as the observation API; batch import adds a separately bounded
+1–15-file envelope with per-file and total request limits.  The runtime
+dependency set intentionally does not include ``python-multipart``.
 """
 
 from __future__ import annotations
 
 import io
+import json
 from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.local import (
     listening_assets,
+    listening_batch_assets,
     listening_service,
     profile_service,
 )
 from app.local.api import get_session
 from app.local.errors import LocalError, LocalValidationError
-from app.local.observation_api import _int_field, _read_multipart
+from app.local.observation_api import _BOUNDARY_RE, _int_field, _read_multipart
 from app.local.observation_assets import ObservationMaterialLimit
 from app.local.schemas import (
     LocalListeningCreateIn,
@@ -39,6 +43,16 @@ from app.local.schemas import (
 from app.local.tx import read_scope, storage_errors
 
 listening_router = APIRouter(prefix="/api/listening", tags=["listening"])
+
+
+class LocalListeningRotateIn(BaseModel):
+    """Absolute target avoids ambiguous repeated +/- operations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    expected_revision: int = Field(..., ge=1, strict=True)
+    rotation_quarters: int = Field(..., ge=0, le=3, strict=True)
 
 
 def _profile_id(session: Session) -> str:
@@ -240,6 +254,21 @@ def save_listening_domain(
         )
 
 
+@listening_router.get(
+    "/records/{record_id}/photos/rotations",
+    response_model=dict[str, Any],
+)
+def read_listening_rotations(
+    record_id: str,
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        profile_id = _profile_id(session)
+        return listening_assets.read_rotations(
+            session, profile_id=profile_id, record_id=record_id
+        )
+
+
 @listening_router.post(
     "/records/{record_id}/domains/{domain}/photos/order",
     response_model=dict[str, Any],
@@ -298,6 +327,31 @@ async def import_listening_photo(
     )
 
 
+@listening_router.post(
+    "/records/{record_id}/domains/{domain}/photos/{group_id}/rotate",
+    response_model=dict[str, Any],
+)
+def rotate_listening_photo(
+    record_id: str,
+    domain: str,
+    group_id: str,
+    data: LocalListeningRotateIn,
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        profile_id = _profile_id(session)
+        return listening_assets.rotate_group_photo(
+            session,
+            profile_id=profile_id,
+            record_id=record_id,
+            domain=domain,
+            group_id=group_id,
+            request_id=data.request_id,
+            expected_revision=data.expected_revision,
+            rotation_quarters=data.rotation_quarters,
+        )
+
+
 def _import_listening_photo_sync(
     session: Session,
     runtime,
@@ -323,6 +377,105 @@ def _import_listening_photo_sync(
             stream=io.BytesIO(content),
             display_name=display_name,
         )
+
+
+_MAX_BATCH_BODY = listening_batch_assets.MAX_BATCH_TOTAL_BYTES + 512 * 1024
+
+
+async def _read_listening_batch_multipart(
+    request: Request,
+) -> tuple[dict[str, str], dict[int, bytes]]:
+    content_type = request.headers.get("content-type", "")
+    if not content_type.lower().startswith("multipart/form-data"):
+        raise listening_batch_assets.ListeningBatchInvalid(
+            "批量照片导入必须使用 multipart/form-data"
+        )
+    match = _BOUNDARY_RE.search(content_type)
+    if match is None:
+        raise listening_batch_assets.ListeningBatchInvalid(
+            "multipart 缺少 boundary"
+        )
+    try:
+        boundary = match.group(1).encode("latin-1")
+    except UnicodeEncodeError:
+        raise listening_batch_assets.ListeningBatchInvalid(
+            "multipart boundary 不合法"
+        ) from None
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > _MAX_BATCH_BODY:
+            raise listening_assets.ListeningMaterialLimit(
+                "批量照片请求超过总大小上限"
+            )
+    return listening_batch_assets.parse_batch_multipart(bytes(body), boundary)
+
+
+def _batch_assignments(fields: dict[str, str]) -> Any:
+    raw = fields.get("assignments")
+    if not raw:
+        raise listening_batch_assets.ListeningBatchInvalid("缺少照片落位信息")
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        raise listening_batch_assets.ListeningBatchInvalid(
+            "照片落位信息不是合法 JSON"
+        ) from None
+
+
+def _import_listening_batch_sync(
+    session: Session,
+    runtime,
+    profile_id: str,
+    record_id: str,
+    request_id: str,
+    expected_revision: int,
+    assignments: Any,
+    files: dict[int, bytes],
+):
+    with storage_errors():
+        return listening_batch_assets.import_batch_photos(
+            session,
+            runtime,
+            profile_id=profile_id,
+            record_id=record_id,
+            request_id=request_id,
+            expected_revision=expected_revision,
+            assignments=assignments,
+            files=files,
+        )
+
+
+@listening_router.post(
+    "/records/{record_id}/photos/batch",
+    status_code=status.HTTP_201_CREATED,
+    response_model=dict[str, Any],
+)
+async def import_listening_photos_batch(
+    record_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Import 1–15 photos as one revision/receipt-protected operation."""
+    profile_id = _profile_id(session)
+    fields, files = await _read_listening_batch_multipart(request)
+    request_id = fields.get("request_id")
+    if not request_id:
+        raise _listening_material_error("缺少 request_id")
+    expected_revision = _revision_field(fields.get("expected_revision"))
+    assignments = _batch_assignments(fields)
+    runtime = request.app.state.runtime
+    return await run_in_threadpool(
+        _import_listening_batch_sync,
+        session,
+        runtime,
+        profile_id,
+        record_id,
+        request_id,
+        expected_revision,
+        assignments,
+        files,
+    )
 
 
 @listening_router.delete(

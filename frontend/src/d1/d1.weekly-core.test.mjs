@@ -65,6 +65,7 @@ function loadTs(file, overrides = {}) {
 
 const weekly = loadTs(path.join(d1Dir, 'weekly.ts'))
 const editor = loadTs(path.join(d1Dir, 'weekly-editor.ts'))
+const leave = loadTs(path.join(d1Dir, 'leave.ts'))
 let passed = 0
 function ok(name) { passed += 1; console.log(`  ok - ${name}`) }
 function jsonEqual(actual, expected) { assert.equal(JSON.stringify(actual), JSON.stringify(expected)) }
@@ -111,10 +112,10 @@ function makeContent(overrides = {}) {
   }
 }
 
-function makeDetail(version = 1, content = makeContent()) {
+function makeDetail(version = 1, content = makeContent(), planId = 'plan-1') {
   return {
     plan: {
-      id: 'plan-1', term_id: 'term-1', week_anchor_date: '2026-11-02',
+      id: planId, term_id: 'term-1', week_anchor_date: '2026-11-02',
       week_number_snapshot: 10,
       header: {
         school_name: '幼儿园', class_name: '一班', grade: 'middle',
@@ -130,11 +131,11 @@ function makeDetail(version = 1, content = makeContent()) {
   }
 }
 
-function writeResult(version, content, confirmation = null, requestId = `req-${version}`) {
+function writeResult(version, content, confirmation = null, requestId = `req-${version}`, planId = 'plan-1') {
   return {
     request_id: requestId,
     status: 'committed',
-    weekly_plan_id: 'plan-1',
+    weekly_plan_id: planId,
     draft: { id: 'draft-1', version, content_hash: `hash-${version}`, content },
     confirmation,
     replayed: false,
@@ -1164,4 +1165,151 @@ function q3Generated() {
   api.saveQueue[1].resolve(writeResult(2, makeContent({ outdoor_game_slots: { collective_1: manualGame('retry-key-1', '重试手工'), collective_2: null, free_choice_1: null } }), null, original.request_id))
   await retrying
   ok('new manual retry keeps the original fingerprint and client_key unchanged')
+}
+
+const secondPlanFocus = {
+  source_kind: 'daily_plan', manual_item_id: null,
+  daily_plan_id: 'dp2', content_id: 'c2', content_version: 1, content_hash: 'h2',
+  section: 'post_group_games', group_id: 'g2', game_id: 'game2',
+  context_kind: 'area', area: '积木区', name: '第二周重点', objectives: '目标',
+  guidance: '指导', support_strategy: '支持',
+}
+function secondPlanController() {
+  const api = makeApi()
+  let request = 0
+  const controller = new editor.WeeklyEditorController({
+    detail: makeDetail(1, makeContent(), 'plan-2'),
+    api, editorEpoch: 7, requestId: () => `second-plan-${++request}`,
+  })
+  return { api, controller }
+}
+function leaveBridge(controller) {
+  return {
+    isDirty: () => controller.isDirty(),
+    identity: () => controller.identity(),
+    settle: () => controller.settle(),
+    saveCurrent: () => controller.saveCurrent(),
+    blockingDraft: () => controller.blockingDraft(),
+  }
+}
+
+{
+  const { api, controller } = secondPlanController()
+  controller.updateContent((draft) => { draft.focus_area = secondPlanFocus })
+  const saving = controller.saveCurrent(); await tick()
+  api.saveQueue[0].reject(new clientStub.ApiError(503, 'raw storage detail', 'LOCAL_STORAGE_ERROR'))
+  assert.equal(await saving, 'failed')
+  assert.equal(controller.getLastFailure().code, 'LOCAL_STORAGE_ERROR')
+  assert.equal(controller.getLastFailure().message, '本地存储异常，当前输入已保留')
+  assert.equal(controller.isDirty(), true)
+  assert.equal(controller.getContent().focus_area.name, '第二周重点')
+  assert.equal(controller.hasUnknown(), false)
+  const notice = editor.weeklySaveNotice('failed', controller.getLastFailure())
+  assert.match(notice, /本地存储异常/)
+  assert.match(notice, /当前输入已保留/)
+  assert.match(notice, /“保存”/)
+  assert.deepEqual(api.saveInputs.map((entry) => entry.planId), ['plan-2'])
+
+  const coordinator = new leave.LeaveCoordinator(leaveBridge(controller))
+  let leftCount = 0
+  const denied = coordinator.requestLeave({
+    kind: 'close', closeRequestId: 'close-denied',
+    run: async () => { leftCount += 1; return 'left' },
+  })
+  await tick()
+  assert.equal(api.saveInputs.length, 2)
+  api.saveQueue[1].reject(new clientStub.ApiError(503, 'raw storage detail', 'LOCAL_STORAGE_ERROR'))
+  assert.equal(await denied, 'stayed')
+  assert.equal(leftCount, 0)
+  assert.equal(api.saveInputs.every((entry) => entry.planId === 'plan-2'), true)
+
+  const retry = controller.saveCurrent(); await tick()
+  api.saveQueue[2].resolve(writeResult(2, makeContent({ focus_area: secondPlanFocus }), null, api.saveInputs[2].input.request_id, 'plan-2'))
+  assert.equal(await retry, 'saved')
+  assert.equal(controller.getLastFailure(), null)
+  assert.equal(controller.isDirty(), false)
+
+  const left = coordinator.requestLeave({
+    kind: 'close', closeRequestId: 'close-after',
+    run: async () => { leftCount += 1; return 'left' },
+  })
+  assert.equal(await left, 'left')
+  assert.equal(leftCount, 1)
+  assert.equal(api.saveInputs.length, 3)
+  assert.equal(api.saveInputs.every((entry) => entry.planId === 'plan-2'), true)
+  ok('known save failure keeps second-plan input, shows the projected reason, denies close, then saves and closes after explicit retry')
+}
+
+{
+  const { api, controller } = secondPlanController()
+  controller.updateContent((draft) => { draft.theme = '第二周待核对' })
+  const saving = controller.saveCurrent(); await tick()
+  api.saveQueue[0].reject(new clientStub.ApiError(0, 'network lost'))
+  assert.equal(await saving, 'indeterminate')
+  const failure = controller.getLastFailure()
+  assert.equal(failure.code, 'WEEKLY_UNKNOWN')
+  assert.equal(failure.retry, 'query')
+  assert.equal(editor.weeklySaveNotice('indeterminate', failure), '提交结果未确认，请先核对原请求')
+  assert.equal(controller.hasUnknown(), true)
+  assert.equal(controller.blockingDraft()?.kind, 'weekly')
+
+  const coordinator = new leave.LeaveCoordinator(leaveBridge(controller))
+  let left = false
+  assert.equal(await coordinator.requestLeave({
+    kind: 'close', closeRequestId: 'unknown-denied',
+    run: async () => { left = true; return 'left' },
+  }), 'stayed')
+  assert.equal(left, false)
+  assert.equal(api.saveInputs.length, 1)
+
+  const query = controller.queryOperation(); await tick()
+  assert.equal(api.saveInputs.length, 1)
+  api.operationQueue[0].pending.resolve(writeResult(2, makeContent({ theme: '第二周待核对' }), null, api.saveInputs[0].input.request_id, 'plan-2'))
+  const found = await query
+  assert.equal(found.draft.version, 2)
+  assert.equal(controller.hasUnknown(), false)
+  assert.equal(controller.getLastFailure(), null)
+  assert.equal(await coordinator.requestLeave({
+    kind: 'close', closeRequestId: 'unknown-after',
+    run: async () => { left = true; return 'left' },
+  }), 'left')
+  assert.equal(left, true)
+  assert.equal(api.saveInputs.length, 1)
+  ok('unknown save exposes query/original-retry only, never auto-resends, and closes after explicit query on the second plan')
+}
+
+{
+  const api = makeApi()
+  let request = 0
+  const controller = new editor.WeeklyEditorController({
+    detail: makeDetail(1, makeContent(), 'plan-2'),
+    api, editorEpoch: 7, requestId: () => `stale-${++request}`,
+  })
+  controller.updateContent((draft) => { draft.theme = '旧身份' })
+  const oldSave = controller.saveCurrent(); await tick()
+  controller.resetForContext('restore', 8)
+  controller.updateContent((draft) => { draft.theme = '新身份' })
+  const newSave = controller.saveCurrent(); await tick()
+  assert.equal(api.saveInputs.length, 2)
+  api.saveQueue[1].reject(new clientStub.ApiError(503, 'raw storage detail', 'LOCAL_STORAGE_ERROR'))
+  assert.equal(await newSave, 'failed')
+  assert.equal(controller.getLastFailure().code, 'LOCAL_STORAGE_ERROR')
+  api.saveQueue[0].reject(new clientStub.ApiError(0, 'late old save'))
+  assert.equal(await oldSave, 'failed')
+  assert.equal(controller.getLastFailure().code, 'LOCAL_STORAGE_ERROR')
+  assert.equal(controller.hasUnknown(), false)
+  ok('retired-identity stale completion cannot overwrite the new identity failure')
+}
+
+{
+  const view = fs.readFileSync(path.join(d1Dir, 'views', 'WeeklyPlanEditorView.vue'), 'utf8')
+  assert.match(view, /weeklySaveNotice/)
+  assert.match(view, /getLastFailure/)
+  assert.match(view, /queryOperation/)
+  assert.match(view, /retryOriginal/)
+  assert.match(view, /async function queryOperation\(\): Promise<void> \{\s*const current = controller/)
+  assert.match(view, /async function retryOriginal\(\): Promise<void> \{\s*const current = controller/)
+  assert.match(view, /saveForLeave/)
+  assert.match(view, /saveCurrent: \(\): Promise<SaveOutcome> => saveForLeave\(\)/)
+  ok('editor save notice wires the projected failure and keeps query/original retry as the only unknown actions')
 }

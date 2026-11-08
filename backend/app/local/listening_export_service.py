@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.local import (
     backup_barrier,
     listening_assets,
+    listening_direction,
     listening_service,
     listening_templates,
 )
@@ -247,15 +248,6 @@ def _text_bytes(values: Iterable[Any]) -> int:
 # Same limits the listening asset import already applies to the source image.
 _MAX_WORK_PIXELS = 40_000_000
 _MAX_WORK_SIDE = 8192
-_ORIENTATION_OPERATIONS = {
-    2: Image.Transpose.FLIP_LEFT_RIGHT,
-    3: Image.Transpose.ROTATE_180,
-    4: Image.Transpose.FLIP_TOP_BOTTOM,
-    5: Image.Transpose.TRANSPOSE,
-    6: Image.Transpose.ROTATE_270,
-    7: Image.Transpose.TRANSVERSE,
-    8: Image.Transpose.ROTATE_90,
-}
 
 
 def _prepare_word_photo(
@@ -264,17 +256,25 @@ def _prepare_word_photo(
 ) -> dict[str, Any]:
     """Return frozen Word bytes plus explicit source/work metadata.
 
-    Orientation 1/unknown keeps the original bytes unchanged.  A rotated or
-    mirrored source gets a bounded, color-preserving working image whose
-    pixels are already upright, so Word never needs to interpret EXIF
-    orientation.  The original asset file, database row and backup hash are
-    never touched.
+    Orientation 1/unknown with zero manual quarters keeps the original bytes
+    unchanged.  An EXIF-rotated, mirrored or manually turned source gets a
+    bounded, color-preserving working image whose pixels are already upright,
+    so Word never needs to interpret EXIF orientation.  Manual quarters are
+    applied after the EXIF transpose, matching the preview and AI package.
+    The original asset file, database row and backup hash are never touched.
     """
     source_mime = str(metadata["mime_type"])
     source_width = int(metadata["width"])
     source_height = int(metadata["height"])
-    orientation = metadata.get("orientation")
-    orientation = int(orientation) if orientation is not None else None
+    try:
+        orientation = listening_direction.normalize_exif_orientation(
+            metadata.get("orientation")
+        )
+        rotation_quarters = listening_direction.normalize_rotation_quarters(
+            metadata.get("rotation_quarters", 0)
+        )
+    except ValueError as exc:
+        raise ListeningExportImageInvalid("图片方向登记不合法") from exc
     source_sha = hashlib.sha256(payload).hexdigest()
     info = {
         "source_sha256": source_sha,
@@ -283,8 +283,9 @@ def _prepare_word_photo(
         "source_width": source_width,
         "source_height": source_height,
         "orientation": orientation,
+        "rotation_quarters": rotation_quarters,
     }
-    if orientation in (None, 1):
+    if orientation in (None, 1) and rotation_quarters == 0:
         return {
             **info,
             "data": payload,
@@ -292,9 +293,6 @@ def _prepare_word_photo(
             "width": source_width,
             "height": source_height,
         }
-    operation = _ORIENTATION_OPERATIONS.get(orientation)
-    if operation is None:
-        raise ListeningExportImageInvalid("图片方向登记不合法")
     try:
         with Image.open(io.BytesIO(payload)) as opened:
             opened.load()
@@ -307,7 +305,11 @@ def _prepare_word_photo(
             ):
                 raise ListeningExportTooLarge("倾听图片尺寸过大")
             icc_profile = opened.info.get("icc_profile")
-            working = opened.transpose(operation)
+            working = listening_direction.apply_display_orientation(
+                opened,
+                orientation=orientation,
+                rotation_quarters=rotation_quarters,
+            )
             working.load()
             work_mime = (
                 "image/jpeg" if source_mime == "image/jpeg" else "image/png"

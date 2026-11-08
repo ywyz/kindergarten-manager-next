@@ -36,13 +36,24 @@ export interface WeeklyAiCandidate {
   eligibility: WeeklyAiEligibility
   available_targets: WeeklyAITarget[]
   create_operation_id: string | null
+  source_revision?: number | null
   created_at?: string
   data?: Record<string, unknown>
   basis?: Record<string, unknown>
   warnings?: unknown[]
   unavailable_inputs?: unknown[]
 }
-export interface WeeklyAiSelection { candidate_id: string; target: WeeklyAITarget }
+export interface WeeklyAiSelection {
+  candidate_id: string
+  target: WeeklyAITarget
+  /** #16: legal teacher edit; the server keeps source handles/provenance. */
+  edit?: Record<string, unknown>
+}
+
+/** Internal identity for a local edit/selection; never rendered as JSON. */
+export function weeklyEditSignature(value: unknown): string {
+  return JSON.stringify(value)
+}
 export interface WeeklyAiAdoptionPreview {
   preview_token: string
   expires_at: string
@@ -127,6 +138,7 @@ const AI_ERRORS: Record<string, WeeklyAiUiError> = {
   WEEKLY_AI_PREVIEW_EXPIRED: { code: 'WEEKLY_AI_PREVIEW_EXPIRED', message: 'AI 预览已失效，请重新预览', retry: 'reload' },
   WEEKLY_AI_CONTRACT_OBSOLETE: { code: 'WEEKLY_AI_CONTRACT_OBSOLETE', message: '该候选使用旧规则，只能查看', retry: 'none' },
   WEEKLY_AI_REQUEST_CONFLICT: { code: 'WEEKLY_AI_REQUEST_CONFLICT', message: '同一请求已用于不同 AI 操作，请核对原请求', retry: 'none' },
+  WEEKLY_AI_ADOPTION_COMMIT_UNCERTAIN: { code: 'WEEKLY_AI_ADOPTION_COMMIT_UNCERTAIN', message: '采用已提交或结果待核对，请只读核对原采用', retry: 'query' },
   WEEKLY_AI_TASK_ACTIVE: { code: 'WEEKLY_AI_TASK_ACTIVE', message: '该周计划已有同类 AI 任务在运行', retry: 'none' },
   MATERIAL_CONTEXT_REQUIRED: { code: 'MATERIAL_CONTEXT_REQUIRED', message: '请先明确重点区域，再生成材料', retry: 'none' },
   AI_EXECUTOR_UNAVAILABLE: { code: 'AI_EXECUTOR_UNAVAILABLE', message: '本机 AI 执行器暂不可用，手工编辑仍可使用', retry: 'retry' },

@@ -24,6 +24,10 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 _TEST_ONLY_FIELDS = frozenset(
     {"test_only", "ca_pem", "connect_host", "connect_port", "server_hostname"}
 )
+_GITHUB_TAG_RE = re.compile(
+    r"v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-listening-test\.(?:0|[1-9][0-9]*))?"
+)
 
 
 class ReleaseConfigError(ValueError):
@@ -88,8 +92,14 @@ class ReleaseSource:
             if self.github_repo != "ywyz/kindergarten-manager-next":
                 raise ReleaseConfigError("GitHub 仓库不是固定项目")
             if self.origin == "https://github.com":
-                if not self.github_tag or not re.match(r"^v?[0-9]+\.[0-9]+\.[0-9]+$", self.github_tag):
+                if (
+                    not self.github_tag
+                    or not _GITHUB_TAG_RE.fullmatch(self.github_tag)
+                ):
                     raise ReleaseConfigError("GitHub Release tag 不合法")
+                tag_is_preview = "-listening-test." in self.github_tag
+                if (self.channel == "preview") != tag_is_preview:
+                    raise ReleaseConfigError("GitHub Release tag 与渠道不匹配")
                 if tuple(self.allowed_redirect_hosts) != ("release-assets.githubusercontent.com",):
                     raise ReleaseConfigError("GitHub 下载跳转域名不合法")
                 if not self.public_keys:

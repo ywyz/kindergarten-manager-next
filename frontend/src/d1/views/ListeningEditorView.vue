@@ -17,7 +17,7 @@ import {
   ref,
   watch,
 } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { LocalContext } from '../types'
 import type { LeaveEditor } from '../leave'
 import { PhotoUrlCache } from '../observation-photos'
@@ -27,11 +27,29 @@ import {
   DOMAIN_LABELS,
   GRADE_LABELS,
   LISTENING_DOMAINS,
+  MAX_BATCH_PHOTOS,
+  MAX_BATCH_PHOTO_BYTES,
+  MAX_BATCH_TOTAL_BYTES,
   ListeningSession,
   createListeningState,
   formatRecordTime,
   listeningApi,
   newRequestId,
+  dateFieldsChanged,
+  listeningDateIssues,
+  normalizeText,
+  parseListeningDate,
+  parseListeningMonth,
+  planListeningPhotoBatch,
+  rotatePhotoQuarters,
+  rotationQuarters,
+  rotationTransform,
+  swapListeningBatchTargets,
+  termMonthRange,
+  workDateRange,
+  validateListeningBatchSelection,
+  type ListeningBatchAssignment,
+  type ListeningBatchEntry,
   type ListeningDomain,
   type SaveOutcome,
 } from '../listening'
@@ -65,6 +83,7 @@ const actionCount = ref(0)
 let actionChain: Promise<unknown> = Promise.resolve()
 const aiBusy = ref(false)
 const aiDraft = ref(false)
+const aiPanel = ref<{ startGoal: () => void } | null>(null)
 const actionBusy = computed(
   () => actionCount.value > 0 || state.busy || state.savePromise !== null,
 )
@@ -78,8 +97,25 @@ const canMutate = computed(
 const exportOpen = ref(false)
 const exportTermId = ref('')
 const exportBusy = ref(false)
+// Batch selection is a preview-only draft until one explicit confirmation.
+// Its files, object URLs and target swaps never touch the record by themselves.
+const batchOpen = ref(false)
+const batchBusy = ref(false)
+const batchError = ref('')
+const batchInputKey = ref(0)
+const batchFiles = ref<File[]>([])
+const batchAssignments = ref<ListeningBatchAssignment[]>([])
+const batchPreviewUrls = ref<string[]>([])
+let batchGeneration = 0
 const form = computed(() => session.form())
 const template = computed(() => session.template())
+const goalHasMaterial = computed(() =>
+  (form.value?.groups ?? []).some(
+    (group) =>
+      Boolean(group.asset_id) ||
+      Boolean((group.listening_text ?? '').trim()),
+  ),
+)
 const record = computed(() => state.record)
 const termName = computed(() => {
   const termId = record.value?.term_id
@@ -88,6 +124,100 @@ const termName = computed(() => {
 const gradeLabel = computed(
   () => GRADE_LABELS[record.value?.grade ?? ''] ?? record.value?.grade ?? '',
 )
+const recordTerm = computed(() =>
+  props.context.terms.find((term) => term.id === record.value?.term_id),
+)
+const termRange = computed(() =>
+  recordTerm.value
+    ? termMonthRange(recordTerm.value.start_date, recordTerm.value.end_date)
+    : null,
+)
+const observationMonth = computed(() =>
+  parseListeningMonth(form.value?.observation_date),
+)
+const observationMonthValue = computed(() =>
+  observationMonth.value ? form.value?.observation_date ?? '' : '',
+)
+const legacyObservationDate = computed(() =>
+  Boolean(
+    form.value?.observation_date &&
+      !parseListeningMonth(form.value.observation_date),
+  ),
+)
+const workRange = computed(() => {
+  if (!form.value || !recordTerm.value) return null
+  return workDateRange(
+    recordTerm.value.start_date,
+    recordTerm.value.end_date,
+    form.value.observation_date ?? '',
+  )
+})
+const dateIssues = computed(() => {
+  if (!form.value || !recordTerm.value) return []
+  return listeningDateIssues(
+    form.value.observation_date,
+    form.value.groups,
+    recordTerm.value.start_date,
+    recordTerm.value.end_date,
+  )
+})
+const dateFieldsDirty = computed(() => {
+  const baseline = state.baselines[state.domain]
+  if (!form.value || !baseline) return false
+  return dateFieldsChanged(form.value, baseline)
+})
+const observationDateChanged = computed(() => {
+  const baseline = state.baselines[state.domain]
+  if (!form.value || !baseline) return false
+  return (
+    normalizeText(form.value.observation_date) !==
+    normalizeText(baseline.observation_date)
+  )
+})
+const dateBlocking = computed(
+  () => observationDateChanged.value && dateIssues.value.length > 0,
+)
+
+function dateIssueFor(groupId: string) {
+  return dateIssues.value.find((issue) => issue.groupId === groupId)
+}
+
+function canonicalWorkDate(value: string | null | undefined): string {
+  return parseListeningDate(value)?.iso ?? ''
+}
+
+function legacyWorkDate(value: string | null | undefined): boolean {
+  return Boolean(value && !parseListeningDate(value))
+}
+
+function setObservationMonth(event: Event): void {
+  if (!canEdit.value) return
+  const value = (event.target as HTMLInputElement).value
+  setField('observation_date', value || '')
+}
+
+function clearObservationMonth(): void {
+  if (!canEdit.value) return
+  setField('observation_date', '')
+}
+
+function setWorkDate(groupId: string, event: Event): void {
+  if (!canEdit.value || !observationMonth.value) return
+  const value = (event.target as HTMLInputElement).value
+  setGroupField(groupId, 'work_date', value || '')
+}
+
+function clearWorkDate(groupId: string): void {
+  if (!canEdit.value) return
+  setGroupField(groupId, 'work_date', '')
+}
+
+function cancelDateChanges(): void {
+  if (!canEdit.value) return
+  if (session.restoreDateBaseline()) {
+    ElMessage.info('已恢复已保存的日期，未写入任何修改')
+  }
+}
 
 const photoUrls = reactive<Record<string, string>>({})
 const photoErrors = reactive<Record<string, string>>({})
@@ -137,6 +267,50 @@ async function ensurePhoto(assetId: string, explicit = false): Promise<void> {
 
 function retryPhoto(assetId: string): void {
   void ensurePhoto(assetId, true)
+}
+
+function photoRotation(assetId: string | null): number {
+  if (!assetId) return 0
+  return rotationQuarters(state.rotations[assetId] ?? 0) ?? 0
+}
+
+function photoRotationStyle(assetId: string | null): Record<string, string> {
+  const quarters = photoRotation(assetId)
+  const transform = rotationTransform(quarters)
+  if (!transform) return {}
+  // A square, contain-fitted stage keeps a wide photo's rotated bounding box
+  // inside the preview instead of clipping it at the fixed height.
+  return {
+    transform,
+    width: '100%',
+    height: 'auto',
+    aspectRatio: '1',
+    maxWidth: '220px',
+    maxHeight: '220px',
+    objectFit: 'contain',
+  }
+}
+
+async function rotatePhoto(
+  groupId: string,
+  direction: -1 | 1,
+): Promise<void> {
+  if (!canEdit.value || state.unknown) return
+  const group = session.form()?.groups.find((item) => item.group_id === groupId)
+  if (!group?.asset_id) return
+  const target = rotatePhotoQuarters(
+    photoRotation(group.asset_id),
+    direction,
+  )
+  const outcome = await runMutating(() =>
+    session.rotatePhoto(groupId, target),
+  )
+  if (outcome === undefined) return
+  if (outcome === 'saved' || outcome === 'unchanged') {
+    ElMessage.success('照片显示方向已保存')
+  } else {
+    ElMessage.warning(outcomeMessage(outcome))
+  }
 }
 
 function syncPhotoUrls(): void {
@@ -232,19 +406,30 @@ const bridge: LeaveEditor = {
   isDirty: () => session.isDirty() || aiDraft.value,
   identity: () => session.identity(),
   settle: settleComposition,
-  saveCurrent: () => runExclusive(() => session.saveCurrent()),
+  saveCurrent: async () => {
+    if (dateBlocking.value) {
+      state.error = '观察月份变更后请先逐组处理作品日期，或取消日期调整'
+      return 'failed'
+    }
+    return runExclusive(() => session.saveCurrent())
+  },
   blockingDraft: () =>
     state.unknown
       ? {
           kind: 'listening',
           message: state.error || '倾听保存结果待核对：请先处理原请求',
         }
-      : aiDraft.value
+      : dateBlocking.value
         ? {
             kind: 'listening',
-            message: 'AI 候选尚未确认或采用：请先采用/取消候选再离开',
+            message: '观察月份变更后作品日期待逐组处理；请替换/清空或取消日期调整',
           }
-        : null,
+        : aiDraft.value
+          ? {
+              kind: 'listening',
+              message: 'AI 候选尚未确认或采用：请先采用/取消候选再离开',
+            }
+          : null,
 }
 
 function register(): void {
@@ -281,6 +466,10 @@ function handleAiDraft(value: boolean): void {
 
 async function ensureAiSaved(): Promise<number | null> {
   if (!canEdit.value || state.unknown) return null
+  if (dateBlocking.value) {
+    ElMessage.warning('观察月份变更后请先逐组处理作品日期，或取消日期调整')
+    return null
+  }
   const outcome = await runMutating(() => session.saveCurrent())
   if (outcome === undefined) return null
   if (outcome !== 'saved' && outcome !== 'unchanged') {
@@ -327,6 +516,10 @@ function outcomeMessage(outcome: SaveOutcome): string {
 
 async function manualSave(): Promise<void> {
   if (!canEdit.value) return
+  if (dateBlocking.value) {
+    ElMessage.warning('观察月份变更后请先逐组处理作品日期，或取消日期调整')
+    return
+  }
   const outcome = await runMutating(() => session.saveCurrent())
   if (outcome === undefined) return
   if (outcome === 'saved' || outcome === 'unchanged') {
@@ -343,6 +536,10 @@ async function manualSave(): Promise<void> {
 
 async function openExport(): Promise<void> {
   if (!canMutate.value) return
+  if (dateBlocking.value) {
+    ElMessage.warning('观察月份变更后请先逐组处理作品日期，或取消日期调整')
+    return
+  }
   if (state.unknown) {
     ElMessage.warning('保存结果待核对：请先处理原请求，不能导出一份未确认的内容')
     return
@@ -371,6 +568,16 @@ async function openExport(): Promise<void> {
 
 async function selectDomain(domain: ListeningDomain): Promise<void> {
   if (!canMutate.value || domain === state.domain) return
+  if (dateBlocking.value) {
+    ElMessage.warning('观察月份变更后请先逐组处理作品日期，或取消日期调整')
+    return
+  }
+  if (aiDraft.value) {
+    // Keep the current domain, candidate, options and edits together.  The
+    // panel's watcher is allowed to reset only after an explicit adopt/cancel.
+    ElMessage.warning('AI 候选尚未采用或取消：请先处理候选后再切换领域')
+    return
+  }
   const outcome = await runMutating(() => session.setDomain(domain))
   if (outcome === undefined) return
   if (outcome === 'saved' || outcome === 'unchanged') {
@@ -436,6 +643,203 @@ async function pickPhoto(event: Event, groupId: string): Promise<void> {
   }
 }
 
+function revokeBatchPreviews(): void {
+  for (const url of batchPreviewUrls.value) {
+    if (!url) continue
+    try {
+      URL.revokeObjectURL(url)
+    } catch {
+      // A stale browser URL must not block closing the draft.
+    }
+  }
+  batchPreviewUrls.value = []
+}
+
+function resetBatchDraft(): void {
+  batchGeneration += 1
+  revokeBatchPreviews()
+  batchFiles.value = []
+  batchAssignments.value = []
+  batchError.value = ''
+  batchBusy.value = false
+  batchInputKey.value += 1
+}
+
+function openBatch(): void {
+  if (!canMutate.value || state.unknown) return
+  resetBatchDraft()
+  batchOpen.value = true
+}
+
+function closeBatch(): void {
+  if (batchBusy.value) return
+  batchOpen.value = false
+  resetBatchDraft()
+}
+
+function beforeBatchClose(done: () => void): void {
+  if (batchBusy.value) return
+  resetBatchDraft()
+  batchOpen.value = false
+  done()
+}
+
+function replanBatch(): void {
+  const result = planListeningPhotoBatch(batchFiles.value, state.forms)
+  if (!result.ok) {
+    batchAssignments.value = []
+    batchError.value = result.reason
+    return
+  }
+  batchAssignments.value = result.plan.assignments
+  batchError.value = ''
+}
+
+function pickBatchPhotos(event: Event): void {
+  const input = event.target as HTMLInputElement
+  const files = input.files ? Array.from(input.files) : []
+  input.value = ''
+  batchGeneration += 1
+  revokeBatchPreviews()
+  batchFiles.value = files
+  batchAssignments.value = []
+  batchError.value = ''
+  if (files.length === 0) return
+  batchPreviewUrls.value = files.map((file) => {
+    try {
+      return URL.createObjectURL(file)
+    } catch {
+      return ''
+    }
+  })
+  replanBatch()
+}
+
+function changeBatchTarget(index: number, event: Event): void {
+  const target = event.target as HTMLSelectElement
+  const targetIndex = batchAssignments.value.findIndex(
+    (assignment) => assignment.groupId === target.value,
+  )
+  if (targetIndex < 0 || targetIndex === index) return
+  batchAssignments.value = swapListeningBatchTargets(
+    batchAssignments.value,
+    index,
+    targetIndex,
+  )
+  batchGeneration += 1
+  batchError.value = ''
+}
+
+function fileSizeText(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`
+  return `${Math.max(1, Math.round(size / 1024))} KB`
+}
+
+const batchSummary = computed(() => {
+  const total = batchFiles.value.reduce((sum, file) => sum + file.size, 0)
+  const mib = (total / (1024 * 1024)).toFixed(1)
+  const perFile = MAX_BATCH_PHOTO_BYTES / (1024 * 1024)
+  const totalLimit = MAX_BATCH_TOTAL_BYTES / (1024 * 1024)
+  return `已选 ${batchFiles.value.length}/${MAX_BATCH_PHOTOS} 张，合计 ${mib} MB；单张不超过 ${perFile} MB，整批不超过 ${totalLimit} MB。`
+})
+
+async function confirmBatch(): Promise<void> {
+  if (batchBusy.value || !canMutate.value) return
+  if (batchFiles.value.length === 0) return
+  // Re-check against the live forms immediately before confirmation without
+  // discarding the teacher's swaps. The dialog is preview-only until this
+  // point, so a refusal performs zero writes.
+  const initial = validateListeningBatchSelection(
+    batchAssignments.value,
+    batchFiles.value,
+    state.forms,
+  )
+  if (!initial.ok) {
+    batchError.value = initial.reason
+    return
+  }
+  batchError.value = ''
+  // Lock the confirmed preview: files, target slots and preview generation.
+  // The modal is the final explicit confirmation, but a reset or a replaced
+  // slot while it is open must never silently submit a different manifest.
+  const previewGeneration = batchGeneration
+  const lockedFiles = [...batchFiles.value]
+  const lockedAssignments = batchAssignments.value.map(
+    (assignment) => ({ ...assignment }),
+  )
+  const count = lockedFiles.length
+  try {
+    await ElMessageBox.confirm(
+      `将把 ${count} 张照片一次保存到 ${count} 个空图位；已有照片不会被替换。确认保存整批？`,
+      '确认整批保存',
+      {
+        confirmButtonText: '确认保存整批',
+        cancelButtonText: '返回预览',
+        type: 'warning',
+      },
+    )
+  } catch {
+    // Dismissing the explicit confirmation performs zero requests and keeps
+    // the preview open for further adjustment.
+    return
+  }
+  if (batchBusy.value || !canMutate.value) return
+  if (previewGeneration !== batchGeneration) {
+    batchError.value = '预览已失效，请重新选择照片后再试'
+    return
+  }
+  const entries: ListeningBatchEntry[] = lockedAssignments.map(
+    (assignment) => ({
+      domain: assignment.domain,
+      groupId: assignment.groupId,
+      file: lockedFiles[assignment.fileIndex],
+    }),
+  )
+  if (entries.some((entry) => !entry.file)) {
+    batchError.value = '本批照片已失效，请重新选择'
+    return
+  }
+  // Re-check the locked manifest against the live record without resetting
+  // the teacher's selection. Invalid/occupied/replaced slots keep the preview.
+  const recheck = validateListeningBatchSelection(
+    lockedAssignments,
+    lockedFiles,
+    state.forms,
+  )
+  if (!recheck.ok) {
+    batchError.value = recheck.reason
+    return
+  }
+  await submitBatch(entries)
+}
+
+async function submitBatch(entries: ListeningBatchEntry[]): Promise<void> {
+  const generation = ++batchGeneration
+  batchBusy.value = true
+  batchError.value = ''
+  const outcome = await runMutating(() => session.importPhotoBatch(entries))
+  if (generation !== batchGeneration) return
+  batchBusy.value = false
+  if (outcome === undefined) return
+  if (outcome === 'saved' || outcome === 'unchanged') {
+    batchOpen.value = false
+    resetBatchDraft()
+    ElMessage.success(`已保存整批 ${entries.length} 张照片`)
+    syncPhotoUrls()
+    return
+  }
+  if (outcome === 'indeterminate') {
+    // The original request is retained in the editor's unknown gate; close the
+    // preview so the teacher must explicitly retry or check the receipt.
+    batchOpen.value = false
+    resetBatchDraft()
+    ElMessage.warning(outcomeMessage(outcome))
+    return
+  }
+  batchError.value = outcomeMessage(outcome)
+  ElMessage.warning(batchError.value)
+}
+
 async function removePhoto(groupId: string): Promise<void> {
   if (!canEdit.value) return
   const outcome = await runMutating(() => session.removePhoto(groupId))
@@ -472,6 +876,8 @@ function resetForContext(): void {
   actionCount.value = 0
   exportOpen.value = false
   exportBusy.value = false
+  batchOpen.value = false
+  resetBatchDraft()
   aiBusy.value = false
   aiDraft.value = false
   releaseComposition()
@@ -500,6 +906,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   actionGeneration += 1
   actionCount.value = 0
+  batchOpen.value = false
+  resetBatchDraft()
   photoGeneration += 1
   releaseComposition()
   unregister()
@@ -510,7 +918,13 @@ onBeforeUnmount(() => {
 
 defineExpose({
   resetForContext,
-  saveCurrent: () => runExclusive(() => session.saveCurrent()),
+  saveCurrent: async () => {
+    if (dateBlocking.value) {
+      state.error = '观察月份变更后请先逐组处理作品日期，或取消日期调整'
+      return 'failed'
+    }
+    return runExclusive(() => session.saveCurrent())
+  },
 })
 </script>
 
@@ -550,6 +964,13 @@ defineExpose({
           @click="openExport"
         >
           按幼儿合册
+        </el-button>
+        <el-button
+          data-d1="listening-batch-open"
+          :disabled="!canMutate || !!state.unknown"
+          @click="openBatch"
+        >
+          批量选择照片
         </el-button>
         <el-button
           type="primary"
@@ -639,15 +1060,58 @@ defineExpose({
         <h3>{{ template.domain_label }}领域 · {{ template.grade_label }} · {{ template.version }}</h3>
         <p class="muted">模板散列 {{ template.sha256.slice(0, 12) }}… · 评价原文来自本记录绑定版本。</p>
 
+        <el-alert
+          v-if="dateBlocking"
+          type="warning"
+          :closable="false"
+          title="观察月份已变更，以下作品日期需逐组明确替换或清空后再保存；当前原值尚未写入。"
+          class="block"
+          data-d1="listening-date-blocking"
+        />
+        <div v-if="dateFieldsDirty" class="date-cancel-row">
+          <el-button
+            size="small"
+            :disabled="!canEdit"
+            data-d1="listening-date-cancel"
+            @click="cancelDateChanges"
+          >
+            取消日期调整
+          </el-button>
+          <span class="muted">恢复已保存的观察月份与作品日期，不写入任何修改。</span>
+        </div>
         <div class="header-grid">
           <label>
-            <span>观察日期/时段</span>
-            <el-input
-              :model-value="form.observation_date ?? ''"
-              data-d1="listening-observation-date"
-              :disabled="!canEdit"
-              @update:model-value="setField('observation_date', String($event))"
+            <span>观察月份（限记录所属学期）</span>
+            <input
+              class="native-date"
+              type="month"
+              :value="observationMonthValue"
+              :min="termRange?.min ?? ''"
+              :max="termRange?.max ?? ''"
+              :disabled="!canEdit || !termRange"
+              data-d1="listening-observation-month"
+              @change="setObservationMonth"
             />
+            <span
+              v-if="legacyObservationDate"
+              class="muted"
+              data-d1="listening-observation-date-legacy"
+            >
+              原记录：{{ form.observation_date }}
+            </span>
+            <span v-else-if="!form.observation_date" class="muted">
+              尚未选择观察月份
+            </span>
+            <el-button
+              v-if="form.observation_date"
+              size="small"
+              text
+              :disabled="!canEdit"
+              data-d1="listening-observation-date-clear"
+              @click="clearObservationMonth"
+            >
+              清空观察月份
+            </el-button>
           </label>
           <label>
             <span>成人数目</span>
@@ -677,15 +1141,19 @@ defineExpose({
               :disabled="!canEdit"
               @update:model-value="setField('goal', String($event))"
             />
-          </label>
-          <label>
-            <span>观察区域</span>
-            <el-input
-              :model-value="form.observation_area ?? ''"
-              data-d1="listening-observation-area"
-              :disabled="!canEdit"
-              @update:model-value="setField('observation_area', String($event))"
-            />
+            <div class="goal-ai-row">
+              <el-button
+                size="small"
+                data-d1="listening-goal-ai"
+                :disabled="!canMutate || !goalHasMaterial"
+                @click.stop="aiPanel?.startGoal()"
+              >
+                生成观察目标建议
+              </el-button>
+              <span v-if="!goalHasMaterial" class="muted">
+                本领域暂无可发送的已存文字或照片材料
+              </span>
+            </div>
           </label>
         </div>
 
@@ -720,10 +1188,15 @@ defineExpose({
             </div>
             <div class="group-grid">
               <div class="photo-cell">
-                <div class="photo-preview">
+                <div
+                  class="photo-preview"
+                  :data-rotation="photoRotation(group.asset_id)"
+                >
                   <img
                     v-if="group.asset_id && photoUrls[group.asset_id]"
                     :src="photoUrls[group.asset_id]"
+                    :style="photoRotationStyle(group.asset_id)"
+                    data-d1="listening-photo-image"
                     alt="幼儿绘画照片"
                   />
                   <span
@@ -755,6 +1228,27 @@ defineExpose({
                     @change="pickPhoto($event, group.group_id)"
                   />
                 </label>
+                <div v-if="group.asset_id" class="photo-rotate-actions">
+                  <el-button
+                    size="small"
+                    :disabled="!canMutate || !!state.unknown"
+                    data-d1="listening-photo-rotate-left"
+                    @click="rotatePhoto(group.group_id, -1)"
+                  >
+                    左转 90°
+                  </el-button>
+                  <el-button
+                    size="small"
+                    :disabled="!canMutate || !!state.unknown"
+                    data-d1="listening-photo-rotate-right"
+                    @click="rotatePhoto(group.group_id, 1)"
+                  >
+                    右转 90°
+                  </el-button>
+                  <span class="muted">
+                    显示 {{ photoRotation(group.asset_id) * 90 }}°
+                  </span>
+                </div>
                 <el-button
                   v-if="group.asset_id"
                   size="small"
@@ -769,14 +1263,46 @@ defineExpose({
               </div>
               <div class="text-cell">
                 <label>
-                  <span>作品日期（可范围文本）</span>
-                  <el-input
-                    :model-value="group.work_date ?? ''"
-                    data-d1="listening-work-date"
+                  <span>作品日期（观察月与学期交集）</span>
+                  <input
+                    class="native-date"
+                    type="date"
+                    :value="canonicalWorkDate(group.work_date)"
+                    :min="workRange?.min ?? ''"
+                    :max="workRange?.max ?? ''"
+                    :disabled="!canEdit || !observationMonth || !workRange"
+                    data-d1="listening-work-date-picker"
+                    :data-group-id="group.group_id"
+                    @change="setWorkDate(group.group_id, $event)"
+                  />
+                  <span
+                    v-if="legacyWorkDate(group.work_date)"
+                    class="muted"
+                    data-d1="listening-work-date-legacy"
+                  >
+                    原记录：{{ group.work_date }}
+                  </span>
+                  <span v-else-if="!group.work_date" class="muted">
+                    {{ observationMonth ? '尚未选择作品日期' : '先选择观察月份' }}
+                  </span>
+                  <el-button
+                    v-if="group.work_date"
+                    size="small"
+                    text
                     :disabled="!canEdit"
-                    @update:model-value="
-                      setGroupField(group.group_id, 'work_date', String($event))
-                    "
+                    data-d1="listening-work-date-clear"
+                    :data-group-id="group.group_id"
+                    @click="clearWorkDate(group.group_id)"
+                  >
+                    清空作品日期
+                  </el-button>
+                  <el-alert
+                    v-if="dateIssueFor(group.group_id)"
+                    type="warning"
+                    :closable="false"
+                    :title="dateIssueFor(group.group_id)?.reason"
+                    data-d1="listening-work-date-warning"
+                    :data-group-id="group.group_id"
                   />
                 </label>
                 <label>
@@ -866,6 +1392,7 @@ defineExpose({
 
     <ListeningAiPanel
       v-if="state.loaded && form && template"
+      ref="aiPanel"
       :record-id="props.recordId"
       :domain="state.domain"
       :groups="form.groups"
@@ -877,6 +1404,116 @@ defineExpose({
       @draft="handleAiDraft"
       @adopted="handleAiAdopted"
     />
+
+    <el-dialog
+      v-model="batchOpen"
+      title="批量选择倾听照片（1～15 张）"
+      width="860px"
+      :close-on-click-modal="false"
+      :before-close="beforeBatchClose"
+      data-d1="listening-batch-dialog"
+    >
+      <div class="batch-dialog">
+        <p class="muted">
+          按界面领域顺序（健康 / 语言 / 社会 / 科学 / 艺术）和本次选择顺序放入各领域空图位；
+          已有照片保留，不会被替换。提交前可逐张调换本批次落位。
+        </p>
+        <label
+          class="file-label"
+          :class="{ disabled: batchBusy || !canMutate }"
+        >
+          {{ batchFiles.length ? '重新选择照片' : '选择 1～15 张照片' }}
+          <input
+            :key="batchInputKey"
+            type="file"
+            multiple
+            accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
+            :disabled="batchBusy || !canMutate"
+            data-d1="listening-batch-input"
+            @change="pickBatchPhotos"
+          />
+        </label>
+
+        <el-alert
+          v-if="batchError"
+          type="warning"
+          :closable="false"
+          :title="batchError"
+          data-d1="listening-batch-error"
+        />
+        <p
+          v-if="batchFiles.length"
+          class="muted"
+          data-d1="listening-batch-summary"
+        >
+          {{ batchSummary }}
+        </p>
+
+        <div v-if="batchFiles.length" class="batch-rows">
+          <div
+            v-for="(assignment, index) in batchAssignments"
+            :key="assignment.fileIndex"
+            class="batch-row"
+            :data-d1="`listening-batch-row-${index}`"
+          >
+            <img
+              v-if="batchPreviewUrls[assignment.fileIndex]"
+              :src="batchPreviewUrls[assignment.fileIndex]"
+              alt="待保存照片预览"
+            />
+            <span v-else class="batch-thumb-placeholder">无预览</span>
+            <div class="batch-file">
+              <strong>{{ batchFiles[assignment.fileIndex]?.name }}</strong>
+              <span class="muted">
+                {{ fileSizeText(batchFiles[assignment.fileIndex]?.size ?? 0) }} ·
+                本次第 {{ assignment.fileIndex + 1 }} 张
+              </span>
+            </div>
+            <label class="batch-target">
+              <span class="muted">目标图位</span>
+              <select
+                :value="assignment.groupId"
+                :disabled="batchBusy || !canMutate"
+                data-d1="listening-batch-target"
+                @change="changeBatchTarget(index, $event)"
+              >
+                <option
+                  v-for="option in batchAssignments"
+                  :key="option.groupId"
+                  :value="option.groupId"
+                >
+                  {{ option.slotLabel }}
+                </option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="batch-actions">
+          <el-button
+            data-d1="listening-batch-cancel"
+            :disabled="batchBusy"
+            @click="closeBatch"
+          >
+            取消（不保存）
+          </el-button>
+          <el-button
+            type="primary"
+            data-d1="listening-batch-confirm"
+            :loading="batchBusy"
+            :disabled="
+              batchBusy ||
+              batchFiles.length === 0 ||
+              !!batchError ||
+              batchAssignments.length !== batchFiles.length
+            "
+            @click="confirmBatch"
+          >
+            确认保存整批
+          </el-button>
+        </div>
+      </div>
+    </el-dialog>
 
     <ListeningExportDialog
       v-model="exportOpen"
@@ -943,6 +1580,33 @@ defineExpose({
 .header-grid .wide {
   grid-column: 1 / -1;
 }
+.native-date {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  background: #fff;
+  color: #303133;
+}
+.native-date:disabled {
+  background: #f5f7fa;
+  color: #a8abb2;
+}
+.date-cancel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.goal-ai-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
 .groups {
   margin-top: 12px;
   display: flex;
@@ -979,6 +1643,14 @@ defineExpose({
   max-width: 100%;
   max-height: 220px;
   object-fit: contain;
+  transition: transform 0.18s ease;
+}
+.photo-rotate-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
 }
 .photo-error {
   color: #b91c1c;
@@ -1034,6 +1706,63 @@ defineExpose({
 }
 .muted {
   color: #6b7280;
+}
+.batch-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.batch-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.batch-row {
+  display: grid;
+  grid-template-columns: 84px minmax(180px, 1fr) minmax(180px, 240px);
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 8px;
+}
+.batch-row img,
+.batch-thumb-placeholder {
+  width: 84px;
+  height: 64px;
+  object-fit: contain;
+  border: 1px dashed #d1d5db;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9ca3af;
+  font-size: 12px;
+}
+.batch-file {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  word-break: break-all;
+}
+.batch-target {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.batch-target select {
+  padding: 6px 8px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  background: #fff;
+}
+.batch-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 @media (max-width: 900px) {
   .header-grid {

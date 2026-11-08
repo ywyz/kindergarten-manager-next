@@ -28,6 +28,7 @@ import {
   ApiError,
   pathSegment,
 } from '../client'
+import { isIndeterminate } from '../operations'
 import type { LocalContext } from '../types'
 import type { BlockingDraft, SaveOutcome } from '../leave'
 import {
@@ -39,8 +40,10 @@ import {
   TARGET_LABELS,
   ObservationFormError,
   availableTargets,
-  candidateTargetText,
+  candidateEditFromRaw,
+  candidateEditSignature,
   chunkPhotos,
+  editedCandidateFromEdit,
   emptyObservationForm,
   BASIC_FIELD_LABELS,
   observationAiMinimumMissing,
@@ -51,8 +54,10 @@ import {
   observationIdentity,
   observationIsDirty,
   observationPayloadFromForm,
+  isSupportedObservationPhoto,
   subjectNames,
   type EvaluationKey,
+  type ObservationCandidateEdit,
   type ObservationCurrent,
   type ObservationForm,
   type ObservationHistoryDetail,
@@ -137,6 +142,14 @@ interface PendingAdopt {
   hash: string
 }
 
+interface AdoptionIntent {
+  candidateId: string
+  targets: ObservationTarget[]
+  edited: Record<string, unknown>
+  editSignature: string
+  epoch: number
+}
+
 interface ObservationAiTask {
   id: string
   task_type: 'game_observation_generate' | 'game_observation_rewrite'
@@ -183,6 +196,7 @@ interface CandidateDetail {
   review_fragments: { target: string; text: string; start: number; end: number }[]
   source_change?: Record<string, unknown> | null
   source?: {
+    source_revision?: number
     internal_context?: {
       missing_fields?: string[]
       warnings?: { code?: string; message?: string }[]
@@ -240,6 +254,7 @@ const baseline = ref<ObservationPayload | null>(null)
 const recordType = ref<ObservationRecordType>('public')
 const errorText = ref('')
 const locked = ref(false)
+const autoSaving = ref(false)
 const composing = ref(false)
 const epoch = ref(0)
 const conflict = ref<ConflictState | null>(null)
@@ -274,6 +289,8 @@ const photoUrls = ref<Record<string, string>>({})
 const photoFailures = ref<Record<string, string>>({})
 const photoLoadError = ref('')
 const uploadBusy = ref(false)
+const photoDragActive = ref(false)
+let photoDragDepth = 0
 const exportBusy = ref(false)
 const photoBusy = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -318,12 +335,33 @@ const candidateId = ref('')
 const candidateDetail = ref<CandidateDetail | null>(null)
 const candidateOpen = ref(false)
 const candidateTargets = ref<ObservationTarget[]>([])
+const candidateEdit = ref<ObservationCandidateEdit>({})
+const candidateEditBaseline = ref('')
+const candidateEditSignatureAtPreview = ref('')
 const adoptionPreview = ref<AdoptionPreview | null>(null)
 const reviewChecked = ref(false)
 const adoptBusy = ref(false)
+const adoptionFlowBusy = ref(false)
 const previewEpoch = ref(-1)
 const previewCandidateId = ref('')
 const adoptUnknown = ref<PendingAdopt | null>(null)
+const adoptCommitted = ref<{
+  result: {
+    changed: boolean
+    revision: number
+    payload_hash: string
+    current_version: number | null
+    result_version: number
+    selected_targets: string[]
+  }
+  snapshotEpoch: number
+  candidateId: string
+  targets: string[]
+} | null>(null)
+const adoptReadBusy = ref(false)
+const regenerateInstruction = ref('')
+const regenerateBaseCandidateId = ref('')
+const regeneratedCandidateId = ref('')
 
 const historyOpen = ref(false)
 const historyItems = ref<ObservationHistoryItem[]>([])
@@ -378,6 +416,12 @@ const captionDirty = computed(() => {
     (item) => (server.get(item.asset_id) ?? null) !== (item.caption ?? null),
   )
 })
+const candidateEditDirty = computed(
+  () =>
+    candidateOpen.value &&
+    candidateDetail.value !== null &&
+    candidateEditSignature(candidateEdit.value) !== candidateEditBaseline.value,
+)
 const needsSave = computed(
   () => dirty.value || captionDirty.value || retainPending.value,
 )
@@ -390,6 +434,7 @@ const writeBlocked = computed(
     historySettling.value ||
     pendingMaterial.value !== null ||
     adoptUnknown.value !== null ||
+    adoptCommitted.value !== null ||
     restoreUnknown.value ||
     aiUnknown.value !== null ||
     aiRetryUnknown.value !== null,
@@ -398,6 +443,7 @@ const externalBusy = computed(
   () =>
     locked.value ||
     writeBlocked.value ||
+    adoptionFlowBusy.value ||
     aiIntent.value ||
     aiSubmitBusy.value ||
     aiRetryIntent.value ||
@@ -407,13 +453,20 @@ const externalBusy = computed(
     phase.value === 'saving',
 )
 watch(externalBusy, (value) => emit('busy', value), { immediate: true })
-const editDisabled = computed(
+const editBlocked = computed(
   () =>
     props.frozen ||
-    locked.value ||
     exportBusy.value ||
     phase.value === 'loading' ||
     writeBlocked.value,
+)
+const editDisabled = computed(
+  () => editBlocked.value || locked.value || autoSaving.value,
+)
+// Automatic saves must never disable or replace the text the teacher is
+// typing. Manual/leave saves and other active mutations still block editing.
+const typingDisabled = computed(
+  () => editBlocked.value || locked.value,
 )
 const termLabel = computed(() => {
   const termId = current.value?.payload?.term_id ?? null
@@ -460,6 +513,13 @@ const AI_REASON_LABELS: Record<string, string> = {
   auth_rejected: 'AI 配置或凭据被拒绝',
   rate_limited: '供应商限流',
   endpoint_blocked: '端点被安全策略拒绝',
+  response_header_timeout: '已发出请求，但等待供应商响应头超时；结果不确定，不会自动重发',
+  malformed_response: '供应商响应格式异常，无法解析；不会自动重发',
+  incomplete_transfer: '响应传输中断；结果不确定，不会自动重发',
+  wire_framing_invalid: '响应分帧无效，传输未完整结束；结果不确定，不会自动重发',
+  reasoning_only: '只收到思考过程，没有可用的四栏正文；本次未生成候选',
+  output_length: '供应商输出达到长度上限，四栏正文被截断；本次未生成候选',
+  candidate_contract_invalid: '响应已完整收到，但四栏结构校验未通过；本次未生成候选',
   user_stop: '用户停止',
 }
 const aiTaskStatusLabel = computed(
@@ -527,6 +587,7 @@ function invalidateAdoptionPreview(): void {
   reviewChecked.value = false
   previewEpoch.value = -1
   previewCandidateId.value = ''
+  candidateEditSignatureAtPreview.value = ''
 }
 
 function scheduleAutoSave(): void {
@@ -537,6 +598,7 @@ function scheduleAutoSave(): void {
     locked.value ||
     conflict.value ||
     indeterminate.value ||
+    adoptCommitted.value !== null ||
     termDialog.value.visible ||
     exportBusy.value ||
     props.frozen
@@ -738,10 +800,7 @@ async function ensureBodySavedForMaterial(): Promise<boolean> {
   return true
 }
 
-async function onFilesPicked(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files ?? [])
-  input.value = ''
+async function uploadPhotoFiles(files: File[]): Promise<void> {
   if (!files.length || !current.value || editDisabled.value) return
   if (!(await ensureBodySavedForMaterial())) return
   uploadBusy.value = true
@@ -788,6 +847,131 @@ async function onFilesPicked(event: Event): Promise<void> {
   } finally {
     uploadBusy.value = false
   }
+}
+
+async function onFilesPicked(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  await uploadPhotoFiles(files)
+}
+
+function canEditPhotoTarget(): boolean {
+  return Boolean(current.value) && !editDisabled.value
+}
+
+function isEditableDropTarget(target: EventTarget | null): boolean {
+  const element = target as {
+    tagName?: string
+    isContentEditable?: boolean
+  } | null
+  if (!element) return false
+  return (
+    element.tagName === 'INPUT'
+    || element.tagName === 'TEXTAREA'
+    || element.isContentEditable === true
+  )
+}
+
+function dropTypes(dataTransfer: DataTransfer | null): string[] {
+  return Array.from(dataTransfer?.types ?? [])
+}
+
+function dropHasFiles(dataTransfer: DataTransfer | null): boolean {
+  return (
+    dropTypes(dataTransfer).includes('Files')
+    || (dataTransfer?.files?.length ?? 0) > 0
+  )
+}
+
+function dropHasTextOrLink(dataTransfer: DataTransfer | null): boolean {
+  return dropTypes(dataTransfer).some((type) =>
+    type === 'text/plain' || type === 'text/uri-list' || type === 'text/html',
+  )
+}
+
+function dropHasDirectory(dataTransfer: DataTransfer | null): boolean {
+  for (const item of Array.from(dataTransfer?.items ?? [])) {
+    const getter = (item as {
+      webkitGetAsEntry?: () => { isDirectory?: boolean } | null
+    }).webkitGetAsEntry
+    if (typeof getter !== 'function') continue
+    try {
+      if (getter.call(item)?.isDirectory === true) return true
+    } catch {
+      // A browser that cannot expose an entry must not be treated as a folder.
+    }
+  }
+  return false
+}
+
+function onPhotoDragEnter(event: DragEvent): void {
+  if (isEditableDropTarget(event.target) && !dropHasFiles(event.dataTransfer)) {
+    return
+  }
+  event.preventDefault()
+  photoDragDepth += 1
+  photoDragActive.value = true
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function onPhotoDragOver(event: DragEvent): void {
+  if (isEditableDropTarget(event.target) && !dropHasFiles(event.dataTransfer)) {
+    return
+  }
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function onPhotoDragLeave(event: DragEvent): void {
+  if (isEditableDropTarget(event.target) && !dropHasFiles(event.dataTransfer)) {
+    return
+  }
+  photoDragDepth = Math.max(0, photoDragDepth - 1)
+  if (photoDragDepth === 0) photoDragActive.value = false
+}
+
+async function onPhotoDrop(event: DragEvent): Promise<void> {
+  const dataTransfer = event.dataTransfer
+  const editableTarget = isEditableDropTarget(event.target)
+  const hasFiles = dropHasFiles(dataTransfer)
+  // Text/link dropped into a focused editable control keeps the browser's
+  // normal insertion behavior; it is never claimed as a photo.
+  if (editableTarget && !hasFiles) return
+  event.preventDefault()
+  photoDragDepth = 0
+  photoDragActive.value = false
+  if (!canEditPhotoTarget()) return
+  if (!dataTransfer) {
+    ElMessage.warning('未检测到可用的图片文件')
+    return
+  }
+  if (dropHasDirectory(dataTransfer)) {
+    ElMessage.warning('不支持拖入文件夹；请拖入图片文件')
+    return
+  }
+  if (uploadBusy.value) {
+    ElMessage.info('正在添加照片，请稍候')
+    return
+  }
+  const files = Array.from(dataTransfer.files ?? [])
+  if (!files.length) {
+    if (dropHasTextOrLink(dataTransfer)) {
+      ElMessage.warning('文本或链接不能作为照片；请拖入图片文件')
+    } else {
+      ElMessage.warning('未检测到可用的图片文件')
+    }
+    return
+  }
+  const supported = files.filter((file) => isSupportedObservationPhoto(file))
+  if (!supported.length) {
+    ElMessage.warning('仅支持 JPG、PNG、WebP、GIF、BMP 图片；文本、链接和文件夹不能作为照片')
+    return
+  }
+  if (supported.length !== files.length) {
+    ElMessage.warning('已忽略不支持的来源；仅添加图片文件')
+  }
+  await uploadPhotoFiles(supported)
 }
 
 function applyPhotoResult(result: {
@@ -1072,14 +1256,20 @@ async function performSave(
   expectedRevisionOverride?: number,
   submittedPhotosOverride?: { asset_id: string; caption: string | null }[],
   epochAtSubmitOverride?: number,
+  interactive = false,
 ): Promise<SaveResult> {
   const record = current.value
   if (!record) return { status: 'failed' }
+  if (adoptCommitted.value) return { status: 'failed' }
   const expectedRevision = expectedRevisionOverride ?? record.revision
   const snapshotEpoch = epochAtSubmitOverride ?? epoch.value
   const submittedPhotos = submittedPhotosOverride ?? submittedPhotoList()
   const generation = ++saveGeneration
-  locked.value = true
+  // A teacher-triggered replay keeps the original wire save_reason='auto', but
+  // must still hold the manual interaction lock while its request is in flight.
+  const automatic = reason === 'auto' && !interactive
+  if (automatic) autoSaving.value = true
+  else locked.value = true
   phase.value = 'saving'
   try {
     const result = await apiPatch<ObservationSaveResult>(
@@ -1129,6 +1319,7 @@ async function performSave(
           expectedRevision,
           submittedPhotos,
           snapshotEpoch,
+          interactive,
         )
       }
       if (
@@ -1167,7 +1358,8 @@ async function performSave(
     phase.value = 'save_failed'
     return { status: 'indeterminate', message: String(err) }
   } finally {
-    locked.value = false
+    if (automatic) autoSaving.value = false
+    else locked.value = false
   }
 }
 
@@ -1226,6 +1418,7 @@ function applySaveResult(
       result.payload_hash,
       snapshotEpoch,
       generation,
+      reason,
     )
   } else {
     // Late input stays in the form and remains dirty against the submitted
@@ -1239,6 +1432,7 @@ async function reconcileServerCopy(
   payloadHash: string,
   snapshotEpoch: number,
   generation: number,
+  reason: SaveReason,
 ): Promise<void> {
   try {
     const server = await apiGet<ObservationCurrent>(
@@ -1253,6 +1447,19 @@ async function reconcileServerCopy(
     if (server.revision !== revision) return
     if (server.payload_hash !== payloadHash) return
     if (epoch.value !== snapshotEpoch) return
+    if (reason === 'auto') {
+      // Refresh the saved authority without replacing the live form. The
+      // server may trim outer whitespace; the teacher's text, caret and IME
+      // state must survive an automatic save.
+      current.value = {
+        ...current.value,
+        payload: server.payload,
+        current_version: server.current_version,
+        latest_version_hash: server.latest_version_hash ?? null,
+        updated_at: server.updated_at,
+      }
+      return
+    }
     applyCurrent(server, false)
   } catch {
     // The save itself already succeeded; a read-back failure keeps the
@@ -1370,6 +1577,7 @@ async function retryIndeterminate(): Promise<void> {
     state.expectedRevision,
     state.submittedPhotos,
     state.epochAtSubmit,
+    true,
   )
   if (outcome.status === 'saved' || outcome.status === 'unchanged') {
     ElMessage.success('已保存')
@@ -1509,22 +1717,6 @@ function removeSubject(index: number): void {
 
 // -- AI tasks and candidates ---------------------------------------------------
 
-function formatPreviewValue(value: unknown): string {
-  if (value === null || value === undefined) return '（空）'
-  if (typeof value === 'string') return value.trim() === '' ? '（空）' : value
-  if (typeof value === 'object') {
-    const record = value as Record<string, unknown>
-    if (EVALUATION_KEYS.some((key) => key in record)) {
-      // Five fixed domains are teacher-facing; never show the machine JSON
-      // keys or a raw object in the comparison pane.
-      return EVALUATION_KEYS.map(
-        (key) => `${EVALUATION_LABELS[key]}：${formatPreviewValue(record[key])}`,
-      ).join('\n')
-    }
-  }
-  return JSON.stringify(value, null, 2)
-}
-
 const SOURCE_FIELD_LABELS: Record<string, string> = {
   record_type: '记录类型',
   observation_date: '观察日期',
@@ -1589,9 +1781,99 @@ function candidateLabel(candidate: { task_type: string; created_at: string }): s
   return `${type} · ${candidate.created_at.replace('T', ' ').slice(0, 19)}`
 }
 
+function resetCandidateEdit(detail: CandidateDetail | null = candidateDetail.value): void {
+  if (!detail) {
+    candidateEdit.value = {}
+    candidateEditBaseline.value = ''
+    return
+  }
+  candidateEdit.value = candidateEditFromRaw(
+    detail.task_type,
+    detail.raw_candidate,
+    detail.available_targets,
+  )
+  candidateEditBaseline.value = candidateEditSignature(candidateEdit.value)
+}
+
+function candidateTextValue(target: string): string {
+  const value = candidateEdit.value[target]
+  return typeof value === 'string' ? value : ''
+}
+
+function candidateEvaluationValue(key: EvaluationKey): string {
+  const value = candidateEdit.value.analysis_evaluation
+  if (!value || typeof value !== 'object') return ''
+  return String((value as Record<EvaluationKey, string>)[key] ?? '')
+}
+
+function onCandidateEditInput(): void {
+  if (adoptionPreview.value) invalidateAdoptionPreview()
+}
+
+function setCandidateTextValue(target: string, value: string): void {
+  candidateEdit.value = { ...candidateEdit.value, [target]: value }
+  onCandidateEditInput()
+}
+
+function setCandidateEvaluationValue(
+  key: EvaluationKey,
+  value: string,
+): void {
+  const currentValue = candidateEdit.value.analysis_evaluation
+  const evaluation = Object.fromEntries(
+    EVALUATION_KEYS.map((name) => [
+      name,
+      currentValue && typeof currentValue === 'object'
+        ? String((currentValue as Record<string, string>)[name] ?? '')
+        : '',
+    ]),
+  ) as Record<EvaluationKey, string>
+  evaluation[key] = value
+  candidateEdit.value = {
+    ...candidateEdit.value,
+    analysis_evaluation: evaluation,
+  }
+  onCandidateEditInput()
+}
+
+function buildEditedCandidate(): Record<string, unknown> | null {
+  const detail = candidateDetail.value
+  if (!detail) return null
+  return editedCandidateFromEdit(
+    detail.task_type,
+    detail.raw_candidate,
+    candidateEdit.value,
+  )
+}
+
+function cancelCandidateEdit(): void {
+  if (
+    adoptionFlowBusy.value ||
+    adoptBusy.value ||
+    adoptUnknown.value ||
+    adoptCommitted.value
+  ) {
+    ElMessage.warning(
+      adoptCommitted.value
+        ? '采用已保存，但正文读取待完成：请先重试读取'
+        : adoptUnknown.value
+          ? '采用结果待核对：请先查询回执后再取消'
+          : '采用操作仍在进行：请等待结果后再取消',
+    )
+    return
+  }
+  invalidateAdoptionPreview()
+  resetCandidateEdit()
+  candidateOpen.value = false
+  candidateId.value = ''
+  regeneratedCandidateId.value = ''
+  ElMessage.info('已取消本次候选编辑；正文未写入')
+}
+
 async function createAiTask(
   taskType: 'game_observation_generate' | 'game_observation_rewrite',
   target?: ObservationTarget,
+  options?: { baseCandidateId?: string; revisionInstruction?: string },
 ): Promise<void> {
   if (
     aiIntent.value ||
@@ -1603,6 +1885,8 @@ async function createAiTask(
   ) {
     return
   }
+  regenerateBaseCandidateId.value = options?.baseCandidateId ?? ''
+  regeneratedCandidateId.value = ''
   // Claim the submit intent before the protective save await: two rapid
   // triggers share one save promise but must never mint two AI requests.
   aiIntent.value = true
@@ -1622,6 +1906,18 @@ async function createAiTask(
       return
     }
     const requestId = crypto.randomUUID()
+    const body: Record<string, unknown> = {
+      request_id: requestId,
+      task_type: taskType,
+      expected_revision: current.value.revision,
+      expected_hash: current.value.payload_hash,
+      target: target ?? null,
+    }
+    if (options?.baseCandidateId) {
+      body.base_candidate_id = options.baseCandidateId
+    }
+    const instruction = options?.revisionInstruction?.trim() ?? ''
+    if (instruction) body.revision_instruction = instruction
     aiBusy.value = true
     aiSubmitBusy.value = true
     aiTaskStatus.value = 'pending'
@@ -1630,13 +1926,7 @@ async function createAiTask(
     try {
       const task = await apiPost<{ id: string }>(
       `/api/observations/${pathSegment(props.observationId)}/ai-tasks`,
-      {
-        request_id: requestId,
-        task_type: taskType,
-        expected_revision: current.value.revision,
-        expected_hash: current.value.payload_hash,
-        target: target ?? null,
-      },
+      body,
     )
     aiSubmitBusy.value = false
     taskListSeq += 1
@@ -1673,6 +1963,62 @@ async function createAiTask(
   if (taskToPoll && editorAlive) {
     await pollTask(taskToPoll)
   }
+}
+
+async function regenerateCandidate(): Promise<void> {
+  const detail = candidateDetail.value
+  if (!detail || !current.value) return
+  if (
+    aiBusy.value ||
+    aiIntent.value ||
+    adoptBusy.value ||
+    adoptionFlowBusy.value ||
+    adoptCommitted.value ||
+    aiUnknown.value
+  ) {
+    ElMessage.warning('当前有 AI 操作进行或待核对：请先处理后再重新生成')
+    return
+  }
+  if (detail.adoption_state !== 'eligible') {
+    ElMessage.warning('来源已变化：原候选不能作为重新生成基准；请用当前资料生成')
+    return
+  }
+  if (
+    typeof detail.source?.source_revision === 'number' &&
+    detail.source.source_revision !== current.value.revision
+  ) {
+    ElMessage.warning('当前正文已变化：请先保存并按最新内容重新生成')
+    return
+  }
+  let target: ObservationTarget | undefined
+  if (detail.task_type === 'game_observation_rewrite') {
+    const value = detail.raw_candidate.target
+    if (!OBSERVATION_TARGETS.includes(value as ObservationTarget)) {
+      ElMessage.warning('原候选重写目标不可用')
+      return
+    }
+    target = value as ObservationTarget
+  }
+  invalidateAdoptionPreview()
+  const taskBefore = aiTaskId.value
+  await createAiTask(
+    detail.task_type as 'game_observation_generate' | 'game_observation_rewrite',
+    target,
+    {
+      baseCandidateId: detail.id,
+      revisionInstruction: regenerateInstruction.value,
+    },
+  )
+  if (aiTaskId.value === taskBefore && !aiUnknown.value) {
+    regenerateBaseCandidateId.value = ''
+  }
+}
+
+async function openRegeneratedCandidate(): Promise<void> {
+  const target = regeneratedCandidateId.value
+  if (!target) return
+  regeneratedCandidateId.value = ''
+  await openCandidate(target)
 }
 
 async function reconcileAiCreate(): Promise<void> {
@@ -1828,6 +2174,24 @@ async function pollTask(taskId: string): Promise<void> {
         aiRetryState.value = null
         aiRetryAck.value = false
         aiRetryNotice.value = ''
+        const regenerateFrom = regenerateBaseCandidateId.value
+        if (regenerateFrom) {
+          regenerateBaseCandidateId.value = ''
+          regenerateInstruction.value = ''
+          const newCandidateId = task.candidate_id ?? ''
+          await loadCandidates(undefined, true, false)
+          if (newCandidateId && newCandidateId !== regenerateFrom) {
+            regeneratedCandidateId.value = newCandidateId
+            ElMessage.success(
+              '新候选已生成：可明确打开查看；原候选与当前编辑保持不变',
+            )
+          } else {
+            ElMessage.warning(
+              '重新生成已完成，但未产生新的候选；原候选与当前编辑保持不变',
+            )
+          }
+          return
+        }
         await loadCandidates(task.candidate_id, true)
         return
       }
@@ -1835,6 +2199,17 @@ async function pollTask(taskId: string): Promise<void> {
         aiBusy.value = false
         clearAwaitingNewExecution()
         setAiRetryState(task)
+        if (regenerateBaseCandidateId.value) {
+          regenerateBaseCandidateId.value = ''
+          ElMessage.warning(
+            task.status === 'failed'
+              ? '重新生成失败：原候选与当前编辑已保留；未自动重发'
+              : task.status === 'outcome_unknown'
+                ? '重新生成结果未知：原候选与当前编辑已保留；未自动重发'
+                : '重新生成已暂停：原候选与当前编辑已保留；请查看原因后再决定',
+          )
+          return
+        }
         ElMessage.warning(
           task.status === 'failed'
             ? 'AI 任务失败：原内容已保留，可主动重试'
@@ -1848,6 +2223,11 @@ async function pollTask(taskId: string): Promise<void> {
         aiBusy.value = false
         clearAwaitingNewExecution()
         aiRetryState.value = null
+        if (regenerateBaseCandidateId.value) {
+          regenerateBaseCandidateId.value = ''
+          ElMessage.warning('重新生成已取消：原候选与当前编辑已保留')
+          return
+        }
         ElMessage.warning('AI 任务已取消：可重新生成')
         return
       }
@@ -1993,6 +2373,7 @@ async function resubmitAiRetry(): Promise<void> {
 async function loadCandidates(
   preferredId?: string | null,
   reset = true,
+  openAfter = true,
 ): Promise<void> {
   const seq = ++candidateListSeq
   try {
@@ -2009,6 +2390,7 @@ async function loadCandidates(
       ? payload.items
       : [...candidates.value, ...payload.items]
     candidateCursor.value = payload.next_cursor
+    if (!openAfter) return
     const target =
       preferredId ?? (reset ? payload.items[0]?.id ?? '' : '')
     if (target) await openCandidate(target)
@@ -2027,6 +2409,10 @@ async function loadMoreCandidates(): Promise<void> {
 
 async function openCandidate(id: string): Promise<void> {
   if (!id) return
+  if (adoptCommitted.value) {
+    ElMessage.warning('采用已保存，但正文读取待完成：请先重试读取')
+    return
+  }
   const seq = ++candidateSeq
   candidateId.value = id
   candidateOpen.value = true
@@ -2039,6 +2425,7 @@ async function openCandidate(id: string): Promise<void> {
     if (seq !== candidateSeq || candidateId.value !== id) return
     candidateDetail.value = detail
     candidateTargets.value = availableTargets(detail.task_type, detail.raw_candidate)
+    resetCandidateEdit(detail)
   } catch (err) {
     if (seq !== candidateSeq) return
     ElMessage.error(
@@ -2056,46 +2443,172 @@ function toggleTarget(target: ObservationTarget): void {
   else candidateTargets.value.push(target)
 }
 
-async function previewAdoption(): Promise<void> {
-  if (!current.value || !candidateDetail.value || adoptBusy.value) return
+function sameTargets(
+  left: readonly ObservationTarget[],
+  right: readonly ObservationTarget[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((target) => right.includes(target))
+  )
+}
+
+function exactUniqueTargets(
+  left: readonly string[],
+  right: readonly ObservationTarget[],
+): boolean {
+  if (left.length !== right.length) return false
+  if (new Set(left).size !== left.length) return false
+  if (new Set(right).size !== right.length) return false
+  return left.every((target, index) => target === right[index])
+}
+
+function adoptResultMatches(
+  result: {
+    candidate_id?: string
+    revision?: number
+    payload_hash?: string
+    selected_targets?: string[]
+  },
+  candidateId: string,
+  targets: readonly ObservationTarget[],
+): boolean {
+  if (result.candidate_id !== candidateId) return false
+  if (
+    !Array.isArray(result.selected_targets) ||
+    !exactUniqueTargets(result.selected_targets, targets)
+  ) {
+    return false
+  }
+  if (
+    !Number.isInteger(result.revision) ||
+    (result.revision ?? 0) < 1 ||
+    typeof result.payload_hash !== 'string' ||
+    result.payload_hash.length !== 64
+  ) {
+    return false
+  }
+  return true
+}
+
+/**
+ * #16: freeze every teacher choice before the protective save await. A slow
+ * save must never let a later candidate/selection/edit become the target of
+ * the click that was already committed.
+ */
+function captureAdoptionIntent(): AdoptionIntent | null {
+  if (
+    !current.value ||
+    !candidateDetail.value ||
+    adoptBusy.value ||
+    adoptionFlowBusy.value
+  ) {
+    return null
+  }
+  if (adoptCommitted.value) {
+    ElMessage.warning('采用已保存，但正文读取待完成：请先重试读取')
+    return null
+  }
   if (!candidateTargets.value.length) {
     ElMessage.warning('请选择至少一个采用目标')
-    return
+    return null
   }
-  const outcome = await saveCurrent('manual')
-  if (outcome !== 'saved' && outcome !== 'unchanged') {
-    ElMessage.warning('正文未保存成功：请先处理保存结果再预览采用')
-    return
+  const edited = buildEditedCandidate()
+  if (!edited) {
+    ElMessage.warning('编辑内容尚未就绪')
+    return null
   }
-  if (!current.value || needsSave.value) {
-    ElMessage.warning('正文仍有未保存输入：请先保存后再预览采用')
-    return
+  return {
+    candidateId: candidateDetail.value.id,
+    targets: [...candidateTargets.value],
+    edited,
+    editSignature: candidateEditSignature(candidateEdit.value),
+    epoch: epoch.value,
   }
-  const snapshotEpoch = epoch.value
-  const candidateAtStart = candidateDetail.value.id
-  const targets = [...candidateTargets.value]
-  adoptBusy.value = true
+}
+
+function adoptionIntentIsCurrent(intent: AdoptionIntent): boolean {
+  return Boolean(
+    editorAlive &&
+      current.value &&
+      candidateDetail.value?.id === intent.candidateId &&
+      candidateId.value === intent.candidateId &&
+      sameTargets(candidateTargets.value, intent.targets) &&
+      candidateEditSignature(candidateEdit.value) === intent.editSignature &&
+      epoch.value === intent.epoch,
+  )
+}
+
+async function runAdoptionPreview(intent: AdoptionIntent): Promise<void> {
+  invalidateAdoptionPreview()
   try {
+    const outcome = await saveCurrent('manual')
+    if (outcome !== 'saved' && outcome !== 'unchanged') {
+      ElMessage.warning('正文未保存成功：请先处理保存结果再采用')
+      return
+    }
+    if (!adoptionIntentIsCurrent(intent)) {
+      ElMessage.warning('候选、目标、编辑或正文已变化：本次未采用，请重新点击')
+      return
+    }
+    if (!current.value || needsSave.value) {
+      ElMessage.warning('正文仍有未保存输入：请先保存后再采用')
+      return
+    }
+    const expectedRevision = current.value.revision
+    const expectedHash = current.value.payload_hash
+    adoptBusy.value = true
     const preview = await apiPost<AdoptionPreview>(
-      `/api/observations/${pathSegment(props.observationId)}/ai-candidates/${pathSegment(candidateAtStart)}/preview-adoption`,
+      `/api/observations/${pathSegment(props.observationId)}/ai-candidates/${pathSegment(intent.candidateId)}/preview-adoption`,
       {
         request_id: crypto.randomUUID(),
-        expected_revision: current.value.revision,
-        expected_hash: current.value.payload_hash,
-        selected_targets: targets,
+        expected_revision: expectedRevision,
+        expected_hash: expectedHash,
+        selected_targets: intent.targets,
+        edited_candidate: intent.edited,
       },
     )
-    if (!editorAlive || epoch.value !== snapshotEpoch) return
+    if (
+      !adoptionIntentIsCurrent(intent) ||
+      current.value?.revision !== expectedRevision ||
+      current.value?.payload_hash !== expectedHash
+    ) {
+      return
+    }
     adoptionPreview.value = preview
-    previewEpoch.value = snapshotEpoch
-    previewCandidateId.value = candidateAtStart
+    previewEpoch.value = intent.epoch
+    previewCandidateId.value = intent.candidateId
+    candidateEditSignatureAtPreview.value = intent.editSignature
     reviewChecked.value = false
   } catch (err) {
+    if (err instanceof ApiError && err.code === 'AI_SOURCE_CHANGED') {
+      ElMessage.warning('来源已变化：请核对差异后确认，或重新生成')
+      return
+    }
+    if (err instanceof ApiError && err.code === 'AI_CONTRACT_OBSOLETE') {
+      ElMessage.warning('该候选的指导契约已过期：只能查看，不能采用')
+      return
+    }
+    if (err instanceof ApiError && err.code === 'VERSION_CONFLICT') {
+      ElMessage.warning('正文版本已变化：请先处理保存结果再采用')
+      return
+    }
     ElMessage.error(
       err instanceof ApiError ? err.message : `采用预览失败：${String(err)}`,
     )
   } finally {
     adoptBusy.value = false
+  }
+}
+
+async function previewAdoption(): Promise<void> {
+  const intent = captureAdoptionIntent()
+  if (!intent) return
+  adoptionFlowBusy.value = true
+  try {
+    await runAdoptionPreview(intent)
+  } finally {
+    adoptionFlowBusy.value = false
   }
 }
 
@@ -2109,11 +2622,42 @@ function adoptionRequestIsCurrent(): boolean {
       previewCandidateId.value === detail.id &&
       previewEpoch.value === epoch.value &&
       !needsSave.value &&
+      candidateEditSignatureAtPreview.value ===
+        candidateEditSignature(candidateEdit.value) &&
       preview.selected_targets.length === candidateTargets.value.length &&
       preview.selected_targets.every((target) =>
         candidateTargets.value.includes(target as ObservationTarget),
       ),
   )
+}
+
+async function adoptOrReview(): Promise<void> {
+  if (!candidateDetail.value || adoptBusy.value || adoptionFlowBusy.value) return
+  if (adoptionPreview.value?.requires_review_decision) {
+    ElMessage.warning('来源已变化：请核对差异并勾选确认后再采用')
+    return
+  }
+  const intent = captureAdoptionIntent()
+  if (!intent) return
+  adoptionFlowBusy.value = true
+  try {
+    await runAdoptionPreview(intent)
+    if (!editorAlive) return
+    const preview = adoptionPreview.value
+    if (!preview) return
+    if (preview.requires_review_decision) {
+      ElMessage.warning('来源已变化：请核对差异并勾选确认后再采用')
+      return
+    }
+    if (!adoptionRequestIsCurrent()) {
+      invalidateAdoptionPreview()
+      ElMessage.warning('正文、编辑或目标已变化：请重新采用')
+      return
+    }
+    await adoptCandidate()
+  } finally {
+    adoptionFlowBusy.value = false
+  }
 }
 
 async function adoptCandidate(): Promise<void> {
@@ -2150,6 +2694,7 @@ async function adoptCandidate(): Promise<void> {
   adoptBusy.value = true
   try {
     const result = await apiPost<{
+      candidate_id?: string
       changed: boolean
       revision: number
       payload_hash: string
@@ -2160,9 +2705,29 @@ async function adoptCandidate(): Promise<void> {
       `/api/observations/${pathSegment(props.observationId)}/ai-candidates/${pathSegment(detail.id)}/adopt`,
       request,
     )
-    await applyAdoptResult(result, snapshotEpoch)
+    if (
+      !adoptResultMatches(
+        result,
+        detail.id,
+        preview.selected_targets as ObservationTarget[],
+      )
+    ) {
+      adoptUnknown.value = {
+        requestId,
+        candidateId: detail.id,
+        targets: [...preview.selected_targets] as ObservationTarget[],
+        previewToken: preview.adoption_token,
+        reviewDecision: request.review_decision,
+        epoch: snapshotEpoch,
+        revision: request.expected_revision,
+        hash: request.expected_hash,
+      }
+      ElMessage.warning('采用回执与当前请求不一致：请先查询回执，不要重复提交')
+      return
+    }
+    await applyAdoptResult(result, snapshotEpoch, detail.id)
   } catch (err) {
-    if (err instanceof ApiError && err.status === 0) {
+    if (isIndeterminate(err)) {
       adoptUnknown.value = {
         requestId,
         candidateId: detail.id,
@@ -2202,26 +2767,80 @@ async function applyAdoptResult(
     selected_targets: string[]
   },
   snapshotEpoch: number,
+  candidateId: string,
 ): Promise<void> {
-  candidateOpen.value = false
-  invalidateAdoptionPreview()
-  const server = await apiGet<ObservationCurrent>(
-    `/api/observations/${pathSegment(props.observationId)}`,
-  )
-  if (!editorAlive || !current.value) return
-  if (server.revision !== result.revision) {
-    await enterConflict()
-    return
+  // The adopt POST already committed. Keep the candidate, preview ticket,
+  // draft and late input until the exact new body has been read back.
+  adoptUnknown.value = null
+  adoptCommitted.value = {
+    result,
+    snapshotEpoch,
+    candidateId,
+    targets: [...result.selected_targets],
   }
-  if (epoch.value === snapshotEpoch) {
-    applyCurrent(server)
-    ElMessage.success(
-      `已采用 ${result.selected_targets.length} 个目标并保存为 v${result.revision}`,
+  await readAdoptCommitted()
+}
+
+async function readAdoptCommitted(): Promise<void> {
+  const committed = adoptCommitted.value
+  if (!committed) return
+  try {
+    const server = await apiGet<ObservationCurrent>(
+      `/api/observations/${pathSegment(props.observationId)}`,
     )
-  } else {
-    conflict.value = { server }
-    phase.value = 'conflict'
-    ElMessage.warning('采用已保存，但当前编辑区已有更新：请比较后处理')
+    if (!editorAlive || !current.value) return
+    if (
+      server.revision !== committed.result.revision ||
+      server.payload_hash !== committed.result.payload_hash
+    ) {
+      // The read succeeded but the exact committed body is no longer the
+      // current one. Keep the server copy for the explicit conflict path.
+      adoptCommitted.value = null
+      candidateOpen.value = false
+      candidateId.value = ''
+      invalidateAdoptionPreview()
+      resetCandidateEdit()
+      conflict.value = { server }
+      phase.value = 'conflict'
+      ElMessage.warning('采用已保存，但服务端正文已更新：请比较后处理')
+      return
+    }
+    if (epoch.value === committed.snapshotEpoch) {
+      applyCurrent(server)
+      adoptCommitted.value = null
+      candidateOpen.value = false
+      candidateId.value = ''
+      invalidateAdoptionPreview()
+      resetCandidateEdit()
+      ElMessage.success(
+        `已采用 ${committed.result.selected_targets.length} 个目标并保存为 v${committed.result.revision}`,
+      )
+    } else {
+      // Late input is retained in the form; the read body is shown only in
+      // the existing conflict comparison.
+      adoptCommitted.value = null
+      candidateOpen.value = false
+      candidateId.value = ''
+      invalidateAdoptionPreview()
+      resetCandidateEdit()
+      conflict.value = { server }
+      phase.value = 'conflict'
+      ElMessage.warning('采用已保存，但当前编辑区已有更新：请比较后处理')
+    }
+  } catch {
+    ElMessage.warning(
+      '采用已保存，但正文读取失败：请重试读取；不会重复写入或重复采用',
+    )
+  }
+}
+
+async function retryAdoptRead(): Promise<void> {
+  if (!adoptCommitted.value || adoptReadBusy.value) return
+  adoptReadBusy.value = true
+  try {
+    await readAdoptCommitted()
+  } finally {
+    adoptReadBusy.value = false
   }
 }
 
@@ -2231,6 +2850,7 @@ async function reconcileAdopt(): Promise<void> {
   try {
     const receipt = await apiGet<{
       result: {
+        candidate_id?: string
         changed: boolean
         revision: number
         payload_hash: string
@@ -2241,8 +2861,12 @@ async function reconcileAdopt(): Promise<void> {
     }>(
       `/api/observations/${pathSegment(props.observationId)}/operations/${pathSegment(unknown.requestId)}`,
     )
+    if (!adoptResultMatches(receipt.result, unknown.candidateId, unknown.targets)) {
+      ElMessage.warning('采用回执与当前请求不一致：已保留待核对状态')
+      return
+    }
     adoptUnknown.value = null
-    await applyAdoptResult(receipt.result, unknown.epoch)
+    await applyAdoptResult(receipt.result, unknown.epoch, unknown.candidateId)
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
       ElMessage.warning('服务端尚无该采用回执：可重新提交同一请求（不会重复执行）')
@@ -2259,6 +2883,7 @@ async function retryAdopt(): Promise<void> {
   if (!unknown || !current.value) return
   try {
     const result = await apiPost<{
+      candidate_id?: string
       changed: boolean
       revision: number
       payload_hash: string
@@ -2276,10 +2901,14 @@ async function retryAdopt(): Promise<void> {
         review_decision: unknown.reviewDecision,
       },
     )
+    if (!adoptResultMatches(result, unknown.candidateId, unknown.targets)) {
+      ElMessage.warning('采用回执与当前请求不一致：已保留待核对状态')
+      return
+    }
     adoptUnknown.value = null
-    await applyAdoptResult(result, unknown.epoch)
+    await applyAdoptResult(result, unknown.epoch, unknown.candidateId)
   } catch (err) {
-    if (err instanceof ApiError && err.status === 0) {
+    if (isIndeterminate(err)) {
       ElMessage.warning('采用结果仍未知：请稍后再次查询回执')
       return
     }
@@ -2722,6 +3351,24 @@ const bridge: EditorBridge = {
         message: '候选采用结果待核对：请先查询回执并处理后再离开',
       }
     }
+    if (adoptCommitted.value) {
+      return {
+        kind: 'candidate',
+        message: '采用已保存，但正文读取待完成：请先重试读取后再离开',
+      }
+    }
+    if (adoptionFlowBusy.value) {
+      return {
+        kind: 'candidate',
+        message: '候选采用正在准备：请等待结果后再离开',
+      }
+    }
+    if (candidateEditDirty.value) {
+      return {
+        kind: 'candidate',
+        message: '候选有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开',
+      }
+    }
     if (restoreUnknown.value) {
       return {
         kind: 'history',
@@ -2845,6 +3492,8 @@ onMounted(() => {
       if (photo) return removePhoto(photo)
     },
     uploadBusy: () => uploadBusy.value,
+    photoDragActive: () => photoDragActive.value,
+    onPhotoDrop: (event: DragEvent) => onPhotoDrop(event),
     aiBusy: () => aiBusy.value,
     aiIntent: () => aiIntent.value,
     aiSubmitBusy: () => aiSubmitBusy.value,
@@ -2871,6 +3520,7 @@ onMounted(() => {
           }
         : null,
     aiRetryTitle: () => aiRetryTitle.value,
+    aiRetryReasonLabel: () => aiRetryReasonLabel.value,
     aiRetryAck: () => aiRetryAck.value,
     setAiRetryAck: (value: boolean) => {
       aiRetryAck.value = value
@@ -2883,9 +3533,10 @@ onMounted(() => {
     createRewriteTask: (target: ObservationTarget) =>
       createAiTask('game_observation_rewrite', target),
     candidates: () => candidates.value,
-    loadCandidates: (preferred?: string, reset = true) =>
-      loadCandidates(preferred, reset),
+    loadCandidates: (preferred?: string, reset = true, openAfter = true) =>
+      loadCandidates(preferred, reset, openAfter),
     candidateOpen: () => candidateOpen.value,
+    candidateId: () => candidateId.value,
     openCandidate: (id: string) => openCandidate(id),
     candidateDetail: () =>
       candidateDetail.value
@@ -2896,10 +3547,27 @@ onMounted(() => {
             adoption_state: candidateDetail.value.adoption_state,
             review_warning: candidateDetail.value.review_warning,
             review_fragments: candidateDetail.value.review_fragments,
+            source_change: candidateDetail.value.source_change ?? null,
+            source: candidateDetail.value.source ?? null,
             raw_candidate: candidateDetail.value.raw_candidate,
           }
         : null,
     candidateTargets: () => [...candidateTargets.value],
+    candidateEdit: () => JSON.parse(JSON.stringify(candidateEdit.value)),
+    candidateEditDirty: () => candidateEditDirty.value,
+    setCandidateText: (target: string, value: string) =>
+      setCandidateTextValue(target, value),
+    setCandidateEvaluation: (key: EvaluationKey, value: string) =>
+      setCandidateEvaluationValue(key, value),
+    adoptOrReview: () => adoptOrReview(),
+    cancelCandidateEdit: () => cancelCandidateEdit(),
+    regenerateInstruction: () => regenerateInstruction.value,
+    setRegenerateInstruction: (value: string) => {
+      regenerateInstruction.value = value
+    },
+    regenerateCandidate: () => regenerateCandidate(),
+    regeneratedCandidateId: () => regeneratedCandidateId.value,
+    openRegeneratedCandidate: () => openRegeneratedCandidate(),
     toggleTarget: (target: ObservationTarget) => toggleTarget(target),
     setTargets: (targets: ObservationTarget[]) => {
       candidateTargets.value = [...targets]
@@ -2987,8 +3655,10 @@ onMounted(() => {
     aiUnknownActive: () => aiUnknown.value !== null,
     reconcileAiCreate: () => reconcileAiCreate(),
     adoptUnknownActive: () => adoptUnknown.value !== null,
+    adoptCommittedActive: () => adoptCommitted.value !== null,
     reconcileAdopt: () => reconcileAdopt(),
     retryAdopt: () => retryAdopt(),
+    retryAdoptRead: () => retryAdoptRead(),
     previewActive: () => adoptionPreview.value !== null,
     previewEpoch: () => previewEpoch.value,
     openTermDialogManual: () => openTermDialogManual(),
@@ -3152,6 +3822,28 @@ onBeforeUnmount(() => {
       </el-alert>
 
       <el-alert
+        v-if="adoptCommitted"
+        type="warning"
+        :closable="false"
+        title="采用已保存，但正文读取失败：只重试读取，不会重复写入"
+        class="block"
+        data-d1="obs-adopt-committed"
+      >
+        <p class="muted">
+          候选、草稿和当前编辑仍保留；读到采用回执对应的新正文后才关闭候选并清除。
+        </p>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="adoptReadBusy"
+          data-d1="obs-adopt-read-retry"
+          @click="retryAdoptRead"
+        >
+          重试读取正文
+        </el-button>
+      </el-alert>
+
+      <el-alert
         v-if="restoreUnknown"
         type="warning"
         :closable="false"
@@ -3220,27 +3912,27 @@ onBeforeUnmount(() => {
           </label>
           <label>
             园所
-            <el-input v-model="form.school_name" :disabled="editDisabled" data-d1="obs-school" />
+            <el-input v-model="form.school_name" :disabled="typingDisabled" data-d1="obs-school" />
           </label>
           <label>
             班级
-            <el-input v-model="form.class_name" :disabled="editDisabled" data-d1="obs-class" />
+            <el-input v-model="form.class_name" :disabled="typingDisabled" data-d1="obs-class" />
           </label>
           <label>
             观察者
-            <el-input v-model="form.observer_name" :disabled="editDisabled" data-d1="obs-observer" />
+            <el-input v-model="form.observer_name" :disabled="typingDisabled" data-d1="obs-observer" />
           </label>
           <label>
             成人数目
-            <el-input v-model="form.adult_count" :disabled="editDisabled" data-d1="obs-adults" />
+            <el-input v-model="form.adult_count" :disabled="typingDisabled" data-d1="obs-adults" />
           </label>
           <label>
             儿童数目（参与总人数）
-            <el-input v-model="form.child_count" :disabled="editDisabled" data-d1="obs-children" />
+            <el-input v-model="form.child_count" :disabled="typingDisabled" data-d1="obs-children" />
           </label>
           <label>
             统一观察年龄
-            <el-input v-model="form.age_years" :disabled="editDisabled" data-d1="obs-age" />
+            <el-input v-model="form.age_years" :disabled="typingDisabled" data-d1="obs-age" />
           </label>
         </div>
         <el-alert
@@ -3281,7 +3973,7 @@ onBeforeUnmount(() => {
               :key="index"
               v-model="form.subjects[index]"
               class="subject-name"
-              :disabled="editDisabled"
+              :disabled="typingDisabled"
               :data-d1="`obs-subject-${index}`"
             />
             <el-button size="small" :disabled="editDisabled" data-d1="obs-add-subject" @click="addSubject">
@@ -3303,7 +3995,7 @@ onBeforeUnmount(() => {
         </div>
         <label class="full">
           观察环境
-          <el-input v-model="form.environment" :disabled="editDisabled" data-d1="obs-environment" />
+          <el-input v-model="form.environment" :disabled="typingDisabled" data-d1="obs-environment" />
         </label>
       </el-card>
 
@@ -3315,7 +4007,7 @@ onBeforeUnmount(() => {
             v-model="form.observation_goal"
             type="textarea"
             :rows="2"
-            :disabled="editDisabled"
+            :disabled="typingDisabled"
             data-d1="obs-goal"
           />
         </label>
@@ -3325,7 +4017,7 @@ onBeforeUnmount(() => {
             v-model="form.observation_process"
             type="textarea"
             :rows="5"
-            :disabled="editDisabled"
+            :disabled="typingDisabled"
             data-d1="obs-process"
           />
         </label>
@@ -3336,7 +4028,7 @@ onBeforeUnmount(() => {
               v-model="form.analysis_evaluation[key]"
               type="textarea"
               :rows="2"
-              :disabled="editDisabled"
+              :disabled="typingDisabled"
               :data-d1="`obs-eval-${key}`"
             />
           </label>
@@ -3347,16 +4039,28 @@ onBeforeUnmount(() => {
             v-model="form.support_strategy"
             type="textarea"
             :rows="3"
-            :disabled="editDisabled"
+            :disabled="typingDisabled"
             data-d1="obs-support"
           />
         </label>
       </el-card>
 
-      <el-card shadow="never" class="block" data-d1="obs-photos">
+      <el-card
+        shadow="never"
+        class="block"
+        :class="{ 'photo-drop-active': photoDragActive }"
+        data-d1="obs-photos"
+        @dragenter="onPhotoDragEnter"
+        @dragover="onPhotoDragOver"
+        @dragleave="onPhotoDragLeave"
+        @drop="onPhotoDrop"
+      >
         <template #header>
           <span>照片（按顺序，最多每行两张）</span>
         </template>
+        <div v-if="photoDragActive" class="photo-drop-hint" data-d1="obs-photo-drop-hint">
+          松开以添加图片（仅支持 JPG/PNG/WebP/GIF/BMP）
+        </div>
         <div class="photo-actions">
           <input
             ref="fileInput"
@@ -3379,6 +4083,7 @@ onBeforeUnmount(() => {
           <span class="muted">
             共 {{ photos.length }} 张；当前显示第 {{ photoChunk + 1 }}/{{ Math.max(photoChunks.length, 1) }} 组
           </span>
+          <span class="muted">也可将图片文件拖到本卡片</span>
           <el-button size="small" :disabled="photoChunk <= 0" @click="changePhotoChunk(-1)">
             上一组
           </el-button>
@@ -3629,8 +4334,56 @@ onBeforeUnmount(() => {
           <div class="candidate-text">
             <div v-for="target in candidateDetail.available_targets" :key="target" class="candidate-block">
               <strong>{{ TARGET_LABELS[target as ObservationTarget] ?? target }}</strong>
-              <pre>{{ candidateTargetText(candidateDetail.raw_candidate, target as ObservationTarget, candidateDetail.task_type) }}</pre>
+              <template v-if="target === 'analysis_evaluation'">
+                <label
+                  v-for="key in EVALUATION_KEYS"
+                  :key="key"
+                  class="candidate-eval"
+                >
+                  <span>{{ EVALUATION_LABELS[key] }}</span>
+                  <el-input
+                    type="textarea"
+                    :rows="2"
+                    :model-value="candidateEvaluationValue(key)"
+                    :disabled="editDisabled"
+                    :data-d1="`obs-candidate-eval-${key}`"
+                    @update:model-value="(value: string) => setCandidateEvaluationValue(key, value)"
+                  />
+                </label>
+              </template>
+              <el-input
+                v-else
+                type="textarea"
+                :rows="target === 'observation_process' ? 5 : 3"
+                :model-value="candidateTextValue(target)"
+                :disabled="editDisabled"
+                :data-d1="`obs-candidate-text-${target}`"
+                @update:model-value="(value: string) => setCandidateTextValue(target, value)"
+              />
             </div>
+          </div>
+          <p class="muted">
+            只写入已勾选栏目；未勾选字段、评分五领域和当前正文其他内容保持不变。
+          </p>
+          <div class="candidate-actions">
+            <el-button
+              size="small"
+              type="primary"
+              :loading="adoptBusy"
+              :disabled="editDisabled || adoptionPreview?.requires_review_decision"
+              data-d1="obs-adopt-direct"
+              @click="adoptOrReview"
+            >
+              采用并保存
+            </el-button>
+            <el-button
+              size="small"
+              :disabled="adoptBusy || adoptUnknown !== null"
+              data-d1="obs-cancel-candidate"
+              @click="cancelCandidateEdit"
+            >
+              取消本次候选编辑
+            </el-button>
           </div>
           <div v-if="candidateDetail.review_fragments.length" class="fragments">
             <p class="muted">审核提示（不会进入正文或 Word）：</p>
@@ -3640,38 +4393,16 @@ onBeforeUnmount(() => {
               </li>
             </ul>
           </div>
-          <el-button
-            size="small"
-            type="primary"
-            :loading="adoptBusy"
-            :disabled="editDisabled"
-            data-d1="obs-preview-adopt"
-            @click="previewAdoption"
+          <div
+            v-if="adoptionPreview?.requires_review_decision"
+            class="preview"
+            data-d1="obs-adoption-preview"
           >
-            预览采用
-          </el-button>
-          <div v-if="adoptionPreview" class="preview" data-d1="obs-adoption-preview">
-            <p>
-              采用目标：{{ adoptionPreview.selected_targets.map(targetLabel).join('、') }} ·
-              来源状态：{{ adoptionStateLabel(adoptionPreview.source_state) }}
-            </p>
-            <p v-if="adoptionPreview.changed" class="muted">预览内容与当前正文不同。</p>
-
-            <div
-              v-for="target in adoptionPreview.selected_targets"
-              :key="`preview-${target}`"
-              class="candidate-block"
-            >
-              <strong>{{ TARGET_LABELS[target as ObservationTarget] ?? target }}</strong>
-              <pre>当前：{{ formatPreviewValue(adoptionPreview.before[target]) }}</pre>
-              <pre>候选：{{ formatPreviewValue(adoptionPreview.after[target]) }}</pre>
-            </div>
-            <div v-if="adoptionPreview.requires_review_decision" class="candidate-block">
+            <div class="candidate-block">
               <strong>来源已变化的资料</strong>
               <p>{{ sourceChangeLabels(adoptionPreview.diff).join('、') || '来源资料' }}</p>
             </div>
             <el-alert
-              v-if="adoptionPreview.requires_review_decision"
               type="warning"
               :closable="false"
               title="来源已变化：请核对当前差异后确认采用"
@@ -3681,7 +4412,7 @@ onBeforeUnmount(() => {
                 data-d1="obs-review-checked"
                 @change="(value: boolean) => (reviewChecked = value)"
               >
-                已核对差异，确认按此预览采用
+                已核对差异，确认按当前编辑采用
               </el-checkbox>
             </el-alert>
             <el-button
@@ -3692,9 +4423,54 @@ onBeforeUnmount(() => {
               data-d1="obs-adopt"
               @click="adoptCandidate"
             >
-              采用并保存
+              确认采用并保存
             </el-button>
           </div>
+          <div class="candidate-regenerate">
+            <el-input
+              v-model="regenerateInstruction"
+              type="textarea"
+              :rows="2"
+              maxlength="500"
+              show-word-limit
+              placeholder="定向修改要求（可选：说明哪个栏目、希望怎么改）"
+              :disabled="editDisabled || aiBusy"
+              data-d1="obs-regenerate-instruction"
+            />
+            <p class="muted">
+              重新生成使用原候选与当前已保存正文；未采用的本地编辑不会作为原候选。
+              失败、取消或迟到响应不会替换原候选和已保存正文。
+            </p>
+            <el-button
+              size="small"
+              :loading="aiBusy"
+              :disabled="editDisabled || aiBusy || candidateDetail.adoption_state !== 'eligible'"
+              data-d1="obs-regenerate"
+              @click="regenerateCandidate"
+            >
+              重新生成
+            </el-button>
+          </div>
+          <el-alert
+            v-if="regeneratedCandidateId"
+            type="success"
+            :closable="false"
+            class="block"
+            data-d1="obs-regenerate-notice"
+            title="新候选已生成"
+          >
+            <p class="muted">
+              候选 {{ regeneratedCandidateId }} 尚未采用；原候选与当前编辑保持不变。
+            </p>
+            <el-button
+              size="small"
+              type="primary"
+              data-d1="obs-regenerate-open"
+              @click="openRegeneratedCandidate"
+            >
+              打开新候选
+            </el-button>
+          </el-alert>
         </div>
       </el-card>
     </template>
@@ -3960,6 +4736,18 @@ label.full {
   align-items: center;
   flex-wrap: wrap;
 }
+.photo-drop-active {
+  outline: 2px dashed var(--kgm-accent);
+  outline-offset: 2px;
+}
+.photo-drop-hint {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  color: var(--kgm-text);
+  background: var(--kgm-bg);
+  border: 1px dashed var(--kgm-accent);
+}
 .photo-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -4023,6 +4811,27 @@ label.full {
   border-radius: 4px;
   font-family: inherit;
   font-size: 0.85rem;
+}
+.candidate-eval {
+  display: block;
+  margin: 6px 0;
+}
+.candidate-eval > span {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 0.8rem;
+  color: var(--kgm-muted);
+}
+.candidate-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.candidate-regenerate {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--kgm-border);
 }
 .preview {
   margin-top: 12px;

@@ -35,7 +35,10 @@ from app.services.word_export_docx import (
     WordExportError,
     generate_daily_export_docx,
 )
-from app.services.word_export_mapping import map_daily_plan
+from app.services.word_export_mapping import (
+    legacy_outdoor_warning,
+    map_daily_plan,
+)
 
 MAX_EXPORT_COUNT = 31
 
@@ -324,6 +327,28 @@ def ack_matches(expected, current: dict) -> bool:
     return True
 
 
+def export_ack_decision(
+    *,
+    ack_missing: bool,
+    expected_context,
+    context_value: dict,
+    missing: list[dict],
+) -> tuple[bool, str | None]:
+    """Pure normal/legacy ack decision for the read-snapshot bundle.
+
+    A normal ``{from,to}`` request (no context) never asks for a second
+    acknowledgement: missing fields remain at their mapped positions as empty
+    values.  Only the legacy explicit-context protocol can still require an
+    ack, and a supplied context must match the current snapshot exactly.
+    """
+    if expected_context is None:
+        return False, None
+    if not ack_matches(expected_context, context_value):
+        return True, "context_changed"
+    ack_required = bool(missing) and not ack_missing
+    return ack_required, "missing" if ack_required else None
+
+
 @dataclass(frozen=True)
 class ExportBundle:
     records: tuple[ExportRecord, ...]
@@ -357,6 +382,13 @@ def _load_records(session: Session, *, class_id: str, start: date, end: date) ->
     records: list[ExportRecord] = []
     for plan in plans:
         content = _load_content(session, plan)
+        adopted_content = content.adopted_content or {}
+        warnings = list(_warnings(content.split_baseline))
+        legacy_warning = legacy_outdoor_warning(
+            adopted_content, plan.plan_date
+        )
+        if legacy_warning is not None:
+            warnings.append(legacy_warning)
         records.append(
             ExportRecord(
                 plan_id=plan.id,
@@ -372,9 +404,9 @@ def _load_records(session: Session, *, class_id: str, start: date, end: date) ->
                 grade=plan.grade,
                 content_id=content.id,
                 content_version=content.version,
-                adopted_content=content.adopted_content or {},
+                adopted_content=adopted_content,
                 split_baseline=content.split_baseline,
-                warnings=_warnings(content.split_baseline),
+                warnings=tuple(warnings),
             )
         )
     return tuple(records)
@@ -432,17 +464,12 @@ def prepare_export(
             missing=missing,
         )
 
-    context_supplied = expected_context is not None
-    context_ok = context_supplied and ack_matches(expected_context, context_value)
-    if not context_supplied:
-        ack_required = bool(missing)
-        ack_reason = "missing" if ack_required else None
-    elif context_ok:
-        ack_required = bool(missing) and not ack_missing
-        ack_reason = "missing" if ack_required else None
-    else:
-        ack_required = True
-        ack_reason = "context_changed"
+    ack_required, ack_reason = export_ack_decision(
+        ack_missing=ack_missing,
+        expected_context=expected_context,
+        context_value=context_value,
+        missing=missing,
+    )
 
     return ExportBundle(
         records=records,
@@ -471,7 +498,10 @@ def raise_if_ack_required(bundle: ExportBundle) -> None:
 
 
 def generate_docx(bundle: ExportBundle) -> bytes:
-    views = [map_daily_plan(record) for record in bundle.records]
+    views = [
+        map_daily_plan(record, single_afternoon_outdoor=True)
+        for record in bundle.records
+    ]
     try:
         return generate_daily_export_docx(views)
     except WordExportError as exc:

@@ -17,6 +17,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiGet, apiPost, ApiError, pathSegment } from '../client'
 import { queryAiReceipt, receiptMessage, isIndeterminate } from '../operations'
+import { alignProcess, type ProcessCompareRow } from '../process-compare'
 import type { SaveOutcome } from '../leave'
 import type {
   AdoptionPreview,
@@ -25,8 +26,10 @@ import type {
   TaskType,
 } from '../types'
 import {
+  adaptEditFromRaw,
   buildAdaptCandidate,
   buildOtherCandidate,
+  buildReflectionCandidate,
   buildSplitCandidate,
   candidateEditable,
   candidateOutputLabel,
@@ -34,6 +37,7 @@ import {
   defaultSelectedTargets,
   otherEditFromRaw,
   originalProcess,
+  reflectionEditFromRaw,
   otherBoardViews,
   sourceExcerptText,
   sourceSummaryLines,
@@ -53,12 +57,23 @@ const props = defineProps<{
   disabled?: boolean
   saveBody: () => Promise<SaveOutcome>
   captureEpoch: () => number
+  /**
+   * #16: render the ordinary daily candidate beside its own editable region
+   * instead of in a separate comparison dialog. The one explicit
+   *「采用并保存」still saves the body, obtains the real preview token and adopts
+   * it internally; the teacher never performs a separate preview step.
+   */
+  inline?: boolean
+  /** The real editing-area anchor the inline card is teleported beside. */
+  inlineTarget?: HTMLElement | null
 }>()
 
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
   (e: 'adopted', result: AdoptionResult, epochAtAdopt: number): void
   (e: 'draft-active', active: boolean): void
+  (e: 'open-candidate', candidateId: string): void
+  (e: 'open-regenerated', candidateId: string, taskType: TaskType): void
 }>()
 
 type Phase = 'idle' | 'loading' | 'ready' | 'failed'
@@ -97,10 +112,37 @@ interface PendingAdopt {
   editSignature: string
 }
 const pendingAdopt = ref<PendingAdopt | null>(null)
+/** #20: an adapt regeneration whose reply has not been resolved yet. */
+interface PendingRegenerate {
+  requestId: string
+  taskType: TaskType
+  version: number
+  body: Record<string, unknown>
+}
+const pendingRegenerate = ref<PendingRegenerate | null>(null)
+const regenerating = ref(false)
+const regenerateInstruction = ref('')
+/** #20: a request the server accepted; generation continues in the worker. */
+interface RegenerateAccepted {
+  requestId: string
+  candidateId: string
+  taskType: TaskType
+  version: number
+  /** The exact accepted task and its execution generation, once observed. */
+  taskId?: string
+  generation?: number
+  status?: string
+  /** The succeeded task's own candidate, never the candidate being viewed. */
+  newCandidateId?: string
+}
+const regenerateAccepted = ref<RegenerateAccepted | null>(null)
+/** Query and same-key retry are mutually exclusive. */
+const regenerateQuerying = ref(false)
 
 const splitForm = ref<SplitEditForm | null>(null)
 const adaptForm = ref('')
 const otherForm = ref<OtherEditForm | null>(null)
+const reflectionForm = ref('')
 const selected = ref<string[]>([])
 
 const taskType = computed<TaskType | null>(() => candidate.value?.task_type ?? null)
@@ -135,6 +177,17 @@ const outputLabel = computed(() =>
   taskType.value ? candidateOutputLabel(taskType.value) : '候选输出',
 )
 const previewLines = computed(() => (preview.value ? comparePreview(preview.value) : []))
+/** #21: align the whole process text into per-step before/after rows. */
+const adaptProcessRows = computed<ProcessCompareRow[]>(() => {
+  if (taskType.value !== 'daily_process_adapt' || !preview.value) return []
+  const before = (preview.value.before as Record<string, unknown>).process
+  const after = (preview.value.after as Record<string, unknown>).process
+  if (typeof before !== 'string' && typeof after !== 'string') return []
+  return alignProcess(
+    typeof before === 'string' ? before : '',
+    typeof after === 'string' ? after : '',
+  )
+})
 
 let loadSeq = 0
 let operationSeq = 0
@@ -151,6 +204,7 @@ function editSignature(): string {
   if (type === 'daily_other_activities') {
     return JSON.stringify({ other: otherForm.value, selected: selected.value })
   }
+  if (type === 'daily_reflection_generate') return JSON.stringify(reflectionForm.value)
   return ''
 }
 
@@ -167,9 +221,21 @@ const dirty = computed(() => {
  * only an in-flight/hung operation blocks conflicting buttons.
  */
 const operationBlocked = computed(
-  () => previewing.value || adopting.value || pendingAdopt.value !== null,
+  () =>
+    previewing.value ||
+    adopting.value ||
+    regenerating.value ||
+    pendingAdopt.value !== null ||
+    pendingRegenerate.value !== null,
 )
-const blocking = computed(() => dirty.value || adopting.value || pendingAdopt.value !== null)
+/** Only an unresolved submit blocks closing; a merely accepted job does not. */
+const blocking = computed(
+  () =>
+    dirty.value ||
+    adopting.value ||
+    pendingAdopt.value !== null ||
+    pendingRegenerate.value !== null,
+)
 
 watch(blocking, (value) => emit('draft-active', value))
 
@@ -179,11 +245,13 @@ function resetForms(): void {
   splitForm.value = null
   adaptForm.value = ''
   otherForm.value = null
+  reflectionForm.value = ''
   if (current.task_type === 'daily_lesson_split') {
     splitForm.value = splitEditFromRaw(current.raw_candidate)
   } else if (current.task_type === 'daily_process_adapt') {
-    adaptForm.value =
-      typeof current.raw_candidate.process === 'string' ? current.raw_candidate.process : ''
+    adaptForm.value = adaptEditFromRaw(current.raw_candidate)
+  } else if (current.task_type === 'daily_reflection_generate') {
+    reflectionForm.value = reflectionEditFromRaw(current.raw_candidate)
   } else {
     otherForm.value = otherEditFromRaw(current.raw_candidate, availableTargets.value)
   }
@@ -201,6 +269,10 @@ async function load(): Promise<void> {
   resultText.value = ''
   invalidatePreview()
   pendingAdopt.value = null
+  pendingRegenerate.value = null
+  regenerateAccepted.value = null
+  regenerateQuerying.value = false
+  regenerateInstruction.value = ''
   try {
     const detail = await apiGet<CandidateDetail>(
       `/api/daily-plans/${pathSegment(planId)}/ai-candidates/${pathSegment(candidateId)}`,
@@ -222,6 +294,9 @@ function currentEdit(): Record<string, unknown> | null {
   if (type === 'daily_process_adapt') return buildAdaptCandidate(adaptForm.value)
   if (type === 'daily_other_activities' && otherForm.value) {
     return buildOtherCandidate(otherForm.value, selected.value)
+  }
+  if (type === 'daily_reflection_generate') {
+    return buildReflectionCandidate(reflectionForm.value)
   }
   return null
 }
@@ -316,6 +391,84 @@ async function requestPreview(): Promise<void> {
   }
 }
 
+/** #16: ordinary candidate types that adopt inline. */
+function inlineEligible(): boolean {
+  if (!editable.value) return false
+  const type = taskType.value
+  return (
+    type === 'daily_lesson_split' ||
+    type === 'daily_other_activities' ||
+    type === 'daily_reflection_generate'
+  )
+}
+
+async function adoptDirect(): Promise<void> {
+  if (!inlineEligible() || previewing.value || adopting.value || pendingAdopt.value) return
+  const planId = props.planId
+  const candidateId = props.candidateId
+  const seq = ++operationSeq
+  previewing.value = true
+  errorText.value = ''
+  resultText.value = ''
+  try {
+    const outcome = await props.saveBody()
+    if (seq !== operationSeq || !identityStill(planId, candidateId)) return
+    if (outcome !== 'saved' && outcome !== 'unchanged') {
+      errorText.value = '正文未保存成功：未采用候选，请先处理保存结果'
+      return
+    }
+    await nextTick()
+    if (seq !== operationSeq || !identityStill(planId, candidateId)) return
+    const edit = currentEdit()
+    if (!edit) {
+      errorText.value = '编辑内容尚未就绪'
+      return
+    }
+    const selectionError = validateSelection()
+    if (selectionError) {
+      errorText.value = selectionError
+      return
+    }
+    const version = props.contentVersion
+    const selection = [...selected.value]
+    const signature = editSignature()
+    const epochAtPreview = props.captureEpoch()
+    const response = await apiPost<AdoptionPreview>(
+      `/api/daily-plans/${pathSegment(planId)}/ai-candidates/${pathSegment(candidateId)}/preview-adoption`,
+      {
+        expected_content_version: version,
+        selected_targets: selection,
+        edited_candidate: edit,
+      },
+    )
+    if (seq !== operationSeq || !identityStill(planId, candidateId)) return
+    if (
+      editSignature() !== signature ||
+      props.contentVersion !== version ||
+      !sameSelection(selected.value, selection)
+    ) {
+      errorText.value = '正文、编辑或目标已变化：未采用候选，请检查后再试'
+      return
+    }
+    preview.value = response
+    previewContext.value = {
+      planId,
+      candidateId,
+      version,
+      selection,
+      signature,
+      epochAtPreview,
+    }
+  } catch (err) {
+    if (seq !== operationSeq || !identityStill(planId, candidateId)) return
+    handlePreviewError(err)
+    return
+  } finally {
+    previewing.value = false
+  }
+  if (seq !== operationSeq || !identityStill(planId, candidateId)) return
+  if (preview.value && previewContext.value) await adopt()
+}
 function invalidatePreview(): void {
   preview.value = null
   previewContext.value = null
@@ -510,11 +663,227 @@ function handleAdoptError(err: unknown): void {
   errorText.value = `采用失败：${String(err)}`
 }
 
+/** Record exactly what the server returned for this request. */
+function acceptRegenerateTask(
+  task: Record<string, unknown>,
+  requestId: string,
+  version: number,
+  taskType: TaskType,
+): void {
+  const execution = (task.execution ?? {}) as Record<string, unknown>
+  const candidateId =
+    typeof task.candidate_id === 'string' ? task.candidate_id : undefined
+  const generation =
+    typeof execution.generation === 'number' ? execution.generation : undefined
+  const status = String(task.status ?? '')
+  regenerateAccepted.value = {
+    requestId,
+    candidateId: props.candidateId,
+    taskType,
+    version,
+    taskId: typeof task.id === 'string' ? task.id : undefined,
+    generation,
+    status,
+    newCandidateId:
+      status === 'succeeded' && candidateId && candidateId !== props.candidateId
+        ? candidateId
+        : undefined,
+  }
+  if (regenerateAccepted.value.newCandidateId) {
+    resultText.value = '新候选已生成：可明确打开查看；原候选与当前编辑保持不变'
+  } else {
+    resultText.value = '已受理重新生成：后台生成期间原候选与当前编辑保持不变；不会自动采用'
+  }
+}
+
+/** #20/#16: regenerate the current daily candidate type explicitly. */
+async function regenerateAdapt(): Promise<void> {
+  const type = taskType.value
+  if (!type) return
+  if (regenerating.value || previewing.value || adopting.value || pendingAdopt.value || pendingRegenerate.value) return
+  let version = props.contentVersion
+  if (type === 'daily_process_adapt') {
+    if (!preview.value || !previewContext.value) return
+    version = previewContext.value.version
+    if (
+      !identityStill(previewContext.value.planId, previewContext.value.candidateId) ||
+      props.contentVersion !== version
+    ) {
+      errorText.value = '正文已变化：请先重新预览，再基于当前保存内容重新生成'
+      return
+    }
+  } else {
+    if (!identityStill(props.planId, props.candidateId)) return
+    const sourceVersion = candidate.value?.source.content_version
+    if (typeof sourceVersion === 'number' && sourceVersion !== props.contentVersion) {
+      errorText.value = '当前候选来源版本已变化：请按最新保存内容重新发起对应任务'
+      return
+    }
+  }
+  const instruction = regenerateInstruction.value.trim()
+  const grade = candidate.value?.source.target_grade
+  const body: Record<string, unknown> = {
+    request_id: crypto.randomUUID(),
+    task_type: type,
+    expected_content_version: version,
+    target_grade:
+      grade === 'small' || grade === 'middle' || grade === 'large' ? grade : 'middle',
+    base_candidate_id: props.candidateId,
+  }
+  if (instruction !== '') body.revision_instruction = instruction
+  pendingRegenerate.value = {
+    requestId: body.request_id as string,
+    taskType: type,
+    version,
+    body,
+  }
+  regenerating.value = true
+  errorText.value = ''
+  resultText.value = ''
+  try {
+    const task = await apiPost<Record<string, unknown>>(
+      `/api/daily-plans/${pathSegment(props.planId)}/ai-tasks`,
+      body,
+    )
+    pendingRegenerate.value = null
+    regenerateInstruction.value = ''
+    acceptRegenerateTask(task, body.request_id as string, version, type)
+  } catch (err) {
+    if (isIndeterminate(err)) {
+      errorText.value = '提交结果未知：请查询提交结果，或用同一请求 ID 与请求体重试原提交'
+      return
+    }
+    pendingRegenerate.value = null
+    errorText.value = err instanceof ApiError ? err.message : `重新生成失败：${String(err)}`
+  } finally {
+    regenerating.value = false
+  }
+}
+
+/** Read only this request's exact task; never scan the task list. */
+async function refreshAcceptedRegenerate(): Promise<void> {
+  const accepted = regenerateAccepted.value
+  if (!accepted || regenerateQuerying.value || accepted.newCandidateId) return
+  if (!accepted.taskId) return
+  regenerateQuerying.value = true
+  try {
+    const task = await apiGet<Record<string, unknown>>(
+      `/api/local/ai/tasks/${encodeURIComponent(accepted.taskId)}`,
+    )
+    const current = regenerateAccepted.value
+    if (!current || current.requestId !== accepted.requestId || current.taskId !== accepted.taskId) return
+    if (task.plan_id !== props.planId || task.task_type !== accepted.taskType) return
+    const summary = (task.input_summary ?? {}) as Record<string, unknown>
+    if (summary.content_version !== current.version) return
+    const execution = (task.execution ?? {}) as Record<string, unknown>
+    if (
+      current.generation !== undefined &&
+      typeof execution.generation === 'number' &&
+      execution.generation !== current.generation
+    ) {
+      return
+    }
+    const status = String(task.status ?? '')
+    const candidateId = typeof task.candidate_id === 'string' ? task.candidate_id : ''
+    const next = { ...current, status }
+    if (status === 'succeeded' && candidateId !== '' && candidateId !== current.candidateId) {
+      next.newCandidateId = candidateId
+      resultText.value = '新候选已生成：可明确打开查看；原候选与当前编辑保持不变'
+    } else if (status === 'failed') {
+      errorText.value = '重新生成失败：原候选与当前编辑已保留；未自动重发'
+    } else if (status === 'cancelled') {
+      errorText.value = '重新生成已取消：原候选与当前编辑已保留'
+    } else if (status === 'outcome_unknown') {
+      errorText.value = '重新生成结果未知：原候选与当前编辑已保留；未自动重发'
+    } else {
+      resultText.value = '重新生成仍在后台进行：原候选与当前编辑保持不变'
+    }
+    regenerateAccepted.value = next
+  } catch {
+    // A read failure is not a generation failure; keep the accepted request.
+  } finally {
+    regenerateQuerying.value = false
+  }
+}
+
+/** Read-only receipt query for an unresolved regeneration. */
+async function queryPendingRegenerate(): Promise<void> {
+  const context = pendingRegenerate.value
+  if (!context || regenerating.value || regenerateQuerying.value) return
+  regenerateQuerying.value = true
+  try {
+    const query = await queryAiReceipt(context.requestId)
+    if (pendingRegenerate.value?.requestId !== context.requestId) return
+    if (query.state === 'found' && query.result) {
+      pendingRegenerate.value = null
+      acceptRegenerateTask(
+        query.result as unknown as Record<string, unknown>,
+        context.requestId,
+        context.version,
+        context.taskType,
+      )
+      return
+    }
+    errorText.value = receiptMessage(query)
+  } finally {
+    regenerateQuerying.value = false
+  }
+}
+
+/** Explicit same-id/same-body retry; never changes the original request. */
+async function resubmitPendingRegenerate(): Promise<void> {
+  const context = pendingRegenerate.value
+  if (!context || regenerating.value || regenerateQuerying.value || props.disabled) return
+  regenerating.value = true
+  errorText.value = ''
+  try {
+    const task = await apiPost<Record<string, unknown>>(
+      `/api/daily-plans/${pathSegment(props.planId)}/ai-tasks`,
+      context.body,
+    )
+    pendingRegenerate.value = null
+    regenerateInstruction.value = ''
+    acceptRegenerateTask(task, context.requestId, context.version, context.taskType)
+  } catch (err) {
+    if (isIndeterminate(err)) {
+      errorText.value = '重试结果仍未知：请稍后再次查询提交结果'
+      return
+    }
+    pendingRegenerate.value = null
+    errorText.value = err instanceof ApiError ? err.message : `重新生成失败：${String(err)}`
+  } finally {
+    regenerating.value = false
+  }
+}
+
+/** Explicit, honest status; only a succeeded task has a candidate. */
+function regenerateStatusTitle(): string {
+  const accepted = regenerateAccepted.value
+  if (!accepted) return ''
+  if (accepted.newCandidateId) {
+    return `新候选已生成（候选 ${accepted.newCandidateId}）：尚未采用，原候选与已保存教案保持不变。`
+  }
+  const base = `请求 ${accepted.requestId.slice(0, 8)}… · 候选 ${accepted.candidateId} · 内容版本 v${accepted.version}`
+  if (accepted.status === 'failed') return `重新生成失败：${base}；原候选与当前编辑已保留。`
+  if (accepted.status === 'cancelled') return `重新生成已取消：${base}；原候选与当前编辑已保留。`
+  if (accepted.status === 'outcome_unknown') return `重新生成结果未知：${base}；原候选与当前编辑已保留，未自动重发。`
+  return `已受理重新生成（${base}）：后台生成期间当前候选与编辑保持不变，完成后可明确打开新候选；不会自动采用。`
+}
+
+/** Open only this task's observed succeeded candidate; never adopt it. */
+function openAcceptedCandidate(): void {
+  const accepted = regenerateAccepted.value
+  if (!accepted?.newCandidateId) return
+  emit('open-regenerated', accepted.newCandidateId, accepted.taskType)
+}
+
 function cancelEdit(): void {
-  if (previewing.value || adopting.value || pendingAdopt.value) {
-    errorText.value = pendingAdopt.value
-      ? '采用操作仍在进行或结果待核对：不能取消丢弃，请先查询提交结果'
-      : '预览比较仍在进行：请稍候再取消本次候选编辑'
+  if (previewing.value || adopting.value || pendingAdopt.value || pendingRegenerate.value) {
+    errorText.value = pendingRegenerate.value
+      ? '重新生成结果待核对：不能结束当前候选，请先查询提交结果'
+      : pendingAdopt.value
+        ? '采用操作仍在进行或结果待核对：不能取消丢弃，请先查询提交结果'
+        : '预览比较仍在进行：请稍候再取消本次候选编辑'
     return
   }
   if (!editable.value) {
@@ -528,14 +897,19 @@ function cancelEdit(): void {
 }
 
 function closeWithoutDraft(): void {
+  // #16: an inline candidate belongs to the editor card, so closing it just
+  // ends this local candidate edit (zero business writes). The saved plan and
+  // the backend candidate stay available for another explicit open.
   emit('update:open', false)
 }
 
 function requestClose(): void {
   if (blocking.value) {
-    errorText.value = pendingAdopt.value
-      ? '采用结果待核对：请先查询提交结果后再离开'
-      : '候选预览有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开'
+    errorText.value = pendingRegenerate.value
+      ? '重新生成结果待核对：请先查询提交结果后再离开'
+      : pendingAdopt.value
+        ? '采用结果待核对：请先查询提交结果后再离开'
+        : '候选预览有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开'
     return
   }
   closeWithoutDraft()
@@ -543,9 +917,11 @@ function requestClose(): void {
 
 function beforeClose(done: () => void): void {
   if (blocking.value) {
-    errorText.value = pendingAdopt.value
-      ? '采用结果待核对：请先查询提交结果后再离开'
-      : '候选预览有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开'
+    errorText.value = pendingRegenerate.value
+      ? '重新生成结果待核对：请先查询提交结果后再离开'
+      : pendingAdopt.value
+        ? '采用结果待核对：请先查询提交结果后再离开'
+        : '候选预览有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开'
     return
   }
   done()
@@ -591,6 +967,14 @@ onMounted(() => {
     preview: () => preview.value,
     previewContext: () => previewContext.value,
     pendingAdopt: () => pendingAdopt.value,
+    pendingRegenerate: () => pendingRegenerate.value,
+    regenerateAccepted: () => regenerateAccepted.value,
+    regenerateInstruction: () => regenerateInstruction.value,
+    regenerateAdapt: () => regenerateAdapt(),
+    queryPendingRegenerate: () => queryPendingRegenerate(),
+    refreshAcceptedRegenerate: () => refreshAcceptedRegenerate(),
+    openAcceptedCandidate: () => openAcceptedCandidate(),
+    resubmitPendingRegenerate: () => resubmitPendingRegenerate(),
     selected: () => selected.value,
     setSelected: (targets: string[]) => {
       selected.value = targets
@@ -601,9 +985,14 @@ onMounted(() => {
     setAdaptProcess: (value: string) => {
       adaptForm.value = value
     },
+    setReflection: (value: string) => {
+      reflectionForm.value = value
+    },
     splitForm: () => splitForm.value,
     otherForm: () => otherForm.value,
+    reflectionForm: () => reflectionForm.value,
     previewLines: () => previewLines.value,
+    processRows: () => adaptProcessRows.value,
     requestPreview: () => requestPreview(),
     adopt: () => adopt(),
     queryPendingAdopt: () => queryPendingAdopt(),
@@ -626,15 +1015,24 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-dialog
-    :model-value="open"
-    title="AI 候选预览与采用"
-    width="820px"
-    :close-on-click-modal="false"
-    :before-close="beforeClose"
-    data-d1="candidate-preview"
+  <Teleport :to="inlineTarget ?? 'body'" :disabled="!inline || !inlineTarget">
+  <component
+    :is="inline ? 'el-card' : 'el-dialog'"
+    v-bind="inline
+      ? { class: 'inline-candidate', 'data-d1': 'candidate-inline' }
+      : {
+          modelValue: open,
+          title: 'AI 候选预览与采用',
+          width: '820px',
+          closeOnClickModal: false,
+          beforeClose,
+          'data-d1': 'candidate-preview',
+        }"
     @update:model-value="(value: boolean) => emit('update:open', value)"
   >
+    <template #header>
+      <span>{{ inline ? 'AI 候选（直接编辑后采用并保存）' : 'AI 候选预览与采用' }}</span>
+    </template>
     <div v-if="phase === 'loading'" class="muted" data-d1="candidate-loading">正在读取候选…</div>
     <el-alert v-else-if="phase === 'failed'" type="error" :closable="false" :title="errorText || '读取候选失败'" />
     <template v-else-if="candidate">
@@ -669,6 +1067,20 @@ onBeforeUnmount(() => {
       <!-- Adapt: only the process (the real input is shown above, read-only). -->
       <template v-else-if="taskType === 'daily_process_adapt'">
         <div class="field"><label>调整后的活动过程</label><el-input v-model="adaptForm" type="textarea" :rows="6" :disabled="!editable" /></div>
+      </template>
+
+      <!-- #27: the only editable output is the reflection body. -->
+      <template v-else-if="taskType === 'daily_reflection_generate'">
+        <div class="field">
+          <label>反思正文</label>
+          <el-input
+            v-model="reflectionForm"
+            type="textarea"
+            :rows="8"
+            :disabled="!editable"
+            data-d1="reflection-candidate-body"
+          />
+        </div>
       </template>
 
       <template v-else-if="taskType === 'daily_other_activities' && otherForm">
@@ -776,7 +1188,38 @@ onBeforeUnmount(() => {
       <el-alert v-if="errorText" type="warning" :closable="false" class="section" data-d1="candidate-error" :title="errorText" />
       <el-alert v-if="resultText" type="success" :closable="false" class="section" data-d1="candidate-adopted" :title="resultText" />
 
-      <div v-if="preview" class="preview-block" data-d1="candidate-preview-compare">
+      <div
+        v-if="preview && adaptProcessRows.length"
+        class="preview-block"
+        data-d1="process-compare"
+      >
+        <h4>采用前后比较（按活动过程环节对齐）</h4>
+        <div
+          v-for="row in adaptProcessRows"
+          :key="row.key"
+          class="process-row"
+          :class="`is-${row.change}`"
+          data-d1="process-compare-row"
+          :data-change="row.change"
+        >
+          <div class="compare-label">
+            {{ row.label }}
+            <el-tag v-if="row.change === 'modified'" size="small" type="warning">修改</el-tag>
+            <el-tag v-else-if="row.change === 'added'" size="small" type="success">新增</el-tag>
+          </div>
+          <div class="compare-cols">
+            <div><span class="muted">采用前</span><pre class="block">{{ row.before ?? '（空）' }}</pre></div>
+            <div><span class="muted">采用后</span><pre class="block">{{ row.after ?? '（空）' }}</pre></div>
+          </div>
+        </div>
+        <p v-if="preview.warnings.length" class="warn">{{ preview.warnings.join('；') }}</p>
+      </div>
+
+      <div
+        v-if="preview && !inline && adaptProcessRows.length === 0"
+        class="preview-block"
+        data-d1="candidate-preview-compare"
+      >
         <h4>采用前后比较（明确采用后才会写入正文）</h4>
         <div v-for="line in previewLines" :key="line.target" class="compare-row">
           <div class="compare-label">{{ line.label }}<el-tag v-if="line.changed" size="small" type="warning">有变化</el-tag></div>
@@ -787,14 +1230,92 @@ onBeforeUnmount(() => {
         </div>
         <p v-if="preview.warnings.length" class="warn">{{ preview.warnings.join('；') }}</p>
       </div>
-    </template>
 
-    <template #footer>
+      <div
+        v-if="taskType && taskType !== 'daily_reflection_generate' && (taskType !== 'daily_process_adapt' || preview)"
+        class="regenerate-block"
+        data-d1="adapt-regenerate"
+      >
+        <div class="field">
+          <label>定向修改要求（可选：哪个环节、希望怎么改）</label>
+          <el-input
+            v-model="regenerateInstruction"
+            type="textarea"
+            :rows="2"
+            maxlength="500"
+            placeholder="例如：第 2 环节对中班偏难，请改成两步；其余环节保持原意"
+            :disabled="disabled || regenerating || !!pendingRegenerate"
+            data-d1="adapt-regeneration-instruction"
+          />
+        </div>
+        <div class="row">
+          <template v-if="pendingRegenerate">
+            <el-button size="small" type="warning" data-d1="adapt-regenerate-query" @click="queryPendingRegenerate">
+              查询提交结果
+            </el-button>
+            <el-button
+              size="small"
+              type="danger"
+              :loading="regenerating"
+              data-d1="adapt-regenerate-resubmit"
+              @click="resubmitPendingRegenerate"
+            >
+              重试原提交（同一请求）
+            </el-button>
+          </template>
+          <el-button
+            v-else
+            size="small"
+            type="primary"
+            :loading="regenerating"
+            :disabled="disabled || !editable || operationBlocked || (taskType === 'daily_process_adapt' && !previewContext)"
+            data-d1="adapt-regenerate"
+            @click="regenerateAdapt"
+          >
+            重新生成
+          </el-button>
+        </div>
+        <div v-if="regenerateAccepted" class="row" data-d1="adapt-regenerate-accepted">
+          <el-alert
+            type="info"
+            :closable="false"
+            class="section"
+            :title="regenerateStatusTitle()"
+          />
+          <el-button
+            size="small"
+            data-d1="adapt-regenerate-open"
+            :disabled="regenerateQuerying || !regenerateAccepted.newCandidateId"
+            @click="openAcceptedCandidate"
+          >
+            打开新候选
+          </el-button>
+          <el-button
+            size="small"
+            text
+            data-d1="adapt-regenerate-refresh"
+            :loading="regenerateQuerying"
+            @click="refreshAcceptedRegenerate"
+          >
+            刷新进度
+          </el-button>
+        </div>
+        <p class="muted">
+          重新生成会绑定当前原候选、已保存内容版本与真实拆分基准；新结果不会自动采用，原候选与已保存教案保持不变。
+        </p>
+      </div>
+
       <div class="footer">
         <el-button data-d1="candidate-cancel-edit" :disabled="disabled || operationBlocked" @click="cancelEdit">
           取消本次候选编辑（恢复原候选）
         </el-button>
-        <el-button data-d1="candidate-preview" :loading="previewing" :disabled="disabled || !editable || operationBlocked" @click="requestPreview">
+        <el-button
+          v-if="!inline"
+          data-d1="candidate-preview"
+          :loading="previewing"
+          :disabled="disabled || !editable || operationBlocked"
+          @click="requestPreview"
+        >
           预览比较
         </el-button>
         <el-button
@@ -820,15 +1341,16 @@ onBeforeUnmount(() => {
           v-else
           data-d1="candidate-adopt"
           type="primary"
-          :loading="adopting"
-          :disabled="disabled || !editable || !preview || operationBlocked"
-          @click="adopt"
+          :loading="adopting || (inline && previewing)"
+          :disabled="disabled || !editable || operationBlocked || (!inline && !preview) || (inline && !inlineEligible())"
+          @click="inline ? adoptDirect() : adopt()"
         >
           采用并保存
         </el-button>
       </div>
     </template>
-  </el-dialog>
+  </component>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -903,6 +1425,13 @@ onBeforeUnmount(() => {
 }
 .compare-row {
   margin-bottom: 10px;
+}
+.process-row {
+  margin-bottom: 12px;
+}
+.process-row.is-modified .compare-cols > div:last-child pre,
+.process-row.is-added .compare-cols > div:last-child pre {
+  color: var(--kgm-danger);
 }
 .compare-label {
   font-size: 0.85rem;

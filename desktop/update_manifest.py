@@ -22,6 +22,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from update_fs import PathSafetyError, ensure_safe_path, ensure_safe_tree
+from update_identity import is_preview_version, version_key
 from update_trust import ReleaseConfigError, ReleaseSource
 
 MAX_METADATA_BYTES = 64 * 1024
@@ -29,7 +30,9 @@ MAX_PACKAGE_BYTES = 512 * 1024 * 1024
 MAX_PACKAGE_FILES = 20000
 MAX_RELEASE_NOTES = 16 * 1024
 MAX_PATH_COMPONENT = 200
-_SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+_SEMVER_RE = re.compile(
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RESERVED_DEVICE = re.compile(
     r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.IGNORECASE
@@ -169,7 +172,7 @@ def _is_strict_int(value: object) -> bool:
 def semver(value: object) -> tuple[int, int, int]:
     if not isinstance(value, str):
         raise ManifestError("UPDATE_METADATA_INVALID", "版本必须是字符串")
-    match = _SEMVER_RE.match(value)
+    match = _SEMVER_RE.fullmatch(value)
     if match is None:
         raise ManifestError("UPDATE_METADATA_INVALID", "版本必须是三段数值 SemVer")
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
@@ -263,10 +266,23 @@ def parse_signed_manifest(
     if app_id != "kindergarten-manager-next":
         raise ManifestError("UPDATE_METADATA_INVALID", "应用 ID 不匹配")
     channel = payload.get("channel")
+    if channel not in ("stable", "preview"):
+        raise ManifestError("UPDATE_METADATA_INVALID", "清单渠道不合法")
     if channel != source.channel:
         raise ManifestError("UPDATE_METADATA_INVALID", "渠道不匹配")
     version = payload.get("version")
-    if semver(version) <= semver(current_version):
+    if not isinstance(version, str):
+        raise ManifestError("UPDATE_METADATA_INVALID", "版本必须是字符串")
+    if is_preview_version(version) != (channel == "preview"):
+        raise ManifestError("UPDATE_METADATA_INVALID", "版本形状与渠道不匹配")
+    try:
+        target_key = version_key(version)
+        current_key = version_key(current_version)
+    except ValueError:
+        raise ManifestError(
+            "UPDATE_METADATA_INVALID", "版本必须是当前渠道的完整版本"
+        ) from None
+    if target_key <= current_key:
         raise ManifestError("UPDATE_NO_NEW_VERSION", "当前已是最新版本")
     build_id = payload.get("build_id")
     try:

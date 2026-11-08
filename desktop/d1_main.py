@@ -49,6 +49,7 @@ from d0_main import (  # noqa: E402
 )
 
 SELFTEST_DEADLINE_SECONDS = 240.0
+PRODUCT_TITLE = "幼儿园信息管理系统"
 
 # Optional startup diagnostics (verification only): when set, each startup
 # step appends one line to this file. Never writes elsewhere and is inert
@@ -387,6 +388,19 @@ def _source_verification_context(args) -> bool:
     )
 
 
+def _prompt_package_client_version(runtime) -> str | None:
+    """Read the actual stable/preview identity without inventing a version."""
+    try:
+        import update_identity
+
+        identity = update_identity.load_app_identity(
+            database_revision=runtime.current_revision or ""
+        )
+        return identity.version if identity is not None else None
+    except Exception:  # noqa: BLE001 - package version is not a launch gate
+        return None
+
+
 def build_runtime(args):
     """Create (service, host_api, runtime) for one window run."""
     _startup_log("build_runtime:start")
@@ -427,6 +441,14 @@ def build_runtime(args):
         # starts its cold-start classification, so recovery runs against a
         # ready database and before the API can accept a request.
         runtime.prepare()
+        # The verified package/cache and built-in fallback must be settled
+        # before the executor can claim a pending AI task.  This is
+        # synchronous and independent of the later background check.
+        prompt_version = _prompt_package_client_version(runtime)
+        runtime.app_version = prompt_version
+        from app.local.app import initialize_prompt_package
+
+        initialize_prompt_package(runtime, client_version=prompt_version)
         port = free_loopback_port()
         token = secrets.token_urlsafe(32)
         # One AI executor per application launch; it owns the coordinator
@@ -449,6 +471,7 @@ def build_runtime(args):
             session_token=token,
             frontend_dir=args.frontend,
             executor=executor,
+            prompt_package_client_version=prompt_version,
         )
         _startup_log(f"build_runtime:app built port {port}")
         service = ServiceRun(app, port)
@@ -953,7 +976,7 @@ def drive_d3_h2_ui(driver, args, summary, checks, host_api, port) -> None:
             + json.dumps(
                 {
                     "display_name": "H2教师",
-                    "class_name": "H2中一班",
+                    "class_number": 1,
                     "grade": "middle",
                     "term_name": "H2学期",
                     "start_date": args.term_start,
@@ -1782,7 +1805,7 @@ def drive_observation_ui(driver, args, summary, checks, host_api, port) -> None:
             + json.dumps(
                 {
                     "display_name": "OBS教师",
-                    "class_name": "OBS中一班",
+                    "class_number": 1,
                     "grade": "middle",
                     "term_name": "OBS学期",
                     "start_date": args.term_start,
@@ -2268,7 +2291,7 @@ def drive_selftest(window, host_api, args, summary: dict, port: int | None = Non
                 + json.dumps(
                     {
                         "display_name": "验证教师",
-                        "class_name": "验证中一班",
+                        "class_number": 1,
                         "grade": "middle",
                         "term_name": "验证学期",
                         "start_date": args.term_start,
@@ -5876,6 +5899,9 @@ def run_w6_resources(args) -> int:
                         end_date="2026-12-31",
                         school_name="W6园所",
                     ),
+                    prompt_package_builtin_only=bool(
+                        getattr(runtime, "prompt_package_builtin_only", False)
+                    ),
                 )
                 session.commit()
                 ai_config_service.patch_config(
@@ -6130,7 +6156,7 @@ def drive_w5_ui(driver, args, summary, checks, host_api, port) -> None:
             + json.dumps(
                 {
                     "display_name": "W5教师",
-                    "class_name": "W5中一班",
+                    "class_number": 1,
                     "grade": "middle",
                     "term_name": "W5学期",
                     "start_date": args.term_start,
@@ -6589,7 +6615,7 @@ def drive_w6_ui(driver, args, summary, checks, host_api, port) -> None:
             + json.dumps(
                 {
                     "display_name": "W6教师",
-                    "class_name": "W6中一班",
+                    "class_number": 1,
                     "grade": "middle",
                     "term_name": "W6学期",
                     "start_date": args.term_start,
@@ -6944,7 +6970,7 @@ def drive_g15_noexec(driver, args, summary, checks, host_api, port) -> None:
             + json.dumps(
                 {
                     "display_name": "G15教师",
-                    "class_name": "G15中一班",
+                    "class_number": 1,
                     "grade": "middle",
                     "term_name": "G15学期",
                     "start_date": args.term_start,
@@ -7793,6 +7819,13 @@ def _run_reopen_sequence(
         generation = lifecycle.next_generation()
         port = free_loopback_port()
         token = secrets.token_urlsafe(32)
+        # Restore/reopen must settle the verified cache (or real built-in
+        # fallback) before the new executor can claim anything.
+        prompt_version = _prompt_package_client_version(runtime)
+        runtime.app_version = prompt_version
+        from app.local.app import initialize_prompt_package
+
+        initialize_prompt_package(runtime, client_version=prompt_version)
         executor, reason, unconfirmed = _start_ai_executor(
             runtime, args, recovery_safe=recovery_mode
         )
@@ -7819,6 +7852,7 @@ def _run_reopen_sequence(
                 session_token=token,
                 frontend_dir=args.frontend,
                 executor=executor,
+                prompt_package_client_version=prompt_version,
             )
             host_api = d1_host_api.D1HostApi(
                 launch_token=token,
@@ -7862,7 +7896,7 @@ def _run_reopen_sequence(
         import webview
 
         window = webview.create_window(
-            "幼儿园教师工作台（本地）",
+            PRODUCT_TITLE,
             url=f"http://127.0.0.1:{bundle.service.port}/",
             js_api=bundle.host_api,
             width=1180,
@@ -7965,7 +7999,7 @@ def _run_interactive_session(args, state: dict) -> int:
     import webview
 
     window = webview.create_window(
-        "幼儿园教师工作台（本地）",
+        PRODUCT_TITLE,
         url=f"http://127.0.0.1:{service.port}/",
         js_api=host_api,
         width=1180,

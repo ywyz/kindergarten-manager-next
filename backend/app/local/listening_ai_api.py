@@ -30,7 +30,7 @@ class ListeningAICreateIn(BaseModel):
     expected_revision: StrictInt
     domain: Literal["health", "language", "social", "science", "art"]
     group_id: StrictStr | None = None
-    task_type: Literal["listening_note_draft", "listening_domain_evaluate"]
+    task_type: Literal["listening_note_draft", "listening_domain_evaluate", "listening_group_notes", "listening_goal_suggest"]
 
 
 class ListeningAIAdoptionPreviewIn(BaseModel):

@@ -30,7 +30,15 @@ PYTHON_VERSION = "3.14.10"
 SOURCE_BUILD_ID = str(
     uuid.uuid5(uuid.NAMESPACE_URL, f"{APP_ID}:{APP_VERSION}:source")
 )
-_SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+# ASCII-only full matches: ``\d``/``$`` would admit non-ASCII digits and a
+# trailing newline, which are not release versions.
+_SEMVER_RE = re.compile(
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+)
+_PREVIEW_RE = re.compile(
+    r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"-listening-test\.(0|[1-9][0-9]*)"
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +58,36 @@ class AppIdentity:
         return asdict(self)
 
 
+def is_preview_version(value: object) -> bool:
+    """True only for the first-segment ``X.Y.Z-listening-test.N`` shape."""
+    return isinstance(value, str) and _PREVIEW_RE.fullmatch(value) is not None
+
+
+def version_key(value: object) -> tuple[tuple[int, int, int], int, int]:
+    """Sortable stable/preview key without changing SemVer precedence.
+
+    A stable ``X.Y.Z`` sorts above every ``X.Y.Z-listening-test.N`` and below
+    the next base version.  Preview numbers compare numerically.
+    """
+    if not isinstance(value, str):
+        raise ValueError("版本必须是字符串")
+    match = _SEMVER_RE.fullmatch(value)
+    if match is not None:
+        return (
+            (int(match.group(1)), int(match.group(2)), int(match.group(3))),
+            1,
+            0,
+        )
+    match = _PREVIEW_RE.fullmatch(value)
+    if match is not None:
+        return (
+            (int(match.group(1)), int(match.group(2)), int(match.group(3))),
+            0,
+            int(match.group(4)),
+        )
+    raise ValueError("版本不是正式版或预览版形状")
+
+
 def _identity_path() -> Path:
     # Kept lazy to avoid importing desktop path helpers in pure tests.
     import d1_paths
@@ -64,7 +102,8 @@ def _valid_packaged_identity(
         return False
     if values.get("app_name") != APP_NAME:
         return False
-    if values.get("channel") != CHANNEL:
+    channel = values.get("channel")
+    if channel not in ("stable", "preview"):
         return False
     if values.get("package_format") != PACKAGE_FORMAT:
         return False
@@ -72,7 +111,12 @@ def _valid_packaged_identity(
         return False
     if values.get("python") != PYTHON_VERSION:
         return False
-    if not _SEMVER_RE.match(values.get("version", "")):
+    try:
+        version = values.get("version", "")
+        version_key(version)
+    except ValueError:
+        return False
+    if is_preview_version(version) != (channel == "preview"):
         return False
     try:
         if str(uuid.UUID(values.get("build_id", ""))) != values.get(

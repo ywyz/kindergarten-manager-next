@@ -8,8 +8,10 @@ frontend, package, old build root or source file is written.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -19,6 +21,8 @@ import pytest
 
 import build_e14
 import update_identity
+import verify_e14_package
+import verify_e14_portable_archive
 
 REPO = build_e14.d0_paths.REPO_ROOT
 
@@ -252,12 +256,13 @@ def _fake_main_env(monkeypatch, tmp_path, *, change_mid_build: bool):
         package.mkdir(parents=True)
         return package
 
-    def fake_metadata(package, build_id, digest, pruned=0):
+    def fake_metadata(package, build_id, digest, pruned=0, **kwargs):
         calls.append("metadata")
         return {
             "build_id": build_id,
-            "version": "0.1.0",
-            "database_revision": build_e14.DATABASE_REVISION,
+            "version": kwargs.get("release_version", "0.1.0"),
+            "channel": kwargs.get("release_channel", "stable"),
+            "database_revision": kwargs.get("migration_head", "m"),
         }
 
     monkeypatch.setattr(build_e14, "source_freeze", fake_freeze)
@@ -291,6 +296,75 @@ def test_freeze_runs_before_vite_and_after_metadata(monkeypatch, tmp_path):
     ]
     freeze = json.loads((tmp_path / "out" / "freeze.json").read_text(encoding="utf-8"))
     assert freeze["stable"] is True
+
+
+def test_main_accepts_preview_release_identity(monkeypatch, tmp_path):
+    paths, calls = _fake_main_env(monkeypatch, tmp_path, change_mid_build=False)
+    version = "1.2.3-listening-test.4"
+    rc = _run(
+        monkeypatch,
+        [
+            "--build-root",
+            str(paths["build_root"]),
+            "--hash-out",
+            str(tmp_path / "out" / "hash.json"),
+            "--source-freeze-out",
+            str(tmp_path / "out" / "freeze.json"),
+            "--version",
+            version,
+            "--channel",
+            "preview",
+        ],
+    )
+    assert rc == 0
+    assert calls == [
+        "freeze_before",
+        "frontend",
+        "package",
+        "metadata",
+        "freeze_after",
+    ]
+    freeze = json.loads(
+        (tmp_path / "out" / "freeze.json").read_text(encoding="utf-8")
+    )
+    assert freeze["version"] == version
+    assert freeze["channel"] == "preview"
+    assert (
+        freeze["database_revision"]
+        == verify_e14_package.discover_migration_chain(
+            build_e14.MIGRATIONS_DIR
+        )["head_revision"]
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["--version", "0.1.0"],
+        ["--channel", "stable"],
+        ["--version", "0.1.0", "--channel", "preview"],
+        ["--version", "1.2.3-listening-test.1", "--channel", "stable"],
+        ["--version", "01.2.3", "--channel", "stable"],
+    ),
+)
+def test_main_rejects_partial_or_mismatched_release_identity(
+    monkeypatch, tmp_path, argv
+):
+    repo = tmp_path / "repo"
+    monkeypatch.setattr(build_e14.d0_paths, "REPO_ROOT", repo)
+    paths = _plan_paths(repo)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        build_e14, "build_frontend", lambda *a, **k: calls.append("frontend")
+    )
+    monkeypatch.setattr(
+        build_e14, "build_package", lambda *a, **k: calls.append("package")
+    )
+    assert (
+        _run(monkeypatch, ["--build-root", str(paths["build_root"]), *argv])
+        == 2
+    )
+    assert calls == []
 
 
 def test_source_change_mid_build_is_rejected(monkeypatch, tmp_path):
@@ -349,7 +423,14 @@ def test_build_identity_and_package_info_are_portable(monkeypatch, tmp_path):
     info = build_e14.install_package_metadata(package, build_id, "f" * 64)
     assert info["build_id"] == build_id
     assert info["version"] == "0.1.0"
-    assert info["database_revision"] == build_e14.DATABASE_REVISION
+    assert info["channel"] == "stable"
+    head = verify_e14_package.discover_migration_chain(
+        build_e14.MIGRATIONS_DIR
+    )["head_revision"]
+    assert info["database_revision"] == head
+    assert info["migrations"] == verify_e14_package.source_migration_files(
+        build_e14.MIGRATIONS_DIR
+    )
     assert info["package"] == "KGNext-E14"
     assert info["listening_templates"]
     for relative in build_e14.LISTENING_TEMPLATE_REQUIRED_FILES:
@@ -357,19 +438,20 @@ def test_build_identity_and_package_info_are_portable(monkeypatch, tmp_path):
     identity_path = package / "_internal" / "build_identity.json"
     assert identity_path.is_file()
     identity = update_identity.load_app_identity(
-        database_revision=build_e14.DATABASE_REVISION,
+        database_revision=head,
         path=identity_path,
         require_packaged=True,
     )
     assert identity is not None
     assert identity.build_id == build_id
     assert identity.build_id != update_identity.SOURCE_BUILD_ID
-    assert identity.database_revision == "20261107_0010_local_listening_ai"
+    assert identity.channel == "stable"
+    assert identity.version == "0.1.0"
+    assert identity.database_revision == head
     payload = json.loads(identity_path.read_text(encoding="utf-8"))
     assert payload["app_id"] == update_identity.APP_ID
     assert payload["package_format"] == update_identity.PACKAGE_FORMAT
 
-    import verify_e14_package
     info_for_verifier = dict(info)
     info_for_verifier.update({
         "frontend_digest": "c" * 64,
@@ -388,6 +470,430 @@ def test_build_identity_and_package_info_are_portable(monkeypatch, tmp_path):
         )["metadata_exact"]
         is False
     )
+
+
+def test_release_identity_accepts_default_and_explicit_pairs():
+    resolve = verify_e14_package.resolve_release_identity
+    assert resolve() == ("0.1.0", "stable")
+    assert resolve("0.1.0", "stable") == ("0.1.0", "stable")
+    assert resolve("1.2.3", "stable") == ("1.2.3", "stable")
+    preview = "1.2.3-listening-test.1"
+    assert resolve(preview, "preview") == (preview, "preview")
+    assert resolve("1.2.3-listening-test.0", "preview") == (
+        "1.2.3-listening-test.0",
+        "preview",
+    )
+
+
+@pytest.mark.parametrize(
+    ("version", "channel"),
+    (
+        ("0.1.0", "preview"),
+        ("1.2.3-listening-test.1", "stable"),
+        ("0.1.0", None),
+        (None, "stable"),
+        ("", "stable"),
+        ("01.2.3", "stable"),
+        ("1.0", "stable"),
+        ("1.0.0.0", "stable"),
+        ("1.0.0-beta", "stable"),
+        ("1.2.3-listening-test.01", "preview"),
+        ("1.2.3-listening-test", "preview"),
+        ("1.2.3", "beta"),
+        (123, "stable"),
+    ),
+)
+def test_release_identity_rejects_partial_mismatched_or_illegal(version, channel):
+    with pytest.raises(ValueError):
+        verify_e14_package.resolve_release_identity(version, channel)
+
+
+def test_migration_chain_covers_full_linear_history_and_has_one_head():
+    chain = verify_e14_package.discover_migration_chain(build_e14.MIGRATIONS_DIR)
+    assert chain["files"] == [
+        "20261012_0001_local_baseline.py",
+        "20261012_0002_local_require_first_revision.py",
+        "20261014_0003_local_config_maintenance.py",
+        "20261017_0004_local.py",
+        "20261023_0005_local_history.py",
+        "20261025_0006_local_game_observations.py",
+        "20261101_0007_local_weekly_plans.py",
+        "20261102_0008_local_weekly_ai.py",
+        "20261107_0009_local_listening.py",
+        "20261107_0010_local_listening_ai.py",
+        "20261108_0011_local_config_ai.py",
+        "20261108_0012_local_listening_rotation.py",
+        "20261108_0013_local_todos.py",
+        "20261108_0014_local_reflection_ai.py",
+        "20261108_0015_local_listening_group_notes.py",
+        "20261108_0016_local_listening_goal_suggest.py",
+    ]
+    assert chain["head_revision"] == "20261108_0016_local_listening_goal_suggest"
+    assert chain["head_file"] == "20261108_0016_local_listening_goal_suggest.py"
+    assert chain["revisions"][-1] == chain["head_revision"]
+    source_files = verify_e14_package.source_migration_files(
+        build_e14.MIGRATIONS_DIR
+    )
+    assert source_files == [
+        "env.py",
+        *[f"versions/{name}" for name in chain["files"]],
+    ]
+    assert len(source_files) == 17
+
+
+def test_source_freeze_contains_every_migration_and_env():
+    freeze = build_e14.source_freeze()
+    paths = {item["path"].replace("\\", "/") for item in freeze["files"]}
+    chain = verify_e14_package.discover_migration_chain(
+        build_e14.MIGRATIONS_DIR
+    )
+    source_files = verify_e14_package.source_migration_files(
+        build_e14.MIGRATIONS_DIR
+    )
+    for relative in source_files:
+        assert f"backend/migrations_local/{relative}" in paths
+    for filename in chain["files"]:
+        assert f"backend/migrations_local/versions/{filename}" in paths
+    assert "backend/migrations_local/env.py" in paths
+    assert "backend/migrations_local/versions/20261108_0011_local_config_ai.py" in paths
+    assert (
+        "backend/migrations_local/versions/"
+        "20261108_0016_local_listening_goal_suggest.py"
+    ) in paths
+
+
+def _write_synthetic_migration(path: Path, revision: str, down: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"revision = {revision!r}\ndown_revision = {down!r}\n",
+        encoding="utf-8",
+    )
+
+
+def test_migration_chain_rejects_missing_middle_fork_and_duplicate(tmp_path):
+    versions = tmp_path / "migrations" / "versions"
+    _write_synthetic_migration(versions / "a.py", "001", None)
+    _write_synthetic_migration(versions / "b.py", "002", "001")
+    chain = verify_e14_package.discover_migration_chain(tmp_path / "migrations")
+    assert chain["revisions"] == ["001", "002"]
+    (versions / "b.py").unlink()
+    _write_synthetic_migration(versions / "c.py", "003", "002")
+    with pytest.raises(ValueError):
+        verify_e14_package.discover_migration_chain(tmp_path / "migrations")
+
+    fork_root = tmp_path / "fork"
+    fork_versions = fork_root / "versions"
+    _write_synthetic_migration(fork_versions / "a.py", "001", None)
+    _write_synthetic_migration(fork_versions / "b.py", "002", "001")
+    _write_synthetic_migration(fork_versions / "c.py", "003", "001")
+    with pytest.raises(ValueError):
+        verify_e14_package.discover_migration_chain(fork_root)
+
+    duplicate_root = tmp_path / "duplicate"
+    duplicate_versions = duplicate_root / "versions"
+    _write_synthetic_migration(duplicate_versions / "a.py", "001", None)
+    _write_synthetic_migration(duplicate_versions / "b.py", "001", None)
+    with pytest.raises(ValueError):
+        verify_e14_package.discover_migration_chain(duplicate_root)
+
+
+def _metadata_package(
+    tmp_path: Path,
+    name: str,
+    *,
+    version: str | None = None,
+    channel: str | None = None,
+) -> tuple[Path, dict, str]:
+    package = tmp_path / name
+    plugin_dir = package / "_internal" / "PIL"
+    plugin_dir.mkdir(parents=True)
+    for plugin in build_e14.PILLOW_REQUIRED_PLUGINS:
+        (plugin_dir / plugin).write_bytes(b"fake-plugin")
+    license_file = tmp_path / f"{name}-LICENSE"
+    license_file.write_text("synthetic license", encoding="utf-8")
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(build_e14, "PILLOW_LICENSE", license_file)
+    build_id = str(uuid.uuid4())
+    try:
+        info = build_e14.install_package_metadata(
+            package,
+            build_id,
+            "f" * 64,
+            release_version=version,
+            release_channel=channel,
+        )
+    finally:
+        monkeypatch.undo()
+    info = dict(info)
+    info.update(
+        {
+            "frontend_digest": "c" * 64,
+            "frontend_file_count": 1,
+            "source_commit": "b" * 40,
+        }
+    )
+    return package, info, build_id
+
+
+def test_preview_metadata_identity_and_directory_checks_agree(tmp_path):
+    package, info, _ = _metadata_package(
+        tmp_path,
+        "preview",
+        version="1.2.3-listening-test.1",
+        channel="preview",
+    )
+    assert info["version"] == "1.2.3-listening-test.1"
+    assert info["channel"] == "preview"
+    checks = verify_e14_package._package_info_checks(info, "KGNext-E14")
+    assert checks["metadata_exact"] is True
+    identity = verify_e14_package._identity_checks(package, info)
+    assert identity["present"] is True
+    assert identity["valid"] is True
+    assert identity["version"] is True
+    assert identity["revision"] is True
+    assert identity["matches_package_info"] is True
+
+    stable_package, stable_info, _ = _metadata_package(tmp_path, "stable")
+    assert stable_info["version"] == "0.1.0"
+    assert stable_info["channel"] == "stable"
+    assert (
+        verify_e14_package._package_info_checks(stable_info, "KGNext-E14")[
+            "metadata_exact"
+        ]
+        is True
+    )
+    assert (
+        verify_e14_package._identity_checks(stable_package, stable_info)["valid"]
+        is True
+    )
+
+
+def test_directory_checks_reject_wrong_identity_version_channel_and_head(tmp_path):
+    package, info, _ = _metadata_package(tmp_path, "wrong")
+    head = verify_e14_package.discover_migration_chain(
+        build_e14.MIGRATIONS_DIR
+    )["head_revision"]
+    for mutation in (
+        {"channel": "preview"},
+        {"database_revision": "20261107_0010_local_listening_ai"},
+        {"migrations": ["env.py"]},
+        {"version": "01.2.3"},
+    ):
+        changed = dict(info)
+        changed.update(mutation)
+        assert (
+            verify_e14_package._package_info_checks(changed, "KGNext-E14")[
+                "metadata_exact"
+            ]
+            is False
+        ), mutation
+
+    for mutation in (
+        {"version": "9.9.9"},
+        {"version": "1.2.3-listening-test.1", "channel": "preview"},
+    ):
+        changed = dict(info)
+        changed.update(mutation)
+        assert (
+            verify_e14_package._package_info_checks(changed, "KGNext-E14")[
+                "metadata_exact"
+            ]
+            is True
+        ), mutation
+        assert (
+            verify_e14_package._identity_checks(package, changed)[
+                "matches_package_info"
+            ]
+            is False
+        ), mutation
+
+    identity_path = package / "_internal" / "build_identity.json"
+    original = json.loads(identity_path.read_text(encoding="utf-8"))
+    payload = dict(original)
+    payload["version"] = "9.9.9"
+    identity_path.write_text(json.dumps(payload), encoding="utf-8")
+    identity = verify_e14_package._identity_checks(package, info)
+    assert identity["valid"] is False
+    assert identity["version"] is False
+    assert identity["matches_package_info"] is False
+    payload["version"] = info["version"]
+    payload["channel"] = "preview"
+    identity_path.write_text(json.dumps(payload), encoding="utf-8")
+    assert (
+        verify_e14_package._identity_checks(package, info)["matches_package_info"]
+        is False
+    )
+    payload["channel"] = info["channel"]
+    payload["database_revision"] = "20261107_0010_local_listening_ai"
+    identity_path.write_text(json.dumps(payload), encoding="utf-8")
+    identity = verify_e14_package._identity_checks(package, info)
+    assert identity["revision"] is False
+    assert identity["matches_package_info"] is False
+
+    payload = dict(original)
+    payload["platform"] = "linux"
+    identity_path.write_text(json.dumps(payload), encoding="utf-8")
+    identity = verify_e14_package._identity_checks(package, info)
+    assert identity["fields_exact"] is False
+    assert identity["fields"]["platform"] is False
+    assert identity["valid"] is False
+
+    payload = dict(original)
+    payload["build_id"] = update_identity.SOURCE_BUILD_ID
+    identity_path.write_text(json.dumps(payload), encoding="utf-8")
+    identity = verify_e14_package._identity_checks(package, info)
+    assert identity["uuid"] is True
+    assert identity["not_source_id"] is False
+    assert identity["valid"] is False
+    assert head == "20261108_0016_local_listening_goal_suggest"
+
+
+def test_package_info_freeze_commit_contract():
+    matches = verify_e14_package.package_info_matches_freeze_commit
+    assert matches({"commit": "a" * 40}, {"source_commit": "a" * 40}) is True
+    assert matches({"commit": "a" * 40}, {"source_commit": "b" * 40}) is False
+    assert matches({"commit": "a" * 40}, {"source_commit": "A" * 40}) is False
+    assert matches({"commit": "a" * 40}, {"source_commit": "short"}) is False
+    assert matches({}, {"source_commit": "a" * 40}) is False
+
+
+def test_install_metadata_rejects_partial_or_mismatched_release_identity(tmp_path):
+    package = tmp_path / "pkg"
+    (package / "_internal" / "PIL").mkdir(parents=True)
+    for plugin in build_e14.PILLOW_REQUIRED_PLUGINS:
+        (package / "_internal" / "PIL" / plugin).write_bytes(b"fake-plugin")
+    license_file = tmp_path / "LICENSE"
+    license_file.write_text("synthetic license", encoding="utf-8")
+    build_id = str(uuid.uuid4())
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(build_e14, "PILLOW_LICENSE", license_file)
+        with pytest.raises(SystemExit):
+            build_e14.install_package_metadata(
+                package, build_id, "f" * 64, release_version="0.1.0"
+            )
+        with pytest.raises(SystemExit):
+            build_e14.install_package_metadata(
+                package,
+                build_id,
+                "f" * 64,
+                release_version="0.1.0",
+                release_channel="preview",
+            )
+        with pytest.raises(SystemExit):
+            build_e14.install_package_metadata(
+                package,
+                build_id,
+                "f" * 64,
+                release_version="01.2.3",
+                release_channel="stable",
+            )
+
+
+def test_directory_freeze_identity_is_stable_and_preview(tmp_path):
+    source = Path(verify_e14_package.__file__)
+    data = source.read_bytes()
+    entry = {
+        "path": "desktop/verify_e14_package.py",
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
+    digest = verify_e14_package._freeze_digest([entry])
+    base = {
+        "commit": "a" * 40,
+        "before": {
+            "files": [entry],
+            "digest": digest,
+            "file_count": 1,
+            "generated_at": "2026-11-08T00:00:00+00:00",
+        },
+        "after": {
+            "files": [entry],
+            "digest": digest,
+            "file_count": 1,
+            "generated_at": "2026-11-08T00:10:00+00:00",
+        },
+        "changes": {"stable": True, "changed": [], "added": [], "removed": []},
+        "stable": True,
+    }
+    package_info = {"built_at": "2026-11-08T01:00:00+00:00"}
+    for version, channel in (
+        ("0.1.0", "stable"),
+        ("1.2.3-listening-test.1", "preview"),
+    ):
+        report = dict(base, version=version, channel=channel)
+        path = tmp_path / f"freeze-{channel}.json"
+        path.write_text(json.dumps(report), encoding="utf-8")
+        loaded = verify_e14_package._load_freeze(
+            path, package_info, "desktop/verify_e14_package.py"
+        )
+        assert loaded["identity_ok"] is True
+        assert loaded["version"] == version
+        assert loaded["channel"] == channel
+        assert loaded["schema_ok"] is True
+        assert verify_e14_package.package_info_matches_freeze_identity(
+            loaded, {"version": version, "channel": channel}
+        )
+        assert not verify_e14_package.package_info_matches_freeze_identity(
+            loaded, {"version": "9.9.9", "channel": channel}
+        )
+
+    invalid = dict(base, version="01.2.3", channel="stable")
+    path = tmp_path / "freeze-invalid.json"
+    path.write_text(json.dumps(invalid), encoding="utf-8")
+    loaded = verify_e14_package._load_freeze(
+        path, package_info, "desktop/verify_e14_package.py"
+    )
+    assert loaded["identity_ok"] is False
+    assert loaded["schema_ok"] is False
+
+
+def test_directory_resource_checks_require_head_and_exact_migration_tree(tmp_path):
+    package = tmp_path / "package"
+    bundled = package / "_internal" / "migrations_local"
+    shutil.copytree(
+        build_e14.MIGRATIONS_DIR,
+        bundled,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    resources = verify_e14_package._resource_checks(package)
+    assert resources["migrations_match"] is True
+    assert resources["migration_0010"] is True
+    assert resources["migration_head"] is True
+
+    (bundled / "versions" / "20261108_0012_local_listening_rotation.py").unlink()
+    resources = verify_e14_package._resource_checks(package)
+    assert resources["migrations_match"] is False
+    assert resources["migration_head"] is True
+
+    (
+        bundled
+        / "versions"
+        / verify_e14_package.discover_migration_chain(build_e14.MIGRATIONS_DIR)[
+            "head_file"
+        ]
+    ).unlink()
+    resources = verify_e14_package._resource_checks(package)
+    assert resources["migration_head"] is False
+
+
+def test_missing_middle_migration_fails_before_any_build(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    monkeypatch.setattr(build_e14.d0_paths, "REPO_ROOT", repo)
+    paths = _portable_plan(repo)
+    migrations = tmp_path / "migrations"
+    _write_synthetic_migration(migrations / "versions" / "a.py", "001", None)
+    _write_synthetic_migration(migrations / "versions" / "c.py", "003", "002")
+    monkeypatch.setattr(build_e14, "MIGRATIONS_DIR", migrations)
+    monkeypatch.setattr(build_e14, "require_pillow_license", lambda: None)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        build_e14, "build_frontend", lambda *a, **k: calls.append("frontend")
+    )
+    monkeypatch.setattr(
+        build_e14, "build_package", lambda *a, **k: calls.append("package")
+    )
+    assert _run(monkeypatch, ["--build-root", str(paths["build_root"])]) == 2
+    assert calls == []
 
 
 def test_build_package_excludes_optional_sqlalchemy_cyextensions(monkeypatch, tmp_path):
@@ -519,13 +1025,11 @@ def test_source_freeze_and_archive_cover_github_update_module():
     freeze = build_e14.source_freeze()
     normalized = {item["path"].replace("\\", "/") for item in freeze["files"]}
     assert "desktop/update_github.py" in normalized
-    import verify_e14_package
 
     assert "update_github" in verify_e14_package.ARCHIVE_REQUIRED_MODULES
 
 
 def test_source_freeze_and_archive_cover_renderer_recovery_modules():
-    import verify_e14_package
 
     freeze = build_e14.source_freeze()
     by_path = {item["path"]: item["group"] for item in freeze["files"]}
@@ -753,13 +1257,12 @@ def test_missing_migration_fails_before_any_build(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     monkeypatch.setattr(build_e14.d0_paths, "REPO_ROOT", repo)
     paths = _portable_plan(repo)
-    monkeypatch.setattr(build_e14, "MIGRATION_FILE", tmp_path / "missing-0006.py")
+    monkeypatch.setattr(build_e14, "MIGRATIONS_DIR", tmp_path / "missing-migrations")
     monkeypatch.setattr(build_e14, "require_pillow_license", lambda: None)
     calls: list[str] = []
     monkeypatch.setattr(build_e14, "build_frontend", lambda *a, **k: calls.append("frontend"))
     monkeypatch.setattr(build_e14, "build_package", lambda *a, **k: calls.append("package"))
-    with pytest.raises(SystemExit):
-        _run(monkeypatch, ["--build-root", str(paths["build_root"])])
+    assert _run(monkeypatch, ["--build-root", str(paths["build_root"])]) == 2
     assert calls == []
 
 
@@ -773,14 +1276,11 @@ def test_missing_listening_template_fails_before_any_build(tmp_path, monkeypatch
 
 
 def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
-    import verify_e14_package
-    import verify_e14_portable_archive
-    assert build_e14.DATABASE_REVISION == "20261107_0010_local_listening_ai"
-    assert build_e14.MIGRATION_FILENAME == "20261107_0010_local_listening_ai.py"
-    assert build_e14.MIGRATION_FILE.is_file()
-    assert build_e14.PREDECESSOR_MIGRATION_FILE.is_file()
-    assert build_e14.DATABASE_REVISION != "20261101_0007_local_weekly"
-    assert build_e14.DATABASE_REVISION != "20261107_0009_local_listening"
+    chain = verify_e14_package.discover_migration_chain(build_e14.MIGRATIONS_DIR)
+    assert chain["head_revision"] == "20261108_0016_local_listening_goal_suggest"
+    assert chain["head_file"] == "20261108_0016_local_listening_goal_suggest.py"
+    assert len(chain["files"]) == 16
+    assert len(verify_e14_package.source_migration_files(build_e14.MIGRATIONS_DIR)) == 17
     new_modules = {
         "weekly_ai_adoption", "weekly_ai_api", "weekly_ai_candidates",
         "weekly_ai_contracts", "weekly_ai_inputs", "weekly_ai_service",
@@ -820,7 +1320,9 @@ def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
         )
     for relative in ("manifest.json", *build_e14.LISTENING_TEMPLATE_DOCX):
         assert relative in verify_e14_package.LISTENING_TEMPLATE_REQUIRED_FILES
-    assert verify_e14_portable_archive.DATABASE_REVISION == "20261107_0010_local_listening_ai"
+    assert verify_e14_portable_archive.discover_migration_chain(
+        verify_e14_portable_archive.SOURCE_MIGRATIONS
+    )["head_revision"] == "20261108_0016_local_listening_goal_suggest"
     freeze = build_e14.source_freeze()
     paths = {item["path"] for item in freeze["files"]}
     for name in new_modules:

@@ -10,6 +10,7 @@ execution flow and must be selected explicitly with ``--mode frozen``.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import marshal
@@ -24,11 +25,246 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+import update_identity
+from update_identity import is_preview_version, version_key
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 BACKEND = REPO / "backend"
 
 PRODUCT = "KGNext-E14"
+
+
+def resolve_release_identity(
+    version: object = None, channel: object = None
+) -> tuple[str, str]:
+    """Resolve an explicit full version/channel pair or the stable default."""
+    if version is None and channel is None:
+        return DEFAULT_APP_VERSION, DEFAULT_CHANNEL
+    if version is None or channel is None:
+        raise ValueError("版本和渠道必须同时指定")
+    if not isinstance(version, str) or not version:
+        raise ValueError("版本必须是非空字符串")
+    if channel not in ("stable", "preview"):
+        raise ValueError("渠道必须是 stable 或 preview")
+    try:
+        version_key(version)
+    except ValueError as exc:
+        raise ValueError("版本不是正式版或预览版形状") from exc
+    if is_preview_version(version) != (channel == "preview"):
+        raise ValueError("版本与渠道不匹配")
+    return version, channel
+
+
+def discover_migration_chain(
+    migrations_dir: Path,
+) -> dict[str, object]:
+    """Parse the local migration files and require one linear unique head."""
+    versions_dir = migrations_dir / "versions"
+    files = sorted(
+        path for path in versions_dir.glob("*.py") if path.is_file()
+    )
+    if not files:
+        raise ValueError("迁移目录为空")
+
+    def assignment(tree: ast.Module, name: str) -> object:
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                if any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+                    return ast.literal_eval(node.value)
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if node.target.id == name and node.value is not None:
+                    return ast.literal_eval(node.value)
+        raise ValueError(f"迁移缺少 {name}")
+
+    rows: list[dict[str, str | None]] = []
+    for path in files:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            revision = assignment(tree, "revision")
+            down_revision = assignment(tree, "down_revision")
+        except (OSError, SyntaxError, ValueError) as exc:
+            raise ValueError(f"迁移无法静态解析：{path.name}") from exc
+        if not isinstance(revision, str) or not revision:
+            raise ValueError(f"迁移 revision 不合法：{path.name}")
+        if down_revision is not None and (
+            not isinstance(down_revision, str) or not down_revision
+        ):
+            raise ValueError(f"迁移 down_revision 不合法：{path.name}")
+        rows.append(
+            {"revision": revision, "down_revision": down_revision, "file": path.name}
+        )
+    revisions = [str(row["revision"]) for row in rows]
+    if len(set(revisions)) != len(revisions):
+        raise ValueError("迁移 revision 重复")
+    roots = [row for row in rows if row["down_revision"] is None]
+    if len(roots) != 1:
+        raise ValueError("迁移链必须恰好有一个根")
+    ordered: list[dict[str, str | None]] = []
+    current: dict[str, str | None] | None = roots[0]
+    seen: set[str] = set()
+    while current is not None:
+        revision = str(current["revision"])
+        if revision in seen:
+            raise ValueError("迁移链存在循环")
+        seen.add(revision)
+        ordered.append(current)
+        children = [
+            row for row in rows if row["down_revision"] == revision
+        ]
+        if len(children) > 1:
+            raise ValueError("迁移链存在分叉")
+        current = children[0] if children else None
+    if len(ordered) != len(rows):
+        raise ValueError("迁移链不是单一线性链")
+    head = ordered[-1]
+    return {
+        "files": [str(row["file"]) for row in ordered],
+        "revisions": [str(row["revision"]) for row in ordered],
+        "head_revision": str(head["revision"]),
+        "head_file": str(head["file"]),
+        "versions_dir": versions_dir,
+    }
+
+
+def source_migration_files(migrations_dir: Path) -> list[str]:
+    return sorted(
+        path.relative_to(migrations_dir).as_posix()
+        for path in migrations_dir.rglob("*.py")
+        if path.is_file() and "__pycache__" not in path.parts
+    )
+
+
+def source_migration_tree_files(migrations_dir: Path) -> list[str]:
+    """Every frozen migration file, including env.py and the Alembic template."""
+    return sorted(
+        path.relative_to(migrations_dir).as_posix()
+        for path in migrations_dir.rglob("*")
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        and path.suffix.lower() not in {".pyc", ".pyo"}
+    )
+
+
+def package_info_matches_freeze_identity(
+    freeze: Mapping[str, Any], package_info: Mapping[str, Any]
+) -> bool:
+    """Require package-info to carry the build summary's release identity."""
+    return bool(
+        freeze.get("identity_ok")
+        and package_info.get("version") == freeze.get("version")
+        and package_info.get("channel", DEFAULT_CHANNEL)
+        == freeze.get("channel")
+    )
+
+
+IDENTITY_FIELDS = (
+    "app_id",
+    "app_name",
+    "channel",
+    "version",
+    "package_format",
+    "platform",
+    "arch",
+    "python",
+    "database_revision",
+)
+
+
+def build_identity_checks(
+    data: Any,
+    package_info: Mapping[str, Any],
+    expected_revision: str | None = None,
+) -> dict:
+    """Validate a complete packaged AppIdentity against package-info."""
+    result = {
+        "valid": False,
+        "uuid": False,
+        "canonical_build_id": False,
+        "not_source_id": False,
+        "version": False,
+        "revision": False,
+        "fields": {name: False for name in IDENTITY_FIELDS},
+        "fields_exact": False,
+        "matches_package_info": False,
+        "errors": [],
+    }
+    if not isinstance(data, dict):
+        result["errors"].append("build_identity not an object")
+        return result
+    try:
+        expected_version, expected_channel = resolve_release_identity(
+            package_info.get("version"), package_info.get("channel", "stable")
+        )
+        if expected_revision is None:
+            expected_revision = str(_source_migration_contract()["head_revision"])
+    except (ValueError, SystemExit):
+        result["errors"].append("package-info version/channel/revision invalid")
+        return result
+    expected = {
+        "app_id": APP_ID,
+        "app_name": APP_NAME,
+        "channel": expected_channel,
+        "version": expected_version,
+        "package_format": PACKAGE_FORMAT,
+        "platform": PLATFORM,
+        "arch": ARCH,
+        "python": PYTHON_VERSION,
+        "database_revision": expected_revision,
+    }
+    result["fields"] = {
+        name: data.get(name) == expected[name] for name in IDENTITY_FIELDS
+    }
+    result["fields_exact"] = all(result["fields"].values())
+    build_id = data.get("build_id")
+    try:
+        parsed = uuid.UUID(str(build_id))
+    except (ValueError, TypeError, AttributeError):
+        parsed = None
+    result["uuid"] = parsed is not None
+    result["canonical_build_id"] = bool(
+        parsed is not None
+        and isinstance(build_id, str)
+        and str(parsed) == build_id.lower()
+    )
+    result["not_source_id"] = bool(
+        parsed is not None and str(parsed) != SOURCE_BUILD_ID
+    )
+    result["version"] = data.get("version") == expected_version
+    result["revision"] = data.get("database_revision") == expected_revision
+    result["matches_package_info"] = bool(
+        data.get("build_id") == package_info.get("build_id")
+        and data.get("version") == package_info.get("version")
+        and data.get("channel", "stable") == package_info.get("channel", "stable")
+        and data.get("database_revision") == package_info.get("database_revision")
+    )
+    result["valid"] = bool(
+        result["fields_exact"]
+        and result["canonical_build_id"]
+        and result["not_source_id"]
+    )
+    return result
+
+
+def package_info_matches_freeze_commit(
+    freeze: Mapping[str, Any], package_info: Mapping[str, Any]
+) -> bool:
+    """Require package-info.source_commit to equal the frozen build commit."""
+    commit = package_info.get("source_commit")
+    return bool(
+        isinstance(commit, str)
+        and COMMIT_RE.match(commit)
+        and freeze.get("commit") == commit
+    )
+
+
+def _source_migration_contract() -> dict[str, object]:
+    try:
+        return discover_migration_chain(MIGRATIONS)
+    except ValueError as exc:
+        raise SystemExit(f"当前源码迁移链不合法：{exc}") from exc
+
+
 README_NAME = "README-KGNext-E14-win11-r01.txt"
 ARCHIVE_NAME = "KGNext-E14-win11-r01.zip"
 PACKAGE = REPO / "build" / "desktop-e14-win11-r01" / "package" / PRODUCT
@@ -48,14 +284,15 @@ LISTENING_TEMPLATE_REQUIRED_FILES = (
 )
 MIGRATIONS = BACKEND / "migrations_local"
 ALEMBIC = BACKEND / "alembic-local.ini"
-DATABASE_REVISION = "20261107_0010_local_listening_ai"
-APP_VERSION = "0.1.0"
-PACKAGE_FORMAT = "pyinstaller-onedir-zip-v1"
-PLATFORM = "windows"
-ARCH = "x64"
-PYTHON_VERSION = "3.14.10"
-APP_ID = "kindergarten-manager-next"
-APP_NAME = "KindergartenManager"
+DEFAULT_APP_VERSION = update_identity.APP_VERSION
+DEFAULT_CHANNEL = update_identity.CHANNEL
+APP_VERSION = DEFAULT_APP_VERSION
+PACKAGE_FORMAT = update_identity.PACKAGE_FORMAT
+PLATFORM = update_identity.PLATFORM
+ARCH = update_identity.ARCH
+PYTHON_VERSION = update_identity.PYTHON_VERSION
+APP_ID = update_identity.APP_ID
+APP_NAME = update_identity.APP_NAME
 SOURCE_BUILD_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{APP_ID}:{APP_VERSION}:source"))
 PILLOW_VERSION = "13.0.0"
 REQUIRED_PILLOW_PLUGINS = (
@@ -288,6 +525,7 @@ REQUIRED_STATIC_CHECKS = (
     "build_identity_not_source_id",
     "build_identity_version",
     "build_identity_revision",
+    "build_identity_fields_exact",
     "build_identity_matches_package_info",
     "source_freeze_present",
     "source_freeze_schema",
@@ -296,6 +534,8 @@ REQUIRED_STATIC_CHECKS = (
     "source_freeze_current_matches",
     "source_freeze_required_paths",
     "source_freeze_before_build",
+    "package_info_matches_freeze_identity",
+    "package_info_matches_freeze_commit",
     "verifier_matches_freeze",
     "package_tree_digest_matches_freeze",
     "archive_entry_matches_source",
@@ -321,6 +561,7 @@ REQUIRED_STATIC_CHECKS = (
     "migration_0006",
     "migration_0009",
     "migration_0010",
+    "migration_head",
     "pillow_plugins_present",
     "pillow_license_present",
     "pillow_license_matches_source",
@@ -596,6 +837,9 @@ def _load_freeze(path: Path, package_info: Mapping[str, Any], self_rel: str) -> 
         "after": {},
         "schema_ok": False,
         "stable": False,
+        "version": None,
+        "channel": None,
+        "identity_ok": False,
         "changes_ok": False,
         "digest_ok": False,
         "current_mismatches": [],
@@ -618,6 +862,17 @@ def _load_freeze(path: Path, package_info: Mapping[str, Any], self_rel: str) -> 
     if not isinstance(report, dict):
         result["errors"].append("freeze root is not an object")
         return result
+    try:
+        freeze_version, freeze_channel = resolve_release_identity(
+            report.get("version", DEFAULT_APP_VERSION),
+            report.get("channel", DEFAULT_CHANNEL),
+        )
+    except ValueError as exc:
+        result["errors"].append(f"freeze release identity invalid: {exc}")
+    else:
+        result["version"] = freeze_version
+        result["channel"] = freeze_channel
+        result["identity_ok"] = True
     before = report.get("before")
     after = report.get("after")
     if not isinstance(before, dict) or not isinstance(after, dict):
@@ -680,6 +935,7 @@ def _load_freeze(path: Path, package_info: Mapping[str, Any], self_rel: str) -> 
         bool(before_files)
         and bool(after_files)
         and result["commit"] is not None
+        and result["identity_ok"]
         and not result["errors"]
         and all(
             isinstance(files.get("generated_at"), str)
@@ -721,8 +977,21 @@ def _package_info_checks(data: Any, expected_product: str) -> dict:
     )
     exact = all(isinstance(data.get(key), str) and data.get(key) for key in required_strings)
     exact = exact and data.get("app") == expected_product
-    exact = exact and data.get("version") == APP_VERSION
-    exact = exact and data.get("database_revision") == DATABASE_REVISION
+    try:
+        expected_version, expected_channel = resolve_release_identity(
+            data.get("version"), data.get("channel", "stable")
+        )
+        expected_migrations = source_migration_files(MIGRATIONS)
+        expected_head = str(_source_migration_contract()["head_revision"])
+    except (ValueError, SystemExit):
+        expected_version = ""
+        expected_channel = ""
+        expected_migrations = []
+        expected_head = ""
+        exact = False
+    exact = exact and bool(expected_version) and bool(expected_channel)
+    exact = exact and data.get("channel", "stable") == expected_channel
+    exact = exact and data.get("database_revision") == expected_head
     exact = exact and data.get("package") == expected_product
     exact = exact and isinstance(data.get("source_freeze_digest"), str)
     exact = exact and bool(SHA_RE.match(str(data.get("source_freeze_digest"))))
@@ -745,22 +1014,10 @@ def _package_info_checks(data: Any, expected_product: str) -> dict:
     migrations = data.get("migrations")
     exact = exact and isinstance(migrations, list)
     if isinstance(migrations, list):
-        names = {str(item).replace("\\", "/") for item in migrations}
-        exact = exact and all(
-            any(name.endswith(suffix) for name in names)
-            for suffix in (
-                "20261012_0001_local_baseline.py",
-                "20261012_0002_local_require_first_revision.py",
-                "20261014_0003_local_config_maintenance.py",
-                "20261017_0004_local.py",
-                "20261023_0005_local_history.py",
-                "20261025_0006_local_game_observations.py",
-                "20261101_0007_local_weekly_plans.py",
-                "20261102_0008_local_weekly_ai.py",
-                "20261107_0009_local_listening.py",
-                "20261107_0010_local_listening_ai.py",
-            )
-        )
+        names = [str(item).replace("\\", "/") for item in migrations]
+        exact = exact and names == expected_migrations
+    else:
+        exact = False
     templates = data.get("templates")
     exact = exact and isinstance(templates, list)
     if isinstance(templates, list):
@@ -919,6 +1176,8 @@ def _identity_checks(package_root: Path, package_info: Mapping[str, Any]) -> dic
         "not_source_id": False,
         "version": False,
         "revision": False,
+        "fields": {},
+        "fields_exact": False,
         "matches_package_info": False,
         "data": None,
         "errors": [],
@@ -937,33 +1196,19 @@ def _identity_checks(package_root: Path, package_info: Mapping[str, Any]) -> dic
         result["errors"].append("build_identity not an object")
         return result
     result["data"] = data
-    expected = {
-        "app_id": APP_ID,
-        "app_name": APP_NAME,
-        "channel": "stable",
-        "version": APP_VERSION,
-        "package_format": PACKAGE_FORMAT,
-        "platform": PLATFORM,
-        "arch": ARCH,
-        "python": PYTHON_VERSION,
-        "database_revision": DATABASE_REVISION,
-    }
-    valid = all(data.get(key) == value for key, value in expected.items())
-    build_id = data.get("build_id")
-    try:
-        parsed = uuid.UUID(str(build_id))
-        result["uuid"] = True
-    except (ValueError, TypeError, AttributeError):
-        parsed = None
-    valid = valid and parsed is not None
-    result["not_source_id"] = bool(parsed is not None and str(parsed) != SOURCE_BUILD_ID)
-    result["version"] = data.get("version") == APP_VERSION
-    result["revision"] = data.get("database_revision") == DATABASE_REVISION
-    result["matches_package_info"] = (
-        data.get("build_id") == package_info.get("build_id")
-        and data.get("database_revision") == package_info.get("database_revision")
-    )
-    result["valid"] = bool(valid)
+    checked = build_identity_checks(data, package_info)
+    for key in (
+        "valid",
+        "uuid",
+        "not_source_id",
+        "version",
+        "revision",
+        "fields",
+        "fields_exact",
+        "matches_package_info",
+    ):
+        result[key] = checked[key]
+    result["errors"].extend(checked["errors"])
     return result
 
 
@@ -1361,6 +1606,11 @@ def _resource_checks(package_root: Path) -> dict:
         ).is_file(),
         "migration_0010": (
             internal / "migrations_local/versions/20261107_0010_local_listening_ai.py"
+        ).is_file(),
+        "migration_head": (
+            internal
+            / "migrations_local/versions"
+            / str(_source_migration_contract()["head_file"])
         ).is_file(),
         "pillow_plugins": sorted(
             path.name for path in (internal / "PIL").glob("_*.cp314-win_amd64.pyd")
@@ -1826,7 +2076,7 @@ def _legacy_run(args, parser_error) -> int:  # pragma: no cover - legacy frozen 
             checks[f"old_{key}"] = bool(old.get("checks", {}).get(key))
         db = old_data / "kindergarten.db"
         version = _query(db, "SELECT version_num FROM local_alembic_version")
-        checks["old_upgraded_0006"] = version and version[0][0] == DATABASE_REVISION
+        checks["old_upgraded_0006"] = version and version[0][0] == _source_migration_contract()["head_revision"]
         checks["old_plan_preserved"] = bool(
             _query(db, "SELECT count(*) FROM local_daily_plans")[0][0]
         )
@@ -2048,6 +2298,7 @@ def main(argv: list[str] | None = None) -> int:
         checks["build_identity_not_source_id"] = bool(identity["not_source_id"])
         checks["build_identity_version"] = bool(identity["version"])
         checks["build_identity_revision"] = bool(identity["revision"])
+        checks["build_identity_fields_exact"] = bool(identity["fields_exact"])
         checks["build_identity_matches_package_info"] = bool(identity["matches_package_info"])
         report["build_identity"] = {key: value for key, value in identity.items() if key != "data"}
 
@@ -2072,6 +2323,12 @@ def main(argv: list[str] | None = None) -> int:
             and not freeze.get("required_missing")
         )
         checks["source_freeze_before_build"] = bool(freeze.get("before_build"))
+        checks["package_info_matches_freeze_identity"] = (
+            package_info_matches_freeze_identity(freeze, package_info)
+        )
+        checks["package_info_matches_freeze_commit"] = (
+            package_info_matches_freeze_commit(freeze, package_info)
+        )
         checks["verifier_matches_freeze"] = bool(freeze.get("self_matches"))
         if freeze.get("errors"):
             report["errors"].extend(freeze["errors"])
@@ -2106,6 +2363,7 @@ def main(argv: list[str] | None = None) -> int:
         checks["migration_0006"] = bool(resources["migration_0006"])
         checks["migration_0009"] = bool(resources["migration_0009"])
         checks["migration_0010"] = bool(resources["migration_0010"])
+        checks["migration_head"] = bool(resources["migration_head"])
         plugins = resources["pillow_plugins"]
         checks["pillow_plugins_present"] = (
             len(plugins) >= 8 and all(name in plugins for name in REQUIRED_PILLOW_PLUGINS)

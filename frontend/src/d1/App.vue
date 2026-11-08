@@ -10,6 +10,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, ApiError, apiPatch, setSessionToken } from './client'
+import { todoStore } from './todos'
 import {
   BRIDGE_PROTOCOL,
   completeCloseWithFallback,
@@ -25,10 +26,12 @@ import {
 import {
   LeaveCoordinator,
   type BlockingDraft,
+  type SettingsDraftTarget,
+  type SettingsDraftTargetKind,
   type LeaveEditor,
   type SaveOutcome,
 } from './leave'
-import { isUpdateBusy, type UpdateStatus } from './update'
+import { isUpdateBusy, type UpdateChannel, type UpdateStatus } from './update'
 import type { AiTaskList, LocalContext } from './types'
 import type { ObservationListItem } from './observation'
 import { isLiveTask } from './ai'
@@ -87,6 +90,11 @@ const closeLocked = ref(false)
 const closeFinalAllowed = ref(false)
 /** The settings draft guard (unconfirmed preview/edit). */
 const settingsDraftActive = ref(false)
+const settingsDraftTargets = ref<SettingsDraftTarget[]>([])
+/** The mounted settings page; its exposed methods are the only bridge. */
+const settingsViewRef = ref<{ draftTargets?: () => SettingsDraftTarget[]; focusTarget?: (target: SettingsDraftTarget) => void } | null>(null)
+/** Latest structured blocked-draft notice, with direct per-target actions. */
+const blockedDraftNotice = ref<BlockingDraft | null>(null)
 /** B2 maintenance panel: independent from pageBusy/close lock. */
 const maintenanceHost = createBackupRestoreHost()
 const maintenanceOpen = ref(false)
@@ -178,8 +186,10 @@ const listeningEditorBusy = ref(false)
 const listeningEditorRef = ref<{ resetForContext: () => void } | null>(null)
 let listeningEditorBridge: LeaveEditor | null = null
 let listeningEditorOwner: string | null = null
+const workbenchBusy = computed(() => todoStore.busy.value)
 const pageBusy = computed(
   () =>
+    workbenchBusy.value ||
     observationsBusy.value ||
     editorBusy.value ||
     weeklyListBusy.value ||
@@ -230,6 +240,11 @@ watch(pageBusy, () => {
 /** D3-U U1 update panel; no install action exists in this slice. */
 const updateOpen = ref(false)
 const updateStatus = ref<UpdateStatus | null>(null)
+const updateChecking = ref(false)
+const updateSwitching = ref(false)
+const updateOperationBusy = computed(
+  () => updateChecking.value || updateSwitching.value,
+)
 /** U2: one install intent; cleared when the close attempt is canceled. */
 const installRequested = ref(false)
 const installError = ref('')
@@ -371,6 +386,17 @@ async function probeLiveTasks(): Promise<LiveProbe> {
 let editorBridge: LeaveEditor | null = null
 
 /** The settings / candidate / weekly draft currently blocking every leave. */
+/** The exact structured target list for the current settings draft. */
+function currentSettingsTargets(): SettingsDraftTarget[] {
+  if (!isSettingsDraftBlocking()) return []
+  return settingsViewRef.value?.draftTargets?.() ?? []
+}
+
+/** Focus one structured target in the same mounted Settings instance. */
+function focusSettingsTarget(target: SettingsDraftTarget): void {
+  settingsViewRef.value?.focusTarget?.(target)
+}
+
 function currentBlockingDraft(): BlockingDraft | null {
   if (observationsBusy.value) {
     return {
@@ -403,9 +429,24 @@ function currentBlockingDraft(): BlockingDraft | null {
     }
   }
   if (isSettingsDraftBlocking()) {
+    const targets =
+      settingsDraftTargets.value.length > 0
+        ? settingsDraftTargets.value
+        : currentSettingsTargets()
+    const hasOnline = targets.some(
+      (target) => target.kind === 'online-collaboration',
+    )
+    const hasOther = targets.some(
+      (target) => target.kind !== 'online-collaboration',
+    )
     return {
       kind: 'settings',
-      message: '设置修改尚未确认：请先完成预览确认或取消编辑',
+      message: hasOnline
+        ? hasOther
+          ? '设置或在线协作尚未完成：请先完成设置预览/取消，或处理在线协作预览/回执'
+          : '在线协作尚未完成：请先处理预览或待核对写入'
+        : '设置修改尚未确认：请先完成预览确认或取消编辑',
+      targets,
     }
   }
   return editorBridge?.blockingDraft?.() ?? null
@@ -424,6 +465,55 @@ const describeSaveFailure = (outcome: SaveOutcome): string => {
   }
 }
 
+/** Keep one shell-mounted notice for the exact structured draft. */
+function notifyBlockedDraft(draft: BlockingDraft): void {
+  const targets = draft.targets ?? []
+  blockedDraftNotice.value = targets.length > 0 ? { ...draft, targets } : null
+}
+
+function blockedTargetKey(target: SettingsDraftTarget): string {
+  return `${target.kind}:${target.id ?? ''}`
+}
+
+const BLOCKED_TARGET_LABELS: Record<SettingsDraftTargetKind, string> = {
+  profile: '姓名与园所',
+  class: '当前班级',
+  term: '学期',
+  'new-term': '新增学期',
+  override: '日历例外',
+  preview: '影响预览',
+  'pending-confirm': '未确认提交回执',
+  'context-read': '最新配置读取',
+  'ai-config': 'AI 配置',
+  'ai-prompts': 'AI 指导',
+  'game-config': '班级游戏配置',
+  'online-collaboration': '在线协作（待核对或预览）',
+}
+
+function blockedTargetLabel(target: SettingsDraftTarget): string {
+  const base = BLOCKED_TARGET_LABELS[target.kind]
+  if (target.kind !== 'term') return base
+  const term = context.value?.terms.find((item) => item.id === target.id)
+  return term ? `${base}：${term.name}` : base
+}
+
+function dismissBlockedDraft(): void {
+  blockedDraftNotice.value = null
+}
+
+/** Focus one blocked target in place; this never confirms or cancels. */
+function goToBlockedTarget(target: SettingsDraftTarget): void {
+  if (view.value.name === 'settings') {
+    focusSettingsTarget(target)
+    return
+  }
+  if (blockedDraftNotice.value?.kind !== 'settings') return
+  void leaveForAction('settings', goSettings).then((outcome) => {
+    if (outcome !== 'left') return
+    setTimeout(() => focusSettingsTarget(target), 0)
+  })
+}
+
 const coordinator = new LeaveCoordinator(
   {
     isDirty: () => editorBridge?.isDirty() ?? false,
@@ -438,6 +528,7 @@ const coordinator = new LeaveCoordinator(
   {
     describeFailure: describeSaveFailure,
     onFailure: (message) => ElMessage.warning(message),
+    onBlocked: (draft) => notifyBlockedDraft(draft),
   },
 )
 
@@ -651,11 +742,35 @@ function openMaintenance(): void {
   if (maintenanceLocked.value) return
   const draft = currentBlockingDraft()
   if (draft) {
+    notifyBlockedDraft(draft)
     ElMessage.warning(draft.message)
     return
   }
   maintenanceOpen.value = true
 }
+
+/** Recompute the notice from the live structured targets. */
+function refreshBlockedNotice(): void {
+  if (!settingsDraftActive.value) {
+    blockedDraftNotice.value = null
+    return
+  }
+  if (blockedDraftNotice.value?.kind !== 'settings') return
+  const targets =
+    settingsDraftTargets.value.length > 0
+      ? settingsDraftTargets.value
+      : currentSettingsTargets()
+  blockedDraftNotice.value =
+    targets.length > 0
+      ? { ...blockedDraftNotice.value, targets }
+      : null
+}
+
+watch(
+  () => [settingsDraftActive.value, settingsDraftTargets.value] as const,
+  () => refreshBlockedNotice(),
+  { deep: true },
+)
 
 function isSettingsDraftBlocking(): boolean {
   return view.value.name === 'settings' && settingsDraftActive.value
@@ -680,6 +795,15 @@ async function requestLeave(
   }
   if (maintenanceLocked.value) {
     ElMessage.warning('备份/恢复操作进行中：请先完成或取消当前维护面板')
+    return 'stayed'
+  }
+  if (
+    workbenchBusy.value
+    && (action.kind === 'close' || action.kind === 'settings')
+  ) {
+    ElMessage.warning(
+      '个人待办写入或未决结果尚未核对：请先回到工作台个人待办查询或重试',
+    )
     return 'stayed'
   }
   // Candidate / settings drafts are checked inside the single leave
@@ -926,7 +1050,12 @@ async function leaveForAction(
     const result = await run()
     return result ?? 'left'
   }
-  return requestLeave({ kind }, execute)
+  const result = await requestLeave({ kind }, execute)
+  if (result === 'left') {
+    blockedDraftNotice.value = null
+    settingsDraftTargets.value = []
+  }
+  return result
 }
 
 async function waitForExportIdle(timeoutMs = 120000): Promise<boolean> {
@@ -1008,18 +1137,22 @@ async function finishClose(closeRequestId: string): Promise<'left' | 'stayed'> {
   // draft (or an open preview) created during the wait keeps the page — the
   // close never applies, posts or discards it (spec §11.3 / D2 §5.4).
   if (
+    workbenchBusy.value ||
     observationsBusy.value ||
     editorBusy.value ||
     weeklyListBusy.value ||
     weeklyEditorBusy.value
   ) {
     ElMessage.warning(
-      '页面写操作仍在提交：已取消本次关闭并保留现场，请等待结果后重试',
+      workbenchBusy.value
+        ? '个人待办写入或未决结果尚未核对：已取消本次关闭，请回到工作台个人待办查询或重试'
+        : '页面写操作仍在提交：已取消本次关闭并保留现场，请等待结果后重试',
     )
     return 'stayed'
   }
   const draft = currentBlockingDraft()
   if (draft) {
+    notifyBlockedDraft(draft)
     ElMessage.warning(
       draft.kind === 'settings'
         ? '设置修改尚未确认：已取消本次关闭并保留设置输入，请先完成预览确认或取消编辑'
@@ -1366,6 +1499,9 @@ function applyUpdateStatus(next: unknown, seq: number): void {
 
 function scheduleUpdatePoll(): void {
   clearUpdatePoll()
+  // While a channel switch is being committed, this window must not start a
+  // poll that could race the host's authoritative switch snapshot.
+  if (updateSwitching.value) return
   // Poll while a host operation is in flight even if the panel was closed:
   // a startup check must still be able to prompt when it finishes.
   if (!isUpdateBusy(updateStatus.value)) return
@@ -1376,6 +1512,7 @@ function scheduleUpdatePoll(): void {
 }
 
 async function refreshUpdateStatus(): Promise<void> {
+  if (updateSwitching.value) return
   const seq = ++updateSeq
   try {
     const next = await hostGlobal()?.api?.get_update_state?.()
@@ -1393,8 +1530,9 @@ async function refreshUpdateStatus(): Promise<void> {
 
 async function checkForUpdate(manual: boolean): Promise<void> {
   if (manual) updateOpen.value = true
-  if (isUpdateBusy(updateStatus.value)) return
+  if (updateOperationBusy.value || isUpdateBusy(updateStatus.value)) return
   if (!manual) updateStartupPending = true
+  updateChecking.value = true
   const seq = ++updateSeq
   try {
     const next = await hostGlobal()?.api?.check_for_update?.()
@@ -1418,6 +1556,8 @@ async function checkForUpdate(manual: boolean): Promise<void> {
       install_available: false,
     } as UpdateStatus
     updateOpen.value = true
+  } finally {
+    updateChecking.value = false
   }
   if (seq === updateSeq) scheduleUpdatePoll()
 }
@@ -1432,6 +1572,7 @@ function openUpdateManual(): void {
 }
 
 async function downloadUpdate(): Promise<void> {
+  if (updateOperationBusy.value) return
   const seq = ++updateSeq
   try {
     const next = await hostGlobal()?.api?.start_update_download?.()
@@ -1467,8 +1608,81 @@ function retryUpdate(): void {
   void checkForUpdate(true)
 }
 
+async function switchUpdateChannel(channel: UpdateChannel): Promise<void> {
+  if (updateOperationBusy.value || isUpdateBusy(updateStatus.value)) return
+  // This is set synchronously before the first await: every check, download,
+  // install and second switch entry observes the commit in progress even if
+  // the synthetic host resolves replies out of order.
+  updateSwitching.value = true
+  const seq = ++updateSeq
+  try {
+    const next = await hostGlobal()?.api?.set_update_channel?.(channel)
+    if (seq !== updateSeq) return
+    applyUpdateStatus(next, seq)
+    updateStartupPending = false
+  } catch {
+    if (seq !== updateSeq) return
+    // The host may already have committed the switch even though the bridge
+    // reply was lost. Re-read its authoritative snapshot before showing the
+    // old channel as current.
+    let actual: unknown = null
+    try {
+      actual = await hostGlobal()?.api?.get_update_state?.()
+    } catch {
+      actual = null
+    }
+    if (seq !== updateSeq) return
+    updateStartupPending = false
+    const actualStatus = (
+      actual
+      && typeof actual === 'object'
+      && typeof (actual as { state?: unknown }).state === 'string'
+    )
+      ? (actual as UpdateStatus)
+      : null
+    if (actualStatus) {
+      // The host supplied its authoritative state. If it confirms the new
+      // channel, show it without a stale "switch failed" notice. If it is the
+      // exact old state (or an explicit failure), show the real state and let
+      // normal actions resume.
+      updateStatus.value = (
+        actualStatus.check_channel === channel
+        || actualStatus.state === 'failed'
+      )
+        ? actualStatus
+        : ({
+            ...actualStatus,
+            channel_switch_error: 'UPDATE_CHANNEL_SWITCH_FAILED',
+          } as UpdateStatus)
+    } else {
+      // Both the commit reply and the follow-up read were lost. Do not keep
+      // showing the pre-switch target or allow download/install/switch on an
+      // unknown host channel. The panel offers read-only refresh/recheck.
+      const previous = updateStatus.value
+      updateStatus.value = {
+        ...(previous ?? ({} as UpdateStatus)),
+        state: 'switch_unknown',
+        reason: 'UPDATE_CHANNEL_SWITCH_UNKNOWN',
+        target: null,
+        progress: { downloaded: 0, total: 0, percent: 0 },
+        release_notes: '',
+        error_code: 'UPDATE_CHANNEL_SWITCH_UNKNOWN',
+        error_message: null,
+        install_available: false,
+        download_available: false,
+        download_id: null,
+        channel_switch_available: false,
+        channel_switch_error: 'UPDATE_CHANNEL_SWITCH_UNKNOWN',
+      } as UpdateStatus
+    }
+  } finally {
+    updateSwitching.value = false
+  }
+  if (seq === updateSeq) scheduleUpdatePoll()
+}
+
 async function installUpdate(): Promise<void> {
-  if (installRequested.value) return
+  if (updateOperationBusy.value || installRequested.value) return
   installError.value = ''
   installRequested.value = true
   try {
@@ -1628,6 +1842,8 @@ onMounted(() => {
     downloadUpdate: () => downloadUpdate(),
     cancelUpdate: () => cancelUpdate(),
     installUpdate: () => installUpdate(),
+    switchUpdateChannel: (channel: UpdateChannel) => switchUpdateChannel(channel),
+    updateSwitching: () => updateSwitching.value,
     installRequested: () => installRequested.value,
     installError: () => installError.value,
   }
@@ -1792,10 +2008,12 @@ onMounted(() => {
       />
       <SettingsView
         v-else-if="view.name === 'settings'"
+        ref="settingsViewRef"
         :context="context!"
         :frozen="closeLocked"
-        @reload-context="reloadContext"
+        :reload-context="reloadContext"
         @draft-active="(active) => settingsDraftActive = active"
+        @draft-targets="(targets) => settingsDraftTargets = targets"
         @leave="onSettingsLeave"
         @open-maintenance="openMaintenance"
       />
@@ -1813,6 +2031,28 @@ onMounted(() => {
       @recovered="onMaintenanceRecovered"
       @completed="onMaintenanceCompleted"
     />
+
+    <el-card
+      v-if="blockedDraftNotice"
+      class="section blocked-draft-notice"
+      shadow="never"
+      data-d1="blocked-draft-notice"
+    >
+      <template #header>当前有未完成的设置</template>
+      <p>{{ blockedDraftNotice.message }}</p>
+      <div class="blocked-targets">
+        <el-button
+          v-for="target in blockedDraftNotice.targets ?? []"
+          :key="blockedTargetKey(target)"
+          size="small"
+          :data-d1="`blocked-target-${blockedTargetKey(target)}`"
+          @click="goToBlockedTarget(target)"
+        >
+          前往处理：{{ blockedTargetLabel(target) }}
+        </el-button>
+      </div>
+      <el-button size="small" text @click="dismissBlockedDraft">稍后处理</el-button>
+    </el-card>
 
     <el-dialog
       :model-value="closeChoiceVisible"
@@ -1845,11 +2085,15 @@ onMounted(() => {
       v-model:open="updateOpen"
       :status="updateStatus"
       :frozen="closeLocked"
+      :operation-busy="updateOperationBusy"
+      :switching="updateSwitching"
       @check="() => void checkForUpdate(true)"
       @download="() => void downloadUpdate()"
       @cancel="() => void cancelUpdate()"
       @retry="retryUpdate"
       @install="() => void installUpdate()"
+      @switch-channel="(channel) => void switchUpdateChannel(channel)"
+      @refresh="() => void refreshUpdateStatus()"
     />
   </div>
 </template>

@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
-from app.local import backup_barrier
+from app.local import backup_barrier, listening_direction
 from app.local import listening_service as service
 from app.local import observation_assets as obs
 from app.local.base import utc_now
@@ -89,6 +89,12 @@ class ListeningAssetProjectionMismatch(LocalError):
     code = "LISTENING_PROJECTION_MISMATCH"
     status_code = 409
     message = "倾听照片关联结构不一致"
+
+
+class ListeningRotationCommitUncertain(LocalError):
+    code = "LISTENING_ROTATION_COMMIT_UNCERTAIN"
+    status_code = 503
+    message = "照片方向提交结果不确定，请用原请求核对回执"
 
 
 def _map_observation_error(exc: BaseException) -> LocalError:
@@ -409,6 +415,7 @@ def _import_group_photo_impl(
                 width=inspection.width,
                 height=inspection.height,
                 orientation=inspection.orientation,
+                rotation_quarters=0,
                 created_at=now,
             )
         )
@@ -428,6 +435,7 @@ def _import_group_photo_impl(
             "width": inspection.width,
             "height": inspection.height,
             "orientation": inspection.orientation,
+            "rotation_quarters": 0,
             "byte_size": inspection.byte_size,
             "changed": True,
             "saved_at": now.isoformat(),
@@ -692,6 +700,182 @@ def reorder_groups(
         raise ListeningAssetStorage() from exc
 
 
+def _asset_for_group(
+    session: Session, record_id: str, domain: str, group_id: str
+):
+    group = _group_for(session, record_id, domain, group_id)
+    if not group.asset_id:
+        raise ListeningAssetNotFound()
+    asset = session.get(LocalListeningAsset, group.asset_id)
+    if asset is None or asset.record_id != record_id:
+        raise ListeningAssetProjectionMismatch()
+    return group, asset
+
+
+def read_rotations(
+    session: Session,
+    *,
+    profile_id: str,
+    record_id: str,
+) -> dict[str, Any]:
+    """Read-only map of current asset ids to manual quarter turns."""
+    with read_scope(session):
+        record, _context_value = service._load_record(
+            session, profile_id, record_id
+        )
+        assets = session.scalars(
+            select(LocalListeningAsset).where(
+                LocalListeningAsset.record_id == record_id
+            )
+        ).all()
+        by_id = {asset.id: asset for asset in assets}
+        rotations: dict[str, int] = {}
+        orientations: dict[str, int | None] = {}
+        for domain in service.DOMAINS:
+            for group in service._groups(session, record_id, domain):
+                if group.asset_id is None:
+                    continue
+                asset = by_id.get(group.asset_id)
+                if asset is None or asset.record_id != record_id:
+                    raise ListeningAssetProjectionMismatch()
+                rotations[asset.id] = int(asset.rotation_quarters or 0)
+                orientations[asset.id] = asset.orientation
+        return {
+            "record_id": record_id,
+            "revision": record.revision,
+            "rotations": rotations,
+            "orientations": orientations,
+        }
+
+
+def rotate_group_photo(
+    session: Session,
+    *,
+    profile_id: str,
+    record_id: str,
+    domain: str,
+    group_id: str,
+    request_id: Any,
+    expected_revision: Any,
+    rotation_quarters: Any,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Persist one manual display rotation without touching original bytes."""
+    rid = normalize_request_id(request_id)
+    revision = service._strict_revision(expected_revision)
+    if domain not in service.DOMAINS:
+        raise ListeningMaterialInvalid("领域标识不合法")
+    if not isinstance(group_id, str) or not group_id:
+        raise ListeningAssetNotFound()
+    try:
+        target = listening_direction.normalize_rotation_quarters(
+            rotation_quarters
+        )
+    except ValueError as exc:
+        raise ListeningMaterialInvalid(str(exc)) from None
+    fingerprint = service._fingerprint(
+        "listening_asset_rotate",
+        {
+            "profile_id": profile_id,
+            "record_id": record_id,
+            "domain": domain,
+            "group_id": group_id,
+            "expected_revision": revision,
+            "rotation_quarters": target,
+        },
+    )
+    with read_scope(session):
+        replay = service._replay(
+            session,
+            profile_id,
+            rid,
+            fingerprint,
+            expected_record_id=record_id,
+            expected_kind="listening_asset_rotate",
+        )
+    if replay is not None:
+        return replay
+
+    now = now or utc_now()
+    commit_started = False
+    try:
+        begin_immediate(session)
+        replay = service._replay(
+            session,
+            profile_id,
+            rid,
+            fingerprint,
+            expected_record_id=record_id,
+            expected_kind="listening_asset_rotate",
+        )
+        if replay is not None:
+            rollback(session)
+            return replay
+        record, _context_value = service._load_record(
+            session, profile_id, record_id
+        )
+        if record.revision != revision:
+            raise ListeningAssetRevisionConflict()
+        group, asset = _asset_for_group(
+            session, record_id, domain, group_id
+        )
+        old_rotation = int(asset.rotation_quarters or 0)
+        changed = old_rotation != target
+        if changed:
+            asset.rotation_quarters = target
+            record.revision += 1
+            record.updated_at = now
+        result = {
+            "record_id": record_id,
+            "domain": domain,
+            "group_id": group.id,
+            "asset_id": asset.id,
+            "revision": record.revision,
+            "old_rotation_quarters": old_rotation,
+            "rotation_quarters": int(asset.rotation_quarters or 0),
+            "orientation": asset.orientation,
+            "changed": changed,
+            "saved_at": now.isoformat(),
+        }
+        service._operation(
+            session,
+            profile_id=profile_id,
+            request_id=rid,
+            kind="listening_asset_rotate",
+            record_id=record_id,
+            fingerprint=fingerprint,
+            result=result,
+            now=now,
+        )
+        if changed:
+            service._audit(
+                session,
+                profile_id=profile_id,
+                action="listening_asset_rotate",
+                record_id=record_id,
+                revision_after=record.revision,
+                now=now,
+            )
+        commit_started = True
+        session.commit()
+        return result
+    except LocalError as exc:
+        rollback(session)
+        if commit_started:
+            raise ListeningRotationCommitUncertain() from exc
+        raise
+    except IntegrityError as exc:
+        rollback(session)
+        if commit_started:
+            raise ListeningRotationCommitUncertain() from exc
+        raise ListeningAssetStorage() from exc
+    except Exception as exc:
+        rollback(session)
+        if commit_started:
+            raise ListeningRotationCommitUncertain() from exc
+        raise ListeningAssetStorage() from exc
+
+
 def read_asset(
     session: Session,
     runtime: Any,
@@ -720,6 +904,7 @@ def read_asset(
             "width": asset.width,
             "height": asset.height,
             "orientation": asset.orientation,
+            "rotation_quarters": int(asset.rotation_quarters or 0),
         }
         relative = asset.relative_path
         expected_hash = asset.content_hash
@@ -745,8 +930,11 @@ __all__ = [
     "ListeningAssetRevisionConflict",
     "ListeningAssetRequestConflict",
     "ListeningAssetProjectionMismatch",
+    "ListeningRotationCommitUncertain",
     "import_group_photo",
     "read_asset",
+    "read_rotations",
     "remove_group_photo",
     "reorder_groups",
+    "rotate_group_photo",
 ]

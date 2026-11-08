@@ -15,6 +15,12 @@ import ts from 'typescript'
 import * as vue from 'vue'
 
 const d1Dir = path.dirname(fileURLToPath(import.meta.url))
+const editorSource = fs.readFileSync(
+  path.join(d1Dir, 'views/ListeningEditorView.vue'),
+  'utf8',
+)
+assert.doesNotMatch(editorSource, /data-d1="listening-observation-area"/)
+assert.match(editorSource, /data-d1="listening-goal-ai"/)
 let uuidCounter = 0
 function uuid() {
   uuidCounter += 1
@@ -365,6 +371,13 @@ function editorClient(overrides = {}) {
     apiGet: async (url) => {
       if (url === '/api/listening/records/record-1') return client.record
       if (url.startsWith('/api/listening/templates')) return client.templates
+      if (url === '/api/listening/records/record-1/photos/rotations') {
+        return {
+          record_id: 'record-1',
+          revision: client.revision,
+          rotations: {},
+        }
+      }
       throw new Error(`unexpected GET ${url}`)
     },
     apiPatch: async (url, body) => {
@@ -538,6 +551,19 @@ function sessionGoal(state) {
   await tick()
   assert.equal(state.canMutate.value, true)
   ok('AI busy blocks navigation but not its internal ensureSaved')
+}
+
+// A candidate edit/nullable adoption ticket blocks a domain switch; cancel
+// clears the draft and the same switch then succeeds.
+{
+  const { state } = await mountedEditor()
+  state.handleAiDraft(true)
+  await state.selectDomain('science')
+  assert.equal(state.state.domain, 'health')
+  state.handleAiDraft(false)
+  await state.selectDomain('science')
+  assert.equal(state.state.domain, 'science')
+  ok('AI candidate edits block tab switch until explicit cancel/adopt')
 }
 
 // Normal close uses the bridge settle then saveCurrent with final input.

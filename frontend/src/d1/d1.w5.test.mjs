@@ -616,6 +616,18 @@ async function testTrainerFacingLabels() {
   const lines = ai.sourceSummaryLines(adaptCandidate().source, 'daily_process_adapt')
   assert.ok(lines.some((line) => line.includes('小班')))
   assert.ok(!lines.some((line) => line.includes('small')))
+  const headerTimeout = ai.taskReasonLabel('response_header_timeout')
+  const incompleteTransfer = ai.taskReasonLabel('incomplete_transfer')
+  assert.match(headerTimeout, /响应头/)
+  assert.match(headerTimeout, /不会自动重发/)
+  assert.match(incompleteTransfer, /传输中断/)
+  assert.notEqual(headerTimeout, incompleteTransfer)
+  assert.match(ai.taskReasonLabel('malformed_response'), /无法解析/)
+  assert.match(ai.taskReasonLabel('wire_framing_invalid'), /分帧/)
+  assert.match(ai.taskReasonLabel('reasoning_only'), /推理/)
+  assert.match(ai.taskReasonLabel('output_length'), /长度上限/)
+  assert.match(ai.taskReasonLabel('candidate_contract_invalid'), /结构校验/)
+  assert.equal(ai.taskReasonLabel(null), '')
   ok('ai: trainer-facing labels hide internal task/grade keys with readable fallbacks')
 }
 
@@ -2791,10 +2803,38 @@ async function testCandidateOtherActivitiesSelectBoards() {
 // AiSettingsPanel (R08)
 // ---------------------------------------------------------------------------
 
+function promptPackageFixture(overrides = {}) {
+  return {
+    configured: true,
+    state: 'package',
+    active_source: 'package',
+    release_sequence: 7,
+    published_at: '2026-11-08T00:00:00Z',
+    notes: '合成默认指导更新',
+    last_checked_at: '2026-11-08T01:00:00Z',
+    last_result: 'updated',
+    message: '已启用提示词功能包 r7。',
+    allowed_tasks: ['daily_lesson_split'],
+    package_tasks: [
+      {
+        task_type: 'daily_lesson_split',
+        contract_version: 1,
+        default_revision: 3,
+      },
+    ],
+    pending_sequence: null,
+    client_version: '0.1.0',
+    prompt_sync_error: null,
+    ...overrides,
+  }
+}
+
 function settingsRoutes(extras = {}) {
   return {
     'GET /api/local/ai/config': () => jsonResponse(200, configFixture()),
     'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+    'GET /api/local/ai/prompt-package': () =>
+      jsonResponse(200, promptPackageFixture()),
     ...extras,
   }
 }
@@ -2963,6 +3003,15 @@ async function testSettingsPromptLostResponseKeepsSameKey() {
       return jsonResponse(200, promptFixture({ personal_revision: 2 }))
     },
     'GET /api/local/ai/operations/*': () => apiError(404, 'AI_OPERATION_NOT_FOUND', '未知'),
+    'POST /api/local/ai/prompt-package/check': () =>
+      jsonResponse(
+        200,
+        promptPackageFixture({
+          release_sequence: 11,
+          last_result: 'updated',
+          message: '已启用提示词功能包 r11。',
+        }),
+      ),
   })
   const { state } = await mountSettings({ routes })
   await settle()
@@ -2971,8 +3020,19 @@ async function testSettingsPromptLostResponseKeepsSameKey() {
   await state.savePrompt('daily_lesson_split')
   await settle()
   assert.match(state.errorText.value, /结果未知/)
-  assert.ok(state.pendingWrites.value.some((write) => write.key === 'prompt-daily_lesson_split'))
+  const pending = state.pendingWrites.value.find(
+    (write) => write.key === 'prompt-daily_lesson_split',
+  )
+  assert.ok(pending)
   assert.equal(state.draftActive.value, true, 'a pending write counts as a draft')
+  await state.checkPromptPackage()
+  await settle()
+  assert.equal(
+    state.pendingWrites.value.find((write) => write.key === 'prompt-daily_lesson_split')
+      .body.request_id,
+    pending.body.request_id,
+    'a package refresh must not replace an unresolved prompt receipt',
+  )
   // A normal re-save is refused while the key is unresolved (method-level).
   await state.savePrompt('daily_lesson_split')
   await settle()
@@ -3148,6 +3208,271 @@ async function testSettingsFrozenBlocksSave() {
   ok('settings R09: a frozen window blocks all AI setting writes')
 }
 
+function initialPackagePromptsFixture() {
+  return promptsFixture({
+    items: [
+      promptFixture({ latest_default_revision: 2 }),
+      promptFixture({ task_type: 'daily_process_adapt' }),
+      promptFixture({ task_type: 'daily_other_activities' }),
+    ],
+  })
+}
+
+function updatedPromptsFixture() {
+  return promptsFixture({
+    items: [
+      promptFixture({
+        latest_default_revision: 3,
+        guidance: { theme: '新版主题指导', process: '默认过程指导' },
+        fields: [
+          { key: 'theme', label: '主题指导', default_text: '新版主题指导' },
+          { key: 'process', label: '过程指导', default_text: '默认过程指导' },
+        ],
+      }),
+      promptFixture({ task_type: 'daily_process_adapt' }),
+      promptFixture({ task_type: 'daily_other_activities' }),
+    ],
+  })
+}
+
+async function testSettingsPromptPackageStatusAndCheck() {
+  let promptReads = 0
+  const routes = settingsRoutes({
+    'GET /api/local/ai/prompts': () => {
+      promptReads += 1
+      return jsonResponse(
+        200,
+        promptReads === 1 ? initialPackagePromptsFixture() : updatedPromptsFixture(),
+      )
+    },
+    'GET /api/local/ai/prompts/daily_lesson_split/defaults/1/2': () =>
+      jsonResponse(200, {
+        task_type: 'daily_lesson_split',
+        contract_version: 1,
+        default_revision: 2,
+        guidance: { theme: '旧版默认主题', process: '默认过程指导' },
+        fields: [
+          { key: 'theme', label: '主题指导', default_text: '旧版默认主题' },
+          { key: 'process', label: '过程指导', default_text: '默认过程指导' },
+        ],
+        bundle_hash: 'a'.repeat(64),
+      }),
+    'POST /api/local/ai/prompt-package/check': () =>
+      jsonResponse(
+        200,
+        promptPackageFixture({
+          release_sequence: 8,
+          last_result: 'updated',
+          message: '已启用提示词功能包 r8。',
+          package_tasks: [
+            {
+              task_type: 'daily_lesson_split',
+              contract_version: 1,
+              default_revision: 4,
+            },
+          ],
+        }),
+      ),
+  })
+  const { state, calls, emitted } = await mountSettings({ routes })
+  await settle()
+  assert.equal(state.promptPackage.value.release_sequence, 7)
+  assert.equal(state.promptPackage.value.state, 'package')
+  assert.equal(state.promptPackageChecking.value, false)
+  await state.viewDefault('daily_lesson_split')
+  await settle()
+  assert.equal(
+    state.defaults.value.daily_lesson_split.default_revision,
+    2,
+  )
+
+  await state.checkPromptPackage()
+  await settle()
+  assert.equal(state.promptPackage.value.release_sequence, 8)
+  assert.equal(state.promptPackage.value.message, '已启用提示词功能包 r8。')
+  assert.equal(state.promptPackageChecking.value, false)
+  assert.equal(promptReads, 2)
+  assert.equal(
+    state.prompts.value.find((item) => item.task_type === 'daily_lesson_split')
+      .latest_default_revision,
+    3,
+  )
+  assert.equal(
+    state.promptGuides.value.daily_lesson_split.theme,
+    '新版主题指导',
+  )
+  assert.equal(
+    state.defaults.value.daily_lesson_split.default_revision,
+    2,
+    'a viewed default keeps its identity after a package refresh',
+  )
+  assert.equal(callsTo(calls, 'POST', '/api/local/ai/prompt-package/check').length, 1)
+  assert.equal(state.draftActive.value, false)
+  assert.equal(emitted.at(-1)?.[0] === 'draft-active', true)
+  ok('settings: package update refreshes prompts once, preserves viewed default, and does not block manual work')
+}
+
+async function testSettingsPromptPackageRefreshPreservesDirtyGuidance() {
+  let promptReads = 0
+  const routes = settingsRoutes({
+    'GET /api/local/ai/prompts': () => {
+      promptReads += 1
+      return jsonResponse(200, promptReads === 1 ? promptsFixture() : updatedPromptsFixture())
+    },
+    'POST /api/local/ai/prompt-package/check': () =>
+      jsonResponse(
+        200,
+        promptPackageFixture({
+          release_sequence: 11,
+          last_result: 'updated',
+          message: '已启用提示词功能包 r11。',
+        }),
+      ),
+  })
+  const { state } = await mountSettings({ routes })
+  await settle()
+  setGuidanceFor(state, 'daily_lesson_split', 'theme', '教师未保存的指导')
+  await settle()
+  assert.equal(state.promptsDirty.value, true)
+
+  await state.checkPromptPackage()
+  await settle()
+  assert.equal(promptReads, 2)
+  assert.equal(
+    state.promptGuides.value.daily_lesson_split.theme,
+    '教师未保存的指导',
+  )
+  assert.equal(state.promptsDirty.value, true)
+  assert.equal(
+    state.prompts.value.find((item) => item.task_type === 'daily_lesson_split')
+      .latest_default_revision,
+    3,
+  )
+  ok('settings: package refresh merges new defaults without overwriting unsaved guidance')
+}
+
+async function testSettingsPromptPackageRefreshIgnoresLateOlderRead() {
+  let promptReads = 0
+  const firstRead = deferred()
+  const routes = settingsRoutes({
+    'GET /api/local/ai/prompts': async () => {
+      promptReads += 1
+      if (promptReads === 1) {
+        await firstRead.promise
+        return jsonResponse(200, promptsFixture())
+      }
+      return jsonResponse(200, updatedPromptsFixture())
+    },
+    'POST /api/local/ai/prompt-package/check': () =>
+      jsonResponse(
+        200,
+        promptPackageFixture({
+          release_sequence: 11,
+          last_result: 'updated',
+          message: '已启用提示词功能包 r11。',
+        }),
+      ),
+  })
+  const { state } = await mountSettings({ routes })
+  await settle()
+  await state.checkPromptPackage()
+  await settle()
+  assert.equal(promptReads, 2)
+  assert.equal(
+    state.prompts.value.find((item) => item.task_type === 'daily_lesson_split')
+      .latest_default_revision,
+    3,
+  )
+  firstRead.resolve()
+  await settle()
+  assert.equal(
+    state.prompts.value.find((item) => item.task_type === 'daily_lesson_split')
+      .latest_default_revision,
+    3,
+    'the late older prompt response is ignored',
+  )
+  assert.equal(
+    state.promptGuides.value.daily_lesson_split.theme,
+    '新版主题指导',
+  )
+  ok('settings: a late pre-update prompt read cannot overwrite the package refresh')
+}
+
+async function testSettingsPromptPackageCacheFallbackReloadsBuiltin() {
+  let promptReads = 0
+  const routes = settingsRoutes({
+    'GET /api/local/ai/prompts': () => {
+      promptReads += 1
+      return jsonResponse(200, initialPackagePromptsFixture())
+    },
+    'POST /api/local/ai/prompt-package/check': () =>
+      jsonResponse(
+        200,
+        promptPackageFixture({
+          state: 'cache_invalid',
+          active_source: 'builtin',
+          release_sequence: 7,
+          last_result: 'cache_invalid',
+          message: '本地功能包缓存校验失败；当前使用内置或已登记文字。',
+        }),
+      ),
+  })
+  const { state } = await mountSettings({ routes })
+  await settle()
+  await state.checkPromptPackage()
+  await settle()
+  assert.equal(promptReads, 2)
+  assert.equal(state.promptPackage.value.active_source, 'builtin')
+  assert.equal(state.promptPackage.value.state, 'cache_invalid')
+  assert.equal(
+    state.prompts.value.find((item) => item.task_type === 'daily_lesson_split')
+      .latest_default_revision,
+    2,
+  )
+  ok('settings: a cache-invalid fallback reloads builtin prompt state')
+}
+
+async function testSettingsPromptPackageUnconfiguredAndFailureKeepState() {
+  let promptReads = 0
+  const routes = settingsRoutes({
+    'GET /api/local/ai/prompts': () => {
+      promptReads += 1
+      return jsonResponse(200, promptsFixture())
+    },
+    'GET /api/local/ai/prompt-package': () =>
+      jsonResponse(
+        200,
+        promptPackageFixture({
+          configured: false,
+          state: 'unconfigured',
+          active_source: 'builtin',
+          release_sequence: null,
+          published_at: null,
+          notes: null,
+          last_result: 'unconfigured',
+          message: '提示词包来源未配置；当前使用程序内置文字。',
+          package_tasks: [],
+        }),
+      ),
+    'POST /api/local/ai/prompt-package/check': () =>
+      apiError(0, 'PACKAGE_OFFLINE', '断网'),
+  })
+  const { state, calls } = await mountSettings({ routes })
+  await settle()
+  assert.equal(state.promptPackage.value.configured, false)
+  assert.equal(state.promptPackage.value.active_source, 'builtin')
+  assert.match(state.promptPackage.value.message, /来源未配置/)
+
+  const before = state.promptPackage.value
+  await state.checkPromptPackage()
+  await settle()
+  assert.equal(state.promptPackage.value, before)
+  assert.match(state.errorText.value, /断网/)
+  assert.equal(callsTo(calls, 'POST', '/api/local/ai/prompt-package/check').length, 1)
+  assert.equal(promptReads, 1, 'unconfigured/failed checks do not reload prompts')
+  ok('settings: unconfigured package source stays builtin and a failed check keeps the last status')
+}
+
 // ---------------------------------------------------------------------------
 // GameConfigPanel (R08/R09)
 // ---------------------------------------------------------------------------
@@ -3158,6 +3483,68 @@ async function mountGameConfig({ routes, props = {} }) {
   const built = harness.setup('views/GameConfigPanel.vue', { frozen: false, ...props })
   harness.runMounted()
   return { harness, ...built, calls: fetchImpl.calls, hook: harness.window.__d1GameConfig }
+}
+
+const AiSettingsPanelStub = {
+  setup: () => () => null,
+}
+
+async function mountSettingsWithGameConfigDom({ routes, context = contextFixture(), reloadContext = () => new Promise(() => {}) }) {
+  const fetchImpl = router(routes)
+  const harness = new Harness({ fetchImpl })
+  const gameFile = path.join(d1Dir, 'views/GameConfigPanel.vue')
+  const gameSource = fs.readFileSync(gameFile, 'utf8')
+  const { descriptor: gameDescriptor } = parse(gameSource, { filename: gameFile })
+  const gameCompiled = compileScript(gameDescriptor, {
+    id: 'settings-game-dom',
+    inlineTemplate: true,
+  }).content
+  const gameComponent = harness._evaluate(gameCompiled, gameFile).default
+  harness.overrides['./GameConfigPanel.vue'] = gameComponent
+  harness.overrides['./AiSettingsPanel.vue'] = AiSettingsPanelStub
+  const settingsFile = path.join(d1Dir, 'views/SettingsView.vue')
+  const settingsSource = fs.readFileSync(settingsFile, 'utf8')
+  const { descriptor } = parse(settingsSource, { filename: settingsFile })
+  const compiled = compileScript(descriptor, {
+    id: 'settings-dom',
+    inlineTemplate: true,
+  }).content
+  const settingsComponent = harness._evaluate(compiled, settingsFile).default
+  const { root, ops } = createMiniDom()
+  const renderer = vue.createRenderer(ops)
+  const app = renderer.createApp({
+    render: () =>
+      vue.h(settingsComponent, {
+        context,
+        frozen: false,
+        reloadContext,
+        onDraftActive: () => {},
+        onLeave: () => {},
+        onOpenMaintenance: () => {},
+      }),
+  })
+  app.component('el-card', DomCardStub)
+  app.component('el-button', DomButtonStub)
+  app.component('el-input', DomInputStub)
+  app.component('el-select', DomSelectStub)
+  app.component('el-option', DomOptionStub)
+  app.component('el-tag', DomTagStub)
+  app.component('el-alert', DomAlertStub)
+  app.component('el-date-picker', DomInputStub)
+  app.component('el-table', DomCardStub)
+  app.component('el-table-column', DomCardStub)
+  app.mount(root)
+  harness.runMounted()
+  await settle()
+  return {
+    harness,
+    app,
+    root,
+    ops,
+    calls: fetchImpl.calls,
+    settings: harness.window.__d1Settings,
+    game: harness.window.__d1GameConfig,
+  }
 }
 
 async function testSettingsClearSecretKeepsLaterInput() {
@@ -3271,7 +3658,94 @@ async function testGameConfigConflictKeepsDraft() {
 }
 
 // ---------------------------------------------------------------------------
-// App: close-time task choice + live probe (R12/R13)
+async function testSettingsRealMountEmitsPerTermTargets() {
+  const context = vue.reactive(contextFixture({
+    terms: [
+      { id: 't1', name: '第一学期', start_date: '2026-09-01', end_date: '2026-09-30', current_calendar_revision_id: 'r1' },
+      { id: 't2', name: '第二学期', start_date: '2026-10-01', end_date: '2027-01-31', current_calendar_revision_id: 'r2' },
+    ],
+  }))
+  const mounted = await mountSettingsWithGameConfigDom({
+    routes: { 'GET /api/local/config/class-games': () => jsonResponse(200, classGamesFixture()) },
+    context,
+  })
+  const settings = mounted.settings
+  assert.equal(settings.draftTargets().length, 0, 'clean page has no targets')
+  settings.setProfile('待处理姓名', '合成园所')
+  await settle()
+  const targets = settings.draftTargets().map((target) => `${target.kind}:${target.id ?? ''}`)
+  assert.ok(targets.includes('profile:'), 'the edited name is a target')
+  assert.ok(!targets.some((item) => item.startsWith('term:')), 'unchanged terms are not targets')
+  mounted.harness.unmount()
+  ok('#11 real mounted settings exposes the structured targets used by the notice')
+}
+
+async function testSettingsRealMountFailedRefreshRecovers() {
+  let failReload = true
+  let reloadAttempts = 0
+  const applies = []
+  const context = vue.reactive(contextFixture())
+  const routes = {
+    'GET /api/local/config/class-games': () => jsonResponse(200, classGamesFixture()),
+    'POST /api/local/config/preview': ({ body }) => jsonResponse(200, {
+      expected_config_version: 1,
+      normalized_change: body.change,
+      changed: true,
+      preview_token: 'settings-token',
+      expires_at: 'x',
+      before: {},
+      after: {},
+      calendar_diff: [],
+      impact: { retained_header_count: 0, affected_plans: [], counts: {} },
+    }),
+    'POST /api/local/config/apply': ({ body }) => {
+      applies.push(body)
+      return jsonResponse(200, {
+        status: 'applied',
+        request_id: body.request_id,
+        config_version: 2,
+        changed: true,
+        affected_plan_ids: [],
+        calendar_revision_id: null,
+      })
+    },
+  }
+  const mounted = await mountSettingsWithGameConfigDom({
+    routes,
+    context,
+    reloadContext: async () => {
+      reloadAttempts += 1
+      if (failReload) throw new StubApiError(503, '合成配置读取失败', 'LOCAL_STORAGE_ERROR')
+      Object.assign(context, contextFixture({
+        profile: { id: 'u1', display_name: '已保存老师' },
+        school_name: '示范幼儿园',
+        config_version: 2,
+      }))
+      return context
+    },
+  })
+  const settings = mounted.settings
+  settings.setProfile('已保存老师', '示范幼儿园')
+  await settle()
+  await settings.confirmProfile()
+  await settle()
+  assert.equal(reloadAttempts, 1)
+  assert.equal(settings.contextReloadFailed(), true)
+  assert.equal(settings.pendingConfirm(), false)
+  assert.equal(applies.length, 1, 'the failed read must not re-send the apply')
+  settings.setClassDraft('失败期间的班级草稿')
+  await settle()
+  failReload = false
+  settings.retryContextRead()
+  await settle()
+  await waitUntil(() => settings.contextReloadFailed() === false && reloadAttempts === 2, 'manual re-read succeeds')
+  assert.equal(settings.classDraft(), '失败期间的班级草稿')
+  assert.equal(applies.length, 1, 'manual re-read never re-sends the settings apply')
+  mounted.harness.unmount()
+  ok('#3 real mounted Vue: failed refresh is recoverable, keeps drafts, never re-applies')
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
 function hostApi({ completeClose, closeState } = {}) {
@@ -3499,6 +3973,192 @@ async function testGameConfigInitialLoadGuard() {
   hook.addLocation()
   assert.equal(state.locations.value.length, 1)
   ok('game config R09: the first read is guarded (late initial load cannot wipe input)')
+}
+
+async function testSettingsCommittedVersionFeedsFirstGamePreview() {
+  let serverVersion = 1
+  let classGames = classGamesFixture()
+  const previews = []
+  const applies = []
+  const routes = {
+    'GET /api/local/config/class-games': () => jsonResponse(200, classGames),
+    'POST /api/local/config/preview': ({ body }) => {
+      previews.push(body)
+      if (body.expected_config_version !== serverVersion) {
+        return apiError(409, 'CONFIG_VERSION_CONFLICT', '版本冲突')
+      }
+      return jsonResponse(200, {
+        expected_config_version: body.expected_config_version,
+        normalized_change: body.change,
+        changed: true,
+        preview_token: body.change.kind === 'class_games' ? 'game-token' : 'settings-token',
+        expires_at: 'x',
+        before: {},
+        after: {},
+        calendar_diff: [],
+        impact: {
+          retained_header_count: 0,
+          affected_plans: [],
+          weekly_plans: [],
+          weekly_retained_header_count: 0,
+          counts: {},
+        },
+      })
+    },
+    'POST /api/local/config/apply': ({ body }) => {
+      applies.push(body)
+      if (body.expected_config_version !== serverVersion) {
+        return apiError(409, 'CONFIG_VERSION_CONFLICT', '版本冲突')
+      }
+      serverVersion += 1
+      if (body.change.kind === 'class_games') {
+        classGames = classGamesFixture({
+          config_version: serverVersion,
+          game_revision_id: 'gr2',
+          revision_no: 2,
+          change: body.change,
+        })
+      } else {
+        classGames = classGamesFixture({
+          config_version: serverVersion,
+          change: classGames.change,
+        })
+      }
+      return jsonResponse(200, {
+        status: 'applied',
+        request_id: body.request_id,
+        config_version: serverVersion,
+        changed: true,
+        affected_plan_ids: [],
+        calendar_revision_id: null,
+        game_revision_id: body.change.kind === 'class_games' ? 'gr2' : null,
+      })
+    },
+  }
+  const { calls, settings, game } = await mountSettingsWithGameConfigDom({ routes })
+  await settle()
+  assert.ok(settings)
+  assert.ok(game)
+  assert.equal(game.current().config_version, 1)
+  const readsBefore = callsTo(calls, 'GET', '/api/local/config/class-games').length
+  settings.setProfile('李老师', '示范幼儿园')
+  await settle()
+  await settings.previewProfile()
+  await settle()
+  await settings.applyPreview()
+  await settle()
+  await waitUntil(
+    () => game.current().config_version === 2,
+    'known ordinary config version in the game panel',
+  )
+  assert.equal(
+    callsTo(calls, 'GET', '/api/local/config/class-games').length,
+    readsBefore,
+    'the mounted game panel uses the known commit instead of re-reading class games',
+  )
+  game.setGameScope('户外为主')
+  await game.previewChange()
+  await settle()
+  assert.equal(previews.length, 2)
+  assert.equal(previews[1].change.kind, 'class_games')
+  assert.equal(previews[1].expected_config_version, 2)
+  await game.applyPreview()
+  await settle()
+  assert.equal(applies.length, 2)
+  assert.equal(applies[1].expected_config_version, 2)
+  assert.equal(serverVersion, 3)
+  assert.equal(game.current().config_version, 3)
+  assert.match(game.messageText(), /新配置版本 v3/)
+  ok('settings→game config: first preview uses the local v1→v2 commit; one apply advances once')
+}
+
+async function testGameConfigKnownCommitStillConflictsOnExternalChange() {
+  let loads = 0
+  const previews = []
+  const routes = {
+    'GET /api/local/config/class-games': () => {
+      loads += 1
+      return jsonResponse(
+        200,
+        classGamesFixture({ config_version: loads === 1 ? 1 : 3 }),
+      )
+    },
+    'POST /api/local/config/preview': ({ body }) => {
+      previews.push(body)
+      return apiError(409, 'CONFIG_VERSION_CONFLICT', '版本冲突')
+    },
+  }
+  const { state, hook } = await mountGameConfig({
+    routes,
+    props: { committedConfigVersion: { from: 1, to: 2 } },
+  })
+  await settle()
+  assert.equal(hook.current().config_version, 2)
+  hook.setGameScope('外部更新前的草稿')
+  await state.previewChange()
+  await settle()
+  assert.equal(previews.length, 1)
+  assert.equal(previews[0].expected_config_version, 2)
+  assert.match(state.errorText.value, /配置已被其他操作更新/)
+  assert.equal(hook.gameScope(), '外部更新前的草稿')
+  assert.equal(state.preview.value, null)
+  assert.equal(hook.current().config_version, 3)
+  assert.equal(loads, 2)
+  ok('game config: a known adjacent commit never hides a later external change')
+}
+
+async function testGameConfigKnownCommitPreservesExistingPreviewBinding() {
+  let serverVersion = 1
+  const previews = []
+  const applies = []
+  const routes = {
+    'GET /api/local/config/class-games': () =>
+      jsonResponse(200, classGamesFixture({ config_version: serverVersion })),
+    'POST /api/local/config/preview': ({ body }) => {
+      previews.push(body)
+      if (body.expected_config_version !== serverVersion) {
+        return apiError(409, 'CONFIG_VERSION_CONFLICT', '版本冲突')
+      }
+      return jsonResponse(200, {
+        expected_config_version: body.expected_config_version,
+        normalized_change: body.change,
+        changed: true,
+        preview_token: 'game-token',
+        expires_at: 'x',
+        before: {},
+        after: {},
+        calendar_diff: [],
+        impact: { retained_header_count: 0, affected_plans: [], counts: {} },
+      })
+    },
+    'POST /api/local/config/apply': ({ body }) => {
+      applies.push(body)
+      return apiError(409, 'CONFIG_VERSION_CONFLICT', '版本冲突')
+    },
+  }
+  const { state, hook, props } = await mountGameConfig({ routes })
+  await settle()
+  hook.setGameScope('旧的预览草稿')
+  await state.previewChange()
+  await settle()
+  assert.ok(state.preview.value)
+  const originalPreview = state.preview.value
+  serverVersion = 2
+  props.committedConfigVersion = { from: 1, to: 2 }
+  await settle()
+  assert.equal(hook.current().config_version, 1)
+  assert.equal(state.preview.value, originalPreview)
+  assert.equal(state.preview.value.expected_config_version, 1)
+  await state.applyPreview()
+  await settle()
+  assert.equal(applies.length, 1)
+  assert.equal(applies[0].expected_config_version, 1)
+  assert.match(state.errorText.value, /配置已被其他操作更新/)
+  assert.equal(hook.gameScope(), '旧的预览草稿')
+  assert.equal(state.preview.value, null)
+  assert.equal(hook.current().config_version, 2)
+  assert.equal(previews.length, 1)
+  ok('game config: a known commit never rebases an existing preview/apply binding')
 }
 
 async function testCloseKeepsWaitingWithLiveTasks() {
@@ -3838,6 +4498,11 @@ const tests = [
   testSettingsClearSecretKeepsLaterInput,
   testSettingsUnmountReleasesDraft,
   testSettingsFrozenBlocksSave,
+  testSettingsPromptPackageStatusAndCheck,
+  testSettingsPromptPackageRefreshPreservesDirtyGuidance,
+  testSettingsPromptPackageRefreshIgnoresLateOlderRead,
+  testSettingsPromptPackageCacheFallbackReloadsBuiltin,
+  testSettingsPromptPackageUnconfiguredAndFailureKeepState,
   testGameConfigReadPreviewApplyBeforeAfter,
   testGameConfigFrozenBlocksWrites,
   testGameConfigConflictKeepsDraft,
@@ -3845,6 +4510,11 @@ const tests = [
   testGameConfigQuerySuccessReleasesDraft,
   testGameConfigConfirmedIsServerState,
   testGameConfigInitialLoadGuard,
+  testSettingsCommittedVersionFeedsFirstGamePreview,
+  testSettingsRealMountFailedRefreshRecovers,
+  testSettingsRealMountEmitsPerTermTargets,
+  testGameConfigKnownCommitStillConflictsOnExternalChange,
+  testGameConfigKnownCommitPreservesExistingPreviewBinding,
   testCloseKeepsWaitingWithLiveTasks,
   testCloseProbePagesLiveTasks,
   testCloseProbeErrorIsConservative,

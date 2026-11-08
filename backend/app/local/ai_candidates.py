@@ -53,6 +53,7 @@ from app.local.tx import read_scope
 
 TARGET_GROUP_ACTIVITY = "group_activity"
 TARGET_PROCESS = "group_activity.process"
+TARGET_REFLECTION = "reflection"
 
 OTHER_BOARDS: tuple[str, ...] = (
     "morning_games",
@@ -88,6 +89,8 @@ def available_targets(task_type: str, raw: dict[str, Any]) -> list[str]:
         return [TARGET_GROUP_ACTIVITY]
     if task_type == "daily_process_adapt":
         return [TARGET_PROCESS]
+    if task_type == "daily_reflection_generate":
+        return [TARGET_REFLECTION]
     return [board for board in OTHER_BOARDS if raw.get(board) is not None]
 
 
@@ -294,6 +297,7 @@ __all__ = [
     "STATE_SOURCE_CHANGED",
     "TARGET_GROUP_ACTIVITY",
     "TARGET_PROCESS",
+    "TARGET_REFLECTION",
     "available_targets",
     "candidate_applicability",
     "chain",

@@ -11,19 +11,29 @@ import {
   getListeningAICandidate,
   getListeningAIOperation,
   getListeningAITask,
+  ListeningAIAdoptionResponseError,
+  listeningAIAdoptionIsUncertain,
+  listeningAIAdoptionPatch,
   listListeningAITasks,
   previewListeningAICandidate,
+  readListeningAIAdoptionResult,
+  readListeningGroupNotesCandidate,
+  readListeningGroupNotesPreview,
   taskIsLive,
+  type ListeningAIAdoptionExpectation,
   type ListeningAIAdoptionPreview,
   type ListeningAICandidateEnvelope,
   type ListeningAITask,
   type ListeningAITaskType,
+  type ListeningGroupNoteProposal,
 } from '../listening-ai'
 import { newRequestId, type ListeningDomain } from '../listening'
 
 interface GroupRef {
   group_id: string
   position: number | null
+  asset_id?: string | null
+  listening_text?: string | null
 }
 
 const props = defineProps<{
@@ -53,20 +63,29 @@ const pendingCreate = ref<{
   domain: ListeningDomain
   taskType: ListeningAITaskType
   groupId: string | null
+  photoPositions?: string
   expectedRevision: number
 } | null>(null)
 const error = ref('')
 const activeTaskId = ref('')
 const candidate = ref<ListeningAICandidateEnvelope | null>(null)
 const preview = ref<ListeningAIAdoptionPreview | null>(null)
+const groupNotes = ref<ListeningGroupNoteProposal[]>([])
+const groupNoteTexts = ref<Record<string, string>>({})
 const candidateLoading = ref(false)
 const adopting = ref(false)
 const adoptRequestId = ref('')
 const frozenAdoptSelections = ref<Array<Record<string, unknown>>>([])
 const frozenAdoptToken = ref('')
 const frozenAdoptRevision = ref(0)
+const frozenAdoptTaskType = ref<ListeningAITaskType | null>(null)
+const frozenAdoptGroupId = ref<string | null>(null)
+const frozenAdoptGroups = ref<
+  Array<{ group_id: string; position: number | null }>
+>([])
 const adoptedMessage = ref('')
 const noteText = ref('')
+const goalText = ref('')
 const overallText = ref('')
 const supportText = ref('')
 const itemValues = ref<Record<string, number | null>>({})
@@ -94,6 +113,15 @@ const groupId = computed(() =>
   props.groups[0]?.group_id ||
   '',
 )
+const photoGroups = computed(() =>
+  props.groups.filter((group) => Boolean(group.asset_id)),
+)
+const photoPositions = computed(() =>
+  photoGroups.value
+    .map((group) => group.position ?? 0)
+    .sort((left, right) => left - right),
+)
+const photoPositionsKey = computed(() => photoPositions.value.join(','))
 
 const activeTask = computed(
   () => tasks.value.find((task) => task.task_id === activeTaskId.value) ?? null,
@@ -140,6 +168,35 @@ function markDraft(): void {
   updateDraft()
 }
 
+function clearAdoptTicket(): void {
+  adoptRequestId.value = ''
+  frozenAdoptSelections.value = []
+  frozenAdoptToken.value = ''
+  frozenAdoptRevision.value = 0
+  frozenAdoptTaskType.value = null
+  frozenAdoptGroupId.value = null
+  frozenAdoptGroups.value = []
+}
+
+function frozenAdoptionExpectation(
+  requestId: string,
+): ListeningAIAdoptionExpectation {
+  const taskType = frozenAdoptTaskType.value
+  if (!taskType) {
+    throw new ListeningAIAdoptionResponseError('采用请求身份缺失')
+  }
+  return {
+    recordId: props.recordId,
+    domain: props.domain,
+    requestId,
+    expectedRevision: frozenAdoptRevision.value,
+    taskType,
+    groupId: frozenAdoptGroupId.value,
+    selections: frozenAdoptSelections.value,
+    groups: frozenAdoptGroups.value,
+  }
+}
+
 function clearPhaseFlags(): void {
   taskLoading.value = false
   creating.value = false
@@ -153,7 +210,10 @@ function clearTransient(): void {
   adoptedMessage.value = ''
   candidate.value = null
   preview.value = null
+  groupNotes.value = []
+  groupNoteTexts.value = {}
   noteText.value = ''
+  goalText.value = ''
   overallText.value = ''
   supportText.value = ''
   itemValues.value = {}
@@ -163,10 +223,7 @@ function clearTransient(): void {
   edited.value = false
   draft.value = false
   activeTaskId.value = ''
-  adoptRequestId.value = ''
-  frozenAdoptSelections.value = []
-  frozenAdoptToken.value = ''
-  frozenAdoptRevision.value = 0
+  clearAdoptTicket()
 }
 
 function stopPolling(): void {
@@ -259,10 +316,22 @@ async function loadCandidate(taskId: string): Promise<void> {
   const epoch = generation
   candidateLoading.value = true
   error.value = ''
+  preview.value = null
+  groupNotes.value = []
+  groupNoteTexts.value = {}
+  goalText.value = ''
   try {
     const envelope = await getListeningAICandidate(props.recordId, taskId)
     if (epoch !== generation) return
     candidate.value = envelope
+    if (envelope.task.task_type === 'listening_group_notes') {
+      // Re-check the raw candidate shape against the currently displayed
+      // photo positions before asking the server for adoption targets.
+      readListeningGroupNotesCandidate(
+        envelope.candidate,
+        photoPositions.value,
+      )
+    }
     const previewResult = await previewListeningAICandidate(
       props.recordId,
       envelope.candidate_id,
@@ -278,6 +347,21 @@ async function loadCandidate(taskId: string): Promise<void> {
         previewResult.target_states.listening_text === 'eligible'
           ? ['listening_text']
           : []
+    } else if (previewResult.task_type === 'listening_group_notes') {
+      const proposals = readListeningGroupNotesPreview(previewResult)
+      groupNotes.value = proposals
+      const texts: Record<string, string> = {}
+      for (const proposal of proposals) {
+        texts[proposal.target] = proposal.text
+        baseline[proposal.target] = proposal.text
+      }
+      groupNoteTexts.value = texts
+      selectedTargets.value = []
+    } else if (previewResult.task_type === 'listening_goal_suggest') {
+      const proposedGoal = String(previewResult.proposed.goal ?? '')
+      goalText.value = proposedGoal
+      baseline.goal = proposedGoal
+      selectedTargets.value = []
     } else {
       const proposedOverall = String(
         previewResult.proposed.overall_evaluation ?? '',
@@ -319,12 +403,28 @@ async function startTask(taskType: ListeningAITaskType): Promise<void> {
     error.value = '没有可用的倾听图文组'
     return
   }
+  if (taskType === 'listening_group_notes' && photoPositions.value.length === 0) {
+    error.value = '本领域没有可发送的有效照片图位'
+    return
+  }
+  if (
+    taskType === 'listening_goal_suggest' &&
+    !props.groups.some(
+      (group) =>
+        Boolean(group.asset_id) ||
+        Boolean((group.listening_text ?? '').trim()),
+    )
+  ) {
+    error.value = '本领域没有可发送的已保存文字或照片材料'
+    return
+  }
   error.value = ''
   const captured = {
     recordId: props.recordId,
     domain: props.domain,
     groupId: taskType === 'listening_note_draft' ? groupId.value : null,
     taskType,
+    photoPositions: photoPositionsKey.value,
     epoch: generation,
   }
   // Own the mutating phase before the internal save.  Navigation waits on
@@ -343,9 +443,11 @@ async function startTask(taskType: ListeningAITaskType): Promise<void> {
       props.recordId !== captured.recordId ||
       props.domain !== captured.domain ||
       (captured.taskType === 'listening_note_draft' &&
-        groupId.value !== captured.groupId)
+        groupId.value !== captured.groupId) ||
+      (captured.taskType === 'listening_group_notes' &&
+        photoPositionsKey.value !== captured.photoPositions)
     ) {
-      error.value = '保存期间页面身份已变化，未创建 AI 任务'
+      error.value = '保存期间页面身份或有效图位已变化，未创建 AI 任务'
       return
     }
     const request = {
@@ -455,10 +557,14 @@ async function checkCreateReceipt(): Promise<void> {
 }
 
 function toggleTarget(target: string, checked: boolean): void {
-  // One confirmed target per adoption request. Selecting another target
-  // replaces the single UI selection instead of submitting a batch that the
-  // backend would reject or partially adopt.
-  selectedTargets.value = checked ? [target] : []
+  // Multiple targets share one "adopt selected" request and one record
+  // revision.  Every target has its own before-hash on the server, so
+  // selecting more never broadens what may be written.
+  selectedTargets.value = checked
+    ? selectedTargets.value.includes(target)
+      ? selectedTargets.value
+      : [...selectedTargets.value, target]
+    : selectedTargets.value.filter((item) => item !== target)
   markDraft()
 }
 
@@ -482,6 +588,18 @@ function setItemStars(itemId: string, value: string): void {
   itemValues.value = {
     ...itemValues.value,
     [itemId]: value === '' ? null : Number(value),
+  }
+  markDraft()
+}
+
+function groupNoteValue(target: string): string {
+  return groupNoteTexts.value[target] ?? ''
+}
+
+function setGroupNoteText(target: string, value: string): void {
+  groupNoteTexts.value = {
+    ...groupNoteTexts.value,
+    [target]: value,
   }
   markDraft()
 }
@@ -510,8 +628,9 @@ function consumeAdoptedTargets(
 ): void {
   for (const item of adopted) {
     const target = String(item.target)
-    if (target === 'listening_text' || target === 'overall_evaluation'
-      || target === 'support_strategy') {
+    // Group-note targets and the three text fields carry a string value;
+    // evaluation targets carry only stars.
+    if ('value' in item) {
       adoptBaselineValue(target, String(item.value ?? ''))
     } else {
       adoptBaselineValue(
@@ -531,6 +650,24 @@ function candidateEditsDiffer(): boolean {
       targetIsEditable('listening_text') &&
       noteText.value !== String(baseline.listening_text ?? '')
     )
+  }
+  if (current.task_type === 'listening_goal_suggest') {
+    return (
+      targetIsEditable('goal') &&
+      goalText.value !== String(baseline.goal ?? '')
+    )
+  }
+  if (current.task_type === 'listening_group_notes') {
+    for (const proposal of groupNotes.value) {
+      if (!targetIsEditable(proposal.target)) continue
+      if (
+        groupNoteValue(proposal.target) !==
+        String(baseline[proposal.target] ?? '')
+      ) {
+        return true
+      }
+    }
+    return false
   }
   if (
     targetIsEditable('overall_evaluation') &&
@@ -556,7 +693,19 @@ function candidateEditsDiffer(): boolean {
 async function adopt(): Promise<void> {
   let current = preview.value
   const envelope = candidate.value
-  if (!current || !envelope || adopting.value || selectedTargets.value.length === 0) return
+  // A retry already has an original key/token/selections.  If that same-key
+  // attempt fails again, keep the uncertain ticket usable for receipt lookup
+  // instead of replacing it with a fresh request.  The frozen selections are
+  // authoritative for the retry, so an emptied checkbox list must not block it.
+  const resuming = adoptRequestId.value !== ''
+  if (
+    !current ||
+    !envelope ||
+    adopting.value ||
+    (!resuming && selectedTargets.value.length === 0)
+  ) {
+    return
+  }
   // Claim the phase before the preflight refresh so a second click cannot
   // start another preflight/POST and navigation sees the mutation barrier.
   adopting.value = true
@@ -566,9 +715,10 @@ async function adopt(): Promise<void> {
     if (!adoptRequestId.value) {
       // A previous POST may have committed while its response was lost, and a
       // normal save may also have advanced the record revision. Always refresh
-      // the frozen preview immediately before a *new* single-target adoption.
+      // the frozen preview immediately before a *new* adoption request.
+      let refreshed: ListeningAIAdoptionPreview | null = null
       try {
-        current = await previewListeningAICandidate(
+        refreshed = await previewListeningAICandidate(
           props.recordId,
           envelope.candidate_id,
         )
@@ -578,14 +728,20 @@ async function adopt(): Promise<void> {
         return
       }
       if (epoch !== generation) return
-      preview.value = current
-      const target = selectedTargets.value[0]
-      if (current.target_states[target] !== 'eligible') {
+      if (!refreshed) return
+      current = refreshed
+      preview.value = refreshed
+      const blocked = selectedTargets.value.find(
+        (target) => refreshed?.target_states[target] !== 'eligible',
+      )
+      if (blocked !== undefined) {
         error.value =
-          current.target_states[target] === 'adopted'
-            ? '该候选目标已经采用，请重新预览其它目标'
-            : '采用目标已被修改，请重新预览'
-        edited.value = false
+          refreshed.target_states[blocked] === 'adopted'
+            ? '所选目标中已有采用项，请取消该项后重试'
+            : '所选目标中有已被修改项，请重新预览'
+        // Keep every checkbox and edited value frozen so the teacher can
+        // correct the selection without losing work.
+        selectedTargets.value = [...selectedTargets.value]
         updateDraft()
         return
       }
@@ -598,6 +754,10 @@ async function adopt(): Promise<void> {
       for (const target of selectedTargets.value) {
         if (current.task_type === 'listening_note_draft') {
           selections.push({ target: 'listening_text', value: noteText.value })
+        } else if (current.task_type === 'listening_goal_suggest') {
+          selections.push({ target: 'goal', value: goalText.value })
+        } else if (current.task_type === 'listening_group_notes') {
+          selections.push({ target, value: groupNoteValue(target) })
         } else if (target === 'overall_evaluation') {
           selections.push({ target, value: overallText.value })
         } else if (target === 'support_strategy') {
@@ -610,47 +770,38 @@ async function adopt(): Promise<void> {
       frozenAdoptSelections.value = selections
       frozenAdoptToken.value = current.preview_token
       frozenAdoptRevision.value = current.revision
+      frozenAdoptTaskType.value = current.task_type
+      frozenAdoptGroupId.value = envelope.task.listening_group_id
+      frozenAdoptGroups.value = props.groups.map((group) => ({
+        group_id: group.group_id,
+        position: group.position,
+      }))
       updateDraft()
     }
-    const result = await adoptListeningAICandidate({
+    const sentRequestId = adoptRequestId.value
+    const raw = await adoptListeningAICandidate({
       recordId: props.recordId,
       candidateId: envelope.candidate_id,
-      requestId: adoptRequestId.value,
+      requestId: sentRequestId,
       expectedRevision: frozenAdoptRevision.value,
       previewToken: frozenAdoptToken.value,
       selections,
     })
     if (epoch !== generation) return
+    // A 2xx body is not enough: the server may have committed while returning
+    // a malformed or mismatched payload.  Validate the complete identity and
+    // every adopted item before touching the editor.
+    const result = readListeningAIAdoptionResult(
+      raw,
+      frozenAdoptionExpectation(sentRequestId),
+    )
+    const patch = listeningAIAdoptionPatch(result)
     adoptedMessage.value = `已采用 ${result.adopted.length} 项`
-    const patch: Record<string, unknown> = {}
-    for (const item of result.adopted) {
-      const target = String(item.target)
-      if (target === 'listening_text') {
-        patch.groups = [
-          {
-            group_id: envelope.task.listening_group_id,
-            listening_text: item.value,
-          },
-        ]
-      } else if (target === 'overall_evaluation') {
-        patch.overall_evaluation = item.value
-      } else if (target === 'support_strategy') {
-        patch.support_strategy = item.value
-      } else {
-        patch.evaluation = {
-          ...((patch.evaluation as Record<string, unknown>) || {}),
-          [target]: item.stars,
-        }
-      }
-    }
     // The adopted values become the candidate edit baseline.  A later
     // preview reports those targets as adopted; they must not be
     // re-classified as an unsaved draft because the raw proposal differs.
     consumeAdoptedTargets(result.adopted)
-    adoptRequestId.value = ''
-    frozenAdoptSelections.value = []
-    frozenAdoptToken.value = ''
-    frozenAdoptRevision.value = 0
+    clearAdoptTicket()
     selectedTargets.value = []
     edited.value = false
     updateDraft()
@@ -678,16 +829,21 @@ async function adopt(): Promise<void> {
     await loadTasks()
   } catch (exc) {
     if (epoch !== generation) return
-    if (exc instanceof ApiError && exc.status === 0) {
-      error.value =
-        '采用结果未知：原请求和预览已保留，请核对采用回执或明确重试，不会自动再写一次。'
-    } else {
-      adoptRequestId.value = ''
-      frozenAdoptSelections.value = []
-      frozenAdoptToken.value = ''
-      frozenAdoptRevision.value = 0
+    if (listeningAIAdoptionIsUncertain(exc)) {
       updateDraft()
+      error.value =
+        '采用结果不确定：原请求和预览已保留，请核对采用回执或明确重试，不会自动再写一次。'
+    } else {
+      // A new request that failed before commit is definite.  A same-key
+      // retry failure must not overwrite the original uncertain ticket.
+      if (!resuming) {
+        clearAdoptTicket()
+        updateDraft()
+      }
       error.value = exc instanceof Error ? exc.message : String(exc)
+      if (resuming) {
+        error.value += '（原未决请求仍保留，可核对回执）'
+      }
     }
   } finally {
     if (epoch === generation) adopting.value = false
@@ -703,42 +859,21 @@ async function checkAdoptReceipt(): Promise<void> {
   try {
     const receipt = await getListeningAIOperation(props.recordId, requestId)
     if (epoch !== generation) return
+    // Apply one receipt at most once: if the pending ticket changed while the
+    // read was in flight, this result no longer belongs to the current state.
+    if (adoptRequestId.value !== requestId) return
     if (receipt.operation_kind !== 'listening_ai_adopt') {
       error.value = '回执不是倾听 AI 采用操作'
       return
     }
-    const result = receipt.result as unknown as {
-      revision_after: number
-      adopted: Array<Record<string, unknown>>
-      group_id: string | null
-    }
+    const result = readListeningAIAdoptionResult(
+      receipt.result,
+      frozenAdoptionExpectation(requestId),
+    )
+    const patch = listeningAIAdoptionPatch(result)
     adoptedMessage.value = '采用回执已确认'
-    const patch: Record<string, unknown> = {}
-    for (const item of result.adopted) {
-      const target = String(item.target)
-      if (target === 'listening_text') {
-        patch.groups = [
-          {
-            group_id: result.group_id,
-            listening_text: item.value,
-          },
-        ]
-      } else if (target === 'overall_evaluation') {
-        patch.overall_evaluation = item.value
-      } else if (target === 'support_strategy') {
-        patch.support_strategy = item.value
-      } else {
-        patch.evaluation = {
-          ...((patch.evaluation as Record<string, unknown>) || {}),
-          [target]: item.stars,
-        }
-      }
-    }
     consumeAdoptedTargets(result.adopted)
-    adoptRequestId.value = ''
-    frozenAdoptSelections.value = []
-    frozenAdoptToken.value = ''
-    frozenAdoptRevision.value = 0
+    clearAdoptTicket()
     selectedTargets.value = []
     edited.value = false
     updateDraft()
@@ -808,7 +943,11 @@ onBeforeUnmount(() => {
   emit('draft', false)
 })
 
-defineExpose({ reset, markDraft })
+function startGoal(): void {
+  void startTask('listening_goal_suggest')
+}
+
+defineExpose({ reset, markDraft, startGoal })
 </script>
 
 <template>
@@ -835,16 +974,25 @@ defineExpose({ reset, markDraft })
       </el-select>
       <el-button
         size="small"
+        type="primary"
+        data-d1="listening-ai-group-notes"
+        :loading="creating && creatingType === 'listening_group_notes'"
+        :disabled="!canCreate || photoGroups.length === 0"
+        @click="startTask('listening_group_notes')"
+      >
+        整理本组倾听记录（{{ photoGroups.length }} 张有效照片）
+      </el-button>
+      <el-button
+        size="small"
         data-d1="listening-ai-note"
         :loading="creating && creatingType === 'listening_note_draft'"
         :disabled="!canCreate || !groupId"
         @click="startTask('listening_note_draft')"
       >
-        整理本组倾听记录
+        旧版单张建议
       </el-button>
       <el-button
         size="small"
-        type="primary"
         data-d1="listening-ai-domain"
         :loading="creating && creatingType === 'listening_domain_evaluate'"
         :disabled="!canCreate"
@@ -890,7 +1038,45 @@ defineExpose({ reset, markDraft })
         data-d1="listening-ai-photo-only"
         title="仅据照片起草，待教师核实；不会把画面推断写成幼儿原话。"
       />
-      <div v-if="preview.task_type === 'listening_note_draft'" class="target-block">
+      <div
+        v-if="preview.task_type === 'listening_group_notes'"
+        class="group-notes"
+        data-d1="listening-ai-group-notes-candidate"
+      >
+        <div
+          v-for="note in groupNotes"
+          :key="note.target"
+          class="target-block"
+          :data-position="note.position"
+          data-d1="listening-ai-group-note"
+        >
+          <el-checkbox
+            :model-value="selectedTargets.includes(note.target)"
+            :disabled="!canSelect(note.target)"
+            :data-d1="`listening-ai-select-group-${note.position}`"
+            @update:model-value="toggleTarget(note.target, $event === true)"
+          >
+            采用第 {{ note.position + 1 }} 组正文
+            <span class="muted">（{{ targetStateLabel(targetState(note.target)) }}）</span>
+          </el-checkbox>
+          <el-input
+            :model-value="groupNoteValue(note.target)"
+            type="textarea"
+            :rows="4"
+            :data-d1="`listening-ai-group-note-text-${note.position}`"
+            :disabled="adopting || !!adoptRequestId"
+            @update:model-value="setGroupNoteText(note.target, String($event))"
+          />
+          <div class="muted">当前：{{ note.current || '未填写' }}</div>
+          <div v-if="note.uncertainties.length" class="muted">
+            待核实：{{ note.uncertainties.join('；') }}
+          </div>
+        </div>
+        <p class="muted">
+          仅按实际发送图位返回；未勾选图位保持原文字。一次采用只保存所选图位并推进一次记录版本。
+        </p>
+      </div>
+      <div v-else-if="preview.task_type === 'listening_note_draft'" class="target-block">
         <el-checkbox
           :model-value="selectedTargets.includes('listening_text')"
           :disabled="!canSelect('listening_text')"
@@ -913,11 +1099,41 @@ defineExpose({ reset, markDraft })
         </div>
       </div>
 
+      <div
+        v-else-if="preview.task_type === 'listening_goal_suggest'"
+        class="target-block"
+      >
+        <el-checkbox
+          :model-value="selectedTargets.includes('goal')"
+          :disabled="!canSelect('goal')"
+          data-d1="listening-ai-select-goal"
+          @update:model-value="toggleTarget('goal', $event === true)"
+        >
+          采用观察目标
+          <span class="muted">（{{ targetStateLabel(targetState('goal')) }}）</span>
+        </el-checkbox>
+        <el-input
+          v-model="goalText"
+          type="textarea"
+          :rows="3"
+          data-d1="listening-ai-goal-text"
+          :disabled="adopting || !!adoptRequestId"
+          @update:model-value="markDraft"
+        />
+        <div
+          v-if="(preview.proposed.uncertainties as string[]).length"
+          class="muted"
+        >
+          待核实：{{ (preview.proposed.uncertainties as string[]).join('；') }}
+        </div>
+      </div>
+
       <template v-else>
         <div class="target-block">
           <el-checkbox
             :model-value="selectedTargets.includes('overall_evaluation')"
             :disabled="!canSelect('overall_evaluation')"
+            data-d1="listening-ai-select-overall"
             @update:model-value="toggleTarget('overall_evaluation', $event === true)"
           >
             采用综合评价
@@ -927,6 +1143,7 @@ defineExpose({ reset, markDraft })
             v-model="overallText"
             type="textarea"
             :rows="3"
+            data-d1="listening-ai-overall-text"
             :disabled="adopting || !!adoptRequestId"
             @update:model-value="markDraft"
           />
@@ -935,6 +1152,7 @@ defineExpose({ reset, markDraft })
           <el-checkbox
             :model-value="selectedTargets.includes('support_strategy')"
             :disabled="!canSelect('support_strategy')"
+            data-d1="listening-ai-select-support"
             @update:model-value="toggleTarget('support_strategy', $event === true)"
           >
             采用支持策略
@@ -944,6 +1162,7 @@ defineExpose({ reset, markDraft })
             v-model="supportText"
             type="textarea"
             :rows="3"
+            data-d1="listening-ai-support-text"
             :disabled="adopting || !!adoptRequestId"
             @update:model-value="markDraft"
           />
@@ -956,6 +1175,7 @@ defineExpose({ reset, markDraft })
           <el-checkbox
             :model-value="selectedTargets.includes(String(item.item_id))"
             :disabled="!canSelect(String(item.item_id))"
+            :data-d1="`listening-ai-select-item-${String(item.item_id)}`"
             @update:model-value="toggleTarget(String(item.item_id), $event === true)"
           >
             {{ String(item.requirement || item.level1 || item.item_id) }}
@@ -966,6 +1186,7 @@ defineExpose({ reset, markDraft })
             <el-select
               :model-value="itemSuggested(String(item.item_id)) === null ? '' : String(itemSuggested(String(item.item_id)))"
               size="small"
+              :data-d1="`listening-ai-stars-${String(item.item_id)}`"
               :disabled="adopting || !canSelect(String(item.item_id))"
               @update:model-value="setItemStars(String(item.item_id), String($event))"
             >
@@ -990,7 +1211,7 @@ defineExpose({ reset, markDraft })
           :disabled="adopting || !!adoptRequestId || selectedTargets.length === 0"
           @click="adopt"
         >
-          采用所选项（单项；不自动保存其它字段）
+          采用所选项（一次保存；未选保持原样）
         </el-button>
       </div>
     </template>

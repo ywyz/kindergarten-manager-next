@@ -27,6 +27,7 @@ export const TASK_TYPE_LABELS: Record<TaskType, string> = {
   daily_lesson_split: '教案拆分',
   daily_process_adapt: '过程适龄调整',
   daily_other_activities: '其他活动生成',
+  daily_reflection_generate: '活动反思生成',
 }
 
 export const TASK_TYPE_HINTS: Record<TaskType, string> = {
@@ -36,6 +37,8 @@ export const TASK_TYPE_HINTS: Record<TaskType, string> = {
     '仅按所选年级调整集体活动过程，不改其他字段与原始基准。',
   daily_other_activities:
     '生成晨间游戏、晨间谈话、集体活动后游戏与下午户外活动候选，按板块勾选采用。',
+  daily_reflection_generate:
+    '结合已保存的日计划与教师提供的实施材料生成反思正文，采用后保存。',
 }
 
 /** Statuses whose task is still live server-side (one live task per type). */
@@ -75,6 +78,13 @@ const REASON_LABELS: Record<string, string> = {
   tls_invalid: 'TLS 证书校验失败，已终止本次请求',
   connection_unavailable: '无法连接供应商：请检查网络与地址',
   timeout_after_dispatch: '发送后超时：结果不明，不会自动重发',
+  response_header_timeout: '已发出请求，但等待供应商响应头超时：结果不明，不会自动重发',
+  malformed_response: '供应商响应格式异常，无法解析：不会自动重发',
+  incomplete_transfer: '响应传输中断：结果不明，不会自动重发',
+  wire_framing_invalid: '响应分帧无效，传输未完整结束：结果不明，不会自动重发',
+  reasoning_only: '只收到推理内容，没有可用的最终正文：本次未生成候选，不会自动重发',
+  output_length: '供应商输出达到长度上限，内容已被截断：本次未生成候选，不会自动重发',
+  candidate_contract_invalid: '已收到完整响应，但候选结构校验未通过：本次未生成候选，不会自动重发',
   user_stop: '已按你的要求停止等待（不表示供应商已停止处理）',
   restart: '应用重启后暂停：需手动继续',
   source_changed: '生成输入已变化：只能重新发起，不会暗中换输入',
@@ -99,6 +109,7 @@ export function actionLabel(action: string): string {
 export const TARGET_LABELS: Record<string, string> = {
   group_activity: '集体活动六字段',
   'group_activity.process': '集体活动过程',
+  reflection: '反思正文',
   morning_games: '晨间游戏',
   morning_talk: '晨间谈话',
   post_group_games: '集体活动后游戏',
@@ -258,8 +269,77 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
+const AI_NUMBER_AFTER = /^[ \t]*(?:\d{1,3}(?:[、)）]|[.．](?![0-9A-Za-z]))|[（(]\d{1,3}[)）])/
+const AI_ROLE_AFTER = /^[ \t]*(?:师|幼|教师|幼儿)[:：]/
+const AI_ROLE_LINE = /^[ \t]*(?:师|幼|教师|幼儿)[:：]/
+const AI_PATH_TOKEN = /(?:[A-Za-z]:[\\/][^\s，。；：！？、]*|\\\\[^\s，。；：！？、\\]+\\[^\s，。；：！？、]*|[^\s\\/，。；：！？、]+\\[^\s\\/，。；：！？、]+\.[A-Za-z0-9]{1,8}|[^\s\\/，。；：！？、]+\\[^\s\\/，。；：！？、]+\\[^\s\\/，。；：！？、]+)/g
+const AI_ESCAPED_BREAK = /\\+n/g
+
+function escapeInsidePath(value: string, position: number): boolean {
+  const start = Math.max(0, position - 256)
+  const window = value.slice(start, position + 64)
+  if (!window.includes('\\') && !window.includes('/')) return false
+  const offset = position - start
+  for (const match of window.matchAll(AI_PATH_TOKEN)) {
+    const index = match.index ?? 0
+    if (index < offset && offset < index + match[0].length) return true
+  }
+  return false
+}
+
+/** Decode only structurally escaped newlines in AI candidate text. */
+export function normalizeAiText(value: string): string {
+  if (!value || (!value.includes('\\n') && !value.includes('\\\\n'))) return value
+  const startsMarker =
+    AI_NUMBER_AFTER.test(value.slice(0, 16)) || AI_ROLE_AFTER.test(value.slice(0, 16))
+  let numbered = 0
+  let lineStart = 0
+  let scan = 0
+  for (const match of value.matchAll(AI_ESCAPED_BREAK)) {
+    const index = match.index ?? 0
+    const chunk = value.slice(scan, index)
+    const newline = chunk.lastIndexOf('\n')
+    if (newline >= 0) lineStart = scan + newline + 1
+    const end = index + match[0].length
+    const after = value.slice(end, end + 64)
+    const nextChar = value.slice(end, end + 1)
+    const pathInternal = escapeInsidePath(value, index)
+    const internalWord = /^[A-Za-z]$/.test(nextChar)
+    if (AI_NUMBER_AFTER.test(after) && !pathInternal && !internalWord) numbered += 1
+    scan = end
+  }
+  let result = ''
+  let cursor = 0
+  lineStart = 0
+  scan = 0
+  for (const match of value.matchAll(AI_ESCAPED_BREAK)) {
+    const index = match.index ?? 0
+    const chunk = value.slice(scan, index)
+    const newline = chunk.lastIndexOf('\n')
+    if (newline >= 0) lineStart = scan + newline + 1
+    const end = index + match[0].length
+    const after = value.slice(end, end + 64)
+    const nextChar = value.slice(end, end + 1)
+    const pathInternal = escapeInsidePath(value, index)
+    const internalWord = /^[A-Za-z]$/.test(nextChar)
+    const roleLine = AI_ROLE_LINE.test(value.slice(lineStart, lineStart + 16))
+    const convert =
+      !pathInternal &&
+      !internalWord &&
+      (AI_ROLE_AFTER.test(after) ||
+        roleLine ||
+        (AI_NUMBER_AFTER.test(after) && (numbered >= 2 || startsMarker)))
+    result += value.slice(cursor, index)
+    result += convert ? '\n' : match[0]
+    cursor = end
+    if (convert) lineStart = end
+    scan = end
+  }
+  return result + value.slice(cursor)
+}
+
 function asString(value: unknown): string {
-  return typeof value === 'string' ? value : ''
+  return normalizeAiText(typeof value === 'string' ? value : '')
 }
 
 function asArray(value: unknown): unknown[] {
@@ -299,6 +379,14 @@ export function adaptEditFromRaw(raw: Record<string, unknown>): string {
 
 export function buildAdaptCandidate(process: string): Record<string, unknown> {
   return { process }
+}
+
+export function reflectionEditFromRaw(raw: Record<string, unknown>): string {
+  return asString(raw.reflection)
+}
+
+export function buildReflectionCandidate(reflection: string): Record<string, unknown> {
+  return { reflection }
 }
 
 function gamesFrom(value: unknown): GameEdit[] {
@@ -528,6 +616,9 @@ export function sourceSummaryLines(
   if (taskType === 'daily_process_adapt' && typeof excerpt.process === 'string') {
     lines.push('真实输入过程见下方“本次适龄调整所用过程”')
   }
+  if (taskType === 'daily_reflection_generate') {
+    lines.push('已保存计划只作原定安排；实施材料见下方')
+  }
   if (taskType === 'daily_other_activities') {
     // Judge by the frozen game-config *content*, not by key presence: the
     // backend returns the key even for an empty/absent revision.
@@ -606,6 +697,34 @@ export function sourceExcerptText(
       return { label: '本次适龄调整所用过程（真实输入，只读）', value: process }
     }
   }
+  if (taskType === 'daily_reflection_generate') {
+    const materials = excerpt.implementation_materials
+    const plan = asRecord(excerpt.plan_snapshot)
+    const group = asRecord(plan.group_activity)
+    const planLines = [
+      ['theme', '活动主题'],
+      ['objectives', '目标'],
+      ['preparation', '准备'],
+      ['key_points', '重点'],
+      ['difficult_points', '难点'],
+      ['process', '过程'],
+    ]
+      .map(([key, label]) => {
+        const value = group[key]
+        return typeof value === 'string' && value !== '' ? `${label}：${value}` : ''
+      })
+      .filter((line) => line !== '')
+    const parts: string[] = []
+    if (typeof materials === 'string' && materials !== '') {
+      parts.push(`实施材料：\n${materials}`)
+    }
+    if (planLines.length > 0) {
+      parts.push(`已保存计划（只读，只代表原定安排）：\n${planLines.join('\n')}`)
+    }
+    if (parts.length > 0) {
+      return { label: '本次反思的真实输入（只读）', value: parts.join('\n\n') }
+    }
+  }
   return null
 }
 
@@ -613,6 +732,7 @@ export function sourceExcerptText(
 export function candidateOutputLabel(taskType: TaskType): string {
   if (taskType === 'daily_process_adapt') return '调整后的活动过程（候选输出）'
   if (taskType === 'daily_lesson_split') return '拆分出的集体活动六字段（候选输出）'
+  if (taskType === 'daily_reflection_generate') return '反思正文（候选输出，可编辑）'
   return '候选输出的活动板块'
 }
 

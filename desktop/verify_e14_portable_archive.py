@@ -22,13 +22,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from verify_e14_package import (
+    DEFAULT_APP_VERSION,
+    DEFAULT_CHANNEL,
+    MIGRATIONS as SOURCE_MIGRATIONS,
+    build_identity_checks,
+    discover_migration_chain,
+    package_info_matches_freeze_commit,
+    package_info_matches_freeze_identity,
+    resolve_release_identity,
+    source_migration_files,
+    source_migration_tree_files,
+)
+
 PRODUCT = "KGNext-E14"
 README_NAME = "README-KGNext-E14-win11-r01.txt"
 ARCHIVE_NAME = "KGNext-E14-win11-r01.zip"
 MANIFEST = "package-files.json"
 SUMS = "SHA256SUMS.txt"
-DATABASE_REVISION = "20261107_0010_local_listening_ai"
-APP_VERSION = "0.1.0"
+APP_VERSION = DEFAULT_APP_VERSION
 LISTENING_TEMPLATE_GRADES = ("small", "middle", "large")
 LISTENING_TEMPLATE_DOMAINS = ("health", "language", "social", "science", "art")
 LISTENING_TEMPLATE_DOCX = tuple(
@@ -137,10 +149,24 @@ REQUIRED_ARCHIVE_CHECKS = (
     "package_info_portable",
     "package_info_metadata_exact",
     "package_info_matches_manifest",
+    "build_identity_present",
+    "build_identity_valid",
+    "build_identity_uuid",
+    "build_identity_not_source_id",
+    "build_identity_fields_exact",
+    "build_identity_matches_package_info",
+    "package_info_identity_matches",
+    "package_info_migration_files_present",
+    "package_info_migration_files_exact",
+    "package_info_migration_tree_exact",
+    "package_info_migration_tree_matches_source",
+    "package_info_migration_files_match_source",
     "source_freeze_present",
     "source_freeze_schema",
     "source_freeze_stable",
     "source_freeze_matches_manifest",
+    "package_info_matches_freeze_identity",
+    "package_info_matches_freeze_commit",
     "package_dir_matches_zip",
     "no_private_audit_entries",
     "no_private_material",
@@ -465,6 +491,9 @@ def _load_freeze_basic(path: Path) -> dict:
         "commit": None,
         "schema": False,
         "stable": False,
+        "version": None,
+        "channel": None,
+        "identity_ok": False,
         "errors": [],
     }
     if not path.is_file():
@@ -483,6 +512,17 @@ def _load_freeze_basic(path: Path) -> dict:
     if not isinstance(report, dict):
         result["errors"].append("freeze root not an object")
         return result
+    try:
+        freeze_version, freeze_channel = resolve_release_identity(
+            report.get("version", DEFAULT_APP_VERSION),
+            report.get("channel", DEFAULT_CHANNEL),
+        )
+    except ValueError as exc:
+        result["errors"].append(f"freeze release identity invalid: {exc}")
+    else:
+        result["version"] = freeze_version
+        result["channel"] = freeze_channel
+        result["identity_ok"] = True
     before = report.get("before")
     after = report.get("after")
     if not isinstance(before, dict) or not isinstance(after, dict):
@@ -491,6 +531,11 @@ def _load_freeze_basic(path: Path) -> dict:
     before_files, before_errors = _freeze_files_map(before.get("files"))
     after_files, after_errors = _freeze_files_map(after.get("files"))
     result["errors"].extend(before_errors + after_errors)
+    result["migration_files"] = {
+        relative: item
+        for relative, item in before_files.items()
+        if relative.startswith("backend/migrations_local/")
+    }
     before_digest = _freeze_digest(before_files.values()) if before_files else None
     after_digest = _freeze_digest(after_files.values()) if after_files else None
     result["digest"] = before_digest
@@ -508,6 +553,7 @@ def _load_freeze_basic(path: Path) -> dict:
         and bool(COMMIT_RE.match(result["commit"]))
         and isinstance(before.get("generated_at"), str)
         and isinstance(after.get("generated_at"), str)
+        and result["identity_ok"]
     )
     result["schema"] = bool(schema)
     declared = report.get("changes")
@@ -582,7 +628,12 @@ def _validate_manifest(data: Any, product: str) -> dict:
         build_id_ok = True
     except (ValueError, TypeError, AttributeError):
         build_id_ok = False
-    revision_ok = data.get("database_revision") == DATABASE_REVISION
+    try:
+        expected_revision = str(discover_migration_chain(SOURCE_MIGRATIONS)["head_revision"])
+    except ValueError as exc:
+        result["errors"].append(f"source migration chain invalid: {exc}")
+        expected_revision = ""
+    revision_ok = bool(expected_revision) and data.get("database_revision") == expected_revision
     freeze_digest = data.get("source_freeze_digest")
     digest_ok = isinstance(freeze_digest, str) and bool(SHA_RE.match(freeze_digest))
     generated_ok = isinstance(data.get("generated_at"), str) and bool(data.get("generated_at"))
@@ -1162,10 +1213,26 @@ def main(argv: list[str] | None = None) -> int:
                 and package_info.get("package") == args.product
                 and not Path(str(package_info.get("package"))).is_absolute()
             )
+            try:
+                expected_version, expected_channel = resolve_release_identity(
+                    package_info.get("version"), package_info.get("channel", "stable")
+                )
+                expected_revision = str(
+                    discover_migration_chain(SOURCE_MIGRATIONS)["head_revision"]
+                )
+                expected_migrations = source_migration_files(SOURCE_MIGRATIONS)
+            except ValueError:
+                expected_version = ""
+                expected_channel = ""
+                expected_revision = ""
+                expected_migrations = []
             checks["package_info_metadata_exact"] = bool(
                 isinstance(package_info, dict)
-                and package_info.get("version") == APP_VERSION
-                and package_info.get("database_revision") == DATABASE_REVISION
+                and bool(expected_version)
+                and package_info.get("version") == expected_version
+                and package_info.get("channel", "stable") == expected_channel
+                and package_info.get("database_revision") == expected_revision
+                and package_info.get("migrations") == expected_migrations
                 and package_info.get("unsigned_internal_test") is True
                 and isinstance(package_info.get("source_commit"), str)
                 and bool(COMMIT_RE.match(package_info.get("source_commit", "")))
@@ -1202,10 +1269,113 @@ def main(argv: list[str] | None = None) -> int:
                 and package_info.get("database_revision") == manifest_data.get("database_revision")
                 and package_info.get("source_freeze_digest") == manifest_data.get("source_freeze_digest")
             )
+            identity_name = f"{PRODUCT}/_internal/build_identity.json"
+            build_identity: dict = {}
+            if identity_name in names:
+                try:
+                    build_identity = _read_json_bytes(
+                        _read_member_bytes(zf, identity_name, MAX_JSON_BYTES)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    report["errors"].append(
+                        f"build_identity: {type(exc).__name__}: {exc}"
+                    )
+                    build_identity = {}
+            identity = build_identity_checks(build_identity, package_info)
+            checks["build_identity_present"] = identity_name in names
+            checks["build_identity_valid"] = bool(identity["valid"])
+            checks["build_identity_uuid"] = bool(identity["uuid"])
+            checks["build_identity_not_source_id"] = bool(identity["not_source_id"])
+            checks["build_identity_fields_exact"] = bool(identity["fields_exact"])
+            checks["build_identity_matches_package_info"] = bool(
+                identity["matches_package_info"]
+            )
+            checks["package_info_identity_matches"] = bool(
+                identity["valid"] and identity["matches_package_info"]
+            )
+            report["build_identity"] = {
+                key: value for key, value in identity.items() if key != "data"
+            }
+            if identity["errors"]:
+                report["errors"].extend(identity["errors"])
+
+            migration_prefix = f"{PRODUCT}/_internal/migrations_local/"
+            migration_source_prefix = "backend/migrations_local/"
+            expected_migration_members = {
+                f"{migration_prefix}{relative}"
+                for relative in expected_migrations
+            }
+            actual_migration_members = {
+                name
+                for name in names
+                if name.startswith(migration_prefix) and name.endswith(".py")
+            }
+            checks["package_info_migration_files_present"] = bool(
+                expected_migrations
+                and expected_migration_members.issubset(names)
+            )
+            checks["package_info_migration_files_exact"] = bool(
+                expected_migrations
+                and actual_migration_members == expected_migration_members
+            )
+
+            freeze_migrations = freeze.get("migration_files") or {}
+            source_migration_tree = {
+                f"{migration_source_prefix}{relative}"
+                for relative in source_migration_tree_files(SOURCE_MIGRATIONS)
+            }
+            checks["package_info_migration_tree_matches_source"] = bool(
+                freeze_migrations
+                and set(freeze_migrations) == source_migration_tree
+            )
+            expected_tree_members = {
+                f"{migration_prefix}{relative[len(migration_source_prefix):]}"
+                for relative in freeze_migrations
+                if relative.startswith(migration_source_prefix)
+            }
+            actual_tree_members = {
+                name for name in names if name.startswith(migration_prefix)
+            }
+            checks["package_info_migration_tree_exact"] = bool(
+                freeze_migrations
+                and expected_tree_members == actual_tree_members
+            )
+            migration_bytes_ok = bool(freeze_migrations)
+            for relative, entry in freeze_migrations.items():
+                if not relative.startswith(migration_source_prefix):
+                    migration_bytes_ok = False
+                    continue
+                member = f"{migration_prefix}{relative[len(migration_source_prefix):]}"
+                source_path = SOURCE_MIGRATIONS / relative[len(migration_source_prefix):]
+                if member not in names or not source_path.is_file():
+                    migration_bytes_ok = False
+                    continue
+                try:
+                    member_size, member_sha = _hash_member(zf, member)
+                    source_size = source_path.stat().st_size
+                    source_sha = _sha256_file(source_path)
+                except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+                    migration_bytes_ok = False
+                    continue
+                if (
+                    type(entry.get("size")) is not int
+                    or not isinstance(entry.get("sha256"), str)
+                    or member_size != entry["size"]
+                    or member_sha != entry["sha256"]
+                    or source_size != entry["size"]
+                    or source_sha != entry["sha256"]
+                ):
+                    migration_bytes_ok = False
+            checks["package_info_migration_files_match_source"] = (
+                migration_bytes_ok
+            )
             report["package_info"] = {
                 "package": package_info.get("package"),
+                "version": package_info.get("version"),
+                "channel": package_info.get("channel", "stable"),
                 "build_id": package_info.get("build_id"),
                 "database_revision": package_info.get("database_revision"),
+                "source_commit": package_info.get("source_commit"),
                 "source_freeze_digest": package_info.get("source_freeze_digest"),
                 "unsigned_internal_test": package_info.get("unsigned_internal_test"),
             }
@@ -1215,6 +1385,12 @@ def main(argv: list[str] | None = None) -> int:
                 and isinstance(manifest_data, dict)
                 and manifest_data.get("source_freeze_digest") == freeze.get("digest")
                 and package_info.get("source_freeze_digest") == freeze.get("digest")
+            )
+            checks["package_info_matches_freeze_identity"] = (
+                package_info_matches_freeze_identity(freeze, package_info)
+            )
+            checks["package_info_matches_freeze_commit"] = (
+                package_info_matches_freeze_commit(freeze, package_info)
             )
 
             if package_dir is None:

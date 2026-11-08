@@ -532,6 +532,7 @@ class ReadyReceiptWriter:
         expected = self.plan.target
         if (
             self.identity.app_id != expected["app_id"]
+            or self.identity.channel != expected["channel"]
             or self.identity.version != expected["version"]
             or self.identity.build_id != expected["build_id"]
             or self.identity.package_format != expected["package_format"]

@@ -186,6 +186,8 @@ VISION_TASK_TYPES = (
     "game_observation_rewrite",
     "listening_note_draft",
     "listening_domain_evaluate",
+    "listening_group_notes",
+    "listening_goal_suggest",
 )
 VISION_SCHEMA_VERSION = 1
 VISION_CONTRACT_VERSIONS = (1,)
@@ -207,7 +209,7 @@ def validate_vision_header(header: Any) -> bool:
         if task_type not in ("game_observation_generate", "game_observation_rewrite"):
             return False
     elif source_kind == "one_to_one_listening":
-        if task_type not in ("listening_note_draft", "listening_domain_evaluate"):
+        if task_type not in ai_transport.LISTENING_VISION_TASK_TYPES:
             return False
         if not isinstance(header.get("listening_record_id"), str) or not header.get("listening_record_id"):
             return False

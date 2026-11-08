@@ -20,13 +20,13 @@
 
 [Setup]
 AppId={{6F2B8E7A-5C4D-4A3E-9B1F-7D2C8A6E4F10}
-AppName=Kindergarten Manager 一对一倾听测试版
+AppName=幼儿园信息管理系统
 AppVersion={#MyAppVersion}
-AppVerName=Kindergarten Manager 一对一倾听测试版 {#MyAppVersion}
+AppVerName=幼儿园信息管理系统 {#MyAppVersion}
 AppPublisher=Kindergarten Manager
-AppComments=Unsigned test build {#MyBuildId}
+AppComments=一对一倾听测试版 - Unsigned test build {#MyBuildId}
 DefaultDirName={localappdata}\Programs\KindergartenManagerListeningTest
-DefaultGroupName=Kindergarten Manager 一对一倾听测试版
+DefaultGroupName=幼儿园信息管理系统
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 UsePreviousAppDir=no
@@ -41,11 +41,11 @@ MinVersion=10.0
 RestartApplications=no
 CloseApplications=no
 UninstallDisplayIcon={app}\KGNext-E14.exe
-UninstallDisplayName=Kindergarten Manager 一对一倾听测试版
+UninstallDisplayName=幼儿园信息管理系统
 SignedUninstaller=no
 
 [Files]
 Source: "{#MyPackageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{userprograms}\Kindergarten Manager 一对一倾听测试版\一对一倾听测试版"; Filename: "{app}\KGNext-E14.exe"; WorkingDir: "{app}"; Parameters: "--data ""{localappdata}\KindergartenManagerListeningTest\data"" --credential-root ""{localappdata}\KindergartenManagerListeningTest\credentials"""
+Name: "{userprograms}\幼儿园信息管理系统\幼儿园信息管理系统"; Filename: "{app}\KGNext-E14.exe"; WorkingDir: "{app}"; Parameters: "--data ""{localappdata}\KindergartenManagerListeningTest\data"" --credential-root ""{localappdata}\KindergartenManagerListeningTest\credentials"""

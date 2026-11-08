@@ -95,6 +95,7 @@ from app.local.observation_ai_inputs import (
     material_image_urls,
     preflight_vision_request,
     project_input,
+    validate_observation_input,
     value_hash,
     vision_capability,
 )
@@ -120,7 +121,7 @@ from app.local.observation_validation import (
     canonical_json,
     normalize_payload,
 )
-from app.local.prompt_bundles import CandidateInvalid, validate_candidate, validate_input
+from app.local.prompt_bundles import CandidateInvalid, validate_candidate
 from app.local.tx import begin_immediate, read_scope, rollback
 
 OP_CREATE = "observation_ai_task_create"
@@ -132,6 +133,66 @@ REVIEW_DECISION = "adopt_reviewed"
 _STATE_ELIGIBLE = "eligible"
 _STATE_SOURCE_CHANGED = "source_changed"
 _STATE_CONTRACT_OBSOLETE = "contract_obsolete"
+_REQUEST_EXTRA_KEYS = ("revision_instruction", "base_candidate")
+_REVISION_INSTRUCTION_MAX_CHARS = 500
+
+
+def _normalize_optional_text(value: Any, label: str, max_length: int) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise LocalValidationError(f"{label} 必须是字符串")
+    text = value.strip()
+    if text == "":
+        return None
+    if len(text) > max_length:
+        raise LocalValidationError(f"{label} 超过长度上限")
+    return text
+
+
+def _request_extras(input_row: LocalAIInput) -> dict[str, Any]:
+    """The frozen regeneration context that is not a current body column."""
+    payload = dict(input_row.payload_json or {})
+    return {
+        key: payload[key]
+        for key in _REQUEST_EXTRA_KEYS
+        if key in payload
+    }
+
+
+def _validated_edited_candidate(
+    task_type: str, raw: dict[str, Any], edited: Any
+) -> dict[str, Any]:
+    """Validate a teacher edit against the frozen candidate contract.
+
+    A generate edit carries all four columns; a rewrite edit carries its one
+    fixed target.  Unknown fields, wrong structures and a changed rewrite
+    target are refused before any preview token is issued.
+    """
+    if not isinstance(edited, dict):
+        raise LocalValidationError("编辑后的候选必须是对象")
+    try:
+        validated = validate_candidate(task_type, edited)
+    except CandidateInvalid as exc:
+        raise LocalValidationError(f"编辑后的候选结构无效：{exc}") from None
+    if task_type == "game_observation_rewrite":
+        available = _available_targets(task_type, raw)
+        if len(available) != 1 or validated.get("target") != available[0]:
+            raise LocalValidationError("单栏重写只能编辑原候选目标")
+    return validated
+
+
+def _edited_values(
+    raw: dict[str, Any],
+    task_type: str,
+    edited: dict[str, Any] | None,
+    selected: list[str],
+) -> dict[str, Any]:
+    source = edited if edited is not None else raw
+    return {
+        target: _candidate_value(source, task_type, target)
+        for target in selected
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +491,7 @@ def load_observation_material(runtime: Any, pick: Any) -> tuple[dict[str, Any] |
                 return None, "schema_unsupported"
             payload = dict(inp.payload_json or {})
             try:
-                validate_input(inp.task_type, payload)
+                validate_observation_input(inp.task_type, payload)
             except CandidateInvalid:
                 return None, "input_invalid"
             profile_id = state.profile_id
@@ -544,7 +605,7 @@ def load_observation_material(runtime: Any, pick: Any) -> tuple[dict[str, Any] |
 
 def _validate_projected(projected: Any) -> None:
     try:
-        validate_input(projected.task_type, projected.payload)
+        validate_observation_input(projected.task_type, projected.payload)
     except CandidateInvalid as exc:
         raise LocalAiInputInvalid("观察 AI 输入结构无效") from exc
 
@@ -634,6 +695,93 @@ def _preflight_observation_size(
 # ---------------------------------------------------------------------------
 
 
+def observation_create_identity(
+    *,
+    profile_id: str,
+    observation_id: str,
+    task_type: str,
+    expected_revision: int,
+    expected_hash: str,
+    target: str | None,
+    base_candidate_id: Any = None,
+    revision_instruction: Any = None,
+) -> tuple[dict[str, Any], str | None, str | None]:
+    """Build the shared create fingerprint, omitting absent optional fields.
+
+    The pre-#16 ordinary create receipt had no optional keys.  They are added
+    only when a valid regeneration request is present, so an old same-key
+    receipt still replays while a real instruction/base change still conflicts.
+    """
+    base_id = _normalize_optional_text(
+        base_candidate_id, "base_candidate_id", 64
+    )
+    instruction = _normalize_optional_text(
+        revision_instruction,
+        "revision_instruction",
+        _REVISION_INSTRUCTION_MAX_CHARS,
+    )
+    if instruction is not None and base_id is None:
+        raise LocalValidationError("定向修改要求必须绑定原候选")
+    payload: dict[str, Any] = {
+        "source_kind": "game_observation",
+        "source_id": observation_id,
+        "profile_id": profile_id,
+        "observation_id": observation_id,
+        "task_type": task_type,
+        "expected_revision": expected_revision,
+        "expected_hash": expected_hash,
+        "target": target,
+    }
+    if base_id is not None:
+        payload["base_candidate_id"] = base_id
+    if instruction is not None:
+        payload["revision_instruction"] = instruction
+    return payload, base_id, instruction
+
+
+def _validate_regeneration_base(
+    session: Session,
+    *,
+    profile_id: str,
+    observation_id: str,
+    task_type: str,
+    target: str | None,
+    expected_revision: int,
+    base_candidate_id: str,
+    record: Any,
+    draft: Any,
+    manifest: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Bind regeneration to the exact original candidate and saved revision."""
+    candidate, raw, _execution, input_row = _candidate_chain(
+        session,
+        profile_id=profile_id,
+        observation_id=observation_id,
+        candidate_id=base_candidate_id,
+    )
+    if candidate.task_type != task_type:
+        raise LocalValidationError("原候选任务类型与本次重新生成不一致")
+    if task_type == "game_observation_rewrite" and raw.get("target") != target:
+        raise LocalValidationError("原候选重写目标与本次请求不一致")
+    if input_row.source_revision != expected_revision:
+        raise LocalValidationError("原候选绑定的保存修订与本次请求不一致")
+    state, diff = _source_state(
+        session,
+        profile_id=profile_id,
+        observation_id=observation_id,
+        candidate=candidate,
+        input_row=input_row,
+        record=record,
+        draft=draft,
+        manifest=manifest,
+    )
+    if state == _STATE_CONTRACT_OBSOLETE:
+        raise LocalAiContractObsolete()
+    if state != _STATE_ELIGIBLE:
+        raise LocalAiSourceChanged(details=diff)
+    return raw
+
+
 def create_observation_task(
     session: Session,
     runtime: Any,
@@ -645,6 +793,8 @@ def create_observation_task(
     expected_hash: Any,
     target: Any = None,
     request_id: Any,
+    base_candidate_id: Any = None,
+    revision_instruction: Any = None,
 ) -> tuple[dict[str, Any], bool]:
     if task_type not in OBSERVATION_TASK_TYPES:
         raise LocalValidationError("不支持的观察 AI 任务类型")
@@ -661,20 +811,18 @@ def create_observation_task(
             raise LocalValidationError("生成任务不接受 target")
     elif target not in TARGETS:
         raise LocalValidationError("重写目标不合法")
-    rid = _normalize_request_id(request_id)
-    fingerprint = _fingerprint(
-        OP_CREATE,
-        {
-            "source_kind": "game_observation",
-            "source_id": observation_id,
-            "profile_id": profile_id,
-            "observation_id": observation_id,
-            "task_type": task_type,
-            "expected_revision": expected_revision,
-            "expected_hash": expected_hash,
-            "target": target,
-        },
+    fingerprint_payload, base_id, instruction = observation_create_identity(
+        profile_id=profile_id,
+        observation_id=observation_id,
+        task_type=task_type,
+        expected_revision=expected_revision,
+        expected_hash=expected_hash,
+        target=target,
+        base_candidate_id=base_candidate_id,
+        revision_instruction=revision_instruction,
     )
+    rid = _normalize_request_id(request_id)
+    fingerprint = _fingerprint(OP_CREATE, fingerprint_payload)
     with read_scope(session):
         receipt = _find_receipt(session, profile_id, rid)
     if receipt is not None:
@@ -691,6 +839,20 @@ def create_observation_task(
                     "current_payload_hash": draft.payload_hash,
                 }
             )
+        base_raw = None
+        if base_id is not None:
+            base_raw = _validate_regeneration_base(
+                session,
+                profile_id=profile_id,
+                observation_id=observation_id,
+                task_type=task_type,
+                target=target,
+                expected_revision=expected_revision,
+                base_candidate_id=base_id,
+                record=record,
+                draft=draft,
+                manifest=manifest,
+            )
         projected = project_input(
             session,
             profile_id=profile_id,
@@ -700,6 +862,8 @@ def create_observation_task(
             record=record,
             draft=draft,
             manifest=manifest,
+            base_candidate=base_raw,
+            revision_instruction=instruction,
         )
         _validate_projected(projected)
         _require_ai_ready(session, task_type)
@@ -741,6 +905,20 @@ def create_observation_task(
         if active is not None:
             raise LocalAiTaskActive(details={"task_id": active.id})
         _require_ai_ready(session, task_type)
+        base_raw = None
+        if base_id is not None:
+            base_raw = _validate_regeneration_base(
+                session,
+                profile_id=profile_id,
+                observation_id=observation_id,
+                task_type=task_type,
+                target=target,
+                expected_revision=expected_revision,
+                base_candidate_id=base_id,
+                record=record,
+                draft=draft,
+                manifest=manifest,
+            )
         projected = project_input(
             session,
             profile_id=profile_id,
@@ -750,6 +928,8 @@ def create_observation_task(
             record=record,
             draft=draft,
             manifest=manifest,
+            base_candidate=base_raw,
+            revision_instruction=instruction,
         )
         _validate_projected(projected)
         input_id = new_opaque_id()
@@ -1192,6 +1372,7 @@ def _source_state(
         return _STATE_CONTRACT_OBSOLETE, {}
     payload = dict(draft.payload_json or {})
     target = input_row.payload_json.get("target") if isinstance(input_row.payload_json, dict) else None
+    request_extras = _request_extras(input_row)
     try:
         projected = project_input(
             session,
@@ -1202,6 +1383,7 @@ def _source_state(
             record=record,
             draft=draft,
             manifest=manifest,
+            dependency_overrides=request_extras or None,
         )
     except Exception:  # noqa: BLE001 - not projectable is a source change
         return _STATE_SOURCE_CHANGED, {"changed_fields": ["source"]}
@@ -1226,7 +1408,7 @@ def _source_state(
                 record=record,
                 draft=draft,
                 manifest=manifest,
-                dependency_overrides=overrides,
+                dependency_overrides={**request_extras, **overrides},
             )
         except Exception:  # noqa: BLE001
             trusted = None
@@ -1564,10 +1746,13 @@ def get_candidate(
         detail["raw_candidate"] = raw
         deps = dict(inp.dependencies_json or {})
         internal = dict(deps.get("internal") or {})
+        wire = dict(deps.get("wire") or {})
+        for key in _REQUEST_EXTRA_KEYS:
+            wire.pop(key, None)
         detail["source"] = {
             "source_revision": inp.source_revision,
             "dependency_hash": inp.dependency_hash,
-            "dependencies": dict(deps.get("wire") or {}),
+            "dependencies": wire,
             "internal_context": {
                 "internal_schema_version": internal.get("internal_schema_version"),
                 "wire_schema_version": internal.get("wire_schema_version"),
@@ -1692,6 +1877,7 @@ def preview_adoption(
     expected_hash: Any,
     selected_targets: Any,
     request_id: Any,
+    edited_candidate: Any = None,
 ) -> dict[str, Any]:
     if (
         not isinstance(expected_revision, int)
@@ -1720,6 +1906,11 @@ def preview_adoption(
             candidate_id=candidate_id,
         )
         selected = _validate_targets(raw, candidate.task_type, selected_targets)
+        edited = (
+            _validated_edited_candidate(candidate.task_type, raw, edited_candidate)
+            if edited_candidate is not None
+            else None
+        )
         state, diff = _source_state(
             session,
             profile_id=profile_id,
@@ -1734,12 +1925,10 @@ def preview_adoption(
             raise LocalAiContractObsolete()
         current_payload = dict(draft.payload_json or {})
         before = {target: _target_value(current_payload, target) for target in selected}
-        after = {
-            target: _candidate_value(raw, candidate.task_type, target)
-            for target in selected
-        }
+        after = _edited_values(raw, candidate.task_type, edited, selected)
         before_hashes = {target: value_hash(before[target]) for target in selected}
         after_hashes = {target: value_hash(after[target]) for target in selected}
+        request_extras = _request_extras(inp)
         current_dependency_hash = project_input(
             session,
             profile_id=profile_id,
@@ -1751,6 +1940,7 @@ def preview_adoption(
             record=record,
             draft=draft,
             manifest=manifest,
+            dependency_overrides=request_extras or None,
         ).dependency_hash
         hints = _review_hints(
             session,
@@ -1788,6 +1978,9 @@ def preview_adoption(
         "material_identities": identities,
         "material_sources": _material_sources(photo_dicts),
     }
+    if edited is not None:
+        payload["edited_candidate"] = edited
+        payload["edit_hash"] = value_hash(edited)
     token, expires = _TOKENS.issue(payload, now)
     return {
         "adoption_token": token,
@@ -1965,6 +2158,16 @@ def adopt(
         selected = _validate_targets(raw, candidate.task_type, selected_targets)
         if selected != payload.get("targets"):
             raise LocalAiPreviewExpired(details={"reason": "target_binding"})
+        edited = payload.get("edited_candidate")
+        if edited is not None:
+            edited = _validated_edited_candidate(
+                candidate.task_type, raw, edited
+            )
+            if value_hash(edited) != payload.get("edit_hash"):
+                raise LocalAiPreviewExpired(details={"reason": "edit_changed"})
+        after_values = _edited_values(
+            raw, candidate.task_type, edited, selected
+        )
         state, diff = _source_state(
             session,
             profile_id=profile_id,
@@ -1985,6 +2188,7 @@ def adopt(
             if review_decision != REVIEW_DECISION:
                 raise LocalAiSourceChanged(details=diff)
         current_payload = dict(draft.payload_json or {})
+        request_extras = _request_extras(inp)
         current_dependency_hash = project_input(
             session,
             profile_id=profile_id,
@@ -1996,13 +2200,14 @@ def adopt(
             record=record,
             draft=draft,
             manifest=manifest,
+            dependency_overrides=request_extras or None,
         ).dependency_hash
         if current_dependency_hash != payload.get("dependency_hash"):
             raise LocalAiPreviewExpired(details={"reason": "late_edit"})
         for target in selected:
             if value_hash(_target_value(current_payload, target)) != payload["before_hashes"][target]:
                 raise LocalAiTargetChanged()
-            if value_hash(_candidate_value(raw, candidate.task_type, target)) != payload["after_hashes"][target]:
+            if value_hash(after_values[target]) != payload["after_hashes"][target]:
                 raise LocalAiPreviewExpired(details={"reason": "candidate_changed"})
         owners, owner_hashes = _operation_owners(
             session, profile_id=profile_id, observation_id=observation_id
@@ -2027,7 +2232,7 @@ def adopt(
             key: value for key, value in current_payload.items() if key != "term_snapshot"
         }
         for target in selected:
-            raw_payload[target] = _candidate_value(raw, candidate.task_type, target)
+            raw_payload[target] = after_values[target]
         merged = normalize_payload(
             raw_payload, term_snapshot=current_payload.get("term_snapshot")
         )

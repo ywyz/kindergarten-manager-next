@@ -82,6 +82,45 @@ export interface ObservationPayload {
   analysis_evaluation: Record<EvaluationKey, string>
 }
 
+export const OBSERVATION_PHOTO_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/bmp',
+] as const
+
+const OBSERVATION_PHOTO_EXTENSIONS = new Set([
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'gif',
+  'bmp',
+])
+
+/**
+ * Ordinary file drops and the file input share the same supported-image
+ * boundary.  A wrong MIME type is never accepted merely because the name has
+ * an image extension; an empty/unknown MIME type may use the extension so
+ * filesystems that do not supply a type still work (the server still sniffs
+ * the actual bytes).
+ */
+export function isSupportedObservationPhoto(file: {
+  name?: string | null
+  type?: string | null
+}): boolean {
+  const type = String(file.type ?? '').toLowerCase()
+  if ((OBSERVATION_PHOTO_MIME_TYPES as readonly string[]).includes(type)) {
+    return true
+  }
+  if (type !== '') return false
+  const name = String(file.name ?? '')
+  const dot = name.lastIndexOf('.')
+  if (dot < 0) return false
+  return OBSERVATION_PHOTO_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())
+}
+
 export interface ObservationPhoto {
   asset_id: string
   content_hash: string
@@ -411,6 +450,104 @@ export function candidateTargetText(
     return String(raw.text ?? '')
   }
   return String(raw[target] ?? '')
+}
+
+export type ObservationCandidateEditValue =
+  | string
+  | Record<EvaluationKey, string>
+
+export type ObservationCandidateEdit = Record<
+  string,
+  ObservationCandidateEditValue
+>
+
+function evaluationEdit(
+  value: unknown,
+): Record<EvaluationKey, string> {
+  const source = (value ?? {}) as Record<string, unknown>
+  return Object.fromEntries(
+    EVALUATION_KEYS.map((key) => [key, String(source[key] ?? '')]),
+  ) as Record<EvaluationKey, string>
+}
+
+/** Build the editable candidate exactly from the raw candidate body. */
+export function candidateEditFromRaw(
+  taskType: string,
+  raw: Record<string, unknown>,
+  targets: string[] = availableTargets(taskType, raw),
+): ObservationCandidateEdit {
+  const edit: ObservationCandidateEdit = {}
+  for (const target of targets) {
+    if (target === 'analysis_evaluation') {
+      edit[target] = evaluationEdit(raw.analysis_evaluation)
+    } else if (taskType === 'game_observation_rewrite') {
+      edit[target] = String(raw.text ?? '')
+    } else {
+      edit[target] = String(raw[target] ?? '')
+    }
+  }
+  return edit
+}
+
+function stringEditValue(
+  edit: ObservationCandidateEdit,
+  target: string,
+  fallback: unknown,
+): string {
+  if (target === 'analysis_evaluation') return ''
+  const value = edit[target]
+  return typeof value === 'string' ? value : String(fallback ?? '')
+}
+
+/** Build the full frozen-contract candidate sent for server validation. */
+export function editedCandidateFromEdit(
+  taskType: string,
+  raw: Record<string, unknown>,
+  edit: ObservationCandidateEdit,
+): Record<string, unknown> {
+  if (taskType === 'game_observation_rewrite') {
+    const target = String(raw.target ?? '')
+    if (target === 'analysis_evaluation') {
+      return {
+        target,
+        analysis_evaluation:
+          edit.analysis_evaluation &&
+          typeof edit.analysis_evaluation === 'object'
+            ? evaluationEdit(edit.analysis_evaluation)
+            : evaluationEdit(raw.analysis_evaluation),
+      }
+    }
+    return {
+      target,
+      text: stringEditValue(edit, target, raw.text),
+    }
+  }
+  return {
+    observation_goal: stringEditValue(
+      edit,
+      'observation_goal',
+      raw.observation_goal,
+    ),
+    observation_process: stringEditValue(
+      edit,
+      'observation_process',
+      raw.observation_process,
+    ),
+    analysis_evaluation: evaluationEdit(
+      edit.analysis_evaluation ?? raw.analysis_evaluation,
+    ),
+    support_strategy: stringEditValue(
+      edit,
+      'support_strategy',
+      raw.support_strategy,
+    ),
+  }
+}
+
+export function candidateEditSignature(
+  edit: ObservationCandidateEdit,
+): string {
+  return JSON.stringify(edit)
 }
 
 /** Split photos into bounded display chunks (never all originals at once). */

@@ -223,6 +223,23 @@ async function waitUntil(condition, what = 'condition') {
   throw new Error(`timed out waiting for ${what}`)
 }
 
+async function bounded(promise, ms = 5000, label = 'operation') {
+  let timer
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} exceeded ${ms}ms`)),
+          ms,
+        )
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 function jsonResponse(status, body) {
   return {
     ok: status >= 200 && status < 300,
@@ -1004,6 +1021,245 @@ async function main() {
     ok('late input during a save is never overwritten and stays dirty')
   }
 
+  // -- R03: auto save keeps typing controls and live normalized text --------
+  {
+    let current = currentFixture()
+    const patches = []
+    const firstStarted = deferred()
+    const firstReply = deferred()
+    const { app, mountEl, harness } = await mountEditorDom({
+      routes: {
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'PATCH /api/observations/o1': ({ body }) => {
+          patches.push(body)
+          firstStarted.resolve()
+          return firstReply.promise
+        },
+      },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    hook.setSubject(0, 'Synthetic child ')
+    hook.setField('environment', 'Synthetic area ')
+    hook.cancelAutoSave()
+    const saving = hook.saveNow('auto')
+    await firstStarted.promise
+    assert.equal(patches.length, 1)
+    assert.equal(patches[0].save_reason, 'auto')
+    assert.equal(patches[0].payload.subjects[0].name, 'Synthetic child')
+    assert.equal(patches[0].payload.environment, 'Synthetic area ')
+    assert.equal(hook.editDisabled(), true)
+    assert.equal(byD1(mountEl, 'obs-subject-0').props.disabled, false)
+    assert.equal(byD1(mountEl, 'obs-environment').props.disabled, false)
+    assert.equal(byD1(mountEl, 'obs-goal').props.disabled, false)
+
+    current = currentFixture({
+      revision: 4,
+      payload_hash: 'b'.repeat(64),
+      payload: {
+        ...current.payload,
+        subjects: [{ name: 'Synthetic child' }],
+        environment: 'Synthetic area',
+      },
+      latest_version_hash: 'b'.repeat(64),
+    })
+    firstReply.resolve(
+      jsonResponse(
+        200,
+        savedFixture({ revision: 4, payload_hash: 'b'.repeat(64) }),
+      ),
+    )
+    assert.equal(await saving, 'saved')
+    await waitUntil(
+      () => hook.payload().environment === 'Synthetic area',
+      'canonical auto-save readback',
+    )
+    assert.equal(hook.form().environment, 'Synthetic area ')
+    assert.equal(hook.form().subjects[0], 'Synthetic child ')
+    assert.equal(hook.dirty(), false)
+    assert.equal(hook.autoSavePending(), false)
+    assert.equal(patches.length, 1)
+    assert.equal(hook.editDisabled(), false)
+    app.unmount()
+    await settle()
+    ok('R03 auto save keeps typing controls and canonical-only whitespace')
+  }
+
+  // -- R03: late input during auto save is retained and scheduled -----------
+  {
+    let current = currentFixture()
+    const patches = []
+    const firstStarted = deferred()
+    const firstReply = deferred()
+    const secondStarted = deferred()
+    const secondReply = deferred()
+    const { app, mountEl, harness } = await mountEditorDom({
+      routes: {
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'PATCH /api/observations/o1': ({ body }) => {
+          patches.push(body)
+          if (patches.length === 1) {
+            firstStarted.resolve()
+            return firstReply.promise
+          }
+          secondStarted.resolve()
+          return secondReply.promise
+        },
+      },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('environment', 'First ')
+    hook.cancelAutoSave()
+    const first = hook.saveNow('auto')
+    await firstStarted.promise
+    assert.equal(byD1(mountEl, 'obs-environment').props.disabled, false)
+    const editor = byD1(mountEl, 'obs-editor')
+    dispatchDomEvent(editor, 'compositionstart')
+    hook.setField('environment', 'Late ')
+    hook.setSubject(0, 'Late child ')
+    current = currentFixture({
+      revision: 4,
+      payload_hash: 'b'.repeat(64),
+      payload: {
+        ...current.payload,
+        subjects: [{ name: 'First' }],
+        environment: 'First',
+      },
+      latest_version_hash: 'b'.repeat(64),
+    })
+    firstReply.resolve(
+      jsonResponse(
+        200,
+        savedFixture({ revision: 4, payload_hash: 'b'.repeat(64) }),
+      ),
+    )
+    assert.equal(await first, 'saved')
+    await settle()
+    dispatchDomEvent(editor, 'compositionend')
+    assert.equal(hook.form().environment, 'Late ')
+    assert.equal(hook.form().subjects[0], 'Late child ')
+    assert.equal(hook.dirty(), true)
+    assert.equal(hook.autoSavePending(), true)
+    assert.equal(patches.length, 1)
+
+    hook.cancelAutoSave()
+    assert.equal(hook.autoSavePending(), false)
+    const second = hook.saveNow('auto')
+    await secondStarted.promise
+    assert.equal(patches.length, 2)
+    assert.equal(patches[1].expected_revision, 4)
+    assert.equal(patches[1].save_reason, 'auto')
+    assert.equal(patches[1].payload.subjects[0].name, 'Late child')
+    assert.equal(patches[1].payload.environment, 'Late ')
+    current = currentFixture({
+      revision: 5,
+      payload_hash: 'c'.repeat(64),
+      payload: {
+        ...current.payload,
+        subjects: [{ name: 'Late child' }],
+        environment: 'Late',
+      },
+      latest_version_hash: 'c'.repeat(64),
+    })
+    secondReply.resolve(
+      jsonResponse(
+        200,
+        savedFixture({ revision: 5, payload_hash: 'c'.repeat(64) }),
+      ),
+    )
+    assert.equal(await second, 'saved')
+    await waitUntil(
+      () => hook.payload().environment === 'Late',
+      'late auto-save readback',
+    )
+    assert.equal(hook.form().environment, 'Late ')
+    assert.equal(hook.form().subjects[0], 'Late child ')
+    assert.equal(hook.dirty(), false)
+    assert.equal(hook.autoSavePending(), false)
+    assert.equal(patches.length, 2)
+    app.unmount()
+    await settle()
+    ok('R03 auto save retains late input and schedules it without a duplicate write')
+  }
+
+  // -- R03: auto save waits for composition already in progress -------------
+  {
+    const patches = []
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'PATCH /api/observations/o1': ({ body }) => {
+          patches.push(body)
+          return jsonResponse(200, savedFixture({ revision: 4 }))
+        },
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('observation_goal', '组合中的目标')
+    hook.cancelAutoSave()
+    view.state.composing.value = true
+    const saving = hook.saveNow('auto')
+    await settle()
+    assert.equal(patches.length, 0)
+    view.state.composing.value = false
+    assert.equal(await saving, 'saved')
+    assert.equal(patches.length, 1)
+    assert.equal(patches[0].save_reason, 'auto')
+    assert.equal(patches[0].payload.observation_goal, '组合中的目标')
+    harness.unmount()
+    await settle()
+    ok('R03 auto save waits for an in-progress composition before sending')
+  }
+
+  // -- R03: explicit replay of an automatic save keeps the input lock -------
+  {
+    const requests = []
+    const replayStarted = deferred()
+    const replayReply = deferred()
+    const { app, mountEl, harness } = await mountEditorDom({
+      routes: {
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'PATCH /api/observations/o1': ({ body }) => {
+          requests.push(body)
+          if (requests.length === 1) {
+            throw new TypeError('synthetic lost auto reply')
+          }
+          replayStarted.resolve()
+          return replayReply.promise
+        },
+      },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('environment', 'Synthetic area')
+    hook.cancelAutoSave()
+    assert.equal(await hook.saveNow('auto'), 'indeterminate')
+    assert.equal(hook.indeterminateActive(), true)
+    const replay = hook.retryIndeterminate()
+    await replayStarted.promise
+    await settle()
+    assert.equal(requests.length, 2)
+    assert.equal(requests[1].request_id, requests[0].request_id)
+    assert.equal(requests[1].expected_revision, requests[0].expected_revision)
+    assert.equal(requests[1].save_reason, 'auto')
+    assert.deepEqual(plain(requests[1].payload), plain(requests[0].payload))
+    assert.equal(byD1(mountEl, 'obs-environment').props.disabled, true)
+    assert.equal(byD1(mountEl, 'obs-subject-0').props.disabled, true)
+    assert.equal(hook.editDisabled(), true)
+    replayReply.resolve(jsonResponse(200, savedFixture({ revision: 4 })))
+    assert.equal(await replay, undefined)
+    await settle()
+    assert.equal(hook.editDisabled(), false)
+    app.unmount()
+    await settle()
+    ok('R03 explicit replay of an automatic save keeps the manual input lock')
+  }
+
   // -- editor: conflict, discard and overwrite ------------------------------
   {
     let current = currentFixture()
@@ -1190,9 +1446,11 @@ async function main() {
         'POST /api/observations/o1/ai-candidates/c1/adopt': () => {
           current = currentFixture({
             revision: 5,
+            payload_hash: 'd'.repeat(64),
             payload: { ...current.payload, observation_goal: '候选目标' },
           })
           return jsonResponse(200, {
+            candidate_id: 'c1',
             changed: true,
             revision: 5,
             payload_hash: 'd'.repeat(64),
@@ -2090,6 +2348,7 @@ async function main() {
         'POST /api/observations/o1/ai-candidates/c1/adopt': () => {
           current = currentFixture({
             revision: 5,
+            payload_hash: 'd'.repeat(64),
             payload: payload({ observation_goal: '候选目标' }),
           })
           throw new StubApiError(0, '网络中断')
@@ -2097,6 +2356,7 @@ async function main() {
         'GET /api/observations/o1/operations/*': () =>
           jsonResponse(200, {
             result: {
+              candidate_id: 'c1',
               changed: true,
               revision: 5,
               payload_hash: 'd'.repeat(64),
@@ -2498,6 +2758,7 @@ async function main() {
           payload: payload({ observation_goal: '候选目标' }),
         })
         return jsonResponse(200, {
+          candidate_id: 'c1',
           changed: true,
           revision: 5,
           payload_hash: 'd'.repeat(64),
@@ -3206,9 +3467,12 @@ async function main() {
     for (const label of ['健康', '语言', '社会', '科学', '艺术']) {
       assert.ok(text.includes(label), `${label} label missing`)
     }
-    assert.ok(text.includes('当前健康原文'))
-    assert.ok(text.includes('当前艺术第一行\n当前艺术第二行'))
-    assert.ok(text.includes('（空）'))
+    const edit = hook.candidateEdit()
+    assert.equal(edit.analysis_evaluation.health, '候选健康')
+    assert.equal(edit.analysis_evaluation.language, '')
+    assert.equal(edit.analysis_evaluation.social, '候选社会')
+    assert.equal(edit.analysis_evaluation.science, '候选科学')
+    assert.equal(text.includes('当前健康原文'), false)
     assert.equal(text.includes('health'), false)
     assert.equal(text.includes('language'), false)
     assert.equal(text.includes('social'), false)
@@ -3220,7 +3484,7 @@ async function main() {
     assert.equal(text.includes('来源资料'), false)
     harness.unmount()
     await settle()
-    ok('R04/R15 evaluation comparison keeps five Chinese domains and labels')
+    ok('R04/R15 evaluation editor keeps five Chinese domains and candidate values')
   }
 
   // -- D4 E11 cross-page selection / stable order -------------------------
@@ -4645,6 +4909,1125 @@ async function main() {
     harness.unmount()
     await settle()
     ok('R23 paused tasks use pause guidance without an unknown-cost claim')
+  }
+
+  // -- R24: #17/#30 transport and unusable-result reasons stay distinct ----
+  {
+    const cases = [
+      ['response_header_timeout', /响应头/, /不确定/, /不会自动重发/],
+      ['incomplete_transfer', /传输中断/, /不确定/, /不会自动重发/],
+      ['reasoning_only', /思考过程/, /四栏/],
+      ['output_length', /长度上限/, /截断/, /四栏/],
+      ['candidate_contract_invalid', /四栏结构校验/, /完整/],
+    ]
+    const labels = new Set()
+    for (const [reason, ...patterns] of cases) {
+      const task = {
+        id: 't1',
+        task_type: 'game_observation_generate',
+        status: 'failed',
+        reason,
+        candidate_id: null,
+        retry_requires_ack: false,
+        execution: { id: 'e1', attempt_no: 1 },
+      }
+      const harness = new Harness({
+        fetchImpl: router({
+          'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+          'GET /api/observations/o1/ai-tasks': () =>
+            jsonResponse(200, { items: [task], next_cursor: null }),
+          'GET /api/observations/o1/ai-tasks/t1': () => jsonResponse(200, task),
+          'GET /api/observations/o1/ai-candidates*': () =>
+            jsonResponse(200, { items: [], next_cursor: null }),
+        }),
+      })
+      const view = harness.setup('views/ObservationEditorView.vue', {
+        context,
+        observationId: 'o1',
+        frozen: false,
+      })
+      harness.runMounted()
+      await waitUntil(
+        () => harness.window.__d1ObservationEditor?.aiTaskReason() === reason,
+        `observation reason ${reason}`,
+      )
+      await settle()
+      const hook = harness.window.__d1ObservationEditor
+      for (const pattern of patterns) assert.match(hook.aiTaskReasonLabel(), pattern)
+      assert.equal(hook.aiRetryReasonLabel(), hook.aiTaskReasonLabel())
+      assert.equal(hook.aiRetryState().reason, reason)
+      labels.add(hook.aiTaskReasonLabel())
+      harness.unmount()
+      await settle()
+    }
+    assert.equal(labels.size, cases.length)
+    ok('R24 observation reasons distinguish header wait, uncertain transfer, reasoning-only, truncation and four-column validation')
+  }
+
+
+  // -- #29 ordinary photo file drag/drop (source-level) --------------------
+  {
+    const h = observationHelpers
+    assert.equal(h.isSupportedObservationPhoto({ name: 'A.JPG', type: '' }), true)
+    assert.equal(h.isSupportedObservationPhoto({ name: 'a.jpeg', type: 'image/jpeg' }), true)
+    assert.equal(h.isSupportedObservationPhoto({ name: 'a.png', type: 'image/png' }), true)
+    assert.equal(h.isSupportedObservationPhoto({ name: 'a.webp', type: 'image/webp' }), true)
+    assert.equal(h.isSupportedObservationPhoto({ name: 'a.gif', type: 'image/gif' }), true)
+    assert.equal(h.isSupportedObservationPhoto({ name: 'a.bmp', type: 'image/bmp' }), true)
+    assert.equal(h.isSupportedObservationPhoto({ name: 'a.png', type: 'text/plain' }), false)
+    assert.equal(h.isSupportedObservationPhoto({ name: 'a.svg', type: 'image/svg+xml' }), false)
+    assert.equal(h.isSupportedObservationPhoto({ name: 'folder', type: '' }), false)
+    assert.equal(h.isSupportedObservationPhoto({ name: 'notes.txt', type: 'text/plain' }), false)
+
+    let current = currentFixture()
+    let uploadSeq = 0
+    let failUpload = false
+    const uploads = []
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'GET /api/observations/o1/ai-tasks*': () => jsonResponse(200, { items: [], next_cursor: null }),
+        'GET /api/observations/o1/ai-candidates*': () => jsonResponse(200, { items: [], next_cursor: null }),
+        'PATCH /api/observations/o1': () => {
+          current = { ...current, revision: current.revision + 1, payload_hash: 'c'.repeat(64) }
+          return jsonResponse(200, savedFixture({ revision: current.revision, photos: current.photos }))
+        },
+        'POST /api/observations/o1/photos': ({ body }) => {
+          if (failUpload) throw new StubApiError(0, '网络中断')
+          uploadSeq += 1
+          const displayName = body.get('display_name')
+          const photo = {
+            asset_id: `a${uploadSeq}`,
+            content_hash: 'a'.repeat(64),
+            format: displayName.endsWith('.png') ? 'png' : 'jpeg',
+            width: 2,
+            height: 2,
+            orientation: null,
+            sort_order: uploadSeq - 1,
+            caption: null,
+          }
+          current = {
+            ...current,
+            revision: current.revision + 1,
+            payload_hash: 'b'.repeat(64),
+            photos: [...current.photos, photo],
+          }
+          uploads.push({ displayName, requestId: body.get('request_id'), revision: body.get('expected_revision') })
+          return jsonResponse(200, {
+            ...savedFixture({ revision: current.revision, photos: current.photos, current_version: 1 }),
+            asset_id: photo.asset_id,
+          })
+        },
+        'GET /api/observations/o1/photos/*/derivatives/ai/content': () => jsonResponse(200, {}),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    const dropEvent = (files, { types = ['Files'], items = [], target = { tagName: 'DIV' } } = {}) => {
+      const event = {
+        target,
+        dataTransfer: {
+          files,
+          types,
+          items,
+          dropEffect: 'none',
+        },
+        defaultPrevented: false,
+        preventDefault() { event.defaultPrevented = true },
+      }
+      return event
+    }
+
+    const first = new File([new Uint8Array([1, 2, 3])], 'one.png', { type: 'image/png' })
+    const second = new File([new Uint8Array([4, 5])], 'two.jpg', { type: 'image/jpeg' })
+    const supported = dropEvent(
+      [first, second],
+      { items: [{ webkitGetAsEntry: () => ({ isDirectory: false, isFile: true }) }, { webkitGetAsEntry: () => ({ isDirectory: false, isFile: true }) }] },
+    )
+    await hook.onPhotoDrop(supported)
+    await settle()
+    assert.equal(supported.defaultPrevented, true)
+    assert.equal(uploads.length, 2)
+    assert.deepEqual(uploads.map((item) => item.displayName), ['one.png', 'two.jpg'])
+    assert.equal(hook.photos().length, 2)
+    assert.equal(hook.photoDragActive(), false)
+
+    const text = dropEvent([], { types: ['text/plain'] })
+    await hook.onPhotoDrop(text)
+    assert.equal(text.defaultPrevented, true)
+    assert.equal(uploads.length, 2)
+    assert.ok(harness.messages.some((message) => String(message).includes('文本或链接')))
+
+    const link = dropEvent([], { types: ['text/uri-list'] })
+    await hook.onPhotoDrop(link)
+    assert.equal(uploads.length, 2)
+    assert.ok(harness.messages.some((message) => String(message).includes('文本或链接')))
+
+    const directory = dropEvent(
+      [new File([], 'folder', { type: '' })],
+      { items: [{ webkitGetAsEntry: () => ({ isDirectory: true, isFile: false }) }] },
+    )
+    await hook.onPhotoDrop(directory)
+    assert.equal(uploads.length, 2)
+    assert.ok(harness.messages.some((message) => String(message).includes('不支持拖入文件夹')))
+
+    const unsupported = dropEvent(
+      [new File(['hello'], 'notes.txt', { type: 'text/plain' })],
+      { items: [{ webkitGetAsEntry: () => ({ isDirectory: false, isFile: true }) }] },
+    )
+    await hook.onPhotoDrop(unsupported)
+    assert.equal(uploads.length, 2)
+    assert.ok(harness.messages.some((message) => String(message).includes('仅支持 JPG')))
+
+    const mixed = dropEvent(
+      [new File([new Uint8Array([9])], 'three.webp', { type: 'image/webp' }), new File(['x'], 'readme.txt', { type: 'text/plain' })],
+      { items: [{ webkitGetAsEntry: () => ({ isDirectory: false, isFile: true }) }, { webkitGetAsEntry: () => ({ isDirectory: false, isFile: true }) }] },
+    )
+    await hook.onPhotoDrop(mixed)
+    await settle()
+    assert.equal(uploads.length, 3)
+    assert.equal(uploads[2].displayName, 'three.webp')
+    assert.equal(hook.photos().length, 3)
+    assert.ok(harness.messages.some((message) => String(message).includes('已忽略不支持的来源')))
+
+    const editableText = dropEvent([], { types: ['text/plain'], target: { tagName: 'INPUT' } })
+    await hook.onPhotoDrop(editableText)
+    assert.equal(editableText.defaultPrevented, false)
+    assert.equal(uploads.length, 3)
+
+    failUpload = true
+    const unknown = dropEvent(
+      [new File([new Uint8Array([8])], 'unknown.png', { type: 'image/png' })],
+      { items: [{ webkitGetAsEntry: () => ({ isDirectory: false, isFile: true }) }] },
+    )
+    await hook.onPhotoDrop(unknown)
+    await settle()
+    assert.equal(hook.pendingMaterialActive(), true)
+    assert.equal(hook.uploadBusy(), false)
+    assert.ok(harness.messages.some((message) => String(message).includes('结果未知')))
+    harness.unmount()
+    ok('#29 ordinary file drop reuses the photo upload path, rejects non-photo sources and preserves unknown receipt behavior')
+  }
+
+  // -- #16 one-click edited candidate adoption and zero-write cancel -------
+  {
+    let current = currentFixture()
+    const patches = []
+    const previewBodies = []
+    const adoptBodies = []
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: [
+        'observation_goal',
+        'observation_process',
+        'analysis_evaluation',
+        'support_strategy',
+      ],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: { source_revision: 3, internal_context: { missing_fields: [], warnings: [] } },
+      raw_candidate: {
+        observation_goal: '候选目标',
+        observation_process: '候选记录',
+        analysis_evaluation: { health: '候选健康', language: '', social: '', science: '', arts: '' },
+        support_strategy: '候选策略',
+      },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'PATCH /api/observations/o1': ({ body }) => {
+          patches.push(body)
+          current = currentFixture({ revision: 4 })
+          return jsonResponse(200, savedFixture({ revision: 4 }))
+        },
+        'GET /api/observations/o1/ai-tasks*': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () =>
+          jsonResponse(200, {
+            items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': ({ body }) => {
+          previewBodies.push(body)
+          return jsonResponse(200, {
+            adoption_token: 'tok-edit',
+            expires_at: '2026-09-15T10:10:00',
+            candidate_id: 'c1',
+            candidate_hash: 'c'.repeat(64),
+            draft_revision: 4,
+            draft_hash: 'b'.repeat(64),
+            selected_targets: body.selected_targets,
+            before: {},
+            after: {},
+            changed: true,
+            source_state: 'eligible',
+            requires_review_decision: false,
+            allowed_review_decisions: [],
+            diff: {},
+            warning: null,
+            fragments: [],
+          })
+        },
+        'POST /api/observations/o1/ai-candidates/c1/adopt': ({ body }) => {
+          adoptBodies.push(body)
+          current = currentFixture({
+            revision: 5,
+            payload_hash: 'e'.repeat(64),
+            payload: payload({
+              observation_goal: '编辑后的目标',
+              analysis_evaluation: { health: '编辑健康', language: '', social: '', science: '', arts: '' },
+            }),
+          })
+          return jsonResponse(200, {
+            candidate_id: 'c1',
+            changed: true,
+            revision: 5,
+            payload_hash: 'e'.repeat(64),
+            current_version: 2,
+            result_version: 2,
+            selected_targets: body.selected_targets,
+          })
+        },
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('observation_goal', '正文先保存')
+    await hook.openCandidate('c1')
+    await settle()
+    assert.equal(hook.candidateEditDirty(), false)
+    hook.setCandidateText('observation_goal', '编辑后的目标')
+    hook.setCandidateEvaluation('health', '编辑健康')
+    assert.equal(hook.candidateEditDirty(), true)
+    await hook.adoptOrReview()
+    await settle()
+    assert.equal(patches.length, 1)
+    assert.equal(previewBodies.length, 1)
+    assert.equal(previewBodies[0].edited_candidate.observation_goal, '编辑后的目标')
+    assert.equal(previewBodies[0].edited_candidate.analysis_evaluation.health, '编辑健康')
+    assert.equal(adoptBodies.length, 1)
+    assert.equal(hook.revision(), 5)
+    assert.equal(hook.form().observation_goal, '编辑后的目标')
+    assert.equal(hook.candidateOpen(), false)
+    assert.equal(hook.candidateEditDirty(), false)
+
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setCandidateText('observation_process', '不采用的本地编辑')
+    assert.equal(hook.candidateEditDirty(), true)
+    hook.cancelCandidateEdit()
+    await settle()
+    assert.equal(hook.candidateOpen(), false)
+    assert.equal(hook.candidateId(), '')
+    assert.equal(hook.candidateEditDirty(), false)
+    assert.equal(patches.length, 1, 'cancel must not write the body')
+    assert.equal(previewBodies.length, 1, 'cancel must not request a preview')
+    assert.equal(adoptBodies.length, 1, 'cancel must not adopt')
+    await hook.openCandidate('c1')
+    await settle()
+    assert.equal(hook.candidateOpen(), true)
+    assert.equal(hook.candidateDetail().id, 'c1')
+    harness.unmount()
+    ok('#16 one click adopts the edited four-column candidate and cancel writes nothing')
+  }
+
+  // -- #16 source change keeps the explicit review decision ----------------
+  {
+    let current = currentFixture()
+    const adoptBodies = []
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal'],
+      adoption_state: 'source_changed',
+      review_warning: null,
+      review_fragments: [],
+      source: { source_revision: 3, internal_context: { missing_fields: [], warnings: [] } },
+      raw_candidate: { observation_goal: '候选目标' },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'GET /api/observations/o1/ai-tasks*': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () =>
+          jsonResponse(200, {
+            items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': () =>
+          jsonResponse(200, {
+            adoption_token: 'tok-review',
+            expires_at: '2026-09-15T10:10:00',
+            candidate_id: 'c1',
+            candidate_hash: 'c'.repeat(64),
+            draft_revision: 3,
+            draft_hash: 'a'.repeat(64),
+            selected_targets: ['observation_goal'],
+            before: {},
+            after: {},
+            changed: true,
+            source_state: 'source_changed',
+            requires_review_decision: true,
+            allowed_review_decisions: ['adopt_reviewed'],
+            diff: { changed_fields: ['observation_process'] },
+            warning: null,
+            fragments: [],
+          }),
+        'POST /api/observations/o1/ai-candidates/c1/adopt': ({ body }) => {
+          adoptBodies.push(body)
+          current = currentFixture({
+            revision: 4,
+            payload_hash: 'f'.repeat(64),
+            payload: payload({ observation_goal: '候选目标' }),
+          })
+          return jsonResponse(200, {
+            candidate_id: 'c1',
+            changed: true,
+            revision: 4,
+            payload_hash: 'f'.repeat(64),
+            current_version: 2,
+            result_version: 2,
+            selected_targets: ['observation_goal'],
+          })
+        },
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setTargets(['observation_goal'])
+    await hook.adoptOrReview()
+    await settle()
+    assert.equal(adoptBodies.length, 0, 'source-changed candidate must wait for review')
+    assert.equal(hook.adoptionPreview().requires_review_decision, true)
+    hook.setReviewChecked(true)
+    await hook.adopt()
+    await settle()
+    assert.equal(adoptBodies.length, 1)
+    assert.equal(adoptBodies[0].review_decision, 'adopt_reviewed')
+    harness.unmount()
+    ok('#16 source change cannot bypass the explicit review decision')
+  }
+
+  // -- #16 regenerate binds the original candidate and instruction ---------
+  {
+    let current = currentFixture()
+    let listVersion = 1
+    const taskBodies = []
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal', 'observation_process', 'analysis_evaluation', 'support_strategy'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: { source_revision: 3, internal_context: { missing_fields: [], warnings: [] } },
+      raw_candidate: {
+        observation_goal: '候选目标',
+        observation_process: '候选记录',
+        analysis_evaluation: { health: '候选健康', language: '', social: '', science: '', arts: '' },
+        support_strategy: '候选策略',
+      },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'GET /api/observations/o1/ai-tasks': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () =>
+          jsonResponse(200, {
+            items: listVersion === 1
+              ? [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }]
+              : [
+                  { id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' },
+                  { id: 'c2', task_type: 'game_observation_generate', created_at: '2026-09-15T10:05:00' },
+                ],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-tasks': ({ body }) => {
+          taskBodies.push(body)
+          listVersion = 2
+          return jsonResponse(202, {
+            id: 't1',
+            status: 'succeeded',
+            candidate_id: 'c2',
+            task_type: 'game_observation_generate',
+            reason: null,
+            execution: { id: 'e1' },
+          })
+        },
+        'GET /api/observations/o1/ai-tasks/t1': () =>
+          jsonResponse(200, {
+            id: 't1',
+            status: 'succeeded',
+            candidate_id: 'c2',
+            task_type: 'game_observation_generate',
+            reason: null,
+            execution: { id: 'e1' },
+          }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setRegenerateInstruction('  请更简洁  ')
+    await bounded(hook.regenerateCandidate(), 5000, 'regenerate')
+    await settle()
+    assert.equal(taskBodies.length, 1)
+    assert.equal(taskBodies[0].base_candidate_id, 'c1')
+    assert.equal(taskBodies[0].revision_instruction, '请更简洁')
+    assert.equal(taskBodies[0].task_type, 'game_observation_generate')
+    assert.equal(taskBodies[0].expected_revision, 3)
+    assert.equal(hook.regeneratedCandidateId(), 'c2')
+    assert.equal(hook.candidateDetail().id, 'c1')
+    assert.equal(hook.candidateOpen(), true)
+    assert.ok(hook.candidates().some((item) => item.id === 'c2'))
+    assert.ok(harness.messages.some((message) => String(message).includes('新候选已生成')))
+    harness.unmount()
+    ok('#16 regeneration binds the saved revision, original candidate and instruction')
+  }
+
+  // -- #16 failed regeneration keeps the old candidate and local edit ------
+  {
+    let current = currentFixture()
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal', 'observation_process', 'analysis_evaluation', 'support_strategy'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: { source_revision: 3, internal_context: { missing_fields: [], warnings: [] } },
+      raw_candidate: {
+        observation_goal: '候选目标',
+        observation_process: '候选记录',
+        analysis_evaluation: { health: '候选健康', language: '', social: '', science: '', arts: '' },
+        support_strategy: '候选策略',
+      },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'GET /api/observations/o1/ai-tasks': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () =>
+          jsonResponse(200, {
+            items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-tasks': () =>
+          jsonResponse(202, {
+            id: 't2',
+            status: 'pending',
+            candidate_id: null,
+            task_type: 'game_observation_generate',
+            reason: null,
+            execution: { id: 'e2' },
+          }),
+        'GET /api/observations/o1/ai-tasks/t2': () =>
+          jsonResponse(200, {
+            id: 't2',
+            status: 'failed',
+            candidate_id: null,
+            task_type: 'game_observation_generate',
+            reason: 'candidate_contract_invalid',
+            execution: { id: 'e2' },
+          }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setCandidateText('observation_goal', '本地未采用编辑')
+    await bounded(hook.regenerateCandidate(), 5000, 'failed regenerate')
+    await settle()
+    assert.equal(hook.candidateDetail().id, 'c1')
+    assert.equal(hook.candidateEdit().observation_goal, '本地未采用编辑')
+    assert.equal(hook.candidateOpen(), true)
+    assert.equal(hook.regeneratedCandidateId(), '')
+    assert.ok(harness.messages.some((message) => String(message).includes('重新生成失败')))
+    harness.unmount()
+    ok('#16 failed regeneration keeps the old candidate and the local edit')
+  }
+
+  // -- #16 committed adopt survives a read failure and only re-reads ------
+  {
+    let current = currentFixture()
+    let failRead = false
+    const adoptBodies = []
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: { source_revision: 3, internal_context: { missing_fields: [], warnings: [] } },
+      raw_candidate: { observation_goal: '候选目标' },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () =>
+          failRead
+            ? apiError(503, 'LOCAL_STORAGE_ERROR', '正文读取失败')
+            : jsonResponse(200, current),
+        'GET /api/observations/o1/ai-tasks': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () =>
+          jsonResponse(200, {
+            items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': () =>
+          jsonResponse(200, {
+            adoption_token: 'tok-read',
+            expires_at: '2026-09-15T10:10:00',
+            candidate_id: 'c1',
+            candidate_hash: 'c'.repeat(64),
+            draft_revision: 3,
+            draft_hash: 'a'.repeat(64),
+            selected_targets: ['observation_goal'],
+            before: {},
+            after: {},
+            changed: true,
+            source_state: 'eligible',
+            requires_review_decision: false,
+            allowed_review_decisions: [],
+            diff: {},
+            warning: null,
+            fragments: [],
+          }),
+        'POST /api/observations/o1/ai-candidates/c1/adopt': ({ body }) => {
+          adoptBodies.push(body)
+          failRead = true
+          current = currentFixture({
+            revision: 4,
+            payload_hash: 'd'.repeat(64),
+            payload: payload({ observation_goal: '候选目标' }),
+          })
+          return jsonResponse(200, {
+            candidate_id: 'c1',
+            changed: true,
+            revision: 4,
+            payload_hash: 'd'.repeat(64),
+            current_version: 2,
+            result_version: 2,
+            selected_targets: ['observation_goal'],
+          })
+        },
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setTargets(['observation_goal'])
+    await hook.adoptOrReview()
+    await settle()
+    assert.equal(adoptBodies.length, 1)
+    assert.equal(hook.adoptCommittedActive(), true)
+    assert.equal(hook.adoptUnknownActive(), false)
+    assert.equal(hook.candidateOpen(), true)
+    assert.equal(hook.candidateId(), 'c1')
+    assert.equal(hook.revision(), 3)
+    assert.equal(hook.previewActive(), true)
+    assert.ok(hook.blockingDraft() !== null)
+    failRead = false
+    await hook.retryAdoptRead()
+    await settle()
+    assert.equal(adoptBodies.length, 1, 'retry must only re-read, never re-adopt')
+    assert.equal(hook.adoptCommittedActive(), false)
+    assert.equal(hook.revision(), 4)
+    assert.equal(hook.form().observation_goal, '候选目标')
+    assert.equal(hook.candidateOpen(), false)
+    assert.equal(hook.candidateId(), '')
+    assert.equal(hook.blockingDraft(), null)
+    harness.unmount()
+    ok('#16 committed adopt read failure keeps the candidate and retries read only')
+  }
+
+  // -- #16 committed read blocks ordinary auto/manual saves -----------------
+  {
+    let current = currentFixture()
+    let failRead = false
+    const patches = []
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: { source_revision: 3, internal_context: { missing_fields: [], warnings: [] } },
+      raw_candidate: { observation_goal: '候选目标' },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () =>
+          failRead
+            ? apiError(503, 'LOCAL_STORAGE_ERROR', '正文读取失败')
+            : jsonResponse(200, current),
+        'PATCH /api/observations/o1': ({ body }) => {
+          patches.push(body)
+          return jsonResponse(200, savedFixture({ revision: 4 }))
+        },
+        'GET /api/observations/o1/ai-tasks': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () =>
+          jsonResponse(200, {
+            items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': () =>
+          jsonResponse(200, {
+            adoption_token: 'tok-block',
+            expires_at: '2026-09-15T10:10:00',
+            candidate_id: 'c1',
+            candidate_hash: 'c'.repeat(64),
+            draft_revision: 3,
+            draft_hash: 'a'.repeat(64),
+            selected_targets: ['observation_goal'],
+            before: {},
+            after: {},
+            changed: true,
+            source_state: 'eligible',
+            requires_review_decision: false,
+            allowed_review_decisions: [],
+            diff: {},
+            warning: null,
+            fragments: [],
+          }),
+        'POST /api/observations/o1/ai-candidates/c1/adopt': () => {
+          failRead = true
+          current = currentFixture({
+            revision: 4,
+            payload_hash: 'd'.repeat(64),
+            payload: payload({ observation_goal: '候选目标' }),
+          })
+          return jsonResponse(200, {
+            candidate_id: 'c1',
+            changed: true,
+            revision: 4,
+            payload_hash: 'd'.repeat(64),
+            current_version: 2,
+            result_version: 2,
+            selected_targets: ['observation_goal'],
+          })
+        },
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setTargets(['observation_goal'])
+    await hook.adoptOrReview()
+    await settle()
+    assert.equal(hook.adoptCommittedActive(), true)
+    assert.equal(hook.revision(), 3)
+
+    hook.setField('observation_goal', '已提交后的晚输入')
+    await settle()
+    assert.equal(hook.autoSavePending(), false, 'committed read must not schedule an auto save')
+    const save = await hook.saveNow('auto')
+    assert.equal(save, 'failed')
+    assert.equal(patches.length, 0, 'committed read must block the old draft PATCH')
+
+    failRead = false
+    await hook.retryAdoptRead()
+    await settle()
+    assert.equal(hook.adoptCommittedActive(), false)
+    assert.equal(hook.conflictActive(), true, 'late input is kept by the conflict path')
+    assert.equal(hook.form().observation_goal, '已提交后的晚输入')
+    assert.equal(patches.length, 0)
+    harness.unmount()
+    ok('#16 a committed read blocks old-draft saves and keeps late input')
+  }
+
+  // -- #16 duplicate or wrong-candidate receipts do not resolve unknowns ---
+  {
+    let current = currentFixture()
+    let receipt = null
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal', 'support_strategy'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: { source_revision: 3, internal_context: { missing_fields: [], warnings: [] } },
+      raw_candidate: { observation_goal: '候选目标', support_strategy: '候选策略' },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'GET /api/observations/o1/ai-tasks': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () =>
+          jsonResponse(200, {
+            items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': () =>
+          jsonResponse(200, {
+            adoption_token: 'tok-strict',
+            expires_at: '2026-09-15T10:10:00',
+            candidate_id: 'c1',
+            candidate_hash: 'c'.repeat(64),
+            draft_revision: 3,
+            draft_hash: 'a'.repeat(64),
+            selected_targets: ['observation_goal', 'support_strategy'],
+            before: {},
+            after: {},
+            changed: true,
+            source_state: 'eligible',
+            requires_review_decision: false,
+            allowed_review_decisions: [],
+            diff: {},
+            warning: null,
+            fragments: [],
+          }),
+        'POST /api/observations/o1/ai-candidates/c1/adopt': () => {
+          current = currentFixture({
+            revision: 4,
+            payload_hash: 'd'.repeat(64),
+            payload: payload({ observation_goal: '候选目标', support_strategy: '候选策略' }),
+          })
+          return apiError(503, 'LOCAL_STORAGE_ERROR', '服务暂时不可用')
+        },
+        'GET /api/observations/o1/operations/*': () =>
+          jsonResponse(200, { result: receipt }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setTargets(['observation_goal', 'support_strategy'])
+    await hook.previewAdoption()
+    await hook.adopt()
+    await settle()
+    assert.equal(hook.adoptUnknownActive(), true)
+
+    receipt = {
+      candidate_id: 'c1',
+      changed: true,
+      revision: 4,
+      payload_hash: 'd'.repeat(64),
+      current_version: 2,
+      result_version: 2,
+      selected_targets: ['observation_goal', 'observation_goal'],
+    }
+    await hook.reconcileAdopt()
+    await settle()
+    assert.equal(hook.adoptUnknownActive(), true, 'duplicate targets must not resolve')
+    assert.equal(hook.revision(), 3)
+
+    receipt = {
+      candidate_id: 'c2',
+      changed: true,
+      revision: 4,
+      payload_hash: 'd'.repeat(64),
+      current_version: 2,
+      result_version: 2,
+      selected_targets: ['observation_goal', 'support_strategy'],
+    }
+    await hook.reconcileAdopt()
+    await settle()
+    assert.equal(hook.adoptUnknownActive(), true, 'wrong candidate must not resolve')
+    assert.equal(hook.revision(), 3)
+
+    receipt = {
+      candidate_id: 'c1',
+      changed: true,
+      revision: 4,
+      payload_hash: 'd'.repeat(64),
+      current_version: 2,
+      result_version: 2,
+      selected_targets: ['observation_goal', 'support_strategy'],
+    }
+    await hook.reconcileAdopt()
+    await settle()
+    assert.equal(hook.adoptUnknownActive(), false)
+    assert.equal(hook.revision(), 4)
+    harness.unmount()
+    ok('#16 receipt recovery requires the exact candidate and unique ordered targets')
+  }
+
+  // -- #16 a slow pre-save cannot retarget the original click --------------
+  {
+    let current = currentFixture()
+    const saveDeferred = deferred()
+    const previewBodies = []
+    const adoptBodies = []
+    const patches = []
+    const detail = (id, goal) => ({
+      id,
+      candidate_hash: (id === 'c1' ? 'c' : 'd').repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: { source_revision: 3, internal_context: { missing_fields: [], warnings: [] } },
+      raw_candidate: { observation_goal: goal },
+    })
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'PATCH /api/observations/o1': ({ body }) => {
+          patches.push(body)
+          return saveDeferred.promise
+        },
+        'GET /api/observations/o1/ai-tasks': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () =>
+          jsonResponse(200, {
+            items: [
+              { id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' },
+              { id: 'c2', task_type: 'game_observation_generate', created_at: '2026-09-15T10:05:00' },
+            ],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail('c1', '候选一')),
+        'GET /api/observations/o1/ai-candidates/c2': () => jsonResponse(200, detail('c2', '候选二')),
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': ({ body }) => {
+          previewBodies.push({ candidate: 'c1', body })
+          return jsonResponse(200, {
+            adoption_token: 'tok-c1',
+            expires_at: '2026-09-15T10:10:00',
+            candidate_id: 'c1',
+            candidate_hash: 'c'.repeat(64),
+            draft_revision: 4,
+            draft_hash: 'b'.repeat(64),
+            selected_targets: ['observation_goal'],
+            before: {},
+            after: {},
+            changed: true,
+            source_state: 'eligible',
+            requires_review_decision: false,
+            allowed_review_decisions: [],
+            diff: {},
+            warning: null,
+            fragments: [],
+          })
+        },
+        'POST /api/observations/o1/ai-candidates/c2/preview-adoption': ({ body }) => {
+          previewBodies.push({ candidate: 'c2', body })
+          return jsonResponse(200, {
+            adoption_token: 'tok-c2',
+            expires_at: '2026-09-15T10:10:00',
+            candidate_id: 'c2',
+            candidate_hash: 'd'.repeat(64),
+            draft_revision: 4,
+            draft_hash: 'b'.repeat(64),
+            selected_targets: ['observation_goal'],
+            before: {},
+            after: {},
+            changed: true,
+            source_state: 'eligible',
+            requires_review_decision: false,
+            allowed_review_decisions: [],
+            diff: {},
+            warning: null,
+            fragments: [],
+          })
+        },
+        'POST /api/observations/o1/ai-candidates/c1/adopt': ({ body }) => {
+          adoptBodies.push({ candidate: 'c1', body })
+          return jsonResponse(400, { error: { code: 'UNEXPECTED', message: 'must not adopt c1' } })
+        },
+        'POST /api/observations/o1/ai-candidates/c2/adopt': ({ body }) => {
+          adoptBodies.push({ candidate: 'c2', body })
+          return jsonResponse(400, { error: { code: 'UNEXPECTED', message: 'must not adopt c2' } })
+        },
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    hook.setField('observation_goal', '慢保存正文')
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setTargets(['observation_goal'])
+    const flow = hook.adoptOrReview()
+    await settle()
+    assert.equal(patches.length, 1)
+    await hook.openCandidate('c2')
+    await settle()
+    assert.equal(hook.candidateDetail().id, 'c2')
+    current = currentFixture({ revision: 4, payload_hash: 'b'.repeat(64) })
+    saveDeferred.resolve(jsonResponse(200, savedFixture({ revision: 4 })))
+    await bounded(flow, 5000, 'slow save adopt')
+    await settle()
+    assert.equal(previewBodies.length, 0, 'the original click must not preview the switched candidate')
+    assert.equal(adoptBodies.length, 0)
+    assert.equal(hook.candidateDetail().id, 'c2')
+    assert.ok(harness.messages.some((message) => String(message).includes('已变化')))
+    harness.unmount()
+    ok('#16 a slow pre-save never retargets the original adopt click')
+  }
+
+  // -- #16 an indeterminate adopt POST keeps key/token/targets -------------
+  {
+    let current = currentFixture()
+    const adoptBodies = []
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: { source_revision: 3, internal_context: { missing_fields: [], warnings: [] } },
+      raw_candidate: { observation_goal: '候选目标' },
+    }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'GET /api/observations/o1/ai-tasks': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () =>
+          jsonResponse(200, {
+            items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+            next_cursor: null,
+          }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': () =>
+          jsonResponse(200, {
+            adoption_token: 'tok-unknown',
+            expires_at: '2026-09-15T10:10:00',
+            candidate_id: 'c1',
+            candidate_hash: 'c'.repeat(64),
+            draft_revision: 3,
+            draft_hash: 'a'.repeat(64),
+            selected_targets: ['observation_goal'],
+            before: {},
+            after: {},
+            changed: true,
+            source_state: 'eligible',
+            requires_review_decision: false,
+            allowed_review_decisions: [],
+            diff: {},
+            warning: null,
+            fragments: [],
+          }),
+        'POST /api/observations/o1/ai-candidates/c1/adopt': ({ body }) => {
+          adoptBodies.push(body)
+          current = currentFixture({
+            revision: 4,
+            payload_hash: 'd'.repeat(64),
+            payload: payload({ observation_goal: '候选目标' }),
+          })
+          return apiError(503, 'LOCAL_STORAGE_ERROR', '服务暂时不可用')
+        },
+        'GET /api/observations/o1/operations/*': () =>
+          jsonResponse(200, {
+            result: {
+              candidate_id: 'c1',
+              changed: true,
+              revision: 4,
+              payload_hash: 'd'.repeat(64),
+              current_version: 2,
+              result_version: 2,
+              selected_targets: ['observation_goal'],
+            },
+          }),
+      }),
+    })
+    const view = harness.setup('views/ObservationEditorView.vue', {
+      context,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setTargets(['observation_goal'])
+    await hook.previewAdoption()
+    await hook.adopt()
+    await settle()
+    assert.equal(adoptBodies.length, 1)
+    assert.equal(hook.adoptUnknownActive(), true)
+    assert.equal(hook.candidateOpen(), true)
+    assert.equal(hook.previewActive(), true)
+    assert.equal(hook.revision(), 3)
+    await hook.reconcileAdopt()
+    await settle()
+    assert.equal(adoptBodies.length, 1, 'receipt read must not re-adopt')
+    assert.equal(hook.adoptUnknownActive(), false)
+    assert.equal(hook.revision(), 4)
+    assert.equal(hook.form().observation_goal, '候选目标')
+    harness.unmount()
+    ok('#16 an indeterminate adopt POST keeps the original key, token and targets')
   }
 
   console.log(`\n${passed} observation page checks passed`)

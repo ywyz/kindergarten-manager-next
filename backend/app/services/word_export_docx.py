@@ -613,7 +613,55 @@ def _fill_daily_post_block(block_rows, group):
     writer.field("支持策略：", group.get("support_strategy") if group else None)
 
 
-def _fill_daily_afternoon(block_rows, afternoon):
+def _nonempty_text(value) -> str:
+    return value if isinstance(value, str) and value.strip() else ""
+
+
+def _fill_daily_legacy_afternoon(block_rows, groups):
+    """Render old upper-only outdoor groups once under the afternoon label.
+
+    The old upper block had ``post_group_games`` with context_kind=outdoor.
+    Its field labels and original group order are preserved here instead of
+    silently dropping the only teacher content.
+    """
+    area_writer = _CellWriter(_cells(block_rows[0])[1])
+    area_writer.line("来源：旧版日计划上方「户外游戏」栏（按原顺序带入）")
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        area = _nonempty_text(group.get("area"))
+        area_text = "、".join(
+            part for part in [area, _game_names(group)] if part
+        )
+        if area_text:
+            area_writer.line(f"游戏区域：{area_text}")
+
+    field_writer = _CellWriter(_cells(block_rows[1])[1])
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        for label, key in (
+            ("重点指导：", "focus_guidance"),
+            ("活动目标：", "objectives"),
+            ("指导要点：", "guidance"),
+        ):
+            value = _nonempty_text(group.get(key))
+            if value:
+                field_writer.field(label, value)
+
+    support_writer = _CellWriter(_cells(block_rows[2])[1])
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        value = _nonempty_text(group.get("support_strategy"))
+        if value:
+            support_writer.field("支持策略：", value)
+
+
+def _fill_daily_afternoon(block_rows, afternoon, legacy_groups=None):
+    if legacy_groups:
+        _fill_daily_legacy_afternoon(block_rows, legacy_groups)
+        return
     area = afternoon.get("area") if isinstance(afternoon, dict) else None
     games = _game_names(afternoon)
     area_text = "、".join(part for part in [area, games] if part)
@@ -666,7 +714,11 @@ def _build_daily_table(canonical_table, view):
     offset = len(new_blocks) - (end - start)
     afternoon_start = _DAILY_AFTERNOON_BLOCK[0] + offset
     afternoon_rows = rows[afternoon_start:afternoon_start + 3]
-    _fill_daily_afternoon(afternoon_rows, view.get("afternoon_outdoor"))
+    _fill_daily_afternoon(
+        afternoon_rows,
+        view.get("afternoon_outdoor"),
+        view.get("afternoon_outdoor_legacy") or [],
+    )
     # The fixed label "一日活动反思：" already lives in the template's left
     # cell; the right cell only carries the reflection value (empty stays
     # empty, no label, no sample text backfilled).

@@ -12,6 +12,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, ApiError, pathSegment } from '../client'
+import WorkbenchTodoPanel from './WorkbenchTodoPanel.vue'
 import type {
   CalendarDayItem,
   CalendarPayload,
@@ -37,7 +38,12 @@ const emit = defineEmits<{
   (e: 'open-settings'): void
   (e: 'check-update'): void
   (e: 'reload-context'): Promise<LocalContext>
+  (e: 'busy', value: boolean): void
 }>()
+
+function onTodoBusy(value: boolean): void {
+  emit('busy', value)
+}
 
 function frozenNow(): boolean {
   // The close-specific freeze covers the workbench navigation while the
@@ -45,19 +51,38 @@ function frozenNow(): boolean {
   return props.frozen === true
 }
 
-const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 const termFilter = ref<string | null>(null)
 const month = ref<string>(currentMonth())
+const todayIso = ref(toIso(new Date()))
 const monthDays = ref<CalendarDayItem[]>([])
 const monthPlans = ref<PlanListItem[]>([])
 const termPlans = ref<TermPlanListItem[] | null>(null)
 const termStatusByDate = ref<Record<string, string>>({})
 const loading = ref(false)
 const loadError = ref('')
-const createCandidate = ref<CalendarDayItem | null>(null)
-const createDialogVisible = ref(false)
-const creating = ref(false)
 let requestSeq = 0
+
+type CalendarCell = { key: string; day: CalendarDayItem | null }
+
+const calendarCells = computed<CalendarCell[]>(() => {
+  const [year, monthNum] = month.value.split('-').map(Number)
+  const leading = (new Date(year, monthNum - 1, 1).getDay() + 6) % 7
+  const lastDay = new Date(year, monthNum, 0).getDate()
+  const byDate = new Map(monthDays.value.map((item) => [item.date, item]))
+  const cells: CalendarCell[] = []
+  for (let index = 0; index < leading; index += 1) {
+    cells.push({ key: `blank-before-${index}`, day: null })
+  }
+  for (let dayNum = 1; dayNum <= lastDay; dayNum += 1) {
+    const date = `${year}-${String(monthNum).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`
+    cells.push({ key: date, day: byDate.get(date) ?? null })
+  }
+  while (cells.length % 7 !== 0) {
+    cells.push({ key: `blank-after-${cells.length}`, day: null })
+  }
+  return cells
+})
 
 function currentMonth(): string {
   const now = new Date()
@@ -74,7 +99,7 @@ function monthRangeFor(monthValue: string): { from: string; to: string } {
 }
 
 function monthStart(iso: string): string {
-  return `${iso.slice(0, 7)}-01`
+  return iso.slice(0, 7)
 }
 
 const selectedTerm = computed(
@@ -85,7 +110,7 @@ const heading = computed(() => {
   if (selectedTerm.value) {
     return `${selectedTerm.value.name}（${selectedTerm.value.start_date} ~ ${selectedTerm.value.end_date}）`
   }
-  return '当前月份'
+  return month.value === todayIso.value.slice(0, 7) ? '当前月份' : `${month.value} 月`
 })
 
 async function load(): Promise<void> {
@@ -105,7 +130,9 @@ async function load(): Promise<void> {
       )
       if (seq !== requestSeq) return
       termPlans.value = termPayload.items
-      termStatusByDate.value = await buildTermStatus(seq)
+      const status = await buildTermStatus(seq)
+      if (seq !== requestSeq) return
+      termStatusByDate.value = status
     } else {
       termPlans.value = null
       termStatusByDate.value = {}
@@ -172,19 +199,46 @@ function stateLabel(state: string): string {
   return state
 }
 
+function clearPlanState(): void {
+  monthPlans.value = []
+  termPlans.value = null
+  termStatusByDate.value = {}
+}
+
+function returnToToday(): void {
+  if (frozenNow()) return
+  const now = new Date()
+  const targetToday = toIso(now)
+  const targetMonth = targetToday.slice(0, 7)
+  todayIso.value = targetToday
+  if (termFilter.value === null && month.value === targetMonth) return
+  clearPlanState()
+  termFilter.value = null
+  month.value = targetMonth
+}
+
 function selectTerm(termId: string | null): void {
   if (frozenNow()) return
-  termFilter.value = termId
-  if (termId) {
-    const term = props.context.terms.find((item) => item.id === termId)
-    if (term) month.value = monthStart(term.start_date)
-  } else {
-    month.value = currentMonth()
+  if (termId === null) {
+    returnToToday()
+    return
   }
+  // Only configured system terms are selectable; an unknown id is inert.
+  const term = props.context.terms.find((item) => item.id === termId)
+  if (!term) return
+  const targetMonth = monthStart(term.start_date)
+  if (termFilter.value === term.id && month.value === targetMonth) return
+  clearPlanState()
+  termFilter.value = term.id
+  month.value = targetMonth
 }
 
 function onTermChange(value: string | number | boolean | undefined): void {
-  selectTerm(value === '__all__' ? null : String(value))
+  if (value === '__all__') {
+    returnToToday()
+    return
+  }
+  selectTerm(String(value))
 }
 
 function planForDay(day: CalendarDayItem): PlanListItem | TermPlanListItem | null {
@@ -225,6 +279,23 @@ function dayClickable(day: CalendarDayItem): boolean {
   return Boolean(day.existing_plan_id || day.date_eligible)
 }
 
+function cellClasses(day: CalendarDayItem): Record<string, boolean> {
+  return {
+    clickable: dayClickable(day),
+    'has-plan': Boolean(day.existing_plan_id),
+    'not-eligible': !day.date_eligible && !day.existing_plan_id,
+    today: day.date === todayIso.value,
+  }
+}
+
+function cellNote(day: CalendarDayItem): string {
+  return dayStatus(day) || (day.existing_plan_id ? '已有计划' : '')
+}
+
+function clickCell(cell: CalendarCell): void {
+  if (cell.day && dayClickable(cell.day)) clickDay(cell.day)
+}
+
 function clickDay(day: CalendarDayItem): void {
   if (frozenNow()) return
   if (day.existing_plan_id) {
@@ -232,25 +303,10 @@ function clickDay(day: CalendarDayItem): void {
     return
   }
   if (!day.date_eligible) return
-  createCandidate.value = day
-  createDialogVisible.value = true
-}
-
-async function confirmCreate(): Promise<void> {
-  const day = createCandidate.value
-  if (!day || creating.value || frozenNow()) return
-  creating.value = true
-  try {
-    if (day.existing_plan_id) {
-      createDialogVisible.value = false
-      emit('open-editor', day.date, 'open', day.existing_plan_id, day.term_id ?? undefined)
-      return
-    }
-    createDialogVisible.value = false
-    emit('open-editor', day.date, 'create')
-  } finally {
-    creating.value = false
-  }
+  // The editor's create mode first checks the same date and opens an
+  // unsaved draft only when no record exists. The calendar never creates a
+  // record just by opening the date.
+  emit('open-editor', day.date, 'create')
 }
 
 function openListItem(plan: PlanListItem | TermPlanListItem): void {
@@ -268,6 +324,13 @@ function openListening(): void {
   if (frozenNow()) return
   emit('open-listening', termFilter.value ?? undefined)
 }
+
+watch([termFilter, month], () => {
+  // Invalidate any in-flight read synchronously, before the async loader
+  // starts, so a slow older response cannot paint the new month/term.
+  requestSeq += 1
+  if (termFilter.value === null) clearPlanState()
+}, { flush: 'sync' })
 
 watch([termFilter, month], () => {
   void load()
@@ -318,6 +381,12 @@ defineExpose({ reload: load })
       </div>
     </div>
 
+    <WorkbenchTodoPanel
+      :profile-id="props.context.profile?.id ?? ''"
+      :disabled="frozen"
+      @busy="onTodoBusy"
+    />
+
     <el-alert
       v-if="loadError"
       type="error"
@@ -330,12 +399,14 @@ defineExpose({ reload: load })
 
     <el-card shadow="never" class="block">
       <div class="filters">
+        <el-button data-d1="term-all" :disabled="frozen" @click="returnToToday">
+          回到今天
+        </el-button>
         <el-radio-group
-          :model-value="termFilter ?? '__all__'"
+          :model-value="termFilter ?? ''"
           :disabled="frozen"
           @change="onTermChange"
         >
-          <el-radio-button value="__all__" data-d1="term-all">当前月份</el-radio-button>
           <el-radio-button
             v-for="term in props.context.terms"
             :key="term.id"
@@ -358,28 +429,33 @@ defineExpose({ reload: load })
         {{ heading }}；点击可创建的日期先确认再新建，已有计划直接打开。
       </p>
 
-      <div v-loading="loading" class="calendar" data-d1="calendar">
-        <div
-          v-for="day in monthDays"
-          :key="day.date"
-          class="day"
-          :class="{
-            clickable: dayClickable(day),
-            'has-plan': Boolean(day.existing_plan_id),
-            'not-eligible': !day.date_eligible && !day.existing_plan_id,
-          }"
-          :data-d1="`day-${day.date}`"
-          @click="dayClickable(day) && clickDay(day)"
-        >
-          <div class="day-date">{{ day.date }}</div>
-          <div class="day-state">
-            {{ stateLabel(day.effective_state) }}
-            <template v-if="day.week_number">· 第{{ day.week_number }}周</template>
-          </div>
-          <div class="day-note">
-            {{ dayStatus(day) || (day.existing_plan_id ? '已有计划' : '') }}
-          </div>
+      <div v-loading="loading" class="calendar" data-d1="calendar" aria-label="月历">
+        <div v-for="label in WEEKDAY_LABELS" :key="label" class="weekday" data-d1="weekday">
+          {{ label }}
         </div>
+        <template v-for="cell in calendarCells" :key="cell.key">
+          <div
+            v-if="cell.day"
+            class="day"
+            :class="cellClasses(cell.day)"
+            :data-d1="`day-${cell.day.date}`"
+            :data-today="cell.day.date === todayIso ? 'true' : undefined"
+            :aria-current="cell.day.date === todayIso ? 'date' : undefined"
+            @click="clickCell(cell)"
+          >
+            <div class="day-date">
+              {{ cell.day.date }}<span v-if="cell.day.date === todayIso" class="today-badge">今天</span>
+            </div>
+            <div class="day-state">
+              {{ stateLabel(cell.day.effective_state) }}
+              <template v-if="cell.day.week_number">· 第{{ cell.day.week_number }}周</template>
+            </div>
+            <div class="day-note">
+              {{ cellNote(cell.day) }}
+            </div>
+          </div>
+          <div v-else class="day blank" aria-hidden="true"></div>
+        </template>
       </div>
     </el-card>
 
@@ -419,31 +495,6 @@ defineExpose({ reload: load })
         </el-table-column>
       </el-table>
     </el-card>
-
-    <el-dialog
-      v-model="createDialogVisible"
-      title="创建日计划"
-      width="420px"
-      :close-on-click-modal="false"
-      data-d1="create-dialog"
-    >
-      <p>
-        日期 <strong>{{ createCandidate?.date }}</strong> 尚无日计划，是否创建？
-      </p>
-      <p class="muted">创建后内容为空，可留空保存；若已有记录将直接打开原记录。</p>
-      <template #footer>
-        <el-button data-d1="create-cancel" :disabled="frozen" @click="createDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="creating"
-          :disabled="frozen"
-          data-d1="create-confirm"
-          @click="confirmCreate"
-        >
-          确认创建
-        </el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -465,16 +516,30 @@ defineExpose({ reload: load })
 }
 .calendar {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  grid-template-columns: repeat(7, minmax(88px, 1fr));
   gap: 8px;
   margin-top: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.weekday {
+  text-align: center;
+  font-weight: 600;
+  color: var(--kgm-muted);
+  padding: 2px 0;
 }
 .day {
+  min-height: 88px;
+  box-sizing: border-box;
   border: 1px solid var(--kgm-border);
   border-radius: 4px;
   padding: 8px;
   font-size: 12px;
   background: var(--kgm-surface);
+}
+.day.blank {
+  border-style: dashed;
+  background: transparent;
 }
 .day.clickable {
   cursor: pointer;
@@ -489,6 +554,19 @@ defineExpose({ reload: load })
 .day.not-eligible {
   background: var(--kgm-bg);
   color: var(--kgm-muted);
+}
+.day.today {
+  border-color: var(--kgm-accent);
+  box-shadow: inset 0 0 0 1px var(--kgm-accent);
+}
+.today-badge {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--kgm-accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 500;
 }
 .day-date {
   font-weight: 600;

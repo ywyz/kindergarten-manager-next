@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
-from app.local import listening_templates, profile_service
+from app.local import listening_dates, listening_templates, profile_service
 from app.local.base import utc_now
 from app.local.errors import LocalError, LocalValidationError
 from app.local.models import (
@@ -116,6 +116,12 @@ class ListeningValidationError(LocalValidationError):
     code = "VALIDATION_ERROR"
     status_code = 422
     message = "倾听请求参数不合法"
+
+
+class ListeningDateRuleError(LocalValidationError):
+    code = "LISTENING_DATE_RULE"
+    status_code = 422
+    message = "观察月份与作品日期范围不一致"
 
 
 def _fingerprint(kind: str, payload: dict[str, Any]) -> str:
@@ -456,6 +462,65 @@ def _validate_groups(
     return normalized
 
 
+def _validate_date_changes(
+    domain_row: LocalListeningDomain,
+    groups: list[LocalListeningPhotoGroup],
+    normalized: dict[str, Any],
+    term: Any,
+) -> None:
+    observation_in_patch = "observation_date" in normalized
+    new_observation = (
+        normalized.get("observation_date")
+        if observation_in_patch
+        else domain_row.observation_date_text
+    )
+    observation_changed = (
+        observation_in_patch
+        and new_observation != domain_row.observation_date_text
+    )
+    patch_work_dates = {
+        item["group_id"]: item["work_date"]
+        for item in normalized.get("groups", [])
+        if "work_date" in item
+    }
+    if not observation_changed and not patch_work_dates:
+        return
+    try:
+        issues = listening_dates.validate_save_dates(
+            old_observation=domain_row.observation_date_text,
+            new_observation=new_observation,
+            observation_changed=observation_changed,
+            groups=[
+                (group.id, int(group.position), group.work_date_text)
+                for group in groups
+            ],
+            patch_work_dates=patch_work_dates,
+            term_start=term.start_date,
+            term_end=term.end_date,
+        )
+    except ValueError as exc:
+        raise ListeningDateRuleError(str(exc)) from None
+    if issues:
+        message = "；".join(
+            f"第 {issue.position + 1} 组「{issue.value}」：{issue.reason}"
+            for issue in issues
+        )
+        raise ListeningDateRuleError(
+            "观察月份变更后需逐组处理作品日期：" + message,
+            details={
+                "issues": [
+                    {
+                        "group_id": issue.group_id,
+                        "position": issue.position,
+                        "value": issue.value,
+                        "reason": issue.reason,
+                    }
+                    for issue in issues
+                ]
+            },
+        )
+
+
 def _normalize_patch(
     session: Session,
     record_id: str,
@@ -545,6 +610,11 @@ def _record_dto(session: Session, record: LocalListeningRecord) -> dict[str, Any
                 template,
             )
         )
+    assets = session.scalars(
+        select(LocalListeningAsset).where(
+            LocalListeningAsset.record_id == record.id
+        )
+    ).all()
     return {
         "record_id": record.id,
         "child_name": record.child_name,
@@ -555,6 +625,11 @@ def _record_dto(session: Session, record: LocalListeningRecord) -> dict[str, Any
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
         "domains": domains,
+        # Same read transaction as the record revision and groups.  The
+        # editor must never merge a newer record with an older direction map.
+        "rotations": {
+            asset.id: int(asset.rotation_quarters or 0) for asset in assets
+        },
     }
 
 
@@ -1082,13 +1157,19 @@ def save_domain(
         if replay is not None:
             rollback(session)
             return replay
-        record, _context_value = _load_record(session, profile_id, record_id)
+        record, context_value = _load_record(session, profile_id, record_id)
         if record.revision != revision:
             raise ListeningRevisionConflict()
         domain_row = _domain_row(session, record_id, domain)
         template = _template_for(record, domain_row)
         normalized = _normalize_patch(session, record_id, domain, patch)
         groups = {row.id: row for row in _groups(session, record_id, domain)}
+        _validate_date_changes(
+            domain_row,
+            list(groups.values()),
+            normalized,
+            _term_for(context_value, record.term_id),
+        )
         choices = {
             row.item_id: row
             for row in session.scalars(

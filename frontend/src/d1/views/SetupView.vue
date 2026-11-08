@@ -1,14 +1,22 @@
 <script setup lang="ts">
 /**
- * First setup: one local teacher profile (name, class name+grade, term
- * name+dates, optional school). The initialization request id is a UUID kept
- * for the lifetime of this form so an unclear result is retried with the
+ * First setup: one local teacher profile (name, grade + class number 1-6,
+ * term name+dates, optional school). The initialization request id is a UUID
+ * kept for the lifetime of this form so an unclear result is retried with the
  * same key (the server then reads the committed profile back).
  */
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, apiPost, ApiError } from '../client'
 import type { LocalContext } from '../types'
+
+type Grade = 'small' | 'middle' | 'large'
+const GRADE_PREFIX: Record<Grade, string> = {
+  small: '小',
+  middle: '中',
+  large: '大',
+}
+const CLASS_NUMBER_LABELS = ['一', '二', '三', '四', '五', '六']
 
 defineProps<{ context: LocalContext | null }>()
 const emit = defineEmits<{
@@ -18,14 +26,21 @@ const emit = defineEmits<{
 
 const form = ref({
   display_name: '',
-  class_name: '',
-  grade: 'middle' as 'small' | 'middle' | 'large',
+  grade: 'middle' as Grade,
+  class_number: null as number | null,
   term_name: '',
   range: [] as string[],
   school_name: '',
 })
 const submitting = ref(false)
 const errorText = ref('')
+const derivedClassName = computed(() => {
+  const number = form.value.class_number
+  if (number === null || !Number.isInteger(number) || number < 1 || number > 6) {
+    return ''
+  }
+  return `${GRADE_PREFIX[form.value.grade]}${CLASS_NUMBER_LABELS[number - 1]}班`
+})
 // One request id per attempt sequence: kept across retries after unclear
 // results, so the server can return the original objects (never rebuilt).
 let requestId = crypto.randomUUID()
@@ -33,7 +48,14 @@ let requestId = crypto.randomUUID()
 function validate(): string {
   const value = form.value
   if (!value.display_name.trim()) return '请填写姓名'
-  if (!value.class_name.trim()) return '请填写班级名称'
+  if (
+    value.class_number === null ||
+    !Number.isInteger(value.class_number) ||
+    value.class_number < 1 ||
+    value.class_number > 6
+  ) {
+    return '请选择班级序号（1–6）'
+  }
   if (!value.term_name.trim()) return '请填写学期名称'
   if (!value.range || value.range.length !== 2) return '请选择学期起止日期'
   return ''
@@ -41,8 +63,8 @@ function validate(): string {
 
 interface SetupFill {
   display_name: string
-  class_name: string
-  grade: 'small' | 'middle' | 'large'
+  grade: Grade
+  class_number: number
   term_name: string
   start_date: string
   end_date: string
@@ -56,8 +78,8 @@ onMounted(() => {
     fill: (fields: SetupFill) => {
       form.value = {
         display_name: fields.display_name,
-        class_name: fields.class_name,
         grade: fields.grade,
+        class_number: fields.class_number,
         term_name: fields.term_name,
         range: [fields.start_date, fields.end_date],
         school_name: fields.school_name ?? '',
@@ -84,7 +106,7 @@ async function submit(): Promise<void> {
     const payload = await apiPost<LocalContext>('/api/local/initialize', {
       request_id: requestId,
       display_name: form.value.display_name,
-      class_name: form.value.class_name,
+      class_name: derivedClassName.value,
       grade: form.value.grade,
       term_name: form.value.term_name,
       start_date: form.value.range[0],
@@ -132,15 +154,31 @@ async function submit(): Promise<void> {
         <el-form-item label="姓名" required>
           <el-input v-model="form.display_name" maxlength="80" data-d1="display-name" />
         </el-form-item>
-        <el-form-item label="班级名称" required>
-          <el-input v-model="form.class_name" maxlength="80" data-d1="class-name" />
-        </el-form-item>
         <el-form-item label="年级" required>
           <el-select v-model="form.grade" data-d1="grade">
             <el-option label="小班" value="small" />
             <el-option label="中班" value="middle" />
             <el-option label="大班" value="large" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="班级" required>
+          <div class="class-picker">
+            <el-select
+              v-model="form.class_number"
+              placeholder="选择班号"
+              data-d1="class-number"
+            >
+              <el-option
+                v-for="(label, index) in CLASS_NUMBER_LABELS"
+                :key="index + 1"
+                :label="`${label}班`"
+                :value="index + 1"
+              />
+            </el-select>
+            <span class="class-preview" data-d1="class-name-preview">
+              {{ derivedClassName || '请选择班号' }}
+            </span>
+          </div>
         </el-form-item>
         <el-form-item label="学期名称" required>
           <el-input v-model="form.term_name" maxlength="80" data-d1="term-name" />
@@ -184,5 +222,13 @@ async function submit(): Promise<void> {
 }
 .actions {
   margin-top: 16px;
+}
+.class-picker {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.class-preview {
+  color: var(--kgm-text);
 }
 </style>

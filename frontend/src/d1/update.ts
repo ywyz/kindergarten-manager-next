@@ -13,6 +13,8 @@ export interface AppIdentity {
   database_revision: string
 }
 
+export type UpdateChannel = 'stable' | 'preview'
+
 export type UpdateState =
   | 'disabled'
   | 'unconfigured'
@@ -20,6 +22,8 @@ export type UpdateState =
   | 'checking'
   | 'up_to_date'
   | 'no_release'
+  | 'incomplete'
+  | 'switch_unknown'
   | 'available'
   | 'downloading'
   | 'verifying'
@@ -69,6 +73,11 @@ export interface UpdateStatus {
     code?: string | null
   } | null
   download_id: string | null
+  installed_channel?: string
+  check_channel?: UpdateChannel | string
+  available_channels?: string[]
+  channel_switch_available?: boolean
+  channel_switch_error?: string | null
 }
 
 export const EMPTY_UPDATE_STATUS: UpdateStatus = {
@@ -82,6 +91,10 @@ export const EMPTY_UPDATE_STATUS: UpdateStatus = {
   error_message: null,
   install_available: false,
   download_id: null,
+  check_channel: 'stable',
+  available_channels: ['stable'],
+  channel_switch_available: false,
+  channel_switch_error: null,
 }
 
 export function updateStateLabel(status: UpdateStatus | null): string {
@@ -93,9 +106,15 @@ export function updateStateLabel(status: UpdateStatus | null): string {
     case 'checking':
       return '正在检查更新…'
     case 'up_to_date':
-      return '当前已是最新版本'
+      return '已到该渠道最新版本'
     case 'no_release':
-      return '尚无正式 Release'
+      return status?.check_channel === 'preview'
+        ? '尚无预览 Release'
+        : '尚无正式 Release'
+    case 'incomplete':
+      return '更新检查不完整'
+    case 'switch_unknown':
+      return '切换结果待核对'
     case 'available':
       return '发现新版本'
     case 'downloading':
@@ -132,7 +151,50 @@ export function canCancelUpdate(status: UpdateStatus | null): boolean {
 }
 
 export function canRetryUpdate(status: UpdateStatus | null): boolean {
-  return status?.state === 'failed' || status?.state === 'cancelled'
+  return (
+    status?.state === 'failed'
+    || status?.state === 'cancelled'
+    || status?.state === 'incomplete'
+  )
+}
+
+export function updateChannelLabel(channel: string | null | undefined): string {
+  if (channel === 'stable') return '正式版'
+  if (channel === 'preview') return '预览版'
+  return '未知渠道'
+}
+
+export function canSwitchUpdateChannel(status: UpdateStatus | null): boolean {
+  if (!status || isUpdateBusy(status)) return false
+  if (status.channel_switch_available !== true) return false
+  const handoff = status.install_state ?? ''
+  return !['pending', 'bound', 'authorized', 'unknown', 'needs_review'].includes(
+    handoff,
+  )
+}
+
+export function updateChannelNotice(status: UpdateStatus | null): string | null {
+  switch (status?.channel_switch_error) {
+    case 'UPDATE_CHANNEL_SWITCH_BUSY':
+      return '当前有更新下载、验证或安装交接进行中，暂不能切换检查渠道'
+    case 'UPDATE_CHANNEL_PREFERENCE_WRITE':
+      return '无法保存检查渠道偏好；本次未切换'
+    case 'UPDATE_CHANNEL_UNAVAILABLE':
+      return '当前更新源不支持该检查渠道'
+    case 'UPDATE_CHANNEL_INVALID':
+      return '检查渠道不合法'
+    case 'UPDATE_CHANNEL_SWITCH_FAILED':
+      return '切换检查渠道失败；当前渠道保持不变'
+    default:
+      break
+  }
+  if (status?.reason === 'UPDATE_CHANNEL_SWITCHED') {
+    return '已切换检查渠道；请重新检查更新'
+  }
+  if (status?.reason === 'UPDATE_STABLE_BELOW_INSTALLED') {
+    return '已安装预览版高于当前正式渠道；可继续等待匹配或更高的正式版'
+  }
+  return null
 }
 
 export function canInstallUpdate(status: UpdateStatus | null): boolean {
@@ -160,11 +222,19 @@ export function updateErrorText(status: UpdateStatus | null): string {
     case 'UPDATE_CONFIG_INVALID':
       return '更新发行配置无效；未联网检查'
     case 'UPDATE_NO_RELEASE':
-      return 'GitHub 尚无正式 Release；不影响本地使用'
+      return '该检查渠道尚无 Release；不影响本地使用'
     case 'UPDATE_RATE_LIMITED':
       return 'GitHub API 限流或暂时拒绝请求；请稍后重试'
     case 'UPDATE_ASSETS_MISSING':
       return '发现新版，但该 Release 缺少固定更新清单或完整包；暂不可下载'
+    case 'UPDATE_PREVIEW_TRUST_PENDING':
+      return '已发现预览版；预览下载与安装待签名清单和关闭交接审核后开放'
+    case 'UPDATE_CHECK_INCOMPLETE':
+      return '预览渠道发布列表未取全；本次检查不完整'
+    case 'UPDATE_CHANNEL_SWITCH_UNKNOWN':
+      return '切换结果待核对：宿主当前渠道未知，旧目标已暂停'
+    case 'UPDATE_STABLE_BELOW_INSTALLED':
+      return '已安装预览版高于当前正式渠道；可继续等待匹配或更高的正式版'
     case 'UPDATE_TRUST_UNCONFIGURED':
       return '发现新版，但尚未配置发行公钥；暂不可安全下载'
     case 'UPDATE_TRUST_CONFIG_WRITE':

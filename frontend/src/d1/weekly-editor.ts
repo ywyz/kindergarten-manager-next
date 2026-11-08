@@ -25,6 +25,7 @@ import {
   type WeeklyGameChoice,
   type WeeklyGamePatch,
   type WeeklyPatch,
+  type WeeklyUiError,
   type WeeklyWriteResult,
   type WeeklyDetail,
 } from './weekly'
@@ -77,6 +78,22 @@ export interface WeeklyWriteOutcome {
   result: 'saved' | 'conflict' | 'failed' | 'indeterminate' | 'unchanged'
   write?: WeeklyWriteResult
   message?: string
+}
+
+/**
+ * Teacher-facing save notice. Known write failures keep the projected,
+ * backend-safe reason and point at the existing save action; unknown results
+ * keep the explicit query/original-retry wording instead of inviting a resend.
+ */
+export function weeklySaveNotice(outcome: SaveOutcome, failure: WeeklyUiError | null): string {
+  if (outcome === 'saved' || outcome === 'unchanged') return '已保存'
+  if (outcome === 'conflict') {
+    const reason = failure?.message
+    return reason ? `${reason}；当前输入已保留` : '周计划版本冲突，已保留本地输入'
+  }
+  if (outcome === 'indeterminate') return failure?.message ?? '保存结果未确认，请核对原请求'
+  const reason = failure?.message ?? '请核对后重试'
+  return `保存失败：${reason}${reason.includes('已保留') ? '；' : '。当前输入已保留，'}请修正后点“保存”重试。`
 }
 
 
@@ -253,6 +270,7 @@ export class WeeklyEditorController {
   private retryPromise: Promise<WeeklyWriteResult | null> | null = null
   private lastTicket: WeeklyWriteTicket | null = null
   private lastOperation: WeeklyWriteResult | null = null
+  private lastFailure: WeeklyUiError | null = null
   private unknown = false
   private acceptedDraft: { id: string; version: number; content_hash: string } | null = null
   private factsPending = false
@@ -297,6 +315,7 @@ export class WeeklyEditorController {
 
   getLoadedDraftVersion(): number { return this.loadedVersion }
   getLastOperation(): WeeklyWriteResult | null { return this.lastOperation }
+  getLastFailure(): WeeklyUiError | null { return this.lastFailure }
   getSelectedConfirmation(): WeeklyConfirmationSummary | null { return this.selectedConfirmation }
 
   setSelectedConfirmation(confirmation: WeeklyConfirmationSummary | null): void {
@@ -426,6 +445,7 @@ export class WeeklyEditorController {
       }
     }
     this.status = 'idle'
+    this.lastFailure = null
     return true
   }
 
@@ -438,8 +458,15 @@ export class WeeklyEditorController {
     this.beginBusy(busyReason)
     this.status = 'saving'
     const work = (async (): Promise<SaveOutcome> => {
+      this.lastFailure = null
       try {
-        try { await this.settle() } catch { if (this.identity() === entryIdentity) this.status = 'idle'; return 'failed' }
+        try { await this.settle() } catch (error) {
+          if (this.identity() === entryIdentity) {
+            this.status = 'idle'
+            this.lastFailure = projectWeeklyError(error)
+          }
+          return 'failed'
+        }
         if (this.identity() !== entryIdentity) return 'failed'
         const patch = weeklyPatchFrom(this.baseline, this.form)
         if (weeklyPatchIsEmpty(patch)) { this.status = 'idle'; return 'unchanged' }
@@ -455,11 +482,15 @@ export class WeeklyEditorController {
             request_id: ticket.request_id, expected_draft_version: ticket.expected_version, patch,
           })
           if (this.identity() !== ticket.identity) return 'failed'
-          if (!this.applySaved(result, ticket)) return 'conflict'
+          if (!this.applySaved(result, ticket)) {
+            this.lastFailure = { code: 'WEEKLY_INVALID', message: '保存回执与本地草稿不一致，请核对后重试', retry: 'none' }
+            return 'conflict'
+          }
           return 'saved'
         } catch (error) {
           if (this.identity() !== ticket.identity) return 'failed'
           const projected = projectWeeklyError(error)
+          this.lastFailure = projected
           if (projected.code === 'WEEKLY_UNKNOWN') { this.unknown = true; this.status = 'unknown'; return 'indeterminate' }
           if (projected.code === 'WEEKLY_VERSION_CONFLICT' || projected.retry === 'reload') { this.status = 'conflict'; return 'conflict' }
           this.status = 'idle'
@@ -480,6 +511,7 @@ export class WeeklyEditorController {
     this.savePromise = null
     this.lastTicket = null
     this.lastOperation = null
+    this.lastFailure = null
     this.unknown = false
     this.busyReasons.clear()
     this.confirmToken = 0
@@ -559,6 +591,7 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
       if (this.identity() !== entryIdentity) return null
       this.lastOperation = result
       this.unknown = false
+      this.lastFailure = null
       this.status = 'idle'
       const ticket = this.lastTicket
       if (
@@ -581,6 +614,7 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
     } catch (error) {
       if (this.identity() !== entryIdentity) return null
       const projected = projectWeeklyError(error)
+      this.lastFailure = projected
       if (projected.code === 'WEEKLY_OPERATION_NOT_FOUND') {
         this.unknown = true
         this.status = 'unknown'
@@ -612,6 +646,7 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
           if (this.identity() !== ticket.identity) return null
           this.lastOperation = result
           this.unknown = false
+          this.lastFailure = null
           this.status = 'idle'
           if (result.draft && this.loadedVersion <= ticket.expected_version) {
             this.applySaved(result, ticket)
@@ -627,6 +662,7 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
           if (this.identity() !== ticket.identity) return null
           this.lastOperation = result
           this.unknown = false
+          this.lastFailure = null
           this.status = 'idle'
           if (result.draft && this.loadedVersion <= ticket.expected_version) this.applySaved(result, ticket)
           return result
@@ -644,6 +680,7 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
           this.lastOperation = result
           if (result.confirmation) this.applyConfirmation(result.confirmation)
           this.unknown = false
+          this.lastFailure = null
           this.status = 'idle'
           return result
         }
@@ -651,6 +688,7 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
       } catch (error) {
         if (this.identity() !== ticket.identity) return null
         const projected = projectWeeklyError(error)
+        this.lastFailure = projected
         if (projected.code === 'WEEKLY_UNKNOWN') {
           this.unknown = true
           this.status = 'unknown'

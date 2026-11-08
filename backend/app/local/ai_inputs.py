@@ -40,6 +40,7 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
+from app.daily_process_contract import normalize_daily_candidate
 from app.local.ai_provenance import resolve_baseline
 from app.local.errors import (
     LocalAiInputEmpty,
@@ -56,6 +57,7 @@ from app.local.models import (
     LocalDailyPlanContent,
     LocalTerm,
 )
+from app.local import config_ai_contracts
 from app.local.prompt_bundles import (
     TASK_TYPES,
     CandidateInvalid,
@@ -82,6 +84,15 @@ _OTHER_BOARDS = (
     "morning_talk",
     "post_group_games",
     "afternoon_outdoor",
+)
+
+_REFLECTION_FIELDS = (
+    "theme",
+    "objectives",
+    "preparation",
+    "key_points",
+    "difficult_points",
+    "process",
 )
 
 HolidayProvider = Callable[[date], "tuple[bool, str | None]"]
@@ -313,6 +324,9 @@ def project_input(
     task_type: str,
     target_grade: object,
     holiday_provider: HolidayProvider | None = None,
+    base_candidate_id: str | None = None,
+    revision_instruction: str | None = None,
+    implementation_materials: str | None = None,
 ) -> ProjectedInput:
     """Build the immutable input projection for one task submission."""
     if task_type not in TASK_TYPES:
@@ -337,19 +351,54 @@ def project_input(
         process = _require_non_empty(process, "活动过程")
         baseline_candidate_id, baseline = _baseline_reference(session, plan, content)
         payload = {"process_source": process, "grade": grade}
+        baseline_process = (
+            baseline.get("group_activity_process")
+            if isinstance(baseline, dict)
+            else None
+        )
+        if isinstance(baseline_process, str) and baseline_process.strip():
+            payload["split_baseline_process"] = baseline_process
         dependencies = {
             "process_source": process,
             "grade": grade,
             "baseline_candidate_id": baseline_candidate_id,
             "split_baseline": baseline,
         }
+        if revision_instruction is not None:
+            payload["revision_instruction"] = revision_instruction
+            dependencies["revision_instruction"] = revision_instruction
+        base_process: str | None = None
+        if base_candidate_id is not None:
+            from app.local.models import LocalAICandidate
+
+            candidate = session.get(LocalAICandidate, base_candidate_id)
+            if (
+                candidate is None
+                or candidate.daily_plan_id != plan.id
+                or candidate.source_kind != "daily_plan"
+                or candidate.task_type != "daily_process_adapt"
+            ):
+                raise LocalValidationError("原候选不属于当前计划或任务类型")
+            raw = dict(candidate.raw_candidate_json or {})
+            raw_process = raw.get("process")
+            if not isinstance(raw_process, str) or raw_process.strip() == "":
+                raise LocalValidationError("原候选正文不可用")
+            base_process = raw_process
+            payload["base_candidate_process"] = base_process
+            dependencies["base_candidate_id"] = base_candidate_id
+            dependencies["base_candidate_process"] = base_process
         target_hashes = {"process": _digest(process)}
         excerpt = {
             "process": process,
             "baseline_candidate_id": baseline_candidate_id,
             "split_baseline": baseline,
         }
-    else:  # daily_other_activities
+        if revision_instruction is not None:
+            excerpt["revision_instruction"] = revision_instruction
+        if base_candidate_id is not None:
+            excerpt["base_candidate_id"] = base_candidate_id
+            excerpt["base_candidate_process"] = base_process
+    elif task_type == "daily_other_activities":
         context, calendar_diagnostic = _calendar_context(
             session, plan, provider=holiday_provider
         )
@@ -384,6 +433,72 @@ def project_input(
             "game_revision_id": game_revision_id,
             "holiday_context": context["holiday_context"],
         }
+    else:  # daily_reflection_generate
+        materials = _require_non_empty(implementation_materials, "活动实施材料")
+        if len(materials) > 5000:
+            raise LocalValidationError("活动实施材料超过长度上限")
+        snapshot, _boards = _snapshot(content)
+        group = snapshot.get("group_activity") or {}
+        plan_group = {
+            key: group.get(key) if isinstance(group.get(key), str) else ""
+            for key in _REFLECTION_FIELDS
+        }
+        dumped = parse_adopted_content(content.adopted_content).model_dump(
+            exclude_none=True
+        )
+        current_reflection = dumped.get("reflection") or ""
+        payload = {
+            "plan_date": plan.plan_date.isoformat(),
+            "week_number": plan.week_number,
+            "weekday": plan.weekday,
+            "target_grade": grade,
+            "plan_snapshot": {"group_activity": plan_group},
+            "implementation_materials": materials,
+        }
+        dependencies = {
+            "plan_date": plan.plan_date.isoformat(),
+            "week_number": plan.week_number,
+            "weekday": plan.weekday,
+            "target_grade": grade,
+            "plan_snapshot": payload["plan_snapshot"],
+            "implementation_materials": materials,
+        }
+        target_hashes = {"reflection": _digest(current_reflection)}
+        excerpt = {
+            "plan_date": plan.plan_date.isoformat(),
+            "week_number": plan.week_number,
+            "weekday": plan.weekday,
+            "target_grade": grade,
+            "plan_snapshot": payload["plan_snapshot"],
+            "implementation_materials": materials,
+        }
+    if task_type not in (
+        "daily_process_adapt",
+        "daily_reflection_generate",
+    ) and revision_instruction is not None:
+        payload["revision_instruction"] = revision_instruction
+        dependencies["revision_instruction"] = revision_instruction
+        excerpt["revision_instruction"] = revision_instruction
+    if task_type not in (
+        "daily_process_adapt",
+        "daily_reflection_generate",
+    ) and base_candidate_id is not None:
+        from app.local.models import LocalAICandidate
+
+        candidate = session.get(LocalAICandidate, base_candidate_id)
+        if (
+            candidate is None
+            or candidate.daily_plan_id != plan.id
+            or candidate.source_kind != "daily_plan"
+            or candidate.task_type != task_type
+        ):
+            raise LocalValidationError("原候选不属于当前计划或任务类型")
+        dependencies["base_candidate_id"] = base_candidate_id
+        excerpt["base_candidate_id"] = base_candidate_id
+        base_candidate = normalize_daily_candidate(
+            task_type, _strip_ids(dict(candidate.raw_candidate_json or {}))
+        )
+        payload["base_candidate"] = base_candidate
     clean = _validated(task_type, payload)
     business = business_dependency_view(dependencies)
     dependencies = dict(dependencies)
@@ -407,6 +522,36 @@ def business_dependency_view(dependencies: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in dependencies.items() if not key.startswith("_")}
 
 
+def project_config_input(
+    *,
+    source_text: str,
+    class_id: str,
+    config_version: int,
+) -> dict[str, Any]:
+    """Project the pasted class-game text for the formal AI task lifecycle.
+
+    The input is text-only; the current class/config version is bound so a
+    task cannot be claimed after an unrelated settings update silently moved
+    the target.  No daily-plan content or candidate is involved.
+    """
+    payload = config_ai_contracts.validate_input({"source_text": source_text})
+    dependencies = {
+        "class_id": class_id,
+        "config_version": config_version,
+        "source_text": source_text,
+    }
+    return {
+        "payload": payload,
+        "dependencies": dependencies,
+        "dependency_hash": _digest(business_dependency_view(dependencies)),
+        "target_hashes": {},
+        "source_excerpt": {
+            "class_id": class_id,
+            "config_version": config_version,
+        },
+    }
+
+
 def dependency_matches(
     session: Session,
     *,
@@ -424,6 +569,8 @@ def dependency_matches(
     game revision, boards) breaks it.
     """
     try:
+        payload = dict(getattr(input_row, "payload_json", None) or {})
+        dependencies = dict(getattr(input_row, "dependencies_json", None) or {})
         projected = project_input(
             session,
             plan=plan,
@@ -431,7 +578,11 @@ def dependency_matches(
             task_type=input_row.task_type,
             target_grade=input_row.target_grade,
             holiday_provider=holiday_provider,
+            base_candidate_id=dependencies.get("base_candidate_id"),
+            revision_instruction=payload.get("revision_instruction"),
+            implementation_materials=payload.get("implementation_materials"),
         )
+
     except (LocalValidationError, LocalStorageError, CandidateInvalid, ValueError):
         return False
     return projected.dependency_hash == input_row.dependency_hash
@@ -455,10 +606,24 @@ def source_excerpt(
     if task_type == "daily_lesson_split":
         return {"raw_lesson_plan": payload.get("raw_lesson_plan")}
     if task_type == "daily_process_adapt":
-        return {
+        excerpt = {
             "process": payload.get("process_source"),
             "baseline_candidate_id": dependencies.get("baseline_candidate_id"),
             "split_baseline": dependencies.get("split_baseline"),
+        }
+        if payload.get("revision_instruction") is not None:
+            excerpt["revision_instruction"] = payload.get("revision_instruction")
+        if dependencies.get("base_candidate_id") is not None:
+            excerpt["base_candidate_id"] = dependencies.get("base_candidate_id")
+        return excerpt
+    if task_type == "daily_reflection_generate":
+        return {
+            "plan_date": payload.get("plan_date"),
+            "week_number": payload.get("week_number"),
+            "weekday": payload.get("weekday"),
+            "target_grade": payload.get("target_grade"),
+            "plan_snapshot": dependencies.get("plan_snapshot"),
+            "implementation_materials": payload.get("implementation_materials"),
         }
     calendar = payload.get("calendar_context")
     holiday = calendar.get("holiday_context") if isinstance(calendar, dict) else None

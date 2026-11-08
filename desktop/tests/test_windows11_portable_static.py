@@ -176,7 +176,11 @@ def test_portable_writer_real_micro_package_manifest_and_sums(tmp_path):
     portable = tmp_path / "dist"
     info = {
         "build_id": str(uuid.uuid4()),
-        "database_revision": build_e14.DATABASE_REVISION,
+        "database_revision": str(
+            __import__("verify_e14_package").discover_migration_chain(
+                __import__("verify_e14_package").MIGRATIONS
+            )["head_revision"]
+        ),
         "source_freeze_digest": "a" * 64,
         "built_at": "2026-10-31T00:00:00+00:00",
         "source_commit": "b" * 40,
@@ -297,10 +301,19 @@ def _write_path(root: Path, relative: str, data: bytes) -> None:
 
 def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=None,
                            zip_extra=None, zip_remove=None, private_text=None,
-                           product_extra=None, package_info_extra=None):
+                           product_extra=None, product_remove=None,
+                           package_info_extra=None, identity_extra=None,
+                           freeze_extra=None):
     import json
     import uuid
     import build_e14
+    import verify_e14_package as package_verifier
+    source_head = str(
+        package_verifier.discover_migration_chain(package_verifier.MIGRATIONS)["head_revision"]
+    )
+    source_migrations = package_verifier.source_migration_files(
+        package_verifier.MIGRATIONS
+    )
     package = root / "package" / "KGNext-E14"
     package.mkdir(parents=True)
     product = {
@@ -310,24 +323,50 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         "licenses/Pillow-LICENSE.txt": b"synthetic license",
         "_internal/data.txt": b"synthetic data",
     }
+    for path in sorted(package_verifier.MIGRATIONS.rglob("*")):
+        if (
+            path.is_file()
+            and "__pycache__" not in path.parts
+            and path.suffix.lower() not in {".pyc", ".pyo"}
+        ):
+            relative = path.relative_to(package_verifier.MIGRATIONS).as_posix()
+            product[f"_internal/migrations_local/{relative}"] = path.read_bytes()
     if private_text is not None:
         product["_internal/notes.txt"] = private_text
     if product_extra:
         product.update(product_extra)
+    for relative in product_remove or ():
+        product.pop(relative, None)
     for relative, data in product.items():
         _write_path(package, relative, data)
-    freeze_files = [{"path": "desktop/d1_main.py", "size": 1, "sha256": "d" * 64}]
+    freeze_files = [
+        {
+            "path": (
+                "backend/migrations_local/"
+                + path.relative_to(package_verifier.MIGRATIONS).as_posix()
+            ),
+            "size": path.stat().st_size,
+            "sha256": _sha_bytes(path.read_bytes()),
+        }
+        for path in sorted(package_verifier.MIGRATIONS.rglob("*"))
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        and path.suffix.lower() not in {".pyc", ".pyo"}
+    ]
     freeze_digest = _canonical_digest(freeze_files)
+    freeze_commit = "e" * 40
     build_id = str(uuid.uuid4())
     package_info = {
         "app": "KGNext-E14",
         "package": "KGNext-E14",
         "version": "0.1.0",
+        "channel": "stable",
         "build_id": build_id,
-        "database_revision": build_e14.DATABASE_REVISION,
+        "database_revision": source_head,
+        "migrations": source_migrations,
         "listening_templates": list(build_e14.LISTENING_TEMPLATE_REQUIRED_FILES),
         "unsigned_internal_test": True,
-        "source_commit": "b" * 40,
+        "source_commit": freeze_commit,
         "frontend_digest": "c" * 64,
         "frontend_file_count": 1,
         "source_freeze_digest": freeze_digest,
@@ -337,6 +376,22 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         package_info.update(package_info_extra)
     _write_path(package, "package-info.json",
                 json.dumps(package_info, ensure_ascii=False, indent=2).encode("utf-8"))
+    identity = {
+        "app_id": "kindergarten-manager-next",
+        "app_name": "KindergartenManager",
+        "channel": package_info.get("channel", "stable"),
+        "version": package_info.get("version"),
+        "build_id": build_id,
+        "package_format": "pyinstaller-onedir-zip-v1",
+        "platform": "windows",
+        "arch": "x64",
+        "python": "3.14.10",
+        "database_revision": package_info.get("database_revision"),
+    }
+    if identity_extra:
+        identity.update(identity_extra)
+    _write_path(package, "_internal/build_identity.json",
+                json.dumps(identity, ensure_ascii=False, indent=2).encode("utf-8"))
     product_files = {
         path.relative_to(package).as_posix(): path.read_bytes()
         for path in package.rglob("*") if path.is_file()
@@ -345,7 +400,7 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         "schema_version": 1,
         "package": "KGNext-E14",
         "build_id": build_id,
-        "database_revision": build_e14.DATABASE_REVISION,
+        "database_revision": source_head,
         "source_freeze_digest": freeze_digest,
         "generated_at": "2026-10-31T01:00:00+00:00",
         "files": [
@@ -384,7 +439,7 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
             for name, digest in sorted(sums_map.items())
         )
     freeze = {
-        "commit": "e" * 40,
+        "commit": freeze_commit,
         "before": {
             "files": freeze_files,
             "digest": freeze_digest,
@@ -399,8 +454,12 @@ def _build_archive_fixture(root: Path, *, manifest_mutator=None, sums_mutator=No
         },
         "changes": {"stable": True, "changed": [], "added": [], "removed": []},
         "stable": True,
+        "version": package_info.get("version", "0.1.0"),
+        "channel": package_info.get("channel", "stable"),
         "package_tree_digest": "f" * 64,
     }
+    if freeze_extra:
+        freeze.update(freeze_extra)
     freeze_path = root / "freeze.json"
     freeze_path.write_text(json.dumps(freeze, ensure_ascii=False, indent=2), encoding="utf-8")
     archive_path = root / "candidate.zip"
@@ -462,6 +521,262 @@ def test_archive_positive_coherent_tiny_candidate(tmp_path):
     assert checks["source_freeze_stable"] is True
     assert checks["zip_streamed_without_extract"] is True
     assert report["frozen_runtime"] == "not_run_static_only"
+
+def test_archive_accepts_preview_identity(tmp_path):
+    root = tmp_path / "preview-ok"
+    root.mkdir()
+    rc, report = _run_archive_case(
+        root,
+        package_info_extra={
+            "version": "1.2.3-listening-test.1",
+            "channel": "preview",
+        },
+        freeze_extra={
+            "version": "1.2.3-listening-test.1",
+            "channel": "preview",
+        },
+    )
+    assert rc == 0, report["errors"]
+    checks = report["checks"]
+    assert checks["package_info_metadata_exact"] is True
+    assert checks["package_info_identity_matches"] is True
+    assert checks["package_info_matches_freeze_identity"] is True
+    assert report["ok"] is True
+
+
+def test_archive_rejects_wrong_identity_version_channel_and_head(tmp_path):
+    import verify_e14_package
+
+    cases = {
+        "wrong-identity-version": {"identity_extra": {"version": "9.9.9"}},
+        "wrong-identity-channel": {"identity_extra": {"channel": "preview"}},
+        "wrong-version-shape": {"package_info_extra": {"version": "01.2.3"}},
+        "wrong-channel": {"package_info_extra": {"channel": "beta"}},
+        "stable-version-preview-channel": {
+            "package_info_extra": {"channel": "preview"},
+        },
+        "preview-version-stable-channel": {
+            "package_info_extra": {
+                "version": "1.2.3-listening-test.1",
+                "channel": "stable",
+            },
+        },
+        "wrong-head": {
+            "package_info_extra": {
+                "database_revision": "20261107_0010_local_listening_ai",
+            },
+        },
+        "coordinated-wrong-version": {
+            "package_info_extra": {"version": "9.9.9"},
+            "identity_extra": {"version": "9.9.9"},
+            "freeze_extra": {"version": "0.1.0", "channel": "stable"},
+        },
+        "coordinated-wrong-preview": {
+            "package_info_extra": {
+                "version": "9.9.9-listening-test.1",
+                "channel": "preview",
+            },
+            "identity_extra": {
+                "version": "9.9.9-listening-test.1",
+                "channel": "preview",
+            },
+            "freeze_extra": {"version": "0.1.0", "channel": "stable"},
+        },
+    }
+    assert verify_e14_package.discover_migration_chain(
+        verify_e14_package.MIGRATIONS
+    )["head_revision"] == "20261108_0016_local_listening_goal_suggest"
+    reports = {}
+    for name, mutation in cases.items():
+        root = tmp_path / name
+        root.mkdir()
+        rc, report = _run_archive_case(root, **mutation)
+        assert rc != 0, name
+        assert report["ok"] is False, name
+        reports[name] = report
+    assert (
+        reports["coordinated-wrong-version"]["checks"][
+            "package_info_matches_freeze_identity"
+        ]
+        is False
+    )
+    assert (
+        reports["coordinated-wrong-preview"]["checks"][
+            "package_info_matches_freeze_identity"
+        ]
+        is False
+    )
+
+
+def test_archive_rejects_missing_or_extra_migration_source_entry(tmp_path):
+    import verify_e14_package
+
+    migrations = verify_e14_package.source_migration_files(
+        verify_e14_package.MIGRATIONS
+    )
+    missing_name = "versions/20261108_0012_local_listening_rotation.py"
+    assert missing_name in migrations
+    without = [name for name in migrations if name != missing_name]
+    assert len(without) == len(migrations) - 1
+
+    missing_root = tmp_path / "missing-migration"
+    missing_root.mkdir()
+    rc, report = _run_archive_case(
+        missing_root,
+        package_info_extra={"migrations": without},
+    )
+    assert rc != 0
+    assert report["checks"]["package_info_metadata_exact"] is False
+
+    extra_root = tmp_path / "extra-migration"
+    extra_root.mkdir()
+    rc, report = _run_archive_case(
+        extra_root,
+        package_info_extra={"migrations": [*migrations, "versions/extra.py"]},
+    )
+    assert rc != 0
+    assert report["checks"]["package_info_metadata_exact"] is False
+
+    extra_file_root = tmp_path / "extra-migration-file"
+    extra_file_root.mkdir()
+    rc, report = _run_archive_case(
+        extra_file_root,
+        product_extra={
+            "_internal/migrations_local/versions/20261108_0099_stale.py":
+                b'revision = "20261108_0099_stale"\ndown_revision = None\n',
+        },
+    )
+    assert rc != 0
+    assert report["checks"]["package_info_metadata_exact"] is True
+    assert report["checks"]["package_info_migration_files_exact"] is False
+    assert report["checks"]["package_info_migration_tree_exact"] is False
+
+    extra_non_py_root = tmp_path / "extra-non-py-migration-file"
+    extra_non_py_root.mkdir()
+    rc, report = _run_archive_case(
+        extra_non_py_root,
+        product_extra={
+            "_internal/migrations_local/versions/stale.txt": b"synthetic stale\n",
+        },
+    )
+    assert rc != 0
+    assert report["checks"]["package_info_migration_files_exact"] is True
+    assert report["checks"]["package_info_migration_tree_exact"] is False
+
+
+def test_archive_rejects_tampered_migration_bytes_with_recomputed_digests(tmp_path):
+    import verify_e14_package as package_verifier
+
+    relative = "versions/20261108_0014_local_reflection_ai.py"
+    source = (package_verifier.MIGRATIONS / relative).read_bytes()
+    root = tmp_path / "tampered-bytes"
+    root.mkdir()
+    rc, report = _run_archive_case(
+        root,
+        product_extra={
+            f"_internal/migrations_local/{relative}": source + b"\n# synthetic tamper\n",
+        },
+    )
+    assert rc != 0
+    checks = report["checks"]
+    assert checks["package_info_migration_files_present"] is True
+    assert checks["package_info_migration_files_exact"] is True
+    assert checks["package_info_migration_tree_exact"] is True
+    assert checks["package_info_migration_files_match_source"] is False
+    assert checks["product_sizes_and_hashes_exact"] is True
+    assert checks["package_info_matches_manifest"] is True
+
+
+def test_archive_rejects_zero_version_migration_files(tmp_path):
+    import verify_e14_package as package_verifier
+
+    chain = package_verifier.discover_migration_chain(
+        package_verifier.MIGRATIONS
+    )
+    remove = tuple(
+        f"_internal/migrations_local/versions/{filename}"
+        for filename in chain["files"]
+    )
+    root = tmp_path / "zero-versions"
+    root.mkdir()
+    rc, report = _run_archive_case(root, product_remove=remove)
+    assert rc != 0
+    checks = report["checks"]
+    assert checks["package_info_metadata_exact"] is True
+    assert checks["package_info_migration_files_present"] is False
+    assert checks["package_info_migration_tree_exact"] is False
+    assert checks["package_info_migration_files_match_source"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("platform", "linux"),
+        ("arch", "arm64"),
+        ("python", "3.12.0"),
+        ("package_format", "zip-v0"),
+    ),
+)
+def test_archive_rejects_wrong_app_identity_fields(tmp_path, field, value):
+    root = tmp_path / f"wrong-{field}"
+    root.mkdir()
+    rc, report = _run_archive_case(root, identity_extra={field: value})
+    assert rc != 0
+    checks = report["checks"]
+    assert checks["build_identity_valid"] is False
+    assert checks["build_identity_fields_exact"] is False
+    assert checks["product_sizes_and_hashes_exact"] is True
+
+
+def test_archive_rejects_source_build_id(tmp_path):
+    import update_identity
+
+    root = tmp_path / "source-build-id"
+    root.mkdir()
+    rc, report = _run_archive_case(
+        root,
+        identity_extra={"build_id": update_identity.SOURCE_BUILD_ID},
+    )
+    assert rc != 0
+    checks = report["checks"]
+    assert checks["build_identity_uuid"] is True
+    assert checks["build_identity_not_source_id"] is False
+    assert checks["build_identity_valid"] is False
+    assert checks["package_info_identity_matches"] is False
+
+
+def test_archive_rejects_package_info_commit_not_matching_freeze(tmp_path):
+    root = tmp_path / "wrong-freeze-commit"
+    root.mkdir()
+    rc, report = _run_archive_case(
+        root,
+        package_info_extra={"source_commit": "b" * 40},
+    )
+    assert rc != 0
+    checks = report["checks"]
+    assert checks["package_info_matches_freeze_commit"] is False
+    assert checks["package_info_matches_freeze_identity"] is True
+    assert checks["package_info_matches_manifest"] is True
+    assert checks["product_sizes_and_hashes_exact"] is True
+
+
+def test_archive_rejects_package_missing_a_source_migration_file(tmp_path):
+    root = tmp_path / "missing-file"
+    root.mkdir()
+    rc, report = _run_archive_case(
+        root,
+        product_remove=(
+            "_internal/migrations_local/versions/"
+            "20261108_0012_local_listening_rotation.py",
+        ),
+    )
+    assert rc != 0
+    checks = report["checks"]
+    assert checks["package_info_metadata_exact"] is True
+    assert checks["package_info_migration_files_present"] is False
+    assert checks["package_info_migration_files_exact"] is False
+    assert report["ok"] is False
+
 
 def test_archive_rejects_sqlalchemy_compiled_extension(tmp_path):
     rc, report = _run_archive_case(
@@ -579,6 +894,8 @@ def _freeze_document(files, *, after_files=None, changes=None, stable=True):
                   "file_count": len(after_files), "generated_at": generated},
         "changes": changes or {"stable": True, "changed": [], "added": [], "removed": []},
         "stable": stable,
+        "version": "0.1.0",
+        "channel": "stable",
         "package_tree_digest": "f" * 64,
     }
 
@@ -1269,9 +1586,15 @@ def test_listening_template_static_contract_is_current_and_complete():
     import build_e14
     import verify_e14_package
 
-    assert build_e14.DATABASE_REVISION == "20261107_0010_local_listening_ai"
-    assert build_e14.PREDECESSOR_MIGRATION_FILE.is_file()
-    assert build_e14.MIGRATION_FILE.is_file()
+    chain = verify_e14_package.discover_migration_chain(build_e14.MIGRATIONS_DIR)
+    assert chain["head_revision"] == "20261108_0016_local_listening_goal_suggest"
+    assert chain["head_file"] == "20261108_0016_local_listening_goal_suggest.py"
+    assert len(chain["files"]) == 16
+    expected = verify_e14_package.source_migration_files(build_e14.MIGRATIONS_DIR)
+    assert expected == sorted(expected)
+    assert len(expected) == 17
+    for filename in chain["files"]:
+        assert (build_e14.MIGRATIONS_DIR / "versions" / filename).is_file()
     assert len(build_e14.LISTENING_TEMPLATE_DOCX) == 15
     assert set(build_e14.LISTENING_TEMPLATE_REQUIRED_FILES) == {
         "README.md",
@@ -1291,6 +1614,59 @@ def test_listening_template_static_contract_is_current_and_complete():
     )
     assert "migration_0009" in verify_e14_package.REQUIRED_STATIC_CHECKS
     assert "migration_0010" in verify_e14_package.REQUIRED_STATIC_CHECKS
+    assert "migration_head" in verify_e14_package.REQUIRED_STATIC_CHECKS
+    assert (
+        "package_info_matches_freeze_identity"
+        in verify_e14_package.REQUIRED_STATIC_CHECKS
+    )
+    assert (
+        "package_info_matches_freeze_commit"
+        in verify_e14_package.REQUIRED_STATIC_CHECKS
+    )
+    assert (
+        "build_identity_fields_exact"
+        in verify_e14_package.REQUIRED_STATIC_CHECKS
+    )
+    import verify_e14_portable_archive as archive_verifier
+
+    assert (
+        "package_info_identity_matches"
+        in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    )
+    assert (
+        "package_info_migration_files_exact"
+        in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    )
+    assert (
+        "package_info_migration_tree_exact"
+        in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    )
+    assert (
+        "package_info_migration_tree_matches_source"
+        in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    )
+    assert (
+        "package_info_migration_files_match_source"
+        in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    )
+    assert (
+        "package_info_matches_freeze_identity"
+        in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    )
+    assert (
+        "package_info_matches_freeze_commit"
+        in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    )
+    assert (
+        "build_identity_fields_exact"
+        in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    )
+    assert "build_identity_valid" in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    assert "build_identity_not_source_id" in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    assert (
+        "build_identity_matches_package_info"
+        in archive_verifier.REQUIRED_ARCHIVE_CHECKS
+    )
 
 
 def test_listening_installer_static_contract():
@@ -1315,12 +1691,24 @@ def test_listening_installer_static_contract():
         "DefaultDirName={localappdata}\\Programs\\KindergartenManagerListeningTest"
         in iss
     )
+    assert "AppName=幼儿园信息管理系统" in iss
+    assert "AppVerName=幼儿园信息管理系统 {#MyAppVersion}" in iss
+    assert "AppComments=一对一倾听测试版 - Unsigned test build {#MyBuildId}" in iss
+    assert "DefaultGroupName=幼儿园信息管理系统" in iss
+    assert "UninstallDisplayName=幼儿园信息管理系统" in iss
+    assert "UninstallDisplayIcon={app}\\KGNext-E14.exe" in iss
+    assert (
+        'Name: "{userprograms}\\幼儿园信息管理系统\\幼儿园信息管理系统"; '
+        'Filename: "{app}\\KGNext-E14.exe"'
+    ) in iss
+    assert "Kindergarten Manager 一对一倾听测试版" not in iss
+    assert "一对一倾听测试版.lnk" not in iss
+    assert "[InstallDelete]" not in iss
     assert "PrivilegesRequired=lowest" in iss
     assert "MinVersion=10.0" in iss
     assert "ArchitecturesAllowed=x64" in iss
     assert "Source: \"{#MyPackageDir}\\*\"" in iss
     assert "recursesubdirs createallsubdirs" in iss
-    assert '一对一倾听测试版"; Filename:' in iss
     assert (
         '--data ""{localappdata}\\KindergartenManagerListeningTest\\data"" '
         '--credential-root ""{localappdata}\\KindergartenManagerListeningTest'
@@ -1338,6 +1726,24 @@ def test_listening_installer_static_contract():
     assert "unins000.exe" in ps1
     assert "KGNext-E14.exe" in ps1
     assert "--credential-root" in ps1
+    assert "$ShortcutFolder = '幼儿园信息管理系统'" in ps1
+    assert "$ShortcutName = '幼儿园信息管理系统.lnk'" in ps1
+    assert (
+        "$userRoot = Join-Path $env:LOCALAPPDATA "
+        "'KindergartenManagerListeningTest'"
+    ) in ps1
+    assert "$dataRoot = Join-Path $userRoot 'data'" in ps1
+    assert "$credentialRoot = Join-Path $userRoot 'credentials'" in ps1
+    assert (
+        "$expectedTarget = [System.IO.Path]::GetFullPath("
+        "(Join-Path $installDir 'KGNext-E14.exe'))"
+    ) in ps1
+    assert (
+        '$expectedArguments = \'--data "{0}" --credential-root "{1}"\' '
+        "-f $dataRoot, $credentialRoot"
+    ) in ps1
+    assert "Kindergarten Manager 一对一倾听测试版" not in ps1
+    assert "一对一倾听测试版.lnk" not in ps1
     assert "installer-identity.json" in ps1
     assert "synthetic-keep" in ps1
     assert "data_preserved" in ps1
@@ -1361,5 +1767,99 @@ def test_listening_installer_static_contract():
     assert "SHA256SUMS.txt" not in workflow
     assert "installer-identity.json" not in workflow
     assert "retention-days: 14" in workflow
+
+
+def test_installer_powershell_parses_and_derives_release_identity(tmp_path):
+    import shutil
+
+    repo = Path(__file__).resolve().parents[2]
+    ps1_path = (
+        repo / ".github" / "scripts" / "build-windows11-listening-installer.ps1"
+    )
+    validation_path = (
+        repo / ".github" / "scripts" / "build-windows11-validation.ps1"
+    )
+    ps1 = ps1_path.read_text(encoding="utf-8-sig")
+    validation = validation_path.read_text(encoding="utf-8-sig")
+    assert "function Get-MigrationHead" in ps1
+    assert "function Assert-ReleaseIdentity" in ps1
+    assert "$ExpectedRevision = Get-MigrationHead $repo" in ps1
+    assert "20261107_0010_local_listening_ai" not in ps1
+    assert "20261108_0016_local_listening_goal_suggest" not in ps1
+    assert "$packageInfo.version" in ps1
+    assert "$buildIdentity.version" in ps1
+    assert "$packageInfo.PSObject.Properties['channel']" in ps1
+    assert "$buildIdentity.PSObject.Properties['channel']" in ps1
+    assert "version = $expectedVersion" in ps1
+    assert "channel = $expectedChannel" in ps1
+    assert "buildIdentity.platform" in ps1
+    assert "buildIdentity.arch" in ps1
+    assert "buildIdentity.python" in ps1
+    assert "buildIdentity.package_format" in ps1
+    assert "buildIdentity.app_id" in ps1
+    assert "buildIdentity.app_name" in ps1
+    assert "summary.build.PSObject.Properties['source_freeze_commit']" in ps1
+    assert "freeze_commit = $expectedFreezeCommit" in ps1
+
+    assert "source_freeze_commit = [string]$freeze.commit" in validation
+    assert (
+        "packageInfo.source_commit -ne [string]$freeze.commit" in validation
+    )
+    assert "buildIdentity.app_id" in validation
+    assert "buildIdentity.app_name" in validation
+    assert "buildIdentity.package_format" in validation
+
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    assert shell, "PowerShell parser is required for the static installer check"
+    parser_template = "\n".join(
+        (
+            "$tokens = $null",
+            "$errors = $null",
+            "[System.Management.Automation.Language.Parser]::ParseFile(",
+            "    $env:KGM_INSTALLER_PS1, [ref]$tokens, [ref]$errors",
+            ") | Out-Null",
+            "if ($errors.Count -gt 0) {",
+            "    $errors | ForEach-Object { Write-Output $_.Message }",
+            "    exit 1",
+            "}",
+            "exit 0",
+        )
+    )
+    for index, path in enumerate((ps1_path, validation_path)):
+        parser = tmp_path / f"parse-powershell-{index}.ps1"
+        parser.write_text(parser_template, encoding="utf-8")
+        environment = os.environ.copy()
+        environment["KGM_INSTALLER_PS1"] = str(path)
+        completed = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-File", str(parser)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=environment,
+        )
+        assert completed.returncode == 0, (
+            path.name,
+            completed.stdout,
+            completed.stderr,
+        )
+
+
+def test_product_display_title_contract():
+    repo = Path(__file__).resolve().parents[2]
+    main_source = (repo / "desktop" / "d1_main.py").read_text(encoding="utf-8")
+    d1_source = (repo / "frontend" / "d1.html").read_text(encoding="utf-8")
+    index_source = (repo / "frontend" / "index.html").read_text(encoding="utf-8")
+
+    assert 'PRODUCT_TITLE = "幼儿园信息管理系统"' in main_source
+    assert main_source.count("PRODUCT_TITLE,") == 2
+    assert "幼儿园教师工作台（本地）" not in main_source
+    assert 'f"D1 验证窗口（{args.phase}）"' in main_source
+    assert "_apply_product_document_title" not in main_source
+    assert "document.title = " not in main_source
+    assert "window.events.loaded +=" not in main_source
+    for source in (d1_source, index_source):
+        assert "<title>幼儿园信息管理系统</title>" in source
+    assert "幼儿园教师工作台（本地）" not in d1_source
+    assert "幼儿园教育工作支持系统" not in index_source
 
 

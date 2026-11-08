@@ -247,6 +247,38 @@ export interface ConfigApplyResult {
   replayed?: boolean | null
 }
 
+/** Class game-config AI extraction task (settings-only task type). */
+export interface ConfigAITask {
+  task_id: string
+  source_kind: 'class_game_config'
+  status: string
+  reason: string | null
+  processing_certainty: string | null
+  candidate_id: string | null
+  allowed_actions: string[]
+  retry_requires_ack: boolean
+  config_version: number | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface ConfigAICandidate {
+  candidate_id: string
+  task_id: string
+  task_type: 'class_game_config_extract'
+  raw_candidate: {
+    locations: GameLocation[]
+    game_scope: string | null
+    guidance: string | null
+  }
+  source: {
+    source_kind: 'class_game_config'
+    class_id: string
+    config_version: number | null
+  }
+  created_at: string | null
+}
+
 /** Read-only current class game configuration (D2 W2 hand-off)。 */
 export interface ClassGames {
   class_id: string
@@ -269,6 +301,7 @@ export type TaskType =
   | 'daily_lesson_split'
   | 'daily_process_adapt'
   | 'daily_other_activities'
+  | 'daily_reflection_generate'
 
 /** GET/PATCH /api/local/ai/config (engineering spec §5.1 ``ConfigOut``). */
 export interface AiConfig {
@@ -314,6 +347,30 @@ export interface PromptDefault {
   guidance: Record<string, string>
   fields: PromptField[]
   bundle_hash: string
+}
+
+export interface PromptPackageTask {
+  task_type: string
+  contract_version: number
+  default_revision: number
+}
+
+/** GET /api/local/ai/prompt-package (teacher feedback #6). */
+export interface PromptPackageStatus {
+  configured: boolean
+  state: string
+  active_source: 'package' | 'builtin'
+  release_sequence: number | null
+  published_at: string | null
+  notes: string | null
+  last_checked_at: string | null
+  last_result: string | null
+  message: string
+  allowed_tasks: string[]
+  package_tasks: PromptPackageTask[]
+  pending_sequence: number | null
+  client_version: string
+  prompt_sync_error: string | null
 }
 
 // --- D2 tasks (engineering spec §5.1) --------------------------------------

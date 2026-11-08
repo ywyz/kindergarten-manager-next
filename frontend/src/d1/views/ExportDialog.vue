@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
  * Word export dialog (D1 spec §12.1/§12.3): day / week / month / custom
- * closed ranges, a 409 ack loop bound to the server's exact
- * ``expected_context`` (re-confirmation even when the missing set shrank to
- * empty), and the restricted host save with operation-id result handling.
+ * closed ranges exported in one normal request from the database-saved
+ * versions; missing fields stay in place as empty values.  The restricted
+ * host save keeps operation-id result handling and the #22 saved-close path.
  *
  * The export always uses the database-saved versions: unsaved editor input
  * is never written by this flow, and export never saves the plan.
@@ -35,25 +35,9 @@ type ExportPhase =
   | 'save_result_unknown'
   | 'export_not_found'
 
-interface MissingFact {
-  kind: string
-  field?: string
-  section?: string
-  [key: string]: unknown
-}
-interface MissingEntry {
-  daily_plan_id: string
-  plan_date: string
-  facts: MissingFact[]
-}
-
 const mode = ref<ExportMode>('week')
 const customFrom = ref(props.planDate)
 const customTo = ref(props.planDate)
-const ackChecked = ref(false)
-const facts = ref<MissingEntry[] | null>(null)
-const expectedContext = ref<Record<string, unknown> | null>(null)
-const ackReason = ref<'missing' | 'context_changed' | null>(null)
 const errorText = ref('')
 /**
  * Two distinct lifecycles (R6): ``generating`` covers the HTTP read/generate
@@ -81,7 +65,6 @@ const phase = ref<ExportPhase>('idle')
 const resultText = ref('')
 const savedFilename = ref('')
 const warnings = ref<Array<{ code: string; message?: string }>>([])
-const ackOpen = ref(false)
 let exportSeq = 0
 
 /**
@@ -137,11 +120,6 @@ function endSaveOperation(): void {
   unresolvedKind.value = null
 }
 
-const acksNeeded = computed(() => {
-  if (facts.value && facts.value.length > 0) return true
-  return ackReason.value === 'context_changed' || ackReason.value === 'missing'
-})
-
 function formatLocal(value: Date): string {
   const year = value.getFullYear()
   const month = String(value.getMonth() + 1).padStart(2, '0')
@@ -195,10 +173,6 @@ watch(
     mode.value = 'week'
     customFrom.value = props.planDate
     customTo.value = props.planDate
-    ackChecked.value = false
-    facts.value = null
-    expectedContext.value = null
-    ackReason.value = null
     errorText.value = ''
     phase.value = 'idle'
     resultText.value = ''
@@ -212,10 +186,6 @@ watch([mode, customFrom, customTo], () => {
   // A range change during generation safely invalidates the old request and
   // restores the controls; the native phase keeps its own mutex (R6).
   generating.value = false
-  ackChecked.value = false
-  facts.value = null
-  expectedContext.value = null
-  ackReason.value = null
   errorText.value = ''
   if (phase.value !== 'idle') phase.value = 'idle'
   resultText.value = ''
@@ -239,10 +209,6 @@ function onDialogVisibility(value: boolean): void {
   emit('update:open', value)
 }
 
-function factsLabel(fact: MissingFact): string {
-  return fact.field || fact.section || fact.kind
-}
-
 interface ExportOk {
   kind: 'docx'
   blob: Blob
@@ -253,8 +219,6 @@ interface ExportOk {
 async function requestExport(payload: {
   from: string
   to: string
-  ack_missing?: boolean
-  expected_context?: Record<string, unknown> | null
 }): Promise<ExportOk | ApiError> {
   const headers: Record<string, string> = { 'cache-control': 'no-store', ...sessionHeaders() }
   let response: Response
@@ -334,20 +298,7 @@ async function runExport(): Promise<void> {
   errorText.value = ''
   phase.value = 'idle'
   try {
-    if (acksNeeded.value && !ackChecked.value) {
-      errorText.value = '请先确认缺项提示后再导出'
-      return
-    }
-    const payload: {
-      from: string
-      to: string
-      ack_missing?: boolean
-      expected_context?: Record<string, unknown> | null
-    } = { from: range.from, to: range.to }
-    if (acksNeeded.value && ackChecked.value && expectedContext.value) {
-      payload.ack_missing = true
-      payload.expected_context = expectedContext.value
-    }
+    const payload = { from: range.from, to: range.to }
     const result = await requestExport(payload)
     // A range change (or a newer export) invalidates this response: never
     // open a dialog for a stale selection.
@@ -364,20 +315,6 @@ async function runExport(): Promise<void> {
 }
 
 function handleExportError(error: ApiError): void {
-  if (error.code === 'EXPORT_ACK_REQUIRED') {
-    const details = error.details ?? {}
-    facts.value = (details.facts as MissingEntry[]) || []
-    expectedContext.value =
-      (details.expected_context as Record<string, unknown>) ?? null
-    ackReason.value =
-      details.reason === 'context_changed' ? 'context_changed' : 'missing'
-    ackChecked.value = false
-    errorText.value =
-      ackReason.value === 'context_changed'
-        ? '导出对象已变化（版本或缺项有更新）：请重新确认后再导出'
-        : '以下日期存在缺项：确认后按当前内容导出（缺项保持为空，不会自动补写）'
-    return
-  }
   if (error.code === 'EXPORT_NOT_FOUND') {
     phase.value = 'export_not_found'
     resultText.value = '所选范围内没有已保存的日计划，未生成文件。'
@@ -462,10 +399,16 @@ function applySaveResult(
     return
   }
   if (saveResult.status === 'saved') {
+    // One terminal entry for both the direct host reply and the read-only
+    // query recovery.  endSaveOperation invalidates this exact operation, so
+    // a second late saved reply cannot show a duplicate toast or close a newer
+    // dialog.
     endSaveOperation()
     phase.value = 'saved'
     savedFilename.value = saveResult.filename || fallbackFilename
     resultText.value = `文件已保存：${savedFilename.value}（${saveResult.bytes ?? fallbackBytes ?? '未知'} 字节；导出的是数据库已保存版本）`
+    ElMessage.success('文件已保存')
+    if (props.open) emit('update:open', false)
     return
   }
   // Unresolved: keep the mutex and the operation id. The kind decides which
@@ -558,13 +501,13 @@ function confirmFileChecked(): void {
   // results are invalidated instead of landing later (R6).
   endSaveOperation()
   resultText.value =
-    '已按你的核对解除保存互斥：重新导出会重新读取数据库并再次确认缺项，使用新的操作 ID。'
+    '已按你的核对解除保存互斥：重新导出会重新读取数据库中的已保存版本，并使用新的操作 ID。'
 }
 
 function retryFromScratch(): void {
   if (nativeBusy.value) return
-  // A fresh user-initiated retry is a NEW operation: new request id, and the
-  // database is read and confirmed again.
+  // A fresh user-initiated retry is a NEW operation: new request id; it
+  // re-reads the database-saved versions before saving again.
   saveRequestId = ''
   unresolvedKind.value = null
   phase.value = 'idle'
@@ -572,18 +515,10 @@ function retryFromScratch(): void {
   void runExport()
 }
 
-/**
- * Verification-driver entry: runs the same real export flow, and when the
- * server asks for the missing-facts confirmation it ticks the confirmation
- * (the equivalent of the user reading the facts and confirming) and retries.
- */
+/** Verification-driver entry: runs the same single normal export flow. */
 async function runConfirmed(): Promise<void> {
   if (generating.value || nativeBusy.value || props.disabled) return
   await runExport()
-  if (acksNeeded.value && expectedContext.value && !generating.value) {
-    ackChecked.value = true
-    await runExport()
-  }
 }
 
 function setMode(value: ExportMode): void {
@@ -669,30 +604,6 @@ onBeforeUnmount(() => {
 
     <el-alert v-if="errorText" type="error" :closable="false" class="inline" :title="errorText" />
 
-    <template v-if="acksNeeded">
-      <el-alert
-        v-if="ackReason === 'context_changed'"
-        type="warning"
-        :closable="false"
-        class="inline"
-        title="导出对象已变化，此前确认已失效；请再次确认。"
-      />
-      <div v-if="facts && facts.length" class="inline">
-        <h4>缺项（确认后保持为空，不会自动补写）</h4>
-        <ul class="facts">
-          <li v-for="entry in facts" :key="entry.daily_plan_id">
-            <strong>{{ entry.plan_date }}</strong>
-            <span class="muted">（{{ entry.facts.length }} 项）：</span>
-            <span>{{ entry.facts.map(factsLabel).join('、') }}</span>
-          </li>
-        </ul>
-      </div>
-      <p v-else class="muted inline">当前缺项清单已为空，但仍需重新确认后才能导出。</p>
-      <el-checkbox v-model="ackChecked" class="inline" data-d1="export-ack">
-        我已重新确认上述导出对象，按其当前内容导出
-      </el-checkbox>
-    </template>
-
     <el-alert
       v-if="phase !== 'idle' && resultText"
       :type="phase === 'saved' ? 'success' : phase === 'canceled' ? 'warning' : phase === 'export_not_found' ? 'info' : 'error'"
@@ -739,11 +650,11 @@ onBeforeUnmount(() => {
       <el-button
         type="primary"
         :loading="generating"
-        :disabled="generating || nativeBusy || props.disabled || (acksNeeded && !ackChecked)"
+        :disabled="generating || nativeBusy || props.disabled"
         data-d1="export-run"
         @click="runExport"
       >
-        {{ acksNeeded ? '再次确认并导出' : '导出' }}
+        导出
       </el-button>
     </template>
   </el-dialog>
@@ -764,11 +675,6 @@ onBeforeUnmount(() => {
 }
 .inline {
   margin-top: 12px;
-}
-.facts {
-  margin: 6px 0;
-  padding-left: 18px;
-  font-size: 0.875rem;
 }
 .muted {
   color: var(--kgm-muted);

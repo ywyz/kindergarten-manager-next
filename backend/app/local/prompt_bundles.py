@@ -45,6 +45,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
+from app.local import config_ai_contracts
 from app.local.base import utc_now
 from app.local.errors import (
     LocalPromptBundleConflict,
@@ -68,6 +69,15 @@ TASK_TYPES: tuple[str, ...] = (
     "daily_lesson_split",
     "daily_process_adapt",
     "daily_other_activities",
+    "daily_reflection_generate",
+)
+# The original three daily types are the hard initialization gate.  A new
+# package task (including reflection) may seed a personal prompt when present,
+# but must not block manual setup on an older/degraded package.
+INITIAL_REQUIRED_TASK_TYPES: tuple[str, ...] = (
+    "daily_lesson_split",
+    "daily_process_adapt",
+    "daily_other_activities",
 )
 OBSERVATION_TASK_TYPES: tuple[str, ...] = (
     "game_observation_generate",
@@ -84,11 +94,20 @@ WEEKLY_TASK_TYPES: tuple[str, ...] = (
 LISTENING_TASK_TYPES: tuple[str, ...] = (
     "listening_note_draft",
     "listening_domain_evaluate",
+    "listening_group_notes",
+    "listening_goal_suggest",
 )
+CONFIG_TASK_TYPES: tuple[str, ...] = config_ai_contracts.TASK_TYPES
 NEW_TASK_TYPES: tuple[str, ...] = (
-    OBSERVATION_TASK_TYPES + WEEKLY_TASK_TYPES + LISTENING_TASK_TYPES
+    OBSERVATION_TASK_TYPES
+    + WEEKLY_TASK_TYPES
+    + LISTENING_TASK_TYPES
+    + CONFIG_TASK_TYPES
 )
 REGISTERED_TASK_TYPES: tuple[str, ...] = TASK_TYPES + NEW_TASK_TYPES
+# Missing personal heads are backfilled for these newly added task types only.
+# Existing daily/reflection text and revisions are never rewritten.
+BACKFILL_TASK_TYPES: tuple[str, ...] = NEW_TASK_TYPES + ("daily_reflection_generate",)
 
 # Package contract delivered by this application build. A future build that
 # ships contract 2 or default r2/r3 only has to add manifest entries and bump
@@ -529,7 +548,69 @@ _OTHER_GUIDANCE_R2 = {
     "morning_games": "根据日期、周次、班级年级、可用游戏配置和当前日计划，提出晨间集体与自选/自主游戏建议。两项均为户外活动，不得使用区域游戏、室内或专用室活动（包括建构区、美工区、阅读室等）；优先使用 game_config 中 kind=outdoor 的场地及限制，没有户外场地配置时只给一般户外建议并明确未结合配置，不冒充已配置场地。多项游戏、目标、指导或要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；名称等短单值不编号。可生成新游戏建议，不伪造日计划引用或活动事实。节日仅供参考，不强制安排节日活动。",
     "morning_talk": "根据日期、周次、班级年级和当前日计划，提出晨间谈话话题与问题。多个问题或要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；话题等短单值不编号。无建议时省略本板块，不清空已保存正文。",
     "post_group_games": "根据班级年级、可用游戏配置和当前日计划，生成集体活动之后的室内区域/户外/专用室游戏建议，可含目标、指导和支持策略。多项游戏、目标、指导或支持策略使用真实换行并依次编号，数量按实际，不强行凑三条。可提出新游戏建议，不把生成内容声称为真实日计划来源。节日仅供参考。",
-    "afternoon_outdoor": "根据班级年级、可用户外游戏配置和当前日计划，生成一组下午户外游戏安排建议，可含区域、游戏名称、观察重点、目标、指导和支持策略。多个游戏、目标或指导要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；名称等短单值不编号。可提出新游戏建议，不伪造真实来源或活动事实。节日仅供参考。",
+    "afternoon_outdoor": "根据班级年级、可用户外游戏配置和当前日计划，生成一组下午户外游戏安排建议，可含区域、游戏名称、观察重点、目标、指导和支持策略。多个游戏、目标或指导要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；名称等短单值不编号。可提出新游戏建议，不虚构真实来源或活动事实。节日仅供参考。",
+}
+
+_REFLECTION_INPUT_SCHEMA = {
+    "$schema": _JSON_SCHEMA_DRAFT,
+    "type": "object",
+    "properties": {
+        "plan_date": {"type": "string"},
+        "week_number": {"type": "integer", "minimum": 1},
+        "weekday": {"type": "integer", "minimum": 1, "maximum": 7},
+        "target_grade": {"type": "string", "enum": ["small", "middle", "large"]},
+        "plan_snapshot": {
+            "type": "object",
+            "properties": {
+                "group_activity": {
+                    "type": "object",
+                    "properties": {
+                        "theme": {"type": "string"},
+                        "objectives": {"type": "string"},
+                        "preparation": {"type": "string"},
+                        "key_points": {"type": "string"},
+                        "difficult_points": {"type": "string"},
+                        "process": {"type": "string"},
+                    },
+                    "required": [
+                        "theme",
+                        "objectives",
+                        "preparation",
+                        "key_points",
+                        "difficult_points",
+                        "process",
+                    ],
+                    "additionalProperties": False,
+                }
+            },
+            "required": ["group_activity"],
+            "additionalProperties": False,
+        },
+        "implementation_materials": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 5000,
+        },
+    },
+    "required": [
+        "plan_date",
+        "week_number",
+        "weekday",
+        "target_grade",
+        "plan_snapshot",
+        "implementation_materials",
+    ],
+    "additionalProperties": False,
+}
+_REFLECTION_OUTPUT_SCHEMA = {
+    "$schema": _JSON_SCHEMA_DRAFT,
+    "type": "object",
+    "properties": {"reflection": {"type": "string"}},
+    "required": ["reflection"],
+    "additionalProperties": False,
+}
+_REFLECTION_GUIDANCE = {
+    "reflection": "根据已保存的日计划与教师提供的活动实施材料，写一段可直接使用的活动反思。材料只代表教师提供的实施情况，计划只代表原定安排；不得把计划中的步骤写成已经发生的事实，不得编造材料没有提到的幼儿反应、对话、结果或时间。材料不足时只写材料能支持的内容，并明确还需要教师补充观察；不要补写未发生的课堂。"
 }
 
 # Observation bundles are registered as data for E06/E07.  They are not added
@@ -831,6 +912,14 @@ PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
         _OTHER_GUIDANCE_R2,
         default_revision=PACKAGE_LATEST_DEFAULT_REVISION,
     ),
+    # #27 is a new independent daily task; existing three bundle identities
+    # above stay byte-for-byte unchanged.
+    _bundle(
+        "daily_reflection_generate",
+        _REFLECTION_INPUT_SCHEMA,
+        _REFLECTION_OUTPUT_SCHEMA,
+        _REFLECTION_GUIDANCE,
+    ),
     # Observation data foundation only: fixed package bundles, no editor and no
     # claimable execution in this slice.
     _bundle(
@@ -844,6 +933,15 @@ PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
         _OBSERVATION_INPUT_SCHEMA,
         _OBSERVATION_REWRITE_OUTPUT_SCHEMA,
         _OBSERVATION_REWRITE_GUIDANCE,
+    ),
+    # Class game-config import is deliberately outside the daily three: its
+    # prompt bundle exists so the formal task lifecycle can pin/validate it,
+    # but prompt_service only lists TASK_TYPES (the daily three).
+    _bundle(
+        config_ai_contracts.TASK_TYPE,
+        config_ai_contracts.INPUT_SCHEMA,
+        config_ai_contracts.OUTPUT_SCHEMA,
+        config_ai_contracts.GUIDANCE,
     ),
 )
 
@@ -940,6 +1038,10 @@ class AdaptCandidate(_StrictModel):
     process: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
 
 
+class ReflectionCandidate(_StrictModel):
+    reflection: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+
+
 class _MorningGroup(_StrictModel):
     group_kind: Literal["collective", "free_choice"]
     games: list[_Game] = Field(..., min_length=1, max_length=MAX_ARRAY_ITEMS)
@@ -984,6 +1086,19 @@ class _AfternoonOutdoor(_StrictModel):
     )
 
 
+class _BaseOtherActivitiesCandidate(_StrictModel):
+    """Read-only previous candidate reference; legal fields, not a new output."""
+
+    morning_games: list[_MorningGroup] | None = Field(
+        default=None, max_length=MAX_ARRAY_ITEMS
+    )
+    morning_talk: _MorningTalk | None = None
+    post_group_games: list[_PostGroupGame] | None = Field(
+        default=None, max_length=MAX_ARRAY_ITEMS
+    )
+    afternoon_outdoor: _AfternoonOutdoor | None = None
+
+
 class OtherActivitiesCandidate(_StrictModel):
     morning_games: list[_MorningGroup] | None = Field(
         default=None, max_length=MAX_ARRAY_ITEMS
@@ -1019,6 +1134,7 @@ _OUTPUT_MODELS: dict[str, type[BaseModel]] = {
     "daily_lesson_split": SplitCandidate,
     "daily_process_adapt": AdaptCandidate,
     "daily_other_activities": OtherActivitiesCandidate,
+    "daily_reflection_generate": ReflectionCandidate,
 }
 
 
@@ -1040,11 +1156,18 @@ class _InputModel(BaseModel):
 class SplitInput(_InputModel):
     raw_lesson_plan: StrictStr
     grade: Literal["small", "middle", "large"]
+    revision_instruction: StrictStr | None = None
+    base_candidate: SplitCandidate | None = None
 
 
 class AdaptInput(_InputModel):
     process_source: StrictStr
     grade: Literal["small", "middle", "large"]
+    # #20 regeneration: the server-verified current candidate process and the
+    # teacher's direction. Both are optional so historical inputs stay valid.
+    base_candidate_process: StrictStr | None = None
+    revision_instruction: StrictStr | None = None
+    split_baseline_process: StrictStr | None = None
 
 
 class _HolidayRef(_InputModel):
@@ -1140,12 +1263,36 @@ class _DailyPlanSnapshot(_InputModel):
 
 
 class OtherActivitiesInput(_InputModel):
+    revision_instruction: StrictStr | None = None
+    base_candidate: _BaseOtherActivitiesCandidate | None = None
     plan_date: StrictStr
     week_number: StrictInt = Field(..., ge=1)
     calendar_context: _CalendarContext
     game_config: _InputGameConfig | None
     daily_plan_snapshot: _DailyPlanSnapshot
     target_grade: Literal["small", "middle", "large"]
+
+
+class _ReflectionGroupActivity(_InputModel):
+    theme: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    objectives: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    preparation: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    key_points: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    difficult_points: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+    process: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+
+
+class _ReflectionPlanSnapshot(_InputModel):
+    group_activity: _ReflectionGroupActivity
+
+
+class ReflectionInput(_InputModel):
+    plan_date: StrictStr
+    week_number: StrictInt = Field(..., ge=1)
+    weekday: StrictInt = Field(..., ge=1, le=7)
+    target_grade: Literal["small", "middle", "large"]
+    plan_snapshot: _ReflectionPlanSnapshot
+    implementation_materials: StrictStr = Field(..., min_length=1, max_length=5000)
 
 
 # ---------------------------------------------------------------------------
@@ -1293,6 +1440,7 @@ _INPUT_MODELS: dict[str, type[BaseModel]] = {
     "daily_lesson_split": SplitInput,
     "daily_process_adapt": AdaptInput,
     "daily_other_activities": OtherActivitiesInput,
+    "daily_reflection_generate": ReflectionInput,
     "game_observation_generate": ObservationInput,
     "game_observation_rewrite": ObservationInput,
 }
@@ -1580,6 +1728,7 @@ def effective_prompt_seed(
     *,
     task_types: tuple[str, ...] | None = None,
     required_task_types: tuple[str, ...] | None = None,
+    builtin_only: bool = False,
 ) -> dict[str, dict]:
     """Effective initial bundle per task from the *registered* bundles only.
 
@@ -1597,6 +1746,42 @@ def effective_prompt_seed(
     """
     requested = tuple(task_types or TASK_TYPES)
     required = set(required_task_types if required_task_types is not None else requested)
+    if builtin_only:
+        # No verified package cache: a brand-new profile must use the build's
+        # built-in defaults even if historical remote bundle rows remain.
+        builtin = initial_prompt_seed()
+        seed = {}
+        for task_type in requested:
+            item = builtin.get(task_type)
+            if item is None:
+                if task_type in required:
+                    raise LocalStorageError(
+                        "内置提示词包缺失，无法建立初版个人指导"
+                    )
+                continue
+            row = session.get(
+                LocalPromptBundle,
+                (
+                    task_type,
+                    item["contract_version"],
+                    item["default_revision"],
+                ),
+            )
+            if row is None:
+                if task_type in required:
+                    raise LocalStorageError(
+                        "内置提示词包未登记，无法建立初版个人指导"
+                    )
+                continue
+            guidance = row.guidance_defaults_json
+            if not isinstance(guidance, dict):
+                raise LocalStorageError("提示词包默认指导损坏")
+            seed[task_type] = {
+                "contract_version": row.contract_version,
+                "default_revision": row.default_revision,
+                "guidance": dict(guidance),
+            }
+        return seed
     rows = session.scalars(
         select(LocalPromptBundle).where(LocalPromptBundle.task_type.in_(requested))
     ).all()
@@ -1632,23 +1817,25 @@ def _ensure_missing_observation_prompt_seeds(
     targets: dict[str, dict],
     now,
 ) -> int:
-    """Add only missing observation personal version/head pairs.
+    """Add only missing extended personal version/head pairs.
 
-    Existing daily and observation personal text is never updated.  A head
-    without its current version, or a version without a head, is treated as
-    corrupt instead of being silently half-repaired.
+    This backfills newly added task types (observation/weekly/listening/
+    configuration/reflection) for existing profiles.  Existing daily and
+    extended personal text is never updated.  A head without its current
+    version, or a version without a head, is treated as corrupt instead of
+    being silently half-repaired.
     """
-    observation_targets = {
+    extended_targets = {
         task_type: targets[task_type]
-        for task_type in NEW_TASK_TYPES
+        for task_type in BACKFILL_TASK_TYPES
         if task_type in targets
     }
-    if not observation_targets:
+    if not extended_targets:
         return 0
     seeded = 0
     profile_ids = list(session.scalars(select(LocalProfile.id)).all())
     for profile_id in profile_ids:
-        for task_type, target in observation_targets.items():
+        for task_type, target in extended_targets.items():
             head = session.get(LocalPersonalPromptHead, (profile_id, task_type))
             if head is not None:
                 version = session.get(
@@ -1656,7 +1843,7 @@ def _ensure_missing_observation_prompt_seeds(
                     (profile_id, task_type, head.current_revision),
                 )
                 if version is None:
-                    raise LocalStorageError("观察个人指导头缺少当前版本")
+                    raise LocalStorageError("扩展个人指导头缺少当前版本")
                 continue
             existing_version = session.scalars(
                 select(LocalPersonalPromptVersion).where(
@@ -1665,7 +1852,7 @@ def _ensure_missing_observation_prompt_seeds(
                 )
             ).first()
             if existing_version is not None:
-                raise LocalStorageError("观察个人指导版本存在但头缺失")
+                raise LocalStorageError("扩展个人指导版本存在但头缺失")
             key = (
                 task_type,
                 target["required_contract_version"],
@@ -1673,7 +1860,7 @@ def _ensure_missing_observation_prompt_seeds(
             )
             item = items.get(key)
             if item is None:
-                raise LocalStorageError("观察提示词包目标缺失")
+                raise LocalStorageError("扩展提示词包目标缺失")
             session.add(
                 LocalPersonalPromptVersion(
                     profile_id=profile_id,
@@ -1703,8 +1890,231 @@ def _ensure_missing_observation_prompt_seeds(
     return seeded
 
 
+def _head_target_decision(
+    task_type: str,
+    current_required: int,
+    current_latest: int,
+    required: int,
+    latest: int,
+) -> str:
+    """Decide whether a sync may advance, keep or must refuse a head.
+
+    A later default already registered by a verified package is kept, not
+    treated as a downgrade.  A higher required contract than this build knows
+    is still refused: that needs a compatible application build.
+    """
+    if current_required > required:
+        raise LocalPromptContractRegression(details={"task_type": task_type})
+    if current_required == required and current_latest > latest:
+        return "keep"
+    if current_required != required or current_latest != latest:
+        return "update"
+    return "same"
+
+
+def _auto_advance_default_only(
+    session: Session,
+    targets: dict[str, dict],
+    *,
+    profile_ids: list[str] | None = None,
+    now=None,
+) -> int:
+    """Move untouched personal defaults to a newly registered default revision.
+
+    Only a personal version that is still the application-initialized default
+    may move: ``action == "initial"``, no rejected revision, the same required
+    contract, and text equal to the bundle it was based on.  Explicit edits,
+    accepts, rejects and adaptations are preserved verbatim.  Historical
+    versions and in-flight execution pins are never updated; a new version is
+    appended and the head's current revision advances.
+    """
+    if profile_ids is None:
+        profile_ids = list(session.scalars(select(LocalProfile.id)).all())
+    advanced = 0
+    timestamp = now or utc_now()
+    for profile_id in profile_ids:
+        for task_type, target in targets.items():
+            head = session.get(LocalPersonalPromptHead, (profile_id, task_type))
+            if head is None:
+                continue
+            version = session.get(
+                LocalPersonalPromptVersion,
+                (profile_id, task_type, head.current_revision),
+            )
+            if version is None:
+                raise LocalStorageError("个人指导头缺少当前版本")
+            required = target["required_contract_version"]
+            latest = target["latest_default_revision"]
+            if version.contract_version != required:
+                continue
+            if version.action != "initial":
+                continue
+            if version.rejected_default_revision is not None:
+                continue
+            if version.based_default_revision >= latest:
+                continue
+            old_bundle = session.get(
+                LocalPromptBundle,
+                (
+                    task_type,
+                    version.contract_version,
+                    version.based_default_revision,
+                ),
+            )
+            if old_bundle is None:
+                raise LocalStorageError("个人指导版本指向未登记的默认修订")
+            if dict(version.guidance_json or {}) != dict(
+                old_bundle.guidance_defaults_json or {}
+            ):
+                # The personal text no longer matches its declared default;
+                # treat it as a teacher edit and never overwrite it.
+                continue
+            new_bundle = session.get(
+                LocalPromptBundle, (task_type, required, latest)
+            )
+            if new_bundle is None:
+                raise LocalStorageError("提示词包默认修订缺失")
+            revision = head.current_revision + 1
+            session.add(
+                LocalPersonalPromptVersion(
+                    profile_id=profile_id,
+                    task_type=task_type,
+                    revision=revision,
+                    contract_version=required,
+                    based_default_revision=latest,
+                    guidance_json=dict(new_bundle.guidance_defaults_json),
+                    orphaned_guidance_json=None,
+                    action="initial",
+                    rejected_default_revision=None,
+                    created_at=timestamp,
+                )
+            )
+            head.current_revision = revision
+            head.updated_at = timestamp
+            advanced += 1
+    return advanced
+
+
+def revert_default_only_to_builtin(
+    session: Session,
+    *,
+    task_types: tuple[str, ...] | None = None,
+    profile_ids: list[str] | None = None,
+    now=None,
+) -> int:
+    """Return untouched default-only heads to the build's built-in default.
+
+    This is the real fallback when no verified package cache is available.
+    It appends a new ``initial`` personal version and moves the head; explicit
+    edits/accepts/rejects/adaptations and every historical version remain
+    untouched, and in-flight executions keep their pinned revisions.
+    """
+    allowed = set(task_types or REGISTERED_TASK_TYPES)
+    manifest = _normalize_manifest(PROMPT_BUNDLE_MANIFEST)
+    targets = _targets(manifest)
+    timestamp = now or utc_now()
+    reverted = 0
+    begin_immediate(session)
+    try:
+        if profile_ids is None:
+            profile_ids = list(
+                session.scalars(select(LocalProfile.id)).all()
+            )
+        for profile_id in profile_ids:
+            for task_type, target in targets.items():
+                if task_type not in allowed:
+                    continue
+                head = session.get(
+                    LocalPersonalPromptHead, (profile_id, task_type)
+                )
+                if head is None:
+                    continue
+                version = session.get(
+                    LocalPersonalPromptVersion,
+                    (profile_id, task_type, head.current_revision),
+                )
+                if version is None:
+                    raise LocalStorageError("个人指导头缺少当前版本")
+                required = target["required_contract_version"]
+                latest = target["latest_default_revision"]
+                if (
+                    head.required_contract_version != required
+                    or version.contract_version != required
+                ):
+                    continue
+                new_bundle = session.get(
+                    LocalPromptBundle, (task_type, required, latest)
+                )
+                if new_bundle is None:
+                    raise LocalStorageError("内置提示词包默认修订缺失")
+                pure_default = (
+                    version.action == "initial"
+                    and version.rejected_default_revision is None
+                )
+                if pure_default:
+                    old_bundle = session.get(
+                        LocalPromptBundle,
+                        (
+                            task_type,
+                            version.contract_version,
+                            version.based_default_revision,
+                        ),
+                    )
+                    if old_bundle is not None and dict(
+                        version.guidance_json or {}
+                    ) == dict(old_bundle.guidance_defaults_json or {}):
+                        if (
+                            version.based_default_revision == latest
+                            and head.latest_default_revision == latest
+                            and dict(version.guidance_json or {})
+                            == dict(new_bundle.guidance_defaults_json or {})
+                        ):
+                            continue
+                        revision = head.current_revision + 1
+                        session.add(
+                            LocalPersonalPromptVersion(
+                                profile_id=profile_id,
+                                task_type=task_type,
+                                revision=revision,
+                                contract_version=required,
+                                based_default_revision=latest,
+                                guidance_json=dict(
+                                    new_bundle.guidance_defaults_json
+                                ),
+                                orphaned_guidance_json=(
+                                    dict(version.orphaned_guidance_json)
+                                    if version.orphaned_guidance_json
+                                    else None
+                                ),
+                                action="initial",
+                                rejected_default_revision=None,
+                                created_at=timestamp,
+                            )
+                        )
+                        head.current_revision = revision
+                        head.latest_default_revision = latest
+                        head.updated_at = timestamp
+                        reverted += 1
+                        continue
+                # Explicit personal text, a rejected default, or an
+                # initial-looking version whose text diverged: move only the
+                # latest-default pointer to the available built-in revision.
+                if head.latest_default_revision != latest:
+                    head.latest_default_revision = latest
+                    head.updated_at = timestamp
+                    reverted += 1
+        session.commit()
+    except BaseException:
+        rollback(session)
+        raise
+    return reverted
+
+
 def sync_prompt_bundles(
-    session: Session, bundles=None
+    session: Session,
+    bundles=None,
+    *,
+    auto_advance_defaults: bool = False,
 ) -> dict[str, int]:
     """Register package bundles and advance personal heads atomically.
 
@@ -1713,24 +2123,36 @@ def sync_prompt_bundles(
       written (``PROMPT_BUNDLE_CONFLICT``); the manual path and existing
       personal text are never touched;
     * each head's required/latest pointers are advanced to the manifest target;
-      a head already pointing at a *newer* contract (or a later default for
-      the same contract) is refused rather than silently downgraded;
-    * only head pointers change for existing heads; a missing observation
-      version/head pair is created once for existing profiles on the default
-      package sync, and a restart never bumps a personal revision.
+      a head already pointing at a *newer* required contract is refused, while
+      a later default for the same contract is kept because it may belong to a
+      verified remote package;
+    * only head pointers change for existing heads; a missing extended task
+      version/head pair (observation/weekly/listening/configuration/reflection)
+      is created once for existing profiles on the default package sync, and a
+      restart never bumps a personal revision;
+    * with ``auto_advance_defaults`` (only used when enabling a verified remote
+      package), a personal version that is still an untouched application
+      default is advanced to the new default by appending a version.  Explicit
+      personal text and in-flight execution pins are never changed.
 
-    Returns counts of registered bundles, updated heads and observation
-    personal seeds created.
+    Returns counts of registered bundles, updated heads, observation personal
+    seeds created and untouched defaults advanced.
     """
     default_manifest = bundles is None
     items = _normalize_manifest(bundles if bundles is not None else PROMPT_BUNDLE_MANIFEST)
     if not items:
-        return {"registered": 0, "heads_updated": 0, "observation_seeded": 0}
+        return {
+            "registered": 0,
+            "heads_updated": 0,
+            "observation_seeded": 0,
+            "defaults_advanced": 0,
+        }
     targets = _targets(items)
     now = utc_now()
     registered = 0
     heads_updated = 0
     observation_seeded = 0
+    defaults_advanced = 0
 
     begin_immediate(session)
     try:
@@ -1815,21 +2237,21 @@ def sync_prompt_bundles(
                 continue
             required = target["required_contract_version"]
             latest = target["latest_default_revision"]
-            if head.required_contract_version > required:
-                raise LocalPromptContractRegression(
-                    details={"task_type": head.task_type}
-                )
-            if (
-                head.required_contract_version == required
-                and head.latest_default_revision > latest
-            ):
-                raise LocalPromptContractRegression(
-                    details={"task_type": head.task_type}
-                )
-            if (
-                head.required_contract_version != required
-                or head.latest_default_revision != latest
-            ):
+            decision = _head_target_decision(
+                head.task_type,
+                head.required_contract_version,
+                head.latest_default_revision,
+                required,
+                latest,
+            )
+            if decision == "keep":
+                # A verified remote package may have registered a later default
+                # revision than this build's built-in manifest.  A normal
+                # startup must not treat that as a downgrade or rewind it; the
+                # final reference check below still proves the pointed bundle
+                # exists, and the package service re-verifies its cache.
+                continue
+            if decision == "update":
                 head.required_contract_version = required
                 head.latest_default_revision = latest
                 head.updated_at = now
@@ -1841,6 +2263,10 @@ def sync_prompt_bundles(
                 (head.task_type, head.required_contract_version, head.latest_default_revision),
             ):
                 raise LocalStorageError("提示词头指向未登记的默认修订")
+        if auto_advance_defaults:
+            defaults_advanced = _auto_advance_default_only(
+                session, targets, now=now
+            )
         session.commit()
     except BaseException:
         rollback(session)
@@ -1849,6 +2275,7 @@ def sync_prompt_bundles(
         "registered": registered,
         "heads_updated": heads_updated,
         "observation_seeded": observation_seeded,
+        "defaults_advanced": defaults_advanced,
     }
 
 
@@ -1857,6 +2284,9 @@ __all__ = [
     "OBSERVATION_TASK_TYPES",
     "WEEKLY_TASK_TYPES",
     "LISTENING_TASK_TYPES",
+    "CONFIG_TASK_TYPES",
+    "BACKFILL_TASK_TYPES",
+    "INITIAL_REQUIRED_TASK_TYPES",
     "REGISTERED_TASK_TYPES",
     "PACKAGE_CONTRACT_VERSION",
     "PACKAGE_DEFAULT_REVISION",
@@ -1873,6 +2303,7 @@ __all__ = [
     "canonical_json",
     "effective_prompt_seed",
     "initial_prompt_seed",
+    "revert_default_only_to_builtin",
     "sync_prompt_bundles",
     "validate_candidate",
     "validate_input",

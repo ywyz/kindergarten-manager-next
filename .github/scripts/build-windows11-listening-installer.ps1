@@ -26,17 +26,98 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$ExpectedRevision = '20261107_0010_local_listening_ai'
 $ExpectedBranch = 'refs/heads/codex/desktop-one-to-one-listening'
 $InstallerName = 'KGNext-Listening-Win11-x64-Setup.exe'
 $IdentityName = 'installer-identity.json'
 $SumsName = 'SHA256SUMS.txt'
-$ShortcutFolder = 'Kindergarten Manager 一对一倾听测试版'
-$ShortcutName = '一对一倾听测试版.lnk'
+$ShortcutFolder = '幼儿园信息管理系统'
+$ShortcutName = '幼儿园信息管理系统.lnk'
 
 function Fail {
     param([string]$Message)
     throw $Message
+}
+
+function Get-MigrationHead {
+    param([string]$Repo)
+    $versions = Join-Path (Join-Path (Join-Path $Repo 'backend') 'migrations_local') 'versions'
+    if (-not (Test-Path -LiteralPath $versions -PathType Container)) {
+        Fail "Missing migration versions directory: $versions"
+    }
+    $files = @(Get-ChildItem -LiteralPath $versions -File -Filter '*.py' |
+        Where-Object { $_.Name -ne '__init__.py' })
+    if ($files.Count -eq 0) { Fail 'No local migrations found' }
+    $rows = @{}
+    foreach ($file in $files) {
+        $text = Get-Content -LiteralPath $file.FullName -Raw -Encoding utf8
+        $revisionMatch = [regex]::Match(
+            $text,
+            '(?m)^revision\s*(?::\s*[^=]+)?=\s*"([^"]+)"'
+        )
+        if (-not $revisionMatch.Success) {
+            Fail "Migration has no revision: $($file.Name)"
+        }
+        $downMatch = [regex]::Match(
+            $text,
+            '(?m)^down_revision\s*(?::\s*[^=]+)?=\s*(?:"([^"]+)"|None)'
+        )
+        if (-not $downMatch.Success) {
+            Fail "Migration has no down_revision: $($file.Name)"
+        }
+        $revision = $revisionMatch.Groups[1].Value
+        $down = if ($downMatch.Groups[1].Success) {
+            $downMatch.Groups[1].Value
+        } else { $null }
+        if ($rows.ContainsKey($revision)) {
+            Fail "Duplicate migration revision: $revision"
+        }
+        $rows[$revision] = [pscustomobject]@{
+            revision = $revision
+            down_revision = $down
+        }
+    }
+    $roots = @($rows.Values | Where-Object { $null -eq $_.down_revision })
+    if ($roots.Count -ne 1) { Fail 'Migration chain must have exactly one root' }
+    $current = $roots[0]
+    $seen = @{}
+    while ($null -ne $current) {
+        if ($seen.ContainsKey($current.revision)) {
+            Fail 'Migration chain contains a cycle'
+        }
+        $seen[$current.revision] = $true
+        $children = @($rows.Values | Where-Object {
+            $_.down_revision -eq $current.revision
+        })
+        if ($children.Count -gt 1) { Fail 'Migration chain contains a fork' }
+        $current = if ($children.Count -eq 1) { $children[0] } else { $null }
+    }
+    if ($seen.Count -ne $rows.Count) { Fail 'Migration chain is not one linear chain' }
+    # The traversal above proves uniqueness; the head is the only revision
+    # that is never used as a down_revision.
+    $downs = @($rows.Values | ForEach-Object { $_.down_revision } |
+        Where-Object { $null -ne $_ })
+    $heads = @($rows.Values | Where-Object {
+        $downs -notcontains $_.revision
+    })
+    if ($heads.Count -ne 1) { Fail 'Migration chain has no unique head' }
+    return [string]($heads[0].revision)
+}
+
+function Assert-ReleaseIdentity {
+    param([string]$Version, [string]$Channel, [string]$Label)
+    $stable = '\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z'
+    $preview = '\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-listening-test\.(0|[1-9][0-9]*)\z'
+    if (@('stable', 'preview') -cnotcontains $Channel) {
+        Fail "$Label has an invalid channel: $Channel"
+    }
+    $isPreview = $Version -cmatch $preview
+    $isStable = $Version -cmatch $stable
+    if (-not ($isPreview -or $isStable)) {
+        Fail "$Label has an invalid full version: $Version"
+    }
+    if (($Channel -eq 'preview') -ne $isPreview) {
+        Fail "$Label version/channel mismatch: $Version/$Channel"
+    }
 }
 
 function Assert-File {
@@ -196,6 +277,7 @@ if (-not [string]::IsNullOrEmpty($trackedStatus)) {
     Fail "Tracked checkout is not clean: $trackedStatus"
 }
 
+$ExpectedRevision = Get-MigrationHead $repo
 $packageRoot = Join-Path $build 'package\KGNext-E14'
 $mainExe = Join-Path $packageRoot 'KGNext-E14.exe'
 $packageInfoPath = Join-Path $packageRoot 'package-info.json'
@@ -229,17 +311,54 @@ if ([string]$summary.build.build_root_name -ne $buildLeaf) {
 if ([string]$summary.build.build_id -ne [string]$packageInfo.build_id) {
     Fail 'validation summary/package-info build_id mismatch'
 }
+$expectedVersion = [string]$packageInfo.version
+$packageChannel = $packageInfo.PSObject.Properties['channel']
+$expectedChannel = if ($null -eq $packageChannel) { 'stable' } else { [string]$packageChannel.Value }
+Assert-ReleaseIdentity $expectedVersion $expectedChannel 'package-info'
+if ([string]$buildIdentity.version -ne $expectedVersion) {
+    Fail 'build_identity version does not match package-info'
+}
+$identityChannel = $buildIdentity.PSObject.Properties['channel']
+$identityChannelValue = if ($null -eq $identityChannel) { 'stable' } else { [string]$identityChannel.Value }
+if ($identityChannelValue -ne $expectedChannel) {
+    Fail 'build_identity channel does not match package-info'
+}
 if ([string]$summary.build.database_revision -ne $ExpectedRevision) {
-    Fail 'validation summary database revision is not the current 0010 head'
+    Fail 'validation summary database revision is not the current source head'
 }
 if ([string]$packageInfo.database_revision -ne $ExpectedRevision) {
-    Fail 'package-info database revision is not the current 0010 head'
+    Fail 'package-info database revision is not the current source head'
 }
 if ([string]$buildIdentity.database_revision -ne $ExpectedRevision) {
-    Fail 'build_identity database revision is not the current 0010 head'
+    Fail 'build_identity database revision is not the current source head'
 }
-if ([string]$packageInfo.source_commit -ne $commit) {
-    Fail 'package-info source commit does not match checkout'
+if ([string]$buildIdentity.app_id -ne 'kindergarten-manager-next') {
+    Fail 'build_identity app_id mismatch'
+}
+if ([string]$buildIdentity.app_name -ne 'KindergartenManager') {
+    Fail 'build_identity app_name mismatch'
+}
+if ([string]$buildIdentity.package_format -ne 'pyinstaller-onedir-zip-v1') {
+    Fail 'build_identity package_format mismatch'
+}
+if ([string]$buildIdentity.platform -ne 'windows' -or
+    [string]$buildIdentity.arch -ne 'x64') {
+    Fail 'build_identity platform/arch mismatch'
+}
+if ([string]$buildIdentity.python -ne '3.14.10') {
+    Fail 'build_identity Python version mismatch'
+}
+$summaryFreezeCommit = $summary.build.PSObject.Properties['source_freeze_commit']
+$expectedFreezeCommit = if ($null -eq $summaryFreezeCommit) {
+    ''
+} else {
+    [string]$summaryFreezeCommit.Value
+}
+if ($expectedFreezeCommit -ne $commit) {
+    Fail 'validation summary source freeze commit does not match checkout'
+}
+if ([string]$packageInfo.source_commit -ne $expectedFreezeCommit) {
+    Fail 'package-info source commit does not match source freeze'
 }
 if ([bool]$summary.static_validation.package.ok -ne $true -or
     [bool]$summary.static_validation.archive.ok -ne $true) {
@@ -443,9 +562,12 @@ $identity = [ordered]@{
     tree = $tree
     build_root_name = $buildLeaf
     build_id = [string]$packageInfo.build_id
+    version = $expectedVersion
+    channel = $expectedChannel
     database_revision = $ExpectedRevision
     source = [ordered]@{
         freeze_digest = [string]$summary.build.source_freeze_digest
+        freeze_commit = $expectedFreezeCommit
         freeze_stable = [bool]$summary.build.source_freeze_stable
         validation_summary_sha256 = $summaryHash
     }

@@ -2,7 +2,7 @@
 
 The package is a PyInstaller onedir/windowed distribution of the real D1/E14
 entry, current frontend build, controlled observation and one-to-one listening
-templates, local migrations (current head 0010) and Pillow imaging plugins. It
+templates, the complete local migration chain and Pillow imaging plugins. It
 reuses the existing venv/node_modules and never installs or upgrades
 dependencies.
 
@@ -16,9 +16,10 @@ Source freeze (E14-R02): product/build sources are hashed both before and after
 the build (cache files excluded); the build fails if the two lists differ.
 
 Build identity/licence (E14-R03): the candidate receives a real UUID
-``_internal/build_identity.json`` (version 0.1.0, current database head 0010);
-a missing Pillow licence, imaging plugin or controlled listening-template file
-aborts the build instead of producing a package that claims to be complete.
+``_internal/build_identity.json`` carrying the resolved release version,
+channel and current source migration head; a missing Pillow licence, imaging
+plugin or controlled listening-template file aborts the build instead of
+producing a package that claims to be complete.
 """
 
 from __future__ import annotations
@@ -40,6 +41,11 @@ from pathlib import Path
 import d0_paths
 import update_identity
 from build_d0 import resolve_node_tool
+from verify_e14_package import (
+    discover_migration_chain,
+    resolve_release_identity,
+    source_migration_files,
+)
 
 BUILD_ROOT = d0_paths.REPO_ROOT / "build" / "desktop-e14-win11-r01"
 PRODUCT_NAME = "KGNext-E14"
@@ -50,9 +56,6 @@ README_NAME = "README-KGNext-E14-win11-r01.txt"
 MANIFEST_NAME = "package-files.json"
 SUMS_NAME = "SHA256SUMS.txt"
 MANIFEST_SCHEMA_VERSION = 1
-DATABASE_REVISION = "20261107_0010_local_listening_ai"
-MIGRATION_FILENAME = "20261107_0010_local_listening_ai.py"
-PREDECESSOR_MIGRATION_FILENAME = "20261107_0009_local_listening.py"
 PILLOW_VERSION = "13.0.0"
 
 TEMPLATE_DIR = d0_paths.BACKEND_ROOT / "app" / "assets" / "word_templates"
@@ -73,10 +76,6 @@ LISTENING_TEMPLATE_REQUIRED_FILES = (
 )
 ALEMBIC_INI = d0_paths.BACKEND_ROOT / "alembic-local.ini"
 MIGRATIONS_DIR = d0_paths.BACKEND_ROOT / "migrations_local"
-MIGRATION_FILE = MIGRATIONS_DIR / "versions" / MIGRATION_FILENAME
-PREDECESSOR_MIGRATION_FILE = (
-    MIGRATIONS_DIR / "versions" / PREDECESSOR_MIGRATION_FILENAME
-)
 PILLOW_LICENSE = (
     d0_paths.REPO_ROOT
     / "desktop"
@@ -993,10 +992,34 @@ def install_package_metadata(
     frontend_digest: str = "",
     frontend_file_count: int = 0,
     source_commit: str = "",
+    release_version: str | None = None,
+    release_channel: str | None = None,
+    migration_files: list[str] | None = None,
+    migration_head: str | None = None,
 ) -> dict:
     internal = package_root / "_internal"
     if not internal.is_dir():
         raise SystemExit(f"拒绝：包内缺少 _internal 目录 {package_root}")
+    try:
+        version, channel = resolve_release_identity(
+            release_version, release_channel
+        )
+    except ValueError as exc:
+        raise SystemExit(f"拒绝：发布身份不合法 {exc}") from exc
+    try:
+        chain = discover_migration_chain(MIGRATIONS_DIR)
+        expected_files = source_migration_files(MIGRATIONS_DIR)
+        expected_head = str(chain["head_revision"])
+    except ValueError as exc:
+        raise SystemExit(f"拒绝：迁移链不合法 {exc}") from exc
+    if migration_files is None:
+        migration_files = expected_files
+    elif migration_files != expected_files:
+        raise SystemExit("拒绝：迁移文件清单与源码不一致")
+    if migration_head is None:
+        migration_head = expected_head
+    elif migration_head != expected_head:
+        raise SystemExit("拒绝：迁移头与源码不一致")
 
     # R03: a missing licence must fail the build, never become a false
     # ``pillow_license_included=false`` in a package advertised as complete.
@@ -1021,14 +1044,14 @@ def install_package_metadata(
     identity = update_identity.AppIdentity(
         app_id=update_identity.APP_ID,
         app_name=update_identity.APP_NAME,
-        channel=update_identity.CHANNEL,
-        version=update_identity.APP_VERSION,
+        channel=channel,
+        version=version,
         build_id=build_id,
         package_format=update_identity.PACKAGE_FORMAT,
         platform=update_identity.PLATFORM,
         arch=update_identity.ARCH,
         python=update_identity.PYTHON_VERSION,
-        database_revision=DATABASE_REVISION,
+        database_revision=migration_head,
     )
     identity_path = internal / "build_identity.json"
     identity_path.write_text(
@@ -1036,7 +1059,7 @@ def install_package_metadata(
         encoding="utf-8",
     )
     loaded = update_identity.load_app_identity(
-        database_revision=DATABASE_REVISION,
+        database_revision=migration_head,
         path=identity_path,
         require_packaged=True,
     )
@@ -1048,6 +1071,7 @@ def install_package_metadata(
         "built_at": datetime.now(timezone.utc).isoformat(),
         "package": APP_NAME,
         "version": identity.version,
+        "channel": identity.channel,
         "build_id": identity.build_id,
         "database_revision": identity.database_revision,
         "build_identity": str(identity_path.relative_to(package_root)),
@@ -1061,11 +1085,7 @@ def install_package_metadata(
         "pillow_license_sha256": license_hash,
         "pillow_plugins": sorted(bundled_plugins),
         "cache_files_pruned": pruned_cache_files,
-        "migrations": sorted(
-            str(path.relative_to(MIGRATIONS_DIR))
-            for path in MIGRATIONS_DIR.rglob("*.py")
-            if path.is_file() and "__pycache__" not in path.parts
-        ),
+        "migrations": migration_files,
         "templates": sorted(path.name for path in TEMPLATE_DIR.glob("*.docx")),
         "listening_templates": sorted(
             path.relative_to(LISTENING_TEMPLATE_DIR).as_posix()
@@ -1146,6 +1166,7 @@ def write_portable_readme(path: Path, package_info: dict) -> None:
 
 身份
 - 版本：{package_info.get("version", "0.1.0")}
+- 渠道：{package_info.get("channel", "stable")}
 - build_id：{package_info.get("build_id", "")}
 - 数据库 revision：{package_info.get("database_revision", "")}
 - 构建基线：{package_info.get("source_commit", "")}
@@ -1310,11 +1331,31 @@ def main() -> int:
     parser.add_argument("--hash-out", help="package file SHA256 JSON")
     parser.add_argument("--source-freeze-out", help="source freeze JSON")
     parser.add_argument(
+        "--version",
+        help="explicit full release version (stable X.Y.Z or preview X.Y.Z-listening-test.N)",
+    )
+    parser.add_argument(
+        "--channel",
+        choices=("stable", "preview"),
+        help="explicit release channel; must be supplied together with --version",
+    )
+    parser.add_argument(
         "--check-paths",
         action="store_true",
         help="validate all write targets and exit without building or writing",
     )
     args = parser.parse_args()
+
+    try:
+        release_version, release_channel = resolve_release_identity(
+            args.version, args.channel
+        )
+        migration_chain = discover_migration_chain(MIGRATIONS_DIR)
+        migration_files = source_migration_files(MIGRATIONS_DIR)
+    except ValueError as exc:
+        print(f"拒绝：发布身份或迁移链不合法 {exc}", file=sys.stderr)
+        return 2
+    migration_head = str(migration_chain["head_revision"])
 
     raw_build_root = Path(args.build_root) if args.build_root else BUILD_ROOT
     raw_frontend = (
@@ -1366,12 +1407,6 @@ def main() -> int:
     )
 
     require_pillow_license()
-    if not MIGRATION_FILE.is_file():
-        raise SystemExit(f"拒绝构建：缺少当前迁移 {MIGRATION_FILE}")
-    if not PREDECESSOR_MIGRATION_FILE.is_file():
-        raise SystemExit(
-            f"拒绝构建：缺少前置迁移 {PREDECESSOR_MIGRATION_FILE}"
-        )
     if not ALEMBIC_INI.is_file():
         raise SystemExit(f"拒绝构建：缺少本地 Alembic 配置 {ALEMBIC_INI}")
     if not TEMPLATE_DIR.is_dir():
@@ -1414,6 +1449,10 @@ def main() -> int:
             frontend_digest=frontend_digest,
             frontend_file_count=frontend_file_count,
             source_commit=before["commit"],
+            release_version=release_version,
+            release_channel=release_channel,
+            migration_files=migration_files,
+            migration_head=migration_head,
         )
         portable = write_portable_archive(package_root, portable_dir, info)
     else:
@@ -1421,7 +1460,14 @@ def main() -> int:
         # output is requested.  The authorized portable build always passes
         # --portable-dir explicitly.
         info = install_package_metadata(
-            package_root, build_id, before["digest"], len(pruned)
+            package_root,
+            build_id,
+            before["digest"],
+            len(pruned),
+            release_version=release_version,
+            release_channel=release_channel,
+            migration_files=migration_files,
+            migration_head=migration_head,
         )
 
     # The second freeze covers the entire write chain, including the portable
@@ -1438,6 +1484,7 @@ def main() -> int:
         "stable": changes["stable"],
         "build_id": info["build_id"],
         "version": info["version"],
+        "channel": info.get("channel", release_channel),
         "database_revision": info["database_revision"],
         "private_only": True,
         "package_included": False,
@@ -1478,6 +1525,9 @@ def main() -> int:
         hash_payload = {
             "package": APP_NAME,
             "build_id": info["build_id"],
+            "version": info["version"],
+            "channel": info.get("channel", release_channel),
+            "database_revision": info["database_revision"],
             "source_freeze_digest": before["digest"],
             "files": hash_tree(package_root),
         }
@@ -1501,6 +1551,7 @@ def main() -> int:
         "package": str(package_root),
         "build_id": info["build_id"],
         "version": info["version"],
+        "channel": info.get("channel", release_channel),
         "database_revision": info["database_revision"],
         "source_freeze_digest": before["digest"],
         "source_freeze_stable": True,

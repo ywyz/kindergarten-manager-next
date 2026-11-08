@@ -52,8 +52,10 @@ from app.local.models import (
     LocalProfile,
 )
 from app.local.normalize import normalize_initialization
-from tests.local.obs_ai_workers import observation_worker_entry
+from tests.local import w3_tls
+from tests.local.obs_ai_workers import GENERATE, observation_worker_entry
 from tests.local.support import LocalTestCase, initialize_body, query_scalar
+from tests.local.test_d2_streaming import _StreamingServer, _event
 
 
 class ObservationAiCase(LocalTestCase):
@@ -1887,3 +1889,127 @@ class ObservationAiRealTransportTests(ObservationAiCase):
             request_id=str(uuid.uuid4()),
         )
         self.assertTrue(retry["changed"])
+
+class TwoPhotoFailureClassificationTests(ObservationAiCase):
+    def setUp(self):
+        super().setUp()
+        ca_dir = self.tmp_root / "reason-tls" / "ca"
+        _cert, _key, ca_pem = w3_tls.create_ca(ca_dir)
+        self.cert, self.key = w3_tls.create_leaf(
+            ca_dir, self.tmp_root / "reason-tls" / "leaf", hostname="api.deepseek.com"
+        )
+        self.ca_pem = ca_pem.decode("utf-8")
+
+    def _two_photo_ready(self):
+        created = self._create()
+        observation_id = created["observation_id"]
+        first = self._import_photo(observation_id, "red")
+        second = self._import_photo(observation_id, "blue")
+        self._save(
+            observation_id,
+            {"observation_goal": "观察合作", "observation_process": "幼儿在积木区搭建。"},
+            photos=[
+                {"asset_id": first, "caption": "一"},
+                {"asset_id": second, "caption": "二"},
+            ],
+        )
+        return observation_id
+
+    def _run_controlled(self, observation_id, first, second):
+        server = _StreamingServer(
+            cert=self.cert, key=self.key, first=first, second=second, delay=0.05
+        ).start()
+        try:
+            executor = ai_executor.AiExecutor(
+                self.runtime,
+                synthetic_transport={
+                    "resolution": [
+                        {"family": 2, "ip": "127.0.0.1", "port": server.port}
+                    ],
+                    "ca_pem": self.ca_pem,
+                },
+            )
+            executor.start()
+            try:
+                task = self._create_task(observation_id)
+                executor.notify()
+                status = self._wait_status(task["id"], timeout=40)
+                self.session.expire_all()
+                row = self.session.get(LocalAITask, task["id"])
+                count = query_scalar(
+                    self.runtime.db_path,
+                    "SELECT count(*) FROM local_ai_candidates WHERE task_id = ?",
+                    (task["id"],),
+                )
+                image_count = 0
+                if server.requests:
+                    body = server.requests[0].partition(b"\r\n\r\n")[2]
+                    content = json.loads(body.decode("utf-8"))["messages"][-1]["content"]
+                    image_count = sum(
+                        1 for item in content if item.get("type") == "image_url"
+                    )
+                attempt = query_scalar(
+                    self.runtime.db_path,
+                    "SELECT a.evidence_code FROM local_ai_attempts a JOIN local_ai_executions e ON e.id = a.execution_id WHERE e.task_id = ? ORDER BY a.rowid DESC LIMIT 1",
+                    (task["id"],),
+                )
+                return status, row, count, len(server.requests), image_count, attempt
+            finally:
+                executor.dispose()
+        finally:
+            server.stop()
+
+    def test_two_photo_terminal_reason_codes(self):
+        observation_id = self._two_photo_ready()
+        text = json.dumps(GENERATE, ensure_ascii=False)
+        first = _event(
+            {"model": "deepseek-flash", "choices": [{"delta": {"reasoning_content": "先观察"}}]}
+        ) + _event({"choices": [{"delta": {"content": text[:20]}}]})
+        second = _event({"choices": [{"delta": {"content": text[20:]}}]}) + _event(
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+        ) + _event("[DONE]")
+        status, row, count, requests, images, attempt = self._run_controlled(
+            observation_id, first, second
+        )
+        self.assertEqual(status, "succeeded")
+        self.assertEqual(attempt, "success")
+        self.assertEqual(count, 1)
+        self.assertEqual(requests, 1)
+        self.assertEqual(images, 2)
+
+        status, row, count, requests, images, attempt = self._run_controlled(
+            observation_id,
+            _event({"choices": [{"delta": {"reasoning_content": "只有推理"}}]}),
+            _event({"choices": [{"delta": {}, "finish_reason": "stop"}]}) + _event("[DONE]"),
+        )
+        self.assertEqual(status, "failed")
+        self.assertEqual(row.reason, "reasoning_only")
+        self.assertEqual(attempt, "reasoning_only")
+        self.assertEqual(count, 0)
+        self.assertEqual(requests, 1)
+        self.assertEqual(images, 2)
+
+        status, row, count, requests, images, attempt = self._run_controlled(
+            observation_id,
+            _event({"choices": [{"delta": {"content": text[:20]}}]}),
+            _event({"choices": [{"delta": {"content": text[20:]}, "finish_reason": "length"}]}),
+        )
+        self.assertEqual(status, "failed")
+        self.assertEqual(row.reason, "output_length")
+        self.assertEqual(attempt, "output_length")
+        self.assertEqual(count, 0)
+        self.assertEqual(requests, 1)
+        self.assertEqual(images, 2)
+
+        invalid = json.dumps({"observation_goal": "只有一栏"}, ensure_ascii=False)
+        status, row, count, requests, images, attempt = self._run_controlled(
+            observation_id,
+            _event({"choices": [{"delta": {"content": invalid}}]}),
+            _event({"choices": [{"delta": {}, "finish_reason": "stop"}]}) + _event("[DONE]"),
+        )
+        self.assertEqual(status, "failed")
+        self.assertEqual(row.reason, "candidate_contract_invalid")
+        self.assertEqual(attempt, "candidate_contract_invalid")
+        self.assertEqual(count, 0)
+        self.assertEqual(requests, 1)
+        self.assertEqual(images, 2)

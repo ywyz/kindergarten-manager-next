@@ -9,6 +9,82 @@ import { ApiError, apiGet, apiPatch, apiPost, pathSegment } from './client'
 import type { DailyPlan } from './types'
 
 export type ISODate = string
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
+function parseIsoDateUtc(value: ISODate): Date | null {
+  if (!ISO_DATE_PATTERN.test(value)) return null
+  const [year, month, day] = value.split('-').map(Number)
+  if (year < 1 || year > 9999) return null
+  // Date.UTC maps years 0..99 to 1900..1999.  Build a safe reference date
+  // first and then set the real full year, so server-accepted years
+  // 0001..0099 retain their ISO identity.
+  const parsed = new Date(Date.UTC(2000, month - 1, day))
+  parsed.setUTCFullYear(year)
+  if (
+    parsed.getUTCFullYear() !== year
+    || parsed.getUTCMonth() !== month - 1
+    || parsed.getUTCDate() !== day
+  ) return null
+  return parsed
+}
+
+function formatIsoDateUtc(value: Date): ISODate {
+  const year = String(value.getUTCFullYear()).padStart(4, '0')
+  const month = String(value.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(value.getUTCDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+export function weeklyIsoWeekday(value: ISODate): number | null {
+  const parsed = parseIsoDateUtc(value)
+  return parsed ? ((parsed.getUTCDay() + 6) % 7) + 1 : null
+}
+
+export function weeklyWeekNumberForDate(termStart: ISODate, day: ISODate): number | null {
+  const start = parseIsoDateUtc(termStart)
+  const target = parseIsoDateUtc(day)
+  if (!start || !target) return null
+  const anchor = new Date(start.getTime())
+  anchor.setUTCDate(anchor.getUTCDate() - ((anchor.getUTCDay() + 6) % 7))
+  const delta = Math.floor((target.getTime() - anchor.getTime()) / 86_400_000)
+  const weekNumber = Math.floor(delta / 7) + 1
+  return weekNumber >= 1 ? weekNumber : null
+}
+
+export function weeklyTermWeekOptions(termStart: ISODate, termEnd: ISODate): number[] {
+  const lastWeek = weeklyWeekNumberForDate(termStart, termEnd)
+  if (lastWeek === null) return []
+  return Array.from({ length: lastWeek }, (_, index) => index + 1)
+}
+
+export function weeklyWeekAnchorForNumber(termStart: ISODate, weekNumber: number): ISODate | null {
+  const start = parseIsoDateUtc(termStart)
+  if (!start || !Number.isInteger(weekNumber) || weekNumber < 1) return null
+  const anchor = new Date(start.getTime())
+  anchor.setUTCDate(anchor.getUTCDate() - ((anchor.getUTCDay() + 6) % 7) + 7 * (weekNumber - 1))
+  return formatIsoDateUtc(anchor)
+}
+
+export function weeklyWeekNumberForAnchor(
+  termStart: ISODate,
+  termEnd: ISODate,
+  anchor: ISODate,
+): number | null {
+  const anchorDate = parseIsoDateUtc(anchor)
+  const endDate = parseIsoDateUtc(termEnd)
+  const firstAnchor = weeklyWeekAnchorForNumber(termStart, 1)
+  const firstDate = firstAnchor ? parseIsoDateUtc(firstAnchor) : null
+  if (
+    !anchorDate
+    || !endDate
+    || !firstDate
+    || anchorDate.getUTCDay() !== 1
+    || anchorDate < firstDate
+    || anchorDate > endDate
+  ) return null
+  return weeklyWeekNumberForDate(termStart, anchor)
+}
+
 export type WeeklySlot = 'collective_1' | 'collective_2' | 'free_choice_1'
 export type WeeklyDayState = 'teaching' | 'rest' | 'outside_term'
 export type WeeklySourceState = 'saved' | 'no_plan' | 'none_required'
@@ -240,6 +316,7 @@ export interface WeeklyConfirmationSummary {
 export interface WeeklyList {
   items: WeeklyPlanSummary[]
   next_cursor: string | null
+  term_week_numbers?: number[]
 }
 
 export interface WeeklyDetail {
@@ -629,6 +706,7 @@ export interface WeeklyApi {
   }): Promise<WeeklyWriteResult>
   list(query?: {
     term_id?: string
+    week_number?: number
     from?: ISODate
     to?: ISODate
     cursor?: string
@@ -710,6 +788,7 @@ export function createWeeklyApi(): WeeklyApi {
     list: (query = {}) =>
       apiGet(`/api/weekly-plans${queryString({
         term_id: query.term_id,
+        week_number: query.week_number,
         from: query.from,
         to: query.to,
         cursor: query.cursor,

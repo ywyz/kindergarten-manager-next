@@ -1191,7 +1191,7 @@ def _encode_bootstrap(
         if not (
             claim.listening_record_id
             and claim.listening_domain
-            and claim.task_type in ("listening_note_draft", "listening_domain_evaluate")
+            and claim.task_type in ai_transport.LISTENING_VISION_TASK_TYPES
             and claim.vision_authorized
             and claim.vision_protocol == ai_transport.VISION_PROTOCOL_ID
             and claim.vision_schema_version == 1
@@ -1205,7 +1205,10 @@ def _encode_bootstrap(
             raise ValueError("vision_image_count")
         if claim.task_type == "listening_note_draft" and not claim.listening_group_id:
             raise ValueError("vision_group_missing")
-        if claim.task_type == "listening_domain_evaluate" and claim.listening_group_id is not None:
+        if (
+            claim.task_type != "listening_note_draft"
+            and claim.listening_group_id is not None
+        ):
             raise ValueError("vision_group_invalid")
         if any(
             not isinstance(url, str) or not url.startswith("data:image/")
@@ -1317,7 +1320,15 @@ def _encode_bootstrap(
             raise ValueError("frame_too_large")
         return frames
 
-    if claim.source_kind not in ("daily_plan", "weekly_plan", "one_to_one_listening") or claim.vision_authorized:
+    text_source_authorized = claim.source_kind in (
+        "daily_plan",
+        "weekly_plan",
+        "one_to_one_listening",
+    ) or (
+        claim.source_kind == "class_game_config"
+        and claim.task_type == "class_game_config_extract"
+    )
+    if not text_source_authorized or claim.vision_authorized:
         raise ValueError("text_bootstrap_not_authorized")
 
     budget = ai_transport.text_response_budget(

@@ -1,10 +1,10 @@
 # Architecture v2
 
-状态：2026-10-08 已确认，依据为用户“同意该推荐内容”及 [ADR 0004](docs/adr/0004-local-desktop-architecture-proposal.md)。本文件描述当前有效的系统级职责与依赖；2026-11-01文档维护只移除过时进度判断，不改变架构决定。实际实现、迁移及验收分别记录，不能仅据本文件判为完成。实施状态与待办见 [v2 实施入口](docs/bootstrap/architecture-v2-readiness.md)。
+本地桌面架构依据 [ADR 0004](docs/adr/0004-local-desktop-architecture-proposal.md)，可选同班在线协作的首段边界依据 [ADR 0005](docs/adr/0005-optional-online-class-collaboration.md)。实现、迁移及验收状态见 [当前任务](docs/tasks/current.md) 和 [v2 实施入口](docs/bootstrap/architecture-v2-readiness.md)。
 
 ## 产品范围与交付顺序
 
-面向教师个人的本地教育工作支持应用，首发保证 Windows 11，Windows 10 后续验证。不同电脑接续使用，不要求手机编辑或同时编辑，不依赖园所管理员集中管理业务，也不提供同班教师相互查看计划的流程。
+本地模式面向教师个人，首发保证 Windows 11，Windows 10 后续验证。支持不同电脑顺序接续使用，个人业务由本地档案管理。可选在线协作首段限于同班关系及班级游戏配置的预览与带入。共享周计划仍处于提议阶段，见 [ADR 0005](docs/adr/0005-optional-online-class-collaboration.md)。
 
 2026-10-08 用户进一步确认：首版采用一个本地教师档案，首次填写姓名、班级和学期，之后直接进入工作台，无需旧注册、账号密码登录与等待管理员分班。用户说明目前云端没有数据，首版使用全新本地数据，不安排旧业务数据导入；这不授权清理远程实例或历史测试记录。
 
@@ -38,6 +38,8 @@ Windows 桌面窗口（Vue）
 ```
 
 Vue 构建产物与本机 API 同源加载。服务只监听回环地址，校验应用会话与请求来源，不能让不受信任网页任意调用本机服务。桌面容器与本地服务的启动、停止及端口管理在运行规格中细化。
+
+启用在线协作时，桌面经 HTTPS 业务 API 访问独立的协作服务，共享班级配置以该服务为权威。数据库连接由服务端管理。个人业务仍由本地 SQLite 管理，数据库选型和后续接入边界见 [ADR 0005](docs/adr/0005-optional-online-class-collaboration.md)。
 
 AI 请求从教师电脑发出。本地业务不依赖中央服务器转发 AI；这减少了中转环节，但不保证消除供应商、网络或本机状态导致的超时。不得用旧部署的体验反馈宣称根因已定位。
 

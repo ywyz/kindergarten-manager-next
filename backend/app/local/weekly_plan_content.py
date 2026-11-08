@@ -2484,31 +2484,45 @@ def apply_weekly_ai_adoption(
     candidate_value: Mapping[str, Any],
     adoption: Mapping[str, Any],
     basis: Mapping[str, Any],
+    edited_value: Mapping[str, Any] | None = None,
     server_manifest: Mapping[str, Any] | None = None,
     ai_item_ids: Mapping[str, str] | None = None,
 ) -> dict:
-    """Pure adoption merge: one target, one new in-memory draft value."""
+    """Pure adoption merge; the original source value stays the provenance.
+
+    ``edited_value`` is the legal teacher-edited projection.  It changes the
+    adopted draft value only; provenance continues to point at the original
+    candidate and source value, and the existing manual_edited/edited flags
+    are derived from the difference.
+    """
     prev = validate_content(previous)
     if target not in BASIS_TARGETS:
         _fail("采用目标非法", "target")
     meta = _map(adoption, "adoption")
     _exact_keys(meta, ADOPTION_METADATA_KEYS, "adoption")
     value = _map(candidate_value, "candidate_value")
+    edited = _map(edited_value, "edited_value") if edited_value is not None else value
     base = promote_to_schema2(prev) if prev["schema_version"] == SCHEMA1_VERSION else copy.deepcopy(prev)
     if target == "games":
         from app.local import weekly_ai_contracts as contracts
 
-        finalized = contracts.finalize_games_value(
+        original_finalized = contracts.finalize_games_value(
             value,
             candidate_id=meta["candidate_id"],
             input_id=meta["input_id"],
             ai_item_ids=ai_item_ids or {},
         )
-        base["outdoor_game_slots"] = copy.deepcopy(finalized["outdoor_game_slots"])
-        base["focus_area"] = copy.deepcopy(finalized["focus_area"])
+        edited_finalized = contracts.finalize_games_value(
+            edited,
+            candidate_id=meta["candidate_id"],
+            input_id=meta["input_id"],
+            ai_item_ids=ai_item_ids or {},
+        )
+        base["outdoor_game_slots"] = copy.deepcopy(edited_finalized["outdoor_game_slots"])
+        base["focus_area"] = copy.deepcopy(edited_finalized["focus_area"])
         adopted_value = {
-            "outdoor_game_slots": copy.deepcopy(finalized["outdoor_game_slots"]),
-            "focus_area": copy.deepcopy(finalized["focus_area"]),
+            "outdoor_game_slots": copy.deepcopy(original_finalized["outdoor_game_slots"]),
+            "focus_area": copy.deepcopy(original_finalized["focus_area"]),
         }
         base["ai_provenance"]["games"] = {
             **copy.deepcopy(meta),
@@ -2519,9 +2533,11 @@ def apply_weekly_ai_adoption(
         }
     elif target in WEEKLY_COLUMN_KEYS:
         _exact_keys(value, frozenset({"text"}), "candidate_value")
-        text = _text(value.get("text"), "candidate_value.text", nonempty=True)
-        base["weekly_columns"][target] = text
-        adopted_value = {"text": text}
+        _exact_keys(edited, frozenset({"text"}), "edited_value")
+        original_text = _text(value.get("text"), "candidate_value.text", nonempty=True)
+        edited_text = _text(edited.get("text"), "edited_value.text", nonempty=True)
+        base["weekly_columns"][target] = edited_text
+        adopted_value = {"text": original_text}
         base["ai_provenance"][target] = {
             **copy.deepcopy(meta),
             "adopted_value": adopted_value,
@@ -2535,11 +2551,16 @@ def apply_weekly_ai_adoption(
         from app.local import weekly_materials
 
         _exact_keys(value, frozenset({"items"}), "candidate_value")
-        items = weekly_materials.materialize_materials_items(
+        _exact_keys(edited, frozenset({"items"}), "edited_value")
+        original_items = weekly_materials.materialize_materials_items(
             value.get("items"), server_manifest=server_manifest
         )
-        original_text = weekly_materials.synthesize_materials_text(items)
-        base["materials"] = original_text
+        edited_items = weekly_materials.materialize_materials_items(
+            edited.get("items"), server_manifest=server_manifest
+        )
+        original_text = weekly_materials.synthesize_materials_text(original_items)
+        edited_text = weekly_materials.synthesize_materials_text(edited_items)
+        base["materials"] = edited_text
         base["materials_provenance"] = weekly_materials.build_materials_provenance(
             candidate_id=meta["candidate_id"],
             candidate_hash=meta["candidate_hash"],
@@ -2548,7 +2569,7 @@ def apply_weekly_ai_adoption(
             contract_version=meta["contract_version"],
             dependency_hash=meta["dependency_hash"],
             basis=basis,
-            items=items,
+            items=original_items,
             original_text=original_text,
             adopter_profile_id=meta["adopter_profile_id"],
             adopted_draft_id=meta["adopted_draft_id"],

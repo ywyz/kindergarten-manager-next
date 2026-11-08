@@ -37,6 +37,7 @@ from app.local import (
     ai_task_service,
     appearance_service,
     calendar_read,
+    config_ai_service,
     config_service,
     daily_plan_history_service,
     daily_plan_service,
@@ -86,6 +87,10 @@ from app.local.schemas import (
     LocalAppearancePatchIn,
     LocalCalendarOut,
     LocalClassGamesOut,
+    LocalConfigAICandidateOut,
+    LocalConfigAILatestOut,
+    LocalConfigAITaskCreateIn,
+    LocalConfigAITaskOut,
     LocalConfigApplyIn,
     LocalConfigApplyOut,
     LocalConfigPreviewIn,
@@ -109,6 +114,7 @@ from app.local.schemas import (
     LocalPromptGuidancePatchIn,
     LocalPromptListOut,
     LocalPromptOut,
+    LocalPromptPackageStatusOut,
     LocalPromptRejectDefaultIn,
     LocalTermDailyPlanListOut,
 )
@@ -159,6 +165,7 @@ def get_context(
     status_code=status.HTTP_201_CREATED,
 )
 def initialize(
+    request: Request,
     response: Response,
     data: LocalInitializeIn,
     session: Session = Depends(get_session),
@@ -174,7 +181,17 @@ def initialize(
         school_name=data.school_name,
     )
     with storage_errors():
-        payload, created = profile_service.initialize(session, normalized)
+        payload, created = profile_service.initialize(
+            session,
+            normalized,
+            prompt_package_builtin_only=bool(
+                getattr(
+                    request.app.state.runtime,
+                    "prompt_package_builtin_only",
+                    False,
+                )
+            ),
+        )
     if not created:
         # Same-key retry or a concurrent commit reads the current
         # configuration back (later maintenance is never rolled back).
@@ -273,6 +290,75 @@ def config_class_games_read(
         return config_service.read_class_games(session)
 
 
+@local_router.post(
+    "/config/class-games/ai-tasks",
+    response_model=LocalConfigAITaskOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_config_ai_task(
+    data: LocalConfigAITaskCreateIn,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    # A committed same-key receipt stays readable even when the executor is
+    # unavailable; never turn a completed create into a 503.
+    with storage_errors():
+        peek = config_ai_service.peek_create(
+            session,
+            request_id=data.request_id,
+            expected_config_version=data.expected_config_version,
+            source_text=data.source_text,
+        )
+    if peek is not None:
+        return peek
+    executor = _require_executor(request)
+    with storage_errors():
+        result, _created = config_ai_service.create_task(
+            session,
+            runtime=request.app.state.runtime,
+            expected_config_version=data.expected_config_version,
+            source_text=data.source_text,
+            request_id=data.request_id,
+        )
+        executor.notify()
+    return result
+
+
+@local_router.get(
+    "/config/class-games/ai-tasks/latest",
+    response_model=LocalConfigAILatestOut,
+)
+def get_latest_config_ai_task(
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        return {"task": config_ai_service.latest_task(session)}
+
+
+@local_router.get(
+    "/config/class-games/ai-tasks/{task_id}",
+    response_model=LocalConfigAITaskOut,
+)
+def get_config_ai_task(
+    task_id: str,
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        return config_ai_service.get_task(session, task_id=task_id)
+
+
+@local_router.get(
+    "/config/class-games/ai-candidates/{candidate_id}",
+    response_model=LocalConfigAICandidateOut,
+)
+def get_config_ai_candidate(
+    candidate_id: str,
+    session: Session = Depends(get_session),
+):
+    with storage_errors():
+        return config_ai_service.get_candidate(session, candidate_id=candidate_id)
+
+
 # ---------------------------------------------------------------------------
 # Appearance preference (desktop appearance spec §2)
 # ---------------------------------------------------------------------------
@@ -366,6 +452,33 @@ def _require_prompt_sync(request: Request) -> None:
     error = getattr(runtime, "prompt_sync_error", None)
     if error:
         raise LocalPromptSyncUnavailable(details={"reason": error})
+
+
+def _prompt_package_service(request: Request):
+    service = getattr(request.app.state, "prompt_package", None)
+    if service is None:
+        from app.local.prompt_package_service import PromptPackageService
+
+        service = PromptPackageService(request.app.state.runtime)
+        request.app.state.prompt_package = service
+    return service
+
+
+@local_router.get(
+    "/ai/prompt-package", response_model=LocalPromptPackageStatusOut
+)
+def ai_prompt_package_status(request: Request):
+    return _prompt_package_service(request).status()
+
+
+@local_router.post(
+    "/ai/prompt-package/check", response_model=LocalPromptPackageStatusOut
+)
+def ai_prompt_package_check(request: Request):
+    # Manual check always has an entry point.  The service reports
+    # unconfigured/offline/invalid/incompatible as distinct status values and
+    # never raises those conditions into the manual editor path.
+    return _prompt_package_service(request).check(manual=True)
 
 
 @local_router.get("/ai/prompts", response_model=LocalPromptListOut)
@@ -706,17 +819,26 @@ def create_ai_task(
 ):
     # Receipt priority: a committed same-key operation is read back even when
     # the executor is unavailable (never a 503 over a completed operation).
+    # Historical same-key retries omit the #20 fields; only include them when
+    # the client actually supplied them so old receipts keep their fingerprint.
+    peek_payload = {
+        "plan_id": plan_id,
+        "task_type": data.task_type,
+        "expected_content_version": data.expected_content_version,
+        "target_grade": data.target_grade,
+    }
+    if data.base_candidate_id is not None:
+        peek_payload["base_candidate_id"] = data.base_candidate_id
+    if data.revision_instruction is not None:
+        peek_payload["revision_instruction"] = data.revision_instruction
+    if data.implementation_materials is not None:
+        peek_payload["implementation_materials"] = data.implementation_materials
     with storage_errors():
         peek = ai_task_service.peek_operation(
             session,
             request_id=data.request_id,
             operation_kind=ai_task_service.OP_CREATE,
-            payload={
-                "plan_id": plan_id,
-                "task_type": data.task_type,
-                "expected_content_version": data.expected_content_version,
-                "target_grade": data.target_grade,
-            },
+            payload=peek_payload,
         )
     if peek is not None:
         return peek
@@ -730,6 +852,9 @@ def create_ai_task(
             target_grade=data.target_grade,
             request_id=data.request_id,
             runtime=request.app.state.runtime,
+            base_candidate_id=data.base_candidate_id,
+            revision_instruction=data.revision_instruction,
+            implementation_materials=data.implementation_materials,
         )
         executor.notify()
     return result

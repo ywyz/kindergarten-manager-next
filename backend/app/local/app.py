@@ -24,6 +24,10 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.local.api import exports_router, local_router, plans_router
+from app.local.collaboration_proxy import (
+    collaboration_router,
+    create_collaboration_proxy,
+)
 from app.local.errors import LocalError
 from app.local.listening_api import listening_router
 from app.local.listening_export_api import listening_exports_router
@@ -33,6 +37,7 @@ from app.local.observation_api import observations_router
 from app.local.observation_export_api import observation_exports_router
 from app.local.runtime import LocalRuntime
 from app.local.schemas import LocalHealthOut
+from app.local.todo_api import todos_router
 from app.local.weekly_plan_api import weekly_plans_router
 from app.local.weekly_ai_api import weekly_ai_router
 from app.local.weekly_plan_export_api import weekly_exports_router
@@ -70,6 +75,35 @@ def _error(
     )
 
 
+def initialize_prompt_package(
+    runtime: LocalRuntime,
+    *,
+    client_version: str | None = None,
+) -> object:
+    """Synchronously verify/enable the package before an executor can claim.
+
+    The desktop host calls this immediately after ``runtime.prepare()`` (and
+    after restore reopen) and before starting the AI executor.  It is
+    idempotent: a second app build reuses the already initialized service.
+    """
+    from app.local.prompt_package_service import PromptPackageService
+
+    existing = getattr(runtime, "prompt_package_service", None)
+    if existing is not None:
+        return existing
+    service = PromptPackageService(
+        runtime,
+        client_version=client_version or getattr(runtime, "app_version", None),
+    )
+    runtime.prompt_package_service = service
+    runtime.prompt_package_restore_hook = service.startup
+    try:
+        service.startup()
+    except Exception:  # noqa: BLE001 - package failure never blocks launch
+        pass
+    return service
+
+
 def create_local_app(
     *,
     data_dir: str | Path | None = None,
@@ -78,8 +112,14 @@ def create_local_app(
     host: str = "127.0.0.1",
     runtime: LocalRuntime | None = None,
     executor: object | None = None,
+    prompt_package_client_version: str | None = None,
 ) -> FastAPI:
-    """Create the local API for one launch (loopback host/port fixed)."""
+    """Create the local API for one launch (loopback host/port fixed).
+
+    ``prompt_package_client_version`` lets the desktop entry pass its actual
+    stable/preview identity without adding a readable package-resource field.
+    Source runs keep the deterministic packaged default.
+    """
     if not port or not session_token:
         raise ValueError("local app requires a port and a per-launch session token")
     if host != "127.0.0.1":
@@ -99,6 +139,17 @@ def create_local_app(
     )
     app.state.runtime = runtime
     app.state.executor = executor
+    # Prompt-package cache verification is local-only.  It re-applies a cached
+    # package after a database restore before any AI request can run; an
+    # unconfigured source performs no network and leaves built-in guidance.
+    prompt_package = initialize_prompt_package(
+        runtime,
+        client_version=prompt_package_client_version,
+    )
+    app.state.prompt_package = prompt_package
+    # No network at startup: this only reads the deployment-configured HTTPS
+    # origin and creates the process-memory collaboration session holder.
+    app.state.collaboration_proxy = create_collaboration_proxy()
     # An internal, never-returned random scope for this app instance. Adoption
     # preview tokens are bound to it (plus the launch id) so a token minted for
     # one app session is refused by another, even on the same runtime; it is
@@ -175,6 +226,7 @@ def create_local_app(
         return _error(500, "INTERNAL_ERROR", "本地服务内部错误")
 
     app.include_router(local_router)
+    app.include_router(todos_router)
     app.include_router(plans_router)
     app.include_router(exports_router)
     app.include_router(observations_router)
@@ -185,4 +237,8 @@ def create_local_app(
     app.include_router(weekly_plans_router)
     app.include_router(weekly_ai_router)
     app.include_router(weekly_exports_router)
+    app.include_router(collaboration_router)
+    # Rate-limited and disabled entirely when the build has no fixed trust
+    # source.  It runs after the app is fully built and never blocks launch.
+    prompt_package.start_background_check()
     return app

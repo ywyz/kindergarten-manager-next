@@ -13,6 +13,8 @@ any database; the read service passes its pinned records in.
 import difflib
 import re
 from collections import Counter
+
+from app.daily_process_contract import split_process_steps
 from datetime import date, timedelta
 from typing import Any, Mapping
 
@@ -111,7 +113,7 @@ def _token_runs(baseline: str, final: str) -> list[dict]:
     return _merge_runs(runs)
 
 
-def diff_process(baseline: Any, final: Any) -> dict:
+def diff_process(baseline: Any, final: Any, *, step_aware: bool = False) -> dict:
     """Redline of ``group_activity.process``.
 
     ``baseline`` is ``split_baseline.group_activity_process`` (None when the
@@ -129,6 +131,10 @@ def diff_process(baseline: Any, final: Any) -> dict:
             "has_baseline": False,
             "runs": _merge_runs([{"text": final_text, "red": False}]),
         }
+    if step_aware:
+        step_runs = _numbered_step_runs(baseline, final_text)
+        if step_runs is not None:
+            return {"has_baseline": True, "runs": step_runs}
 
     base_paras = baseline.split("\n")
     final_paras = final_text.split("\n")
@@ -200,6 +206,68 @@ def diff_process(baseline: Any, final: Any) -> dict:
     return {"has_baseline": True, "runs": _merge_runs(runs)}
 
 
+def _numbered_step_runs(baseline: str, final: str) -> list[dict] | None:
+    """Whole-step redline for two numbered processes (#23)."""
+    base_steps = split_process_steps(baseline)
+    final_steps = split_process_steps(final)
+    if not base_steps or not final_steps:
+        return None
+    if not any(step.number for step in base_steps) or not any(
+        step.number for step in final_steps
+    ):
+        return None
+    identity = lambda step: step.body.replace("\r\n", "\n").replace("\r", "\n").strip()
+    matcher = difflib.SequenceMatcher(
+        None,
+        [identity(step) for step in base_steps],
+        [identity(step) for step in final_steps],
+        autojunk=False,
+    )
+    deleted_pool = Counter()
+    for tag, i1, i2, _j1, _j2 in matcher.get_opcodes():
+        if tag in ("delete", "replace"):
+            for step in base_steps[i1:i2]:
+                key = identity(step)
+                if key:
+                    deleted_pool[key] += 1
+    red_flags: list[bool] = [False] * len(final_steps)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "delete":
+            continue
+        if tag == "insert":
+            for j in range(j1, j2):
+                key = identity(final_steps[j])
+                if key and deleted_pool.get(key, 0) > 0:
+                    deleted_pool[key] -= 1
+                else:
+                    red_flags[j] = True
+            continue
+        for j in range(j1, j2):
+            key = identity(final_steps[j])
+            if key and deleted_pool.get(key, 0) > 0:
+                deleted_pool[key] -= 1
+            else:
+                red_flags[j] = True
+    normalized = final.replace("\r\n", "\n").replace("\r", "\n")
+    runs: list[dict] = []
+    cursor = 0
+    for index, step in enumerate(final_steps):
+        position = normalized.find(step.raw, cursor)
+        if position < 0:
+            return None
+        if position > cursor:
+            runs.append({"text": normalized[cursor:position], "red": False})
+        runs.append(
+            {"text": normalized[position : position + len(step.raw)], "red": red_flags[index]}
+        )
+        cursor = position + len(step.raw)
+    if cursor < len(normalized):
+        runs.append({"text": normalized[cursor:], "red": False})
+    return _merge_runs(runs)
+
+
 def _norm(paragraph: str) -> str:
     return paragraph.strip()
 
@@ -226,13 +294,39 @@ def _map_morning_group(group: Any) -> dict | None:
     }
 
 
-def _map_post_group(group: Any) -> dict | None:
+def _display_area(
+    value: Any, context_kind: Any, single_afternoon_outdoor: bool
+) -> Any:
+    """Remove only the exact known system placeholder for its own area type.
+
+    The stored content has no source/provenance field that could distinguish a
+    teacher who typed the identical string.  This local-only rule is therefore
+    deliberately limited to the exact string paired with the matching
+    ``context_kind``; no substring/keyword cleaning and no text-field changes.
+    """
+    if not single_afternoon_outdoor or not isinstance(value, str):
+        return value
+    if isinstance(context_kind, str) and value == _KNOWN_AREA_PLACEHOLDERS.get(
+        context_kind
+    ):
+        return ""
+    return value
+
+
+def _map_post_group(
+    group: Any, *, single_afternoon_outdoor: bool = False
+) -> dict | None:
     if not isinstance(group, dict):
         return None
+    context_kind = group.get("context_kind")
     return {
         "group_id": group.get("group_id"),
-        "context_kind": group.get("context_kind"),
-        "area": _text(group.get("area")),
+        "context_kind": context_kind,
+        "area": _text(
+            _display_area(
+                group.get("area"), context_kind, single_afternoon_outdoor
+            )
+        ),
         "games": [
             {"game_id": g.get("game_id"), "name": _text(g.get("name"))}
             for g in group.get("games") or []
@@ -245,12 +339,18 @@ def _map_post_group(group: Any) -> dict | None:
     }
 
 
-def _map_afternoon_outdoor(value: Any) -> dict | None:
+def _map_afternoon_outdoor(
+    value: Any, *, single_afternoon_outdoor: bool = False
+) -> dict | None:
     if not isinstance(value, dict):
         return None
     return {
         "group_id": value.get("group_id"),
-        "area": _text(value.get("area")),
+        "area": _text(
+            _display_area(
+                value.get("area"), "outdoor", single_afternoon_outdoor
+            )
+        ),
         "games": [
             {"game_id": g.get("game_id"), "name": _text(g.get("name"))}
             for g in value.get("games") or []
@@ -260,6 +360,111 @@ def _map_afternoon_outdoor(value: Any) -> dict | None:
         "objectives": _text(value.get("objectives")),
         "guidance": _text(value.get("guidance")),
         "support_strategy": _text(value.get("support_strategy")),
+    }
+
+
+_KNOWN_AREA_PLACEHOLDERS = {
+    "area": "室内区域（一般建议）",
+    "outdoor": "户外场地（一般建议）",
+}
+_LEGACY_OUTDOOR_PLACEHOLDER_AREAS = {_KNOWN_AREA_PLACEHOLDERS["outdoor"]}
+_LEGACY_OUTDOOR_TEXT_FIELDS = (
+    "focus_guidance",
+    "objectives",
+    "guidance",
+    "support_strategy",
+)
+_AFTERNOON_TEXT_FIELDS = (
+    "observation_focus",
+    "objectives",
+    "guidance",
+    "support_strategy",
+)
+
+
+def _raw_game_names(group: Any) -> list[str]:
+    if not isinstance(group, dict):
+        return []
+    names: list[str] = []
+    for game in group.get("games") or []:
+        if not isinstance(game, dict):
+            continue
+        name = game.get("name")
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    return names
+
+
+def _post_group_has_content(group: Any) -> bool:
+    if not isinstance(group, dict):
+        return False
+    if _raw_game_names(group):
+        return True
+    if any(
+        isinstance(group.get(field), str) and group[field].strip()
+        for field in _LEGACY_OUTDOOR_TEXT_FIELDS
+    ):
+        return True
+    area = _text(group.get("area")).strip()
+    return bool(area and area not in _LEGACY_OUTDOOR_PLACEHOLDER_AREAS)
+
+
+def _afternoon_has_content(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if _raw_game_names(value):
+        return True
+    if any(
+        isinstance(value.get(field), str) and value[field].strip()
+        for field in _AFTERNOON_TEXT_FIELDS
+    ):
+        return True
+    area = _text(value.get("area")).strip()
+    return bool(area and area not in _LEGACY_OUTDOOR_PLACEHOLDER_AREAS)
+
+
+def legacy_outdoor_groups(content: Any) -> list[dict]:
+    """Legacy upper outdoor groups to move into the sole afternoon position.
+
+    The old daily word block rendered ``post_group_games`` with
+    ``context_kind='outdoor'`` as a separate upper "户外游戏" block.  When the
+    real afternoon field has no teacher content, those groups are returned in
+    their original order so the same content can be rendered once under
+    "下午：户外游戏".  When an afternoon field is real, the upper block is
+    intentionally ignored (the afternoon position is authoritative).
+    """
+    data = _as_dict(content)
+    raw_groups = data.get("post_group_games")
+    outdoor_groups = [
+        group
+        for group in raw_groups or []
+        if isinstance(group, dict) and group.get("context_kind") == "outdoor"
+    ]
+    groups = [group for group in outdoor_groups if _post_group_has_content(group)]
+    if not groups:
+        return []
+    if _afternoon_has_content(data.get("afternoon_outdoor")):
+        return []
+    return groups
+
+
+def legacy_outdoor_warning(content: Any, plan_date) -> dict | None:
+    """Actionable export warning for an upper-only legacy outdoor block."""
+    groups = legacy_outdoor_groups(content)
+    if not groups:
+        return None
+    iso = (
+        plan_date.isoformat()
+        if isinstance(plan_date, date)
+        else str(plan_date)
+    )
+    return {
+        "code": "legacy_outdoor_moved_to_afternoon",
+        "message": (
+            f"旧版日计划上方「户外游戏」栏的内容（{len(groups)} 组）"
+            f"已按原顺序呈现在「下午：户外游戏」位置；"
+            f"请在日计划 {iso} 的下午户外栏核对或补录。"
+        ),
     }
 
 
@@ -280,8 +485,16 @@ def grade_display(value: Any) -> str:
     return _GRADE_LABELS.get(value, value)
 
 
-def map_daily_plan(record) -> dict:
-    """Map one pinned daily plan record to the fixed two-column view model."""
+def map_daily_plan(
+    record, *, single_afternoon_outdoor: bool = False
+) -> dict:
+    """Map one pinned daily plan record to the fixed two-column view model.
+
+    ``single_afternoon_outdoor`` is used only by the Windows local daily Word
+    path (#25).  The default keeps the legacy/web contract: an upper
+    ``context_kind=outdoor`` post block remains independent and the afternoon
+    block is unchanged.
+    """
     content = _as_dict(record.adopted_content)
     groups = [
         g for g in content.get("morning_games") or [] if isinstance(g, dict)
@@ -294,11 +507,16 @@ def map_daily_plan(record) -> dict:
     )
     talk = _as_dict(content.get("morning_talk"))
     activity = _as_dict(content.get("group_activity"))
+    legacy_outdoor = (
+        legacy_outdoor_groups(content) if single_afternoon_outdoor else []
+    )
 
     baseline = split_baseline_process(record.split_baseline)
-    process = diff_process(baseline, activity.get("process"))
+    process = diff_process(
+        baseline, activity.get("process"), step_aware=single_afternoon_outdoor
+    )
 
-    return {
+    view = {
         "kind": KIND_DAILY,
         "plan_id": record.plan_id,
         "plan_date": record.plan_date,
@@ -332,15 +550,40 @@ def map_daily_plan(record) -> dict:
         "post_group_games": [
             mapped
             for mapped in (
-                _map_post_group(g)
+                _map_post_group(
+                    g, single_afternoon_outdoor=single_afternoon_outdoor
+                )
                 for g in content.get("post_group_games") or []
                 if isinstance(g, dict)
+                and (
+                    not single_afternoon_outdoor
+                    or g.get("context_kind") != "outdoor"
+                )
             )
             if mapped is not None
         ],
-        "afternoon_outdoor": _map_afternoon_outdoor(
-            content.get("afternoon_outdoor")
+        # The old upper outdoor post block is never a second independent
+        # document position.  A true afternoon field is authoritative; only
+        # an old record with no real afternoon content migrates its upper
+        # outdoor groups into this sole afternoon position.
+        "afternoon_outdoor": (
+            None
+            if legacy_outdoor
+            else _map_afternoon_outdoor(
+                content.get("afternoon_outdoor"),
+                single_afternoon_outdoor=single_afternoon_outdoor,
+            )
         ),
+        "afternoon_outdoor_legacy": [
+            mapped
+            for mapped in (
+                _map_post_group(
+                    g, single_afternoon_outdoor=single_afternoon_outdoor
+                )
+                for g in legacy_outdoor
+            )
+            if mapped is not None
+        ],
         "reflection": _text(content.get("reflection")),
         "process": {
             "has_baseline": process["has_baseline"],
@@ -348,6 +591,11 @@ def map_daily_plan(record) -> dict:
         },
         "warnings": list(getattr(record, "warnings", ()) or ()),
     }
+    if not single_afternoon_outdoor:
+        # Preserve the old web/legacy view contract exactly: no new key and
+        # no filtering when the caller did not opt into the local-only mode.
+        view.pop("afternoon_outdoor_legacy", None)
+    return view
 
 
 # ---------------------------------------------------------------------------

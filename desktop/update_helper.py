@@ -16,14 +16,22 @@ import os
 import subprocess
 import sys
 import time
+import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import update_github
+import update_identity
 import update_install
 import update_paths
 import update_process
-from update_fs import PathSafetyError, ensure_safe_path, ensure_safe_tree
+from update_fs import (
+    PathSafetyError,
+    ensure_safe_path,
+    ensure_safe_tree,
+    has_multiple_hard_links,
+)
 from update_manifest import (
     ManifestError,
     parse_signed_manifest,
@@ -88,6 +96,108 @@ def _check_product_layout(plan: update_install.InstallPlan) -> None:
         )
 
 
+_INSTALLED_IDENTITY_FIELDS = (
+    "app_id",
+    "app_name",
+    "channel",
+    "version",
+    "build_id",
+    "package_format",
+    "platform",
+    "arch",
+    "python",
+    "database_revision",
+)
+
+
+def _read_installed_identity(plan: update_install.InstallPlan) -> dict[str, str]:
+    """Read the actual old package identity from its managed program tree."""
+    app = Path(plan.install_app_dir)
+    try:
+        ensure_safe_path(app)
+        install_root = getattr(plan, "install_root", "")
+        if install_root:
+            app.resolve().relative_to(Path(install_root).resolve())
+    except (PathSafetyError, OSError, ValueError) as exc:
+        raise update_install.InstallPlanError(
+            "INSTALL_OLD_IDENTITY_UNSAFE", "旧程序身份路径越出受管安装根"
+        ) from exc
+    identity_path = app / "_internal" / "build_identity.json"
+    try:
+        ensure_safe_path(identity_path)
+    except PathSafetyError as exc:
+        raise update_install.InstallPlanError(
+            "INSTALL_OLD_IDENTITY_UNSAFE", "旧程序身份路径包含链接或重解析点"
+        ) from exc
+    if identity_path.is_symlink() or not identity_path.is_file():
+        raise update_install.InstallPlanError(
+            "INSTALL_OLD_IDENTITY_INVALID", "旧程序 build_identity.json 缺失或不是普通文件"
+        )
+    try:
+        if has_multiple_hard_links(identity_path):
+            raise update_install.InstallPlanError(
+                "INSTALL_OLD_IDENTITY_UNSAFE", "旧程序身份文件存在硬链接"
+            )
+    except PathSafetyError as exc:
+        raise update_install.InstallPlanError(
+            "INSTALL_OLD_IDENTITY_UNSAFE", "无法核对旧程序身份文件链接"
+        ) from exc
+    try:
+        data = strict_json_loads(identity_path.read_bytes(), package=True)
+    except (OSError, ManifestError) as exc:
+        raise update_install.InstallPlanError(
+            "INSTALL_OLD_IDENTITY_INVALID", "旧程序 build_identity.json 无法读取"
+        ) from exc
+    if (
+        not isinstance(data, dict)
+        or set(data) != set(_INSTALLED_IDENTITY_FIELDS)
+        or not all(isinstance(data.get(key), str) and data.get(key) for key in _INSTALLED_IDENTITY_FIELDS)
+    ):
+        raise update_install.InstallPlanError(
+            "INSTALL_OLD_IDENTITY_INVALID", "旧程序 build_identity.json 字段不合法"
+        )
+    actual = {key: data[key] for key in _INSTALLED_IDENTITY_FIELDS}
+    if (
+        actual["app_id"] != "kindergarten-manager-next"
+        or actual["app_name"] != "KindergartenManager"
+        or actual["package_format"] != "pyinstaller-onedir-zip-v1"
+        or actual["platform"] != "windows"
+        or actual["arch"] != "x64"
+    ):
+        raise update_install.InstallPlanError(
+            "INSTALL_OLD_IDENTITY_INVALID", "旧程序固定身份字段不匹配"
+        )
+    if actual["channel"] not in ("stable", "preview"):
+        raise update_install.InstallPlanError(
+            "INSTALL_OLD_IDENTITY_INVALID", "旧程序渠道不合法"
+        )
+    try:
+        if (
+            update_identity.is_preview_version(actual["version"])
+            != (actual["channel"] == "preview")
+        ):
+            raise ValueError
+        update_identity.version_key(actual["version"])
+        if str(uuid.UUID(actual["build_id"])) != actual["build_id"].lower():
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise update_install.InstallPlanError(
+            "INSTALL_OLD_IDENTITY_INVALID", "旧程序版本或 build ID 不合法"
+        ) from None
+    current = plan.current
+    if not isinstance(current, dict):
+        raise update_install.InstallPlanError(
+            "INSTALL_CURRENT_IDENTITY_INVALID", "安装计划的当前身份不合法"
+        )
+    for key in _INSTALLED_IDENTITY_FIELDS:
+        if current.get(key) != actual[key]:
+            raise update_install.InstallPlanError(
+                "INSTALL_CURRENT_IDENTITY_MISMATCH",
+                f"安装计划当前身份与旧程序实际身份不一致：{key}",
+            )
+    return actual
+
+
 def _load_manifest(
     plan: update_install.InstallPlan,
     *,
@@ -107,6 +217,20 @@ def _load_manifest(
         raise update_install.InstallPlanError(
             "INSTALL_SOURCE_UNCONFIGURED", "发行信任配置未配置"
         )
+    target_channel = plan.target.get("channel")
+    if target_channel not in ("stable", "preview"):
+        raise update_install.InstallPlanError(
+            "INSTALL_METADATA_INVALID", "安装目标渠道不合法"
+        )
+    if source.provider == "github":
+        # Only the fixed GitHub trust path may select stable/preview in the
+        # updater config; the signed manifest is still checked below.
+        source = replace(source, channel=target_channel)
+    elif target_channel != source.channel:
+        raise update_install.InstallPlanError(
+            "INSTALL_METADATA_MISMATCH", "固定更新源只接受其配置渠道"
+        )
+    actual = _read_installed_identity(plan)
     raw = strict_json_loads(Path(plan.metadata_path).read_bytes(), package=True)
     if not isinstance(raw, dict) or set(raw) != {"raw"} or not isinstance(
         raw.get("raw"), str
@@ -118,8 +242,8 @@ def _load_manifest(
     manifest = parse_signed_manifest(
         metadata,
         source,
-        str(plan.current.get("version", "")),
-        str(plan.current.get("database_revision", "")),
+        actual["version"],
+        actual["database_revision"],
     )
     if source.provider == "github":
         # The embedded updater config is the authority; the selected tag is

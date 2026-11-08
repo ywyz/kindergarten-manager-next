@@ -9,6 +9,59 @@ import ts from 'typescript'
 import * as vue from 'vue'
 
 const d1Dir = path.dirname(fileURLToPath(import.meta.url))
+
+function loadRealListeningAi() {
+  const aiFile = path.join(d1Dir, 'listening-ai.ts')
+  const compiled = ts.transpileModule(fs.readFileSync(aiFile, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+    fileName: aiFile,
+  }).outputText
+  const module = { exports: {} }
+  vm.runInNewContext(compiled, {
+    module,
+    exports: module.exports,
+    require: (spec) => {
+      if (spec === './client') {
+        return {
+          ApiError,
+          apiGet: async () => {
+            throw new Error('unexpected real apiGet')
+          },
+          apiPost: async () => {
+            throw new Error('unexpected real apiPost')
+          },
+          pathSegment: (value) => encodeURIComponent(String(value)),
+        }
+      }
+      if (spec === './listening') {
+        return { newRequestId: () => 'request-real', ListeningDomain: undefined }
+      }
+      throw new Error(`unexpected import ${spec}`)
+    },
+    console,
+    Date,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Array,
+    String,
+    Boolean,
+    Promise,
+    Map,
+    Set,
+    URLSearchParams,
+    crypto: { randomUUID: () => 'request-real' },
+    setTimeout,
+    clearTimeout,
+  })
+  return module.exports
+}
+
 const file = path.join(d1Dir, 'components/ListeningAiPanel.vue')
 const source = fs.readFileSync(file, 'utf8')
 assert.match(source, /整理本组倾听记录/)
@@ -104,9 +157,11 @@ function cumulativePreview() {
   value.target_states.health_1 = adoptedTargets.has('health_1')
     ? 'adopted'
     : 'eligible'
+  if (adoptedTargets.size > 0) value.revision = 6
   return value
 }
 const ai = {
+  ...loadRealListeningAi(),
   createListeningAITask: async (payload) => {
     calls.create.push(payload)
     return { ...payload, task_id: 'task-1', operation_kind: 'create', replayed: false }
@@ -135,7 +190,9 @@ const ai = {
         adoptedTargets.add(String(selection.target))
       }
       previewAfterAdopt = cumulativePreview()
-      return adoptResponse
+      return adoptResponse && typeof adoptResponse === 'object'
+        ? { ...adoptResponse, request_id: payload.requestId }
+        : adoptResponse
     }
     if (adoptGate) {
       const gate = adoptGate
@@ -273,8 +330,8 @@ const first = calls.adopt.at(-1)
 await state.adopt()
 const second = calls.adopt.at(-1)
 assert.deepEqual(JSON.parse(JSON.stringify(second.selections)), JSON.parse(JSON.stringify(first.selections)))
-assert.equal(second.request_id, first.request_id)
-assert.equal(second.preview_token, first.preview_token)
+assert.equal(second.requestId, first.requestId)
+assert.equal(second.previewToken, first.previewToken)
 
 // Deferred reset: a domain switch while the old adopt is awaiting its tail
 // must release the old phase flags, let the new domain own taskLoading, and
