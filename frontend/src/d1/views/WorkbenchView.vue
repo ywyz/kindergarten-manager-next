@@ -33,6 +33,7 @@ const emit = defineEmits<{
     termId?: string,
   ): void
   (e: 'open-observations'): void
+  (e: 'open-curriculum'): void
   (e: 'open-weekly-plans'): void
   (e: 'open-listening', termId?: string): void
   (e: 'open-settings', section?: 'collaboration'): void
@@ -330,6 +331,11 @@ function openListening(): void {
   emit('open-listening', termFilter.value ?? undefined)
 }
 
+function openCurriculum(): void {
+  if (frozenNow()) return
+  emit('open-curriculum')
+}
+
 watch([termFilter, month], () => {
   // Invalidate any in-flight read synchronously, before the async loader
   // starts, so a slow older response cannot paint the new month/term.
@@ -372,6 +378,9 @@ defineExpose({ reload: load })
       <div class="actions">
         <el-button data-d1="open-observations" :disabled="frozen" @click="emit('open-observations')">
           游戏观察
+        </el-button>
+        <el-button data-d1="open-curriculum" :disabled="frozen" @click="openCurriculum">
+          课程审议
         </el-button>
         <el-button data-d1="open-listening" :disabled="frozen" @click="openListening">
           一对一倾听

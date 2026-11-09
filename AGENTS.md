@@ -6,7 +6,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-开发分支为 `codex/desktop-one-to-one-listening`。唯一执行入口为 [当前任务](docs/tasks/current.md)，在线协作四阶段合成核查见 [联调结果](docs/bootstrap/online-collaboration-integration-review.md)。Windows 教师反馈修复的源码和合成核查及待验项目见 [教师反馈核查](docs/bootstrap/desktop-teacher-feedback-repair-review.md)。一对一倾听 L1–L4 的源码结论及原 Windows 11 测试机补验归 [原核查记录](docs/bootstrap/desktop-one-to-one-listening-review.md)。关闭／恢复专项及历史白屏、Word 差异归 [原测试机记录](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。
+课程审议设计分支为 `codex/teaching-documents-design`，在线协作联调基线分支为 `codex/desktop-one-to-one-listening`。唯一执行入口为 [当前任务](docs/tasks/current.md)，在线协作四阶段合成核查见 [联调结果](docs/bootstrap/online-collaboration-integration-review.md)。Windows 教师反馈修复的源码和合成核查及待验项目见 [教师反馈核查](docs/bootstrap/desktop-teacher-feedback-repair-review.md)。一对一倾听 L1–L4 的源码结论及原 Windows 11 测试机补验归 [原核查记录](docs/bootstrap/desktop-one-to-one-listening-review.md)。关闭／恢复专项及历史白屏、Word 差异归 [原测试机记录](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。
 
 Codex 维护正式规格和审核记录。已结束轮次的写入白名单与原生会话权限归各轮结果，后续工作按当轮责任执行。
 

@@ -56,6 +56,9 @@ import WeeklyPlansView from './views/WeeklyPlansView.vue'
 import WeeklyPlanEditorView from './views/WeeklyPlanEditorView.vue'
 import ListeningRecordsView from './views/ListeningRecordsView.vue'
 import ListeningEditorView from './views/ListeningEditorView.vue'
+import CurriculumPlansView from './views/CurriculumPlansView.vue'
+import CurriculumEditorView from './views/CurriculumEditorView.vue'
+import type { CurriculumContent } from './curriculum'
 
 type View =
   | { name: 'setup' }
@@ -73,6 +76,13 @@ type View =
   | { name: 'weekly-editor'; planId: string }
   | { name: 'listening-records'; termId?: string }
   | { name: 'listening-editor'; recordId: string }
+  | { name: 'curriculum-plans' }
+  | {
+      name: 'curriculum-editor'
+      recordId: string
+      isNew: boolean
+      defaults?: CurriculumContent
+    }
   | { name: 'settings'; section?: 'collaboration' }
 
 let pageTicket = ''
@@ -186,6 +196,11 @@ const listeningEditorBusy = ref(false)
 const listeningEditorRef = ref<{ resetForContext: () => void } | null>(null)
 let listeningEditorBridge: LeaveEditor | null = null
 let listeningEditorOwner: string | null = null
+/** Curriculum editor save/preview/export barrier, accepted only for its owner. */
+const curriculumEditorBusy = ref(false)
+const curriculumEditorRef = ref<{ resetForContext: () => void } | null>(null)
+let curriculumEditorBridge: LeaveEditor | null = null
+let curriculumEditorOwner: string | null = null
 const workbenchBusy = computed(() => todoStore.busy.value)
 const pageBusy = computed(
   () =>
@@ -196,6 +211,7 @@ const pageBusy = computed(
     weeklyEditorBusy.value ||
     listeningListBusy.value ||
     listeningEditorBusy.value ||
+    curriculumEditorBusy.value ||
     exportBusy.value,
 )
 
@@ -426,6 +442,12 @@ function currentBlockingDraft(): BlockingDraft | null {
     return {
       kind: 'listening',
       message: '倾听记录保存、照片提交或 Word 导出仍在进行：请等待结果后再离开当前页面',
+    }
+  }
+  if (curriculumEditorBusy.value) {
+    return {
+      kind: 'material',
+      message: '课程审议保存或 Word 导出仍在进行：请等待结果后再离开当前页面',
     }
   }
   if (isSettingsDraftBlocking()) {
@@ -720,6 +742,47 @@ function clearListeningState(): void {
   listeningEditorOwner = null
 }
 
+function registerCurriculumEditor(
+  owner: string | null,
+  bridge: LeaveEditor | null,
+): void {
+  if (bridge) {
+    curriculumEditorBridge = bridge
+    curriculumEditorOwner = owner
+    registerEditorFor(owner, bridge)
+    return
+  }
+  if (curriculumEditorOwner === owner) {
+    if (editorBridge === curriculumEditorBridge) {
+      editorBridge = null
+      editorBridgeOwner = null
+    }
+    curriculumEditorBridge = null
+    curriculumEditorOwner = null
+    curriculumEditorBusy.value = false
+    registerEditorFor(owner, null)
+  }
+}
+
+function onCurriculumEditorBusy(payload: {
+  owner: string
+  busy: boolean
+}): void {
+  if (view.value.name !== 'curriculum-editor') return
+  if (payload.owner !== curriculumEditorOwner) return
+  curriculumEditorBusy.value = payload.busy
+}
+
+function clearCurriculumState(): void {
+  curriculumEditorBusy.value = false
+  if (editorBridge === curriculumEditorBridge) {
+    editorBridge = null
+    editorBridgeOwner = null
+  }
+  curriculumEditorBridge = null
+  curriculumEditorOwner = null
+}
+
 function updateContext(next: LocalContext): void {
   context.value = next
   bootState.value = next.status === 'ready' ? 'ready' : 'uninitialized'
@@ -742,6 +805,7 @@ async function onMaintenanceRecovered(): Promise<void> {
     weeklyEditorRef.value?.resetForContext()
     listeningEditorRef.value?.resetForContext()
     listeningListRef.value?.resetForContext()
+    curriculumEditorRef.value?.resetForContext()
     resetTheme('restore')
     await reloadContext()
     maintenanceOpen.value = false
@@ -798,7 +862,10 @@ function isSettingsDraftBlocking(): boolean {
 
 async function requestLeave(
   action:
-    | { kind: 'calendar' | 'date' | 'term' | 'observations' | 'settings' }
+    | {
+        kind: 'calendar' | 'date' | 'term' | 'observations' | 'settings'
+        target_key?: string
+      }
     | { kind: 'close'; closeRequestId: string }
     | { kind: 'weekly'; target_key: string }
     | { kind: 'listening'; target_key: string },
@@ -841,6 +908,7 @@ async function goWorkbench(): Promise<'left' | 'stayed'> {
   weeklyListBusy.value = false
   clearWeeklyState()
   clearListeningState()
+  clearCurriculumState()
   view.value = { name: 'workbench' }
   return 'left'
 }
@@ -1004,6 +1072,72 @@ async function backFromListeningEditor(): Promise<void> {
       clearListeningState()
       listeningListBusy.value = false
       view.value = { name: 'listening-records', termId: listeningTermId.value }
+      return 'left'
+    },
+  )
+}
+
+function openCurriculumFromWorkbench(): void {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return
+  }
+  clearCurriculumState()
+  view.value = { name: 'curriculum-plans' }
+}
+
+async function openCurriculumFromList(
+  recordId: string,
+  isNew: boolean,
+  defaults: CurriculumContent | null,
+): Promise<void> {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return
+  }
+  await requestLeave(
+    {
+      kind: 'calendar',
+      target_key: `curriculum-editor:${recordId}`,
+    },
+    async (): Promise<'left'> => {
+      clearCurriculumState()
+      view.value = {
+        name: 'curriculum-editor',
+        recordId,
+        isNew,
+        defaults: defaults ?? undefined,
+      }
+      return 'left'
+    },
+  )
+}
+
+function openCurriculumRecord(
+  recordId: string,
+  isNew: boolean,
+  defaults: CurriculumContent | null,
+): void {
+  void openCurriculumFromList(recordId, isNew, defaults)
+}
+
+async function backFromCurriculumList(): Promise<void> {
+  await requestLeave(
+    { kind: 'calendar', target_key: 'curriculum-workbench' },
+    async (): Promise<'left'> => {
+      clearCurriculumState()
+      view.value = { name: 'workbench' }
+      return 'left'
+    },
+  )
+}
+
+async function backFromCurriculumEditor(): Promise<void> {
+  await requestLeave(
+    { kind: 'calendar', target_key: 'curriculum-list' },
+    async (): Promise<'left'> => {
+      clearCurriculumState()
+      view.value = { name: 'curriculum-plans' }
       return 'left'
     },
   )
@@ -1175,7 +1309,8 @@ async function finishClose(closeRequestId: string): Promise<'left' | 'stayed'> {
     observationsBusy.value ||
     editorBusy.value ||
     weeklyListBusy.value ||
-    weeklyEditorBusy.value
+    weeklyEditorBusy.value ||
+    curriculumEditorBusy.value
   ) {
     ElMessage.warning(
       workbenchBusy.value
@@ -1946,6 +2081,7 @@ onMounted(() => {
         @open-weekly-plans="() => void openWeeklyPlansFromWorkbench()"
         @open-observations="openObservationsFromWorkbench"
         @open-listening="(termId) => void openListeningFromWorkbench(termId)"
+        @open-curriculum="openCurriculumFromWorkbench"
         @open-settings="openSettingsView"
         @check-update="openUpdateManual"
         @reload-context="reloadContext"
@@ -1999,6 +2135,28 @@ onMounted(() => {
         @busy="onListeningEditorBusy"
         @back="() => void backFromListeningEditor()"
         @open-settings="() => void openSettingsFromListening()"
+      />
+      <CurriculumPlansView
+        v-else-if="view.name === 'curriculum-plans'"
+        :frozen="closeLocked"
+        :disabled="closeLocked || maintenanceLocked"
+        :profile-epoch="profileEpoch"
+        @back="() => void backFromCurriculumList()"
+        @open-record="openCurriculumRecord"
+      />
+      <CurriculumEditorView
+        v-else-if="view.name === 'curriculum-editor'"
+        ref="curriculumEditorRef"
+        :key="view.recordId"
+        :record-id="view.recordId"
+        :is-new="view.isNew"
+        :initial-defaults="view.defaults ?? null"
+        :frozen="closeLocked"
+        :disabled="closeLocked || maintenanceLocked"
+        :profile-epoch="profileEpoch"
+        @register-editor="registerCurriculumEditor"
+        @busy="onCurriculumEditorBusy"
+        @back="() => void backFromCurriculumEditor()"
       />
       <div v-else-if="view.name === 'weekly-plans'" class="weekly-plans-page">
         <el-button

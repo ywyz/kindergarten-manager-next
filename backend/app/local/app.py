@@ -28,6 +28,7 @@ from app.local.collaboration_proxy import (
     collaboration_router,
     create_collaboration_proxy,
 )
+from app.local.curriculum_api import curriculum_router
 from app.local.errors import LocalError
 from app.local.listening_api import listening_router
 from app.local.listening_export_api import listening_exports_router
@@ -229,6 +230,7 @@ def create_local_app(
         return _error(500, "INTERNAL_ERROR", "本地服务内部错误")
 
     app.include_router(local_router)
+    app.include_router(curriculum_router)
     app.include_router(todos_router)
     app.include_router(plans_router)
     app.include_router(exports_router)

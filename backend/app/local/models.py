@@ -3661,6 +3661,62 @@ class LocalListeningOperation(LocalBase):
     )
 
 
+# ---------------------------------------------------------------------------
+# Desktop curriculum deliberation (teacher-confirmed 2026-11-09)
+# ---------------------------------------------------------------------------
+
+
+class LocalCurriculumDeliberation(LocalBase):
+    """One saved curriculum deliberation, scoped to profile and stable class."""
+
+    __tablename__ = "local_curriculum_deliberations"
+    __table_args__ = (
+        CheckConstraint(
+            "length(id) = 36",
+            name="ck_local_curriculum_deliberations_id",
+        ),
+        CheckConstraint(
+            "typeof(version) = 'integer' AND version >= 1",
+            name="ck_local_curriculum_deliberations_version",
+        ),
+        CheckConstraint(
+            "length(content_hash) = 64",
+            name="ck_local_curriculum_deliberations_hash",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id"],
+            ["local_profile.id"],
+            name="fk_local_curriculum_deliberations_profile",
+        ),
+        ForeignKeyConstraint(
+            ["class_id"],
+            ["local_classes.id"],
+            name="fk_local_curriculum_deliberations_class",
+        ),
+        Index(
+            "ix_local_curriculum_deliberations_profile_class_updated",
+            "profile_id",
+            "class_id",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    class_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    activity_name: Mapped[str] = mapped_column(Text, nullable=False)
+    activity_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
 # Personal todo tables live in their own module but join the shared local
 # metadata so the single migration chain and backup fingerprints see them.
 from app.local import todo_models as _todo_models  # noqa: E402,F401
