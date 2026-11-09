@@ -585,7 +585,7 @@ def test_archive_rejects_wrong_identity_version_channel_and_head(tmp_path):
     }
     assert verify_e14_package.discover_migration_chain(
         verify_e14_package.MIGRATIONS
-    )["head_revision"] == "20261109_0017_local_curriculum_deliberations"
+    )["head_revision"] == "20261110_0018_local_curriculum_ai"
     reports = {}
     for name, mutation in cases.items():
         root = tmp_path / name
@@ -1587,12 +1587,12 @@ def test_listening_template_static_contract_is_current_and_complete():
     import verify_e14_package
 
     chain = verify_e14_package.discover_migration_chain(build_e14.MIGRATIONS_DIR)
-    assert chain["head_revision"] == "20261109_0017_local_curriculum_deliberations"
-    assert chain["head_file"] == "20261109_0017_local_curriculum_deliberations.py"
-    assert len(chain["files"]) == 17
+    assert chain["head_revision"] == "20261110_0018_local_curriculum_ai"
+    assert chain["head_file"] == "20261110_0018_local_curriculum_ai.py"
+    assert len(chain["files"]) == 18
     expected = verify_e14_package.source_migration_files(build_e14.MIGRATIONS_DIR)
     assert expected == sorted(expected)
-    assert len(expected) == 18
+    assert len(expected) == 19
     for filename in chain["files"]:
         assert (build_e14.MIGRATIONS_DIR / "versions" / filename).is_file()
     assert len(build_e14.LISTENING_TEMPLATE_DOCX) == 15

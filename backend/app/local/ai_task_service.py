@@ -97,9 +97,14 @@ SUPPORTED_CONTRACT_VERSIONS = (PACKAGE_CONTRACT_VERSION,)
 
 
 def _supports_task_contract(task_type: object, contract_version: object) -> bool:
-    """Only weekly prompt tasks may use current contract 2; daily/vision stay v1."""
-    from app.local import weekly_ai_contracts
+    """Only weekly prompt tasks may use current contract 2; the rest use v1."""
+    from app.local import curriculum_ai_contracts, weekly_ai_contracts
 
+    if isinstance(task_type, str) and task_type in curriculum_ai_contracts.TASK_TYPES:
+        return (
+            type(contract_version) is int
+            and contract_version in SUPPORTED_CONTRACT_VERSIONS
+        )
     if isinstance(task_type, str) and task_type in weekly_ai_contracts.TASK_TARGETS:
         return weekly_ai_contracts.supports_prompt_contract(
             task_type, contract_version
@@ -230,6 +235,10 @@ def require_task(
         raise LocalAiNotFound("未找到该 AI 任务")
     if source_kind == "one_to_one_listening" and (
         source_id is None or task.listening_record_id != source_id
+    ):
+        raise LocalAiNotFound("未找到该 AI 任务")
+    if source_kind == "curriculum_deliberation" and (
+        source_id is None or task.source_id != source_id
     ):
         raise LocalAiNotFound("未找到该 AI 任务")
     return task
@@ -553,6 +562,9 @@ def task_out(session: Session, task: LocalAITask) -> dict[str, Any]:
     if task.source_kind == "game_observation":
         result["source_kind"] = task.source_kind
         result["observation_id"] = task.observation_id
+    if task.source_kind == "curriculum_deliberation":
+        result["source_kind"] = task.source_kind
+        result["record_id"] = task.source_id
     if task.source_kind == "one_to_one_listening":
         result.pop("plan_id", None)
         inp = session.get(LocalAIInput, task.input_id)
@@ -843,6 +855,246 @@ def create_task(
         raise
 
 
+def _preflight_curriculum_size(
+    runtime: Any,
+    session: Session,
+    projected: Any,
+) -> None:
+    from app.local.ai_config_service import _read_config
+    from app.local import curriculum_ai_contracts
+
+    with read_scope(session):
+        state, config, _credential = _read_config(session)
+        if state is None or config is None:
+            raise LocalAiNotConfigured()
+        head, version = _current_prompt(
+            session, state.profile_id, projected.task_type
+        )
+        if version is None:
+            raise LocalStorageError("个人指导缺失")
+        bundle = session.get(
+            LocalPromptBundle,
+            (
+                projected.task_type,
+                version.contract_version,
+                version.based_default_revision,
+            ),
+        )
+        if bundle is None:
+            raise LocalStorageError("提示词包缺失")
+        guidance = dict(version.guidance_json or {})
+        output_schema = dict(bundle.output_schema_json or {})
+    size = serialized_request_bytes(
+        task_type=projected.task_type,
+        contract_version=version.contract_version,
+        output_schema=output_schema,
+        guidance=guidance,
+        payload=projected.payload,
+        model=config.model or "",
+    )
+    if size > ai_transport.REQUEST_MAX_BYTES:
+        raise LocalAiInputTooLarge(
+            details={
+                "serialized_bytes": size,
+                "limit": ai_transport.REQUEST_MAX_BYTES,
+            }
+        )
+
+
+def peek_curriculum_create(
+    session: Session,
+    *,
+    record_id: object,
+    kind: object,
+    version: object,
+    content: object,
+    age_group: object = None,
+    instruction: object = None,
+    document: object = None,
+    split_task_id: object = None,
+    resolutions: object = None,
+    selection: object = None,
+    request_id: object,
+) -> dict[str, Any] | None:
+    from app.local import curriculum_ai
+    from app.local import curriculum_service
+
+    rid = curriculum_service.normalize_record_id(record_id)
+    normalized = curriculum_ai.normalize_request(
+        kind=kind,
+        version=version,
+        content=content,
+        age_group=age_group,
+        instruction=instruction,
+        document=document,
+        split_task_id=split_task_id,
+        resolutions=resolutions,
+        selection=selection,
+    )
+    return peek_operation(
+        session,
+        request_id=request_id,
+        operation_kind=OP_CREATE,
+        payload={"record_id": rid, **normalized},
+    )
+
+
+def create_curriculum_task(
+    session: Session,
+    *,
+    record_id: object,
+    kind: object,
+    version: object,
+    content: object,
+    age_group: object = None,
+    instruction: object = None,
+    document: object = None,
+    split_task_id: object = None,
+    resolutions: object = None,
+    selection: object = None,
+    request_id: object,
+    runtime: Any | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Submit one curriculum AI task through the shared task lifecycle."""
+    from app.local import curriculum_ai, curriculum_ai_contracts
+    from app.local import curriculum_service
+
+    rid = curriculum_service.normalize_record_id(record_id)
+    normalized = curriculum_ai.normalize_request(
+        kind=kind,
+        version=version,
+        content=content,
+        age_group=age_group,
+        instruction=instruction,
+        document=document,
+        split_task_id=split_task_id,
+        resolutions=resolutions,
+        selection=selection,
+    )
+    request_id_text = _normalize_request_id(request_id)
+    fingerprint = _fingerprint(
+        OP_CREATE, {"record_id": rid, **normalized}
+    )
+    with read_scope(session):
+        profile_id = _profile_id(session)
+        receipt = _find_receipt(session, profile_id, request_id_text)
+    if receipt is not None:
+        return _replay(receipt, OP_CREATE, fingerprint), False
+
+    if runtime is not None:
+        with read_scope(session):
+            context = require_context(session, date.today())
+            if context.school_class is None:
+                raise LocalStorageError("当前班级缺失")
+            projected = curriculum_ai.project_create(
+                session,
+                profile_id=profile_id,
+                class_id=context.school_class.id,
+                grade=context.school_class.grade,
+                record_id=rid,
+                request=normalized,
+            )
+        _preflight_ready(runtime, session, projected.task_type)
+        _preflight_curriculum_size(runtime, session, projected)
+
+    begin_immediate(session)
+    try:
+        profile_id = _profile_id(session)
+        receipt = _find_receipt(session, profile_id, request_id_text)
+        if receipt is not None:
+            result = _replay(receipt, OP_CREATE, fingerprint)
+            rollback(session)
+            return result, False
+        context = require_context(session, date.today())
+        if context.school_class is None:
+            raise LocalStorageError("当前班级缺失")
+        projected = curriculum_ai.project_create(
+            session,
+            profile_id=profile_id,
+            class_id=context.school_class.id,
+            grade=context.school_class.grade,
+            record_id=rid,
+            request=normalized,
+        )
+        active = session.scalars(
+            select(LocalAITask).where(
+                LocalAITask.source_kind == curriculum_ai.SOURCE_KIND,
+                LocalAITask.source_id == rid,
+                LocalAITask.task_type == projected.task_type,
+                LocalAITask.status.in_(LIVE_STATUSES),
+            )
+        ).first()
+        if active is not None:
+            raise LocalAiTaskActive(details={"task_id": active.id})
+        _require_ai_ready(session, projected.task_type)
+        now = _now()
+        input_id = new_opaque_id()
+        session.add(
+            LocalAIInput(
+                id=input_id,
+                profile_id=profile_id,
+                source_kind=curriculum_ai.SOURCE_KIND,
+                source_id=rid,
+                observation_id=None,
+                source_revision=normalized["version"],
+                daily_plan_id=None,
+                content_id=None,
+                content_version=None,
+                weekly_plan_id=None,
+                weekly_draft_id=None,
+                listening_record_id=None,
+                listening_domain=None,
+                listening_group_id=None,
+                create_operation_id=None,
+                task_type=projected.task_type,
+                target_grade=projected.target_grade,
+                input_schema_version=curriculum_ai_contracts.INPUT_SCHEMA_VERSION,
+                payload_json=projected.payload,
+                dependencies_json=projected.dependencies,
+                dependency_hash=projected.dependency_hash,
+                target_hashes_json=projected.target_hashes,
+                created_at=now,
+            )
+        )
+        task = LocalAITask(
+            id=new_opaque_id(),
+            profile_id=profile_id,
+            source_kind=curriculum_ai.SOURCE_KIND,
+            source_id=rid,
+            observation_id=None,
+            daily_plan_id=None,
+            weekly_plan_id=None,
+            listening_record_id=None,
+            listening_domain=None,
+            listening_group_id=None,
+            task_type=projected.task_type,
+            input_id=input_id,
+            status="pending",
+            reason=None,
+            current_execution_id=None,
+            generation=0,
+            runtime_meta_json=_meta(CERTAINTY_NOT_SENT),
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(task)
+        session.flush()
+        result = curriculum_ai.task_payload(session, task)
+        _store_receipt(
+            session,
+            profile_id=profile_id,
+            request_id=request_id_text,
+            operation_kind=OP_CREATE,
+            fingerprint=fingerprint,
+            result=result,
+        )
+        session.commit()
+        return result, True
+    except BaseException:
+        rollback(session)
+        raise
+
+
 # ---------------------------------------------------------------------------
 # List / detail
 # ---------------------------------------------------------------------------
@@ -887,6 +1139,7 @@ def list_tasks(
         "game_observation",
         "weekly_plan",
         "one_to_one_listening",
+        "curriculum_deliberation",
     ):
         raise LocalValidationError("source_kind 不在允许范围")
     if observation_id is not None and source_kind != "game_observation":
@@ -1138,6 +1391,13 @@ def cancel_task(
 
 
 def _revalidate_source(session: Session, task: LocalAITask) -> bool:
+    if task.source_kind == "curriculum_deliberation":
+        from app.local import curriculum_ai
+
+        try:
+            return curriculum_ai.revalidate_source(session, task)
+        except Exception:  # noqa: BLE001 - a corrupt source is not claimable
+            return False
     if task.source_kind == "class_game_config":
         if task.task_type != config_ai_contracts.TASK_TYPE:
             return False
@@ -2402,7 +2662,17 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
         return finalize_failure(session, claim, result, now)
     input_row = session.get(LocalAIInput, claim.input_id)
     try:
-        if claim.source_kind == "one_to_one_listening":
+        if claim.source_kind == "curriculum_deliberation":
+            from app.local import curriculum_ai
+
+            inp = session.get(LocalAIInput, claim.input_id)
+            if inp is None:
+                raise ValueError("input_missing")
+            parsed = ai_transport.parse_strict_json_object(text)
+            validated = curriculum_ai.validate_candidate_for_input(
+                claim.task_type, parsed, inp
+            )
+        elif claim.source_kind == "one_to_one_listening":
             from app.local import listening_ai_contracts
 
             parsed = ai_transport.parse_strict_json_object(text)

@@ -76,6 +76,17 @@ function loadCurriculum(client, fetchImpl) {
     exports: module.exports,
     require: (spec) => {
       if (spec === './client') return client
+      if (spec === './operations') {
+        return {
+          isIndeterminate: (error) => {
+            const status = error && error.status
+            if (typeof status !== 'number') return false
+            if (status === 0) return true
+            if (error.code === 'AI_EXECUTOR_UNAVAILABLE') return false
+            return status >= 500
+          },
+        }
+      }
       throw new Error(`unexpected import ${spec}`)
     },
     console,
@@ -219,6 +230,7 @@ async function mountEditor({
       'element-plus': { ElMessage: messages, ElMessageBox: box },
       '../leave': {},
       './CurriculumExportDialog.vue': { default: {} },
+      './CurriculumAiDialog.vue': { default: {} },
       '../curriculum': curriculum,
     },
     {
@@ -388,6 +400,7 @@ function mountDialog({ host, curriculum, preview, disabled = false }) {
       JSON.stringify({
         expected_version: 3,
         content: content({ activity_name: '新' }),
+        document: null,
       }),
     )
     return {
@@ -840,6 +853,36 @@ function mountDialog({ host, curriculum, preview, disabled = false }) {
   assert.equal(calls.filter((call) => call.method === 'POST').length, 1)
   ok('new draft uses defaults and creates version 1 on explicit save')
 }
+async function mountAiDialog({
+  curriculum,
+  client,
+  props = {},
+  box = boxStub(),
+  messages = messageStub(),
+}) {
+  const built = loadSfc(
+    'views/CurriculumAiDialog.vue',
+    {
+      'element-plus': { ElMessage: messages, ElMessageBox: box },
+      '../curriculum': curriculum,
+    },
+    {
+      open: true,
+      recordId: 'rec-1',
+      mode: 'review',
+      version: 3,
+      content: content({ lesson_original: '原稿正文' }),
+      document: null,
+      profileEpoch: 1,
+      defaultAgeGroup: 'middle',
+      selection: null,
+      disabled: false,
+      ...props,
+    },
+  )
+  return { ...built, box, messages }
+}
+
 const exportPreview = {
   id: 'rec-1',
   version: 4,
@@ -1050,6 +1093,19 @@ const exportPreview = {
   )
   assert.match(editor, /data-d1="curriculum-latest-review"/)
   assert.match(editor, /data-d1="curriculum-use-latest-base"/)
+  assert.match(editor, /data-d1="curriculum-ai-generate"/)
+  assert.match(editor, /data-d1="curriculum-ai-edit-selection"/)
+  assert.match(editor, /data-curriculum-field="lesson_original"/)
+  const aiDialog = fs.readFileSync(
+    path.join(d1Dir, 'views/CurriculumAiDialog.vue'),
+    'utf8',
+  )
+  assert.match(aiDialog, /data-d1="curriculum-ai-questions"/)
+  assert.match(aiDialog, /data-d1="curriculum-ai-adopt-reason"/)
+  assert.match(aiDialog, /data-d1="curriculum-ai-stale"/)
+  assert.match(aiDialog, /data-d1="curriculum-ai-drafts"/)
+  assert.match(aiDialog, /data-d1="curriculum-ai-document"/)
+  assert.match(editor, /data-d1="curriculum-ai-edit-whole"/)
   const dialog = fs.readFileSync(
     path.join(d1Dir, 'views/CurriculumExportDialog.vue'),
     'utf8',
@@ -1065,4 +1121,590 @@ const exportPreview = {
   ok('workbench entry, routes and native preview wiring are present')
 }
 
+
+// AI selection uses JS UTF-16 ranges and patches never touch the header.
+{
+  const { client } = makeClient()
+  const curriculum = loadCurriculum(client)
+  const emoji = '🙂a🙂b'
+  const captured = curriculum.captureCurriculumSelection(
+    content({ process_original: emoji }),
+    'process_original',
+    2,
+    3,
+  )
+  assert.equal(captured.error, '')
+  assert.equal(captured.selection.text, 'a')
+  assert.equal(captured.selection.start, 2)
+  assert.equal(captured.selection.end, 3)
+  assert.match(
+    curriculum.validateCurriculumSelection(
+      content({ process_original: '🙂A🙂b' }),
+      captured.selection,
+    ),
+    /不一致/,
+  )
+  const whole = curriculum.wholeCurriculumSelection(
+    content({ process_original: emoji }),
+    'process_original',
+  )
+  assert.equal(whole.start, 0)
+  assert.equal(whole.end, emoji.length)
+
+  const patched = curriculum.applyCurriculumAiPatch(
+    content({
+      goals_original: '原目标',
+      goals_status: '',
+      goals_adjustment: '',
+      preparation_original: '原准备',
+      preparation_status: 'adjusted',
+    }),
+    {
+      activity_name: '表头',
+      goals_adjustment: '新目标调整',
+      preparation_status: 'adjusted',
+      unknown_field: '忽略',
+    },
+  )
+  assert.equal(
+    JSON.stringify(patched.ignoredHeaderFields),
+    JSON.stringify(['activity_name']),
+  )
+  assert.equal(patched.content.activity_name, '')
+  assert.equal(patched.content.goals_status, 'adjusted')
+  assert.equal(patched.content.preparation_status, 'adjusted')
+  ok('emoji selection and header-safe AI patch')
+}
+
+// A reason-only or process-only patch never changes unrelated statuses.
+{
+  const { client } = makeClient()
+  const curriculum = loadCurriculum(client)
+  const base = content({
+    goals_original: '原目标',
+    goals_status: 'unchanged',
+    goals_adjustment: '老师待核对的调整',
+    preparation_original: '原准备',
+    preparation_status: 'adjusted',
+    preparation_adjustment: '准备调整',
+    process_original: '原过程',
+    reason: '原理由',
+  })
+  const reasonOnly = curriculum.applyCurriculumAiPatch(base, {
+    reason: '新理由',
+  })
+  assert.equal(reasonOnly.content.goals_status, 'unchanged')
+  assert.equal(reasonOnly.content.preparation_status, 'adjusted')
+  assert.equal(reasonOnly.content.goals_adjustment, '老师待核对的调整')
+  assert.equal(
+    JSON.stringify(reasonOnly.entries.map((entry) => entry.field)),
+    JSON.stringify(['reason']),
+  )
+  const processOnly = curriculum.applyCurriculumAiPatch(base, {
+    process_original: '新过程',
+  })
+  assert.equal(processOnly.content.goals_status, 'unchanged')
+  assert.equal(processOnly.content.preparation_status, 'adjusted')
+  assert.equal(
+    JSON.stringify(processOnly.entries.map((entry) => entry.field)),
+    JSON.stringify(['process_original']),
+  )
+  const cleared = curriculum.applyCurriculumAiPatch(
+    content({
+      goals_original: '原目标',
+      goals_status: 'adjusted',
+      goals_adjustment: '原调整',
+    }),
+    { goals_adjustment: '' },
+  )
+  assert.equal(cleared.content.goals_status, 'unchanged')
+  assert.equal(
+    JSON.stringify(cleared.entries.map((entry) => entry.field)),
+    JSON.stringify(['goals_status', 'goals_adjustment']),
+  )
+  const explicit = curriculum.applyCurriculumAiPatch(
+    content({
+      goals_original: '原目标',
+      goals_status: 'adjusted',
+      goals_adjustment: '原调整',
+    }),
+    { goals_adjustment: '新调整', goals_status: 'unchanged' },
+  )
+  assert.equal(explicit.content.goals_status, 'unchanged')
+  assert.equal(
+    JSON.stringify(explicit.entries.map((entry) => entry.field)),
+    JSON.stringify(['goals_status', 'goals_adjustment']),
+  )
+  ok('reason/process-only patches preserve status; status changes are previewed')
+}
+// AI bodies keep the selected UTF-16 range and the review split identity.
+{
+  const { client } = makeClient()
+  const curriculum = loadCurriculum(client)
+  const emoji = '🙂a🙂b'
+  const captured = curriculum.captureCurriculumSelection(
+    content({ process_original: emoji }),
+    'process_original',
+    2,
+    3,
+  )
+  const editBody = curriculum.buildCurriculumAiEditBody({
+    requestId: 'req-edit',
+    version: 3,
+    content: content({ process_original: emoji }),
+    document: { version: 1 },
+    ageGroup: 'middle',
+    instruction: '把 a 改成 A',
+    selection: captured.selection,
+  })
+  assert.equal(editBody.kind, 'edit')
+  assert.equal(editBody.instruction, '把 a 改成 A')
+  assert.equal(editBody.selection.start, 2)
+  assert.equal(editBody.selection.end, 3)
+  assert.equal(editBody.selection.text, 'a')
+
+  const reviewBody = curriculum.buildCurriculumAiReviewBody({
+    requestId: 'req-review',
+    version: 3,
+    content: content(),
+    document: null,
+    splitTaskId: 'split-1',
+    resolutions: [{ id: 'q1', section: 'process' }],
+    instruction: '本次意见',
+  })
+  assert.equal(reviewBody.split_task_id, 'split-1')
+  assert.equal(reviewBody.instruction, '本次意见')
+  assert.equal(
+    JSON.stringify(reviewBody.resolutions),
+    JSON.stringify([{ id: 'q1', section: 'process' }]),
+  )
+
+  const snapshot = curriculum.captureCurriculumAiSnapshot({
+    recordId: 'rec-1',
+    version: 3,
+    content: content({ goals_original: '目标' }),
+    document: { version: 1 },
+    profileEpoch: 1,
+  })
+  assert.equal(
+    curriculum.curriculumAiSnapshotEquals(
+      snapshot,
+      curriculum.captureCurriculumAiSnapshot({
+        recordId: 'rec-1',
+        version: 3,
+        content: content({ goals_original: '目标' }),
+        document: { version: 1 },
+        profileEpoch: 1,
+      }),
+    ),
+    true,
+  )
+  assert.equal(
+    curriculum.curriculumAiSnapshotEquals(
+      snapshot,
+      curriculum.captureCurriculumAiSnapshot({
+        recordId: 'rec-1',
+        version: 3,
+        content: content({ goals_original: '目标变了' }),
+        document: { version: 1 },
+        profileEpoch: 1,
+      }),
+    ),
+    false,
+  )
+  ok('AI edit/review bodies and snapshots')
+}
+// Review questions block review submission until every attribution is confirmed.
+{
+  const { client, calls } = makeClient()
+  const curriculum = loadCurriculum(client)
+  const reviewBodies = []
+  client.postHandler = async (url, body) => {
+    assert.equal(
+      url,
+      '/api/local/curriculum-deliberations/rec-1/ai/tasks',
+    )
+    if (body.kind === 'split') {
+      return {
+        id: 'split-1',
+        status: 'succeeded',
+        reason: null,
+        candidate: {
+          kind: 'split',
+          patch: { goals_original: '整理后的目标' },
+          document: null,
+          questions: [
+            {
+              id: 'q1',
+              source_id: 's1',
+              quote: '这段原文',
+              question: '这段属于哪里？',
+              section: null,
+            },
+          ],
+          status: 'proposed',
+          reason_suggestion: '',
+        },
+      }
+    }
+    if (body.kind === 'review') {
+      reviewBodies.push(body)
+      return {
+        id: 'review-1',
+        status: 'succeeded',
+        reason: null,
+        candidate: {
+          kind: 'review',
+          patch: {
+            lesson_original: '整理后的全文',
+            lesson_revised: '二次稿全文',
+            goals_adjustment: 'AI 调整',
+            reason: '建议说明调整理由',
+          },
+          document: { version: 1, sections: ['goals'] },
+          questions: [
+            {
+              id: 'rq1',
+              source_id: 's1',
+              quote: '核对原文',
+              question: '请核对目标',
+              section: 'goals',
+            },
+          ],
+          status: 'proposed',
+          reason_suggestion: '',
+        },
+      }
+    }
+    throw new Error(`unexpected kind ${body.kind}`)
+  }
+  const d = await mountAiDialog({ curriculum, client })
+  assert.equal(d.state.ageGroup.value, 'middle')
+  await d.state.submitSplit()
+  assert.equal(d.state.stage.value, 'questions')
+  assert.equal(d.state.questions.value.length, 1)
+  const before = reviewBodies.length
+  await d.state.continueReview()
+  assert.equal(reviewBodies.length, before)
+  assert.match(d.state.errorText.value, /归属/)
+  d.state.setResolution('q1', 'process')
+  await d.state.continueReview()
+  assert.equal(reviewBodies.length, before)
+  assert.match(d.state.errorText.value, /核对此项归属/)
+  d.state.setQuestionConfirmed('q1', true)
+  await d.state.continueReview()
+  assert.equal(reviewBodies.length, before + 1)
+  assert.equal(reviewBodies[0].split_task_id, 'split-1')
+  assert.equal(
+    JSON.stringify(reviewBodies[0].resolutions),
+    JSON.stringify([{ id: 'q1', section: 'process' }]),
+  )
+  assert.equal(d.state.stage.value, 'candidate')
+  assert.equal(
+    d.state.candidate.value.patch.reason,
+    '建议说明调整理由',
+  )
+  assert.equal(d.state.candidate.value.reason_suggestion, '')
+  assert.equal(
+    d.state.candidateResultContent.value.lesson_original,
+    '整理后的全文',
+  )
+  assert.equal(
+    d.state.candidateResultContent.value.lesson_revised,
+    '二次稿全文',
+  )
+  assert.ok(
+    d.state.candidatePreview.value.entries.some(
+      (entry) => entry.field === 'reason',
+    ),
+  )
+  d.state.adoptCandidate('patch')
+  d.state.adoptCandidate('reason')
+  const adoptEmits = d.emitted.filter((args) => args[0] === 'adopt')
+  assert.equal(adoptEmits.length, 1)
+  assert.equal(adoptEmits[0][1].mode, 'patch')
+  assert.equal(
+    adoptEmits[0][1].patch.reason,
+    '建议说明调整理由',
+  )
+  assert.equal(adoptEmits[0][1].reasonSuggestion, '')
+  d.props.content = {
+    ...d.props.content,
+    process_original: '老师正在改的内容',
+  }
+  await tick()
+  assert.equal(d.state.stale.value, true)
+  const emitsBefore = d.emitted.filter((args) => args[0] === 'adopt').length
+  d.state.adoptCandidate('patch')
+  assert.equal(
+    d.emitted.filter((args) => args[0] === 'adopt').length,
+    emitsBefore,
+  )
+  assert.ok(d.state.candidate.value)
+  assert.match(d.state.errorText.value, /当前输入已变化/)
+  assert.equal(d.state.questions.value[0].quote, '这段原文')
+  assert.equal(
+    d.state.splitCandidate.value.patch.goals_original,
+    '整理后的目标',
+  )
+  ok('AI review blocks questions, separates reason, and keeps stale candidate')
+}
+// An edit task submits the exact emoji-aware UTF-16 selection.
+{
+  const { client } = makeClient()
+  const curriculum = loadCurriculum(client)
+  let editBody = null
+  client.postHandler = async (url, body) => {
+    editBody = body
+    return {
+      id: 'edit-1',
+      status: 'succeeded',
+      reason: null,
+      candidate: {
+        kind: 'edit',
+        patch: { process_original: '🙂a🙂b 改' },
+        document: { version: 1 },
+        questions: [],
+        status: 'proposed',
+        reason_suggestion: '独立理由',
+      },
+    }
+  }
+  const emoji = '🙂a🙂b'
+  const d = await mountAiDialog({
+    curriculum,
+    client,
+    props: {
+      mode: 'edit',
+      content: content({ process_original: emoji }),
+      selection: {
+        field: 'process_original',
+        start: 2,
+        end: 3,
+        text: 'a',
+      },
+    },
+  })
+  d.state.instruction.value = '把 a 改成 A'
+  await d.state.submitEdit()
+  assert.equal(editBody.kind, 'edit')
+  assert.equal(editBody.selection.start, 2)
+  assert.equal(editBody.selection.end, 3)
+  assert.equal(editBody.selection.text, 'a')
+  assert.equal(editBody.instruction, '把 a 改成 A')
+  assert.equal(d.state.stage.value, 'candidate')
+  assert.equal(
+    d.state.candidate.value.patch.process_original,
+    '🙂a🙂b 改',
+  )
+  assert.equal(d.state.candidate.value.reason_suggestion, '独立理由')
+  d.state.adoptCandidate('patch')
+  d.state.adoptCandidate('reason')
+  const adoptEmits = d.emitted.filter((args) => args[0] === 'adopt')
+  assert.equal(adoptEmits.length, 2)
+  assert.equal(adoptEmits[0][1].mode, 'patch')
+  assert.equal(adoptEmits[1][1].mode, 'reason')
+  assert.equal(adoptEmits[1][1].reasonSuggestion, '独立理由')
+  ok('AI edit submits exact emoji UTF-16 selection and keeps reason separate')
+}
+// Unknown acceptance keeps the requester and only explicit same-id retry runs.
+{
+  const { client } = makeClient()
+  const curriculum = loadCurriculum(client)
+  const bodies = []
+  let postCount = 0
+  client.postHandler = async (url, body) => {
+    bodies.push(body)
+    postCount += 1
+    if (postCount === 1) throw new ApiError(0, 'unknown')
+    return {
+      id: 'split-1',
+      status: 'failed',
+      reason: 'provider_error',
+      candidate: null,
+    }
+  }
+  const d = await mountAiDialog({ curriculum, client })
+  await d.state.submitSplit()
+  assert.equal(postCount, 1)
+  assert.ok(d.state.pendingSubmit.value)
+  assert.equal(
+    d.state.pendingSubmit.value.body.request_id,
+    bodies[0].request_id,
+  )
+  await tick()
+  assert.equal(postCount, 1)
+  await d.state.retryPendingSubmit()
+  assert.equal(postCount, 2)
+  assert.equal(bodies[1].request_id, bodies[0].request_id)
+  assert.equal(d.state.pendingSubmit.value, null)
+  ok('unknown acceptance keeps request id and never auto-resends')
+}
+// A late task status after reset cannot apply a candidate.
+{
+  const { client } = makeClient()
+  const curriculum = loadCurriculum(client)
+  let resolveTask = null
+  client.postHandler = async () => ({
+    id: 'task-late',
+    status: 'pending',
+    reason: null,
+    candidate: null,
+  })
+  client.getHandler = async () =>
+    new Promise((resolve) => {
+      resolveTask = resolve
+    })
+  const d = await mountAiDialog({ curriculum, client })
+  await d.state.submitSplit()
+  assert.equal(d.state.task.value.status, 'pending')
+  const query = d.state.queryTask()
+  await tick()
+  assert.equal(d.state.polling.value, true)
+  d.state.reset()
+  resolveTask({
+    id: 'task-late',
+    status: 'succeeded',
+    reason: null,
+    candidate: {
+      kind: 'split',
+      patch: { goals_original: '迟到候选' },
+      document: null,
+      questions: [],
+      status: 'proposed',
+      reason_suggestion: '',
+    },
+  })
+  await query
+  assert.equal(d.state.candidate.value, null)
+  assert.equal(d.state.stage.value, 'config')
+  ok('late task status after reset cannot apply a candidate')
+}
+// Editor adoption applies patch+document locally, rejects header changes,
+// keeps reason separate, and writes document only on explicit save.
+{
+  const { client, calls } = makeClient()
+  const curriculum = loadCurriculum(client)
+  let server = {
+    id: 'rec-1',
+    version: 3,
+    content: content({ activity_name: '活动', goals_original: '原目标' }),
+    document: { version: 1, sections: ['goals'] },
+    updated_at: '2026-11-10T10:00:00',
+  }
+  let saveBody = null
+  client.getHandler = async (url) => {
+    if (url === '/api/local/curriculum-deliberations/rec-1') {
+      return clone(server)
+    }
+    throw new Error(`unexpected GET ${url}`)
+  }
+  client.postHandler = async (url, body) => {
+    assert.ok(
+      url.endsWith('/api/local/curriculum-deliberations/rec-1/save'),
+    )
+    saveBody = body
+    server = {
+      id: 'rec-1',
+      version: body.expected_version + 1,
+      content: body.content,
+      document: body.document,
+      updated_at: '2026-11-10T11:00:00',
+    }
+    return clone(server)
+  }
+  const h = await mountEditor({ curriculum, client })
+  assert.equal(
+    JSON.stringify(h.state.document.value),
+    JSON.stringify({ version: 1, sections: ['goals'] }),
+  )
+  assert.equal(h.state.isDirty.value, false)
+  const snapshot = curriculum.captureCurriculumAiSnapshot({
+    recordId: 'rec-1',
+    version: h.state.version.value,
+    content: h.state.form.value,
+    document: h.state.document.value,
+    profileEpoch: 1,
+  })
+  const postsBefore = calls.filter((call) => call.method === 'POST').length
+  h.state.onAiAdopt({
+    mode: 'patch',
+    patch: { activity_name: '表头', goals_adjustment: 'AI 调整' },
+    document: { version: 2 },
+    reasonSuggestion: '独立理由',
+    snapshot,
+  })
+  assert.match(h.state.actionError.value, /表头/)
+  assert.equal(
+    calls.filter((call) => call.method === 'POST').length,
+    postsBefore,
+  )
+  h.state.onAiAdopt({
+    mode: 'patch',
+    patch: {
+      goals_adjustment: 'AI 调整',
+    },
+    document: { version: 2 },
+    reasonSuggestion: '独立理由',
+    snapshot,
+  })
+  assert.equal(h.state.form.value.goals_status, 'adjusted')
+  assert.equal(
+    JSON.stringify(h.state.document.value),
+    JSON.stringify({ version: 2 }),
+  )
+  assert.equal(h.state.form.value.reason, '')
+  assert.equal(h.state.isDirty.value, true)
+  assert.equal(
+    calls.filter((call) => call.method === 'POST').length,
+    postsBefore,
+  )
+
+  const afterPatch = curriculum.captureCurriculumAiSnapshot({
+    recordId: 'rec-1',
+    version: h.state.version.value,
+    content: h.state.form.value,
+    document: h.state.document.value,
+    profileEpoch: 1,
+  })
+  h.state.onAiAdopt({
+    mode: 'reason',
+    patch: {},
+    document: null,
+    reasonSuggestion: '独立理由',
+    snapshot: afterPatch,
+  })
+  assert.equal(h.state.form.value.reason, '独立理由')
+  assert.equal(
+    JSON.stringify(h.state.document.value),
+    JSON.stringify({ version: 2 }),
+  )
+
+  const stale = curriculum.captureCurriculumAiSnapshot({
+    recordId: 'rec-1',
+    version: h.state.version.value,
+    content: h.state.form.value,
+    document: h.state.document.value,
+    profileEpoch: 1,
+  })
+  h.state.setField('process_original', '老师输入')
+  h.state.onAiAdopt({
+    mode: 'patch',
+    patch: { goals_original: '不应覆盖' },
+    document: null,
+    reasonSuggestion: '',
+    snapshot: stale,
+  })
+  assert.equal(h.state.form.value.goals_original, '原目标')
+  assert.match(h.state.actionError.value, /当前输入已变化/)
+
+  assert.equal(await bridgeOf(h.emitted).saveCurrent(), 'saved')
+  assert.equal(
+    JSON.stringify(saveBody.document),
+    JSON.stringify({ version: 2 }),
+  )
+  assert.equal(saveBody.content.reason, '独立理由')
+  assert.equal(saveBody.content.process_original, '老师输入')
+  ok('AI adoption applies local patch/document, keeps reason separate and rejects stale')
+}
 console.log(`curriculum: ${passed} checks passed`)

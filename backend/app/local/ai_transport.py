@@ -411,6 +411,9 @@ LISTENING_VISION_TASK_TYPES = frozenset(
     }
 )
 CONFIG_TEXT_TASK_TYPES = frozenset({"class_game_config_extract"})
+CURRICULUM_TEXT_TASK_TYPES = frozenset(
+    {"curriculum_split", "curriculum_review", "curriculum_edit"}
+)
 
 
 @dataclass(frozen=True)
@@ -458,6 +461,15 @@ CONFIG_TEXT_RESPONSE_BUDGET = ResponseBudget(
     result_ipc_max_bytes=2 * 1_048_576 + 16 * 1024,
     require_terminal=True,
 )
+CURRICULUM_TEXT_RESPONSE_BUDGET = ResponseBudget(
+    max_tokens=16_384,
+    wire_max_bytes=16 * 1024 * 1024,
+    content_max_bytes=1_048_576,
+    event_max_bytes=2 * 1_048_576 + 16 * 1024,
+    buffer_max_bytes=2 * 1_048_576 + 16 * 1024,
+    result_ipc_max_bytes=6 * 1_048_576 + 16 * 1024,
+    require_terminal=True,
+)
 
 
 def text_response_budget(
@@ -482,6 +494,10 @@ def text_response_budget(
         if source_kind is not None and source_kind != "class_game_config":
             return None
         return CONFIG_TEXT_RESPONSE_BUDGET
+    if task_type in CURRICULUM_TEXT_TASK_TYPES:
+        if source_kind is not None and source_kind != "curriculum_deliberation":
+            return None
+        return CURRICULUM_TEXT_RESPONSE_BUDGET
     return None
 
 
@@ -1456,6 +1472,8 @@ __all__ = [
     "TLS_INVALID",
     "UNKNOWN",
     "AUTH",
+    "CURRICULUM_TEXT_RESPONSE_BUDGET",
+    "CURRICULUM_TEXT_TASK_TYPES",
     "DAILY_TEXT_TASK_TYPES",
     "DEFAULT_TEXT_RESPONSE_BUDGET",
     "DETAIL",

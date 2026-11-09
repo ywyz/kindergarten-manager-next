@@ -10,14 +10,23 @@ import {
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { LeaveEditor } from '../leave'
 import CurriculumExportDialog from './CurriculumExportDialog.vue'
+import CurriculumAiDialog from './CurriculumAiDialog.vue'
 import {
+  CURRICULUM_AI_EDIT_FIELDS,
   CURRICULUM_FORM_OPTIONS,
   CURRICULUM_STATUS_OPTIONS,
+  applyCurriculumAiPatch,
   applyCurriculumConflictChoice,
+  captureCurriculumAiSnapshot,
+  captureCurriculumSelection,
   cloneCurriculumContent,
+  cloneCurriculumDocument,
+  curriculumAiSnapshotEquals,
   curriculumConflicts,
   curriculumContentEquals,
+  curriculumDocumentEquals,
   curriculumErrorMessage,
+  curriculumFieldLabel,
   curriculumValidationErrors,
   emptyCurriculumContent,
   formatCurriculumUpdatedAt,
@@ -28,8 +37,13 @@ import {
   newCurriculumRecordId,
   previewCurriculumDeliberation,
   saveCurriculumDeliberation,
+  validateCurriculumSelection,
+  wholeCurriculumSelection,
+  type CurriculumAiAdoptPayload,
+  type CurriculumAiSelection,
   type CurriculumConflict,
   type CurriculumContent,
+  type CurriculumDocument,
   type CurriculumExportPreview,
   type CurriculumRecord,
   type CurriculumSaveOutcome,
@@ -39,6 +53,7 @@ const props = defineProps<{
   recordId: string
   isNew: boolean
   initialDefaults?: CurriculumContent | null
+  defaultAgeGroup?: string
   frozen?: boolean
   disabled?: boolean
   profileEpoch?: number
@@ -55,6 +70,8 @@ const currentOwner = ref(
 )
 const form = ref<CurriculumContent>(emptyCurriculumContent())
 const baseline = ref<CurriculumContent>(emptyCurriculumContent())
+const document = ref<CurriculumDocument | null>(null)
+const baselineDocument = ref<CurriculumDocument | null>(null)
 const version = ref(0)
 const updatedAt = ref('')
 const persisted = ref(false)
@@ -66,6 +83,7 @@ const conflictNotice = ref('')
 const pendingUnknown = ref<{
   expectedVersion: number
   content: CurriculumContent
+  document: CurriculumDocument | null
 } | null>(null)
 const savePromise = ref<Promise<CurriculumSaveOutcome> | null>(null)
 const editEpoch = ref(0)
@@ -79,24 +97,44 @@ const exportBusy = ref(false)
 const previewSeq = ref(0)
 const latestSnapshot = ref<CurriculumRecord | null>(null)
 const showLatestDetails = ref(false)
+const aiOpen = ref(false)
+const aiKind = ref<'review' | 'edit'>('review')
+const aiSelection = ref<CurriculumAiSelection | null>(null)
+const aiBusy = ref(false)
+const lastSelections = ref<Record<string, CurriculumAiSelection>>({})
+const lastSelectionField = ref('')
+const wholeField = ref('lesson_original')
 const composing = ref(false)
 let compositionWaiters: Array<() => void> = []
 
 const canEdit = computed(() => !props.frozen && !props.disabled)
 const isDirty = computed(
-  () => loaded.value && !curriculumContentEquals(form.value, baseline.value),
+  () =>
+    loaded.value &&
+    (!curriculumContentEquals(form.value, baseline.value) ||
+      !curriculumDocumentEquals(document.value, baselineDocument.value)),
 )
 const conflicts = computed(() => curriculumConflicts(form.value))
 const pageBusy = computed(
-  () => savePromise.value !== null || exportBusy.value,
+  () => savePromise.value !== null || exportBusy.value || aiBusy.value,
 )
 const canMutate = computed(() => canEdit.value && !pageBusy.value)
 const statusText = computed(() => {
   if (loadError.value) return '读取失败'
+  if (aiBusy.value) return 'AI 生成中'
   if (pendingUnknown.value) return '保存结果待核对'
   if (isDirty.value) return '有未保存修改'
   if (persisted.value) return '已保存'
   return '新草稿'
+})
+const lastSelectionSummary = computed(() => {
+  const field = lastSelectionField.value
+  const selection = field ? lastSelections.value[field] : null
+  if (!selection) return '尚未在正文中选择文字'
+  const text = selection.text || '（空栏）'
+  return `${curriculumFieldLabel(field)} · ${
+    text.length > 40 ? `${text.slice(0, 40)}…` : text
+  }`
 })
 const latestDetailFields = computed(() => {
   const value = latestSnapshot.value?.content
@@ -167,6 +205,7 @@ async function load(): Promise<void> {
   previewPending.value = false
   try {
     let content: CurriculumContent
+    let nextDocument: CurriculumDocument | null = null
     let nextVersion = 0
     let nextUpdatedAt = ''
     let nextPersisted = false
@@ -182,6 +221,7 @@ async function load(): Promise<void> {
       const record = await getCurriculumDeliberation(props.recordId)
       if (seq !== loadSeq.value || generation !== lifecycle.value) return
       content = record.content
+      nextDocument = record.document
       nextVersion = record.version
       nextUpdatedAt = record.updated_at
       nextPersisted = true
@@ -189,6 +229,8 @@ async function load(): Promise<void> {
     if (seq !== loadSeq.value || generation !== lifecycle.value) return
     form.value = content
     baseline.value = cloneCurriculumContent(content)
+    document.value = cloneCurriculumDocument(nextDocument)
+    baselineDocument.value = cloneCurriculumDocument(nextDocument)
     version.value = nextVersion
     updatedAt.value = nextUpdatedAt
     persisted.value = nextPersisted
@@ -281,21 +323,27 @@ async function saveInternal(
   }
   if (
     curriculumContentEquals(form.value, baseline.value) &&
+    curriculumDocumentEquals(document.value, baselineDocument.value) &&
     (persisted.value || !forceNew)
   ) {
     return 'unchanged'
   }
   const snapshot = cloneCurriculumContent(form.value)
+  const snapshotDocument = cloneCurriculumDocument(document.value)
   const expectedVersion = version.value
   try {
     const result = await saveCurriculumDeliberation(
       props.recordId,
       expectedVersion,
       snapshot,
+      snapshotDocument,
     )
     if (generation !== lifecycle.value) return 'indeterminate'
+    const savedDocument = cloneCurriculumDocument(result.document)
     version.value = result.version
     baseline.value = snapshot
+    document.value = savedDocument
+    baselineDocument.value = cloneCurriculumDocument(savedDocument)
     updatedAt.value = result.updated_at
     persisted.value = true
     actionError.value = ''
@@ -313,6 +361,7 @@ async function saveInternal(
       pendingUnknown.value = {
         expectedVersion,
         content: snapshot,
+        document: snapshotDocument,
       }
       actionError.value =
         '保存结果未知：已保留输入；请重试原保存或核对已保存内容'
@@ -342,10 +391,13 @@ async function retryUnknownSave(): Promise<void> {
         props.recordId,
         pending.expectedVersion,
         pending.content,
+        pending.document,
       )
       if (generation !== lifecycle.value) return 'indeterminate'
       version.value = result.version
       baseline.value = pending.content
+      document.value = cloneCurriculumDocument(result.document)
+      baselineDocument.value = cloneCurriculumDocument(result.document)
       updatedAt.value = result.updated_at
       persisted.value = true
       pendingUnknown.value = null
@@ -390,10 +442,13 @@ async function checkUnknownSaved(): Promise<void> {
     if (generation !== lifecycle.value) return
     if (
       latest.version >= pending.expectedVersion + 1 &&
-      curriculumContentEquals(latest.content, pending.content)
+      curriculumContentEquals(latest.content, pending.content) &&
+      curriculumDocumentEquals(latest.document, pending.document)
     ) {
       version.value = latest.version
       baseline.value = pending.content
+      document.value = cloneCurriculumDocument(latest.document)
+      baselineDocument.value = cloneCurriculumDocument(latest.document)
       updatedAt.value = latest.updated_at
       persisted.value = true
       pendingUnknown.value = null
@@ -462,6 +517,7 @@ async function useLatestAsBase(): Promise<void> {
   }
   version.value = latest.version
   baseline.value = cloneCurriculumContent(latest.content)
+  baselineDocument.value = cloneCurriculumDocument(latest.document)
   updatedAt.value = latest.updated_at
   persisted.value = true
   pendingUnknown.value = null
@@ -500,6 +556,8 @@ async function adoptLatest(): Promise<void> {
   }
   form.value = cloneCurriculumContent(latest.content)
   baseline.value = cloneCurriculumContent(latest.content)
+  document.value = cloneCurriculumDocument(latest.document)
+  baselineDocument.value = cloneCurriculumDocument(latest.document)
   version.value = latest.version
   updatedAt.value = latest.updated_at
   persisted.value = true
@@ -515,6 +573,157 @@ async function adoptLatest(): Promise<void> {
 
 function closeLatestReview(): void {
   latestSnapshot.value = null
+}
+
+function setFieldSelection(
+  field: string,
+  start: number,
+  end: number,
+): string {
+  const captured = captureCurriculumSelection(
+    form.value,
+    field,
+    start,
+    end,
+  )
+  if (captured.selection) {
+    lastSelections.value = {
+      ...lastSelections.value,
+      [field]: captured.selection,
+    }
+    lastSelectionField.value = field
+  }
+  return captured.error
+}
+
+function rememberSelectionEvent(event: Event): void {
+  const target = event.target as {
+    selectionStart?: number
+    selectionEnd?: number
+    closest?: (selector: string) => Element | null
+  } | null
+  if (
+    !target ||
+    typeof target.selectionStart !== 'number' ||
+    typeof target.selectionEnd !== 'number' ||
+    typeof target.closest !== 'function'
+  ) {
+    return
+  }
+  const holder = target.closest(
+    '[data-curriculum-field]',
+  ) as HTMLElement | null
+  const field = holder?.dataset.curriculumField ?? ''
+  if (!field) return
+  setFieldSelection(field, target.selectionStart, target.selectionEnd)
+}
+
+function openEditAiFromSelection(): void {
+  if (!canMutate.value) return
+  if (!lastSelectionField.value) {
+    ElMessage.warning('请先在正文中选择要修改的文字，或使用「整栏修改」')
+    return
+  }
+  openEditAi(lastSelectionField.value)
+}
+
+function rememberSelection(field: string, event: Event): void {
+  const target = event.target as HTMLTextAreaElement | null
+  if (!target || typeof target.selectionStart !== 'number') return
+  setFieldSelection(field, target.selectionStart, target.selectionEnd)
+}
+
+function openReviewAi(): void {
+  if (!canMutate.value) return
+  if (!form.value.lesson_original.trim()) {
+    ElMessage.warning('请先在「添加原稿教案」粘贴正文，再生成审议建议')
+    return
+  }
+  aiKind.value = 'review'
+  aiSelection.value = null
+  aiOpen.value = true
+}
+
+function openEditAi(field: string, whole = false): void {
+  if (!canMutate.value) return
+  const selection = whole
+    ? wholeCurriculumSelection(form.value, field)
+    : lastSelections.value[field] ?? null
+  if (!selection) {
+    ElMessage.warning('请先在正文中选择要修改的文字，或使用「整栏修改」')
+    return
+  }
+  if (!whole && selection.text === '') {
+    ElMessage.warning('请选择要修改的文字，或使用「整栏修改」')
+    return
+  }
+  const error = validateCurriculumSelection(form.value, selection)
+  if (error) {
+    ElMessage.warning(error)
+    return
+  }
+  aiKind.value = 'edit'
+  aiSelection.value = selection
+  aiOpen.value = true
+}
+
+function selectWholeAndEdit(field: string): void {
+  openEditAi(field, true)
+}
+
+function onAiOpen(value: boolean): void {
+  aiOpen.value = value
+  if (!value) {
+    aiBusy.value = false
+    aiSelection.value = null
+  }
+}
+
+function onAiBusy(value: boolean): void {
+  aiBusy.value = value
+}
+
+function onAiAdopt(payload: CurriculumAiAdoptPayload): void {
+  if (!loaded.value || !canEdit.value) return
+  const current = captureCurriculumAiSnapshot({
+    recordId: props.recordId,
+    version: version.value,
+    content: form.value,
+    document: document.value,
+    profileEpoch: props.profileEpoch ?? 0,
+  })
+  if (!curriculumAiSnapshotEquals(payload.snapshot, current)) {
+    actionError.value =
+      '当前输入已变化：候选保留，但不能采用；请重新生成或重新对照'
+    return
+  }
+  if (payload.mode === 'patch' || payload.mode === 'both') {
+    const applied = applyCurriculumAiPatch(form.value, payload.patch)
+    if (applied.ignoredHeaderFields.length > 0) {
+      actionError.value = '候选试图修改表头，已拒绝采用；请重新生成'
+      return
+    }
+    form.value = applied.content
+    document.value = cloneCurriculumDocument(payload.document)
+  }
+  if (payload.mode === 'reason' || payload.mode === 'both') {
+    const reason = payload.reasonSuggestion
+    if (reason.trim() === '') return
+    form.value = { ...form.value, reason }
+  }
+  editEpoch.value += 1
+  aiOpen.value = false
+  aiBusy.value = false
+  aiSelection.value = null
+  invalidatePreview()
+  actionError.value = ''
+  ElMessage.success(
+    payload.mode === 'reason'
+      ? '已采用理由建议，尚未保存；请核对后保存'
+      : payload.mode === 'both'
+        ? '已采用候选修改和理由建议，尚未保存；请核对后保存'
+        : '已采用候选修改，尚未保存；请核对后保存',
+  )
 }
 
 async function manualSave(): Promise<void> {
@@ -629,10 +838,17 @@ watch(
 
 const bridge: LeaveEditor = {
   isDirty: () =>
-    isDirty.value || pendingUnknown.value !== null || exportBusy.value,
+    isDirty.value ||
+    pendingUnknown.value !== null ||
+    exportBusy.value ||
+    aiBusy.value,
   identity: () => `${props.recordId}:${editEpoch.value}`,
   settle: settleComposition,
   saveCurrent: async () => {
+    if (aiBusy.value) {
+      actionError.value = 'AI 任务正在生成或结果待核对：请先处理后再保存或离开'
+      return 'failed'
+    }
     if (exportBusy.value) {
       actionError.value = 'Word 导出进行中：请等待结果后再保存或离开'
       return 'failed'
@@ -646,6 +862,13 @@ const bridge: LeaveEditor = {
         message:
           actionError.value ||
           '课程审议保存结果待核对：请先重试原保存或核对已保存内容',
+      }
+    }
+    if (aiBusy.value) {
+      return {
+        kind: 'material',
+        message:
+          '课程审议 AI 任务正在生成或结果待核对：请先完成或放弃原请求后再离开',
       }
     }
     if (exportBusy.value) {
@@ -708,6 +931,14 @@ function resetForContext(): void {
   editEpoch.value = 0
   form.value = emptyCurriculumContent()
   baseline.value = emptyCurriculumContent()
+  document.value = null
+  baselineDocument.value = null
+  aiOpen.value = false
+  aiBusy.value = false
+  aiSelection.value = null
+  lastSelections.value = {}
+  lastSelectionField.value = ''
+  wholeField.value = 'lesson_original'
   releaseComposition()
   const previous = currentOwner.value
   currentOwner.value = `curriculum:${props.recordId}:${
@@ -750,6 +981,10 @@ defineExpose({
     class="curriculum-editor"
     @compositionstart="onCompositionStart"
     @compositionend="onCompositionEnd"
+    @select.capture="rememberSelectionEvent"
+    @mouseup.capture="rememberSelectionEvent"
+    @keyup.capture="rememberSelectionEvent"
+    @blur.capture="rememberSelectionEvent"
   >
     <div class="topbar">
       <div>
@@ -942,6 +1177,59 @@ defineExpose({
         </div>
       </el-card>
 
+      <el-card shadow="never" class="block" data-d1="curriculum-ai-review">
+        <template #header>AI 审议建议</template>
+        <p class="muted">
+          先粘贴原稿教案，再生成。候选只作预览，明确采用后才进入保存；未知受理不会自动重发。
+        </p>
+        <el-button
+          type="primary"
+          data-d1="curriculum-ai-generate"
+          :disabled="!canMutate || !form.lesson_original.trim()"
+          @click="openReviewAi"
+        >
+          生成审议建议
+        </el-button>
+        <span v-if="!form.lesson_original.trim()" class="muted">
+          请先在「添加原稿教案」粘贴正文
+        </span>
+        <div class="ai-selection-row">
+          <el-button
+            size="small"
+            data-d1="curriculum-ai-edit-selection"
+            :disabled="!canMutate"
+            @click="openEditAiFromSelection"
+          >
+            让 AI 修改这里
+          </el-button>
+          <span class="muted" data-d1="curriculum-ai-selection-summary">
+            {{ lastSelectionSummary }}
+          </span>
+        </div>
+        <div class="ai-selection-row">
+          <el-select
+            v-model="wholeField"
+            style="width: 240px"
+            data-d1="curriculum-ai-whole-field"
+          >
+            <el-option
+              v-for="item in CURRICULUM_AI_EDIT_FIELDS"
+              :key="item.field"
+              :label="item.label"
+              :value="item.field"
+            />
+          </el-select>
+          <el-button
+            size="small"
+            data-d1="curriculum-ai-edit-whole"
+            :disabled="!canMutate || !wholeField"
+            @click="selectWholeAndEdit(wholeField)"
+          >
+            整栏修改
+          </el-button>
+        </div>
+      </el-card>
+
       <el-card shadow="never" class="block">
         <template #header>基本信息</template>
         <div class="form-grid">
@@ -1056,6 +1344,7 @@ defineExpose({
               :rows="7"
               :model-value="form.goals_original"
               data-d1="curriculum-goals-original"
+              data-curriculum-field="goals_original"
               :disabled="!canEdit"
               @update:model-value="
                 setField('goals_original', $event)
@@ -1089,6 +1378,7 @@ defineExpose({
                 :rows="7"
                 :model-value="form.goals_adjustment"
                 data-d1="curriculum-goals-adjustment"
+              data-curriculum-field="goals_adjustment"
                 :disabled="!canEdit"
                 @update:model-value="
                   setField('goals_adjustment', $event)
@@ -1115,6 +1405,7 @@ defineExpose({
               :rows="7"
               :model-value="form.preparation_original"
               data-d1="curriculum-preparation-original"
+              data-curriculum-field="preparation_original"
               :disabled="!canEdit"
               @update:model-value="
                 setField('preparation_original', $event)
@@ -1148,6 +1439,7 @@ defineExpose({
                 :rows="7"
                 :model-value="form.preparation_adjustment"
                 data-d1="curriculum-preparation-adjustment"
+              data-curriculum-field="preparation_adjustment"
                 :disabled="!canEdit"
                 @update:model-value="
                   setField('preparation_adjustment', $event)
@@ -1174,6 +1466,7 @@ defineExpose({
               :rows="10"
               :model-value="form.process_original"
               data-d1="curriculum-process-original"
+              data-curriculum-field="process_original"
               :disabled="!canEdit"
               @update:model-value="
                 setField('process_original', $event)
@@ -1187,6 +1480,7 @@ defineExpose({
               :rows="10"
               :model-value="form.process_adjustment"
               data-d1="curriculum-process-adjustment"
+              data-curriculum-field="process_adjustment"
               :disabled="!canEdit"
               @update:model-value="
                 setField('process_adjustment', $event)
@@ -1203,6 +1497,7 @@ defineExpose({
           :rows="4"
           :model-value="form.reason"
           data-d1="curriculum-reason"
+              data-curriculum-field="reason"
           :disabled="!canEdit"
           @update:model-value="setField('reason', $event)"
         />
@@ -1218,6 +1513,7 @@ defineExpose({
               :rows="10"
               :model-value="form.lesson_original"
               data-d1="curriculum-lesson-original"
+              data-curriculum-field="lesson_original"
               :disabled="!canEdit"
               @update:model-value="
                 setField('lesson_original', $event)
@@ -1231,6 +1527,7 @@ defineExpose({
               :rows="10"
               :model-value="form.lesson_revised"
               data-d1="curriculum-lesson-revised"
+              data-curriculum-field="lesson_revised"
               :disabled="!canEdit"
               @update:model-value="
                 setField('lesson_revised', $event)
@@ -1240,6 +1537,22 @@ defineExpose({
         </div>
       </el-card>
     </template>
+
+    <CurriculumAiDialog
+      :open="aiOpen"
+      :record-id="props.recordId"
+      :mode="aiKind"
+      :version="version"
+      :content="form"
+      :document="document"
+      :profile-epoch="props.profileEpoch ?? 0"
+      :default-age-group="props.defaultAgeGroup ?? ''"
+      :selection="aiSelection"
+      :disabled="!canEdit"
+      @update:open="onAiOpen"
+      @busy="onAiBusy"
+      @adopt="onAiAdopt"
+    />
 
     <CurriculumExportDialog
       :open="exportOpen"
@@ -1309,6 +1622,13 @@ defineExpose({
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 6px;
+}
+.ai-selection-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
 }
 .latest-details {
   display: flex;

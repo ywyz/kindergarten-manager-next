@@ -1,21 +1,24 @@
 # 当前任务
 
-## 课程审议填写、保存与 Word 导出
+## 课程审议 AI
 
-2026-11-09 在 `codex/teaching-documents-design` 实施，基线为在线协作提交 `cd2b1a1`。按教师提供的空表和脱敏成品核对填写流程、两处教案材料和 Word 版式。教师已确认材料只粘贴正文，成品 Word 只生成有正文的附页。产品范围见[桌面课程审议功能设计](../specs/desktop-curriculum-deliberation.md)。
+2026-11-10 在 `codex/teaching-documents-design` 接续，基线为 `1cc91c1`。教师确认首次生成与局部修改流程，授权两个原生开发会话使用 DeepSeek V4.1 Flash max 实现，通过独立复核后提交并推送本分支。流程与模型指导见[课程审议 AI 提示词](../specs/desktop-curriculum-deliberation.md#课程审议-ai-提示词草案)。
 
-教师已确认活动形式单选、活动时间只填日期、主表缺项集中提示一次后仍可导出。四份合成 Word 校样已在本机 Word 逐页核对，教师确认版式并授权实施。自制教玩具另按教师资料排期。教师已决定取消人脸识别选题。
+原填写、保存与 Word 版式沿用[产品规格](../specs/desktop-curriculum-deliberation.md)。基线已通过 Windows 11 WebView2 保存重开、剪贴板粘贴、原生另存为及 Word 逐页核查，证据见[上一轮独立核查](../bootstrap/desktop-curriculum-deliberation-review.md)。自制教玩具另按教师资料排期，人脸识别选题已取消。
 
-本轮源码、WebView2 填写与重启重开、剪贴板粘贴、原生另存为和 Word 逐页核查通过。四种实际导出分别为 1、2、2、6 页，每页都有内容。同素材对照恢复了确认校样的 1、2、2、4 页和长稿续页位置。详见[独立核查](../bootstrap/desktop-curriculum-deliberation-review.md)。下一门槛为 Certum 证书到位后签名、制作 EXE 安装包并进行安装包测试。
+课程审议 AI 已通过隔离源码、旧库升级、WebView2 和实际 Word 验收。核查及回修见[课程审议 AI 独立核查](../bootstrap/desktop-curriculum-deliberation-review.md#2026-11-10-课程审议-ai-独立核查)。后续在 Certum 证书到位后接续签名、制作 EXE 安装包和安装包测试。
 
-### 当轮分工与接口
+### 当轮分工与验收
 
-- OpenCode 使用 build／`opencode-go/deepseek-v4.1-flash#max`。独占 `backend/app/local/app.py`、`backend/app/local/models.py`、新增 `backend/app/local/curriculum_*.py`、`backend/app/services/word_export_curriculum.py`、本地迁移 0017 及对应后端测试。因本地迁移新增而需更新的精确 head 断言由 OpenCode 处理。
-- Command Go 使用 `deepseek/deepseek-v4.1-flash`／max。独占 `frontend/src/d1/App.vue`、`frontend/src/d1/views/WorkbenchView.vue`、新增 `frontend/src/d1/curriculum.ts`、`frontend/src/d1/views/Curriculum*.vue`、`frontend/src/d1/d1.curriculum*.test.mjs` 及前端测试入口。复用本机会话、编辑离开保护和现有 `save_docx`／`get_save_result`。
-- 课程审议本机 API 前缀为 `/api/local/curriculum-deliberations`。GET 根返回 `{records,defaults}`，记录列表项为 `{id,version,activity_name,activity_date,updated_at}`，`defaults` 为新表完整内容。GET `/{id}` 返回 `{id,version,content,updated_at}`。POST `/{id}/save` 接 `{expected_version,content}`，返回同一记录形状。ID 由前端为新草稿生成 UUID，首次版本基准为 0，成功版本为 1。保存对当前版本原子比较，同一未决保存可核对或以同 ID 和内容重试。已保存记录按本机档案和稳定班级 ID 查询。
-- `content` 的普通字段为字符串，空字段使用空字符串。字段为 `activity_name, activity_form, activity_form_other, institution, class_name, child_count, organizer, recorder, activity_date, goals_original, goals_status, goals_adjustment, preparation_original, preparation_status, preparation_adjustment, process_original, process_adjustment, reason, lesson_original, lesson_revised`。人数用空或非负整数字符串。日期空或 ISO 日期。活动形式为空或 `collective, area, parent_child, small_group, other`，修订状态为空或 `unchanged, adjusted`。正文保留换行及编号。选不变与实际调整文字冲突须经老师处理。
-- GET `/{id}/export-preview?version=N` 返回 `{id,version,activity_name,activity_date,missing,appendices}`。`missing` 为集中展示的中文缺项名称，`appendices` 为按顺序出现的 `original`／`revised`。GET `/{id}/word?version=N` 返回 DOCX。两个入口均校验记录版本，过期版本返回 409 并重新核对。预览后表单被改动时，先重新保存和预览。DOCX 按已确认的版式由代码生成，原始空表及教师成品留在本地。
-- Codex 独立复核源码、迁移、填写与重开、原生另存为和实际 Word 四种组合。发现问题交原会话修复，停写后复验。通过后普通提交并推送本分支。Certum 证书到位后再签名、制作 EXE 安装包和测试。
+- OpenCode 续接原生会话 `ses_e3f562e7cffe11GIhP5weE4IQu`，使用 build／`opencode-go/deepseek-v4.1-flash#max`，负责课程审议本机任务、模型输入输出、候选组装、兼容存储、必要的共用 AI 接入和后端测试。
+- Command Go 续接原生会话 `588fd8a9-65b6-4866-9409-a8dfdb1c4459`，使用 `deepseek/deepseek-v4.1-flash`／max，负责课程审议编辑器、候选预览与采用、选段、保存重开和对应前端测试，沿用现有原生 Word 另存为。
+- Codex 维护接口及正式文档。用隔离合成数据和假供应商，独立验证原稿覆盖与归属核对、审议建议与二次稿、选段与联动、陈旧候选、保存重开、Word 正文和四种附页组合。问题交原责任会话回修，停写后复验。通过后普通提交并推送当前分支。Certum 证书到位后再签名、制作 EXE 安装包和测试。
+
+### 接口边界
+
+- 课程审议本机前缀为 `/api/local/curriculum-deliberations`。原记录、版本保存、导出预览和 Word 接口继续使用。记录读取和保存增加可选 `document`，用于保存后重开时定位正文对应段。20 个表单字段继续作为 Word 正文来源。
+- POST `/{id}/ai/tasks` 接 `request_id, kind, version, content`，按步骤可加 `age_group, instruction, document, split_task_id, resolutions, selection`。`kind` 为 `split, review, edit`。选区含 `field, start, end, text`，按浏览器 UTF-16 偏移绑定原文。原任务 ID 可按 GET `/{id}/ai/tasks/{task_id}` 查询。相同请求 ID 和内容只受理一次。
+- 成功候选含 `kind, patch, document, questions, status, reason_suggestion`。拆分待核对项经老师明确归属后才进入审议。采用候选核对记录、档案代次、已保存版本和本次草稿。理由单独采用。导出按明确保存的版本读取，过期预览重新核对。
 
 ## 在线协作合成联调
 

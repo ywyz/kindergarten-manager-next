@@ -2154,6 +2154,7 @@ onMounted(() => {
         :frozen="closeLocked"
         :disabled="closeLocked || maintenanceLocked"
         :profile-epoch="profileEpoch"
+        :default-age-group="context?.class?.grade ?? ''"
         @register-editor="registerCurriculumEditor"
         @busy="onCurriculumEditorBusy"
         @back="() => void backFromCurriculumEditor()"

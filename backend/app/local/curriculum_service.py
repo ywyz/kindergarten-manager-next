@@ -36,6 +36,9 @@ class CurriculumVersionConflict(LocalError):
     message = "课程审议记录已被其他保存更新，请重新核对"
 
 
+_DOCUMENT_UNSET = object()
+
+
 def normalize_record_id(value: object) -> str:
     if not isinstance(value, str):
         raise LocalValidationError("记录 ID 必须是 UUID")
@@ -83,6 +86,7 @@ def _record_payload(row: LocalCurriculumDeliberation) -> dict[str, Any]:
         "id": row.id,
         "version": row.version,
         "content": curriculum_content.stored_content(row.content_json),
+        "document": row.document_json,
         "updated_at": row.updated_at.isoformat(),
     }
 
@@ -137,11 +141,17 @@ def save_record(
     record_id: object,
     expected_version: object,
     content: object,
+    document: object = _DOCUMENT_UNSET,
 ) -> dict[str, Any]:
     rid = normalize_record_id(record_id)
     expected = _expected_version(expected_version)
     canonical = curriculum_content.normalize_content(content)
     digest = curriculum_content.content_hash(canonical)
+    supplied_document = (
+        _DOCUMENT_UNSET
+        if document is _DOCUMENT_UNSET
+        else curriculum_content.normalize_document(document)
+    )
     activity_date = (
         date.fromisoformat(canonical["activity_date"])
         if canonical["activity_date"]
@@ -166,6 +176,11 @@ def save_record(
                 activity_date=activity_date,
                 content_json=canonical,
                 content_hash=digest,
+                document_json=(
+                    None
+                    if supplied_document is _DOCUMENT_UNSET
+                    else supplied_document
+                ),
                 created_at=now,
                 updated_at=now,
             )
@@ -178,6 +193,11 @@ def save_record(
         if row.profile_id != profile_id or row.class_id != class_id:
             raise CurriculumNotFound()
 
+        effective_document = (
+            row.document_json
+            if supplied_document is _DOCUMENT_UNSET
+            else supplied_document
+        )
         if row.version == expected:
             result = session.execute(
                 update(LocalCurriculumDeliberation)
@@ -193,6 +213,7 @@ def save_record(
                     activity_date=activity_date,
                     content_json=canonical,
                     content_hash=digest,
+                    document_json=effective_document,
                     updated_at=now,
                 )
                 .execution_options(synchronize_session=False)
@@ -212,7 +233,11 @@ def save_record(
             session.commit()
             return result_payload
 
-        if row.version == expected + 1 and row.content_hash == digest:
+        if (
+            row.version == expected + 1
+            and row.content_hash == digest
+            and row.document_json == effective_document
+        ):
             result = _record_payload(row)
             rollback(session)
             return result

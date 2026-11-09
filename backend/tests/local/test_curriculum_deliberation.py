@@ -976,6 +976,48 @@ class CurriculumApiTests(LocalTestCase):
         self.assertNotIn("附教案：原稿", text3)
         self.assertNotIn("二次修改", text3)
 
+    def test_document_roundtrip_and_optional_save(self) -> None:
+        record_id = str(uuid.uuid4())
+        content = _content()
+        document = {
+            "schema_version": 1,
+            "kind": "split",
+            "original": {"blocks": [{"id": "b1", "text": "目标"}]},
+        }
+        status, saved = self.client.post(
+            self._url(record_id) + "/save",
+            {
+                "expected_version": 0,
+                "content": content,
+                "document": document,
+            },
+        )
+        self.assertEqual(status, 200, saved)
+        self.assertEqual(saved["document"], document)
+        status, loaded = self.client.get(self._url(record_id))
+        self.assertEqual(status, 200, loaded)
+        self.assertEqual(loaded["document"], document)
+
+        status, second = self.client.post(
+            self._url(record_id) + "/save",
+            {"expected_version": 1, "content": content},
+        )
+        self.assertEqual(status, 200, second)
+        self.assertEqual(second["version"], 2)
+        self.assertEqual(second["document"], document)
+
+        status, cleared = self.client.post(
+            self._url(record_id) + "/save",
+            {
+                "expected_version": 2,
+                "content": content,
+                "document": None,
+            },
+        )
+        self.assertEqual(status, 200, cleared)
+        self.assertEqual(cleared["version"], 3)
+        self.assertIsNone(cleared["document"])
+
     def test_word_renders_after_leaving_the_read_transaction(self) -> None:
         record_id = str(uuid.uuid4())
         status, saved = self.client.post(
@@ -1054,7 +1096,7 @@ class CurriculumMigrationTests(LocalTestCase):
         runtime = self.make_runtime()
         self.assertEqual(
             runtime.current_revision,
-            "20261109_0017_local_curriculum_deliberations",
+            "20261110_0018_local_curriculum_ai",
         )
         db = runtime.db_path
         tables = {
@@ -1083,6 +1125,7 @@ class CurriculumMigrationTests(LocalTestCase):
                 "content_hash",
                 "created_at",
                 "updated_at",
+                "document_json",
             ],
         )
         self.assertEqual(columns["id"]["pk"], 1)

@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.local import curriculum_content, curriculum_service, profile_service
-from app.local.api import get_session
-from app.local.errors import LocalValidationError
+from app.local import (
+    ai_task_service,
+    curriculum_ai,
+    curriculum_content,
+    curriculum_service,
+    profile_service,
+)
+from app.local.api import _require_executor, get_session
+from app.local.errors import (
+    LocalAiExecutorUnavailable,
+    LocalAiNotFound,
+    LocalValidationError,
+)
 from app.local.tx import read_scope, storage_errors
 
 curriculum_router = APIRouter(
@@ -31,6 +41,22 @@ class CurriculumSaveIn(BaseModel):
 
     expected_version: int = Field(..., ge=0, strict=True)
     content: dict[str, Any]
+    document: dict[str, Any] | None = None
+
+
+class CurriculumAiTaskIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    kind: Literal["split", "review", "edit"]
+    version: int = Field(..., ge=0, strict=True)
+    content: dict[str, Any]
+    age_group: str | None = None
+    instruction: str | None = None
+    document: dict[str, Any] | None = None
+    split_task_id: str | None = None
+    resolutions: list[dict[str, Any]] | None = None
+    selection: dict[str, Any] | None = None
 
 
 def _profile_id(session: Session) -> str:
@@ -122,6 +148,84 @@ def export_curriculum_word(
     )
 
 
+@curriculum_router.post(
+    "/{record_id}/ai/tasks",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=dict[str, Any],
+)
+def create_curriculum_ai_task(
+    record_id: str,
+    data: CurriculumAiTaskIn,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    replay = None
+    with storage_errors():
+        replay = ai_task_service.peek_curriculum_create(
+            session,
+            record_id=record_id,
+            kind=data.kind,
+            version=data.version,
+            content=data.content,
+            age_group=data.age_group,
+            instruction=data.instruction,
+            document=data.document,
+            split_task_id=data.split_task_id,
+            resolutions=data.resolutions,
+            selection=data.selection,
+            request_id=data.request_id,
+        )
+    if replay is not None:
+        response.status_code = status.HTTP_200_OK
+        return replay
+    executor = _require_executor(request)
+    if getattr(executor, "is_frozen", lambda: False)():
+        raise LocalAiExecutorUnavailable()
+    with storage_errors():
+        result, created = ai_task_service.create_curriculum_task(
+            session,
+            runtime=request.app.state.runtime,
+            record_id=record_id,
+            kind=data.kind,
+            version=data.version,
+            content=data.content,
+            age_group=data.age_group,
+            instruction=data.instruction,
+            document=data.document,
+            split_task_id=data.split_task_id,
+            resolutions=data.resolutions,
+            selection=data.selection,
+            request_id=data.request_id,
+        )
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return result
+
+
+@curriculum_router.get(
+    "/{record_id}/ai/tasks/{task_id}", response_model=dict[str, Any]
+)
+def read_curriculum_ai_task(
+    record_id: str,
+    task_id: str,
+    session: Session = Depends(get_session),
+):
+    rid = curriculum_service.normalize_record_id(record_id)
+    profile_id = _profile_id(session)
+    with storage_errors():
+        with read_scope(session):
+            task = ai_task_service.require_task(
+                session,
+                task_id,
+                source_kind=curriculum_ai.SOURCE_KIND,
+                source_id=rid,
+            )
+            if task.profile_id != profile_id:
+                raise LocalAiNotFound("未找到该 AI 任务")
+            return curriculum_ai.task_payload(session, task)
+
+
 @curriculum_router.get("/{record_id}", response_model=dict[str, Any])
 def read_curriculum_deliberation(
     record_id: str,
@@ -141,14 +245,16 @@ def save_curriculum_deliberation(
     data: CurriculumSaveIn,
     session: Session = Depends(get_session),
 ):
+    arguments: dict[str, Any] = {
+        "profile_id": _profile_id(session),
+        "record_id": record_id,
+        "expected_version": data.expected_version,
+        "content": data.content,
+    }
+    if "document" in data.model_fields_set:
+        arguments["document"] = data.document
     with storage_errors():
-        return curriculum_service.save_record(
-            session,
-            profile_id=_profile_id(session),
-            record_id=record_id,
-            expected_version=data.expected_version,
-            content=data.content,
-        )
+        return curriculum_service.save_record(session, **arguments)
 
 
 __all__ = ["curriculum_router"]

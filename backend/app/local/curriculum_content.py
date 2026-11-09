@@ -177,6 +177,26 @@ def stored_content(value: object) -> dict[str, str]:
     return content
 
 
+def normalize_document(value: object) -> dict[str, Any] | None:
+    """Validate the optional local linkage document is JSON-safe and bounded."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise LocalValidationError("document 必须是对象或 null")
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        raise LocalValidationError("document 必须可序列化为 JSON") from None
+    if len(encoded.encode("utf-8")) > 1_048_576:
+        raise LocalValidationError("document 超过长度上限")
+    return json.loads(encoded)
+
+
 def content_hash(content: Mapping[str, str]) -> str:
     payload = json.dumps(
         content,
@@ -249,6 +269,7 @@ __all__ = [
     "list_summary",
     "missing_fields",
     "normalize_content",
+    "normalize_document",
     "sanitize_export_text",
     "stored_content",
 ]
