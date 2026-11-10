@@ -4,13 +4,14 @@ The driver starts on the real setup page (``local_profile`` empty), keeps the
 existing native-cancel/bad-package/wrong-password negatives, then proves the
 complete P06 path through the real Vue panel, host bridge and restore core:
 
-1. correct-password retry reaches a real preview and is cancelled with the
-   four unsubmitted setup fields unchanged;
+1. correct-password retry reaches a real preview and is cancelled with all
+   unsubmitted setup controls unchanged;
 2. a full source package is restored through the setup restore entry, the old
    window is retired and the new window shows the calendar plus its automatic
    pre-restore protection location;
 3. that automatic empty protection package is verified read-only and must be
-   exactly the pre-UI empty baseline (41 business tables, resources, profile 0);
+   exactly the pre-UI empty baseline (full current business table set,
+   resources, profile 0);
 4. the same empty package is restored from the new workbench settings entry;
    the third window returns to the setup page and the final database/resources
    must again equal the initial empty baseline.
@@ -35,7 +36,8 @@ from maintenance_lifecycle import LifecycleManager
 
 _PROTECTION_PREFIX = "恢复前保护副本："
 _PROTECTION_SUFFIX = "。自动保留，不会自动删除。"
-_BUSINESS_TABLE_COUNT = 41
+# These two check names are retained for existing report consumers.  Both
+# assertions now compare the exact current business table set, not a count.
 _SETUP_CHECKS = (
     "setup_negative_full41_unchanged",
     "setup_negative_resources_unchanged",
@@ -162,7 +164,7 @@ def _profile_count(db_path: Path) -> int:
 
 
 def _capture_fixture(runtime, data_dir: str | Path) -> dict[str, Any]:
-    """Read-only semantic baseline: full 41 tables and all managed resources."""
+    """Read-only semantic baseline: full current business tables and resources."""
     from tests.local import backup_fixture_support as fixture
 
     return {
@@ -185,6 +187,27 @@ def _tables_of(value: dict[str, Any]) -> dict[str, Any]:
     return dict(value.get("tables") or {})
 
 
+def _expected_business_tables() -> frozenset[str]:
+    """Current trusted business table names, not a historical count."""
+    from tests.local import backup_fixture_support as fixture
+
+    return frozenset(fixture._business_table_names())
+
+
+def _has_expected_tables(database: dict[str, Any]) -> bool:
+    return frozenset(_tables_of(database)) == _expected_business_tables()
+
+
+def _assert_expected_tables(database: dict[str, Any], label: str) -> None:
+    actual = frozenset(_tables_of(database))
+    expected = _expected_business_tables()
+    if actual != expected:
+        raise SetupFlowError(
+            f"{label} 数据库业务表集合不一致；"
+            f"缺少={sorted(expected - actual)}；多余={sorted(actual - expected)}"
+        )
+
+
 def _table_diff(left: dict[str, Any], right: dict[str, Any]) -> list[str]:
     left_tables = _tables_of(left)
     right_tables = _tables_of(right)
@@ -201,13 +224,9 @@ def _assert_same_database(
 ) -> None:
     if actual.get("fingerprint_sha256") != expected.get("fingerprint_sha256"):
         raise SetupFlowError(
-            f"{label} 数据库 full41 不一致；差异表={_table_diff(actual, expected)}"
+            f"{label} 数据库业务数据不一致；差异表={_table_diff(actual, expected)}"
         )
-    if len(_tables_of(actual)) != _BUSINESS_TABLE_COUNT:
-        raise SetupFlowError(
-            f"{label} 数据库表数不是 {_BUSINESS_TABLE_COUNT}: "
-            f"{len(_tables_of(actual))}"
-        )
+    _assert_expected_tables(actual, label)
 
 
 def _assert_same_resources(
@@ -434,12 +453,57 @@ def _record_failure_dom(
         checks["failure_dialog_call_count"] = len(dialog_calls)
 
 
-def _input_value(driver, key: str):
+def _form_state(driver) -> dict[str, Any]:
+    """Read the real setup controls currently shown to the teacher."""
     return driver.eval(
-        "(()=>{const e=document.querySelector('[data-d1=\""
-        + key
-        + "\"]'); if(!e) return null; const i=e.matches('input,textarea')"
-        " ? e : e.querySelector('input,textarea'); return i ? i.value : null;})()"
+        "(()=>{"
+        "const root=(key)=>document.querySelector('[data-d1=\"'+key+'\"]');"
+        "const input=(key)=>{const e=root(key); if(!e) return null;"
+        " const i=e.matches('input,textarea')?e:e.querySelector('input,textarea');"
+        " return i?i.value:null;};"
+        "const preview=root('class-name-preview');"
+        "return {"
+        "'display-name':input('display-name'),"
+        "'class-name-preview':preview?(preview.textContent||'').trim():null,"
+        "'term-name':input('term-name'),"
+        "'school-name':input('school-name')"
+        "};})()"
+    )
+
+
+def _select_setup_option(driver, key: str, label: str) -> bool:
+    """Open a real el-select and click the visible option by label."""
+    selector = f'[data-d1="{key}"]'
+    if not driver.eval(
+        "(function(){const root=document.querySelector("
+        + json.dumps(selector)
+        + "); if(!root) return false;"
+        " const target=root.querySelector('.el-select__wrapper')||root;"
+        " target.click(); return true;})()"
+    ):
+        return False
+    visible = (
+        "(()=>{const want="
+        + json.dumps(label, ensure_ascii=False)
+        + ";return [...document.querySelectorAll('.el-select-dropdown__item')]"
+        ".some(e=>{const r=e.getBoundingClientRect();const s=getComputedStyle(e);"
+        "return r.width>0&&r.height>0&&s.visibility!=='hidden'"
+        "&&s.display!=='none'&&(e.textContent||'').trim()===want;});})()"
+    )
+    try:
+        driver.wait_until(visible, what=f"{key} 下拉选项", timeout=15)
+    except Exception:  # noqa: BLE001 - caller reports the false result
+        return False
+    return bool(
+        driver.eval(
+            "(()=>{const want="
+            + json.dumps(label, ensure_ascii=False)
+            + ";const e=[...document.querySelectorAll('.el-select-dropdown__item')]"
+            ".find(x=>{const r=x.getBoundingClientRect();const s=getComputedStyle(x);"
+            "return r.width>0&&r.height>0&&s.visibility!=='hidden'"
+            "&&s.display!=='none'&&(x.textContent||'').trim()===want;});"
+            "if(!e) return false; e.click(); return true;})()"
+        )
     )
 
 
@@ -487,12 +551,6 @@ def run_setup_driver(
     for key in _SETUP_CHECKS:
         checks.setdefault(key, False)
 
-    fields = {
-        "display-name": "王老师",
-        "class-name": "中一班",
-        "term-name": "2026 年秋季学期",
-        "school-name": "合成园所",
-    }
     restore_selector = (
         '[data-d1="backup-restore-panel"] [data-d1="backup-restore"]'
     )
@@ -510,7 +568,8 @@ def run_setup_driver(
         checks["setup_visible"] = _js_visible(driver, '[data-d1="setup"]')
 
         # Capture the empty target before any setup/panel UI action.  The
-        # empty runtime has 41 business tables, no profile and no resources.
+        # empty runtime has the full current business table set, no profile
+        # and no resources.
         baseline = _capture_fixture(runtime, data_dir)
         baseline_profile_count = _profile_count(runtime.db_path)
         checks["setup_initial_profile_count"] = baseline_profile_count
@@ -524,23 +583,28 @@ def run_setup_driver(
                 "files": len(baseline["resources"].get("files") or []),
             },
         }
-        if len(_tables_of(baseline["database"])) != _BUSINESS_TABLE_COUNT:
-            raise SetupFlowError(
-                "初始空档案不是 41 表: "
-                f"{len(_tables_of(baseline['database']))}"
-            )
+        _assert_expected_tables(baseline["database"], "初始空档案")
         if baseline_profile_count != 0:
             raise SetupFlowError(
                 f"首次设置前已有档案: {baseline_profile_count}"
             )
 
-        for selector, value in fields.items():
-            assert _js_visible_enabled(driver, f'[data-d1="{selector}"]'), selector
-            assert _js_set_input(driver, f'[data-d1="{selector}"]', value), selector
-        before = {key: _input_value(driver, key) for key in fields}
+        assert _js_visible_enabled(driver, '[data-d1="display-name"]')
+        assert _js_set_input(driver, '[data-d1="display-name"]', "王老师")
+        assert _js_visible_enabled(driver, '[data-d1="class-number"]')
+        assert _select_setup_option(driver, "class-number", "一班")
+        assert _js_visible_enabled(driver, '[data-d1="term-name"]')
+        assert _js_set_input(driver, '[data-d1="term-name"]', "2026 年秋季学期")
+        assert _js_visible_enabled(driver, '[data-d1="school-name"]')
+        assert _js_set_input(driver, '[data-d1="school-name"]', "合成园所")
+        before = _form_state(driver)
         checks["setup_form_before"] = before
-        for key, value in fields.items():
-            assert before[key] == value, {key: before[key]}
+        assert before == {
+            "display-name": "王老师",
+            "class-name-preview": "中一班",
+            "term-name": "2026 年秋季学期",
+            "school-name": "合成园所",
+        }, before
         assert _js_visible_enabled(driver, '[data-d1="setup-restore"]')
         assert _js_click_visible(driver, '[data-d1="setup-restore"]')
         driver.wait_until(
@@ -676,7 +740,7 @@ def run_setup_driver(
             timeout=30,
         )
 
-        after = {key: _input_value(driver, key) for key in fields}
+        after = _form_state(driver)
         checks["setup_form_after"] = after
         checks["setup_form_preserved"] = before == after
         checks["setup_still_visible"] = _js_visible(driver, '[data-d1="setup"]')
@@ -710,8 +774,7 @@ def run_setup_driver(
         checks["setup_negative_full41_unchanged"] = (
             negative["database"].get("fingerprint_sha256")
             == baseline["database"].get("fingerprint_sha256")
-            and len(_tables_of(negative["database"]))
-            == _BUSINESS_TABLE_COUNT
+            and _has_expected_tables(negative["database"])
         )
         checks["setup_negative_resources_unchanged"] = (
             negative["resources"].get("fingerprint_sha256")
@@ -844,7 +907,7 @@ def run_setup_driver(
             and first_verified["resources"].get("fingerprint_sha256")
             == baseline["resources"].get("fingerprint_sha256")
             and first_verified["profile_count"] == 0
-            and first_verified["table_count"] == _BUSINESS_TABLE_COUNT
+            and _has_expected_tables(first_verified["database"])
         )
         if not empty_ok:
             raise SetupFlowError(
@@ -999,7 +1062,7 @@ def run_setup_driver(
             == baseline["database"].get("fingerprint_sha256")
             and final["resources"].get("fingerprint_sha256")
             == baseline["resources"].get("fingerprint_sha256")
-            and len(_tables_of(final["database"])) == _BUSINESS_TABLE_COUNT
+            and _has_expected_tables(final["database"])
         )
         checks["setup_empty_resources_restored"] = (
             final["resources"].get("fingerprint_sha256")
@@ -1030,7 +1093,7 @@ def run_setup_driver(
             and second_verified["resources"].get("fingerprint_sha256")
             == second_source_baseline["resources"].get("fingerprint_sha256")
             and second_verified["profile_count"] >= 1
-            and second_verified["table_count"] == _BUSINESS_TABLE_COUNT
+            and _has_expected_tables(second_verified["database"])
         )
         checks["setup_second_protection_source_full"] = second_source_ok
         if not second_source_ok:

@@ -512,7 +512,16 @@ EXPECTED_DERIVATIVE_PURPOSES = ("ai", "export")
 # 600"; a larger cap still allows tuning without becoming unbounded.
 MAX_CAPACITY_PHOTOS = 2000
 
-_SPLIT_CANDIDATE = {
+SPLIT_RAW_LESSON = (
+    "活动主题：秋天的树叶\n"
+    "活动目标：观察树叶的形状与颜色\n"
+    "活动准备：各种树叶、放大镜\n"
+    "活动重点：有序观察\n"
+    "活动难点：比较异同\n"
+    "活动过程：\n"
+    "一、导入\n二、观察\n三、比较"
+)
+SPLIT_CANDIDATE = {
     "group_activity": {
         "theme": "秋天的树叶",
         "objectives": "观察树叶的形状与颜色",
@@ -986,8 +995,65 @@ def _insert_old_photo_links(con, observation_id, profile_id, version_id,
          _sha256_bytes(specs[0]["derivatives"][0]["payload"])),
     )
 
-def create_old_0007_fixture(db_path: Path, data_dir: Path) -> None:
-    """Create the frozen synthetic 0007 archive without any new ORM writes."""
+def _align_old_prompt_bundles(conn: sqlite3.Connection) -> None:
+    """Opt-in: align synthetic 0007 defaults with this build's manifest.
+
+    This deliberately rewrites frozen 0007 prompt-bundle content/hashes.  It is
+    only for current weekly-AI business tests that need normal registration of
+    this build's weekly prompts; it must never be used by original 0007 package
+    fidelity or restore tests.  The default fixture leaves every frozen row
+    byte-for-byte untouched.
+    """
+    from app.local.prompt_bundles import PROMPT_BUNDLE_MANIFEST
+
+    for item in PROMPT_BUNDLE_MANIFEST:
+        conn.execute(
+            "UPDATE local_prompt_bundles SET input_schema_json = ?, "
+            "output_schema_json = ?, guidance_defaults_json = ?, "
+            "bundle_hash = ? WHERE task_type = ? AND contract_version = ? "
+            "AND default_revision = ?",
+            (
+                json.dumps(
+                    item["input_schema_json"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    item["output_schema_json"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    item["guidance_defaults_json"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                item["bundle_hash"],
+                item["task_type"],
+                item["contract_version"],
+                item["default_revision"],
+            ),
+        )
+
+
+def create_old_0007_fixture(
+    db_path: Path,
+    data_dir: Path,
+    *,
+    align_default_prompts: bool = False,
+) -> None:
+    """Create the frozen synthetic 0007 archive without any new ORM writes.
+
+    ``align_default_prompts=False`` (the default) preserves the original 0007
+    prompt-bundle rows and is the only mode valid for original archive/fidelity
+    and plaintext/password restore tests.  Passing ``True`` is an explicit
+    opt-in for later current-build weekly-AI business tests: it rewrites the
+    same-key default bundles to this build's manifest so the normal prompt sync
+    can register weekly prompts and backfill their personal heads.
+    """
     from alembic import command
     from app.local.migrate import alembic_config
 
@@ -1001,6 +1067,8 @@ def create_old_0007_fixture(db_path: Path, data_dir: Path) -> None:
     con = sqlite3.connect(str(db_path))
     try:
         con.executescript(old_0007_data_sql())
+        if align_default_prompts:
+            _align_old_prompt_bundles(con)
         con.commit()
     finally:
         con.close()
@@ -1317,6 +1385,59 @@ def _finalize_unknown_claim(session: Session, claim: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+def save_split_baseline(
+    session: Session,
+    runtime: Any,
+    *,
+    plan_id: str,
+    expected_content_version: int,
+    target_grade: str,
+) -> dict[str, Any]:
+    """Run the real split task/adopt path and save its content version.
+
+    The caller must have created the plan with ``SPLIT_RAW_LESSON`` so the
+    candidate is a legal cleanup of the original lesson.
+    """
+    task, created = ai_task_service.create_task(
+        session,
+        plan_id=plan_id,
+        task_type="daily_lesson_split",
+        expected_content_version=expected_content_version,
+        target_grade=target_grade,
+        request_id=_request_id(),
+    )
+    if not created:
+        raise FixtureError("the daily plan split task was not created")
+    claim = _claim_exact(session, runtime, task["id"])
+    _finalize_success_claim(session, claim, SPLIT_CANDIDATE)
+    candidate = session.scalars(
+        select(LocalAICandidate).where(LocalAICandidate.task_id == task["id"])
+    ).one()
+    preview = ai_adoption.preview_adoption(
+        session,
+        plan_id=plan_id,
+        candidate_id=candidate.id,
+        expected_content_version=expected_content_version,
+        selected_targets=["group_activity"],
+        edited_candidate=SPLIT_CANDIDATE,
+    )
+    adopted = ai_adoption.adopt(
+        session,
+        plan_id=plan_id,
+        candidate_id=candidate.id,
+        expected_content_version=expected_content_version,
+        preview_token=preview["preview_token"],
+        request_id=_request_id(),
+    )
+    if adopted["content_version"] != expected_content_version + 1:
+        raise FixtureError("daily plan split baseline did not advance the content version")
+    return {
+        "task_id": task["id"],
+        "candidate_id": candidate.id,
+        "content_version": adopted["content_version"],
+    }
+
+
 def seed_existing_runtime(
     runtime: Any,
     *,
@@ -1442,7 +1563,7 @@ def seed_existing_runtime(
         plan, created = daily_plan_service.create_or_open(
             session,
             plan_date=FIXTURE_PLAN_DATE,
-            raw_lesson_plan="原始教案：秋天的树叶（合成夹具）",
+            raw_lesson_plan=SPLIT_RAW_LESSON,
             adopted_content={
                 "group_activity": {"process": "一、导入\n二、观察"},
                 "reflection": "初始反思",
@@ -1452,41 +1573,16 @@ def seed_existing_runtime(
             raise FixtureError("the fixture daily plan unexpectedly already existed")
         plan_id = plan["id"]
 
-        task, created = ai_task_service.create_task(
+        split = save_split_baseline(
             session,
+            runtime,
             plan_id=plan_id,
-            task_type="daily_lesson_split",
             expected_content_version=1,
             target_grade=FIXTURE_CLASS_GRADE,
-            request_id=_request_id(),
         )
-        if not created:
-            raise FixtureError("the daily plan AI task was not created")
-        split_task_id = task["id"]
-        split_claim = _claim_exact(session, runtime, split_task_id)
-        _finalize_success_claim(session, split_claim, _SPLIT_CANDIDATE)
-        split_candidate = session.scalars(
-            select(LocalAICandidate).where(LocalAICandidate.task_id == split_task_id)
-        ).one()
-        split_candidate_id = split_candidate.id
-
-        preview = ai_adoption.preview_adoption(
-            session,
-            plan_id=plan_id,
-            candidate_id=split_candidate_id,
-            expected_content_version=1,
-            selected_targets=["group_activity"],
-            edited_candidate=_SPLIT_CANDIDATE,
-        )
-        adopted = ai_adoption.adopt(
-            session,
-            plan_id=plan_id,
-            candidate_id=split_candidate_id,
-            expected_content_version=1,
-            preview_token=preview["preview_token"],
-            request_id=_request_id(),
-        )
-        if adopted["content_version"] != 2:
+        split_task_id = split["task_id"]
+        split_candidate_id = split["candidate_id"]
+        if split["content_version"] != 2:
             raise FixtureError("daily plan adoption did not create version 2")
 
         current_plan = daily_plan_service.get_plan(session, plan_id=plan_id)

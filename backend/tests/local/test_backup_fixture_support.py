@@ -52,9 +52,8 @@ class BackupFixtureSupportTests(LocalTestCase):
             len(evidence.fingerprint["database"]["tables"]),
             len(LocalBase.metadata.tables),
         )
-        self.assertEqual(
-            len(LocalBase.metadata.tables), 55
-        )
+        # The dynamic metadata equality above is the meaningful invariant; a
+        # hard-coded table count goes stale whenever a new local domain lands.
         self.assertEqual(len(evidence.calendar_revision_ids), 2)
         self.assertEqual(len(evidence.class_game_revision_ids), 2)
         self.assertEqual(evidence.daily_plan_content_versions, (1, 2, 3, 4))

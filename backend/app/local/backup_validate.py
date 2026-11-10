@@ -137,14 +137,160 @@ def _normalize_sql(value: str | None) -> str:
     return result
 
 
+def _skip_sql_quoted(value: str, index: int) -> int | None:
+    """Return the index after one quoted SQL token, or None if unclosed."""
+    opener = value[index]
+    closer = "]" if opener == "[" else opener
+    index += 1
+    while index < len(value):
+        if value[index] == closer:
+            if index + 1 < len(value) and value[index + 1] == closer:
+                index += 2
+                continue
+            return index + 1
+        index += 1
+    return None
+
+
+def _sql_code_indices(value: str) -> Iterator[int]:
+    """Yield character indices outside quoted SQL tokens, in order.
+
+    The scanner is shared by the outer-parenthesis and top-level-comma
+    passes so both apply exactly the same quote/escape rules.  Any SQL comment
+    makes this optional ordering normalization refuse the text; the caller
+    then leaves the original SQL unchanged (fail closed).  This avoids
+    assigning a comment to the wrong constraint during reordering.
+    """
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char in ("'", '"', "`", "["):
+            end = _skip_sql_quoted(value, index)
+            if end is None:
+                raise ValueError("unclosed SQL quote")
+            index = end
+            continue
+        if value.startswith("--", index) or value.startswith("/*", index):
+            raise ValueError("SQL comments are not normalized")
+        yield index
+        index += 1
+
+
+def _table_body_bounds(value: str) -> tuple[int, int] | None:
+    """Find the outer CREATE TABLE parentheses outside quotes/comments."""
+    depth = 0
+    body_start: int | None = None
+    try:
+        for index in _sql_code_indices(value):
+            char = value[index]
+            if char == "(":
+                if depth == 0:
+                    body_start = index + 1
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth < 0:
+                    return None
+                if depth == 0 and body_start is not None:
+                    return body_start, index
+    except ValueError:
+        return None
+    return None
+
+
+def _split_table_items(body: str) -> list[str] | None:
+    """Split a CREATE TABLE body on top-level commas, quote/comment aware."""
+    items: list[str] = []
+    start = 0
+    depth = 0
+    try:
+        for index in _sql_code_indices(body):
+            char = body[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                if depth == 0:
+                    return None
+                depth -= 1
+            elif char == "," and depth == 0:
+                item = body[start:index].strip()
+                if not item:
+                    return None
+                items.append(item)
+                start = index + 1
+    except ValueError:
+        return None
+    if depth != 0:
+        return None
+    item = body[start:].strip()
+    if not item:
+        return None
+    items.append(item)
+    return items
+
+
+def _normalize_table_sql(table_name: str, value: str) -> str:
+    """Order only the confirmed independent named table constraints.
+
+    Migration 0012 uses ``batch_alter_table`` to rebuild
+    ``local_listening_assets``.  SQLAlchemy can emit the same named table-level
+    constraints in different orders on two standard migrations to the same
+    revision.  The table-level named constraints are independent; their
+    contents still must match exactly, and duplicate counts are preserved.
+    Every other table and every column/PRAGMA/index/quote/comment stays
+    byte-for-byte on the strict comparison path.  Any parse uncertainty leaves
+    the original text unchanged (fail closed).
+    """
+    if table_name != "local_listening_assets" or not value:
+        return value
+    bounds = _table_body_bounds(value)
+    if bounds is None:
+        return value
+    body_start, body_end = bounds
+    items = _split_table_items(value[body_start:body_end])
+    if items is None:
+        return value
+    columns: list[str] = []
+    constraints: list[str] = []
+    seen_constraint = False
+    for item in items:
+        token = item.split(None, 1)[0].casefold() if item else ""
+        if token == "constraint":
+            seen_constraint = True
+            constraints.append(item)
+            continue
+        if token in ("primary", "unique", "check", "foreign"):
+            # An unnamed table-level constraint cannot be safely reordered.
+            return value
+        if seen_constraint:
+            # The verified table puts all columns before the named
+            # constraints.  Do not silently move a column across them.
+            return value
+        columns.append(item)
+    if len(constraints) < 2:
+        return value
+    ordered = columns + sorted(constraints)
+    return (
+        value[:body_start]
+        + ", ".join(ordered)
+        + value[body_end:]
+    )
+
+
 def _schema_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
     """Capture every user object plus its PRAGMA structure.
 
-    SQLite stores the exact ``CREATE`` text it executed, so canonical and
-    backup schemas produced by the same migration revision have identical
-    normalized text.  The PRAGMA view catches a forged table whose text was
-    copied but whose actual constraints differ, and makes missing PK/FK/
-    CHECK/unique or a substituted column type visible.
+    SQLite stores the exact ``CREATE`` text it executed.  Normally the
+    canonical and backup schemas at the same revision therefore have identical
+    normalized text.  The one confirmed exception is the table rebuilt by
+    migration 0012's batch alter: SQLAlchemy may emit its independent named
+    table-level constraints in a different order.  ``_normalize_table_sql``
+    orders only those named constraints on ``local_listening_assets``; column
+    order/content, statement boundaries, comments, quotes, duplicate counts,
+    every other table, and every PRAGMA/index remain strictly compared.  The
+    PRAGMA view also catches a forged table whose text was copied but whose
+    actual constraints differ, and makes missing PK/FK/CHECK/unique or a
+    substituted column type visible.
     """
 
     rows = connection.execute(
@@ -171,7 +317,9 @@ def _schema_snapshot(connection: sqlite3.Connection) -> dict[str, Any]:
                 "BACKUP_DB_SCHEMA_UNTRUSTED", "备份数据库含未知内部对象"
             )
         if kind == "table":
-            tables[name] = _normalize_sql(sql)
+            tables[name] = _normalize_table_sql(
+                name, _normalize_sql(sql)
+            )
         elif kind == "index":
             indexes[name] = _normalize_sql(sql)
         else:

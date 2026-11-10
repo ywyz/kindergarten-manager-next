@@ -21,7 +21,6 @@ from tests.local.backup_fixture_support import (
 )
 from tests.local.support import initialize_body
 
-HEAD = "20261107_0010_local_listening_ai"
 OLD_0008 = "20261102_0008_local_weekly_ai"
 
 
@@ -55,8 +54,7 @@ def _initials(runtime: LocalRuntime):
 def test_new_database_has_six_listening_tables_and_constraints(tmp_path) -> None:
     runtime = _runtime(tmp_path)
     try:
-        assert runtime.current_revision == HEAD
-        assert len(LocalBase.metadata.tables) == 56
+        assert runtime.current_revision == head_revision()
         db = runtime.db_path
         connection = sqlite3.connect(str(db))
         try:
@@ -67,7 +65,9 @@ def test_new_database_has_six_listening_tables_and_constraints(tmp_path) -> None
                     "AND name NOT LIKE 'sqlite_%'"
                 ).fetchall()
             }
-            assert len(tables - {"local_alembic_version"}) == 56
+            assert tables - {"local_alembic_version"} == set(
+                LocalBase.metadata.tables
+            )
             assert {
                 "local_listening_records",
                 "local_listening_domains",
@@ -173,7 +173,7 @@ def test_0008_upgrade_preserves_old_rows_and_resources(tmp_path) -> None:
     try:
         assert connection.execute(
             "SELECT version_num FROM local_alembic_version"
-        ).fetchone() == (HEAD,)
+        ).fetchone() == (head_revision(),)
         for table in (
             "local_listening_records",
             "local_listening_domains",

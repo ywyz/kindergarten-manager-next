@@ -22,6 +22,7 @@ from app.local import (
     profile_service,
 )
 from app.local.backup_snapshot import SnapshotService
+from app.local.migrate import head_revision
 from app.local.normalize import normalize_initialization
 from app.local.restore_service import RestoreCore
 from app.local.restore_types import MaintenanceHooks
@@ -29,6 +30,14 @@ from app.local.runtime import LocalRuntime
 from tests.local import backup_fixture_support as fixture
 from tests.local import listening_fixture_support as listening_fixture
 from tests.local.support import BACKEND_DIR, initialize_body, worker_env
+
+# Current listening date rules accept only canonical YYYY-MM / YYYY-MM-DD
+# inside the fixture term; the old free-text labels are not a valid save path.
+_OBSERVATION_MONTH = (
+    f"{fixture.FIXTURE_TERM_START.year:04d}-"
+    f"{fixture.FIXTURE_TERM_START.month:02d}"
+)
+_WORK_DATE = fixture.FIXTURE_TERM_START.replace(day=2).isoformat()
 
 
 class _Hooks(MaintenanceHooks):
@@ -115,7 +124,7 @@ def _fill_domain(runtime: LocalRuntime, profile_id: str, record: dict,
             request_id=str(uuid.uuid4()),
             expected_revision=record["revision"],
             patch={
-                "observation_date": "9月1日 上午",
+                "observation_date": _OBSERVATION_MONTH,
                 "adult_count": "2",
                 "child_age": "4岁",
                 "goal": f"{domain}目标",
@@ -126,7 +135,7 @@ def _fill_domain(runtime: LocalRuntime, profile_id: str, record: dict,
                 "groups": [
                     {
                         "group_id": group_id,
-                        "work_date": "9月2日",
+                        "work_date": _WORK_DATE,
                         "listening_text": text,
                     }
                 ],
@@ -258,7 +267,7 @@ def test_full_listening_backup_restore_and_cold_open(tmp_path) -> None:
         service.create(package, password=None, cancel=threading.Event())
         verified = service.verify(package, password=None, cancel=threading.Event())
         assert verified.source_revision == verified.target_revision == (
-            "20261107_0010_local_listening_ai"
+            head_revision()
         )
         listening_entries = [
             entry
@@ -318,7 +327,7 @@ def test_full_listening_backup_restore_and_cold_open(tmp_path) -> None:
         target.dispose()
 
     cold = _cold_open(target_root)
-    assert cold["revision"] == "20261107_0010_local_listening_ai"
+    assert cold["revision"] == head_revision()
     assert cold["profile_id"] == profile_id
     records = {record["record_id"]: record for record in cold["records"]}
     assert records[first["record_id"]] == first_snapshot["record"]
@@ -357,7 +366,7 @@ def test_old_0008_package_restores_with_empty_listening_tables(tmp_path) -> None
         )
         verified = service.verify(package, password=None, cancel=threading.Event())
         assert verified.source_revision == "20261102_0008_local_weekly_ai"
-        assert verified.target_revision == "20261107_0010_local_listening_ai"
+        assert verified.target_revision == head_revision()
         connection = sqlite3.connect(str(verified.database_path))
         try:
             for table in (
@@ -383,7 +392,7 @@ def test_old_0008_package_restores_with_empty_listening_tables(tmp_path) -> None
         try:
             assert connection.execute(
                 "SELECT version_num FROM local_alembic_version"
-            ).fetchone() == ("20261107_0010_local_listening_ai",)
+            ).fetchone() == (head_revision(),)
             assert connection.execute(
                 "SELECT display_name FROM local_profile"
             ).fetchone()[0] == "王老师"

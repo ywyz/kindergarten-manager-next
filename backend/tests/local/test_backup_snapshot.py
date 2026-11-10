@@ -56,6 +56,7 @@ from app.local.models import (
 from app.local.normalize import normalize_initialization
 from app.local.tx import begin_immediate
 from tests.local.support import LocalTestCase, initialize_body
+from tests.local.backup_fixture_support import SPLIT_RAW_LESSON, save_split_baseline
 
 
 class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
@@ -1040,7 +1041,7 @@ def _seed_ai_material(case: BackupSnapshotCase) -> str:
     plan, _created = daily_plan_service.create_or_open(
         case.session,
         plan_date=date(2026, 9, 2),
-        raw_lesson_plan="原始教案正文",
+        raw_lesson_plan=SPLIT_RAW_LESSON,
         adopted_content={
             "group_activity": {"process": "一、导入\n二、观察"},
             "reflection": "反思",
@@ -1059,132 +1060,59 @@ def _seed_ai_material(case: BackupSnapshotCase) -> str:
         request_id=str(uuid.uuid4()),
         credential_root=case.runtime.credential_root,
     )
-    statuses = ["succeeded", "failed", "outcome_unknown"]
-    for task_type, status in zip(
-        ("daily_lesson_split", "daily_process_adapt", "daily_other_activities"),
-        statuses,
+    split = save_split_baseline(
+        case.session,
+        case.runtime,
+        plan_id=plan["id"],
+        expected_content_version=1,
+        target_grade="middle",
+    )
+    assert split["content_version"] == 2
+    for task_type, outcome in (
+        ("daily_process_adapt", "failed"),
+        ("daily_other_activities", "unknown"),
     ):
-        task, _created = ai_task_service.create_task(
+        task, created = ai_task_service.create_task(
             case.session,
             plan_id=plan["id"],
             task_type=task_type,
-            expected_content_version=1,
+            expected_content_version=split["content_version"],
             target_grade="middle",
             request_id=str(uuid.uuid4()),
         )
-        task_id = task["id"]
-        row = case.session.execute(
-            text(
-                "SELECT input_id, source_id, daily_plan_id FROM local_ai_tasks "
-                "WHERE id = :id"
-            ),
-            {"id": task_id},
-        ).one()
-        input_id, source_id, daily_plan_id = row
-        config_version = case.session.execute(
-            text("SELECT current_config_version FROM local_ai_state")
-        ).scalar()
-        personal_revision = case.session.execute(
-            text(
-                "SELECT current_revision FROM local_personal_prompt_heads "
-                "WHERE profile_id = :profile AND task_type = :task_type"
-            ),
-            {"profile": case.profile.id, "task_type": task_type},
-        ).scalar()
-        bundle = case.session.execute(
-            text(
-                "SELECT contract_version, default_revision FROM local_prompt_bundles "
-                "WHERE task_type = :task_type ORDER BY contract_version, default_revision "
-                "LIMIT 1"
-            ),
-            {"task_type": task_type},
-        ).one()
-        execution_id = uuid.uuid4().hex[:20]
-        now = utc_now()
-        case.session.execute(
-            text(
-                "INSERT INTO local_ai_executions ("
-                "id, task_id, source_kind, source_id, observation_id, daily_plan_id, "
-                "input_id, task_type, generation, launch_id, permit_id, config_version, "
-                "profile_id, personal_revision, contract_version, default_revision, "
-                "state, runtime_meta_json, started_at, created_at, ended_at"
-                ") VALUES ("
-                ":id, :task_id, 'daily_plan', :source_id, NULL, :daily_plan_id, "
-                ":input_id, :task_type, 1, :launch_id, :permit_id, :config_version, "
-                ":profile_id, :personal_revision, :contract_version, :default_revision, "
-                ":state, '{}', :now, :now, :now)"
-            ),
-            {
-                "id": execution_id,
-                "task_id": task_id,
-                "source_id": source_id,
-                "daily_plan_id": daily_plan_id,
-                "input_id": input_id,
-                "task_type": task_type,
-                "launch_id": str(uuid.uuid4()),
-                "permit_id": str(uuid.uuid4()),
-                "config_version": config_version,
-                "profile_id": case.profile.id,
-                "personal_revision": personal_revision,
-                "contract_version": bundle[0],
-                "default_revision": bundle[1],
-                "state": status,
-                "now": now,
-            },
+        if not created:
+            raise AssertionError(f"task was not created: {task_type}")
+        claim = ai_task_service.claim_next(
+            case.runtime, now=utc_now(), started_ticks=1
         )
-        case.session.execute(
-            text(
-                "INSERT INTO local_ai_attempts ("
-                "id, execution_id, attempt_no, state, created_at"
-                ") VALUES (:id, :execution_id, 1, :state, :now)"
-            ),
-            {
-                "id": uuid.uuid4().hex[:20],
-                "execution_id": execution_id,
-                "state": status,
-                "now": now,
-            },
+        assert claim is not None and claim.task_id == task["id"]
+        assert ai_task_service.commit_dispatch_mark(
+            case.session, claim, utc_now()
         )
-        if status == "succeeded":
-            case.session.execute(
-                text(
-                    "INSERT INTO local_ai_candidates ("
-                    "id, profile_id, execution_id, task_id, source_kind, source_id, "
-                    "observation_id, daily_plan_id, input_id, task_type, "
-                    "contract_version, schema_version, raw_candidate_json, "
-                    "candidate_hash, created_at"
-                    ") VALUES ("
-                    ":id, :profile_id, :execution_id, :task_id, 'daily_plan', "
-                    ":source_id, NULL, :daily_plan_id, :input_id, :task_type, "
-                    ":contract_version, 1, '{}', :candidate_hash, :now)"
-                ),
+        if outcome == "failed":
+            ok = ai_task_service.finalize_failure(
+                case.session,
+                claim,
                 {
-                    "id": uuid.uuid4().hex[:20],
-                    "profile_id": case.profile.id,
-                    "execution_id": execution_id,
-                    "task_id": task_id,
-                    "source_id": source_id,
-                    "daily_plan_id": daily_plan_id,
-                    "input_id": input_id,
-                    "task_type": task_type,
-                    "contract_version": bundle[0],
-                    "candidate_hash": "e" * 64,
-                    "now": now,
+                    "kind": "not_sent",
+                    "reason": "connection_unavailable",
+                    "sent": False,
+                    "transient_not_sent": False,
                 },
+                utc_now(),
             )
-        case.session.execute(
-            text(
-                "UPDATE local_ai_tasks SET status = :status, "
-                "current_execution_id = :execution_id, runtime_meta_json = '{}', "
-                "updated_at = :now WHERE id = :id"
-            ),
-            {
-                "status": status,
-                "execution_id": execution_id,
-                "now": now,
-                "id": task_id,
-            },
-        )
+        else:
+            ok = ai_task_service.finalize_failure(
+                case.session,
+                claim,
+                {
+                    "kind": "unknown",
+                    "reason": "timeout_after_dispatch",
+                    "sent": True,
+                },
+                utc_now(),
+            )
+        assert ok
     case.session.add(
         LocalAICredential(
             id=uuid.uuid4().hex[:20],

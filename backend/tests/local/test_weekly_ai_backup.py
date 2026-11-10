@@ -17,6 +17,10 @@ from tests.local.backup_fixture_support import (
 )
 PROMPT_TABLES = {"local_prompt_bundles", "local_personal_prompt_heads",
                   "local_personal_prompt_versions"}
+# Original 0007 archive/fidelity and plaintext/password restore tests use
+# create_old_0007_fixture() with its default frozen rows.  Current-build weekly
+# AI business tests explicitly pass align_default_prompts=True; that synthetic
+# alignment is not evidence about the untouched original package.
 class _Hooks(MaintenanceHooks):
     def wait_host_idle(self, cancel) -> bool:
         return not cancel.is_set()
@@ -129,10 +133,86 @@ def test_0007_archive_migration_preserves_raw_old_rows_and_photos(tmp_path):
     finally:
         con.close()
 
-def test_0007_runtime_sync_adds_only_weekly_prompt_rows(tmp_path):
+def test_0007_original_archive_reports_prompt_bundle_conflict(tmp_path):
+    """The untouched 0007 archive keeps its old defaults; current registration
+    therefore fails closed with the known same-key/different-hash conflict."""
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
     create_old_0007_fixture(db, old)
+    connection = sqlite3.connect(str(db))
+    try:
+        original = connection.execute(
+            "SELECT bundle_hash, guidance_defaults_json "
+            "FROM local_prompt_bundles WHERE task_type = "
+            "'daily_other_activities' AND contract_version = 1 "
+            "AND default_revision = 2"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert original is not None
+    from app.local.prompt_bundles import PROMPT_BUNDLE_MANIFEST
+    current = next(
+        item for item in PROMPT_BUNDLE_MANIFEST
+        if item["task_type"] == "daily_other_activities"
+        and item["contract_version"] == 1
+        and item["default_revision"] == 2
+    )
+    assert original[0] != current["bundle_hash"]
+    current_hashes = {
+        (item["task_type"], item["contract_version"], item["default_revision"]):
+        item["bundle_hash"]
+        for item in PROMPT_BUNDLE_MANIFEST
+    }
+    connection = sqlite3.connect(str(db))
+    try:
+        old_hashes = {
+            (row[0], row[1], row[2]): row[3]
+            for row in connection.execute(
+                "SELECT task_type, contract_version, default_revision, "
+                "bundle_hash FROM local_prompt_bundles"
+            )
+        }
+    finally:
+        connection.close()
+    assert {
+        key for key in old_hashes.keys() & current_hashes.keys()
+        if old_hashes[key] != current_hashes[key]
+    } == {("daily_other_activities", 1, 2)}
+    runtime_data = tmp_path / "runtime-data"
+    _copy_old_tree(old, runtime_data)
+    runtime = LocalRuntime(runtime_data, credential_root=tmp_path / "credentials")
+    try:
+        runtime.prepare()
+        assert runtime.prompt_sync_error == "PROMPT_BUNDLE_CONFLICT"
+        connection = sqlite3.connect(str(runtime_data / "kindergarten.db"))
+        try:
+            assert connection.execute(
+                "SELECT bundle_hash, guidance_defaults_json "
+                "FROM local_prompt_bundles WHERE task_type = "
+                "'daily_other_activities' AND contract_version = 1 "
+                "AND default_revision = 2"
+            ).fetchone() == original
+            for table in (
+                "local_prompt_bundles",
+                "local_personal_prompt_heads",
+                "local_personal_prompt_versions",
+            ):
+                assert connection.execute(
+                    f"SELECT COUNT(*) FROM {table} "
+                    "WHERE task_type LIKE 'weekly_%'"
+                ).fetchone()[0] == 0
+        finally:
+            connection.close()
+    finally:
+        runtime.dispose()
+
+
+def test_0007_aligned_runtime_sync_adds_only_weekly_prompt_rows(tmp_path):
+    """Deliberately aligned synthetic 0007: current-build weekly registration is
+    normal.  This is not an original-package fidelity test."""
+    old = tmp_path / "old-data"
+    db = old / "kindergarten.db"
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     before = migration_rows(db)
     runtime_data = tmp_path / "runtime-data"
     _copy_old_tree(old, runtime_data)
@@ -143,7 +223,10 @@ def test_0007_runtime_sync_adds_only_weekly_prompt_rows(tmp_path):
         runtime.dispose()
     after = migration_rows(runtime_data / "kindergarten.db")
     _old_rows_preserved(before, after)
-    assert len(after["tables"]["local_prompt_bundles"]["rows"]) > len(
+    # The frozen archive may already carry this build's current defaults; the
+    # meaningful invariant is that no old bundle is removed and the full
+    # weekly set is registered below.
+    assert len(after["tables"]["local_prompt_bundles"]["rows"]) >= len(
         before["tables"]["local_prompt_bundles"]["rows"]
     )
     assert len(after["tables"]["local_personal_prompt_heads"]["rows"]) >= len(
@@ -217,10 +300,13 @@ def test_0007_plain_and_encrypted_packages_verify_and_restore(tmp_path):
         finally:
             target.dispose()
 
-def test_0008_restore_protection_package_round_trip(tmp_path):
+def test_0008_aligned_restore_protection_package_round_trip(tmp_path):
+    """Current weekly-AI restore protection after deliberate synthetic
+    alignment; untouched 0007 restore is covered by the default plaintext and
+    encrypted package test above."""
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
@@ -433,7 +519,7 @@ def _seed_real_adoption(runtime: LocalRuntime) -> dict:
 def test_real_adoption_manual_save_backup_and_restore(tmp_path):
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
@@ -503,7 +589,7 @@ def test_real_adoption_manual_save_backup_and_restore(tmp_path):
 def test_forged_weekly_ai_chain_is_rejected(tmp_path):
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
@@ -587,7 +673,7 @@ def test_0008_encrypted_snapshot_restores_complete_archive(tmp_path):
 def test_forged_successor_provenance_is_rejected(tmp_path):
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
@@ -721,7 +807,7 @@ def _seed_materials_adoption(runtime: LocalRuntime, *, contract_version: int = 2
 def test_real_materials_adoption_clear_confirmation_backup_restore(tmp_path):
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
@@ -853,7 +939,7 @@ def _seed_games_adoption(runtime: LocalRuntime, *, contract_version: int = 2) ->
 def test_real_games_adoption_hand_save_backup_restore(tmp_path):
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
@@ -890,7 +976,7 @@ def test_real_games_adoption_hand_save_backup_restore(tmp_path):
 def test_forged_materials_provenance_origin_is_rejected(tmp_path):
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
@@ -928,7 +1014,7 @@ def test_forged_materials_provenance_origin_is_rejected(tmp_path):
 def test_forged_origin_metadata_swap_is_rejected(tmp_path):
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
@@ -966,7 +1052,7 @@ def test_forged_origin_metadata_swap_is_rejected(tmp_path):
 def test_forged_origin_adopted_value_is_rejected(tmp_path):
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
@@ -1058,7 +1144,7 @@ def test_restore_rejects_old_weekly_claim_and_does_not_dispatch(tmp_path):
         label = "sent" if dispatched else "unsent"
         old = tmp_path / f"old-{label}"
         db = old / "kindergarten.db"
-        create_old_0007_fixture(db, old)
+        create_old_0007_fixture(db, old, align_default_prompts=True)
         source_data = tmp_path / f"source-{label}"
         _copy_old_tree(old, source_data)
         source = LocalRuntime(source_data, credential_root=tmp_path / f"cred-{label}")
@@ -1121,7 +1207,7 @@ def test_contract_predicate_versions_and_synthetic_rejections(tmp_path):
     assert contracts.supports_prompt_contract("unknown", 1) is False
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
-    create_old_0007_fixture(db, old)
+    create_old_0007_fixture(db, old, align_default_prompts=True)
     source_data = tmp_path / "source-data"
     _copy_old_tree(old, source_data)
     source = LocalRuntime(source_data, credential_root=tmp_path / "source-cred")
