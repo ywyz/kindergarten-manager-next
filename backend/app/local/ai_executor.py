@@ -1325,6 +1325,7 @@ def _encode_bootstrap(
         "weekly_plan",
         "one_to_one_listening",
         "curriculum_deliberation",
+        "directional_revision",
     ) or (
         claim.source_kind == "class_game_config"
         and claim.task_type == "class_game_config_extract"

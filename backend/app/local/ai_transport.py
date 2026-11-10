@@ -414,6 +414,7 @@ CONFIG_TEXT_TASK_TYPES = frozenset({"class_game_config_extract"})
 CURRICULUM_TEXT_TASK_TYPES = frozenset(
     {"curriculum_split", "curriculum_review", "curriculum_edit"}
 )
+DIRECTIONAL_TEXT_TASK_TYPES = frozenset({"directional_revision"})
 
 
 @dataclass(frozen=True)
@@ -470,6 +471,15 @@ CURRICULUM_TEXT_RESPONSE_BUDGET = ResponseBudget(
     result_ipc_max_bytes=6 * 1_048_576 + 16 * 1024,
     require_terminal=True,
 )
+DIRECTIONAL_TEXT_RESPONSE_BUDGET = ResponseBudget(
+    max_tokens=16_384,
+    wire_max_bytes=16 * 1024 * 1024,
+    content_max_bytes=1_048_576,
+    event_max_bytes=2 * 1_048_576 + 16 * 1024,
+    buffer_max_bytes=2 * 1_048_576 + 16 * 1024,
+    result_ipc_max_bytes=6 * 1_048_576 + 16 * 1024,
+    require_terminal=True,
+)
 
 
 def text_response_budget(
@@ -498,6 +508,10 @@ def text_response_budget(
         if source_kind is not None and source_kind != "curriculum_deliberation":
             return None
         return CURRICULUM_TEXT_RESPONSE_BUDGET
+    if task_type in DIRECTIONAL_TEXT_TASK_TYPES:
+        if source_kind is not None and source_kind != "directional_revision":
+            return None
+        return DIRECTIONAL_TEXT_RESPONSE_BUDGET
     return None
 
 
@@ -1475,6 +1489,7 @@ __all__ = [
     "CURRICULUM_TEXT_RESPONSE_BUDGET",
     "CURRICULUM_TEXT_TASK_TYPES",
     "DAILY_TEXT_TASK_TYPES",
+    "DIRECTIONAL_TEXT_TASK_TYPES",
     "DEFAULT_TEXT_RESPONSE_BUDGET",
     "DETAIL",
     "Prepared",

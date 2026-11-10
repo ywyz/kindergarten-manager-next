@@ -217,9 +217,26 @@ vm.runInNewContext(js, {
   exports: module.exports,
   require: (spec) => {
     if (spec === 'vue') return vue
-    if (spec === '../client') return { ApiError }
+    if (spec === '../client') {
+      return { ApiError, getSessionEpoch: () => 1 }
+    }
     if (spec === '../listening-ai') return ai
     if (spec === '../listening') return { newRequestId: () => `request-${++uuid}` }
+    if (spec === './DirectionalRevisionDialog.vue') return { default: {} }
+    if (spec === './DirectionalRevisionTrigger.vue') return { default: {} }
+    if (spec === '../directional-revision') {
+      return {
+        captureDirectionalSelection: () => null,
+        directionalSelectionKey: (field, group = '', candidate = '') =>
+          `${candidate}:${field}:${group}`,
+        validateDirectionalSelection: () => '',
+        wholeDirectionalSelection: (text) => ({
+          start: 0,
+          end: text.length,
+          text,
+        }),
+      }
+    }
     throw new Error(`unexpected import ${spec}`)
   },
   console,

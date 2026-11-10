@@ -7,6 +7,19 @@ import { createWeeklyApi, newWeeklyRequestId } from '../weekly'
 import { getSessionEpoch } from '../client'
 import { isIndeterminate } from '../operations'
 import { WEEKLY_AI_COLUMNS, candidateLines, createWeeklyAiApi, groupStatus, groupStatusLabel, eligibilityLabel, taskStatusLabel, certaintyLabel, targetLabel, projectWeeklyAiError, weeklyEditSignature, type WeeklyAiCandidate, type WeeklyAiColumn, type WeeklyAiCreateOut, type WeeklyAiSelection, type WeeklyAiTask, type WeeklyAiAdoptionPreview, type WeeklyAiAdoptionResult } from '../weekly-ai'
+import DirectionalRevisionDialog from '../components/DirectionalRevisionDialog.vue'
+import DirectionalRevisionTrigger from '../components/DirectionalRevisionTrigger.vue'
+import {
+  captureDirectionalSelection,
+  directionalSelectionKey,
+  validateDirectionalSelection,
+  wholeDirectionalSelection,
+  type DirectionalAdoptPayload,
+  type DirectionalApplyResult,
+  type DirectionalOpenRequest,
+  type DirectionalScope,
+  type DirectionalSelection,
+} from '../directional-revision'
 const props = withDefaults(defineProps<{ controller: WeeklyEditorController; planId: string; detail: WeeklyDetail | null; focusSelected?: boolean; disabled?: boolean; profileEpoch?: number; sessionEpoch?: number }>(), { disabled: false, focusSelected: false, profileEpoch: 0, sessionEpoch: 0 })
 const emit = defineEmits<{ (e: 'busy', value: boolean): void; (e: 'blocking', value: BlockingDraft | null): void; (e: 'focus-area'): void }>()
 const api = createWeeklyAiApi()
@@ -31,6 +44,12 @@ const notice = ref('')
 const retryAckByTask = ref<Record<string, boolean>>({})
 const materialText = ref('')
 const materialTouched = ref(false)
+const directionalOpen = ref(false)
+const directionalBusy = ref(false)
+const directionalRequest = ref<DirectionalOpenRequest | null>(null)
+const directionalSelections = ref<Record<string, DirectionalSelection>>({})
+const directionalNotice = ref('')
+const directionalNoticeCandidateId = ref('')
 let alive = true
 let aiBusyToken = 0
 let adoptGateRelease: (() => void) | null = null
@@ -47,7 +66,7 @@ let panelRequestFlight = false
 let refreshGeneration = 0
 function beginAiBusy(): number { const token = ++aiBusyToken; aiBusy.value = true; return token }
 function endAiBusy(token: number): void { if (token === aiBusyToken) aiBusy.value = false }
-onBeforeUnmount(() => { alive = false; aiBusyToken += 1; refreshGeneration += 1; panelRequestFlight = false; releaseAdoptGate(); emit('busy', false); emit('blocking', null) })
+onBeforeUnmount(() => { alive = false; aiBusyToken += 1; refreshGeneration += 1; panelRequestFlight = false; directionalOpen.value = false; directionalBusy.value = false; directionalRequest.value = null; releaseAdoptGate(); emit('busy', false); emit('blocking', null) })
 const progress = ref<Record<string, string>>({})
 const materialsFocusReady = computed(() => props.focusSelected || Boolean(props.controller.getContent().focus_area))
 const focusHint = '生成材料前需要先选择“重点区域”；若没有可选来源，请先保存对应日计划，再点“刷新来源预览”后选择'
@@ -81,8 +100,8 @@ const visibleCandidates = computed(() => {
   }
   return [...byId.values()]
 })
-const blocking = computed<BlockingDraft | null>(() => aiBusy.value ? { kind: 'weekly', message: '周计划 AI 正在处理，请等待或查询原请求' } : preview.value ? { kind: 'candidate', message: 'AI 候选预览尚未采用或关闭，请先处理' } : (pendingCreate.value || pendingAdopt.value || pendingAction.value) ? { kind: 'weekly', message: 'AI 请求结果未确认，请先只读核对这次原操作' } : anyCandidateEditDirty() ? { kind: 'candidate', message: '候选有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开' } : null)
-watch([aiBusy, blocking], () => { emit('busy', aiBusy.value); emit('blocking', blocking.value) }, { immediate: true })
+const blocking = computed<BlockingDraft | null>(() => directionalBusy.value ? { kind: 'weekly', message: '定向修改正在生成或原受理结果待核对：请先处理后再离开' } : aiBusy.value ? { kind: 'weekly', message: '周计划 AI 正在处理，请等待或查询原请求' } : preview.value ? { kind: 'candidate', message: 'AI 候选预览尚未采用或关闭，请先处理' } : (pendingCreate.value || pendingAdopt.value || pendingAction.value) ? { kind: 'weekly', message: 'AI 请求结果未确认，请先只读核对这次原操作' } : anyCandidateEditDirty() ? { kind: 'candidate', message: '候选有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开' } : null)
+watch([aiBusy, directionalBusy, blocking], () => { emit('busy', aiBusy.value || directionalBusy.value); emit('blocking', blocking.value) }, { immediate: true })
 function syncMaterialFromActual(): void {
   const detailMaterials = props.detail?.draft.content.materials ?? null
   const actual = props.controller.getContent().materials
@@ -97,7 +116,7 @@ function syncMaterialFromActual(): void {
 watch(() => props.detail, syncMaterialFromActual, { immediate: true })
 watch(() => props.planId, () => {
   refreshGeneration += 1
-  batch.value = null; tasks.value = []; candidates.value = []; selectedKeys.value = []; candidateEdits.value = {}; candidateEditBaselines.value = {}; regenerateInstructions.value = {}; regeneratedNotice.value = ''; preview.value = null; pendingCreate.value = null; pendingAdopt.value = null; adoptCommitted.value = null; pendingAction.value = null; releaseAdoptGate(); progress.value = {}; error.value = ''; readError.value = ''; batchReadPending.value = false; notice.value = ''
+  batch.value = null; tasks.value = []; candidates.value = []; selectedKeys.value = []; candidateEdits.value = {}; candidateEditBaselines.value = {}; regenerateInstructions.value = {}; regeneratedNotice.value = ''; preview.value = null; pendingCreate.value = null; pendingAdopt.value = null; adoptCommitted.value = null; pendingAction.value = null; releaseAdoptGate(); progress.value = {}; error.value = ''; readError.value = ''; batchReadPending.value = false; notice.value = ''; directionalOpen.value = false; directionalBusy.value = false; directionalRequest.value = null; directionalSelections.value = {}; directionalNotice.value = ''; directionalNoticeCandidateId.value = ''
   void refreshBatch()
 })
 function fail(errorValue: unknown) { const projected = projectWeeklyAiError(errorValue); error.value = projected.message; notice.value = ''; return projected }
@@ -133,6 +152,10 @@ function initCandidateEdit(candidate: WeeklyAiCandidate): Record<string, string>
   return state
 }
 function resetCandidateEdit(candidate: WeeklyAiCandidate, unselect = true): void {
+  if (directionalNoticeCandidateId.value === candidate.candidate_id) {
+    directionalNotice.value = ''
+    directionalNoticeCandidateId.value = ''
+  }
   const state = initCandidateEdit(candidate)
   candidateEdits.value = { ...candidateEdits.value, [candidate.candidate_id]: state }
   candidateEditBaselines.value = { ...candidateEditBaselines.value, [candidate.candidate_id]: weeklyEditSignature(state) }
@@ -160,6 +183,9 @@ function syncCandidateEdits(): void {
   }
 }
 function editField(candidate: WeeklyAiCandidate, key: string): string { return candidateEdits.value[candidate.candidate_id]?.[key] ?? '' }
+function fieldEditLabel(candidate: WeeklyAiCandidate, key: string, original: unknown): string {
+  return editField(candidate, key) === String(original ?? '') ? '当前候选文字' : '改写建议'
+}
 function setEditField(candidate: WeeklyAiCandidate, key: string, value: string): void {
   const state = { ...(candidateEdits.value[candidate.candidate_id] ?? {}), [key]: value }
   candidateEdits.value = { ...candidateEdits.value, [candidate.candidate_id]: state }
@@ -168,8 +194,183 @@ function candidateEditDirty(candidate: WeeklyAiCandidate): boolean {
   return weeklyEditSignature(candidateEdits.value[candidate.candidate_id] ?? {}) !== (candidateEditBaselines.value[candidate.candidate_id] ?? '{}')
 }
 function anyCandidateEditDirty(): boolean { return visibleCandidates.value.some(candidateEditDirty) }
+function directionalCandidate(id: string): WeeklyAiCandidate | null {
+  return (
+    visibleCandidates.value.find((item) => item.candidate_id === id) ?? null
+  )
+}
+
+const directionalLiveScope = computed<DirectionalScope | null>(() => {
+  const request = directionalRequest.value
+  if (!request) return null
+  return {
+    ...request.scope,
+    version: props.controller.savedDraftRef().version,
+  }
+})
+
+const directionalLiveFieldText = computed(() => {
+  const request = directionalRequest.value
+  if (!request) return ''
+  const candidate = directionalCandidate(request.scope.candidate_id ?? '')
+  return candidate ? editField(candidate, request.scope.field) : ''
+})
+
+function rememberDirectionalSelection(event: Event): void {
+  const captured = captureDirectionalSelection(event)
+  if (!captured) return
+  directionalSelections.value = {
+    ...directionalSelections.value,
+    [captured.key]: captured.selection,
+  }
+}
+
+function directionalKeyLabel(key: string): string {
+  if (key === 'text') return '候选正文'
+  const slot = /^slot\.([^.]+)\.(.+)$/.exec(key)
+  if (slot) {
+    return `${OUTDOOR_LABELS[slot[1]] ?? slot[1]} · ${
+      GAME_FIELD_LABELS[slot[2]] ?? slot[2]
+    }（候选）`
+  }
+  const focus = /^focus\.(.+)$/.exec(key)
+  if (focus) {
+    return `重点区域 · ${FOCUS_FIELD_LABELS[focus[1]] ?? focus[1]}（候选）`
+  }
+  const item = /^item\.(\d+)\.text$/.exec(key)
+  if (item) return `材料第 ${Number(item[1]) + 1} 项（候选）`
+  return key
+}
+
+function openDirectional(
+  candidate: WeeklyAiCandidate,
+  key: string,
+  whole: boolean,
+): void {
+  if (
+    !alive ||
+    props.disabled ||
+    aiBusy.value ||
+    directionalBusy.value ||
+    panelRequestFlight ||
+    pendingCreate.value ||
+    pendingAdopt.value ||
+    pendingAction.value ||
+    preview.value
+  ) {
+    return
+  }
+  if (candidate.eligibility !== 'eligible') {
+    error.value = '该候选来源或规则已变化，只能查看'
+    return
+  }
+  const text = editField(candidate, key)
+  const selection = whole
+    ? wholeDirectionalSelection(text)
+    : directionalSelections.value[
+        directionalSelectionKey(key, '', candidate.candidate_id)
+      ]
+  if (!selection) {
+    error.value = '请先在候选文字中选择内容，或使用「整栏修改」'
+    return
+  }
+  if (!whole && text === '') {
+    error.value = '空栏请使用「整栏修改」明确范围'
+    return
+  }
+  const selectionError = validateDirectionalSelection(text, selection)
+  if (selectionError) {
+    error.value = selectionError
+    return
+  }
+  const saved = props.controller.savedDraftRef()
+  const scope: DirectionalScope = {
+    kind: 'weekly_candidate',
+    record_id: props.planId,
+    version: saved.version,
+    candidate_id: candidate.candidate_id,
+    field: key,
+  }
+  const sourceLines = [
+    ...candidateLines(candidate),
+    `草稿版本 v${saved.version}`,
+    `候选状态：${eligibilityLabel(candidate.eligibility)}`,
+  ]
+  directionalRequest.value = {
+    scope,
+    fieldText: text,
+    selection,
+    sourceLabel: `${targetLabel(candidate.target)} · ${directionalKeyLabel(key)}`,
+    sourceLines,
+    sourceStale: candidateEditDirty(candidate),
+  }
+  directionalOpen.value = true
+}
+
+function applyDirectionalAdoption(
+  payload: DirectionalAdoptPayload,
+): DirectionalApplyResult {
+  const request = directionalRequest.value
+  if (!request || payload.snapshot.scope.kind !== 'weekly_candidate') {
+    return { ok: false, message: '定向修改目标已失效，请重新选择' }
+  }
+  const submitted = payload.snapshot
+  const saved = props.controller.savedDraftRef()
+  if (
+    submitted.scope.record_id !== props.planId ||
+    submitted.scope.version !== saved.version ||
+    submitted.scope.candidate_id !==
+      (request.scope.candidate_id ?? '') ||
+    submitted.scope.field !== request.scope.field
+  ) {
+    return {
+      ok: false,
+      message: '周计划、候选或草稿版本已变化：候选和前后文字已保留，请重新选择',
+    }
+  }
+  if (submitted.profileEpoch !== props.profileEpoch) {
+    return { ok: false, message: '本地档案已切换：未采用，请重新选择' }
+  }
+  if (submitted.sessionEpoch !== getSessionEpoch()) {
+    return { ok: false, message: '本机会话已变化：未采用，请重新选择' }
+  }
+  const candidate = directionalCandidate(
+    submitted.scope.candidate_id ?? '',
+  )
+  if (!candidate || candidate.eligibility !== 'eligible') {
+    return {
+      ok: false,
+      message: '候选来源或规则已变化：候选和前后文字已保留，请重新选择',
+    }
+  }
+  const currentText = editField(candidate, submitted.scope.field)
+  if (currentText !== submitted.fieldText) {
+    return {
+      ok: false,
+      message: '当前候选文字已变化：候选和前后文字已保留，请重新选择',
+    }
+  }
+  const selectionError = validateDirectionalSelection(
+    currentText,
+    submitted.selection,
+  )
+  if (selectionError) {
+    return { ok: false, message: selectionError }
+  }
+  setEditField(candidate, submitted.scope.field, payload.fieldAfter)
+  directionalNotice.value =
+    '已写入候选待采用区，尚未写入周计划；仍需点击「采用并保存」'
+  directionalNoticeCandidateId.value = candidate.candidate_id
+  directionalOpen.value = false
+  return { ok: true }
+}
+
 function closePreservedCandidates(): void {
   const ids = new Set(preservedCandidates.value.map((candidate) => candidate.candidate_id))
+  if (ids.has(directionalNoticeCandidateId.value)) {
+    directionalNotice.value = ''
+    directionalNoticeCandidateId.value = ''
+  }
   preservedCandidates.value = []
   const edits = { ...candidateEdits.value }
   const baselines = { ...candidateEditBaselines.value }
@@ -188,6 +389,8 @@ function resetAllCandidateEdits(): void {
   for (const candidate of visibleCandidates.value) resetCandidateEdit(candidate, false)
   selectedKeys.value = []
   regeneratedNotice.value = ''
+  directionalNotice.value = ''
+  directionalNoticeCandidateId.value = ''
   notice.value = '已取消本次候选编辑；未写入正文'
   error.value = ''
 }
@@ -261,8 +464,42 @@ function materialItems(candidate: WeeklyAiCandidate): unknown[] {
   const items = rec(candidate.data).items
   return Array.isArray(items) ? items : []
 }
+
+function materialEvidence(
+  candidate: WeeklyAiCandidate,
+  index: number,
+): string[] {
+  const row = rec(materialItems(candidate)[index])
+  const refs = Array.isArray(row.evidence_refs) ? row.evidence_refs : []
+  return refs.map((ref) => {
+    const value = rec(ref)
+    const quote = String(value.quote ?? '')
+    const fieldPath = String(value.field_path ?? '')
+    const source = rec(value.source)
+    const origin = String(
+      source.date ?? source.name ?? source.kind ?? '',
+    )
+    return `原文：${quote || '（空）'}${
+      origin ? ` · ${origin}` : ''
+    }${fieldPath ? ` · ${fieldPath}` : ''}`
+  })
+}
+
+function sourceLineFor(
+  candidate: WeeklyAiCandidate,
+  prefix: string,
+): string {
+  return (
+    candidateLines(candidate).find((line) => line.startsWith(prefix)) ?? ''
+  )
+}
 function candidateFieldDisabled(candidate: WeeklyAiCandidate): boolean {
-  return props.disabled || aiBusy.value || candidate.eligibility !== 'eligible'
+  return (
+    props.disabled ||
+    aiBusy.value ||
+    directionalBusy.value ||
+    candidate.eligibility !== 'eligible'
+  )
 }
 async function ensureSaved(ctx: PanelEpoch): Promise<boolean> {
   try {
@@ -756,6 +993,16 @@ async function finishAdopt(pending: { body: Record<string, unknown>; planId: str
     releaseAdoptGate()
     closePreview(false)
     clearAdoptedCandidateState(result.selections)
+    if (
+      directionalNoticeCandidateId.value &&
+      result.selections.some(
+        (item) =>
+          item.candidate_id === directionalNoticeCandidateId.value,
+      )
+    ) {
+      directionalNotice.value = ''
+      directionalNoticeCandidateId.value = ''
+    }
     await refreshBatch()
   }
 }
@@ -827,7 +1074,14 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
 </script>
 
 <template>
-  <section class="weekly-ai" data-d1="weekly-ai">
+  <section
+    class="weekly-ai"
+    data-d1="weekly-ai"
+    @select.capture="rememberDirectionalSelection"
+    @mouseup.capture="rememberDirectionalSelection"
+    @keyup.capture="rememberDirectionalSelection"
+    @blur.capture="rememberDirectionalSelection"
+  >
     <h3>周计划 AI 辅助</h3>
     <p>三个操作各自生成候选；普通保存、改选和采用均不会自动连发。</p>
     <div class="actions">
@@ -847,6 +1101,13 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
     <el-alert v-if="readError" :title="readError" type="warning" :closable="false" />
     <div v-if="readError" class="actions"><el-button :disabled="disabled || aiBusy" @click="refreshBatch">重新读取任务与候选</el-button></div>
     <el-alert v-if="notice" :title="notice" type="info" :closable="false" />
+    <el-alert
+      v-if="directionalNotice"
+      :title="directionalNotice"
+      type="success"
+      :closable="false"
+      data-d1="weekly-directional-notice"
+    />
     <el-alert v-if="pendingCreate" title="AI 创建请求结果未确认；保留这次原操作，请只读核对或按原操作重试" type="warning" :closable="false" />
     <div v-if="pendingCreate" class="actions"><el-button @click="queryCreate">核对原创建</el-button><el-button @click="retryCreate">重试这次原创建</el-button></div>
     <el-alert
@@ -881,56 +1142,110 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
           <strong>{{ targetLabel(candidate.target) }} · {{ eligibilityLabel(candidate.eligibility) }}</strong>
           <span v-if="preservedCandidates.some((item) => item.candidate_id === candidate.candidate_id)" class="muted"> · 原候选批次</span>
         </div>
+        <p class="candidate-source-title"><strong>原候选来源/证据（只读）</strong></p>
         <ul><li v-for="line in candidateLines(candidate)" :key="line">{{ line }}</li></ul>
+        <p v-if="candidateEditDirty(candidate)" class="candidate-source-stale" data-d1="weekly-candidate-edit-stale">
+          候选文字已被手改：上方原来源/证据可能不再对应，请以改写建议和正式采用预览为准。
+        </p>
         <el-checkbox v-for="target in candidate.available_targets" :key="target" v-model="selectedKeys" :value="selectionKey(candidate, target)" :disabled="candidate.eligibility !== 'eligible'">{{ targetLabel(target) }}</el-checkbox>
 
         <div v-if="candidate.target !== 'games' && candidate.target !== 'materials'" class="candidate-edit">
+          <p class="candidate-edit-title">候选编辑区（未改字段保持当前候选；采用仍走原预览）</p>
+          <p class="candidate-edit-label">{{ fieldEditLabel(candidate, 'text', rec(candidate.data).text) }}</p>
           <el-input
             type="textarea"
             :rows="4"
             :model-value="editField(candidate, 'text')"
             :disabled="candidateFieldDisabled(candidate)"
             :data-d1="`weekly-edit-${candidate.candidate_id}`"
+            data-directional-field="text"
+            :data-directional-candidate-id="candidate.candidate_id"
             @update:model-value="(value: string) => setEditField(candidate, 'text', value)"
+          />
+          <DirectionalRevisionTrigger
+            :test-id="`weekly-directional-${candidate.candidate_id}-text`"
+            :disabled="candidateFieldDisabled(candidate)"
+            @request="(whole) => openDirectional(candidate, 'text', whole)"
           />
         </div>
         <div v-else-if="candidate.target === 'materials'" class="candidate-edit">
+          <p class="candidate-edit-title">候选编辑区（未改字段保持当前候选；采用仍走原预览）</p>
           <div v-for="(item, index) in materialItems(candidate)" :key="index" class="candidate-edit-row">
-            <span class="muted">{{ rec(item).origin === 'suggested' ? '建议（无原文证据）' : '提取' }}</span>
+            <span class="muted">{{ rec(item).origin === 'suggested' ? '原建议（无原文证据）' : '原提取（原文证据）' }}</span>
+            <pre class="candidate-original">{{ rec(item).text || '（空）' }}</pre>
+            <p v-for="evidence in materialEvidence(candidate, index)" :key="evidence" class="candidate-evidence">{{ evidence }}</p>
+            <span class="muted">{{ fieldEditLabel(candidate, `item.${index}.text`, rec(item).text) }}</span>
             <el-input
               type="textarea"
               :rows="2"
               :model-value="editField(candidate, `item.${index}.text`)"
               :disabled="candidateFieldDisabled(candidate)"
               :data-d1="`weekly-edit-${candidate.candidate_id}-item-${index}`"
+              :data-directional-field="`item.${index}.text`"
+              :data-directional-candidate-id="candidate.candidate_id"
               @update:model-value="(value: string) => setEditField(candidate, `item.${index}.text`, value)"
+            />
+            <DirectionalRevisionTrigger
+              :test-id="`weekly-directional-${candidate.candidate_id}-item-${index}`"
+              :disabled="candidateFieldDisabled(candidate)"
+              @request="
+                (whole) =>
+                  openDirectional(candidate, `item.${index}.text`, whole)
+              "
             />
           </div>
         </div>
         <div v-else class="candidate-edit">
+          <p class="candidate-edit-title">候选编辑区（未改字段保持当前候选；采用仍走原预览）</p>
           <div v-for="key in OUTDOOR_KEYS" :key="key" class="candidate-edit-group">
             <template v-if="gameItem(candidate, key)">
               <strong>{{ OUTDOOR_LABELS[key] }}</strong>
+              <p class="candidate-evidence">原来源：{{ sourceLineFor(candidate, `${OUTDOOR_LABELS[key]}：`) || '未提供来源' }}</p>
               <label v-for="field in GAME_EDIT_FIELDS" :key="field" class="candidate-edit-row">
-                <span class="muted">{{ GAME_FIELD_LABELS[field] }}</span>
+                <span class="muted">{{ GAME_FIELD_LABELS[field] }} · {{ fieldEditLabel(candidate, `slot.${key}.${field}`, gameItem(candidate, key)?.[field]) }}</span>
                 <el-input
                   :model-value="editField(candidate, `slot.${key}.${field}`)"
                   :disabled="candidateFieldDisabled(candidate)"
                   :data-d1="`weekly-edit-${candidate.candidate_id}-${key}-${field}`"
+                  :data-directional-field="`slot.${key}.${field}`"
+                  :data-directional-candidate-id="candidate.candidate_id"
                   @update:model-value="(value: string) => setEditField(candidate, `slot.${key}.${field}`, value)"
+                />
+                <DirectionalRevisionTrigger
+                  :test-id="`weekly-directional-${candidate.candidate_id}-${key}-${field}`"
+                  :disabled="candidateFieldDisabled(candidate)"
+                  @request="
+                    (whole) =>
+                      openDirectional(
+                        candidate,
+                        `slot.${key}.${field}`,
+                        whole,
+                      )
+                  "
                 />
               </label>
             </template>
           </div>
           <div v-if="focusItem(candidate)" class="candidate-edit-group">
             <strong>重点区域</strong>
+            <p class="candidate-evidence">原来源：{{ sourceLineFor(candidate, '重点区域：') || '未提供来源' }}</p>
             <label v-for="field in FOCUS_EDIT_FIELDS" :key="field" class="candidate-edit-row">
-              <span class="muted">{{ FOCUS_FIELD_LABELS[field] }}</span>
+              <span class="muted">{{ FOCUS_FIELD_LABELS[field] }} · {{ fieldEditLabel(candidate, `focus.${field}`, focusItem(candidate)?.[field]) }}</span>
               <el-input
                 :model-value="editField(candidate, `focus.${field}`)"
                 :disabled="candidateFieldDisabled(candidate)"
                 :data-d1="`weekly-edit-${candidate.candidate_id}-focus-${field}`"
+                :data-directional-field="`focus.${field}`"
+                :data-directional-candidate-id="candidate.candidate_id"
                 @update:model-value="(value: string) => setEditField(candidate, `focus.${field}`, value)"
+              />
+              <DirectionalRevisionTrigger
+                :test-id="`weekly-directional-${candidate.candidate_id}-focus-${field}`"
+                :disabled="candidateFieldDisabled(candidate)"
+                @request="
+                  (whole) =>
+                    openDirectional(candidate, `focus.${field}`, whole)
+                "
               />
             </label>
           </div>
@@ -994,6 +1309,22 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
       <el-input v-model="materialText" type="textarea" :disabled="disabled || aiBusy" @input="onMaterialInput" />
       <el-button :disabled="disabled || aiBusy" @click="saveMaterials">保存材料正文</el-button>
     </el-card>
+
+    <DirectionalRevisionDialog
+      v-if="directionalRequest"
+      :open="directionalOpen"
+      :scope="directionalLiveScope"
+      :field-text="directionalLiveFieldText"
+      :selection="directionalRequest.selection"
+      :profile-epoch="props.profileEpoch"
+      :source-label="directionalRequest.sourceLabel"
+      :source-lines="directionalRequest.sourceLines"
+      :source-stale="directionalRequest.sourceStale"
+      :disabled="props.disabled"
+      :apply-adoption="applyDirectionalAdoption"
+      @update:open="directionalOpen = $event"
+      @busy="directionalBusy = $event"
+    />
   </section>
 </template>
 
@@ -1007,4 +1338,18 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
 .candidate-edit-group { margin: .5rem 0; padding: .4rem 0; border-top: 1px dashed var(--kgm-border); }
 .candidate-edit-row { display: block; margin: .3rem 0; }
 .candidate-edit-row > span { display: block; margin-bottom: 2px; font-size: .8rem; }
+.candidate-source-title, .candidate-edit-title { margin: .5rem 0 .2rem; font-size: .85rem; }
+.candidate-source-stale, .candidate-evidence { margin: .2rem 0; color: var(--kgm-muted); font-size: .8rem; }
+.candidate-source-stale { color: var(--kgm-warning); }
+.candidate-edit-label { margin: .1rem 0 .2rem; color: var(--kgm-muted); font-size: .8rem; }
+.candidate-original {
+  margin: .2rem 0 .3rem;
+  padding: .3rem .5rem;
+  border: 1px dashed var(--kgm-border);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--kgm-muted);
+  font-size: .8rem;
+}
 </style>

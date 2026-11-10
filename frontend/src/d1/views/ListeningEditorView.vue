@@ -18,11 +18,25 @@ import {
   watch,
 } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { getSessionEpoch } from '../client'
 import type { LocalContext } from '../types'
 import type { LeaveEditor } from '../leave'
 import { PhotoUrlCache } from '../observation-photos'
 import ListeningExportDialog from '../components/ListeningExportDialog.vue'
 import ListeningAiPanel from '../components/ListeningAiPanel.vue'
+import DirectionalRevisionDialog from '../components/DirectionalRevisionDialog.vue'
+import DirectionalRevisionTrigger from '../components/DirectionalRevisionTrigger.vue'
+import {
+  captureDirectionalSelection,
+  directionalSelectionKey,
+  validateDirectionalSelection,
+  wholeDirectionalSelection,
+  type DirectionalAdoptPayload,
+  type DirectionalApplyResult,
+  type DirectionalOpenRequest,
+  type DirectionalScope,
+  type DirectionalSelection,
+} from '../directional-revision'
 import {
   DOMAIN_LABELS,
   GRADE_LABELS,
@@ -84,6 +98,11 @@ let actionChain: Promise<unknown> = Promise.resolve()
 const aiBusy = ref(false)
 const aiDraft = ref(false)
 const aiPanel = ref<{ startGoal: () => void } | null>(null)
+const directionalOpen = ref(false)
+const directionalBusy = ref(false)
+const directionalRequest = ref<DirectionalOpenRequest | null>(null)
+const directionalSelections = ref<Record<string, DirectionalSelection>>({})
+const directionalNotice = ref('')
 const actionBusy = computed(
   () => actionCount.value > 0 || state.busy || state.savePromise !== null,
 )
@@ -92,7 +111,11 @@ const actionBusy = computed(
 // request is in flight.  ensureAiSaved stays outside this check, so the
 // panel's internal save cannot deadlock against its own busy flag.
 const canMutate = computed(
-  () => canEdit.value && !actionBusy.value && !aiBusy.value,
+  () =>
+    canEdit.value &&
+    !actionBusy.value &&
+    !aiBusy.value &&
+    !directionalBusy.value,
 )
 const exportOpen = ref(false)
 const exportTermId = ref('')
@@ -403,7 +426,8 @@ async function runMutating<T>(
 }
 
 const bridge: LeaveEditor = {
-  isDirty: () => session.isDirty() || aiDraft.value,
+  isDirty: () =>
+    session.isDirty() || aiDraft.value || directionalBusy.value,
   identity: () => session.identity(),
   settle: settleComposition,
   saveCurrent: async () => {
@@ -411,10 +435,17 @@ const bridge: LeaveEditor = {
       state.error = '观察月份变更后请先逐组处理作品日期，或取消日期调整'
       return 'failed'
     }
-    return runExclusive(() => session.saveCurrent())
+    const outcome = await runExclusive(() => session.saveCurrent())
+    clearDirectionalNoticeAfterSave(outcome)
+    return outcome
   },
   blockingDraft: () =>
-    state.unknown
+    directionalBusy.value
+      ? {
+          kind: 'listening',
+          message: '定向修改正在生成或原受理结果待核对：请先处理后再离开',
+        }
+      : state.unknown
       ? {
           kind: 'listening',
           message: state.error || '倾听保存结果待核对：请先处理原请求',
@@ -446,6 +477,7 @@ function emitBusy(): void {
     owner: currentOwner.value,
     busy:
       aiBusy.value ||
+      directionalBusy.value ||
       exportBusy.value ||
       state.busy ||
       state.savePromise !== null,
@@ -455,6 +487,7 @@ function emitBusy(): void {
 watch(actionBusy, emitBusy)
 watch(exportBusy, emitBusy)
 watch(aiBusy, emitBusy)
+watch(directionalBusy, emitBusy)
 
 function handleAiBusy(value: boolean): void {
   aiBusy.value = value
@@ -476,6 +509,7 @@ async function ensureAiSaved(): Promise<number | null> {
     ElMessage.warning(outcomeMessage(outcome))
     return null
   }
+  clearDirectionalNoticeAfterSave(outcome)
   if (session.isDirty()) {
     ElMessage.warning('保存期间又有新输入；请再次保存后再创建 AI 任务')
     syncPhotoUrls()
@@ -514,6 +548,12 @@ function outcomeMessage(outcome: SaveOutcome): string {
   return ''
 }
 
+function clearDirectionalNoticeAfterSave(outcome: SaveOutcome): void {
+  if (outcome === 'saved' || outcome === 'unchanged') {
+    directionalNotice.value = ''
+  }
+}
+
 async function manualSave(): Promise<void> {
   if (!canEdit.value) return
   if (dateBlocking.value) {
@@ -523,6 +563,7 @@ async function manualSave(): Promise<void> {
   const outcome = await runMutating(() => session.saveCurrent())
   if (outcome === undefined) return
   if (outcome === 'saved' || outcome === 'unchanged') {
+    clearDirectionalNoticeAfterSave(outcome)
     syncPhotoUrls()
     if (session.isDirty()) {
       ElMessage.warning('已保存已确认部分；保存期间的新输入仍保留，请再次保存')
@@ -552,6 +593,7 @@ async function openExport(): Promise<void> {
     ElMessage.warning(outcomeMessage(outcome))
     return
   }
+  clearDirectionalNoticeAfterSave(outcome)
   if (session.isDirty()) {
     ElMessage.warning('保存期间又有新输入，已留在编辑页；请再次保存后再合册')
     syncPhotoUrls()
@@ -581,6 +623,7 @@ async function selectDomain(domain: ListeningDomain): Promise<void> {
   const outcome = await runMutating(() => session.setDomain(domain))
   if (outcome === undefined) return
   if (outcome === 'saved' || outcome === 'unchanged') {
+    clearDirectionalNoticeAfterSave(outcome)
     syncPhotoUrls()
   } else {
     ElMessage.warning(outcomeMessage(outcome))
@@ -607,6 +650,186 @@ function setGroupField(
   value: string,
 ): void {
   session.setGroupField(groupId, field, value)
+}
+
+function currentListeningFieldText(scope: DirectionalScope): string {
+  if (scope.field === 'listening_text') {
+    return (
+      form.value?.groups.find((group) => group.group_id === scope.group_id)
+        ?.listening_text ?? ''
+    )
+  }
+  if (
+    scope.field === 'goal' ||
+    scope.field === 'overall_evaluation' ||
+    scope.field === 'support_strategy'
+  ) {
+    return form.value?.[scope.field] ?? ''
+  }
+  return ''
+}
+
+const directionalLiveScope = computed<DirectionalScope | null>(() => {
+  const request = directionalRequest.value
+  if (!request) return null
+  return {
+    ...request.scope,
+    version: state.revision,
+    domain: state.domain,
+  }
+})
+
+const directionalLiveFieldText = computed(() =>
+  directionalRequest.value
+    ? currentListeningFieldText(directionalRequest.value.scope)
+    : '',
+)
+
+const savedDirectionalGroups = computed(() =>
+  (state.baselines[state.domain]?.groups ?? []).map((group) => ({
+    group_id: group.group_id,
+    position: group.position,
+  })),
+)
+
+function rememberDirectionalSelection(event: Event): void {
+  const captured = captureDirectionalSelection(event)
+  if (!captured) return
+  directionalSelections.value = {
+    ...directionalSelections.value,
+    [captured.key]: captured.selection,
+  }
+}
+
+function openDirectionalSaved(
+  field: string,
+  groupId: string,
+  whole: boolean,
+): void {
+  if (!canMutate.value) return
+  if (state.unknown) {
+    ElMessage.warning('保存结果待核对：请先处理原保存，再发起定向修改')
+    return
+  }
+  const scope: DirectionalScope = {
+    kind: 'listening_record',
+    record_id: props.recordId,
+    version: state.revision,
+    domain: state.domain,
+    ...(groupId ? { group_id: groupId } : {}),
+    field,
+  }
+  const text = currentListeningFieldText(scope)
+  const key = directionalSelectionKey(field, groupId)
+  const selection = whole
+    ? wholeDirectionalSelection(text)
+    : directionalSelections.value[key]
+  if (!selection) {
+    ElMessage.warning('请先在正文中选择文字，或使用「整栏修改」')
+    return
+  }
+  if (!whole && text === '') {
+    ElMessage.warning('空栏请使用「整栏修改」明确范围')
+    return
+  }
+  const selectionError = validateDirectionalSelection(text, selection)
+  if (selectionError) {
+    ElMessage.warning(selectionError)
+    return
+  }
+  const group = form.value?.groups.find((item) => item.group_id === groupId)
+  const position =
+    group && form.value ? form.value.groups.indexOf(group) + 1 : 0
+  const label =
+    field === 'listening_text'
+      ? `第 ${position} 组倾听正文（当前编辑器）`
+      : field === 'goal'
+        ? '观察目标（当前编辑器）'
+        : field === 'overall_evaluation'
+          ? '综合评价（当前编辑器）'
+          : '支持策略（当前编辑器）'
+  const sourceLines = [
+    `领域：${DOMAIN_LABELS[state.domain]}`,
+    `已保存版本 v${state.revision}`,
+    ...(field === 'listening_text' && group
+      ? [`照片：${group.asset_id ? '有' : '无'}`]
+      : []),
+    '当前输入可含未保存修改；生成不会偷偷保存或采用',
+  ]
+  directionalRequest.value = {
+    scope,
+    fieldText: text,
+    selection,
+    sourceLabel: label,
+    sourceLines,
+    sourceStale: false,
+  }
+  directionalOpen.value = true
+}
+
+function applyDirectionalAdoption(
+  payload: DirectionalAdoptPayload,
+): DirectionalApplyResult {
+  const request = directionalRequest.value
+  if (!request || payload.snapshot.scope.kind !== 'listening_record') {
+    return { ok: false, message: '定向修改目标已失效，请重新选择后再试' }
+  }
+  const submitted = payload.snapshot
+  if (
+    submitted.scope.record_id !== props.recordId ||
+    submitted.scope.version !== state.revision ||
+    submitted.scope.domain !== state.domain ||
+    submitted.scope.field !== request.scope.field ||
+    (submitted.scope.group_id ?? '') !==
+      (request.scope.group_id ?? '')
+  ) {
+    return {
+      ok: false,
+      message: '记录、领域、组或版本已变化：候选和前后文字已保留，请重新选择',
+    }
+  }
+  if (submitted.profileEpoch !== (props.profileEpoch ?? 0)) {
+    return { ok: false, message: '本地档案已切换：未采用，请重新选择' }
+  }
+  if (submitted.sessionEpoch !== getSessionEpoch()) {
+    return { ok: false, message: '本机会话已变化：未采用，请重新选择' }
+  }
+  const currentText = currentListeningFieldText(submitted.scope)
+  if (currentText !== submitted.fieldText) {
+    return {
+      ok: false,
+      message: '当前正文已变化：候选和前后文字已保留，请重新选择或重新生成',
+    }
+  }
+  const selectionError = validateDirectionalSelection(
+    currentText,
+    submitted.selection,
+  )
+  if (selectionError) {
+    return { ok: false, message: selectionError }
+  }
+  if (submitted.scope.field === 'listening_text') {
+    if (!submitted.scope.group_id) {
+      return { ok: false, message: '倾听正文缺少组标识，未采用' }
+    }
+    session.setGroupField(
+      submitted.scope.group_id,
+      'listening_text',
+      payload.fieldAfter,
+    )
+  } else if (
+    submitted.scope.field === 'goal' ||
+    submitted.scope.field === 'overall_evaluation' ||
+    submitted.scope.field === 'support_strategy'
+  ) {
+    session.setField(submitted.scope.field, payload.fieldAfter)
+  } else {
+    return { ok: false, message: '该字段不支持定向修改，未采用' }
+  }
+  directionalNotice.value =
+    '已写入当前表单，尚未保存；请核对后点击「保存」'
+  directionalOpen.value = false
+  return { ok: true }
 }
 
 function starsFor(itemId: string): number | null {
@@ -880,6 +1103,11 @@ function resetForContext(): void {
   resetBatchDraft()
   aiBusy.value = false
   aiDraft.value = false
+  directionalOpen.value = false
+  directionalBusy.value = false
+  directionalRequest.value = null
+  directionalSelections.value = {}
+  directionalNotice.value = ''
   releaseComposition()
   invalidatePhotos()
   session.reset()
@@ -908,6 +1136,9 @@ onBeforeUnmount(() => {
   actionCount.value = 0
   batchOpen.value = false
   resetBatchDraft()
+  directionalOpen.value = false
+  directionalBusy.value = false
+  directionalRequest.value = null
   photoGeneration += 1
   releaseComposition()
   unregister()
@@ -923,13 +1154,23 @@ defineExpose({
       state.error = '观察月份变更后请先逐组处理作品日期，或取消日期调整'
       return 'failed'
     }
-    return runExclusive(() => session.saveCurrent())
+    const outcome = await runExclusive(() => session.saveCurrent())
+    clearDirectionalNoticeAfterSave(outcome)
+    return outcome
   },
 })
 </script>
 
 <template>
-  <div class="listening-editor" @compositionstart="onCompositionStart" @compositionend="onCompositionEnd">
+  <div
+    class="listening-editor"
+    @compositionstart="onCompositionStart"
+    @compositionend="onCompositionEnd"
+    @select.capture="rememberDirectionalSelection"
+    @mouseup.capture="rememberDirectionalSelection"
+    @keyup.capture="rememberDirectionalSelection"
+    @blur.capture="rememberDirectionalSelection"
+  >
     <div class="topbar">
       <div class="identity">
         <el-button
@@ -967,7 +1208,7 @@ defineExpose({
         </el-button>
         <el-button
           data-d1="listening-batch-open"
-          :disabled="!canMutate || !!state.unknown"
+          :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
           @click="openBatch"
         >
           批量选择照片
@@ -1138,6 +1379,7 @@ defineExpose({
               type="textarea"
               :rows="2"
               data-d1="listening-goal"
+              data-directional-field="goal"
               :disabled="!canEdit"
               @update:model-value="setField('goal', String($event))"
             />
@@ -1153,6 +1395,11 @@ defineExpose({
               <span v-if="!goalHasMaterial" class="muted">
                 本领域暂无可发送的已存文字或照片材料
               </span>
+              <DirectionalRevisionTrigger
+                test-id="listening-directional-goal"
+                :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+                @request="(whole) => openDirectionalSaved('goal', '', whole)"
+              />
             </div>
           </label>
         </div>
@@ -1231,7 +1478,7 @@ defineExpose({
                 <div v-if="group.asset_id" class="photo-rotate-actions">
                   <el-button
                     size="small"
-                    :disabled="!canMutate || !!state.unknown"
+                    :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
                     data-d1="listening-photo-rotate-left"
                     @click="rotatePhoto(group.group_id, -1)"
                   >
@@ -1239,7 +1486,7 @@ defineExpose({
                   </el-button>
                   <el-button
                     size="small"
-                    :disabled="!canMutate || !!state.unknown"
+                    :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
                     data-d1="listening-photo-rotate-right"
                     @click="rotatePhoto(group.group_id, 1)"
                   >
@@ -1312,9 +1559,23 @@ defineExpose({
                     type="textarea"
                     :rows="5"
                     data-d1="listening-text"
+                    data-directional-field="listening_text"
+                    :data-directional-group-id="group.group_id"
                     :disabled="!canEdit"
                     @update:model-value="
                       setGroupField(group.group_id, 'listening_text', String($event))
+                    "
+                  />
+                  <DirectionalRevisionTrigger
+                    test-id="listening-directional-group-text"
+                    :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+                    @request="
+                      (whole) =>
+                        openDirectionalSaved(
+                          'listening_text',
+                          group.group_id,
+                          whole,
+                        )
                     "
                   />
                 </label>
@@ -1371,8 +1632,17 @@ defineExpose({
               type="textarea"
               :rows="3"
               data-d1="listening-overall"
+              data-directional-field="overall_evaluation"
               :disabled="!canEdit"
               @update:model-value="setField('overall_evaluation', String($event))"
+            />
+            <DirectionalRevisionTrigger
+              test-id="listening-directional-overall"
+              :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+              @request="
+                (whole) =>
+                  openDirectionalSaved('overall_evaluation', '', whole)
+              "
             />
           </label>
           <label class="wide">
@@ -1382,8 +1652,17 @@ defineExpose({
               type="textarea"
               :rows="3"
               data-d1="listening-support"
+              data-directional-field="support_strategy"
               :disabled="!canEdit"
               @update:model-value="setField('support_strategy', String($event))"
+            />
+            <DirectionalRevisionTrigger
+              test-id="listening-directional-support"
+              :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+              @request="
+                (whole) =>
+                  openDirectionalSaved('support_strategy', '', whole)
+              "
             />
           </label>
         </div>
@@ -1396,13 +1675,39 @@ defineExpose({
       :record-id="props.recordId"
       :domain="state.domain"
       :groups="form.groups"
-      :revision="record?.revision ?? 0"
-      :disabled="!canMutate || !!state.unknown"
+      :saved-groups="savedDirectionalGroups"
+      :revision="state.revision"
+      :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
       :profile-epoch="props.profileEpoch ?? 0"
       :ensure-saved="ensureAiSaved"
       @busy="handleAiBusy"
       @draft="handleAiDraft"
       @adopted="handleAiAdopted"
+    />
+
+    <el-alert
+      v-if="directionalNotice"
+      type="success"
+      :closable="false"
+      :title="directionalNotice"
+      class="block"
+      data-d1="listening-directional-notice"
+    />
+
+    <DirectionalRevisionDialog
+      v-if="directionalRequest"
+      :open="directionalOpen"
+      :scope="directionalLiveScope"
+      :field-text="directionalLiveFieldText"
+      :selection="directionalRequest.selection"
+      :profile-epoch="props.profileEpoch ?? 0"
+      :source-label="directionalRequest.sourceLabel"
+      :source-lines="directionalRequest.sourceLines"
+      :source-stale="directionalRequest.sourceStale"
+      :disabled="!canEdit"
+      :apply-adoption="applyDirectionalAdoption"
+      @update:open="directionalOpen = $event"
+      @busy="directionalBusy = $event"
     />
 
     <el-dialog

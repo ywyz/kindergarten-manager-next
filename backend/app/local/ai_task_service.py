@@ -98,9 +98,21 @@ SUPPORTED_CONTRACT_VERSIONS = (PACKAGE_CONTRACT_VERSION,)
 
 def _supports_task_contract(task_type: object, contract_version: object) -> bool:
     """Only weekly prompt tasks may use current contract 2; the rest use v1."""
-    from app.local import curriculum_ai_contracts, weekly_ai_contracts
+    from app.local import (
+        curriculum_ai_contracts,
+        directional_revision_contracts,
+        weekly_ai_contracts,
+    )
 
     if isinstance(task_type, str) and task_type in curriculum_ai_contracts.TASK_TYPES:
+        return (
+            type(contract_version) is int
+            and contract_version in SUPPORTED_CONTRACT_VERSIONS
+        )
+    if (
+        isinstance(task_type, str)
+        and task_type == directional_revision_contracts.TASK_TYPE
+    ):
         return (
             type(contract_version) is int
             and contract_version in SUPPORTED_CONTRACT_VERSIONS
@@ -1095,6 +1107,176 @@ def create_curriculum_task(
         raise
 
 
+def peek_directional_revision_create(
+    session: Session,
+    *,
+    request_id: object,
+    scope: object,
+    field_text: object,
+    selection: object,
+    instruction: object,
+) -> dict[str, Any] | None:
+    from app.local import directional_revision
+
+    normalized = directional_revision.normalize_request(
+        scope=scope,
+        field_text=field_text,
+        selection=selection,
+        instruction=instruction,
+    )
+    return peek_operation(
+        session,
+        request_id=request_id,
+        operation_kind=OP_CREATE,
+        payload=normalized,
+    )
+
+
+def create_directional_revision_task(
+    session: Session,
+    *,
+    runtime: Any,
+    request_id: object,
+    scope: object,
+    field_text: object,
+    selection: object,
+    instruction: object,
+) -> tuple[dict[str, Any], bool]:
+    """Submit one directional-revision task through the shared lifecycle."""
+    from app.local import directional_revision
+    from app.local import directional_revision_contracts
+
+    normalized = directional_revision.normalize_request(
+        scope=scope,
+        field_text=field_text,
+        selection=selection,
+        instruction=instruction,
+    )
+    rid = _normalize_request_id(request_id)
+    fingerprint = _fingerprint(OP_CREATE, normalized)
+    with read_scope(session):
+        profile_id = _profile_id(session)
+        receipt = _find_receipt(session, profile_id, rid)
+    if receipt is not None:
+        return _replay(receipt, OP_CREATE, fingerprint), False
+
+    if runtime is not None:
+        with read_scope(session):
+            projected = directional_revision.project_create(
+                session, profile_id=profile_id, request=normalized
+            )
+        _preflight_ready(runtime, session, directional_revision.TASK_TYPE)
+        directional_revision.preflight_size(session, projected)
+
+    begin_immediate(session)
+    try:
+        profile_id = _profile_id(session)
+        receipt = _find_receipt(session, profile_id, rid)
+        if receipt is not None:
+            result = _replay(receipt, OP_CREATE, fingerprint)
+            rollback(session)
+            return result, False
+        projected = directional_revision.project_create(
+            session, profile_id=profile_id, request=normalized
+        )
+        source_id = projected.weekly_plan_id or projected.listening_record_id
+        if source_id is None:
+            raise LocalStorageError("定向修改来源缺失")
+        active = session.scalars(
+            select(LocalAITask).where(
+                LocalAITask.profile_id == profile_id,
+                LocalAITask.source_kind == directional_revision.SOURCE_KIND,
+                LocalAITask.source_id == source_id,
+                LocalAITask.task_type == directional_revision.TASK_TYPE,
+                LocalAITask.status.in_(LIVE_STATUSES),
+            )
+        ).first()
+        if active is not None:
+            raise LocalAiTaskActive(details={"task_id": active.id})
+        _require_ai_ready(session, directional_revision.TASK_TYPE)
+        now = _now()
+        operation_id = new_opaque_id()
+        task_id = new_opaque_id()
+        input_id = new_opaque_id()
+        result = {
+            "id": task_id,
+            "status": "pending",
+            "reason": None,
+            "candidate": None,
+        }
+        session.add(
+            LocalAIOperation(
+                id=operation_id,
+                profile_id=profile_id,
+                request_id=rid,
+                operation_kind=OP_CREATE,
+                request_fingerprint=fingerprint,
+                fingerprint_kind="sha256",
+                fingerprint_key_id=None,
+                result_json=result,
+                created_at=now,
+            )
+        )
+        session.flush()
+        session.add(
+            LocalAIInput(
+                id=input_id,
+                profile_id=profile_id,
+                source_kind=directional_revision.SOURCE_KIND,
+                source_id=source_id,
+                observation_id=None,
+                source_revision=projected.source_revision,
+                daily_plan_id=None,
+                content_id=None,
+                content_version=None,
+                weekly_plan_id=projected.weekly_plan_id,
+                weekly_draft_id=projected.weekly_draft_id,
+                listening_record_id=projected.listening_record_id,
+                listening_domain=projected.listening_domain,
+                listening_group_id=projected.listening_group_id,
+                create_operation_id=operation_id,
+                task_type=directional_revision.TASK_TYPE,
+                target_grade=None,
+                input_schema_version=(
+                    directional_revision_contracts.INPUT_SCHEMA_VERSION
+                ),
+                payload_json=projected.payload,
+                dependencies_json=projected.dependencies,
+                dependency_hash=projected.dependency_hash,
+                target_hashes_json=projected.target_hashes,
+                created_at=now,
+            )
+        )
+        task = LocalAITask(
+            id=task_id,
+            profile_id=profile_id,
+            source_kind=directional_revision.SOURCE_KIND,
+            source_id=source_id,
+            observation_id=None,
+            daily_plan_id=None,
+            weekly_plan_id=projected.weekly_plan_id,
+            listening_record_id=projected.listening_record_id,
+            listening_domain=projected.listening_domain,
+            listening_group_id=projected.listening_group_id,
+            task_type=directional_revision.TASK_TYPE,
+            input_id=input_id,
+            status="pending",
+            reason=None,
+            current_execution_id=None,
+            generation=0,
+            runtime_meta_json=_meta(CERTAINTY_NOT_SENT),
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(task)
+        session.flush()
+        session.commit()
+        return result, True
+    except BaseException:
+        rollback(session)
+        raise
+
+
 # ---------------------------------------------------------------------------
 # List / detail
 # ---------------------------------------------------------------------------
@@ -1391,6 +1573,13 @@ def cancel_task(
 
 
 def _revalidate_source(session: Session, task: LocalAITask) -> bool:
+    if task.source_kind == "directional_revision":
+        from app.local import directional_revision
+
+        try:
+            return directional_revision.revalidate_source(session, task)
+        except Exception:  # noqa: BLE001 - a corrupt source is not claimable
+            return False
     if task.source_kind == "curriculum_deliberation":
         from app.local import curriculum_ai
 
@@ -2662,7 +2851,15 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
         return finalize_failure(session, claim, result, now)
     input_row = session.get(LocalAIInput, claim.input_id)
     try:
-        if claim.source_kind == "curriculum_deliberation":
+        if claim.source_kind == "directional_revision":
+            from app.local import directional_revision
+
+            inp = session.get(LocalAIInput, claim.input_id)
+            if inp is None:
+                raise ValueError("input_missing")
+            parsed = ai_transport.parse_strict_json_object(text)
+            validated = directional_revision.validate_candidate(parsed, inp)
+        elif claim.source_kind == "curriculum_deliberation":
             from app.local import curriculum_ai
 
             inp = session.get(LocalAIInput, claim.input_id)

@@ -1096,7 +1096,7 @@ class CurriculumMigrationTests(LocalTestCase):
         runtime = self.make_runtime()
         self.assertEqual(
             runtime.current_revision,
-            "20261110_0018_local_curriculum_ai",
+            "20261110_0019_local_directional_revisions",
         )
         db = runtime.db_path
         tables = {

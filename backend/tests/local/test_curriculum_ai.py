@@ -1459,7 +1459,7 @@ class CurriculumAIMigrationTests(LocalTestCase):
                 connection.execute(
                     "SELECT version_num FROM local_alembic_version"
                 ).fetchone()[0],
-                "20261110_0018_local_curriculum_ai",
+                "20261110_0019_local_directional_revisions",
             )
             self.assertEqual(
                 connection.execute(

@@ -45,7 +45,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
-from app.local import config_ai_contracts, curriculum_ai_contracts
+from app.local import (
+    config_ai_contracts,
+    curriculum_ai_contracts,
+    directional_revision_contracts,
+)
 from app.local.base import utc_now
 from app.local.errors import (
     LocalPromptBundleConflict,
@@ -99,12 +103,16 @@ LISTENING_TASK_TYPES: tuple[str, ...] = (
 )
 CONFIG_TASK_TYPES: tuple[str, ...] = config_ai_contracts.TASK_TYPES
 CURRICULUM_TASK_TYPES: tuple[str, ...] = curriculum_ai_contracts.TASK_TYPES
+DIRECTIONAL_TASK_TYPES: tuple[str, ...] = (
+    directional_revision_contracts.TASK_TYPE,
+)
 NEW_TASK_TYPES: tuple[str, ...] = (
     OBSERVATION_TASK_TYPES
     + WEEKLY_TASK_TYPES
     + LISTENING_TASK_TYPES
     + CONFIG_TASK_TYPES
     + CURRICULUM_TASK_TYPES
+    + DIRECTIONAL_TASK_TYPES
 )
 REGISTERED_TASK_TYPES: tuple[str, ...] = TASK_TYPES + NEW_TASK_TYPES
 # Missing personal heads are backfilled for these newly added task types only.
@@ -1000,11 +1008,26 @@ def _curriculum_bundle_manifest() -> tuple[dict, ...]:
     )
 
 
+def _directional_bundle_manifest() -> tuple[dict, ...]:
+    return tuple(
+        _bundle(
+            item["task_type"],
+            item["input_schema_json"],
+            item["output_schema_json"],
+            dict(item["guidance_defaults_json"]),
+            contract_version=item["contract_version"],
+            default_revision=item["default_revision"],
+        )
+        for item in directional_revision_contracts.bundle_definitions()
+    )
+
+
 PROMPT_BUNDLE_MANIFEST = (
     PROMPT_BUNDLE_MANIFEST
     + _weekly_bundle_manifest()
     + _listening_bundle_manifest()
     + _curriculum_bundle_manifest()
+    + _directional_bundle_manifest()
 )
 
 GUIDANCE_FIELDS: dict[str, tuple[str, ...]] = {
@@ -2303,6 +2326,7 @@ __all__ = [
     "LISTENING_TASK_TYPES",
     "CONFIG_TASK_TYPES",
     "CURRICULUM_TASK_TYPES",
+    "DIRECTIONAL_TASK_TYPES",
     "BACKFILL_TASK_TYPES",
     "INITIAL_REQUIRED_TASK_TYPES",
     "REGISTERED_TASK_TYPES",

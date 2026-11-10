@@ -4,7 +4,7 @@
  * per-target adoption.  It only operates on server-projected saved material.
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { ApiError } from '../client'
+import { ApiError, getSessionEpoch } from '../client'
 import {
   adoptListeningAICandidate,
   createListeningAITask,
@@ -28,6 +28,19 @@ import {
   type ListeningGroupNoteProposal,
 } from '../listening-ai'
 import { newRequestId, type ListeningDomain } from '../listening'
+import DirectionalRevisionDialog from './DirectionalRevisionDialog.vue'
+import DirectionalRevisionTrigger from './DirectionalRevisionTrigger.vue'
+import {
+  captureDirectionalSelection,
+  directionalSelectionKey,
+  validateDirectionalSelection,
+  wholeDirectionalSelection,
+  type DirectionalAdoptPayload,
+  type DirectionalApplyResult,
+  type DirectionalOpenRequest,
+  type DirectionalScope,
+  type DirectionalSelection,
+} from '../directional-revision'
 
 interface GroupRef {
   group_id: string
@@ -40,6 +53,7 @@ const props = defineProps<{
   recordId: string
   domain: ListeningDomain
   groups: GroupRef[]
+  savedGroups?: Array<{ group_id: string; position: number | null }>
   revision: number
   disabled?: boolean
   profileEpoch?: number
@@ -92,6 +106,12 @@ const itemValues = ref<Record<string, number | null>>({})
 const selectedTargets = ref<string[]>([])
 const draft = ref(false)
 const edited = ref(false)
+const directionalOpen = ref(false)
+const directionalBusy = ref(false)
+const directionalRequest = ref<DirectionalOpenRequest | null>(null)
+const directionalSelections = ref<Record<string, DirectionalSelection>>({})
+const directionalNotice = ref('')
+const directionalNoticeTarget = ref('')
 // A consumed target keeps the value the teacher actually adopted.  Target
 // states from a later preview may still call it eligible, but it must not be
 // re-counted as an unsaved candidate edit merely because the raw model
@@ -102,7 +122,12 @@ let timer: ReturnType<typeof setTimeout> | null = null
 let generation = 0
 
 const busy = computed(
-  () => taskLoading.value || creating.value || candidateLoading.value || adopting.value,
+  () =>
+    taskLoading.value ||
+    creating.value ||
+    candidateLoading.value ||
+    adopting.value ||
+    directionalBusy.value,
 )
 watch(busy, (value) => emit('busy', value), { immediate: true })
 watch(draft, (value) => emit('draft', value), { immediate: true })
@@ -223,6 +248,12 @@ function clearTransient(): void {
   edited.value = false
   draft.value = false
   activeTaskId.value = ''
+  directionalOpen.value = false
+  directionalBusy.value = false
+  directionalRequest.value = null
+  directionalSelections.value = {}
+  directionalNotice.value = ''
+  directionalNoticeTarget.value = ''
   clearAdoptTicket()
 }
 
@@ -604,12 +635,328 @@ function setGroupNoteText(target: string, value: string): void {
   markDraft()
 }
 
+function directionalSavedGroupId(position: number | null): string {
+  return (
+    props.savedGroups?.find((group) => group.position === position)
+      ?.group_id ?? ''
+  )
+}
+
+function savedGroupExists(groupId: string): boolean {
+  return (
+    Boolean(groupId) &&
+    (props.savedGroups ?? []).some((group) => group.group_id === groupId)
+  )
+}
+
+function candidateFieldText(field: string, target = ''): string {
+  if (field === 'listening_text') {
+    if (target) return groupNoteTexts.value[target] ?? ''
+    return noteText.value
+  }
+  if (field === 'goal') return goalText.value
+  if (field === 'overall_evaluation') return overallText.value
+  if (field === 'support_strategy') return supportText.value
+  return ''
+}
+
+function candidateFieldDirty(field: string, target = ''): boolean {
+  if (field === 'listening_text') {
+    if (target) {
+      return (
+        groupNoteValue(target) !==
+        String(candidateBaseline.value[target] ?? '')
+      )
+    }
+    return (
+      noteText.value !==
+      String(candidateBaseline.value.listening_text ?? '')
+    )
+  }
+  if (field === 'goal') {
+    return goalText.value !== String(candidateBaseline.value.goal ?? '')
+  }
+  if (field === 'overall_evaluation') {
+    return (
+      overallText.value !==
+      String(candidateBaseline.value.overall_evaluation ?? '')
+    )
+  }
+  if (field === 'support_strategy') {
+    return (
+      supportText.value !==
+      String(candidateBaseline.value.support_strategy ?? '')
+    )
+  }
+  return false
+}
+
+
+const directionalLiveScope = computed<DirectionalScope | null>(() => {
+  const request = directionalRequest.value
+  if (!request) return null
+  const envelope = candidate.value
+  return {
+    ...request.scope,
+    version: props.revision,
+    domain: props.domain,
+    ...(envelope
+      ? {
+          candidate_id: envelope.candidate_id,
+          task_id: envelope.task.task_id,
+        }
+      : {}),
+  }
+})
+
+const directionalLiveFieldText = computed(() => {
+  const request = directionalRequest.value
+  return request
+    ? candidateFieldText(request.scope.field, request.target)
+    : ''
+})
+
+function rememberDirectionalSelection(event: Event): void {
+  const captured = captureDirectionalSelection(event)
+  if (!captured) return
+  directionalSelections.value = {
+    ...directionalSelections.value,
+    [captured.key]: captured.selection,
+  }
+}
+
+function openDirectionalCandidate(
+  target: string,
+  field: string,
+  groupId: string,
+  whole: boolean,
+): void {
+  if (props.disabled || busy.value || !candidate.value || !preview.value) {
+    return
+  }
+  const targetKey =
+    field === 'listening_text' ? target || 'listening_text' : field
+  if (!targetIsEditable(targetKey)) {
+    error.value = '该候选目标已采用、已被手改或不再可核对，未发起定向修改'
+    return
+  }
+  if (field === 'listening_text') {
+    if (target) {
+      const note = groupNotes.value.find((item) => item.target === target)
+      const savedGroupId = note
+        ? directionalSavedGroupId(note.position)
+        : ''
+      if (!savedGroupId || savedGroupId !== groupId) {
+        error.value =
+          '未找到该组稳定的已保存位置映射，未发起定向修改；请先保存组顺序'
+        return
+      }
+    } else if (!savedGroupExists(groupId)) {
+      error.value =
+        '未找到该单图候选的已保存组标识，未发起定向修改'
+      return
+    }
+  }
+  const text = candidateFieldText(field, target)
+  const key = directionalSelectionKey(
+    field,
+    groupId,
+    candidate.value.candidate_id,
+  )
+  const selection = whole
+    ? wholeDirectionalSelection(text)
+    : directionalSelections.value[key]
+  if (!selection) {
+    error.value = '请先在候选正文中选择文字，或使用「整栏修改」'
+    return
+  }
+  if (!whole && text === '') {
+    error.value = '空栏请使用「整栏修改」明确范围'
+    return
+  }
+  const selectionError = validateDirectionalSelection(text, selection)
+  if (selectionError) {
+    error.value = selectionError
+    return
+  }
+  const note = groupNotes.value.find((item) => item.target === target)
+  const uncertainties = Array.isArray(preview.value.proposed.uncertainties)
+    ? (preview.value.proposed.uncertainties as string[])
+    : []
+  const label =
+    field === 'listening_text'
+      ? note
+        ? `第 ${note.position + 1} 组倾听正文（AI 候选）`
+        : '倾听正文（旧版单张候选）'
+      : field === 'goal'
+        ? '观察目标（AI 候选）'
+        : field === 'overall_evaluation'
+          ? '综合评价（AI 候选）'
+          : '支持策略（AI 候选）'
+  const sourceLines = [
+    `记录版本 v${props.revision}`,
+    ...(note
+      ? [`当前已保存：${note.current || '未填写'}`, ...note.uncertainties]
+      : []),
+    ...(field === 'listening_text'
+      ? [
+          ...(preview.value.proposed.photo_only
+            ? ['仅据照片起草，待教师核实；不会把画面推断写成幼儿原话']
+            : []),
+          ...uncertainties,
+        ]
+      : uncertainties),
+    '采用本次建议只改候选待采用区，不会自动写入记录；仍需勾选并点击采用',
+  ]
+  const scope: DirectionalScope = {
+    kind: 'listening_candidate',
+    record_id: props.recordId,
+    version: props.revision,
+    candidate_id: candidate.value.candidate_id,
+    task_id: candidate.value.task.task_id,
+    domain: props.domain,
+    ...(field === 'listening_text' && groupId
+      ? { group_id: groupId }
+      : {}),
+    field,
+  }
+  directionalRequest.value = {
+    scope,
+    fieldText: text,
+    selection,
+    sourceLabel: label,
+    sourceLines,
+    sourceStale: candidateFieldDirty(field, target),
+    ...(target ? { target } : {}),
+  }
+  directionalOpen.value = true
+}
 
 function targetIsEditable(target: string): boolean {
   return (
     preview.value?.target_states[target] === 'eligible' &&
     !consumedTargets.value[target]
   )
+}
+
+function applyDirectionalAdoption(
+  payload: DirectionalAdoptPayload,
+): DirectionalApplyResult {
+  const request = directionalRequest.value
+  const envelope = candidate.value
+  if (
+    !request ||
+    !envelope ||
+    payload.snapshot.scope.kind !== 'listening_candidate'
+  ) {
+    return { ok: false, message: '定向修改候选已失效，请重新选择' }
+  }
+  const submitted = payload.snapshot
+  if (
+    submitted.scope.record_id !== props.recordId ||
+    submitted.scope.version !== props.revision ||
+    submitted.scope.domain !== props.domain ||
+    submitted.scope.candidate_id !== envelope.candidate_id ||
+    (submitted.scope.task_id ?? '') !== envelope.task.task_id ||
+    submitted.scope.field !== request.scope.field ||
+    (submitted.scope.group_id ?? '') !== (request.scope.group_id ?? '')
+  ) {
+    return {
+      ok: false,
+      message: '记录、领域、候选或版本已变化：候选和前后文字已保留，请重新选择',
+    }
+  }
+  if (submitted.profileEpoch !== (props.profileEpoch ?? 0)) {
+    return { ok: false, message: '本地档案已切换：未采用，请重新选择' }
+  }
+  if (submitted.sessionEpoch !== getSessionEpoch()) {
+    return { ok: false, message: '本机会话已变化：未采用，请重新选择' }
+  }
+  const targetKey =
+    submitted.scope.field === 'listening_text'
+      ? request.target || 'listening_text'
+      : submitted.scope.field
+  if (!targetIsEditable(targetKey)) {
+    return {
+      ok: false,
+      message: '该候选目标已采用、已被手改或不再可核对，未采用',
+    }
+  }
+  if (
+    submitted.scope.field === 'listening_text' &&
+    request.target
+  ) {
+    const note = groupNotes.value.find(
+      (item) => item.target === request.target,
+    )
+    const savedGroupId = note
+      ? directionalSavedGroupId(note.position)
+      : ''
+    if (
+      !savedGroupId ||
+      savedGroupId !== (submitted.scope.group_id ?? '')
+    ) {
+      return {
+        ok: false,
+        message: '已保存组位映射已变化：候选和前后文字已保留，请重新选择',
+      }
+    }
+  }
+  if (
+    submitted.scope.field === 'listening_text' &&
+    !request.target
+  ) {
+    if (
+      !savedGroupExists(submitted.scope.group_id ?? '') ||
+      submitted.scope.group_id !== envelope.task.listening_group_id
+    ) {
+      return {
+        ok: false,
+        message: '单图候选的已保存组标识已变化：候选和前后文字已保留，请重新选择',
+      }
+    }
+  }
+  const currentText = candidateFieldText(
+    submitted.scope.field,
+    request.target,
+  )
+  if (currentText !== submitted.fieldText) {
+    return {
+      ok: false,
+      message: '当前候选文字已变化：候选和前后文字已保留，请重新选择',
+    }
+  }
+  const selectionError = validateDirectionalSelection(
+    currentText,
+    submitted.selection,
+  )
+  if (selectionError) {
+    return { ok: false, message: selectionError }
+  }
+  if (submitted.scope.field === 'listening_text') {
+    if (request.target) {
+      setGroupNoteText(request.target, payload.fieldAfter)
+    } else {
+      noteText.value = payload.fieldAfter
+      markDraft()
+    }
+  } else if (submitted.scope.field === 'goal') {
+    goalText.value = payload.fieldAfter
+    markDraft()
+  } else if (submitted.scope.field === 'overall_evaluation') {
+    overallText.value = payload.fieldAfter
+    markDraft()
+  } else if (submitted.scope.field === 'support_strategy') {
+    supportText.value = payload.fieldAfter
+    markDraft()
+  } else {
+    return { ok: false, message: '该候选字段不支持定向修改，未采用' }
+  }
+  directionalNotice.value =
+    '已写入候选待采用区，尚未写入记录；仍需勾选并点击「采用所选项」'
+  directionalNoticeTarget.value = targetKey
+  directionalOpen.value = false
+  return { ok: true }
 }
 
 function adoptBaselineValue(
@@ -638,6 +985,15 @@ function consumeAdoptedTargets(
         (item.stars as number | null | undefined) ?? null,
       )
     }
+  }
+  if (
+    directionalNoticeTarget.value &&
+    adopted.some(
+      (item) => String(item.target) === directionalNoticeTarget.value,
+    )
+  ) {
+    directionalNotice.value = ''
+    directionalNoticeTarget.value = ''
   }
 }
 
@@ -938,6 +1294,9 @@ onBeforeUnmount(() => {
   stopPolling()
   clearPhaseFlags()
   pendingCreate.value = null
+  directionalOpen.value = false
+  directionalBusy.value = false
+  directionalRequest.value = null
   clearTransient()
   emit('busy', false)
   emit('draft', false)
@@ -951,7 +1310,15 @@ defineExpose({ reset, markDraft, startGoal })
 </script>
 
 <template>
-  <el-card shadow="never" class="ai-panel" data-d1="listening-ai-panel">
+  <el-card
+    shadow="never"
+    class="ai-panel"
+    data-d1="listening-ai-panel"
+    @select.capture="rememberDirectionalSelection"
+    @mouseup.capture="rememberDirectionalSelection"
+    @keyup.capture="rememberDirectionalSelection"
+    @blur.capture="rememberDirectionalSelection"
+  >
     <template #header>
       <div class="ai-header">
         <span>AI 建议</span>
@@ -1021,6 +1388,14 @@ defineExpose({ reset, markDraft, startGoal })
     </el-alert>
 
     <p v-if="adoptedMessage" class="muted" data-d1="listening-ai-adopted">{{ adoptedMessage }}</p>
+    <el-alert
+      v-if="directionalNotice"
+      type="success"
+      :closable="false"
+      :title="directionalNotice"
+      class="block"
+      data-d1="listening-ai-directional-notice"
+    />
 
     <div v-if="activeTask && !candidate" class="task-status" data-d1="listening-ai-task">
       <span>任务 {{ activeTask.task_id.slice(0, 8) }} · {{ statusLabel(activeTask.status) }}</span>
@@ -1064,8 +1439,24 @@ defineExpose({ reset, markDraft, startGoal })
             type="textarea"
             :rows="4"
             :data-d1="`listening-ai-group-note-text-${note.position}`"
-            :disabled="adopting || !!adoptRequestId"
+            data-directional-field="listening_text"
+            :data-directional-group-id="directionalSavedGroupId(note.position)"
+            :data-directional-candidate-id="candidate.candidate_id"
+            :disabled="adopting || !!adoptRequestId || directionalBusy"
             @update:model-value="setGroupNoteText(note.target, String($event))"
+          />
+          <DirectionalRevisionTrigger
+            test-id="listening-directional-group-note"
+            :disabled="adopting || !!adoptRequestId || directionalBusy"
+            @request="
+              (whole) =>
+                openDirectionalCandidate(
+                  note.target,
+                  'listening_text',
+                  directionalSavedGroupId(note.position),
+                  whole,
+                )
+            "
           />
           <div class="muted">当前：{{ note.current || '未填写' }}</div>
           <div v-if="note.uncertainties.length" class="muted">
@@ -1091,8 +1482,24 @@ defineExpose({ reset, markDraft, startGoal })
           type="textarea"
           :rows="5"
           data-d1="listening-ai-note-text"
-          :disabled="adopting || !!adoptRequestId"
+          data-directional-field="listening_text"
+          :data-directional-group-id="candidate?.task.listening_group_id ?? ''"
+          :data-directional-candidate-id="candidate.candidate_id"
+          :disabled="adopting || !!adoptRequestId || directionalBusy"
           @update:model-value="markDraft"
+        />
+        <DirectionalRevisionTrigger
+          test-id="listening-directional-note"
+          :disabled="adopting || !!adoptRequestId || directionalBusy"
+          @request="
+            (whole) =>
+              openDirectionalCandidate(
+                '',
+                'listening_text',
+                candidate?.task.listening_group_id ?? '',
+                whole,
+              )
+          "
         />
         <div v-if="(preview.proposed.uncertainties as string[]).length" class="muted">
           待核实：{{ (preview.proposed.uncertainties as string[]).join('；') }}
@@ -1117,8 +1524,17 @@ defineExpose({ reset, markDraft, startGoal })
           type="textarea"
           :rows="3"
           data-d1="listening-ai-goal-text"
-          :disabled="adopting || !!adoptRequestId"
+          data-directional-field="goal"
+          :data-directional-candidate-id="candidate.candidate_id"
+          :disabled="adopting || !!adoptRequestId || directionalBusy"
           @update:model-value="markDraft"
+        />
+        <DirectionalRevisionTrigger
+          test-id="listening-directional-candidate-goal"
+          :disabled="adopting || !!adoptRequestId || directionalBusy"
+          @request="
+            (whole) => openDirectionalCandidate('', 'goal', '', whole)
+          "
         />
         <div
           v-if="(preview.proposed.uncertainties as string[]).length"
@@ -1144,8 +1560,18 @@ defineExpose({ reset, markDraft, startGoal })
             type="textarea"
             :rows="3"
             data-d1="listening-ai-overall-text"
-            :disabled="adopting || !!adoptRequestId"
+            data-directional-field="overall_evaluation"
+            :data-directional-candidate-id="candidate.candidate_id"
+            :disabled="adopting || !!adoptRequestId || directionalBusy"
             @update:model-value="markDraft"
+          />
+          <DirectionalRevisionTrigger
+            test-id="listening-directional-candidate-overall"
+            :disabled="adopting || !!adoptRequestId || directionalBusy"
+            @request="
+              (whole) =>
+                openDirectionalCandidate('', 'overall_evaluation', '', whole)
+            "
           />
         </div>
         <div class="target-block">
@@ -1163,8 +1589,18 @@ defineExpose({ reset, markDraft, startGoal })
             type="textarea"
             :rows="3"
             data-d1="listening-ai-support-text"
-            :disabled="adopting || !!adoptRequestId"
+            data-directional-field="support_strategy"
+            :data-directional-candidate-id="candidate.candidate_id"
+            :disabled="adopting || !!adoptRequestId || directionalBusy"
             @update:model-value="markDraft"
+          />
+          <DirectionalRevisionTrigger
+            test-id="listening-directional-candidate-support"
+            :disabled="adopting || !!adoptRequestId || directionalBusy"
+            @request="
+              (whole) =>
+                openDirectionalCandidate('', 'support_strategy', '', whole)
+            "
           />
         </div>
         <div
@@ -1215,6 +1651,22 @@ defineExpose({ reset, markDraft, startGoal })
         </el-button>
       </div>
     </template>
+
+    <DirectionalRevisionDialog
+      v-if="directionalRequest"
+      :open="directionalOpen"
+      :scope="directionalLiveScope"
+      :field-text="directionalLiveFieldText"
+      :selection="directionalRequest.selection"
+      :profile-epoch="props.profileEpoch ?? 0"
+      :source-label="directionalRequest.sourceLabel"
+      :source-lines="directionalRequest.sourceLines"
+      :source-stale="directionalRequest.sourceStale"
+      :disabled="props.disabled"
+      :apply-adoption="applyDirectionalAdoption"
+      @update:open="directionalOpen = $event"
+      @busy="directionalBusy = $event"
+    />
   </el-card>
 </template>
 

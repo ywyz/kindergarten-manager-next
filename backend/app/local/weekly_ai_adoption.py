@@ -260,12 +260,23 @@ def _apply_candidate_edit(
             if not isinstance(original_item, Mapping):
                 raise LocalValidationError("原材料项损坏")
             item = copy.deepcopy(dict(original_item))
-            item["text"] = _edit_text(
+            original_text = item.get("text")
+            new_text = _edit_text(
                 raw_item.get("text"),
                 f"edit.items[{index}].text",
                 maximum=weekly_ai_contracts.MAX_MATERIAL_ITEM_TEXT,
                 nonempty=True,
             )
+            item["text"] = new_text
+            if (
+                item.get("origin") == "extracted"
+                and new_text != original_text
+            ):
+                # A rewritten extraction is no longer the original quotation.
+                # Keep it as an AI suggestion and never retain evidence that
+                # would falsely claim the new text still matches the source.
+                item["origin"] = "suggested"
+                item["evidence_refs"] = []
             result_items.append(item)
         return {**original, "items": result_items}
     if target != "games":

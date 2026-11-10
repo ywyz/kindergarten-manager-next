@@ -229,6 +229,7 @@ class Harness {
         if (spec === '../types' || spec === '../leave') return {}
         if (spec === '../client') return {
           ApiError,
+          getSessionEpoch: () => 1,
           apiGet: () => Promise.reject(new Error('unexpected apiGet')),
           apiPost: () => Promise.reject(new Error('unexpected apiPost')),
           apiPatch: () => Promise.reject(new Error('unexpected apiPatch')),
@@ -240,6 +241,21 @@ class Harness {
         if (spec === '../observation-photos') return { PhotoUrlCache: harness.PhotoCacheClass }
         if (spec === '../components/ListeningExportDialog.vue') return { default: {} }
         if (spec === '../components/ListeningAiPanel.vue') return { default: {} }
+        if (spec === '../components/DirectionalRevisionDialog.vue') return { default: {} }
+        if (spec === '../components/DirectionalRevisionTrigger.vue') return { default: {} }
+        if (spec === '../directional-revision') {
+          return {
+            captureDirectionalSelection: () => null,
+            directionalSelectionKey: (field, group = '', candidate = '') =>
+              `${candidate}:${field}:${group}`,
+            validateDirectionalSelection: () => '',
+            wholeDirectionalSelection: (text) => ({
+              start: 0,
+              end: text.length,
+              text,
+            }),
+          }
+        }
         if (spec === '../listening') return harness.listening
         throw new Error(`unexpected import ${spec} from ${file}`)
       },

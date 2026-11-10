@@ -726,7 +726,8 @@ class LocalPromptBundle(LocalBase):
             "'listening_domain_evaluate', 'listening_group_notes', "
             "'listening_goal_suggest', 'class_game_config_extract', "
             "'daily_reflection_generate', 'curriculum_split', "
-            "'curriculum_review', 'curriculum_edit')",
+            "'curriculum_review', 'curriculum_edit', "
+            "'directional_revision')",
             name="ck_local_prompt_bundles_task_type",
         ),
         CheckConstraint(
@@ -916,11 +917,12 @@ class LocalAIInput(LocalBase):
             "'listening_domain_evaluate', 'listening_group_notes', "
             "'listening_goal_suggest', 'class_game_config_extract', "
             "'daily_reflection_generate', 'curriculum_split', "
-            "'curriculum_review', 'curriculum_edit')",
+            "'curriculum_review', 'curriculum_edit', "
+            "'directional_revision')",
             name="ck_local_ai_inputs_task_type",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config', 'curriculum_deliberation')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config', 'curriculum_deliberation', 'directional_revision')",
             name="ck_local_ai_inputs_source_kind",
         ),
         CheckConstraint(
@@ -1005,11 +1007,31 @@ class LocalAIInput(LocalBase):
             "AND create_operation_id IS NULL "
             "AND (target_grade IS NULL OR target_grade IN ('small', 'middle', 'large')) "
             "AND source_revision IS NOT NULL "
-            "AND typeof(source_revision) = 'integer' AND source_revision >= 0)",
+            "AND typeof(source_revision) = 'integer' AND source_revision >= 0) "
+            "OR "
+            "(source_kind = 'directional_revision' "
+            "AND task_type = 'directional_revision' "
+            "AND daily_plan_id IS NULL AND content_id IS NULL "
+            "AND content_version IS NULL "
+            "AND observation_id IS NULL AND target_grade IS NULL "
+            "AND create_operation_id IS NOT NULL "
+            "AND source_revision IS NOT NULL "
+            "AND typeof(source_revision) = 'integer' AND source_revision >= 1 "
+            "AND ("
+            "(source_id = listening_record_id "
+            "AND listening_record_id IS NOT NULL "
+            "AND listening_domain IS NOT NULL "
+            "AND weekly_plan_id IS NULL AND weekly_draft_id IS NULL) "
+            "OR "
+            "(source_id = weekly_plan_id "
+            "AND weekly_plan_id IS NOT NULL AND weekly_draft_id IS NOT NULL "
+            "AND listening_record_id IS NULL AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)"
+            "))",
             name="ck_local_ai_inputs_source_match",
         ),
         CheckConstraint(
-            "source_kind = 'one_to_one_listening' "
+            "source_kind IN ('one_to_one_listening', 'directional_revision') "
             "OR (listening_record_id IS NULL "
             "AND listening_domain IS NULL "
             "AND listening_group_id IS NULL)",
@@ -1135,7 +1157,7 @@ class LocalAITask(LocalBase):
             name="ck_local_ai_tasks_status",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config', 'curriculum_deliberation')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config', 'curriculum_deliberation', 'directional_revision')",
             name="ck_local_ai_tasks_source_kind",
         ),
         CheckConstraint(
@@ -1186,11 +1208,24 @@ class LocalAITask(LocalBase):
             "AND daily_plan_id IS NULL AND observation_id IS NULL "
             "AND weekly_plan_id IS NULL "
             "AND listening_record_id IS NULL AND listening_domain IS NULL "
-            "AND listening_group_id IS NULL)",
+            "AND listening_group_id IS NULL) "
+            "OR "
+            "(source_kind = 'directional_revision' "
+            "AND task_type = 'directional_revision' "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND ("
+            "(weekly_plan_id IS NULL AND source_id = listening_record_id "
+            "AND listening_record_id IS NOT NULL "
+            "AND listening_domain IS NOT NULL) "
+            "OR "
+            "(weekly_plan_id IS NOT NULL AND source_id = weekly_plan_id "
+            "AND listening_record_id IS NULL AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)"
+            "))",
             name="ck_local_ai_tasks_source_match",
         ),
         CheckConstraint(
-            "source_kind = 'one_to_one_listening' "
+            "source_kind IN ('one_to_one_listening', 'directional_revision') "
             "OR (listening_record_id IS NULL "
             "AND listening_domain IS NULL "
             "AND listening_group_id IS NULL)",
@@ -1427,7 +1462,7 @@ class LocalAIExecution(LocalBase):
             name="ck_local_ai_executions_state",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config', 'curriculum_deliberation')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config', 'curriculum_deliberation', 'directional_revision')",
             name="ck_local_ai_executions_source_kind",
         ),
         CheckConstraint(
@@ -1478,11 +1513,24 @@ class LocalAIExecution(LocalBase):
             "AND daily_plan_id IS NULL AND observation_id IS NULL "
             "AND weekly_plan_id IS NULL "
             "AND listening_record_id IS NULL AND listening_domain IS NULL "
-            "AND listening_group_id IS NULL)",
+            "AND listening_group_id IS NULL) "
+            "OR "
+            "(source_kind = 'directional_revision' "
+            "AND task_type = 'directional_revision' "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND ("
+            "(weekly_plan_id IS NULL AND source_id = listening_record_id "
+            "AND listening_record_id IS NOT NULL "
+            "AND listening_domain IS NOT NULL) "
+            "OR "
+            "(weekly_plan_id IS NOT NULL AND source_id = weekly_plan_id "
+            "AND listening_record_id IS NULL AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)"
+            "))",
             name="ck_local_ai_executions_source_match",
         ),
         CheckConstraint(
-            "source_kind = 'one_to_one_listening' "
+            "source_kind IN ('one_to_one_listening', 'directional_revision') "
             "OR (listening_record_id IS NULL "
             "AND listening_domain IS NULL "
             "AND listening_group_id IS NULL)",
@@ -1687,7 +1735,7 @@ class LocalAICandidate(LocalBase):
             name="ck_local_ai_candidates_schema_version",
         ),
         CheckConstraint(
-            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config', 'curriculum_deliberation')",
+            "source_kind IN ('daily_plan', 'game_observation', 'weekly_plan', 'one_to_one_listening', 'class_game_config', 'curriculum_deliberation', 'directional_revision')",
             name="ck_local_ai_candidates_source_kind",
         ),
         CheckConstraint(
@@ -1738,11 +1786,24 @@ class LocalAICandidate(LocalBase):
             "AND daily_plan_id IS NULL AND observation_id IS NULL "
             "AND weekly_plan_id IS NULL "
             "AND listening_record_id IS NULL AND listening_domain IS NULL "
-            "AND listening_group_id IS NULL)",
+            "AND listening_group_id IS NULL) "
+            "OR "
+            "(source_kind = 'directional_revision' "
+            "AND task_type = 'directional_revision' "
+            "AND daily_plan_id IS NULL AND observation_id IS NULL "
+            "AND ("
+            "(weekly_plan_id IS NULL AND source_id = listening_record_id "
+            "AND listening_record_id IS NOT NULL "
+            "AND listening_domain IS NOT NULL) "
+            "OR "
+            "(weekly_plan_id IS NOT NULL AND source_id = weekly_plan_id "
+            "AND listening_record_id IS NULL AND listening_domain IS NULL "
+            "AND listening_group_id IS NULL)"
+            "))",
             name="ck_local_ai_candidates_source_match",
         ),
         CheckConstraint(
-            "source_kind = 'one_to_one_listening' "
+            "source_kind IN ('one_to_one_listening', 'directional_revision') "
             "OR (listening_record_id IS NULL "
             "AND listening_domain IS NULL "
             "AND listening_group_id IS NULL)",

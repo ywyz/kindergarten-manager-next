@@ -1,5 +1,15 @@
 # 当前任务
 
+## 一对一倾听与本机周计划的 AI 定向修改
+
+2026-11-10 从 `codex/teaching-documents-design` 的 `f6368c0` 接续。教师授权按[已标定的位置](../specs/desktop-curriculum-deliberation.md#一对一倾听与周计划的定向修改位置)实现选段、输入意见、预览差异和明确采用。课程审议与原有周计划整份重新生成流程沿用。Certum 证书待到位后再接续签名与安装包测试。
+
+本轮功能已通过 Codex 独立核查，含本机接口、前端回归、SQLite 迁移、Windows 11 WebView2 保存重开和原请求恢复。证据与对照确认的既有备份、D2 测试问题见[定向修改核查](../bootstrap/desktop-directional-revision-review.md)。
+
+- OpenCode 续接 `ses_e3f562e7cffe11GIhP5weE4IQu`，使用 build／`opencode-go/deepseek-v4.1-flash#max`，负责本机任务、选区校验、输入投影、候选来源、必要迁移及后端测试。Command Go 续接 `588fd8a9-65b6-4866-9409-a8dfdb1c4459`，使用 `deepseek/deepseek-v4.1-flash`／max，负责两个模块的入口、选区、共用对话框、预览和既有采用或保存接入。两边各自停写后由 Codex 独立复核。通过后普通提交并推送当前分支。
+- 本机创建入口为 `POST /api/local/directional-revisions`。请求含 `request_id, scope, field_text, selection, instruction`。`scope` 绑定来源类别、记录、已保存版本和指定栏位，候选、领域或图位按需传入。`selection` 含 UTF-16 的 `start, end` 及逐字一致的 `text`。`GET /api/local/directional-revisions/{task_id}` 查询原任务。生成结果只返回拟替换文字、澄清问题或无需修改的状态。未知受理通过原请求 ID 核对。采用前再次核对身份、版本和当前文本。
+- 倾听的选区绑定当前领域、组和正文。核对所见与幼儿原话，照片与身份留在本机。周计划的选区绑定一栏、一个游戏槽字段或一条材料。预览显示对应来源，改写后的文字按建议处理，原证据留作核对。两个模块均先进入已有待保存或待采用状态。用隔离合成档案和假供应商核查迁移、目标绑定、待核对及迟到回包、保存重开和来源一致性。
+
 ## 课程审议 AI
 
 2026-11-10 在 `codex/teaching-documents-design` 接续，基线为 `1cc91c1`。教师确认首次生成与局部修改流程，授权两个原生开发会话使用 DeepSeek V4.1 Flash max 实现，通过独立复核后提交并推送本分支。流程与模型指导见[课程审议 AI 提示词](../specs/desktop-curriculum-deliberation.md#课程审议-ai-提示词草案)。
