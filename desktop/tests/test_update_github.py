@@ -669,6 +669,55 @@ def test_github_check_stays_busy_until_manifest_verified(monkeypatch, tmp_path):
     assert state["target"]["version"] == "0.2.0"
 
 
+def test_preview_check_stays_checking_until_manifest_verified(
+    monkeypatch, tmp_path
+):
+    manifest_started = threading.Event()
+    release_manifest = threading.Event()
+
+    def fake_open(source, url, read_timeout=update_service.READ_TIMEOUT, *, deadline=None):
+        if "?per_page=" in url:
+            return (
+                None,
+                _Response(
+                    200,
+                    _preview_list(["v0.2.0-listening-test.10"]),
+                ),
+                _Sock(),
+            )
+        manifest_started.set()
+        release_manifest.wait(5.0)
+        return (
+            None,
+            _Response(
+                200,
+                _manifest_bytes(
+                    tag="v0.2.0-listening-test.10",
+                    version="0.2.0-listening-test.10",
+                    channel="preview",
+                ),
+            ),
+            _Sock(),
+        )
+
+    monkeypatch.setattr(update_service, "_open_url", fake_open)
+    manager = update_service.UpdateManager(
+        PREVIEW_CURRENT,
+        source=_source(),
+        enabled=True,
+        staging_root=tmp_path / "preview-blocking-staging",
+        allow_install=False,
+    )
+    manager.check()
+    assert manifest_started.wait(2.0)
+    assert manager.state()["state"] == "checking"
+    assert manager.state()["download_available"] is False
+    release_manifest.set()
+    state = _wait_state(manager, "available")
+    assert state["target"]["version"] == "0.2.0-listening-test.10"
+    assert state["download_available"] is False
+
+
 def test_github_late_check_after_shutdown_does_not_publish(monkeypatch, tmp_path):
     manifest_started = threading.Event()
     release_manifest = threading.Event()

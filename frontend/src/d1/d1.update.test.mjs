@@ -468,6 +468,51 @@ async function testAppStartupCheckPromptsAvailable() {
   }
 }
 
+async function testAppStartupKeepsPollingThroughMetadataChecking() {
+  const polls = []
+  let checkCalls = 0
+  let downloadCalls = 0
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () => {
+      checkCalls += 1
+      return status({ state: 'checking' })
+    },
+    get_update_state: () => {
+      const pending = deferred()
+      polls.push(pending)
+      return pending.promise
+    },
+    start_update_download: async () => {
+      downloadCalls += 1
+      return status({ state: 'downloading', target })
+    },
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => checkCalls === 1 && polls.length >= 1, 'initial checking poll')
+    assert.equal(app.updateState().state, 'checking')
+    assert.equal(app.updateOpen(), false)
+    polls[0].resolve(status({ state: 'checking', target, download_available: false }))
+    await waitUntil(() => polls.length >= 2, 'poll after metadata-only checking')
+    assert.equal(app.updateState().state, 'checking')
+    assert.equal(app.updateOpen(), false)
+    polls[1].resolve(status({ state: 'available', target, download_available: true }))
+    await waitUntil(() => app.updateState()?.state === 'available', 'verified available')
+    assert.equal(app.updateOpen(), true)
+    assert.equal(app.updateState().download_available, true)
+    await app.downloadUpdate()
+    assert.equal(downloadCalls, 1)
+    assert.equal(app.updateState().state, 'downloading')
+    ok('update U1 App: startup metadata-only checking keeps polling and opens verified download')
+  } finally {
+    harness.unmount()
+  }
+}
+
 async function testAppPanelCloseKeepsPollingInFlight() {
   const calls = { state: 0 }
   const api = {
@@ -1152,6 +1197,7 @@ const tests = [
   testFailedAndUnconfiguredStates,
   testNoReleaseAndUnavailableDownload,
   testAppStartupCheckPromptsAvailable,
+  testAppStartupKeepsPollingThroughMetadataChecking,
   testAppPanelCloseKeepsPollingInFlight,
   testAppUnmountIgnoresLateCheck,
   testAppLateRefreshResponseIgnored,

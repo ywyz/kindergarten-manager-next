@@ -1102,27 +1102,28 @@ class UpdateManager:
                 self._manifest = None
                 self._manifest_source = None
                 self._metadata_raw = None
-                self._state = "available"
                 self._progress_downloaded = 0
                 self._progress_total = 0
                 self._reason = None
                 self._error_code = None
                 self._error_message = None
             if not selected.assets_complete:
-                with self._lock:
-                    if self._closed or generation != self._generation:
-                        return
-                    self._reason = "UPDATE_ASSETS_MISSING"
-                    self._error_code = "UPDATE_ASSETS_MISSING"
-                    self._error_message = "该预览 Release 缺少固定清单或完整包资产"
+                self._publish(
+                    generation,
+                    "available",
+                    reason="UPDATE_ASSETS_MISSING",
+                    error_code="UPDATE_ASSETS_MISSING",
+                    error_message="该预览 Release 缺少固定清单或完整包资产",
+                )
                 return
             if not self.source.public_keys:
-                with self._lock:
-                    if self._closed or generation != self._generation:
-                        return
-                    self._reason = "UPDATE_TRUST_UNCONFIGURED"
-                    self._error_code = "UPDATE_TRUST_UNCONFIGURED"
-                    self._error_message = "尚未配置发行公钥；无法验证预览签名清单"
+                self._publish(
+                    generation,
+                    "available",
+                    reason="UPDATE_TRUST_UNCONFIGURED",
+                    error_code="UPDATE_TRUST_UNCONFIGURED",
+                    error_message="尚未配置发行公钥；无法验证预览签名清单",
+                )
                 return
             manifest_source = update_github.manifest_source(
                 selected,
@@ -1140,15 +1141,13 @@ class UpdateManager:
                 deadline=deadline,
             )
             if response2.status == 404:
-                with self._lock:
-                    if self._closed or generation != self._generation:
-                        return
-                    self._release = selected
-                    self._manifest = None
-                    self._state = "available"
-                    self._reason = "UPDATE_ASSETS_MISSING"
-                    self._error_code = "UPDATE_ASSETS_MISSING"
-                    self._error_message = "该预览 Release 的签名清单资产不可用；暂不可下载"
+                self._publish(
+                    generation,
+                    "available",
+                    reason="UPDATE_ASSETS_MISSING",
+                    error_code="UPDATE_ASSETS_MISSING",
+                    error_message="该预览 Release 的签名清单资产不可用；暂不可下载",
+                )
                 return
             if response2.status != 200:
                 raise UpdateError(
