@@ -1290,10 +1290,7 @@ def _schema_for(task_type: str) -> dict:
             "必须为空数组。start/end 是 Unicode code point、0 起点、左闭右开，"
             "end 大于 start；quote 必须与原文切片逐字相同，不得伪造来源、拼接口径或"
             "把泛称材料猜成具体用品。所有 items 的正文按顺序以单个换行连接，"
-            "总长不超过 20000 字符。当 selection.focus_area 为 null 时，"
-            "所有 items 都必须是 origin=suggested 且 evidence_refs=[]；只能依据"
-            " grade、weekly_context、theme、suggestion_context 和已保存的可靠已选"
-            "上下文设计材料，不得输出 source_handle 或声称来自原文。"
+            "总长不超过 20000 字符。"
         )
     elif task_type == "weekly_habit_culture":
         guidance["allowed_input_fields"] = [

@@ -33,6 +33,10 @@ SNAPSHOT_KEYS = frozenset(
         "facts",
     }
 )
+SNAPSHOT_OPTIONAL_KEYS = frozenset(
+    {"term_name", "reissued_from_confirmation_id"}
+)
+SNAPSHOT_ALL_KEYS = SNAPSHOT_KEYS | SNAPSHOT_OPTIONAL_KEYS
 CREATION_CONTEXT_KEYS = frozenset(
     {
         "week_anchor_date",
@@ -87,6 +91,7 @@ EXPORT_ITEM_KEYS = SNAPSHOT_KEYS | {
     "confirmation_version",
     "confirmation_hash",
 }
+EXPORT_ITEM_OPTIONAL_KEYS = SNAPSHOT_OPTIONAL_KEYS
 
 
 def canonical_json(value: Any) -> str:
@@ -144,6 +149,17 @@ def _hash(value: Any, label: str) -> str:
         or any(ch not in "0123456789abcdef" for ch in value)
     ):
         _fail(f"{label} 必须是 64 位十六进制")
+    return value
+
+
+def _term_name(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not (1 <= len(value) <= 80)
+        or value != value.strip()
+        or "\x00" in value
+    ):
+        _fail("确认快照 term_name 不合法")
     return value
 
 
@@ -306,6 +322,8 @@ def build_confirmation_snapshot(
     creation_context: dict,
     content: dict,
     facts: dict,
+    term_name: str | None = None,
+    reissued_from_confirmation_id: str | None = None,
 ) -> dict:
     snapshot = {
         "schema_version": 1,
@@ -327,15 +345,34 @@ def build_confirmation_snapshot(
         "columns": columns_for(content),
         "facts": facts,
     }
+    if term_name is not None:
+        snapshot["term_name"] = term_name
+    if reissued_from_confirmation_id is not None:
+        snapshot["reissued_from_confirmation_id"] = (
+            reissued_from_confirmation_id
+        )
     return validate_confirmation_snapshot(snapshot)
 
 
 def validate_confirmation_snapshot(snapshot: Any) -> dict:
-    if not isinstance(snapshot, dict) or set(snapshot) != SNAPSHOT_KEYS:
+    if (
+        not isinstance(snapshot, dict)
+        or not SNAPSHOT_KEYS <= set(snapshot)
+        or set(snapshot) - SNAPSHOT_ALL_KEYS
+    ):
         _fail("确认快照字段不完整")
     _exact_one(snapshot.get("schema_version"), "schema_version")
     for key in ("weekly_plan_id", "profile_id", "class_id", "term_id", "draft_id"):
         _id(snapshot.get(key), key)
+    if "term_name" in snapshot:
+        _term_name(snapshot.get("term_name"))
+    if "reissued_from_confirmation_id" in snapshot:
+        if "term_name" not in snapshot:
+            _fail("确认快照的另存来源必须带 term_name")
+        _id(
+            snapshot.get("reissued_from_confirmation_id"),
+            "reissued_from_confirmation_id",
+        )
     draft_version = _positive_int(snapshot.get("draft_version"), "draft_version")
     content_hash = _hash(snapshot.get("content_hash"), "content_hash")
     header = validate_header(snapshot.get("header"))
@@ -461,9 +498,19 @@ def validate_export_manifest(manifest: Any) -> dict:
     previous_key = None
     derived_selection: list[dict] = []
     for item in items:
-        if not isinstance(item, dict) or set(item) != EXPORT_ITEM_KEYS:
+        if (
+            not isinstance(item, dict)
+            or not EXPORT_ITEM_KEYS <= set(item)
+            or set(item) - EXPORT_ITEM_KEYS - EXPORT_ITEM_OPTIONAL_KEYS
+        ):
             _fail("导出 manifest item 字段不完整")
-        projection = {key: item[key] for key in SNAPSHOT_KEYS}
+        projection = {
+            key: item[key]
+            for key in SNAPSHOT_KEYS
+        }
+        for key in SNAPSHOT_OPTIONAL_KEYS:
+            if key in item:
+                projection[key] = item[key]
         snapshot = validate_confirmation_snapshot(projection)
         confirmation_id = _id(item.get("confirmation_id"), "item.confirmation_id")
         confirmation_version = _positive_int(

@@ -28,6 +28,7 @@ const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
   (e: 'close'): void
   (e: 'export-confirmation', confirmation: WeeklyConfirmationSummary): void
+  (e: 'reissue-confirmation', history: WeeklyConfirmationHistory): void
 }>()
 
 const api: WeeklyApi = createWeeklyApi()
@@ -60,20 +61,32 @@ async function load(): Promise<void> {
 }
 
 async function choose(summary: WeeklyConfirmationSummary): Promise<void> {
+  if (props.disabled) return
   const generation = ++chooseGeneration
   const planId = props.planId
+  const confirmationId = summary.id
+  selected.value = null
   dateGeneration += 1
   sourceDates.value = {}
   dateNotice.value = ''
   dateLoading.value = false
   try {
-    const result = await api.getConfirmation(planId, summary.id)
-    if (!alive || generation !== chooseGeneration || planId !== props.planId) return
+    const result = await api.getConfirmation(planId, confirmationId)
+    if (
+      !alive
+      || generation !== chooseGeneration
+      || planId !== props.planId
+      || result.confirmation.id !== confirmationId
+    ) return
     selected.value = result
     void loadSourceDates(result.snapshot)
     error.value = ''
   } catch (caught) {
-    if (alive && generation === chooseGeneration && planId === props.planId) error.value = projectWeeklyError(caught).message
+    if (
+      alive
+      && generation === chooseGeneration
+      && planId === props.planId
+    ) error.value = projectWeeklyError(caught).message
   }
 }
 
@@ -117,6 +130,8 @@ function sourceStateLabel(value: string): string { return value === 'saved' ? '�
 
 function close(): void { emit('update:open', false); emit('close') }
 function exportSelected(): void { if (!props.disabled && selected.value) emit('export-confirmation', selected.value.confirmation) }
+function reissueSelected(): void { if (!props.disabled && selected.value) emit('reissue-confirmation', selected.value) }
+function historyTermName(history: WeeklyConfirmationHistory): string { return history.term_name ?? history.snapshot.term_name ?? '历史学期' }
 onBeforeUnmount(() => { alive = false; openGeneration += 1; chooseGeneration += 1; dateGeneration += 1 })
 watch(() => props.open, (open) => { if (open) { selected.value = null; dateGeneration += 1; void load() } else { openGeneration += 1; chooseGeneration += 1; dateGeneration += 1 } })
 watch(() => props.planId, () => { selected.value = null; dateGeneration += 1; if (props.open) void load() })
@@ -131,13 +146,13 @@ function targetLines(snapshot: ConfirmationSnapshotV1): string[] {
     <div v-loading="loading" class="history-layout">
       <aside>
         <h4>已确认版本</h4>
-        <el-button v-for="item in items" :key="item.id" text :type="selected?.confirmation.id === item.id ? 'primary' : undefined" @click="choose(item)">v{{ item.version }} · 草稿 v{{ item.draft_version }}</el-button>
+        <el-button v-for="item in items" :key="item.id" text :type="selected?.confirmation.id === item.id ? 'primary' : undefined" @click="choose(item)">v{{ item.version }} · 草稿 v{{ item.draft_version }} · {{ item.term_name || '历史学期' }}</el-button>
         <el-empty v-if="!loading && !items.length" description="尚无历史确认" />
       </aside>
       <main v-if="selected">
         <h4>{{ selected.snapshot.header.school_name }} · {{ selected.snapshot.header.class_name }}</h4>
         <p>{{ selected.snapshot.date_range.start }} ~ {{ selected.snapshot.date_range.end }} · 确认人 本档案教师 · {{ selected.confirmed_at }}</p>
-        <p>确认 v{{ selected.confirmation.version }} · 草稿 v{{ selected.snapshot.draft_version }}</p>
+        <p>确认 v{{ selected.confirmation.version }} · 草稿 v{{ selected.snapshot.draft_version }} · 历史学期：{{ historyTermName(selected) }}</p>
         <p v-if="dateLoading">正在只读核对来源日期…</p>
         <p v-if="dateNotice">来源日期：{{ dateNotice }}</p>
         <ul><li v-for="line in targetLines(selected.snapshot)" :key="line">{{ line }}</li></ul>
@@ -149,7 +164,8 @@ function targetLines(snapshot: ConfirmationSnapshotV1): string[] {
     </div>
     <template #footer>
       <el-button @click="close">关闭</el-button>
-      <el-button type="primary" :disabled="!selected || disabled" @click="exportSelected">导出此旧确认</el-button>
+      <el-button type="primary" :disabled="!selected || disabled" data-d1="weekly-history-export" @click="exportSelected">导出此旧确认</el-button>
+      <el-button type="primary" :disabled="!selected || disabled" data-d1="weekly-history-reissue" @click="reissueSelected">另存为当前学期名版本</el-button>
     </template>
   </el-dialog>
 </template>

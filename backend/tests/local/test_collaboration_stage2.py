@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import json
+import os
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from app.local.collaboration_proxy import (
     CollaborationProxy,
     PromotionIn,
     _endpoint_allowed,
+    create_collaboration_proxy,
 )
 from app.local.errors import LocalError
 
@@ -56,6 +63,107 @@ class Stage2ProxyTests(unittest.TestCase):
         self.assertFalse(
             _endpoint_allowed("GET", "/me/class/promotion/operations/not-a-uuid")
         )
+
+    def test_packaged_release_origin_takes_priority_over_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "collaboration_release.json").write_text(
+                json.dumps({"origin": "https://packaged.example/"}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "_MEIPASS", tmp, create=True),
+                patch.dict(
+                    os.environ,
+                    {"APP_COLLABORATION_API_ORIGIN": "http://env-invalid"},
+                    clear=False,
+                ),
+            ):
+                proxy = create_collaboration_proxy()
+                self.assertTrue(proxy.status().configured)
+                self.assertEqual(proxy._origin, "https://packaged.example")
+                self.assertEqual(
+                    proxy._configuration_code, "COLLABORATION_READY"
+                )
+
+    def test_missing_packaged_file_keeps_environment_compatibility(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "_MEIPASS", tmp, create=True),
+                patch.dict(
+                    os.environ,
+                    {"APP_COLLABORATION_API_ORIGIN": "https://env.example"},
+                    clear=False,
+                ),
+            ):
+                proxy = create_collaboration_proxy()
+                self.assertTrue(proxy.status().configured)
+                self.assertEqual(proxy._origin, "https://env.example")
+
+    def test_malformed_or_extra_packaged_config_fails_closed(self):
+        for raw in (
+            "{",
+            json.dumps({"origin": "https://packaged.example", "secret": "x"}),
+            json.dumps({"origin": "http://packaged.example"}),
+            json.dumps({"origin": "https://packaged.example/path"}),
+            json.dumps({"origin": 1}),
+        ):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as tmp:
+                Path(tmp, "collaboration_release.json").write_text(
+                    raw, encoding="utf-8"
+                )
+                with (
+                    patch.object(sys, "frozen", True, create=True),
+                    patch.object(sys, "_MEIPASS", tmp, create=True),
+                    patch.dict(
+                        os.environ,
+                        {"APP_COLLABORATION_API_ORIGIN": "https://env.example"},
+                        clear=False,
+                    ),
+                ):
+                    proxy = create_collaboration_proxy()
+                    self.assertFalse(proxy.status().configured)
+                    self.assertEqual(
+                        proxy._configuration_code,
+                        "COLLABORATION_ORIGIN_INVALID",
+                    )
+
+    def test_packaged_io_failure_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "collaboration_release.json").mkdir()
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "_MEIPASS", tmp, create=True),
+                patch.dict(
+                    os.environ,
+                    {"APP_COLLABORATION_API_ORIGIN": "https://env.example"},
+                    clear=False,
+                ),
+            ):
+                proxy = create_collaboration_proxy()
+                self.assertFalse(proxy.status().configured)
+                self.assertEqual(
+                    proxy._configuration_code, "COLLABORATION_ORIGIN_INVALID"
+                )
+
+    def test_source_mode_ignores_a_file_and_uses_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "collaboration_release.json").write_text(
+                json.dumps({"origin": "https://packaged.example"}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(sys, "frozen", False, create=True),
+                patch.object(sys, "_MEIPASS", tmp, create=True),
+                patch.dict(
+                    os.environ,
+                    {"APP_COLLABORATION_API_ORIGIN": "https://env.example"},
+                    clear=False,
+                ),
+            ):
+                proxy = create_collaboration_proxy()
+                self.assertEqual(proxy._origin, "https://env.example")
 
     def test_redeem_returns_no_token_and_join_has_no_membership(self):
         proxy = self.proxy()

@@ -13,6 +13,7 @@ import {
   type WeeklyApi,
   type WeeklyConfirmationPreview,
   type WeeklyConfirmationSummary,
+  type WeeklyConfirmationHistory,
   type WeeklyDetail,
   type WeeklyDraftContent,
   type WeeklyFocusArea,
@@ -28,6 +29,7 @@ import { WeeklyEditorController, weeklySaveNotice } from '../weekly-editor'
 import WeeklyExportDialog from './WeeklyExportDialog.vue'
 import WeeklyAiPanel from './WeeklyAiPanel.vue'
 import WeeklyCollaborationPanel from './WeeklyCollaborationPanel.vue'
+import WeeklyHistoryPanel from './WeeklyHistoryPanel.vue'
 
 const props = withDefaults(defineProps<{
   planId: string
@@ -69,6 +71,10 @@ const refreshPreviewMeta = ref<{ identity: string; revision: number; sequence: n
 const sharedOpen = ref(false)
 const sharedBusy = ref(false)
 const sharedBlocking = ref<BlockingDraft | null>(null)
+const historyOpen = ref(false)
+const reissueSource = ref<WeeklyConfirmationHistory | null>(null)
+const reissuePending = ref(false)
+let reissueGeneration = 0
 const confirmOpen = ref(false)
 const confirmPreview = ref<WeeklyConfirmationPreview | null>(null)
 const ackMissing = ref(false)
@@ -196,6 +202,10 @@ function resetForContext(): void {
   blocking.value = null
   refreshPreviewData.value = null
   refreshPreviewMeta.value = null
+  historyOpen.value = false
+  reissueSource.value = null
+  reissuePending.value = false
+  reissueGeneration += 1
   confirmOpen.value = false
   confirmPreview.value = null
   confirmDateGeneration += 1
@@ -442,9 +452,72 @@ async function applyRefresh(): Promise<void> {
   refreshPreviewMeta.value = null
 }
 
-async function openConfirmation(): Promise<void> {
-  if (!controller || props.disabled) return
+function onHistoryClosed(): void {
+  reissueGeneration += 1
+  reissuePending.value = false
+}
+
+function openHistory(): void {
+  if (props.disabled || busy.value || reissuePending.value) return
+  historyOpen.value = true
+}
+
+async function beginReissue(history: WeeklyConfirmationHistory): Promise<void> {
+  if (!controller || props.disabled || busy.value || reissuePending.value) return
+  const current = controller
+  const planId = props.planId
+  const sourceId = history.confirmation.id
+  const generation = ++reissueGeneration
+  if (confirmOpen.value) return
+  reissuePending.value = true
   try {
+    const preview = await current.confirmationPreview(sourceId)
+    if (
+      generation !== reissueGeneration
+      || !historyOpen.value
+      || controller !== current
+      || props.planId !== planId
+    ) return
+    if (preview.target.reissued_from_confirmation_id !== sourceId) {
+      notice.value = '另存预览与所选历史确认不一致：已停止，请重新选择'
+      return
+    }
+    if (!preview.target.term_name) {
+      notice.value = '另存预览缺少目标学期名：已停止，请重新选择'
+      return
+    }
+    reissueSource.value = history
+    confirmPreview.value = preview
+    historyOpen.value = false
+    ackMissing.value = false
+    ackStale.value = false
+    confirmNote.value = ''
+    confirmOpen.value = true
+    void loadConfirmDates(preview.target)
+  } catch (error) {
+    if (
+      generation === reissueGeneration
+      && controller === current
+      && props.planId === planId
+    ) {
+      notice.value = projectWeeklyError(error).message
+    }
+  } finally {
+    if (
+      generation === reissueGeneration
+      && controller === current
+      && props.planId === planId
+    ) {
+      reissuePending.value = false
+      syncState()
+    }
+  }
+}
+
+async function openConfirmation(): Promise<void> {
+  if (!controller || props.disabled || reissuePending.value) return
+  try {
+    reissueSource.value = null
     confirmPreview.value = await controller.confirmationPreview()
     void loadConfirmDates(confirmPreview.value.target)
     ackMissing.value = false
@@ -456,20 +529,36 @@ async function openConfirmation(): Promise<void> {
 }
 
 async function confirmTarget(): Promise<void> {
-  if (busy.value) return
+  if (busy.value || reissuePending.value) return
   if (!controller || !confirmPreview.value || props.disabled) return
   const current = controller
+  const source = reissueSource.value
+  const sourceId = source?.confirmation.id ?? null
   const outcome = await current.confirm(confirmPreview.value, {
     ack_missing: ackMissing.value,
     ack_stale: ackStale.value,
     note: confirmNote.value || null,
+    source_confirmation_id: sourceId,
   })
   if (controller !== current) return
   syncState()
   detail.value = current.getDetail()
   if (outcome.result !== 'saved') { notice.value = outcome.message ?? '确认未完成'; return }
   confirmOpen.value = false
-  notice.value = '已确认当前稿，可导出'
+  reissueSource.value = null
+  if (source) {
+    const targetName = confirmPreview.value.target.term_name ?? '当前学期'
+    notice.value = `已从历史确认 v${source.confirmation.version} 另存为「${targetName}」版本；原历史与当前已存草稿均保留`
+  } else {
+    notice.value = '已确认当前稿，可导出'
+  }
+}
+
+function exportHistoryConfirmation(confirmation: WeeklyConfirmationSummary): void {
+  if (props.disabled) return
+  exportConfirmation.value = confirmation
+  historyOpen.value = false
+  exportOpen.value = true
 }
 
 function openExport(): void {
@@ -508,6 +597,7 @@ defineExpose({ resetForContext })
         </el-button>
         <el-button :disabled="disabled || busy" @click="refreshPreview">刷新来源预览</el-button>
         <el-button type="primary" :disabled="disabled || busy" @click="openConfirmation">确认</el-button>
+        <el-button data-d1="weekly-history-open" :disabled="disabled || busy" @click="openHistory">历史确认</el-button>
         <el-button type="primary" :disabled="disabled || busy" @click="openExport">导出</el-button>
         <el-button v-if="unknown" :disabled="disabled" @click="queryOperation">核对原提交</el-button>
         <el-button v-if="unknown" :disabled="disabled" @click="retryOriginal">明确再次提交原请求</el-button>
@@ -614,8 +704,13 @@ defineExpose({ resetForContext })
       <div v-if="busy" class="muted">正在处理保存/刷新/确认/导出；仍可继续编辑表单。</div>
     </template>
 
-    <el-dialog v-model="confirmOpen" title="确认当前周计划" width="760px">
+    <el-dialog v-model="confirmOpen" :title="reissueSource ? '另存为当前学期名版本' : '确认当前周计划'" width="760px">
       <template v-if="confirmPreview">
+        <p v-if="reissueSource" data-d1="weekly-reissue-source">
+          来源历史确认 v{{ reissueSource.confirmation.version }}（{{ reissueSource.term_name ?? reissueSource.snapshot.term_name ?? '历史学期' }}）
+          → 目标名称：{{ confirmPreview.target.term_name ?? '当前学期' }}。
+          确认后追加新的历史版本；当前已存草稿保留。
+        </p>
         <p>真实日期：{{ confirmPreview.target.date_range.start }} ~ {{ confirmPreview.target.date_range.end }} · 草稿 v{{ confirmPreview.target.draft_version }} · {{ confirmPreview.target.header.class_name }}</p>
         <h4>完整目标</h4><ul><li v-for="line in targetLines(confirmPreview.target)" :key="line">{{ line }}</li></ul>
         <p v-if="confirmDateLoading">正在只读核对来源日期…</p>
@@ -641,9 +736,19 @@ defineExpose({ resetForContext })
       v-model:open="sharedOpen"
       :local-detail="detail"
       :host="weeklyHost"
-      :disabled="disabled || loading"
+      :disabled="disabled || loading || reissuePending"
       @busy="onSharedBusy"
       @blocking="onSharedBlocking"
+    />
+
+    <WeeklyHistoryPanel
+      v-if="detail"
+      v-model:open="historyOpen"
+      :plan-id="detail.plan.id"
+      :disabled="disabled || loading || reissuePending"
+      @export-confirmation="exportHistoryConfirmation"
+      @reissue-confirmation="beginReissue"
+      @close="onHistoryClosed"
     />
 
     <WeeklyExportDialog v-if="detail" v-model:open="exportOpen" :plan-id="detail.plan.id" mode="single" :confirmation="exportConfirmation" :disabled="disabled" :host="weeklyHost" @busy="onExportBusy" />

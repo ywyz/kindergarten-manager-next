@@ -1313,3 +1313,48 @@ function leaveBridge(controller) {
   assert.match(view, /saveCurrent: \(\): Promise<SaveOutcome> => saveForLeave\(\)/)
   ok('editor save notice wires the projected failure and keeps query/original retry as the only unknown actions')
 }
+{
+  const { api, controller } = makeController(2)
+  const targetContent = makeContent()
+  const preview = {
+    target: {
+      draft_version: 1,
+      date_range: { start: '2026-11-02', end: '2026-11-08' },
+      header: makeDetail().plan.header,
+      content: targetContent,
+      facts: { missing: [], stale_sources: [], warnings: [] },
+      term_name: '秋季学期',
+      reissued_from_confirmation_id: 'hist-1',
+    },
+    target_hash: 'hist-hash',
+    preview_token: 'reissue-token',
+  }
+  const previewPending = controller.confirmationPreview('hist-1')
+  await tick()
+  api.previewQueue[0].resolve(preview)
+  const accepted = await previewPending
+  assert.equal(accepted.preview_token, 'reissue-token')
+  const rejected = await controller.confirm(
+    { ...accepted, preview_token: 'stale-token' },
+    { source_confirmation_id: 'hist-1' },
+  )
+  assert.equal(rejected.result, 'failed')
+  assert.equal(controller.snapshot().busy, false)
+  assert.equal(controller.snapshot().status, 'idle')
+  assert.equal(api.confirmQueue.length, 0)
+  const retryPreviewPending = controller.confirmationPreview('hist-1')
+  await tick()
+  api.previewQueue[1].resolve(preview)
+  const retryPreview = await retryPreviewPending
+  const confirming = controller.confirm(retryPreview, { source_confirmation_id: 'hist-1' })
+  assert.equal(api.confirmQueue[0].input.expected_draft_version, 2)
+  assert.equal(api.confirmQueue[0].input.source_confirmation_id, 'hist-1')
+  api.confirmQueue[0].pending.resolve(writeResult(2, makeContent(), {
+    id: 'confirmation-new', version: 3, draft_version: 2, snapshot_hash: 'new-hash', term_name: '秋季学期',
+  }))
+  assert.equal((await confirming).result, 'saved')
+  assert.equal(controller.getDetail().draft.version, 2)
+  assert.equal(controller.getDetail().confirmed.id, 'confirmation-new')
+  assert.equal(controller.getDetail().plan.current_confirmed_version, 3)
+  ok('reissue confirm keeps the current saved draft version while source snapshot v1 stays historical')
+}

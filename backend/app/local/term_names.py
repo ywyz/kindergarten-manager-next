@@ -1,12 +1,13 @@
 """Resolve local term display names at a record's creation time.
 
 The current ``local_terms.name`` is the name new records use.  Committed
-renames are append-only rows so old records can keep their recorded name, while
-a rename with ``update_existing_documents=true`` also updates the display and
-re-export projection of records that already existed.
+renames are append-only rows so old records keep their recorded name.  Even a
+legacy ``update_existing_documents=true`` row does not rewrite existing
+records; the explicit historical reissue flow creates a new version instead.
 
 History is never written into observation snapshots or exported Word bytes.
-Only the read projection is resolved here.
+Only the listening read projection is resolved here; observations always read
+their stored snapshot.
 """
 
 from __future__ import annotations
@@ -68,13 +69,13 @@ def resolve_term_name(
     recorded_at: datetime | None,
     fallback_name: str,
 ) -> str:
-    """Resolve one record's display name from the committed rename timeline.
+    """Resolve one listening record's name from its creation time.
 
-    Used where no stored term snapshot exists (listening).  ``fallback_name``
-    is the name before the first committed rename.  False renames only affect
-    records created afterwards; a true rename also applies to records that
-    already existed, but a later false rename does not take that display name
-    away.
+    Existing records keep the name that was current when they were created.
+    Even a legacy ``update_existing_documents=true`` row does not rewrite an
+    already stored record's display; the explicit reissue flow creates a new
+    confirmation/version instead.  ``fallback_name`` is the name before the
+    first committed rename.
     """
 
     if not changes:
@@ -82,35 +83,7 @@ def resolve_term_name(
     if recorded_at is None:
         return changes[-1].new_name
     base: TermNameChange | None = None
-    retroactive: TermNameChange | None = None
     for change in changes:
         if change.changed_at <= recorded_at:
             base = change
-        elif change.update_existing_documents:
-            retroactive = change
-    chosen = retroactive or base
-    return chosen.new_name if chosen is not None else fallback_name
-
-
-def resolve_snapshot_term_name(
-    changes: Sequence[TermNameChange],
-    *,
-    recorded_at: datetime | None,
-    snapshot_name: str,
-) -> str:
-    """Resolve an observation name with its stored snapshot as authority.
-
-    An observation can be moved to another term and saved with that term's
-    current snapshot after its original creation time.  Timeline ``base``
-    events must therefore never replace the snapshot.  Only an explicit
-    retroactive rename that happened after the record was created overlays the
-    new name; every ordinary rename keeps the saved snapshot name.
-    """
-
-    if not changes or recorded_at is None:
-        return snapshot_name
-    retroactive: TermNameChange | None = None
-    for change in changes:
-        if change.changed_at > recorded_at and change.update_existing_documents:
-            retroactive = change
-    return retroactive.new_name if retroactive is not None else snapshot_name
+    return base.new_name if base is not None else fallback_name

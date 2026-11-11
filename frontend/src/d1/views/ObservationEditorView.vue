@@ -231,6 +231,7 @@ interface RestoreRequest {
   baseHash: string
   termDecision: 'keep_history' | 'keep_current' | 'assign_selected' | 'unassigned'
   selectedTermId: string | null
+  useCurrentTermName: boolean
   token: string
 }
 
@@ -243,6 +244,8 @@ interface RestorePreview {
   effective_term_id: string | null
   effective_payload: ObservationPayload
   photos: ObservationPhoto[]
+  source_term_name?: string | null
+  target_term_name?: string | null
   expires_at: string
   warnings: string[]
 }
@@ -373,12 +376,32 @@ const restoreTermDecision = ref<
   'keep_history' | 'keep_current' | 'assign_selected' | 'unassigned'
 >('keep_history')
 const restoreTermId = ref('')
+const restoreUseCurrentTermName = ref(false)
 const restoreBusy = ref(false)
 const restoreUnknown = ref(false)
 const restoreNotice = ref('')
+const restoreLocked = computed(
+  () => restoreBusy.value || restoreUnknown.value || historySettling.value,
+)
 let historyRequestId = ''
 
-watch([restoreTermDecision, restoreTermId], () => {
+const restoreHistoryTermName = computed(() => {
+  const termId = historyDetail.value?.payload.term_id ?? null
+  if (!termId) return '未归属学期'
+  return props.context.terms.find((term) => term.id === termId)?.name ?? '历史学期已移除'
+})
+const restoreTargetTermName = computed(
+  () => restorePreview.value?.target_term_name ?? '目标学期（预览后显示）',
+)
+const restoreCanReissueTermName = computed(() => {
+  const termId = historyDetail.value?.payload.term_id ?? null
+  return Boolean(
+    termId && props.context.terms.some((term) => term.id === termId),
+  )
+})
+
+watch([restoreTermDecision, restoreTermId, restoreUseCurrentTermName], () => {
+  if (restoreUnknown.value) return
   if (restorePreview.value || restoreRequest.value) {
     restorePreview.value = null
     restoreRequest.value = null
@@ -556,7 +579,7 @@ function touchEpoch(): void {
 function onUserInput(): void {
   touchEpoch()
   if (adoptionPreview.value) invalidateAdoptionPreview()
-  if (restorePreview.value || restoreRequest.value) {
+  if (!restoreUnknown.value && (restorePreview.value || restoreRequest.value)) {
     restorePreview.value = null
     restoreRequest.value = null
     restoreNotice.value = '当前稿已变化：请重新预览恢复'
@@ -2920,8 +2943,20 @@ async function retryAdopt(): Promise<void> {
 
 // -- history and restore -------------------------------------------------------
 
+function closeHistory(done: () => void): void {
+  if (restoreLocked.value) {
+    ElMessage.warning('恢复正在处理或待核对：请先完成当前恢复回执')
+    return
+  }
+  done()
+}
+
 async function openHistory(): Promise<void> {
   if (editDisabled.value) return
+  if (restoreUnknown.value) {
+    ElMessage.warning('历史恢复结果待核对：请先查询回执')
+    return
+  }
   const outcome = await saveCurrent('manual')
   if (outcome !== 'saved' && outcome !== 'unchanged') {
     ElMessage.warning('正文未保存成功：请先处理保存结果再打开历史')
@@ -2937,6 +2972,7 @@ async function openHistory(): Promise<void> {
     )
     historyDetail.value = null
     restorePreview.value = null
+    restoreUseCurrentTermName.value = false
     restoreNotice.value = ''
     historyOpen.value = true
   } catch (err) {
@@ -2947,6 +2983,10 @@ async function openHistory(): Promise<void> {
 }
 
 async function selectHistory(version: number): Promise<void> {
+  if (restoreLocked.value) {
+    ElMessage.warning('恢复正在处理或待核对：请先完成当前恢复回执')
+    return
+  }
   const seq = ++historySeq
   try {
     const detail = await apiGet<ObservationHistoryDetail>(
@@ -2956,6 +2996,7 @@ async function selectHistory(version: number): Promise<void> {
     historyDetail.value = detail
     restorePreview.value = null
     restoreRequest.value = null
+    restoreUseCurrentTermName.value = false
     restoreNotice.value = ''
     historyPhotoChunk.value = 0
     historyPhotoUrls.value = {}
@@ -2971,8 +3012,16 @@ async function selectHistory(version: number): Promise<void> {
 }
 
 async function previewRestore(): Promise<void> {
+  if (restoreUnknown.value) {
+    ElMessage.warning('历史恢复结果待核对：请先查询回执')
+    return
+  }
   if (!historyDetail.value || !current.value || restoreBusy.value) return
-  if (restoreTermDecision.value === 'assign_selected' && !restoreTermId.value) {
+  if (
+    !restoreUseCurrentTermName.value
+    && restoreTermDecision.value === 'assign_selected'
+    && !restoreTermId.value
+  ) {
     ElMessage.warning('请选择要归属的学期')
     return
   }
@@ -2990,7 +3039,10 @@ async function previewRestore(): Promise<void> {
     ElMessage.warning('当前稿仍有未保存输入：不能预览恢复')
     return
   }
-  const termDecision = restoreTermDecision.value
+  const useCurrentTermName = restoreUseCurrentTermName.value
+  const termDecision = useCurrentTermName
+    ? 'keep_history'
+    : restoreTermDecision.value
   const selectedTermId =
     termDecision === 'assign_selected' ? restoreTermId.value : null
   const sourceVersion = historyDetail.value.version
@@ -3008,10 +3060,22 @@ async function previewRestore(): Promise<void> {
         base_draft_hash: current.value.payload_hash,
         term_decision: termDecision,
         selected_term_id: selectedTermId,
+        ...(useCurrentTermName ? { use_current_term_name: true } : {}),
       },
     )
     if (
-      restoreTermDecision.value !== termDecision ||
+      useCurrentTermName
+      && (!preview.source_term_name || !preview.target_term_name)
+    ) {
+      restoreNotice.value =
+        '另存预览缺少原学期名或目标学期名：已停止，请重新预览'
+      return
+    }
+    if (
+      restoreUseCurrentTermName.value !== useCurrentTermName ||
+      (useCurrentTermName
+        ? 'keep_history'
+        : restoreTermDecision.value) !== termDecision ||
       (termDecision === 'assign_selected' ? restoreTermId.value : '') !==
         (selectedTermId ?? '') ||
       historyDetail.value?.version !== sourceVersion
@@ -3027,6 +3091,7 @@ async function previewRestore(): Promise<void> {
       baseHash: preview.base_draft_hash,
       termDecision,
       selectedTermId,
+      useCurrentTermName,
       token: preview.restore_token,
     }
   } catch (err) {
@@ -3041,6 +3106,7 @@ async function previewRestore(): Promise<void> {
 }
 
 async function confirmRestore(): Promise<void> {
+  if (restoreUnknown.value) return
   const preview = restorePreview.value
   const request = restoreRequest.value
   if (!preview || !request || !current.value || restoreBusy.value) return
@@ -3070,6 +3136,7 @@ async function confirmRestore(): Promise<void> {
         expected_base_hash: request.baseHash,
         term_decision: request.termDecision,
         selected_term_id: request.selectedTermId,
+        ...(request.useCurrentTermName ? { use_current_term_name: true } : {}),
       },
     )
     const server = await apiGet<ObservationCurrent>(
@@ -3174,6 +3241,7 @@ async function retryRestore(): Promise<void> {
         expected_base_hash: request.baseHash,
         term_decision: request.termDecision,
         selected_term_id: request.selectedTermId,
+        ...(request.useCurrentTermName ? { use_current_term_name: true } : {}),
       },
     )
     restoreUnknown.value = false
@@ -3607,6 +3675,10 @@ onMounted(() => {
           }
         : null,
     restoreTermDecision: () => restoreTermDecision.value,
+    restoreUseCurrentTermName: () => restoreUseCurrentTermName.value,
+    setRestoreUseCurrentTermName: (value: boolean) => {
+      restoreUseCurrentTermName.value = value
+    },
     setRestoreTermDecision: (value: string) => {
       restoreTermDecision.value = value as typeof restoreTermDecision.value
     },
@@ -3618,6 +3690,8 @@ onMounted(() => {
       restorePreview.value
         ? {
             source_version: restorePreview.value.source_version,
+            source_term_name: restorePreview.value.source_term_name,
+            target_term_name: restorePreview.value.target_term_name,
             effective_term_id: restorePreview.value.effective_term_id,
             effective_payload: restorePreview.value.effective_payload,
             photos: restorePreview.value.photos,
@@ -4515,6 +4589,9 @@ onBeforeUnmount(() => {
       v-model="historyOpen"
       title="历史记录"
       width="820px"
+      :before-close="closeHistory"
+      :close-on-click-modal="!restoreLocked"
+      :close-on-press-escape="!restoreLocked"
       data-d1="obs-history"
     >
       <div class="history">
@@ -4524,7 +4601,7 @@ onBeforeUnmount(() => {
             v-for="item in historyItems"
             :key="item.version"
             class="history-item"
-            :class="{ current: item.is_current }"
+            :class="{ current: item.is_current, locked: restoreLocked }"
             :data-d1="`obs-history-${item.version}`"
             @click="selectHistory(item.version)"
           >
@@ -4613,7 +4690,19 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="restore-controls">
-              <el-select v-model="restoreTermDecision" size="small" data-d1="obs-restore-term">
+              <el-checkbox
+                v-model="restoreUseCurrentTermName"
+                :disabled="restoreLocked || editDisabled || !restoreCanReissueTermName"
+                data-d1="obs-restore-reissue-term-name"
+              >
+                另存为当前学期名版本（保留历史版本）
+              </el-checkbox>
+              <el-select
+                v-model="restoreTermDecision"
+                size="small"
+                data-d1="obs-restore-term"
+                :disabled="restoreLocked || restoreUseCurrentTermName"
+              >
                 <el-option label="沿用历史学期归属" value="keep_history" />
                 <el-option label="保留当前学期归属" value="keep_current" />
                 <el-option label="设为未归属" value="unassigned" />
@@ -4624,6 +4713,7 @@ onBeforeUnmount(() => {
                 v-model="restoreTermId"
                 size="small"
                 placeholder="选择学期"
+                :disabled="restoreLocked"
                 data-d1="obs-restore-term-id"
               >
                 <el-option
@@ -4636,7 +4726,7 @@ onBeforeUnmount(() => {
               <el-button
                 size="small"
                 :loading="restoreBusy"
-                :disabled="editDisabled"
+                :disabled="restoreLocked || editDisabled"
                 data-d1="obs-restore-preview"
                 @click="previewRestore"
               >
@@ -4651,9 +4741,15 @@ onBeforeUnmount(() => {
             />
             <div v-if="restorePreview" class="restore-preview" data-d1="obs-restore-preview-box">
               <p>
-                来源 v{{ restorePreview.source_version }} · 有效学期
-                {{ restorePreview.effective_term_id || '未归属' }} ·
-                {{ restorePreview.photos.length }} 张照片
+                来源 v{{ restorePreview.source_version }} · 历史学期
+                {{ restorePreview.source_term_name ?? restoreHistoryTermName }} →
+                目标学期
+                {{ restorePreview.target_term_name ?? (restoreUseCurrentTermName ? restoreTargetTermName : (restorePreview.effective_term_id || '未归属')) }}
+                · {{ restorePreview.photos.length }} 张照片
+              </p>
+              <p v-if="restoreUseCurrentTermName" data-d1="obs-restore-reissue-summary">
+                将从历史 v{{ restorePreview.source_version }} 另存为当前学期名版本「{{ restorePreview.target_term_name ?? restoreTargetTermName }}」；
+                历史版本和当前已存草稿保持，不会删除或覆盖原历史。
               </p>
               <p v-if="restorePreview.warnings.length" class="muted">
                 {{ restorePreview.warnings.join('；') }}
@@ -4662,7 +4758,7 @@ onBeforeUnmount(() => {
                 size="small"
                 type="primary"
                 :loading="restoreBusy"
-                :disabled="editDisabled"
+                :disabled="restoreLocked || editDisabled"
                 data-d1="obs-restore-confirm"
                 @click="confirmRestore"
               >
@@ -4860,6 +4956,10 @@ label.full {
 }
 .history-item.current {
   background: color-mix(in srgb, var(--kgm-accent) 12%, var(--kgm-surface));
+}
+.history-item.locked {
+  cursor: default;
+  opacity: 0.65;
 }
 .history-text {
   white-space: pre-wrap;

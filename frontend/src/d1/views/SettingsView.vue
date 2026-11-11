@@ -144,22 +144,9 @@ const termForms = ref<TermForm[]>(
     end_date: term.end_date,
   })),
 )
-const updateExistingDocuments = reactive<Record<string, boolean>>({})
 const readingPromotionTerms = ref(false)
 const promotionTermNotice = ref('')
 const promotionTerms = ref<CollaborationPromotionTerm[]>([])
-
-function termNameChanged(form: TermForm): boolean {
-  return form.name !== (currentTerm(form.id)?.name ?? '')
-}
-
-function termUpdateExisting(form: TermForm): boolean {
-  return updateExistingDocuments[form.id] === true
-}
-
-function setTermUpdateExisting(form: TermForm, value: boolean): void {
-  updateExistingDocuments[form.id] = value
-}
 
 const newTermName = ref('')
 const newTermRange = ref<string[]>([])
@@ -519,17 +506,7 @@ watch(
   [profileName, schoolName, className, classGrade, headerTeacherNamesText, caregiverName],
   () => clearPreview(),
 )
-watch(
-  termForms,
-  () => {
-    clearPreview()
-    for (const form of termForms.value) {
-      if (!termNameChanged(form)) updateExistingDocuments[form.id] = false
-    }
-  },
-  { deep: true },
-)
-watch(updateExistingDocuments, () => clearPreview(), { deep: true })
+watch(termForms, () => clearPreview(), { deep: true })
 watch([newTermName, newTermRange], () => clearPreview())
 watch([overrideTermId, overrideDate, overrideState, overrideReason], () => clearPreview())
 
@@ -1005,9 +982,6 @@ function termChange(form: TermForm): ConfigChange {
     name: form.name,
     start_date: form.start_date,
     end_date: form.end_date,
-  }
-  if (termNameChanged(form)) {
-    change.update_existing_documents = termUpdateExisting(form)
   }
   return change
 }
@@ -1740,17 +1714,7 @@ defineExpose({
             <el-button size="small" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmTermChange(form)">
               确认修改
             </el-button>
-            <el-checkbox
-              v-if="termNameChanged(form)"
-              class="term-doc-update"
-              data-d1="term-update-existing-documents"
-              title="只影响应用内旧记录的显示和重新导出；既有确认快照与已导出文件不变"
-              :model-value="termUpdateExisting(form)"
-              :disabled="frozen"
-              @update:model-value="setTermUpdateExisting(form, $event === true)"
-            >
-              同时更新旧记录中的学期名称（默认保留）
-            </el-checkbox>
+
           </div>
           <div class="term-row new-term">
             <el-input v-model="newTermName" maxlength="80" placeholder="新学期名称" class="term-name" :disabled="frozen" data-d1="new-term-name" />
@@ -1767,6 +1731,7 @@ defineExpose({
             </el-button>
           </div>
           <p class="muted">学期闭区间不得重叠或共端点；修改起止日期会生成新的日历修订，已保存计划保留原周次。</p>
+          <p class="muted" data-d1="settings-term-history-hint">修改学期名称不会更新旧记录；如需旧记录改用新学期名，请在游戏观察或本机周计划的历史记录中另存为当前学期名版本。</p>
         </el-card>
       </details>
 

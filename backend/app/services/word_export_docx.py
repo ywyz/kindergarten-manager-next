@@ -1022,9 +1022,16 @@ def generate_weekly_export_docx(views, *, template_path=None) -> bytes:
         class_text = " ".join(
             part for part in class_parts if isinstance(part, str) and part
         )
+        term_name = header.get("term_name")
+        term_text = (
+            f"学期：{term_name} "
+            if isinstance(term_name, str) and term_name
+            else ""
+        )
         _set_paragraph_text(
             theme_line,
             (
+                f"{term_text}"
                 f"主题名称：《{header.get('theme') or ''}》 "
                 f"班级：{class_text} "
                 f"第（{_cn_number(view['week_number'])}）周"

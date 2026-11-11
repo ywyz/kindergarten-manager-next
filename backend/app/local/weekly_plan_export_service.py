@@ -1087,6 +1087,7 @@ def _load_confirmation(
         ).hexdigest()
         != row.facts_hash
         or snapshot["profile_id"] != plan.profile_id
+        or snapshot["weekly_plan_id"] != plan.id
         or snapshot["class_id"] != plan.class_id
         or snapshot["term_id"] != plan.term_id
         or snapshot["header"] != plan.header_json
@@ -1407,6 +1408,8 @@ def _view_from_item(item: dict) -> dict:
     header = dict(item["header"])
     header["theme"] = content.get("theme") or ""
     header["grade"] = mapping.grade_display(header.get("grade"))
+    if isinstance(item.get("term_name"), str):
+        header["term_name"] = item["term_name"]
     slots = content.get("outdoor_game_slots") or {}
     return {
         "kind": mapping.KIND_WEEKLY,

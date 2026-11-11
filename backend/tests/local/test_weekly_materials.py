@@ -8,6 +8,7 @@ from datetime import date, timedelta
 
 import pytest
 
+from app.local import ai_task_service
 from app.local import weekly_ai_contracts as c
 from app.local import weekly_ai_contracts as contracts
 from app.local import weekly_ai_inputs as inputs
@@ -849,3 +850,14 @@ def test_materials_schema_revision_and_guidance_are_complete():
     instructions = bundle["guidance_defaults_json"]["instructions"]
     for term in ("text", "origin", "evidence_refs", "Unicode", "20000"):
         assert term in instructions
+    # The published r1 bundle identity excludes this newer no-focus rule; it
+    # travels as a fixed per-task execution instruction instead.
+    assert "selection.focus_area" not in instructions
+    system_text = ai_task_service._render_system_text(
+        "weekly_materials_generate",
+        bundle["contract_version"],
+        bundle["output_schema_json"],
+        bundle["guidance_defaults_json"],
+    )
+    assert "当 selection.focus_area 为 null 时" in system_text
+    assert "所有 items 都必须是 origin=suggested 且 evidence_refs=[]" in system_text

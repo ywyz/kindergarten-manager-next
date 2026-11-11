@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import copy
 import unittest
 import uuid
 from datetime import date
 
-from app.local import daily_plan_service, profile_service, weekly_plan_service
+from app.local import (
+    daily_plan_service,
+    profile_service,
+    weekly_plan_service,
+    weekly_plan_snapshot as snapshots,
+)
 from app.local.errors import (
     LocalWeeklyInvalid,
     LocalWeeklyOperationConflict,
+    LocalWeeklyPreviewStale,
     LocalWeeklySourceChanged,
     LocalWeeklyVersionConflict,
 )
@@ -17,6 +24,7 @@ from app.local.models import (
     LocalProfile,
     LocalSettings,
     LocalTerm,
+    LocalWeeklyPlanConfirmation,
     LocalWeeklyPlanOperation,
 )
 from app.local.migrate import head_revision
@@ -313,6 +321,290 @@ class WeeklyPlanServiceTests(LocalTestCase):
         )
         self.assertEqual(detail["draft"]["content"]["theme"], "后来主题")
 
+    def test_reissue_confirmation_appends_current_term_name_without_draft_write(self) -> None:
+        self._create_daily()
+        result, _ = self._create()
+        plan_id = result["weekly_plan_id"]
+        first = self._confirm(plan_id, 1)
+        source = weekly_plan_service.get_confirmation(
+            self.session,
+            profile_id=self.profile.id,
+            plan_id=plan_id,
+            confirmation_id=first["confirmation"]["id"],
+        )["snapshot"]
+        self.assertEqual(source["term_name"], "秋季学期")
+        before_draft = weekly_plan_service.get_detail(
+            self.session, profile_id=self.profile.id, plan_id=plan_id
+        )["draft"]
+
+        self.term.name = "新学期"
+        self.session.commit()
+        preview = weekly_plan_service.confirmation_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            plan_id=plan_id,
+            expected_draft_version=before_draft["version"],
+            source_confirmation_id=first["confirmation"]["id"],
+        )
+        target = preview["target"]
+        self.assertEqual(target["term_name"], "新学期")
+        self.assertEqual(
+            target["reissued_from_confirmation_id"],
+            first["confirmation"]["id"],
+        )
+        for key in (
+            "content",
+            "header",
+            "creation_context",
+            "date_range",
+            "columns",
+            "facts",
+            "draft_id",
+            "draft_version",
+            "content_hash",
+        ):
+            self.assertEqual(target[key], source[key], key)
+        self.assertNotEqual(
+            snapshots.snapshot_hash(target), first["confirmation"]["snapshot_hash"]
+        )
+
+        request_id = str(uuid.uuid4())
+        confirmed = weekly_plan_service.confirm(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            request_id=request_id,
+            plan_id=plan_id,
+            expected_draft_version=before_draft["version"],
+            context_token=preview["preview_token"],
+            ack_missing=True,
+            ack_stale=True,
+            source_confirmation_id=first["confirmation"]["id"],
+        )
+        replayed = weekly_plan_service.confirm(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            request_id=request_id,
+            plan_id=plan_id,
+            expected_draft_version=before_draft["version"],
+            context_token=preview["preview_token"],
+            ack_missing=True,
+            ack_stale=True,
+            source_confirmation_id=first["confirmation"]["id"],
+        )
+        self.assertTrue(replayed["replayed"])
+        self.assertEqual(
+            replayed["confirmation"]["id"], confirmed["confirmation"]["id"]
+        )
+        duplicate = weekly_plan_service.confirm(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            request_id=str(uuid.uuid4()),
+            plan_id=plan_id,
+            expected_draft_version=before_draft["version"],
+            context_token=preview["preview_token"],
+            ack_missing=True,
+            ack_stale=True,
+            source_confirmation_id=first["confirmation"]["id"],
+        )
+        self.assertTrue(duplicate["replayed"])
+        self.assertEqual(
+            duplicate["confirmation"]["id"], confirmed["confirmation"]["id"]
+        )
+        self.assertEqual(confirmed["confirmation"]["version"], 2)
+        self.assertEqual(confirmed["confirmation"]["term_name"], "新学期")
+        self.assertEqual(
+            confirmed["confirmation"]["reissued_from_confirmation_id"],
+            first["confirmation"]["id"],
+        )
+        detail = weekly_plan_service.get_detail(
+            self.session, profile_id=self.profile.id, plan_id=plan_id
+        )
+        self.assertEqual(detail["plan"]["current_confirmed_version"], 2)
+        self.assertEqual(detail["draft"], before_draft)
+        old = weekly_plan_service.get_confirmation(
+            self.session,
+            profile_id=self.profile.id,
+            plan_id=plan_id,
+            confirmation_id=first["confirmation"]["id"],
+        )
+        self.assertEqual(old["snapshot"], source)
+        self.assertEqual(
+            old["confirmation"]["snapshot_hash"],
+            first["confirmation"]["snapshot_hash"],
+        )
+
+    def test_reissue_rejects_same_name_source_swap_and_late_changes(self) -> None:
+        self._create_daily()
+        result, _ = self._create()
+        plan_id = result["weekly_plan_id"]
+        first = self._confirm(plan_id, 1)
+        other = self._confirm(plan_id, 1)
+        self.term.name = "新学期"
+        self.session.commit()
+        preview = weekly_plan_service.confirmation_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            plan_id=plan_id,
+            expected_draft_version=1,
+            source_confirmation_id=first["confirmation"]["id"],
+        )
+        second = weekly_plan_service.confirm(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            request_id=str(uuid.uuid4()),
+            plan_id=plan_id,
+            expected_draft_version=1,
+            context_token=preview["preview_token"],
+            ack_missing=True,
+            ack_stale=True,
+            source_confirmation_id=first["confirmation"]["id"],
+        )
+        with self.assertRaises(LocalWeeklyInvalid):
+            weekly_plan_service.confirmation_preview(
+                self.session,
+                runtime=self.runtime,
+                profile_id=self.profile.id,
+                launch_id=self.launch,
+                session_scope_hash=self.scope,
+                plan_id=plan_id,
+                expected_draft_version=1,
+                source_confirmation_id=second["confirmation"]["id"],
+            )
+
+        # A different ordinary confirmation is a different source even when
+        # the current term name is equal.
+        swapped = weekly_plan_service.confirmation_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            plan_id=plan_id,
+            expected_draft_version=1,
+            source_confirmation_id=first["confirmation"]["id"],
+        )
+        with self.assertRaises(LocalWeeklyPreviewStale):
+            weekly_plan_service.confirm(
+                self.session,
+                runtime=self.runtime,
+                profile_id=self.profile.id,
+                launch_id=self.launch,
+                session_scope_hash=self.scope,
+                request_id=str(uuid.uuid4()),
+                plan_id=plan_id,
+                expected_draft_version=1,
+                context_token=swapped["preview_token"],
+                ack_missing=True,
+                ack_stale=True,
+                source_confirmation_id=other["confirmation"]["id"],
+            )
+
+        # A late draft edit changes the bound current draft version.
+        late = weekly_plan_service.confirmation_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            plan_id=plan_id,
+            expected_draft_version=1,
+            source_confirmation_id=first["confirmation"]["id"],
+        )
+        weekly_plan_service.save_draft(
+            self.session,
+            profile_id=self.profile.id,
+            request_id=str(uuid.uuid4()),
+            plan_id=plan_id,
+            expected_draft_version=1,
+            patch={"theme": "晚到编辑"},
+        )
+        with self.assertRaises(LocalWeeklyVersionConflict):
+            weekly_plan_service.confirm(
+                self.session,
+                runtime=self.runtime,
+                profile_id=self.profile.id,
+                launch_id=self.launch,
+                session_scope_hash=self.scope,
+                request_id=str(uuid.uuid4()),
+                plan_id=plan_id,
+                expected_draft_version=1,
+                context_token=late["preview_token"],
+                ack_missing=True,
+                ack_stale=True,
+                source_confirmation_id=first["confirmation"]["id"],
+            )
+
+        # A term rename after preview changes the target snapshot name.
+        renamed = weekly_plan_service.confirmation_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            plan_id=plan_id,
+            expected_draft_version=2,
+            source_confirmation_id=first["confirmation"]["id"],
+        )
+        self.term.name = "更新学期"
+        self.session.commit()
+        with self.assertRaises(LocalWeeklyPreviewStale):
+            weekly_plan_service.confirm(
+                self.session,
+                runtime=self.runtime,
+                profile_id=self.profile.id,
+                launch_id=self.launch,
+                session_scope_hash=self.scope,
+                request_id=str(uuid.uuid4()),
+                plan_id=plan_id,
+                expected_draft_version=2,
+                context_token=renamed["preview_token"],
+                ack_missing=True,
+                ack_stale=True,
+                source_confirmation_id=first["confirmation"]["id"],
+            )
+
+        # A snapshot whose own weekly_plan_id differs from the plan is rejected
+        # even when its row hash was recomputed.
+        source_row = self.session.get(
+            LocalWeeklyPlanConfirmation, first["confirmation"]["id"]
+        )
+        tampered = copy.deepcopy(source_row.snapshot_json)
+        tampered["weekly_plan_id"] = "z" * 22
+        source_row.snapshot_json = tampered
+        source_row.snapshot_hash = snapshots.snapshot_hash(tampered)
+        self.session.commit()
+        with self.assertRaises(
+            weekly_plan_service.LocalWeeklyConfirmationNotFound
+        ):
+            weekly_plan_service.confirmation_preview(
+                self.session,
+                runtime=self.runtime,
+                profile_id=self.profile.id,
+                launch_id=self.launch,
+                session_scope_hash=self.scope,
+                plan_id=plan_id,
+                expected_draft_version=2,
+                source_confirmation_id=first["confirmation"]["id"],
+            )
+
     def test_confirmation_preview_target_is_the_persisted_snapshot(self) -> None:
         self._create_daily()
         result, _ = self._create()
@@ -352,10 +644,12 @@ class WeeklyPlanServiceTests(LocalTestCase):
                 "date_range",
                 "columns",
                 "facts",
+                "term_name",
             },
         )
         self.assertEqual(target["draft_id"], saved["draft"]["id"])
         self.assertEqual(target["draft_version"], saved["draft"]["version"])
+        self.assertEqual(target["term_name"], "秋季学期")
         self.assertEqual(target["content"]["theme"], "目标")
         self.assertTrue(target["date_range"]["start"] <= target["date_range"]["end"])
         self.assertEqual(len(target["columns"]), 5)

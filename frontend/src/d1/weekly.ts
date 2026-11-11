@@ -311,6 +311,7 @@ export interface WeeklyConfirmationSummary {
   version: number
   draft_version: number
   snapshot_hash: string
+  term_name?: string | null
 }
 
 export interface WeeklyList {
@@ -407,6 +408,8 @@ export interface ConfirmationSnapshotV1 {
   profile_id: string
   class_id: string
   term_id: string
+  term_name?: string | null
+  reissued_from_confirmation_id?: string | null
   draft_id: string
   draft_version: number
   content_hash: string
@@ -428,6 +431,7 @@ export interface WeeklyConfirmationPreview {
 export interface WeeklyConfirmationHistory {
   confirmation: WeeklyConfirmationSummary
   snapshot: ConfirmationSnapshotV1
+  term_name?: string | null
   note: string | null
   confirmed_by: string
   confirmed_at: string
@@ -724,7 +728,7 @@ export interface WeeklyApi {
     expected_draft_version: number
     preview_token: string
   }): Promise<WeeklyWriteResult>
-  confirmationPreview(planId: string, expectedDraftVersion: number): Promise<WeeklyConfirmationPreview>
+  confirmationPreview(planId: string, expectedDraftVersion: number, sourceConfirmationId?: string): Promise<WeeklyConfirmationPreview>
   confirm(planId: string, input: {
     request_id: string
     expected_draft_version: number
@@ -732,6 +736,7 @@ export interface WeeklyApi {
     ack_missing: boolean
     ack_stale: boolean
     note?: string | null
+    source_confirmation_id?: string | null
   }): Promise<WeeklyWriteResult>
   listConfirmations(planId: string): Promise<{ items: WeeklyConfirmationSummary[] }>
   getConfirmation(planId: string, confirmationId: string): Promise<WeeklyConfirmationHistory>
@@ -803,9 +808,12 @@ export function createWeeklyApi(): WeeklyApi {
       }),
     refreshSources: (planId, input) =>
       apiPost(`/api/weekly-plans/${pathSegment(planId)}/refresh-sources`, input),
-    confirmationPreview: (planId, expectedDraftVersion) =>
+    confirmationPreview: (planId, expectedDraftVersion, sourceConfirmationId) =>
       apiPost(`/api/weekly-plans/${pathSegment(planId)}/confirmation-preview`, {
         expected_draft_version: expectedDraftVersion,
+        ...(sourceConfirmationId
+          ? { source_confirmation_id: sourceConfirmationId }
+          : {}),
       }),
     confirm: (planId, input) =>
       apiPost(`/api/weekly-plans/${pathSegment(planId)}/confirm`, input),

@@ -18,6 +18,7 @@ from app.local import (
     daily_plan_service,
     profile_service,
     weekly_plan_service,
+    weekly_plan_snapshot,
 )
 from app.local.models import (
     LocalProfile,
@@ -569,6 +570,72 @@ class WeeklyBackupTests(LocalTestCase):
             weekly_export_manager=marker,
         )
         self.assertIs(fixed.weekly_export_manager, marker)
+
+    def test_reissued_confirmation_relation_is_backup_validated(self) -> None:
+        source = self.session.scalars(
+            select(LocalWeeklyPlanConfirmation).where(
+                LocalWeeklyPlanConfirmation.weekly_plan_id == self.plan_id
+            )
+        ).one()
+        self.term.name = "新学期"
+        self.session.commit()
+        preview = weekly_plan_service.confirmation_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id="backup-launch",
+            session_scope_hash=scope_hash("backup-scope"),
+            plan_id=self.plan_id,
+            expected_draft_version=2,
+            source_confirmation_id=source.id,
+        )
+        confirmed = weekly_plan_service.confirm(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id="backup-launch",
+            session_scope_hash=scope_hash("backup-scope"),
+            request_id=str(uuid.uuid4()),
+            plan_id=self.plan_id,
+            expected_draft_version=2,
+            context_token=preview["preview_token"],
+            ack_missing=True,
+            ack_stale=True,
+            source_confirmation_id=source.id,
+        )
+        reissued_id = confirmed["confirmation"]["id"]
+        source_db = sqlite3.connect(str(self.runtime.db_path))
+        target_db = sqlite3.connect(str(self.copy))
+        try:
+            source_db.backup(target_db)
+        finally:
+            target_db.close()
+            source_db.close()
+        self._validate()
+
+        connection = sqlite3.connect(str(self.copy))
+        try:
+            raw = connection.execute(
+                "SELECT snapshot_json FROM local_weekly_plan_confirmations "
+                "WHERE id = ?",
+                (reissued_id,),
+            ).fetchone()[0]
+            snapshot = json.loads(raw)
+            snapshot["reissued_from_confirmation_id"] = "x" * 22
+            connection.execute(
+                "UPDATE local_weekly_plan_confirmations "
+                "SET snapshot_json = ?, snapshot_hash = ? WHERE id = ?",
+                (
+                    json.dumps(snapshot, ensure_ascii=False),
+                    weekly_plan_snapshot.snapshot_hash(snapshot),
+                    reissued_id,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(backup_validate.BackupValidationError):
+            self._validate()
 
     def test_tampered_confirmation_snapshot_is_rejected(self) -> None:
         connection = sqlite3.connect(str(self.copy))

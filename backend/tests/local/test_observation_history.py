@@ -18,6 +18,7 @@ from PIL import Image
 from sqlalchemy import event, select, text
 
 from app.local import (
+    config_service,
     observation_assets,
     observation_history_service,
     observation_service,
@@ -35,6 +36,7 @@ from app.local.models import (
     LocalObservationVersionPhoto,
     LocalOperationRecord,
     LocalProfile,
+    LocalSettings,
     LocalTerm,
 )
 from app.local.normalize import normalize_initialization
@@ -371,6 +373,311 @@ class ObservationHistoryServiceTests(LocalTestCase):
             )
         ).one()
         self.assertEqual(restore_row.changed, 1)
+
+    def test_keep_history_reissue_current_term_name_appends_version(self):
+        created = self._create(observation_goal="A")
+        observation_id = created["observation_id"]
+        photo = self._import_photo(observation_id, "red")
+        first = self._save(
+            observation_id,
+            {"observation_goal": "A"},
+            reason="manual",
+            photos=[{"asset_id": photo, "caption": "源图"}],
+        )
+        second = self._save(
+            observation_id, {"observation_goal": "B"}, reason="manual"
+        )
+        source = observation_history_service.read_history_version(
+            self.session,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            version=first["current_version"],
+        )
+        term = self.session.scalars(select(LocalTerm)).one()
+        term.name = "新学期名称"
+        self.session.commit()
+        current = self._current(observation_id)
+        preview_request = str(uuid.uuid4())
+        preview = observation_history_service.preview_restore(
+            self.session,
+            self.runtime,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            source_version=first["current_version"],
+            request_id=preview_request,
+            base_draft_revision=current["revision"],
+            base_draft_hash=current["payload_hash"],
+            term_decision="keep_history",
+            use_current_term_name=True,
+            now=self.now,
+        )
+        self.assertTrue(preview["use_current_term_name"])
+        self.assertEqual(preview["source_term_name"], "2026 年秋季学期")
+        self.assertEqual(preview["target_term_name"], "新学期名称")
+        self.assertEqual(
+            preview["effective_term_snapshot"]["name"], "新学期名称"
+        )
+        # Only the name is replaced; the source range and content stay exact.
+        self.assertEqual(
+            preview["effective_term_snapshot"]["start_date"],
+            source["payload"]["term_snapshot"]["start_date"],
+        )
+        self.assertEqual(
+            preview["effective_term_snapshot"]["end_date"],
+            source["payload"]["term_snapshot"]["end_date"],
+        )
+        self.assertEqual(
+            preview["effective_payload"]["observation_goal"], "A"
+        )
+        self.assertEqual(
+            [item["asset_id"] for item in preview["photos"]], [photo]
+        )
+        restored = observation_history_service.restore_observation(
+            self.session,
+            self.runtime,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            request_id=preview_request,
+            restore_token=preview["restore_token"],
+            expected_base_revision=current["revision"],
+            expected_base_hash=current["payload_hash"],
+            term_decision="keep_history",
+            use_current_term_name=True,
+            now=self.now,
+        )
+        self.assertTrue(restored["changed"])
+        self.assertTrue(restored["use_current_term_name"])
+        self.assertEqual(restored["revision"], current["revision"] + 1)
+        self.assertEqual(
+            restored["current_version"], second["current_version"] + 1
+        )
+        after = self._current(observation_id)
+        self.assertEqual(after["payload"]["observation_goal"], "A")
+        self.assertEqual(
+            after["payload"]["term_snapshot"]["name"], "新学期名称"
+        )
+        self.assertEqual([item["asset_id"] for item in after["photos"]], [photo])
+        # The old retained version and its snapshot name are unchanged.
+        old = observation_history_service.read_history_version(
+            self.session,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            version=first["current_version"],
+        )
+        self.assertEqual(
+            old["payload"]["term_snapshot"]["name"], "2026 年秋季学期"
+        )
+        self.assertEqual(old["payload_hash"], source["payload_hash"])
+        replay = observation_history_service.restore_observation(
+            self.session,
+            self.runtime,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            request_id=preview_request,
+            restore_token=preview["restore_token"],
+            expected_base_revision=current["revision"],
+            expected_base_hash=current["payload_hash"],
+            term_decision="keep_history",
+            use_current_term_name=True,
+            now=self.now,
+        )
+        self.assertEqual(replay, restored)
+        restore_row = self.session.scalars(
+            select(LocalObservationRestore).where(
+                LocalObservationRestore.observation_id == observation_id
+            )
+        ).all()
+        self.assertEqual(len(restore_row), 1)
+        self.assertEqual(restore_row[0].term_decision, "keep_history")
+
+    def test_reissue_uses_source_term_name_when_history_term_differs(self):
+        settings = self.session.get(LocalSettings, "singleton")
+        change = {
+            "kind": "term_create",
+            "name": "来源旧学期",
+            "start_date": "2026-10-01",
+            "end_date": "2026-10-31",
+        }
+        preview = config_service.preview(
+            self.session,
+            expected_config_version=settings.config_version,
+            change=change,
+        )
+        config_service.apply(
+            self.session,
+            request_id=str(uuid.uuid4()),
+            expected_config_version=settings.config_version,
+            change=change,
+            preview_token=preview["preview_token"],
+        )
+        source_term_id = self.session.scalars(
+            select(LocalTerm).where(LocalTerm.name == "来源旧学期")
+        ).one().id
+        created = observation_service.create_observation(
+            self.session,
+            profile_id=self.profile.id,
+            request_id=str(uuid.uuid4()),
+            record_type="public",
+            payload=self._payload(observation_date="2026-10-15"),
+            now=self.now,
+        )
+        observation_id = created["observation_id"]
+        source_version = self._save(
+            observation_id, {"observation_goal": "来源内容"}, reason="manual"
+        )
+        original_term = self.session.scalars(
+            select(LocalTerm).where(LocalTerm.name == "2026 年秋季学期")
+        ).one()
+        current = self._current(observation_id)
+        observation_service.save_observation(
+            self.session,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            request_id=str(uuid.uuid4()),
+            expected_revision=current["revision"],
+            payload={"observation_date": "2026-09-15"},
+            term_decision="assign_selected",
+            selected_term_id=original_term.id,
+            now=self.now,
+        )
+        source_term = self.session.get(LocalTerm, source_term_id)
+        source_term.name = "来源新学期"
+        self.session.commit()
+        current = self._current(observation_id)
+        preview = observation_history_service.preview_restore(
+            self.session,
+            self.runtime,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            source_version=source_version["current_version"],
+            request_id=str(uuid.uuid4()),
+            base_draft_revision=current["revision"],
+            base_draft_hash=current["payload_hash"],
+            term_decision="keep_history",
+            use_current_term_name=True,
+            now=self.now,
+        )
+        self.assertEqual(preview["effective_term_id"], source_term_id)
+        self.assertEqual(preview["source_term_name"], "来源旧学期")
+        self.assertEqual(preview["target_term_name"], "来源新学期")
+        self.assertEqual(
+            preview["effective_term_snapshot"],
+            {
+                "term_id": source_term_id,
+                "name": "来源新学期",
+                "start_date": "2026-10-01",
+                "end_date": "2026-10-31",
+            },
+        )
+
+    def test_reissue_rejects_same_name_wrong_decision_and_late_rename(self):
+        created = self._create(observation_goal="A")
+        observation_id = created["observation_id"]
+        first = self._save(
+            observation_id, {"observation_goal": "A"}, reason="manual"
+        )
+        second = self._save(
+            observation_id, {"observation_goal": "B"}, reason="manual"
+        )
+        current = self._current(observation_id)
+        with self.assertRaises(
+            observation_history_service.ObservationRestoreSourceInvalid
+        ) as same:
+            observation_history_service.preview_restore(
+                self.session,
+                self.runtime,
+                profile_id=self.profile.id,
+                observation_id=observation_id,
+                source_version=first["current_version"],
+                request_id=str(uuid.uuid4()),
+                base_draft_revision=current["revision"],
+                base_draft_hash=current["payload_hash"],
+                term_decision="keep_history",
+                use_current_term_name=True,
+                now=self.now,
+            )
+        self.assertEqual(same.exception.details.get("reason"), "term_name_unchanged")
+        with self.assertRaises(
+            observation_history_service.ObservationRestoreSourceInvalid
+        ) as wrong_decision:
+            observation_history_service.preview_restore(
+                self.session,
+                self.runtime,
+                profile_id=self.profile.id,
+                observation_id=observation_id,
+                source_version=first["current_version"],
+                request_id=str(uuid.uuid4()),
+                base_draft_revision=current["revision"],
+                base_draft_hash=current["payload_hash"],
+                term_decision="keep_current",
+                use_current_term_name=True,
+                now=self.now,
+            )
+        self.assertEqual(
+            wrong_decision.exception.details.get("reason"),
+            "use_current_term_name_requires_keep_history",
+        )
+
+        term = self.session.scalars(select(LocalTerm)).one()
+        term.name = "第一新名"
+        self.session.commit()
+        preview_request = str(uuid.uuid4())
+        preview = observation_history_service.preview_restore(
+            self.session,
+            self.runtime,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            source_version=first["current_version"],
+            request_id=preview_request,
+            base_draft_revision=current["revision"],
+            base_draft_hash=current["payload_hash"],
+            term_decision="keep_history",
+            use_current_term_name=True,
+            now=self.now,
+        )
+        # Swapping the option invalidates the preview binding.
+        with self.assertRaises(
+            observation_history_service.ObservationRestorePreviewInvalid
+        ):
+            observation_history_service.restore_observation(
+                self.session,
+                self.runtime,
+                profile_id=self.profile.id,
+                observation_id=observation_id,
+                request_id=preview_request,
+                restore_token=preview["restore_token"],
+                expected_base_revision=current["revision"],
+                expected_base_hash=current["payload_hash"],
+                term_decision="keep_history",
+                use_current_term_name=False,
+                now=self.now,
+            )
+        # A later rename before commit invalidates the bound current name.
+        term.name = "第二新名"
+        self.session.commit()
+        with self.assertRaises(
+            observation_history_service.ObservationRestorePreviewInvalid
+        ):
+            observation_history_service.restore_observation(
+                self.session,
+                self.runtime,
+                profile_id=self.profile.id,
+                observation_id=observation_id,
+                request_id=preview_request,
+                restore_token=preview["restore_token"],
+                expected_base_revision=current["revision"],
+                expected_base_hash=current["payload_hash"],
+                term_decision="keep_history",
+                use_current_term_name=True,
+                now=self.now,
+            )
+        self.assertEqual(
+            self._current(observation_id)["payload"]["observation_goal"], "B"
+        )
+        self.assertEqual(
+            self._current(observation_id)["payload"]["term_snapshot"]["name"],
+            "2026 年秋季学期",
+        )
 
     def test_restore_requires_protection_and_rejects_late_edit(self):
         created = self._create(observation_goal="A")

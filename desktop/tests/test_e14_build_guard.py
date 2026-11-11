@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -322,6 +323,7 @@ def _fake_main_env(
     *,
     change_mid_build: bool,
     package_kwargs: list[dict] | None = None,
+    metadata_kwargs: list[dict] | None = None,
 ):
     repo = tmp_path / "repo"
     monkeypatch.setattr(build_e14.d0_paths, "REPO_ROOT", repo)
@@ -354,6 +356,8 @@ def _fake_main_env(
 
     def fake_metadata(package, build_id, digest, pruned=0, **kwargs):
         calls.append("metadata")
+        if metadata_kwargs is not None:
+            metadata_kwargs.append(dict(kwargs))
         return {
             "build_id": build_id,
             "version": kwargs.get("release_version", "0.1.0"),
@@ -545,6 +549,163 @@ def test_normal_build_passes_no_runtime_hook(monkeypatch, tmp_path):
         "metadata",
         "freeze_after",
     ]
+
+
+def test_collaboration_origin_is_normalized_and_passed_to_metadata(
+    monkeypatch, tmp_path
+):
+    metadata_kwargs: list[dict] = []
+    paths, calls = _fake_main_env(
+        monkeypatch,
+        tmp_path,
+        change_mid_build=False,
+        metadata_kwargs=metadata_kwargs,
+    )
+    rc = _run(
+        monkeypatch,
+        [
+            "--build-root",
+            str(paths["build_root"]),
+            "--hash-out",
+            str(tmp_path / "out" / "hash.json"),
+            "--source-freeze-out",
+            str(tmp_path / "out" / "freeze.json"),
+            "--collaboration-origin",
+            "https://manager-next.ywyz.tech/",
+        ],
+    )
+    assert rc == 0
+    assert calls == [
+        "freeze_before",
+        "frontend",
+        "package",
+        "metadata",
+        "freeze_after",
+    ]
+    assert metadata_kwargs[0]["collaboration_origin"] == (
+        "https://manager-next.ywyz.tech"
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    (
+        "http://manager-next.ywyz.tech",
+        "https://manager-next.ywyz.tech/path",
+        "https://user:pass@manager-next.ywyz.tech",
+        "https://manager-next.ywyz.tech?x=1",
+        "https://manager-next.ywyz.tech#fragment",
+        "ftp://manager-next.ywyz.tech",
+    ),
+)
+def test_collaboration_origin_rejects_non_pure_https_origins(
+    monkeypatch, tmp_path, origin
+):
+    paths, calls = _fake_main_env(monkeypatch, tmp_path, change_mid_build=False)
+    assert (
+        _run(
+            monkeypatch,
+            [
+                "--build-root",
+                str(paths["build_root"]),
+                "--collaboration-origin",
+                origin,
+            ],
+        )
+        == 2
+    )
+    assert calls == []
+
+
+def test_collaboration_origin_conflicts_with_online_integration_test(
+    monkeypatch, tmp_path
+):
+    paths, calls = _fake_main_env(monkeypatch, tmp_path, change_mid_build=False)
+    assert (
+        _run(
+            monkeypatch,
+            [
+                "--build-root",
+                str(paths["build_root"]),
+                "--collaboration-origin",
+                "https://manager-next.ywyz.tech",
+                "--online-integration-test",
+                "--version",
+                "1.2.3-listening-test.4",
+                "--channel",
+                "preview",
+            ],
+        )
+        == 2
+    )
+    assert calls == []
+
+
+def test_install_metadata_writes_collaboration_release_and_manifest(
+    monkeypatch, tmp_path
+):
+    package = tmp_path / "KGNext-E14"
+    plugin_dir = package / "_internal" / "PIL"
+    plugin_dir.mkdir(parents=True)
+    for name in build_e14.PILLOW_REQUIRED_PLUGINS:
+        (plugin_dir / name).write_bytes(b"fake-plugin")
+    license_file = tmp_path / "LICENSE"
+    license_file.write_text("synthetic license", encoding="utf-8")
+    monkeypatch.setattr(build_e14, "PILLOW_LICENSE", license_file)
+
+    info = build_e14.install_package_metadata(
+        package,
+        str(uuid.uuid4()),
+        "f" * 64,
+        collaboration_origin="https://manager-next.ywyz.tech",
+    )
+    release_file = package / "_internal" / build_e14.COLLABORATION_RELEASE_FILENAME
+    assert json.loads(release_file.read_text(encoding="utf-8")) == {
+        "origin": "https://manager-next.ywyz.tech"
+    }
+    entries = build_e14.hash_tree(package)
+    assert "_internal/collaboration_release.json" in {
+        item["path"] for item in entries
+    }
+    manifest_payload = build_e14.build_manifest_payload(package, info)
+    assert "_internal/collaboration_release.json" in {
+        item["path"] for item in manifest_payload["files"]
+    }
+
+    portable = build_e14.write_portable_archive(
+        package, tmp_path / "dist", info
+    )
+    manifest = json.loads(
+        Path(portable["manifest_path"]).read_text(encoding="utf-8")
+    )
+    assert "_internal/collaboration_release.json" in {
+        item["path"] for item in manifest["files"]
+    }
+    with zipfile.ZipFile(portable["archive_path"]) as archive:
+        assert json.loads(
+            archive.read(
+                "KGNext-E14/_internal/collaboration_release.json"
+            ).decode("utf-8")
+        ) == {"origin": "https://manager-next.ywyz.tech"}
+
+
+def test_default_metadata_does_not_write_collaboration_release(
+    monkeypatch, tmp_path
+):
+    package = tmp_path / "KGNext-E14"
+    plugin_dir = package / "_internal" / "PIL"
+    plugin_dir.mkdir(parents=True)
+    for name in build_e14.PILLOW_REQUIRED_PLUGINS:
+        (plugin_dir / name).write_bytes(b"fake-plugin")
+    license_file = tmp_path / "LICENSE"
+    license_file.write_text("synthetic license", encoding="utf-8")
+    monkeypatch.setattr(build_e14, "PILLOW_LICENSE", license_file)
+    build_e14.install_package_metadata(
+        package, str(uuid.uuid4()), "f" * 64
+    )
+    assert not (
+        package / "_internal" / build_e14.COLLABORATION_RELEASE_FILENAME
+    ).exists()
 
 
 def test_online_integration_hook_environment_and_default_roots(tmp_path):

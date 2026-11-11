@@ -642,6 +642,7 @@ def preview_observation_restore(
             base_draft_hash=data.base_draft_hash,
             term_decision=data.term_decision,
             selected_term_id=data.selected_term_id,
+            use_current_term_name=data.use_current_term_name,
         )
 
 
@@ -667,6 +668,7 @@ def restore_observation(
             expected_base_hash=data.expected_base_hash,
             term_decision=data.term_decision,
             selected_term_id=data.selected_term_id,
+            use_current_term_name=data.use_current_term_name,
         )
 
 

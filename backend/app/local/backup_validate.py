@@ -936,6 +936,9 @@ def _weekly_validate_export_manifest(
             key: item[key]
             for key in weekly_plan_snapshot.SNAPSHOT_KEYS
         }
+        for key in weekly_plan_snapshot.SNAPSHOT_OPTIONAL_KEYS:
+            if key in item:
+                projection[key] = item[key]
         if projection != snapshot:
             raise BackupValidationError(
                 "BACKUP_DB_LOGICAL_INVALID", "备份数据库导出 item 快照投影不匹配"
@@ -2686,6 +2689,37 @@ def _weekly_checks(connection: sqlite3.Connection) -> None:
             "hash": row[7],
             "snapshot": snapshot,
         }
+    for (plan_id, confirmation_id), record in confirmation_rows.items():
+        snapshot = record["snapshot"]
+        source_id = snapshot.get("reissued_from_confirmation_id")
+        if source_id is None:
+            continue
+        source = confirmation_rows.get((plan_id, source_id))
+        _weekly_require(
+            source is not None
+            and source["version"] < record["version"],
+            f"confirmation reissue source {confirmation_id}",
+        )
+        base = {
+            key: value
+            for key, value in snapshot.items()
+            if key not in ("term_name", "reissued_from_confirmation_id")
+        }
+        source_base = {
+            key: value
+            for key, value in source["snapshot"].items()
+            if key not in ("term_name", "reissued_from_confirmation_id")
+        }
+        _weekly_require(
+            base == source_base,
+            f"confirmation reissue snapshot {confirmation_id}",
+        )
+        if "term_name" in source["snapshot"]:
+            _weekly_require(
+                snapshot.get("term_name")
+                != source["snapshot"].get("term_name"),
+                f"confirmation reissue name {confirmation_id}",
+            )
     _weekly_ai_chain(connection, plans, contents)
     _listening_ai_chain(connection)
     for plan_id, plan in plans.items():

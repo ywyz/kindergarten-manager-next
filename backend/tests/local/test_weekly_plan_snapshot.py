@@ -156,6 +156,38 @@ class SnapshotStrictnessTests(unittest.TestCase):
         with self.assertRaises(LocalWeeklyInvalid):
             weekly_plan_snapshot.validate_confirmation_snapshot(snapshot)
 
+    def test_optional_term_name_and_reissue_fields_keep_old_snapshots_valid(self) -> None:
+        snapshot = _valid_snapshot()
+        baseline_hash = weekly_plan_snapshot.snapshot_hash(snapshot)
+        weekly_plan_snapshot.validate_confirmation_snapshot(snapshot)
+        snapshot["term_name"] = "新学期"
+        snapshot["reissued_from_confirmation_id"] = "c" * 22
+        weekly_plan_snapshot.validate_confirmation_snapshot(snapshot)
+        self.assertNotEqual(
+            weekly_plan_snapshot.snapshot_hash(snapshot), baseline_hash
+        )
+        for bad in ("", " 春季 ", "春\x00季", "名" * 81, 1):
+            candidate = _valid_snapshot()
+            candidate["term_name"] = bad
+            with self.subTest(term_name=bad):
+                with self.assertRaises(LocalWeeklyInvalid):
+                    weekly_plan_snapshot.validate_confirmation_snapshot(
+                        candidate
+                    )
+        missing_name = _valid_snapshot()
+        missing_name["reissued_from_confirmation_id"] = "c" * 22
+        with self.assertRaises(LocalWeeklyInvalid):
+            weekly_plan_snapshot.validate_confirmation_snapshot(missing_name)
+        unknown = _valid_snapshot()
+        unknown["unknown_key"] = True
+        with self.assertRaises(LocalWeeklyInvalid):
+            weekly_plan_snapshot.validate_confirmation_snapshot(unknown)
+        manifest = _export_manifest_for(snapshot)
+        weekly_plan_snapshot.validate_export_manifest(manifest)
+        self.assertEqual(
+            manifest["items"][0]["term_name"], "新学期"
+        )
+
     def test_zero_teaching_uses_saved_basis_term_intersection(self) -> None:
         source = _source_snapshot(
             term_start="2026-09-09",

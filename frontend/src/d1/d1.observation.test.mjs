@@ -1588,6 +1588,82 @@ async function main() {
     ok('history preview protects the draft and restores a new version')
   }
 
+  // -- reissue a historical version under the current term name -------------
+  {
+    let current = currentFixture()
+    const bodies = []
+    const reissueContext = { ...context, term: context.terms[0] }
+    const harness = new Harness({
+      fetchImpl: router({
+        'GET /api/observations/o1': () => jsonResponse(200, current),
+        'GET /api/observations/o1/history': () => jsonResponse(200, [{
+          version: 1, id: 'v1', payload_hash: 'a'.repeat(64),
+          source_kind: 'manual', created_at: '2026-09-15T10:00:00', is_current: false,
+        }]),
+        'GET /api/observations/o1/history/1': () => jsonResponse(200, {
+          version: 1, id: 'v1',
+          payload: payload({ term_id: 't2', observation_process: '旧学期正文' }),
+          payload_hash: 'a'.repeat(64), photos: [], source_kind: 'manual',
+          created_at: '2026-09-15T10:00:00',
+        }),
+        'POST /api/observations/o1/history/preview-restore': ({ body }) => {
+          bodies.push(body)
+          return jsonResponse(200, {
+            restore_token: 'reissue-token', source_version: 1,
+            base_draft_revision: 4, base_draft_hash: 'b'.repeat(64),
+            effective_payload_hash: 'e'.repeat(64), effective_term_id: 't2',
+            source_term_name: '春季学期', target_term_name: '秋季学期',
+            effective_payload: payload({ term_id: 't2', observation_process: '旧学期正文' }),
+            photos: [], expires_at: '2026-09-15T10:15:00', warnings: [],
+          })
+        },
+        'POST /api/observations/o1/history/restore': ({ body }) => {
+          bodies.push(body)
+          current = currentFixture({
+            revision: 5,
+            payload: payload({ term_id: 't2', observation_process: '旧学期正文' }),
+          })
+          return jsonResponse(200, {
+            changed: true, revision: 5, payload_hash: 'e'.repeat(64),
+            current_version: 2, result_version: 2, source_version: 1,
+          })
+        },
+      }),
+    })
+    harness.setup('views/ObservationEditorView.vue', {
+      context: reissueContext,
+      observationId: 'o1',
+      frozen: false,
+    })
+    harness.runMounted()
+    await settle()
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openHistory()
+    await settle()
+    await hook.selectHistory(1)
+    await settle()
+    const revisionAtPreview = hook.revision()
+    hook.setRestoreTermDecision('assign_selected')
+    hook.setRestoreTermId('')
+    hook.setRestoreUseCurrentTermName(true)
+    await hook.previewRestore()
+    await settle()
+    assert.equal(bodies[0].use_current_term_name, true)
+    assert.equal(bodies[0].term_decision, 'keep_history')
+    assert.equal(bodies[0].source_version, 1)
+    assert.equal(bodies[0].base_draft_revision, revisionAtPreview)
+    assert.equal(hook.restorePreview().source_term_name, '春季学期')
+    assert.equal(hook.restorePreview().target_term_name, '秋季学期')
+    await hook.confirmRestore()
+    await settle()
+    assert.equal(bodies[1].use_current_term_name, true)
+    assert.equal(bodies[1].term_decision, 'keep_history')
+    assert.equal(bodies[1].restore_token, 'reissue-token')
+    assert.equal(bodies[1].request_id, bodies[0].request_id)
+    assert.equal(hook.form().observation_process, '旧学期正文')
+    harness.unmount()
+    ok('history reissue sends current-term-name on preview and restore with one request')
+  }
   // -- R09/R15: rewrite text and safe numeric parsing ----------------------
   {
     const harness = new Harness()
@@ -2465,6 +2541,9 @@ async function main() {
     await settle()
     assert.equal(hook.restoreUnknownActive(), true)
     assert.ok(hook.blockingDraft() !== null)
+    await hook.selectHistory(2)
+    await settle()
+    assert.equal(hook.historyDetail().version, 1)
     await hook.reconcileRestore()
     await settle()
     assert.equal(hook.restoreUnknownActive(), false)

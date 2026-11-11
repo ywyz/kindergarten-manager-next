@@ -218,6 +218,7 @@ def weekly_confirmation_preview(
             session_scope_hash=_session_scope_hash(request),
             plan_id=plan_id,
             expected_draft_version=data.expected_draft_version,
+            source_confirmation_id=data.source_confirmation_id,
         )
 
 
@@ -244,6 +245,7 @@ def weekly_confirm(
             ack_missing=data.ack_missing,
             ack_stale=data.ack_stale,
             note=data.note,
+            source_confirmation_id=data.source_confirmation_id,
         )
 
 

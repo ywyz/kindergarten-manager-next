@@ -60,6 +60,7 @@ PILLOW_VERSION = "13.0.0"
 ONLINE_INTEGRATION_TEST_HOOK = (
     d0_paths.REPO_ROOT / "desktop" / "e14_online_integration_test_hook.py"
 )
+COLLABORATION_RELEASE_FILENAME = "collaboration_release.json"
 
 TEMPLATE_DIR = d0_paths.BACKEND_ROOT / "app" / "assets" / "word_templates"
 LISTENING_TEMPLATE_DIR = (
@@ -1008,6 +1009,30 @@ def require_online_integration_hook() -> None:
         raise SystemExit(f"拒绝构建：runtime hook 含 reparse 别名 {path}")
 
 
+def normalize_collaboration_origin(value: str | None) -> str | None:
+    """Validate one optional ordinary-release collaboration origin.
+
+    The desktop proxy owns the single URL judgment; the builder must not
+    accept a broader value (path, query, credentials, non-HTTPS, redirect).
+    """
+
+    if value is None:
+        return None
+    backend = str(d0_paths.BACKEND_ROOT)
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    try:
+        from app.local.collaboration_proxy import _normalize_origin
+    except (ImportError, OSError) as exc:  # pragma: no cover - build env fault
+        raise SystemExit(f"拒绝：无法加载协作地址校验器 {exc}") from exc
+    origin, code, message = _normalize_origin(value)
+    if origin is None:
+        raise SystemExit(
+            f"拒绝 --collaboration-origin：{message or code or '地址不合法'}"
+        )
+    return origin
+
+
 def install_package_metadata(
     package_root: Path,
     build_id: str,
@@ -1021,10 +1046,24 @@ def install_package_metadata(
     release_channel: str | None = None,
     migration_files: list[str] | None = None,
     migration_head: str | None = None,
+    collaboration_origin: str | None = None,
 ) -> dict:
     internal = package_root / "_internal"
     if not internal.is_dir():
         raise SystemExit(f"拒绝：包内缺少 _internal 目录 {package_root}")
+    normalized_origin = normalize_collaboration_origin(collaboration_origin)
+    if normalized_origin is not None:
+        release_config = internal / COLLABORATION_RELEASE_FILENAME
+        release_config.write_text(
+            json.dumps({"origin": normalized_origin}, ensure_ascii=False)
+            + chr(10),
+            encoding="utf-8",
+            newline=chr(10),
+        )
+        if json.loads(release_config.read_text(encoding="utf-8")) != {
+            "origin": normalized_origin
+        }:
+            raise SystemExit("拒绝：写入后的 collaboration_release.json 不一致")
     try:
         version, channel = resolve_release_identity(
             release_version, release_channel
@@ -1395,7 +1434,29 @@ def main() -> int:
             "explicit preview --version and --channel preview"
         ),
     )
+    parser.add_argument(
+        "--collaboration-origin",
+        help=(
+            "ordinary release only: optional pure HTTPS collaboration origin "
+            "written to _internal/collaboration_release.json"
+        ),
+    )
     args = parser.parse_args()
+
+    try:
+        collaboration_origin = normalize_collaboration_origin(
+            args.collaboration_origin
+        )
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.online_integration_test and collaboration_origin is not None:
+        print(
+            "拒绝：--online-integration-test 与 --collaboration-origin 冲突；"
+            "联调测试包必须保持固定隔离地址",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.online_integration_test:
         if not args.version or args.channel != "preview":
@@ -1523,6 +1584,7 @@ def main() -> int:
             release_channel=release_channel,
             migration_files=migration_files,
             migration_head=migration_head,
+            collaboration_origin=collaboration_origin,
         )
         portable = write_portable_archive(
             package_root,
@@ -1543,6 +1605,7 @@ def main() -> int:
             release_channel=release_channel,
             migration_files=migration_files,
             migration_head=migration_head,
+            collaboration_origin=collaboration_origin,
         )
 
     # The second freeze covers the entire write chain, including the portable

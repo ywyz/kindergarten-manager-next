@@ -2375,7 +2375,7 @@ async function testPromotionTermsIgnoreLateForeignResponse() {
   assert.equal(posts.length, 0)
   ok('settings: a late promotion response from another connected school is ignored')
 }
-async function testTermNameUpdateExistingDocumentsIsOptional() {
+async function testTermRenameDoesNotRewriteHistory() {
   const { state, posts } = await mountSettings({
     postImpl: async (path, body) => {
       if (path.endsWith('/preview')) return previewPayload(body.change)
@@ -2385,44 +2385,15 @@ async function testTermNameUpdateExistingDocumentsIsOptional() {
   const form = state.termForms.value[0]
   form.name = '园所秋季学期'
   await vue.nextTick()
-  assert.equal(state.termNameChanged(form), true)
-  state.setTermUpdateExisting(form, true)
-  await vue.nextTick()
   await state.confirmTermChange(form)
-  assert.equal(posts[0].body.change.update_existing_documents, true)
-  assert.equal(posts[1].body.change.update_existing_documents, true)
-  assert.deepEqual(posts[1].body.change, posts[0].body.change)
-
-  const falseOption = await mountSettings({
-    postImpl: async (path, body) => {
-      if (path.endsWith('/preview')) return previewPayload(body.change)
-      return appliedPayload(body)
-    },
-  })
-  const renamed = falseOption.state.termForms.value[0]
-  renamed.name = '默认保留旧记录名称'
-  await vue.nextTick()
-  await falseOption.state.confirmTermChange(renamed)
-  assert.equal(falseOption.posts[0].body.change.update_existing_documents, false)
-  assert.equal(falseOption.posts[1].body.change.update_existing_documents, false)
-
-  const second = await mountSettings({
-    postImpl: async (path, body) => {
-      if (path.endsWith('/preview')) return previewPayload(body.change)
-      return appliedPayload(body)
-    },
-  })
-  const dateOnly = second.state.termForms.value[0]
-  dateOnly.end_date = '2026-09-29'
-  await vue.nextTick()
-  second.state.setTermUpdateExisting(dateOnly, true)
-  await vue.nextTick()
-  await second.state.confirmTermChange(dateOnly)
-  assert.equal(second.posts.length, 2)
-  assert.equal('update_existing_documents' in second.posts[0].body.change, false)
-  ok('settings: update_existing_documents is sent only for a term name change')
-}
-async function testCalendarExceptionKeepsTwoStepPreview() {
+  assert.equal(posts.length, 2)
+  assert.equal('update_existing_documents' in posts[0].body.change, false)
+  assert.equal('update_existing_documents' in posts[1].body.change, false)
+  const source = fs.readFileSync(path.join(d1Dir, 'views', 'SettingsView.vue'), 'utf8')
+  assert.match(source, /settings-term-history-hint/)
+  assert.equal(source.includes('term-update-existing-documents'), false)
+  ok('settings: term rename never rewrites old records and points to history re-save')
+}async function testCalendarExceptionKeepsTwoStepPreview() {
   const { state } = await mountSettings({
     postImpl: async (path, body) => {
       if (path.endsWith('/preview')) return previewPayload(body.change)
@@ -4255,7 +4226,7 @@ const tests = [
   testTermUpdateConfirmPreviewThenApply,
   testPromotionTermsFillOnlyExplicitReadAndUniqueRange,
   testPromotionTermsIgnoreLateForeignResponse,
-  testTermNameUpdateExistingDocumentsIsOptional,
+  testTermRenameDoesNotRewriteHistory,
   testCalendarExceptionKeepsTwoStepPreview,
   testChangedInputDuringOneClickPreviewSendsNoApply,
   testOneClickKnownConflictKeepsDraft,

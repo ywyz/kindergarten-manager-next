@@ -144,6 +144,12 @@ HISTORICAL_BUNDLE_HASHES: dict[tuple[str, int, int], frozenset[str]] = {
     ("daily_other_activities", 1, 2): frozenset(
         {"4700755f7c65380c628bba4104d8f210ec3b6fea6656814f80eb81d593f87a75"}
     ),
+    # fa9d342 shipped this exact guidance text before it was restored to the
+    # 4d2043e published identity.  The stored digest is re-derived from the
+    # actual schemas/guidance before this whitelist is consulted.
+    ("weekly_materials_generate", 2, 1): frozenset(
+        {"d03ca0d68a54172c46c75a5822ee6f5073238c9f53bbc50a394061dd1b7094ef"}
+    ),
 }
 
 GUIDANCE_MAX_CHARS = 8000

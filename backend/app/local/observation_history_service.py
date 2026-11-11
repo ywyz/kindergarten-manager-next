@@ -207,9 +207,14 @@ def _effective_payload(
     current_payload: dict[str, Any],
     term_decision: str,
     selected_term_id: str | None,
+    use_current_term_name: bool = False,
 ) -> tuple[dict[str, Any], dict[str, str] | None, list[str]]:
     if term_decision not in _TERM_DECISIONS:
         raise ObservationRestoreSourceInvalid()
+    if use_current_term_name and term_decision != "keep_history":
+        raise ObservationRestoreSourceInvalid(
+            details={"reason": "use_current_term_name_requires_keep_history"}
+        )
     base = {
         key: value
         for key, value in source_payload.items()
@@ -235,6 +240,29 @@ def _effective_payload(
                 raise ObservationRestoreSourceInvalid(
                     details={"reason": "history_term_range_changed"}
                 )
+            if use_current_term_name:
+                old_name = snapshot.get("name")
+                current_name = live_source.get("name") if live_source else None
+                if (
+                    not isinstance(old_name, str)
+                    or not old_name.strip()
+                    or not isinstance(current_name, str)
+                    or not current_name.strip()
+                ):
+                    raise ObservationRestoreSourceInvalid(
+                        details={"reason": "term_name_unavailable"}
+                    )
+                if old_name == current_name:
+                    raise ObservationRestoreSourceInvalid(
+                        details={"reason": "term_name_unchanged"}
+                    )
+                # Only the name changes.  The source snapshot's dates,
+                # term id and all content/material stay exactly as recorded.
+                snapshot = {**snapshot, "name": current_name}
+        elif use_current_term_name:
+            raise ObservationRestoreSourceInvalid(
+                details={"reason": "history_term_missing"}
+            )
     elif term_decision == "keep_current":
         term_id = current_payload.get("term_id")
         snapshot = current_payload.get("term_snapshot")
@@ -313,20 +341,23 @@ def _term_snapshot_hash(
     term_decision: str,
     selected_term_id: str | None,
     binding_context: dict[str, Any],
+    use_current_term_name: bool = False,
 ) -> str:
     # The hash is a binding, not a display value.  It must remain distinct even
     # when the effective term is null, so a token cannot be reused with another
     # keep_history/keep_current/unassigned decision or after an involved term
     # configuration changes.
+    payload = {
+        "snapshot": snapshot,
+        "term_decision": term_decision,
+        "selected_term_id": selected_term_id,
+        "binding_context": binding_context,
+    }
+    if use_current_term_name:
+        # Omitted/false keeps every historical binding byte-for-byte stable.
+        payload["use_current_term_name"] = True
     return hashlib.sha256(
-        canonical_json(
-            {
-                "snapshot": snapshot,
-                "term_decision": term_decision,
-                "selected_term_id": selected_term_id,
-                "binding_context": binding_context,
-            }
-        ).encode("utf-8")
+        canonical_json(payload).encode("utf-8")
     ).hexdigest()
 
 
@@ -426,11 +457,18 @@ def preview_restore(
     base_draft_hash: str,
     term_decision: str,
     selected_term_id: str | None = None,
+    use_current_term_name: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     rid = normalize_request_id(request_id)
     if term_decision not in _TERM_DECISIONS:
         raise ObservationRestoreSourceInvalid()
+    if not isinstance(use_current_term_name, bool):
+        raise ObservationRestoreSourceInvalid()
+    if use_current_term_name and term_decision != "keep_history":
+        raise ObservationRestoreSourceInvalid(
+            details={"reason": "use_current_term_name_requires_keep_history"}
+        )
     with read_scope(session):
         record, draft, _current_manifest = _load_current(
             session, profile_id, observation_id
@@ -455,6 +493,7 @@ def preview_restore(
             current_payload=dict(draft.payload_json or {}),
             term_decision=term_decision,
             selected_term_id=selected_term_id,
+            use_current_term_name=use_current_term_name,
         )
         effective_hash = aggregate_hash(effective, source_manifest)
         material_hash = _material_hash(source_manifest)
@@ -500,6 +539,7 @@ def preview_restore(
             current_payload=dict(draft2.payload_json or {}),
             term_decision=term_decision,
             selected_term_id=selected_term_id,
+            use_current_term_name=use_current_term_name,
         )
         effective_hash2 = aggregate_hash(effective2, source_manifest2)
         if (
@@ -524,6 +564,7 @@ def preview_restore(
                 term_decision,
                 selected_term_id,
                 binding_context2,
+                use_current_term_name,
             ),
             effective_payload_hash=effective_hash2,
             material_hash=material_hash,
@@ -543,7 +584,7 @@ def preview_restore(
     except Exception as exc:
         rollback(session)
         raise ObservationStorageError() from exc
-    return {
+    result = {
         "restore_token": token,
         "source_version": source_version,
         "base_draft_revision": base_draft_revision,
@@ -559,6 +600,25 @@ def preview_restore(
         "current_version": current_version,
         "warnings": term_warnings2,
     }
+    if use_current_term_name:
+        result["use_current_term_name"] = True
+        source_snapshot = (
+            source.payload_json.get("term_snapshot")
+            if isinstance(source.payload_json, dict)
+            else None
+        )
+        result["source_term_name"] = (
+            source_snapshot.get("name")
+            if isinstance(source_snapshot, dict)
+            else None
+        )
+        effective_snapshot = effective.get("term_snapshot")
+        result["target_term_name"] = (
+            effective_snapshot.get("name")
+            if isinstance(effective_snapshot, dict)
+            else None
+        )
+    return result
 
 
 def _preview_by_token(
@@ -589,6 +649,7 @@ def restore_observation(
     expected_base_hash: str,
     term_decision: str,
     selected_term_id: str | None = None,
+    use_current_term_name: bool = False,
     now: datetime | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
@@ -597,18 +658,27 @@ def restore_observation(
         raise ObservationRestorePreviewInvalid()
     if term_decision not in _TERM_DECISIONS:
         raise ObservationRestoreSourceInvalid()
+    if not isinstance(use_current_term_name, bool):
+        raise ObservationRestoreSourceInvalid()
+    if use_current_term_name and term_decision != "keep_history":
+        raise ObservationRestoreSourceInvalid(
+            details={"reason": "use_current_term_name_requires_keep_history"}
+        )
     token_hash = hashlib.sha256(restore_token.encode("utf-8")).hexdigest()
+    fingerprint_payload = {
+        "profile_id": profile_id,
+        "observation_id": observation_id,
+        "token_hash": token_hash,
+        "expected_base_revision": expected_base_revision,
+        "expected_base_hash": expected_base_hash,
+        "term_decision": term_decision,
+        "selected_term_id": selected_term_id,
+    }
+    if use_current_term_name:
+        fingerprint_payload["use_current_term_name"] = True
     fingerprint = _fingerprint(
         "observation_restore",
-        {
-            "profile_id": profile_id,
-            "observation_id": observation_id,
-            "token_hash": token_hash,
-            "expected_base_revision": expected_base_revision,
-            "expected_base_hash": expected_base_hash,
-            "term_decision": term_decision,
-            "selected_term_id": selected_term_id,
-        },
+        fingerprint_payload,
     )
     with read_scope(session):
         replay = _replay(session, profile_id, rid, fingerprint)
@@ -649,6 +719,7 @@ def restore_observation(
                 current_payload=dict(current_draft.payload_json or {}),
                 term_decision=term_decision,
                 selected_term_id=selected_term_id,
+                use_current_term_name=use_current_term_name,
             )
             binding_context = _term_binding_context(
                 session,
@@ -662,7 +733,13 @@ def restore_observation(
             if (
                 effective_hash != preview.effective_payload_hash
                 or material_hash != preview.material_hash
-                or _term_snapshot_hash(snapshot, term_decision, selected_term_id, binding_context) != preview.term_snapshot_hash
+                or _term_snapshot_hash(
+                    snapshot,
+                    term_decision,
+                    selected_term_id,
+                    binding_context,
+                    use_current_term_name,
+                ) != preview.term_snapshot_hash
             ):
                 raise ObservationRestorePreviewInvalid()
             preview_id = preview.id
@@ -735,6 +812,7 @@ def restore_observation(
             current_payload=dict(draft.payload_json or {}),
             term_decision=term_decision,
             selected_term_id=selected_term_id,
+            use_current_term_name=use_current_term_name,
         )
         binding_context = _term_binding_context(
             session,
@@ -747,7 +825,13 @@ def restore_observation(
         if (
             effective_hash != preview.effective_payload_hash
             or _material_hash(source_manifest) != preview.material_hash
-            or _term_snapshot_hash(snapshot, term_decision, selected_term_id, binding_context) != preview.term_snapshot_hash
+            or _term_snapshot_hash(
+                snapshot,
+                term_decision,
+                selected_term_id,
+                binding_context,
+                use_current_term_name,
+            ) != preview.term_snapshot_hash
         ):
             raise ObservationRestorePreviewInvalid()
         _short_material_check(
@@ -799,6 +883,22 @@ def restore_observation(
             created_at=commit_now,
         )
         # Operation and restore detail share the same short transaction.
+        operation_result = {
+            "observation_id": observation_id,
+            "changed": changed,
+            "revision": draft.revision,
+            "payload_hash": effective_hash,
+            "current_version": record.current_version,
+            "source_version": preview.source_version,
+            "result_version": result_version,
+            "term_decision": term_decision,
+            "effective_term_id": effective.get("term_id"),
+            "photos": source_manifest,
+            "target_hashes": _target_hashes(effective),
+            "saved_at": commit_now.isoformat(),
+        }
+        if use_current_term_name:
+            operation_result["use_current_term_name"] = True
         operation = _operation(
             session,
             profile_id=profile_id,
@@ -806,20 +906,7 @@ def restore_observation(
             kind="observation_restore",
             observation_id=observation_id,
             fingerprint=fingerprint,
-            result={
-                "observation_id": observation_id,
-                "changed": changed,
-                "revision": draft.revision,
-                "payload_hash": effective_hash,
-                "current_version": record.current_version,
-                "source_version": preview.source_version,
-                "result_version": result_version,
-                "term_decision": term_decision,
-                "effective_term_id": effective.get("term_id"),
-                "photos": source_manifest,
-                "target_hashes": _target_hashes(effective),
-                "saved_at": commit_now.isoformat(),
-            },
+            result=operation_result,
             now=commit_now,
         )
         restore.operation_id = operation.id

@@ -400,6 +400,76 @@ class PromptReadTests(PromptCase):
             self.sync(PROMPT_BUNDLE_MANIFEST)
         self.assertEqual(ctx.exception.code, "PROMPT_BUNDLE_CONFLICT")
 
+    def test_historical_weekly_materials_fa9d342_digest_is_accepted(self):
+        bundle = next(
+            item
+            for item in PROMPT_BUNDLE_MANIFEST
+            if item["task_type"] == "weekly_materials_generate"
+        )
+        old_guidance = dict(bundle["guidance_defaults_json"])
+        old_guidance["instructions"] = (
+            old_guidance["instructions"]
+            + "当 selection.focus_area 为 null 时，所有 items 都必须是 "
+            "origin=suggested 且 evidence_refs=[]；只能依据 grade、weekly_context、"
+            "theme、suggestion_context 和已保存的可靠已选上下文设计材料，"
+            "不得输出 source_handle 或声称来自原文。"
+        )
+        digest = prompt_bundles.bundle_hash(
+            bundle["input_schema_json"],
+            bundle["output_schema_json"],
+            old_guidance,
+        )
+        self.assertIn(
+            digest,
+            prompt_bundles.HISTORICAL_BUNDLE_HASHES[
+                ("weekly_materials_generate", 2, 1)
+            ],
+        )
+        session = self.session()
+        try:
+            row = session.get(LocalPromptBundle, ("weekly_materials_generate", 2, 1))
+            self.assertIsNotNone(row)
+            row.guidance_defaults_json = old_guidance
+            row.bundle_hash = digest
+            session.commit()
+        finally:
+            session.close()
+        self.sync(PROMPT_BUNDLE_MANIFEST)
+        row = query_rows(
+            self.db,
+            "SELECT guidance_defaults_json, bundle_hash FROM local_prompt_bundles "
+            "WHERE task_type='weekly_materials_generate' AND contract_version=2 "
+            "AND default_revision=1",
+        )[0]
+        guidance = (
+            row["guidance_defaults_json"]
+            if isinstance(row["guidance_defaults_json"], dict)
+            else __import__("json").loads(row["guidance_defaults_json"])
+        )
+        self.assertEqual(guidance["instructions"], old_guidance["instructions"])
+        self.assertEqual(row["bundle_hash"], digest)
+    def test_historical_weekly_materials_digest_on_tampered_content_is_rejected(self):
+        digest = next(
+            iter(
+                prompt_bundles.HISTORICAL_BUNDLE_HASHES[
+                    ("weekly_materials_generate", 2, 1)
+                ]
+            )
+        )
+        session = self.session()
+        try:
+            row = session.get(LocalPromptBundle, ("weekly_materials_generate", 2, 1))
+            self.assertIsNotNone(row)
+            guidance = dict(row.guidance_defaults_json)
+            guidance["instructions"] = "被篡改的材料说明"
+            row.guidance_defaults_json = guidance
+            row.bundle_hash = digest
+            session.commit()
+        finally:
+            session.close()
+        with self.assertRaises(LocalError) as ctx:
+            self.sync(PROMPT_BUNDLE_MANIFEST)
+        self.assertEqual(ctx.exception.code, "PROMPT_BUNDLE_CONFLICT")
     def test_get_prompt_is_read_only(self):
         out = self.prompt("daily_lesson_split")
         self.assertEqual(out["personal_revision"], 1)

@@ -19,7 +19,7 @@ from PIL import Image
 from sqlalchemy import select
 
 from app.local import ai_config_service, ai_executor, profile_service
-from app.local.models import LocalAIExecution, LocalProfile
+from app.local.models import LocalAIExecution, LocalProfile, LocalTerm
 from app.local.normalize import normalize_initialization
 from tests.local.obs_ai_workers import observation_worker_entry
 from tests.local.support import LocalTestCase, initialize_body, query_scalar
@@ -517,6 +517,64 @@ class ObservationApiCase(LocalTestCase):
         self.assertFalse(unchanged["changed"])
 
     # -- AI task / candidate / adoption ------------------------------------
+    def test_history_reissue_current_term_name_over_http(self):
+        observation_id, _asset = self.ready_observation()
+        status, saved = self.save(
+            observation_id, {"observation_goal": "第二版"}
+        )
+        self.assertEqual(status, 200, saved)
+        status, history = self.client.get(
+            f"/api/observations/{observation_id}/history"
+        )
+        self.assertEqual(status, 200, history)
+        oldest = history[-1]["version"]
+        term = self.session.scalars(select(LocalTerm)).one()
+        term.name = "HTTP 新名"
+        self.session.commit()
+        current = self.current(observation_id)
+        request_id = str(uuid.uuid4())
+        status, preview = self.client.post(
+            f"/api/observations/{observation_id}/history/preview-restore",
+            {
+                "request_id": request_id,
+                "source_version": oldest,
+                "base_draft_revision": current["revision"],
+                "base_draft_hash": current["payload_hash"],
+                "term_decision": "keep_history",
+                "use_current_term_name": True,
+            },
+        )
+        self.assertEqual(status, 200, preview)
+        self.assertEqual(preview["source_term_name"], "2026 年秋季学期")
+        self.assertEqual(preview["target_term_name"], "HTTP 新名")
+        self.assertEqual(
+            preview["effective_term_snapshot"]["name"], "HTTP 新名"
+        )
+        status, restored = self.client.post(
+            f"/api/observations/{observation_id}/history/restore",
+            {
+                "request_id": request_id,
+                "restore_token": preview["restore_token"],
+                "expected_base_revision": preview["base_draft_revision"],
+                "expected_base_hash": preview["base_draft_hash"],
+                "term_decision": "keep_history",
+                "use_current_term_name": True,
+            },
+        )
+        self.assertEqual(status, 200, restored)
+        self.assertTrue(restored["use_current_term_name"])
+        self.assertEqual(
+            self.current(observation_id)["payload"]["term_snapshot"]["name"],
+            "HTTP 新名",
+        )
+        status, old = self.client.get(
+            f"/api/observations/{observation_id}/history/{oldest}"
+        )
+        self.assertEqual(status, 200, old)
+        self.assertEqual(
+            old["payload"]["term_snapshot"]["name"], "2026 年秋季学期"
+        )
+
     def test_ai_task_candidate_preview_and_adopt_over_http(self):
         self.configure_ai()
         observation_id, _asset = self.ready_observation()

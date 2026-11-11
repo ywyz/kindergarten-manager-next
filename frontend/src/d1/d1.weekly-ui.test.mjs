@@ -58,24 +58,25 @@ assert.match(editor.script, /confirmationPreview/)
 assert.match(editor.script, /retryOriginalOperation/)
 assert.match(editor.script, /openExport/)
 assert.match(editor.script, /WeeklyExportDialog/)
-assert.equal(editor.script.includes('WeeklyHistoryPanel'), false)
+assert.match(editor.script, /WeeklyHistoryPanel/)
 assert.equal(editor.script.includes('startCurrentExport'), false)
-assert.equal(editor.script.includes('openHistory'), false)
-assert.equal(editor.script.includes('historyOpen'), false)
+assert.match(editor.script, /openHistory/)
+assert.match(editor.script, /historyOpen/)
 assert.equal(editor.script.includes('createWeeklyExportApi'), false)
-assert.equal(editor.template.includes('历史确认'), false)
+assert.match(editor.template, /历史确认/)
+assert.match(editor.source, /weekly-reissue-source|beginReissue/)
 assert.match(editor.source, /<el-form label-width="90px" @submit\.prevent>/)
 assert.match(editor.template, /保存/)
 assert.match(editor.template, /刷新来源预览/)
 assert.match(editor.template, /导出/)
-ok('editor compiles with confirm/export actions, save/refresh auxiliaries and no history entry')
+ok('editor compiles with confirm/export actions, save/refresh auxiliaries and history reissue entry')
 
 const history = compileView('WeeklyHistoryPanel.vue')
 assert.match(history.script, /listConfirmations/)
 assert.match(history.script, /getConfirmation/)
 assert.match(history.script, /export-confirmation/)
 assert.match(history.script, /snapshot\.content/)
-ok('history panel compiles as a read-only self-contained snapshot viewer')
+ok('history panel compiles as a self-contained snapshot viewer with reissue action')
 
 const exportDialog = compileView('WeeklyExportDialog.vue')
 assert.match(exportDialog.script, /save_weekly_export/)
@@ -244,7 +245,80 @@ FakeController.prototype.resetForContext = function () {}
   await waiting
   assert.equal(settled, true)
   ok('editor actual setup persists all four-column edits, exposes unknown recovery and waits for compositionend')
+}
 
+{
+  const detail = detailFixture()
+  const api = { get: async () => clone(detail) }
+  const weeklyStub = {
+    createWeeklyApi: () => api,
+    createWeeklyExportApi: () => ({}),
+    newWeeklyRequestId: () => idWeekly.newWeeklyRequestId(),
+    projectWeeklyError: () => ({ message: 'error' }),
+    weeklyFrozenSourceDates: () => ({}),
+    fetchWeeklySourceDate: async () => '',
+    formatFrozenWeeklyTarget: () => [],
+  }
+  const harness = new SfcHarness({ '../weekly': weeklyStub, '../weekly-editor': { WeeklyEditorController: FakeController } })
+  const { state } = harness.setup('WeeklyPlanEditorView.vue', { planId: 'p1' })
+  harness.runMounted()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  let previewSource = ''
+  let confirmOptions = null
+  const originalPreview = FakeController.prototype.confirmationPreview
+  const originalConfirm = FakeController.prototype.confirm
+  FakeController.prototype.confirmationPreview = async function (sourceId) {
+    previewSource = sourceId
+    return {
+      target: {
+        draft_version: 1,
+        date_range: { start: '2026-11-02', end: '2026-11-08' },
+        header: detail.plan.header,
+        facts: { missing: [], stale_sources: [], warnings: [] },
+        content: this.content,
+        term_name: '秋季学期',
+        reissued_from_confirmation_id: sourceId,
+      },
+      target_hash: 'h',
+      preview_token: 'reissue-token',
+    }
+  }
+  FakeController.prototype.confirm = async function (_preview, options) {
+    confirmOptions = options
+    this.detail = {
+      ...this.detail,
+      plan: { ...this.detail.plan, current_confirmed_version: 4 },
+      confirmed: { id: 'hist-new', version: 4, draft_version: 1, snapshot_hash: 'n', term_name: '秋季学期' },
+    }
+    return { result: 'saved' }
+  }
+  try {
+    const history = {
+      confirmation: { id: 'hist-1', version: 3, draft_version: 1, snapshot_hash: 'h' },
+      snapshot: { term_name: '历史学期' },
+      term_name: '历史学期',
+      note: null,
+      confirmed_by: '本档案教师',
+      confirmed_at: '2026-11-02T10:00:00',
+    }
+    state.historyOpen.value = true
+    const before = clone(state.content.value)
+    await state.beginReissue(history)
+    assert.equal(previewSource, 'hist-1')
+    assert.equal(state.confirmPreview.value.target.term_name, '秋季学期')
+    assert.equal(state.confirmPreview.value.target.reissued_from_confirmation_id, 'hist-1')
+    await state.confirmTarget()
+    assert.equal(confirmOptions.source_confirmation_id, 'hist-1')
+    assert.deepEqual(state.content.value, before)
+    assert.equal(state.detail.value.confirmed.id, 'hist-new')
+    assert.equal(state.detail.value.plan.current_confirmed_version, 4)
+    assert.match(state.notice.value, /已从历史确认 v3 另存/)
+    ok('editor reissue previews/confirms one historical source id and updates confirmed metadata without replacing the draft')
+  } finally {
+    FakeController.prototype.confirmationPreview = originalPreview
+    FakeController.prototype.confirm = originalConfirm
+  }
+}
 {
   const detail = detailFixture()
   const collectiveA = flatCandidate()
@@ -330,7 +404,6 @@ FakeController.prototype.resetForContext = function () {}
   assert.match(editorTemplate, /confirmPreview\.target\.facts\.missing/)
   assert.match(editorTemplate, /formatWeeklyFact/)
   ok('weekly list/editor overviews collapse 0/1/many missing and stale sources to short labels while confirm details remain')
-}
 }
 
 {
@@ -1690,6 +1763,27 @@ for (const [code, message, noticePattern] of [
 }
 
 {
+  const calls = []
+  const client = {
+    ApiError: class ApiError extends Error {},
+    apiGet: async () => ({}),
+    apiPatch: async () => ({}),
+    apiPost: async (url, body) => { calls.push({ url, body: clone(body) }); return {} },
+    pathSegment: (value) => encodeURIComponent(String(value)),
+  }
+  const weeklyHarness = new SfcHarness({ './client': client })
+  const weekly = weeklyHarness.loadModule('weekly.ts')
+  const api = weekly.createWeeklyApi()
+  await api.confirmationPreview('p1', 7, 'hist-1')
+  assert.equal(calls[0].url, '/api/weekly-plans/p1/confirmation-preview')
+  assert.equal(calls[0].body.expected_draft_version, 7)
+  assert.equal(calls[0].body.source_confirmation_id, 'hist-1')
+  await api.confirmationPreview('p1', 8)
+  assert.equal(calls[1].body.expected_draft_version, 8)
+  assert.equal('source_confirmation_id' in calls[1].body, false)
+  ok('weekly API adapter sends source_confirmation_id only for a reissue preview')
+}
+{
   const harness = new SfcHarness({ '../weekly': { createWeeklyExportApi: () => ({}) } })
   const { state, template } = harness.setup('WeeklyExportDialog.vue', { planId: 'p1', open: false })
   assert.equal(state.saveStatusLabel('saved'), '已保存')
@@ -1703,4 +1797,104 @@ for (const [code, message, noticePattern] of [
   assert.match(template, /回执待补记/)
   assert.equal(template.includes('operation.export_id'), false)
   ok('export display maps every bridge status and hides the opaque export ID')
+}
+{
+  const detail = detailFixture()
+  const api = { get: async () => clone(detail) }
+  const weeklyStub = {
+    createWeeklyApi: () => api,
+    createWeeklyExportApi: () => ({}),
+    newWeeklyRequestId: () => idWeekly.newWeeklyRequestId(),
+    projectWeeklyError: () => ({ message: 'error' }),
+    weeklyFrozenSourceDates: () => ({}),
+    fetchWeeklySourceDate: async () => '',
+    formatFrozenWeeklyTarget: () => [],
+  }
+  const harness = new SfcHarness({ '../weekly': weeklyStub, '../weekly-editor': { WeeklyEditorController: FakeController } })
+  const { state } = harness.setup('WeeklyPlanEditorView.vue', { planId: 'p1' })
+  harness.runMounted()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const originalPreview = FakeController.prototype.confirmationPreview
+  let releasePreview
+  let rejectPreview
+  FakeController.prototype.confirmationPreview = () => new Promise((resolve, reject) => { releasePreview = resolve; rejectPreview = reject })
+  try {
+    state.historyOpen.value = true
+    const pending = state.beginReissue({
+      confirmation: { id: 'hist-1', version: 3, draft_version: 1, snapshot_hash: 'h' },
+      snapshot: { term_name: '历史学期' },
+      term_name: '历史学期',
+      note: null,
+      confirmed_by: '本档案教师',
+      confirmed_at: '2026-11-02T10:00:00',
+    })
+    state.historyOpen.value = false
+    state.onHistoryClosed()
+    state.historyOpen.value = true
+    state.reissuePending.value = true
+    state.notice.value = '新历史选择尚未完成'
+    rejectPreview(new Error('late failure'))
+    await pending
+    assert.equal(state.confirmPreview.value, null)
+    assert.equal(state.reissuePending.value, true)
+    assert.equal(state.notice.value, '新历史选择尚未完成')
+    ok('late reissue failure after close/reopen cannot unlock or overwrite the new notice')
+  } finally {
+    FakeController.prototype.confirmationPreview = originalPreview
+  }
+}
+{
+  const queue = []
+  const historyResult = (id) => ({
+    confirmation: { id, version: 3, draft_version: 1, snapshot_hash: 'h' },
+    snapshot: {
+      draft_version: 1,
+      term_name: '历史学期',
+      header: { school_name: '幼儿园', class_name: '一班' },
+      date_range: { start: '2026-11-02', end: '2026-11-08' },
+      content: {
+        outdoor_game_slots: { collective_1: null, collective_2: null, free_choice_1: null },
+        focus_area: null,
+      },
+      facts: { missing: [], stale_sources: [] },
+    },
+    note: null,
+    confirmed_by: '本档案教师',
+    confirmed_at: '2026-11-02T10:00:00',
+    term_name: '历史学期',
+  })
+  const api = {
+    listConfirmations: async () => ({ items: [] }),
+    getConfirmation: () => new Promise((resolve, reject) => queue.push({ resolve, reject })),
+  }
+  const weeklyStub = {
+    createWeeklyApi: () => api,
+    weeklyFrozenSourceDates: () => ({}),
+    fetchWeeklySourceDate: async () => '',
+    formatFrozenWeeklyTarget: () => [],
+    formatWeeklyFact: () => '',
+    projectWeeklyError: (error) => ({ message: String(error) }),
+  }
+  const harness = new SfcHarness({ '../weekly': weeklyStub })
+  const { state } = harness.setup('WeeklyHistoryPanel.vue', { planId: 'p1', open: true, disabled: false })
+  harness.runMounted()
+  state.selected.value = historyResult('old')
+  const first = state.choose({ id: 'h2' })
+  assert.equal(state.selected.value, null)
+  const second = state.choose({ id: 'h3' })
+  queue[1].resolve(historyResult('h3'))
+  await second
+  assert.equal(state.selected.value.confirmation.id, 'h3')
+  queue[0].resolve(historyResult('h2'))
+  await first
+  assert.equal(state.selected.value.confirmation.id, 'h3')
+  const wrong = state.choose({ id: 'h4' })
+  queue[2].resolve(historyResult('h5'))
+  await wrong
+  assert.equal(state.selected.value, null)
+  const correct = state.choose({ id: 'h4' })
+  queue[3].resolve(historyResult('h4'))
+  await correct
+  assert.equal(state.selected.value.confirmation.id, 'h4')
+  ok('history panel clears stale selection while loading and ignores wrong or late confirmations')
 }

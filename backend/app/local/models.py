@@ -132,9 +132,11 @@ class LocalTermNameChange(LocalBase):
 
     The row is append-only.  ``old_name``/``new_name`` are the exact committed
     names, ``changed_at`` is the record-time boundary and
-    ``update_existing_documents`` says whether records created before this
-    rename project the new name.  Historical observation snapshots and already
-    exported Word files are never rewritten.
+    ``config_version`` identifies the committed rename.  The legacy
+    ``update_existing_documents`` flag is retained for old clients and audit,
+    but it never rewrites an existing record's display; an explicit historical
+    reissue/confirmation is required for that.  Observation snapshots and
+    already exported Word files are never rewritten by a rename.
     """
 
     __tablename__ = "local_term_name_changes"

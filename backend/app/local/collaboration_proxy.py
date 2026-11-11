@@ -17,10 +17,12 @@ import datetime as _datetime
 import json
 import os
 import ssl
+import sys
 import threading
 import urllib.error
 import urllib.request
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -1246,8 +1248,77 @@ def _normalize_origin(
     return f"https://{parsed.netloc}", "COLLABORATION_READY", None
 
 
+def _packaged_collaboration_origin(
+) -> tuple[bool, str | None, str, str | None]:
+    """Read the frozen release origin without any network or source fallback.
+
+    Source mode and old frozen builds without the file keep the historical
+    ``APP_COLLABORATION_API_ORIGIN`` behavior.  A present but malformed or
+    unreadable packaged file is fail-closed rather than silently letting an
+    environment value override release metadata.
+    """
+
+    if not getattr(sys, "frozen", False):
+        return False, None, "", None
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not isinstance(meipass, str) or not meipass:
+        # An old/partial frozen build has no trusted packaged file.
+        return False, None, "", None
+    try:
+        path = Path(meipass) / "collaboration_release.json"
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False, None, "", None
+    except (OSError, ValueError, TypeError):
+        return (
+            True,
+            None,
+            "COLLABORATION_ORIGIN_INVALID",
+            "在线协作服务地址配置读取失败，请联系部署方",
+        )
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return (
+            True,
+            None,
+            "COLLABORATION_ORIGIN_INVALID",
+            "在线协作服务地址配置不合法，请联系部署方",
+        )
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"origin"}
+        or not isinstance(payload.get("origin"), str)
+    ):
+        return (
+            True,
+            None,
+            "COLLABORATION_ORIGIN_INVALID",
+            "在线协作服务地址配置不合法，请联系部署方",
+        )
+    origin, code, message = _normalize_origin(payload["origin"])
+    if origin is None:
+        return (
+            True,
+            None,
+            code or "COLLABORATION_ORIGIN_INVALID",
+            message or "在线协作服务地址配置不合法，请联系部署方",
+        )
+    return True, origin, "COLLABORATION_READY", None
+
+
 def create_collaboration_proxy() -> CollaborationProxy:
     """Build the process-memory proxy; this performs no network request."""
+    packaged, origin, code, message = _packaged_collaboration_origin()
+    if packaged:
+        if origin is None:
+            proxy = CollaborationProxy(None)
+            proxy._configuration_code = code
+            proxy._configuration_error = (
+                message or "在线协作服务地址配置不合法，请联系部署方"
+            )
+            return proxy
+        return CollaborationProxy(origin)
     return CollaborationProxy(os.environ.get("APP_COLLABORATION_API_ORIGIN"))
 
 

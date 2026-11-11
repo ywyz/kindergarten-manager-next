@@ -158,7 +158,6 @@ export type ConfigChange =
       name: string
       start_date: string
       end_date: string
-      update_existing_documents?: boolean
     }
   | {
       kind: 'calendar_override'

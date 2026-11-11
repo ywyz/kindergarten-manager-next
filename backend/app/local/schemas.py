@@ -651,6 +651,9 @@ class WeeklyConfirmPreviewIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_draft_version: int = Field(..., ge=1, strict=True)
+    source_confirmation_id: str | None = Field(
+        default=None, min_length=1, max_length=32
+    )
 
 
 class WeeklyConfirmIn(BaseModel):
@@ -662,6 +665,9 @@ class WeeklyConfirmIn(BaseModel):
     ack_missing: StrictBool = False
     ack_stale: StrictBool = False
     note: str | None = None
+    source_confirmation_id: str | None = Field(
+        default=None, min_length=1, max_length=32
+    )
 
 
 class LocalDailyExportIn(BaseModel):
@@ -1157,6 +1163,7 @@ class LocalObservationRestorePreviewIn(BaseModel):
         "keep_current", "assign_selected", "unassigned", "keep_history"
     ]
     selected_term_id: str | None = None
+    use_current_term_name: bool = Field(default=False, strict=True)
 
 
 class LocalObservationRestoreIn(BaseModel):
@@ -1170,6 +1177,7 @@ class LocalObservationRestoreIn(BaseModel):
         "keep_current", "assign_selected", "unassigned", "keep_history"
     ]
     selected_term_id: str | None = None
+    use_current_term_name: bool = Field(default=False, strict=True)
 
 
 class LocalObservationAITaskCreateIn(BaseModel):

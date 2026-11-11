@@ -293,7 +293,7 @@ class TermNameScopeTests(LocalTestCase):
             ],
         )
 
-    def test_true_rename_updates_projection_without_rewriting_snapshot(self):
+    def test_legacy_true_flag_does_not_rewrite_existing_projection(self):
         old_observation = self._observation("旧观察")
         old_listening = self._listening("旧倾听")
         snapshot_before = query_scalar(
@@ -311,9 +311,11 @@ class TermNameScopeTests(LocalTestCase):
         )
         self.assertEqual(applied["status"], "applied")
 
-        self.assertEqual(self._observation_name(old_observation), "更新后新名")
-        self.assertEqual(self._listening_name(old_listening), "更新后新名")
-        # Display/re-export projection changed; the historical snapshot did not.
+        # The legacy bool is accepted for old clients but never performs a
+        # global display rewrite.  Existing records keep snapshot/record-time
+        # names; only a new explicit reissue version can carry the new name.
+        self.assertEqual(self._observation_name(old_observation), "原始学期")
+        self.assertEqual(self._listening_name(old_listening), "原始学期")
         self.assertEqual(
             self._observation_snapshot_name(old_observation), "原始学期"
         )
@@ -382,7 +384,8 @@ class TermNameScopeTests(LocalTestCase):
             self._observation_snapshot_name(observation_id), "归属中间名"
         )
 
-        # Only an explicit retroactive rename overlays the snapshot.
+        # Even a legacy true rename must not overlay the saved snapshot; the
+        # explicit historical reissue flow is the only name-change path.
         self._rename(
             "归属追溯名",
             update_existing_documents=True,
@@ -392,7 +395,7 @@ class TermNameScopeTests(LocalTestCase):
         )
         self.assertEqual(
             self._observation_name(observation_id, term_id=moved_term),
-            "归属追溯名",
+            "归属中间名",
         )
         self.assertEqual(
             self._observation_snapshot_name(observation_id), "归属中间名"
@@ -502,10 +505,11 @@ class TermNameScopeTests(LocalTestCase):
         after = self._observation("最终时点")
         after_listening = self._listening("最终倾听")
 
-        # The true rename updates both older records; the later false rename
-        # only affects records created after it.
-        self.assertEqual(self._observation_name(before), "中间名")
-        self.assertEqual(self._listening_name(before_listening), "中间名")
+        # Record-time semantics ignore the legacy true flag: the record made
+        # before the first rename stays on its original snapshot/name.  Records
+        # created after a rename use the name current at their creation.
+        self.assertEqual(self._observation_name(before), "原始学期")
+        self.assertEqual(self._listening_name(before_listening), "原始学期")
         self.assertEqual(self._observation_name(between), "中间名")
         self.assertEqual(self._listening_name(between_listening), "中间名")
         self.assertEqual(self._observation_name(after), "最终名")
@@ -534,9 +538,10 @@ class TermNameScopeTests(LocalTestCase):
             ],
         )
 
-    def test_resolver_distinguishes_false_chain_from_later_true(self):
-        # Pure timeline check for a record before every rename: false A->B
-        # keeps A, a later true C->D still applies retroactively.
+    def test_resolver_uses_record_time_and_ignores_legacy_true(self):
+        # Pure timeline check: a record before every rename keeps A; a record
+        # created after a rename uses that rename's new name.  A legacy true
+        # row does not retroactively rewrite an older record.
         changes = (
             TermNameChange(
                 old_name="A",
@@ -560,22 +565,20 @@ class TermNameScopeTests(LocalTestCase):
                 changed_at=datetime(2026, 9, 4),
             ),
         )
-        self.assertEqual(
-            resolve_term_name(
-                changes,
-                recorded_at=datetime(2026, 9, 1),
-                fallback_name="A",
-            ),
-            "D",
-        )
-        self.assertEqual(
-            resolve_term_name(
-                changes,
-                recorded_at=datetime(2026, 9, 2, 12),
-                fallback_name="A",
-            ),
-            "D",
-        )
+        for recorded_at, expected in (
+            (datetime(2026, 9, 1), "A"),
+            (datetime(2026, 9, 2, 12), "B"),
+            (datetime(2026, 9, 3, 12), "C"),
+            (datetime(2026, 9, 4, 12), "D"),
+        ):
+            self.assertEqual(
+                resolve_term_name(
+                    changes,
+                    recorded_at=recorded_at,
+                    fallback_name="A",
+                ),
+                expected,
+            )
 
     # -- pre-feature database and backup ---------------------------------
     def test_pre_feature_database_upgrades_without_rewriting_existing_names(self):
@@ -634,8 +637,8 @@ class TermNameScopeTests(LocalTestCase):
                 session.close()
             self.assertEqual(listing["items"][0]["term_name"], "原始学期")
 
-            # A true rename after the upgrade still starts from the preserved
-            # snapshot for old observations.
+            # A legacy true rename after upgrade does not rewrite the old
+            # observation projection; an explicit reissue is required.
             version = int(
                 query_scalar(
                     upgraded.db_path,
@@ -676,7 +679,7 @@ class TermNameScopeTests(LocalTestCase):
                 )
             finally:
                 session.close()
-            self.assertEqual(listing["items"][0]["term_name"], "升级后新名")
+            self.assertEqual(listing["items"][0]["term_name"], "原始学期")
             self.assertEqual(
                 self._observation_snapshot_name(observation_id), "原始学期"
             )

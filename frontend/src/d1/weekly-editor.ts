@@ -72,6 +72,7 @@ export interface WeeklyWriteTicket {
   ack_missing?: boolean
   ack_stale?: boolean
   note?: string | null
+  source_confirmation_id?: string | null
 }
 
 export interface WeeklyWriteOutcome {
@@ -267,6 +268,14 @@ export class WeeklyEditorController {
   private flightCounter = 0
   private refreshToken = 0
   private confirmToken = 0
+  private confirmationBinding: {
+    token: string
+    planId: string
+    identity: string
+    inputRevision: number
+    expectedDraftVersion: number
+    sourceConfirmationId: string | null
+  } | null = null
   private retryPromise: Promise<WeeklyWriteResult | null> | null = null
   private lastTicket: WeeklyWriteTicket | null = null
   private lastOperation: WeeklyWriteResult | null = null
@@ -368,6 +377,8 @@ export class WeeklyEditorController {
   private endBusy(reason: string): void { this.busyReasons.delete(reason); this.notify() }
 
   private applyConfirmation(confirmation: WeeklyConfirmationSummary): void {
+    const currentVersion = this.detail.plan.current_confirmed_version ?? 0
+    if (confirmation.version < currentVersion) return
     this.selectedConfirmation = confirmation
     this.detail = {
       ...this.detail,
@@ -515,6 +526,7 @@ export class WeeklyEditorController {
     this.unknown = false
     this.busyReasons.clear()
     this.confirmToken = 0
+    this.confirmationBinding = null
     this.retryPromise = null
     this.refreshToken = 0
     this.status = 'idle'
@@ -675,6 +687,7 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
             ack_missing: ticket.ack_missing ?? false,
             ack_stale: ticket.ack_stale ?? false,
             note: ticket.note ?? null,
+            source_confirmation_id: ticket.source_confirmation_id ?? null,
           })
           if (this.identity() !== ticket.identity) return null
           this.lastOperation = result
@@ -727,7 +740,7 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
     }
   }
 
-  async confirmationPreview(): Promise<WeeklyConfirmationPreview> {
+  async confirmationPreview(sourceConfirmationId?: string): Promise<WeeklyConfirmationPreview> {
     const confirmationReason = `confirmation-preview:${++this.flightCounter}`
     this.beginBusy(confirmationReason)
     const identity = this.identity()
@@ -738,9 +751,23 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
       if (this.identity() !== identity || this.inputRevision !== revision) {
         throw new Error('周计划内容已变化，请重新确认')
       }
-      const preview = await this.api.confirmationPreview(this.detail.plan.id, this.loadedVersion)
+      const expectedDraftVersion = this.loadedVersion
+      const planId = this.detail.plan.id
+      const preview = await this.api.confirmationPreview(
+        planId,
+        expectedDraftVersion,
+        sourceConfirmationId,
+      )
       if (this.identity() !== identity || this.inputRevision !== revision) {
         throw new Error('周计划内容已变化，请重新确认')
+      }
+      this.confirmationBinding = {
+        token: preview.preview_token,
+        planId,
+        identity,
+        inputRevision: revision,
+        expectedDraftVersion,
+        sourceConfirmationId: sourceConfirmationId ?? null,
       }
       return preview
     } finally {
@@ -751,19 +778,37 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
   async confirm(
     preview: WeeklyConfirmationPreview,
 
-    options: { ack_missing?: boolean; ack_stale?: boolean; note?: string | null } = {},
+    options: { ack_missing?: boolean; ack_stale?: boolean; note?: string | null; source_confirmation_id?: string | null } = {},
   ): Promise<WeeklyWriteOutcome> {
     if (this.confirmToken) return { result: 'indeterminate', message: '确认正在处理' }
+    const identity = this.identity()
+    const revision = this.inputRevision
+    const binding = this.confirmationBinding
+    if (
+      binding
+      && (
+        binding.token !== preview.preview_token
+        || binding.planId !== this.detail.plan.id
+        || binding.identity !== identity
+        || binding.inputRevision !== revision
+        || (options.source_confirmation_id ?? null) !== binding.sourceConfirmationId
+      )
+    ) {
+      return { result: 'failed', message: '确认预览已失效，请重新确认' }
+    }
+    if (options.source_confirmation_id && !binding) {
+      return { result: 'failed', message: '另存预览未绑定，请重新选择历史确认' }
+    }
+    const expectedDraftVersion =
+      binding?.expectedDraftVersion ?? preview.target.draft_version
     const confirmId = ++this.flightCounter
     const confirmReason = `confirming:${confirmId}`
     this.confirmToken = confirmId
     this.beginBusy(confirmReason)
-    const identity = this.identity()
-    const revision = this.inputRevision
     const ticket: WeeklyWriteTicket = {
       request_id: this.makeRequestId(),
       identity,
-      expected_version: preview.target.draft_version,
+      expected_version: expectedDraftVersion,
       input_revision: revision,
       sequence: this.sequence + 1,
       action: 'confirm',
@@ -772,6 +817,7 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
       ack_missing: options.ack_missing ?? false,
       ack_stale: options.ack_stale ?? false,
       note: options.note ?? null,
+      source_confirmation_id: options.source_confirmation_id ?? null,
     }
     this.sequence = ticket.sequence
     this.lastTicket = ticket
@@ -780,11 +826,12 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
     try {
       const result = await this.api.confirm(this.detail.plan.id, {
         request_id: ticket.request_id,
-        expected_draft_version: preview.target.draft_version,
+        expected_draft_version: ticket.expected_version,
         context_token: ticket.context_token!,
         ack_missing: ticket.ack_missing!,
         ack_stale: ticket.ack_stale!,
         note: ticket.note ?? null,
+        source_confirmation_id: ticket.source_confirmation_id ?? null,
       })
       if (this.identity() !== identity) return { result: 'failed' }
       if (!result.confirmation) return { result: 'failed' }
@@ -854,6 +901,7 @@ export interface WeeklyConfirmDecision {
   ack_missing: boolean
   ack_stale: boolean
   note?: string | null
+  source_confirmation_id?: string | null
 }
 
 export type WeeklyQ3Result =

@@ -9,6 +9,7 @@ never lets that helper read another database snapshot.
 from __future__ import annotations
 
 import base64
+import copy
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -144,12 +145,20 @@ def _summary(plan: LocalWeeklyPlan) -> dict:
 
 
 def _confirmation_summary(row: LocalWeeklyPlanConfirmation) -> dict:
-    return {
+    summary = {
         "id": row.id,
         "version": row.version,
         "draft_version": row.draft_version,
         "snapshot_hash": row.snapshot_hash,
     }
+    snapshot = row.snapshot_json if isinstance(row.snapshot_json, dict) else {}
+    if isinstance(snapshot.get("term_name"), str):
+        summary["term_name"] = snapshot["term_name"]
+    if isinstance(snapshot.get("reissued_from_confirmation_id"), str):
+        summary["reissued_from_confirmation_id"] = snapshot[
+            "reissued_from_confirmation_id"
+        ]
+    return summary
 
 
 def _settings(session: Session) -> LocalSettings:
@@ -1181,6 +1190,87 @@ def refresh_sources(
 # ---------------------------------------------------------------------------
 
 
+def _current_term_name(session: Session, plan: LocalWeeklyPlan) -> str:
+    term = session.get(LocalTerm, plan.term_id)
+    if term is None:
+        raise LocalStorageError("周计划所属学期缺失")
+    return term.name
+
+
+def _load_reissue_source(
+    session: Session,
+    *,
+    plan: LocalWeeklyPlan,
+    source_confirmation_id: str,
+) -> tuple[LocalWeeklyPlanConfirmation, dict]:
+    if (
+        not isinstance(source_confirmation_id, str)
+        or not (1 <= len(source_confirmation_id) <= 32)
+    ):
+        raise LocalWeeklyConfirmationNotFound()
+    row = session.get(LocalWeeklyPlanConfirmation, source_confirmation_id)
+    if row is None or row.weekly_plan_id != plan.id:
+        raise LocalWeeklyConfirmationNotFound()
+    try:
+        snapshot = confirmation_schema.validate_confirmation_snapshot(
+            row.snapshot_json
+        )
+    except LocalWeeklyInvalid as exc:
+        raise LocalWeeklyConfirmationNotFound() from exc
+    if (
+        row.draft_id != snapshot["draft_id"]
+        or row.draft_version != snapshot["draft_version"]
+        or row.snapshot_hash != confirmation_schema.snapshot_hash(snapshot)
+        or confirmation_schema.canonical_json(row.facts_json)
+        != confirmation_schema.canonical_json(snapshot["facts"])
+        or _hash(row.facts_json) != row.facts_hash
+        or snapshot["weekly_plan_id"] != plan.id
+        or snapshot["profile_id"] != plan.profile_id
+        or snapshot["class_id"] != plan.class_id
+        or snapshot["term_id"] != plan.term_id
+    ):
+        raise LocalWeeklyConfirmationNotFound()
+    return row, snapshot
+
+
+def _reissue_snapshot(
+    source_snapshot: dict,
+    *,
+    source_confirmation_id: str,
+    term_name: str,
+) -> tuple[dict, str]:
+    target = copy.deepcopy(source_snapshot)
+    target["term_name"] = term_name
+    target["reissued_from_confirmation_id"] = source_confirmation_id
+    target = confirmation_schema.validate_confirmation_snapshot(target)
+    return target, confirmation_schema.snapshot_hash(target)
+
+
+def _reissue_target(
+    session: Session,
+    *,
+    plan: LocalWeeklyPlan,
+    source_confirmation_id: str,
+) -> tuple[dict, str, str]:
+    row, snapshot = _load_reissue_source(
+        session,
+        plan=plan,
+        source_confirmation_id=source_confirmation_id,
+    )
+    term_name = _current_term_name(session, plan)
+    if snapshot.get("term_name") == term_name:
+        raise LocalWeeklyInvalid(
+            "当前学期名称与该确认版本相同，无需另存新确认"
+        )
+    target, target_hash = _reissue_snapshot(
+        snapshot,
+        source_confirmation_id=row.id,
+        term_name=term_name,
+    )
+    source_hash = _hash(snapshot)
+    return target, target_hash, source_hash
+
+
 def confirmation_preview(
     session: Session,
     *,
@@ -1190,6 +1280,7 @@ def confirmation_preview(
     session_scope_hash: str,
     plan_id: str,
     expected_draft_version: object,
+    source_confirmation_id: str | None = None,
 ) -> dict:
     expected = _validate_version(expected_draft_version)
     with read_scope(session):
@@ -1199,10 +1290,24 @@ def confirmation_preview(
             raise LocalWeeklyVersionConflict(
                 details={"draft_version": content.version}
             )
-        live = _live_snapshot(session, plan)
-    facts = _facts(session, plan, content.content_json, live)
-    target = _confirmation_snapshot(plan, content, facts)
-    target_hash = confirmation_schema.snapshot_hash(target)
+        term_name = _current_term_name(session, plan)
+        if source_confirmation_id is not None:
+            target, target_hash, source_hash = _reissue_target(
+                session,
+                plan=plan,
+                source_confirmation_id=source_confirmation_id,
+            )
+            facts_hash = _hash(target["facts"])
+            source_context_hash = source_hash
+        else:
+            live = _live_snapshot(session, plan)
+            facts = _facts(session, plan, content.content_json, live)
+            target = _confirmation_snapshot(
+                plan, content, facts, term_name=term_name
+            )
+            target_hash = confirmation_schema.snapshot_hash(target)
+            facts_hash = _hash(facts)
+            source_context_hash = live["source_context_hash"]
     token = tokens.issue_token(
         runtime,
         purpose="confirm",
@@ -1211,8 +1316,8 @@ def confirmation_preview(
         session_scope_hash=session_scope_hash,
         object_id=plan.id,
         expected_version=expected,
-        source_context_hash=live["source_context_hash"],
-        facts_hash=_hash(facts),
+        source_context_hash=source_context_hash,
+        facts_hash=facts_hash,
         target_hash=target_hash,
     )
     return {
@@ -1227,6 +1332,8 @@ def _confirmation_snapshot(
     plan: LocalWeeklyPlan,
     content: LocalWeeklyPlanContent,
     facts: dict,
+    *,
+    term_name: str | None = None,
 ) -> dict:
     return confirmation_schema.build_confirmation_snapshot(
         weekly_plan_id=plan.id,
@@ -1246,6 +1353,7 @@ def _confirmation_snapshot(
         },
         content=content.content_json,
         facts=facts,
+        term_name=term_name,
     )
 
 
@@ -1263,23 +1371,24 @@ def confirm(
     ack_missing: object,
     ack_stale: object,
     note: object = None,
+    source_confirmation_id: str | None = None,
 ) -> dict:
     rid = normalize_request_id(request_id)
     expected = _validate_version(expected_draft_version)
     if not isinstance(ack_missing, bool) or not isinstance(ack_stale, bool):
         raise LocalValidationError("ack_missing/ack_stale 必须是布尔值")
     note_value = _validate_note(note)
-    fingerprint = operations.fingerprint(
-        "confirm",
-        {
-            "plan_id": plan_id,
-            "expected_draft_version": expected,
-            "context_token_hash": tokens.token_hash(str(context_token)),
-            "ack_missing": ack_missing,
-            "ack_stale": ack_stale,
-            "note": note_value,
-        },
-    )
+    fingerprint_payload = {
+        "plan_id": plan_id,
+        "expected_draft_version": expected,
+        "context_token_hash": tokens.token_hash(str(context_token)),
+        "ack_missing": ack_missing,
+        "ack_stale": ack_stale,
+        "note": note_value,
+    }
+    if source_confirmation_id is not None:
+        fingerprint_payload["source_confirmation_id"] = source_confirmation_id
+    fingerprint = operations.fingerprint("confirm", fingerprint_payload)
     with read_scope(session):
         receipt = operations.find_receipt(
             session,
@@ -1309,11 +1418,29 @@ def confirm(
             raise LocalWeeklyVersionConflict(
                 details={"draft_version": content.version}
             )
-        live = _live_snapshot(session, plan)
-        facts = _facts(session, plan, content.content_json, live)
-        facts_hash = _hash(facts)
-        snapshot_json = _confirmation_snapshot(plan, content, facts)
-        snapshot_hash = confirmation_schema.snapshot_hash(snapshot_json)
+        term_name = _current_term_name(session, plan)
+        if source_confirmation_id is not None:
+            snapshot_json, snapshot_hash, source_hash = _reissue_target(
+                session,
+                plan=plan,
+                source_confirmation_id=source_confirmation_id,
+            )
+            facts = copy.deepcopy(snapshot_json["facts"])
+            facts_hash = _hash(facts)
+            source_context_hash = source_hash
+            confirmation_draft_id = snapshot_json["draft_id"]
+            confirmation_draft_version = snapshot_json["draft_version"]
+        else:
+            live = _live_snapshot(session, plan)
+            facts = _facts(session, plan, content.content_json, live)
+            facts_hash = _hash(facts)
+            snapshot_json = _confirmation_snapshot(
+                plan, content, facts, term_name=term_name
+            )
+            snapshot_hash = confirmation_schema.snapshot_hash(snapshot_json)
+            source_context_hash = live["source_context_hash"]
+            confirmation_draft_id = content.id
+            confirmation_draft_version = content.version
         tokens.verify_token(
             runtime,
             context_token,
@@ -1323,7 +1450,7 @@ def confirm(
             session_scope_hash=session_scope_hash,
             object_id=plan.id,
             expected_version=expected,
-            source_context_hash=live["source_context_hash"],
+            source_context_hash=source_context_hash,
             facts_hash=facts_hash,
             target_hash=snapshot_hash,
         )
@@ -1331,6 +1458,48 @@ def confirm(
             raise LocalWeeklyAckRequired(details={"reason": "missing"})
         if facts.get("stale_sources") and not ack_stale:
             raise LocalWeeklyAckRequired(details={"reason": "stale"})
+        if source_confirmation_id is not None:
+            duplicate = next(
+                (
+                    candidate
+                    for candidate in session.scalars(
+                        select(LocalWeeklyPlanConfirmation)
+                        .where(
+                            LocalWeeklyPlanConfirmation.weekly_plan_id == plan.id
+                        )
+                        .order_by(
+                            LocalWeeklyPlanConfirmation.version.desc()
+                        )
+                    ).all()
+                    if confirmation_schema.canonical_json(
+                        candidate.snapshot_json
+                    )
+                    == confirmation_schema.canonical_json(snapshot_json)
+                ),
+                None,
+            )
+            if duplicate is not None:
+                result = _write_result(
+                    plan, content, duplicate, replayed=True
+                )
+                receipt = _store(
+                    session,
+                    profile_id=profile_id,
+                    request_id=rid,
+                    action="confirm",
+                    fingerprint=fingerprint,
+                    result=result,
+                    weekly_plan_id=plan.id,
+                    result_draft_id=content.id,
+                    result_draft_version=content.version,
+                    result_confirmed_id=duplicate.id,
+                    result_confirmed_version=duplicate.version,
+                )
+                response = _finish_result(
+                    session, receipt, replayed=True
+                )
+                session.commit()
+                return response
         version = (
             session.scalar(
                 select(func.max(LocalWeeklyPlanConfirmation.version)).where(
@@ -1344,8 +1513,8 @@ def confirm(
             id=new_opaque_id(),
             weekly_plan_id=plan.id,
             version=version,
-            draft_id=content.id,
-            draft_version=content.version,
+            draft_id=confirmation_draft_id,
+            draft_version=confirmation_draft_version,
             schema_version=1,
             snapshot_json=snapshot_json,
             snapshot_hash=snapshot_hash,

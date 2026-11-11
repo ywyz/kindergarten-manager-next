@@ -267,7 +267,10 @@ class WeeklyExportTests(LocalTestCase):
         manifest = snapshots.validate_export_manifest(context["manifest"])
         self.assertEqual(set(manifest), snapshots.EXPORT_MANIFEST_KEYS)
         self.assertEqual(set(manifest["selection"][0]), snapshots.EXPORT_SELECTION_KEYS)
-        self.assertEqual(set(manifest["items"][0]), snapshots.EXPORT_ITEM_KEYS)
+        self.assertEqual(
+            set(manifest["items"][0]),
+            snapshots.EXPORT_ITEM_KEYS | {"term_name"},
+        )
         self.assertEqual(
             context["manifest_hash"], snapshots.snapshot_hash(manifest)
         )
@@ -277,6 +280,74 @@ class WeeklyExportTests(LocalTestCase):
         }
         self.assertEqual(before, after)
         self.assertFalse(self.work_root.exists())
+    def test_reissued_confirmation_adds_term_name_without_changing_old_snapshot(self) -> None:
+        plan_id, source_id, draft_version = self._make_confirmation(
+            theme="旧确认主题"
+        )
+        source_row = self.session.get(
+            LocalWeeklyPlanConfirmation, source_id
+        )
+        self.assertIsNotNone(source_row)
+        # Simulate a pre-feature snapshot with no optional term_name.
+        old_snapshot = copy.deepcopy(source_row.snapshot_json)
+        old_snapshot.pop("term_name", None)
+        old_snapshot.pop("reissued_from_confirmation_id", None)
+        source_row.snapshot_json = old_snapshot
+        source_row.snapshot_hash = snapshots.snapshot_hash(old_snapshot)
+        self.session.commit()
+        old_bytes = self._export_weekly_docx(plan_id, source_id)
+        old_root, _ = _weekly_table(old_bytes)
+        old_text = _xml_text(old_root)
+        self.assertNotIn("学期：", old_text)
+        self.assertIn("旧确认主题", old_text)
+
+        self.term.name = "新学期"
+        self.session.commit()
+        preview = weekly_plan_service.confirmation_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.manager.launch_id,
+            session_scope_hash=self.manager.session_scope_hash,
+            plan_id=plan_id,
+            expected_draft_version=draft_version,
+            source_confirmation_id=source_id,
+        )
+        self.assertEqual(preview["target"]["term_name"], "新学期")
+        self.assertEqual(
+            preview["target"]["reissued_from_confirmation_id"], source_id
+        )
+        confirmed = weekly_plan_service.confirm(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.manager.launch_id,
+            session_scope_hash=self.manager.session_scope_hash,
+            request_id=str(uuid.uuid4()),
+            plan_id=plan_id,
+            expected_draft_version=draft_version,
+            context_token=preview["preview_token"],
+            ack_missing=True,
+            ack_stale=True,
+            source_confirmation_id=source_id,
+        )
+        new_id = confirmed["confirmation"]["id"]
+
+        old_again = self._export_weekly_docx(plan_id, source_id)
+        old_again_root, _ = _weekly_table(old_again)
+        self.assertNotIn("学期：", _xml_text(old_again_root))
+        new_bytes = self._export_weekly_docx(plan_id, new_id)
+        new_root, _ = _weekly_table(new_bytes)
+        new_text = _xml_text(new_root)
+        self.assertIn("学期：新学期", new_text)
+        self.assertIn("旧确认主题", new_text)
+        self.assertEqual(
+            self.session.get(
+                LocalWeeklyPlanConfirmation, source_id
+            ).snapshot_hash,
+            snapshots.snapshot_hash(old_snapshot),
+        )
+
     def test_create_content_attempt_and_replay(self) -> None:
         plan_id, confirmation_id, _version = self._make_confirmation()
         preview = export_service.preview_export(
