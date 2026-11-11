@@ -18,6 +18,23 @@ import ts from 'typescript'
 const d1Dir = path.dirname(fileURLToPath(import.meta.url))
 const viewFile = process.env.KGM_WORKBENCH_VIEW || path.join(d1Dir, 'views', 'WorkbenchView.vue')
 const source = fs.readFileSync(viewFile, 'utf8')
+assert.match(source, /data-d1="daily-plan-module"/)
+assert.match(source, /data-d1="open-daily-plan"/)
+assert.ok(
+  source.indexOf('data-d1="open-daily-plan"') <
+    source.indexOf('<WorkbenchTodoPanel'),
+  'daily-plan top entry is separate from the personal todo panel',
+)
+assert.ok(
+  source.indexOf('data-d1="daily-plan-module"') <
+    source.indexOf('data-d1="calendar"'),
+  'daily-plan module contains the calendar',
+)
+assert.ok(
+  source.indexOf('data-d1="calendar"') <
+    source.indexOf('data-d1="plan-list"'),
+  'daily-plan module contains the saved-plan history',
+)
 const descriptor = parse(source, { filename: viewFile }).descriptor
 const compiledScript = compileScript(descriptor, { id: 'WorkbenchView.vue' })
 const compiledTemplate = compileTemplate({

@@ -131,12 +131,52 @@ def _iso(value: object) -> str | None:
     return str(value)
 
 
+def normalize_batch_action(value: object) -> str:
+    if value not in ("archive", "delete"):
+        raise TodoInputError("批量操作只能是 archive 或 delete")
+    return str(value)
+
+
+def normalize_batch_items(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise TodoInputError("批量操作至少选择一个待办")
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise TodoInputError("批量项目必须是对象")
+        todo_id = item.get("todo_id")
+        if not isinstance(todo_id, str) or not todo_id or len(todo_id) > 32:
+            raise TodoInputError("批量待办 ID 不合法")
+        if todo_id in seen:
+            raise TodoInputError("批量待办 ID 不能重复")
+        seen.add(todo_id)
+        items.append(
+            {
+                "todo_id": todo_id,
+                "expected_version": normalize_expected_version(
+                    item.get("expected_version")
+                ),
+            }
+        )
+    return items
+
+
+def batch_fingerprint(action: str, items: list[dict[str, Any]]) -> str:
+    internal = "update" if action == "archive" else "delete"
+    return todo_fingerprint(
+        internal,
+        {"batch_action": action, "items": items},
+    )
+
+
 def todo_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "todo_id": str(row.get("todo_id") or row.get("id")),
         "title": str(row["title"]),
         "due_date": _iso(row.get("due_date")),
         "completed": bool(row.get("completed")),
+        "archived_at": _iso(row.get("archived_at")),
         "version": int(row["version"]),
         "created_at": _iso(row.get("created_at")) or "",
         "updated_at": _iso(row.get("updated_at")) or "",
@@ -169,6 +209,9 @@ __all__ = [
     "TodoRequestConflict",
     "TodoStorageNotReady",
     "TodoVersionConflict",
+    "batch_fingerprint",
+    "normalize_batch_action",
+    "normalize_batch_items",
     "normalize_completed",
     "normalize_due_date",
     "normalize_expected_version",

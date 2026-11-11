@@ -48,6 +48,11 @@ from app.local.observation_validation import (
     normalize_payload,
     normalize_photo_manifest,
 )
+from app.local.term_names import (
+    TermNameChange,
+    load_term_name_changes,
+    resolve_snapshot_term_name,
+)
 from app.local.tx import begin_immediate, read_scope, rollback
 
 _UNSET = object()
@@ -900,10 +905,21 @@ DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
 
 
-def _list_item(record: LocalObservationRecord) -> dict[str, Any]:
+def _list_item(
+    record: LocalObservationRecord,
+    name_changes: dict[str, tuple[TermNameChange, ...]] | None = None,
+) -> dict[str, Any]:
     subjects = record.subjects_json or []
     snapshot = record.term_snapshot_json
     term_name = snapshot.get("name") if isinstance(snapshot, dict) else None
+    if term_name is not None and record.term_id is not None:
+        changes = (name_changes or {}).get(record.term_id, ())
+        if changes:
+            term_name = resolve_snapshot_term_name(
+                changes,
+                recorded_at=record.created_at,
+                snapshot_name=term_name,
+            )
     return {
         "observation_id": record.id,
         "record_type": record.record_type,
@@ -1031,8 +1047,12 @@ def list_observations(
                 .limit(limit)
             ).all()
         )
+        name_changes = load_term_name_changes(
+            session,
+            {row.term_id for row in rows if row.term_id is not None},
+        )
     return {
-        "items": [_list_item(row) for row in rows],
+        "items": [_list_item(row, name_changes) for row in rows],
         "total": total,
         "offset": offset,
         "limit": limit,

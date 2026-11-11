@@ -133,9 +133,14 @@ def test_0007_archive_migration_preserves_raw_old_rows_and_photos(tmp_path):
     finally:
         con.close()
 
-def test_0007_original_archive_reports_prompt_bundle_conflict(tmp_path):
-    """The untouched 0007 archive keeps its old defaults; current registration
-    therefore fails closed with the known same-key/different-hash conflict."""
+def test_0007_original_archive_accepts_known_historical_other_activities(
+    tmp_path,
+):
+    """The frozen 0007 one-character wording is a known historical default.
+
+    It is accepted by exact local re-computation, without rewriting the old row,
+    and the rest of the normal package sync still runs.
+    """
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
     create_old_0007_fixture(db, old)
@@ -183,7 +188,7 @@ def test_0007_original_archive_reports_prompt_bundle_conflict(tmp_path):
     runtime = LocalRuntime(runtime_data, credential_root=tmp_path / "credentials")
     try:
         runtime.prepare()
-        assert runtime.prompt_sync_error == "PROMPT_BUNDLE_CONFLICT"
+        assert runtime.prompt_sync_error is None
         connection = sqlite3.connect(str(runtime_data / "kindergarten.db"))
         try:
             assert connection.execute(
@@ -192,15 +197,14 @@ def test_0007_original_archive_reports_prompt_bundle_conflict(tmp_path):
                 "'daily_other_activities' AND contract_version = 1 "
                 "AND default_revision = 2"
             ).fetchone() == original
-            for table in (
-                "local_prompt_bundles",
-                "local_personal_prompt_heads",
-                "local_personal_prompt_versions",
-            ):
-                assert connection.execute(
-                    f"SELECT COUNT(*) FROM {table} "
-                    "WHERE task_type LIKE 'weekly_%'"
-                ).fetchone()[0] == 0
+            assert connection.execute(
+                "SELECT COUNT(*) FROM local_prompt_bundles "
+                "WHERE task_type LIKE 'weekly_%'"
+            ).fetchone()[0] == 6
+            assert connection.execute(
+                "SELECT COUNT(*) FROM local_personal_prompt_heads "
+                "WHERE task_type LIKE 'weekly_%'"
+            ).fetchone()[0] >= 6
         finally:
             connection.close()
     finally:

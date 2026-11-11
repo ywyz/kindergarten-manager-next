@@ -30,7 +30,7 @@ import update_helper
 import update_install
 import update_process
 from update_process import ProcessIdentity
-from app.local.migrate import alembic_config
+from app.local.migrate import alembic_config, head_revision
 from app.local.runtime import LocalRuntime
 from update_identity import AppIdentity
 from update_manifest import canonical_json, parse_signed_manifest
@@ -42,7 +42,7 @@ OLD_FIXTURE = DESKTOP / "tests" / "update_old_app_fixture.py"
 NEW_FIXTURE = DESKTOP / "tests" / "update_new_app_fixture.py"
 HELPER = DESKTOP / "update_helper.py"
 OLD_REV = "20261017_0004_local"
-HEAD_REV = "20261102_0008_local_weekly_ai"
+HEAD_REV = head_revision() or "20261102_0008_local_weekly_ai"
 
 
 def _identity(revision: str = HEAD_REV) -> AppIdentity:
@@ -272,6 +272,11 @@ def _plan(
     cred.mkdir(parents=True, exist_ok=True)
     old_app = root / "program" / "app"
     old_app.mkdir(parents=True, exist_ok=True)
+    (old_app / "_internal").mkdir(parents=True, exist_ok=True)
+    (old_app / "_internal" / "build_identity.json").write_text(
+        json.dumps(current.as_dict(), ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
     (old_app / "old-marker.txt").write_text("old", encoding="utf-8")
     (old_app / "KindergartenManager.exe").write_bytes(b"old exe")
     plan = update_install.build_install_plan(
@@ -430,6 +435,8 @@ def test_revocation_after_authorized_blocks_real_switch(tmp_path):
     _make_current_db(data, Path(plan.credential_root), HEAD_REV)
     ready = tmp_path / "old-ready"
     stop = tmp_path / "old-stop"
+    old_identity = (old_app / "_internal" / "build_identity.json").read_bytes()
+    old_exe = (old_app / "KindergartenManager.exe").read_bytes()
     old = _start_old(data, Path(plan.credential_root), ready, stop)
     try:
         old_pid = _wait_ready(ready)["pid"]
@@ -466,7 +473,12 @@ def test_revocation_after_authorized_blocks_real_switch(tmp_path):
         assert result["status"] == "revoked"
         assert result["code"] == "INSTALL_AUTHORIZATION_WITHDRAWN"
         assert (old_app / "old-marker.txt").is_file()
-        assert not (old_app / "_internal").exists()
+        # The old tree is still the original package, not a new one: its
+        # identity and executable bytes are unchanged and the new-package
+        # marker was never placed there.
+        assert (old_app / "_internal" / "build_identity.json").read_bytes() == old_identity
+        assert (old_app / "KindergartenManager.exe").read_bytes() == old_exe
+        assert not (old_app / "new-package-marker.txt").exists()
     finally:
         if old.poll() is None:
             old.terminate()
@@ -610,6 +622,9 @@ def test_helper_reverifies_original_zip_and_switches_directory(tmp_path):
         helper.wait(timeout=40)
         result = _result(plan, timeout=5)
         assert result["status"] == "success", result
+        deadline = time.monotonic() + 5
+        while not observer.install_available() and time.monotonic() < deadline:
+            time.sleep(0.05)
         assert observer.install_available() is True
         assert observer.state()["install_state"] == "idle"
         assert (old_app / "old-marker.txt").exists() is False

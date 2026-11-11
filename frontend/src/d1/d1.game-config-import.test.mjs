@@ -16,6 +16,10 @@ import * as vue from 'vue'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const viewFile = path.join(here, 'views', 'GameConfigPanel.vue')
 const source = fs.readFileSync(viewFile, 'utf8')
+assert.match(source, /data-d1="game-candidate-apply"/)
+assert.match(source, /data-d1="game-candidate-inline"/)
+assert.match(source, /GAME_KIND_LABELS/)
+assert.ok(!source.includes('`${key}=${describeValue(item)}`'))
 const descriptor = parse(source, { filename: viewFile }).descriptor
 const compiled = compileScript(descriptor, { id: 'game-config-import' })
 const scriptCode = ts.transpileModule(compiled.content, {

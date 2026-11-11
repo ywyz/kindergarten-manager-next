@@ -1860,8 +1860,14 @@ async function testCloseGateCompositionInputSettlesBeforeDecision() {
 // SettingsView.vue: multi-region drafts (R3) and preview binding (R4)
 // ---------------------------------------------------------------------------
 
-async function mountSettings({ context = contextFixture(), postImpl, frozen = false } = {}) {
+async function mountSettings({
+  context = contextFixture(),
+  postImpl,
+  frozen = false,
+  promotion = null,
+} = {}) {
   const posts = []
+  const collaborationCalls = []
   const harness = new Harness({
     overrides: {
       '../client': {
@@ -1873,13 +1879,21 @@ async function mountSettings({ context = contextFixture(), postImpl, frozen = fa
         ApiError,
         pathSegment: (value) => encodeURIComponent(value),
       },
+      '../collaboration': {
+        createCollaborationApi: () => ({
+          getPromotion: async () => {
+            collaborationCalls.push('getPromotion')
+            return promotion
+          },
+        }),
+      },
     },
   })
   const { state, emitted, props } = harness.setup('views/SettingsView.vue', {
     context,
     frozen,
   })
-  return { harness, state, emitted, posts, props }
+  return { harness, state, emitted, posts, props, collaborationCalls }
 }
 
 async function testLatePreviewNeverRestoresOldConfirmation() {
@@ -2245,6 +2259,169 @@ async function testTermUpdateConfirmPreviewThenApply() {
   ok('#3 term update: one click uses the same normalized change for apply')
 }
 
+async function testPromotionTermsFillOnlyExplicitReadAndUniqueRange() {
+  const promotion = {
+    class_id: 'c1',
+    class_name: '中一班',
+    grade: 'middle',
+    version: 1,
+    terms: [
+      {
+        term_id: 'online-1',
+        name: '园所秋季学期',
+        start_date: '2026-09-01',
+        end_date: '2026-09-30',
+      },
+    ],
+  }
+  const { state, posts, collaborationCalls } = await mountSettings({
+    postImpl: async () => { throw new Error('term read must not submit') },
+    promotion,
+  })
+  state.collaborationPanelRef.value = {
+    currentStatus: () => ({
+      connected: true,
+      teacher: { teacher_id: 'online-teacher', school_id: 'online-school' },
+    }),
+    draftTargets: () => [],
+  }
+  const form = state.termForms.value[0]
+  await state.readPromotionTerms()
+  assert.deepEqual(collaborationCalls, ['getPromotion'])
+  assert.equal(form.name, '园所秋季学期')
+  assert.equal(posts.length, 0)
+  assert.match(state.promotionTermNotice.value, /未提交修改/)
+
+  form.name = '教师自定义名称'
+  await vue.nextTick()
+  await state.readPromotionTerms()
+  assert.equal(form.name, '教师自定义名称')
+  assert.match(state.promotionTermNotice.value, /自定义名称/)
+  assert.equal(posts.length, 0)
+
+  state.collaborationPanelRef.value = {
+    currentStatus: () => ({ connected: false, teacher: null }),
+  }
+  await state.readPromotionTerms()
+  assert.match(state.errorText.value, /先连接在线班级/)
+  assert.equal(collaborationCalls.length, 2)
+
+  const noMatch = await mountSettings({
+    postImpl: async () => { throw new Error('term read must not submit') },
+    promotion: {
+      class_id: 'c1',
+      class_name: '中一班',
+      grade: 'middle',
+      version: 1,
+      terms: [{
+        term_id: 'online-2',
+        name: '不同日期学期',
+        start_date: '2026-10-01',
+        end_date: '2026-10-31',
+      }],
+    },
+  })
+  noMatch.state.collaborationPanelRef.value = {
+    currentStatus: () => ({
+      connected: true,
+      teacher: { teacher_id: 'online-teacher', school_id: 'online-school' },
+    }),
+  }
+  const unmatchedForm = noMatch.state.termForms.value[0]
+  const originalName = unmatchedForm.name
+  await noMatch.state.readPromotionTerms()
+  assert.equal(unmatchedForm.name, originalName)
+  assert.match(noMatch.state.promotionTermNotice.value, /未找到/)
+  assert.equal(noMatch.posts.length, 0)
+  ok('settings: promotion terms are read only on explicit click, unique range match, and never submitted')
+}
+async function testPromotionTermsIgnoreLateForeignResponse() {
+  const gate = deferred()
+  const { state, posts } = await mountSettings({
+    postImpl: async () => { throw new Error('term read must not submit') },
+    promotion: gate.promise,
+  })
+  const form = state.termForms.value[0]
+  const originalName = form.name
+  state.collaborationPanelRef.value = {
+    currentStatus: () => ({
+      connected: true,
+      teacher: { teacher_id: 'teacher-a', school_id: 'school-a' },
+    }),
+  }
+  const reading = state.readPromotionTerms()
+  await settle()
+  state.collaborationPanelRef.value = {
+    currentStatus: () => ({
+      connected: true,
+      teacher: { teacher_id: 'teacher-b', school_id: 'school-b' },
+    }),
+  }
+  gate.resolve({
+    class_id: 'c1',
+    class_name: '中一班',
+    grade: 'middle',
+    version: 1,
+    terms: [{
+      term_id: 'online-1',
+      name: '换园回包',
+      start_date: '2026-09-01',
+      end_date: '2026-09-30',
+    }],
+  })
+  await reading
+  assert.equal(form.name, originalName)
+  assert.match(state.promotionTermNotice.value, /已忽略/)
+  assert.equal(posts.length, 0)
+  ok('settings: a late promotion response from another connected school is ignored')
+}
+async function testTermNameUpdateExistingDocumentsIsOptional() {
+  const { state, posts } = await mountSettings({
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) return previewPayload(body.change)
+      return appliedPayload(body)
+    },
+  })
+  const form = state.termForms.value[0]
+  form.name = '园所秋季学期'
+  await vue.nextTick()
+  assert.equal(state.termNameChanged(form), true)
+  state.setTermUpdateExisting(form, true)
+  await vue.nextTick()
+  await state.confirmTermChange(form)
+  assert.equal(posts[0].body.change.update_existing_documents, true)
+  assert.equal(posts[1].body.change.update_existing_documents, true)
+  assert.deepEqual(posts[1].body.change, posts[0].body.change)
+
+  const falseOption = await mountSettings({
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) return previewPayload(body.change)
+      return appliedPayload(body)
+    },
+  })
+  const renamed = falseOption.state.termForms.value[0]
+  renamed.name = '默认保留旧记录名称'
+  await vue.nextTick()
+  await falseOption.state.confirmTermChange(renamed)
+  assert.equal(falseOption.posts[0].body.change.update_existing_documents, false)
+  assert.equal(falseOption.posts[1].body.change.update_existing_documents, false)
+
+  const second = await mountSettings({
+    postImpl: async (path, body) => {
+      if (path.endsWith('/preview')) return previewPayload(body.change)
+      return appliedPayload(body)
+    },
+  })
+  const dateOnly = second.state.termForms.value[0]
+  dateOnly.end_date = '2026-09-29'
+  await vue.nextTick()
+  second.state.setTermUpdateExisting(dateOnly, true)
+  await vue.nextTick()
+  await second.state.confirmTermChange(dateOnly)
+  assert.equal(second.posts.length, 2)
+  assert.equal('update_existing_documents' in second.posts[0].body.change, false)
+  ok('settings: update_existing_documents is sent only for a term name change')
+}
 async function testCalendarExceptionKeepsTwoStepPreview() {
   const { state } = await mountSettings({
     postImpl: async (path, body) => {
@@ -2741,7 +2918,7 @@ async function testSettingsGroupsStartCollapsedAndFocusExpandsAncestors() {
   const { state, emitted } = await mountSettings()
   assert.deepEqual(
     { ...state.expandedGroups },
-    { backup: false, terms: false, calendar: false, games: false, ai: false },
+    { backup: false, terms: false, calendar: false, games: false },
   )
   state.newTermName.value = '新学期草稿'
   state.overrideDate.value = '2026-09-20'
@@ -2751,7 +2928,7 @@ async function testSettingsGroupsStartCollapsedAndFocusExpandsAncestors() {
   await state.focusTarget({ kind: 'override' })
   assert.equal(state.expandedGroups.calendar, true)
   await state.focusTarget({ kind: 'ai-config' })
-  assert.equal(state.expandedGroups.ai, true)
+  assert.equal('ai' in state.expandedGroups, false)
   await state.focusTarget({ kind: 'game-config' })
   assert.equal(state.expandedGroups.games, true)
   await state.focusTarget({ kind: 'online-collaboration' })
@@ -3995,6 +4172,10 @@ async function testD1EntryUsesChineseElementPlusLocale() {
     path.join(d1Dir, 'views/SettingsView.vue'),
     'utf8',
   )
+  const collaborationSource = fs.readFileSync(
+    path.join(d1Dir, 'views/CollaborationPanel.vue'),
+    'utf8',
+  )
   for (const source of [setupSource, settingsSource]) {
     assert.match(source, /<el-date-picker/)
     assert.match(source, /value-format="YYYY-MM-DD"/)
@@ -4005,7 +4186,25 @@ async function testD1EntryUsesChineseElementPlusLocale() {
   assert.match(setupSource, /请选择学期起止日期/)
   assert.match(settingsSource, /newTermRange\.value\.length !== 2/)
   assert.match(settingsSource, /请填写学期名称与起止日期/)
-  ok('D1 entry installs the locked Element Plus zh-CN locale for date panels')
+  assert.match(setupSource, /class-picker[\s\S]*flex-wrap: wrap/)
+  assert.match(setupSource, /aria-live="polite"/)
+  assert.match(settingsSource, /settings-class-summary/)
+  const aiPanelSource = fs.readFileSync(
+    path.join(d1Dir, 'views/AiSettingsPanel.vue'),
+    'utf8',
+  )
+  const aiProviderIndex = aiPanelSource.indexOf(
+    'data-d1="settings-group-ai-provider"',
+  )
+  const aiPromptsIndex = aiPanelSource.indexOf(
+    'data-d1="settings-group-ai-prompts"',
+  )
+  assert.ok(aiProviderIndex > -1 && aiPromptsIndex > aiProviderIndex)
+  const aiComponentIndex = settingsSource.indexOf('<AiSettingsPanel')
+  const gameGroupIndex = settingsSource.indexOf('data-d1="settings-group-games"')
+  assert.ok(aiComponentIndex > -1 && gameGroupIndex > aiComponentIndex)
+  assert.ok(!collaborationSource.includes('（低频）'))
+  ok('D1 entry installs the locked Element Plus zh-CN locale and first-run/settings layout')
 }
 
 // ---------------------------------------------------------------------------
@@ -4054,6 +4253,9 @@ const tests = [
   testCloseGateCompositionInputSettlesBeforeDecision,
   testOrdinaryConfirmPreviewThenOneApply,
   testTermUpdateConfirmPreviewThenApply,
+  testPromotionTermsFillOnlyExplicitReadAndUniqueRange,
+  testPromotionTermsIgnoreLateForeignResponse,
+  testTermNameUpdateExistingDocumentsIsOptional,
   testCalendarExceptionKeepsTwoStepPreview,
   testChangedInputDuringOneClickPreviewSendsNoApply,
   testOneClickKnownConflictKeepsDraft,

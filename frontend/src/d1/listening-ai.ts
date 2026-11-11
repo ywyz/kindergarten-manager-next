@@ -724,6 +724,15 @@ export function getListeningAITask(
   )
 }
 
+export function getListeningAIProgress(
+  recordId: string,
+  taskId: string,
+): Promise<import('./types').AiTaskProgress> {
+  return apiGet(
+    `${ROOT}/records/${pathSegment(recordId)}/ai/tasks/${pathSegment(taskId)}/progress`,
+  )
+}
+
 export function getListeningAICandidate(
   recordId: string,
   taskId: string,

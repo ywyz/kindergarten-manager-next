@@ -26,7 +26,6 @@ from datetime import date
 from app.services.word_export_mapping import diff_process
 from tests.local.test_d2_w4_api import W4ApiCase
 from tests.local.test_d2_w4_candidates import (
-    ADAPT_CANDIDATE,
     OTHER_CANDIDATE,
     SPLIT_CANDIDATE,
 )
@@ -34,7 +33,8 @@ from tests.local.test_d2_w4_candidates import (
 BASELINE_KEY = "group_activity_process"
 P0 = SPLIT_CANDIDATE["group_activity"]["process"]  # model raw process (baseline)
 P1 = "一、导入\n二、观察\n三、比较"  # teacher preview edit used at adopt
-P2 = ADAPT_CANDIDATE["process"]  # adapt candidate process
+ADAPT_PATCH = {"operation": "replace", "step_index": 3, "text": "比较（适龄）"}
+P2 = "一、导入\n二、观察\n三、比较（适龄）"  # expanded one-step adapt candidate
 P3 = "一、导入\n二、观察\n三、比较（适龄）\n四、教师补充"  # later manual edit
 DAY = date(2026, 9, 2)
 DAY2 = date(2026, 9, 3)
@@ -173,8 +173,8 @@ class W6ExportClosureCase(W4ApiCase):
         self.assertEqual(content["adopted_content"]["group_activity"]["process"], P1)
 
         # 2) adapt (age-appropriate) -> adopt; only the process changes.
-        adapt_id = self.generate(plan_id, "daily_process_adapt", ADAPT_CANDIDATE)
-        self._adopt(adapt_id, ["group_activity.process"], ADAPT_CANDIDATE)
+        adapt_id = self.generate(plan_id, "daily_process_adapt", ADAPT_PATCH)
+        self._adopt(adapt_id, ["group_activity.process"], {"process": P2})
         content = self.plan_content()["content"]
         self.assertEqual(content["adopted_content"]["group_activity"]["process"], P2)
         self.assertEqual(
@@ -223,7 +223,8 @@ class W6ExportClosureCase(W4ApiCase):
         # The unchanged prefix paragraphs stay non-red.
         self.assertIn("一、导入", plain_text)
         self.assertIn("二、观察", plain_text)
-        # The teacher's added paragraph is red.
+        # The changed third step and the teacher's added paragraph are red.
+        self.assertIn("三、比较（适龄）", red_text)
         self.assertIn("四、教师补充", red_text)
 
         # 6) merged export over two real plans: both titles/content present and
@@ -329,12 +330,6 @@ class W6ExportClosureCase(W4ApiCase):
         merged = json.loads(json.dumps(content["adopted_content"]))
         merged.update(json.loads(json.dumps(OTHER_CANDIDATE)))
         merged["reflection"] = "反思"
-        self.save_content(plan_id, self.content_version(plan_id), merged)
-        content = self.plan_content()["content"]
-        before = json.loads(json.dumps(content["adopted_content"]))
-        self.assertEqual(content["raw_lesson_plan"], initial_raw)
-        self.assertEqual(content["split_baseline"], {BASELINE_KEY: P0})
-
         teacher_process = (
             "1. 导入\n"
             "教师：“请看看这片树叶。”\n"
@@ -343,23 +338,63 @@ class W6ExportClosureCase(W4ApiCase):
             "3. 比较\n"
             "教师：“它们有什么不一样？”"
         )
+        merged["group_activity"]["process"] = teacher_process
+        self.save_content(
+            plan_id,
+            self.content_version(plan_id),
+            merged,
+            raw=initial_raw,
+        )
+        content = self.plan_content()["content"]
+        before = json.loads(json.dumps(content["adopted_content"]))
+        self.assertEqual(
+            before["group_activity"]["process"], teacher_process,
+            "real save must establish the three-step teacher-talk baseline",
+        )
+        self.assertEqual(content["raw_lesson_plan"], initial_raw)
+        self.assertEqual(content["split_baseline"], {BASELINE_KEY: P0})
+
+        teacher_adapted = (
+            "1. 导入\n"
+            "教师：“请看看这片树叶。”\n"
+            "2. 观察\n"
+            "教师：“请找一找相同形状的树叶。”\n"
+            "3. 比较\n"
+            "教师：“它们有什么不一样？”"
+        )
         adapt_id = self.generate(
-            plan_id, "daily_process_adapt", {"process": teacher_process}
+            plan_id,
+            "daily_process_adapt",
+            {
+                "operation": "replace",
+                "step_index": 2,
+                "text": "观察\n教师：“请找一找相同形状的树叶。”",
+            },
         )
         status, preview = self.preview_http(
-            adapt_id, ["group_activity.process"], {"process": teacher_process}
+            adapt_id, ["group_activity.process"], {"process": teacher_adapted}
         )
         self.assertEqual(status, 200, preview)
-        self.assertEqual(preview["after"]["group_activity.process"], teacher_process)
+        self.assertEqual(preview["after"]["group_activity.process"], teacher_adapted)
         status, adopted = self.adopt_http(
             adapt_id, preview["preview_token"], request_id=str(uuid.uuid4())
         )
         self.assertEqual(status, 200, adopted)
 
         expected = json.loads(json.dumps(before))
-        expected["group_activity"]["process"] = teacher_process
+        expected["group_activity"]["process"] = teacher_adapted
         content = self.plan_content()["content"]
         self.assertEqual(content["adopted_content"], expected)
+        for key in (
+            "morning_games",
+            "morning_talk",
+            "post_group_games",
+            "afternoon_outdoor",
+        ):
+            self.assertEqual(
+                content["adopted_content"][key], before[key],
+                f"adapt must leave {key} unchanged",
+            )
         self.assertEqual(content["raw_lesson_plan"], initial_raw)
         self.assertEqual(content["split_baseline"], {BASELINE_KEY: P0})
 
@@ -382,7 +417,7 @@ class W6ExportClosureCase(W4ApiCase):
         root = docx_root(payload)
         process_paragraphs = cell_paragraphs(root, "活动过程：")
         self.assertTrue(process_paragraphs[0].startswith("活动过程："))
-        self.assertEqual("\n".join(process_paragraphs[1:]), teacher_process)
+        self.assertEqual("\n".join(process_paragraphs[1:]), teacher_adapted)
         self.assertEqual(len(process_paragraphs[1:]), 6)
         self.assertEqual(self.content_version(plan_id), saved_version)
 

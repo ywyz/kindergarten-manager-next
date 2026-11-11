@@ -1507,4 +1507,6 @@ class UpdateManager:
 def _default_staging_root() -> Path:
     import update_paths
 
-    return update_paths.staging_root()
+    # A manager without an explicit process-confirmed install root must not
+    # borrow another preview registration's staging area.
+    return update_paths.neutral_staging_root()

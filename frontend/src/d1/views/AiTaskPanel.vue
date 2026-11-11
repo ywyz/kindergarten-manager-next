@@ -951,6 +951,7 @@ onBeforeUnmount(() => {
   emit('draft-active', false)
   delete (window as unknown as { __d1AiTasks?: object }).__d1AiTasks
 })
+defineExpose({ trigger })
 </script>
 
 <template>

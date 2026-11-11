@@ -43,6 +43,7 @@ class LocalTodo(LocalBase):
             name="fk_local_todos_profile",
         ),
         Index("ix_local_todos_profile_order", "profile_id", "completed", "due_date"),
+        Index("ix_local_todos_profile_archive", "profile_id", "archived_at"),
     )
 
     id: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -56,6 +57,9 @@ class LocalTodo(LocalBase):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), nullable=False, default=utc_now
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=False), nullable=True
     )
 
 

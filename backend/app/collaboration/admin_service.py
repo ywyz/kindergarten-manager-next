@@ -17,7 +17,7 @@ import os
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from .admin_models import AdminCode, AdminSession, AdminUser
 from .config import CollaborationSettings
-from .class_promotion_models import effective_class_name_now
+from .class_promotion_models import CollaborationTerm, effective_class_name_now
 from .errors import CollaborationError
 from .models import Classroom, School, Teacher, TeacherClassMembership, TeacherToken
 from .schemas import MembershipOut
@@ -445,6 +445,97 @@ def list_teachers(session: Session, school_id: UUID) -> list[Teacher]:
             .order_by(Teacher.active.desc(), Teacher.display_name, Teacher.id)
         ).all()
     )
+
+
+@dataclass(frozen=True)
+class AdminTerm:
+    term_id: UUID
+    school_id: UUID
+    name: str
+    start_date: date
+    end_date: date
+
+
+def _term_view(row: CollaborationTerm) -> AdminTerm:
+    return AdminTerm(
+        term_id=row.id,
+        school_id=row.school_id,
+        name=row.name,
+        start_date=row.start_date,
+        end_date=row.end_date,
+    )
+
+
+def term_name_conflict(current_name: str) -> CollaborationError:
+    return CollaborationError(
+        409,
+        "TERM_NAME_CONFLICT",
+        "学期名称已被其他窗口修改，请刷新后重试",
+        details={"current_name": current_name},
+    )
+
+
+def _valid_term_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise admin_validation("学期名称必须是字符串")
+    name = value.strip()
+    if not (1 <= len(name) <= 80) or "\x00" in name:
+        raise admin_validation("学期名称长度必须为 1–80 个字符")
+    return name
+
+
+def list_terms(session: Session, school_id: UUID) -> list[AdminTerm]:
+    school = session.get(School, school_id)
+    if school is None:
+        raise admin_validation("所选的园所不存在")
+    rows = session.scalars(
+        select(CollaborationTerm)
+        .where(CollaborationTerm.school_id == school_id)
+        .order_by(CollaborationTerm.start_date, CollaborationTerm.id)
+    ).all()
+    return [_term_view(row) for row in rows]
+
+
+def update_term_name(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    term_id: UUID,
+    expected_name: object,
+    new_name: object,
+) -> AdminTerm:
+    """Rename one existing term without touching its ID or dates.
+
+    ``expected_name`` is the old-name baseline.  A retry after a successful
+    rename is idempotent when the current name already equals ``new_name``; a
+    different concurrent name returns a 409 with the current value.
+    """
+    if not isinstance(expected_name, str):
+        raise admin_validation("旧名称必须是字符串")
+    expected = expected_name
+    if not (1 <= len(expected.strip()) <= 80) or "\x00" in expected:
+        raise admin_validation("旧名称长度必须为 1–80 个字符")
+    new = _valid_term_name(new_name)
+    with session.begin():
+        admin = session.get(AdminUser, principal.admin_id)
+        if admin is None or not admin.active:
+            raise admin_auth_required()
+        term = session.get(
+            CollaborationTerm, term_id, with_for_update=True
+        )
+        if term is None or term.school_id != school_id:
+            raise CollaborationError(404, "TERM_NOT_FOUND", "没有找到该学期")
+        current = term.name
+        if current == expected:
+            if new != current:
+                term.name = new
+                session.flush()
+            return _term_view(term)
+        if current == new:
+            # Same request retried after the first response was lost.
+            return _term_view(term)
+        raise term_name_conflict(current)
 
 
 def issue_code(

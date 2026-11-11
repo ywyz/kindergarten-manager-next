@@ -350,8 +350,9 @@ def _filter_configs(
 def build_materials_basis(*, grade: str, content: Mapping[str, Any]) -> dict:
     """Build BasisV1 for target ``materials`` from the saved selection."""
     fixed = content_mod.validate_content(content)
-    if fixed["focus_area"] is None:
-        _fail("材料任务必须有明确重点区域", "focus_area", code="MATERIAL_CONTEXT_REQUIRED")
+    # With no saved focus area the task remains valid: the provider may return
+    # only ``suggested`` items (empty evidence) from grade/theme/selected
+    # context, and the teacher still previews/adopts through the normal flow.
     selected = build_selected_basis(grade=grade, content=fixed)
     refs: list[dict] = []
     for item in selected["outdoor_game_slots"].values():
@@ -632,6 +633,15 @@ def build_materials_provenance(
         for index, item in enumerate(items)
     ]
     content_mod._validate_materials_evidence_basis(stored_items, normalized_basis)
+    selected = normalized_basis.get("selected") or {}
+    if selected.get("focus_area") is None:
+        for item in stored_items:
+            if item.get("origin") != "suggested" or item.get("evidence_refs"):
+                _fail(
+                    "无重点区域时材料只能为 suggested 且不得有证据",
+                    "items",
+                    code="WEEKLY_AI_OUTPUT_INVALID",
+                )
     if not isinstance(original_text, str):
         _fail("original_text 必须是字符串", "original_text")
     expected_text = synthesize_materials_text(stored_items)
@@ -676,9 +686,20 @@ def validate_materials_provenance(
     if fixed["materials"] != materials:
         _fail("materials 参数与 content 不一致", "materials")
     grade = fixed["source_manifest"]["header"]["grade"]
-    return content_mod._normalize_materials_provenance(
+    normalized = content_mod._normalize_materials_provenance(
         value, "materials_provenance", materials=materials, grade=grade
     )
+    if normalized is not None:
+        selected = normalized.get("basis", {}).get("selected") or {}
+        if selected.get("focus_area") is None:
+            for item in normalized.get("items") or []:
+                if item.get("origin") != "suggested" or item.get("evidence_refs"):
+                    _fail(
+                        "无重点区域时材料只能为 suggested 且不得有证据",
+                        "materials_provenance.items",
+                        code="WEEKLY_AI_OUTPUT_INVALID",
+                    )
+    return normalized
 
 
 __all__ = [

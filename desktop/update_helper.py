@@ -64,35 +64,71 @@ def _trusted_release_config_path() -> Path:
 
 
 def _check_product_layout(plan: update_install.InstallPlan) -> None:
-    """Product helper may only use the fixed managed install layout."""
-    install = update_paths.install_root().resolve()
-    app = update_paths.install_app_dir().resolve()
-    helper = update_paths.updater_exe().resolve()
-    staging = update_paths.staging_root().resolve()
-    if Path(plan.install_root).resolve() != install:
+    """Bind the frozen helper to its own registered/fixed managed root.
+
+    The plan is never trusted on its own.  The helper's actual executable path
+    (raw, reparse-checked) must be ``{root}/updater/KindergartenManagerUpdater.exe``
+    for a root that is the HKCU-registered install root or a fixed legacy root.
+    A copied helper, alias, different root or missing entry is refused.
+    """
+    if not getattr(sys, "frozen", False):
         raise update_install.InstallPlanError(
-            "INSTALL_PRODUCT_LAYOUT", "安装根不是固定受管目录"
+            "INSTALL_PRODUCT_LAYOUT", "源码更新器不能使用产品布局"
         )
-    if Path(plan.install_app_dir).resolve() != app:
+    helper_exe = update_paths.raw_path(sys.executable)
+    if not update_paths.is_safe_existing(helper_exe):
         raise update_install.InstallPlanError(
-            "INSTALL_PRODUCT_LAYOUT", "程序目录不是固定受管目录"
+            "INSTALL_PRODUCT_LAYOUT", "更新器自身路径不安全或不存在"
         )
-    if Path(plan.helper_path).resolve() != helper:
+    try:
+        if has_multiple_hard_links(helper_exe):
+            raise update_install.InstallPlanError(
+                "INSTALL_PRODUCT_LAYOUT", "更新器自身存在硬链接"
+            )
+    except PathSafetyError as exc:
         raise update_install.InstallPlanError(
-            "INSTALL_PRODUCT_LAYOUT", "更新器不是固定受信任入口"
+            "INSTALL_PRODUCT_LAYOUT", "无法核对更新器自身链接属性"
+        ) from exc
+    if helper_exe.name != "KindergartenManagerUpdater.exe" or helper_exe.parent.name != "updater":
+        raise update_install.InstallPlanError(
+            "INSTALL_PRODUCT_LAYOUT", "更新器不是受管 updater 入口"
         )
-    plan_staging = Path(plan.staging_dir).resolve()
-    if plan_staging != staging and staging not in plan_staging.parents:
+    own_root = helper_exe.parent.parent
+    resolved = update_paths.resolve_install_root(own_root / "app")
+    if resolved is None or not update_paths.same_path(resolved, own_root):
         raise update_install.InstallPlanError(
-            "INSTALL_PRODUCT_LAYOUT", "暂存目录不是固定受管目录"
+            "INSTALL_PRODUCT_LAYOUT", "更新器自身不在注册或稳定版受管根"
+        )
+    plan_install = update_paths.raw_path(plan.install_root)
+    if not update_paths.same_path(plan_install, own_root):
+        raise update_install.InstallPlanError(
+            "INSTALL_PRODUCT_LAYOUT", "安装根与更新器自身受管根不一致"
+        )
+    install, app, helper, staging = update_paths.managed_layout(own_root)
+    if not update_paths.same_path(plan.install_app_dir, app):
+        raise update_install.InstallPlanError(
+            "INSTALL_PRODUCT_LAYOUT", "程序目录不是受管布局的 app 目录"
+        )
+    if not update_paths.same_path(plan.helper_path, helper):
+        raise update_install.InstallPlanError(
+            "INSTALL_PRODUCT_LAYOUT", "更新器不是受管布局的固定入口"
+        )
+    plan_staging = update_paths.raw_path(plan.staging_dir)
+    if not update_paths.same_path(plan_staging, staging) and not str(
+        plan_staging
+    ).lower().startswith(str(staging).lower() + "\\"):
+        raise update_install.InstallPlanError(
+            "INSTALL_PRODUCT_LAYOUT", "暂存目录不是受管布局的同卷暂存目录"
         )
     if plan.new_app_command:
         raise update_install.InstallPlanError(
             "INSTALL_PRODUCT_LAYOUT", "产品安装计划不接受测试启动命令"
         )
-    if Path(plan.new_app_path).resolve() != (app / "KindergartenManager.exe").resolve():
+    if not update_paths.same_path(
+        plan.new_app_path, app / "KindergartenManager.exe"
+    ):
         raise update_install.InstallPlanError(
-            "INSTALL_PRODUCT_LAYOUT", "新版主入口不是固定受管入口"
+            "INSTALL_PRODUCT_LAYOUT", "新版主入口不是受管 app 入口"
         )
 
 
@@ -122,6 +158,10 @@ def _read_installed_identity(plan: update_install.InstallPlan) -> dict[str, str]
         raise update_install.InstallPlanError(
             "INSTALL_OLD_IDENTITY_UNSAFE", "旧程序身份路径越出受管安装根"
         ) from exc
+    if not app.is_dir():
+        raise update_install.InstallPlanError(
+            "INSTALL_APP_MISSING", "旧程序目录缺失或不是目录"
+        )
     identity_path = app / "_internal" / "build_identity.json"
     try:
         ensure_safe_path(identity_path)

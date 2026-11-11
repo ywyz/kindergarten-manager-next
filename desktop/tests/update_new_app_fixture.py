@@ -69,7 +69,7 @@ def main() -> int:
             runtime=runtime,
             port=port,
             session_token=token,
-            frontend_dir=None,
+            frontend_dir=Path(plan.install_app_dir) / "_internal" / "frontend",
             executor=None,
         )
         service = ServiceRun(app, port)

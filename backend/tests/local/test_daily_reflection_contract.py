@@ -50,13 +50,27 @@ class ReflectionContractTests(unittest.TestCase):
         self.assertIn(("daily_lesson_split", 1, 1), entries)
         self.assertIn(("daily_process_adapt", 1, 1), entries)
         self.assertIn(("daily_other_activities", 1, 1), entries)
-        reflection = [
-            bundle
+        reflection = {
+            bundle["default_revision"]: bundle
             for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST
             if bundle["task_type"] == "daily_reflection_generate"
-        ]
-        self.assertEqual(len(reflection), 1)
-        self.assertEqual(set(reflection[0]["guidance_defaults_json"]), {"reflection"})
+        }
+        self.assertEqual(set(reflection), {1, 2})
+        for revision, bundle in reflection.items():
+            with self.subTest(revision=revision):
+                self.assertEqual(bundle["contract_version"], 1)
+                self.assertEqual(
+                    set(bundle["guidance_defaults_json"]),
+                    {"reflection"},
+                )
+        self.assertIn(
+            "材料只代表教师提供",
+            reflection[1]["guidance_defaults_json"]["reflection"],
+        )
+        self.assertIn(
+            "唯一的实施事实来源",
+            reflection[2]["guidance_defaults_json"]["reflection"],
+        )
 
     def test_input_requires_materials_and_separates_plan(self):
         clean = validate_input("daily_reflection_generate", payload())

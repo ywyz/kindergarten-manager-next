@@ -58,6 +58,7 @@ const emit = defineEmits<{
   (e: 'register-editor', bridge: EditorBridge | null): void
   (e: 'leave', kind: 'calendar' | 'date' | 'settings', run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed'): void
   (e: 'open-editor', date: string, mode: 'open' | 'create', planId?: string): void
+  (e: 'open-settings', focusPrompt?: string): void
   (e: 'refresh-context'): void
   (e: 'export-busy', value: boolean): void
 }>()
@@ -151,6 +152,7 @@ const candidateInlineTarget = ref<HTMLElement | null>(null)
  * keeps task state/polling; its per-type rows are teleported beside the raw
  * lesson input, the collective-activity process and the other-activity area.
  */
+const aiTaskPanelRef = ref<{ trigger?: (taskType: TaskType) => Promise<void> } | null>(null)
 const splitTarget = ref<HTMLElement | null>(null)
 const processTarget = ref<HTMLElement | null>(null)
 const otherTarget = ref<HTMLElement | null>(null)
@@ -1424,7 +1426,11 @@ function captureEpoch(): number {
   return editEpoch.value
 }
 
-function openGuidance(): void {
+function openGuidance(taskType?: TaskType): void {
+  if (taskType) {
+    emit('open-settings', taskType)
+    return
+  }
   goSettings()
 }
 
@@ -1483,6 +1489,22 @@ function backToCalendar(): void {
 
 function goSettings(): void {
   leave('settings', () => 'left')
+}
+
+/** Save the unsaved draft first, then start the split on the same page. */
+async function saveDraftForSplit(): Promise<void> {
+  if (!rawLessonPlan.value.trim() || editDisabled.value) return
+  const outcome = await saveCurrent()
+  if (outcome !== 'saved' && outcome !== 'unchanged') {
+    ElMessage.warning('日计划尚未保存成功：请先处理保存结果，再发起拆分')
+    return
+  }
+  await nextTick()
+  if (!plan.value) {
+    ElMessage.warning('日计划保存后尚未就绪：请稍后在同页发起拆分')
+    return
+  }
+  await aiTaskPanelRef.value?.trigger?.('daily_lesson_split')
 }
 
 function onDateChange(value: string | null): void {
@@ -1790,11 +1812,36 @@ onBeforeUnmount(() => {
           ref="splitTarget"
           class="ai-action-anchor"
           data-d1="ai-slot-daily_lesson_split"
-        ></div>
+        >
+          <div
+            v-if="!plan"
+            class="split-placeholder"
+            data-d1="split-needs-save"
+          >
+            <el-button
+              size="small"
+              type="primary"
+              data-d1="split-save-and-start"
+              :loading="phase === 'saving'"
+              :disabled="!rawLessonPlan.trim() || editDisabled"
+              @click="saveDraftForSplit"
+            >
+              保存并拆分
+            </el-button>
+            <span class="muted">
+              {{
+                rawLessonPlan.trim()
+                  ? '先保存日计划，保存成功后会在同页发起拆分；不会覆盖现有内容'
+                  : '请先粘贴原教案'
+              }}
+            </span>
+          </div>
+        </div>
       </el-card>
 
       <AiTaskPanel
         v-if="plan"
+        ref="aiTaskPanelRef"
         :plan-id="plan.id"
         :plan-grade="planGrade"
         :content-version="plan.current_content_version"
@@ -2054,6 +2101,14 @@ onBeforeUnmount(() => {
           </div>
           <p class="muted reflection-hint">
             已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。
+            <el-button
+              size="small"
+              text
+              data-d1="reflection-guidance"
+              @click="openGuidance(REFLECTION_TASK_TYPE)"
+            >
+              查看反思提示词
+            </el-button>
           </p>
           <div class="row">
             <template v-if="reflectionPending">
@@ -2263,6 +2318,13 @@ onBeforeUnmount(() => {
 /* #19: empty anchors collapse while the AI panel is absent (unsaved draft);
    once the row is teleported in, the separator keeps it visually attached to
    the field it operates on. */
+.split-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
 .ai-action-anchor {
   margin-top: 10px;
   padding-top: 8px;

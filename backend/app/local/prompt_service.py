@@ -51,10 +51,24 @@ from app.local.normalize import normalize_request_id
 from app.local.profile_service import require_context
 from app.local.prompt_bundles import (
     GUIDANCE_MAX_CHARS,
+    REGISTERED_TASK_TYPES,
     TASK_TYPES,
     canonical_json,
 )
 from app.local.tx import begin_immediate, read_scope, rollback
+
+# Four weekly text columns have no task-specific text field in the signed
+# bundle. Their local-only instruction is stored in the existing personal
+# guidance version; bundle schemas/hashes/revisions remain untouched.
+LOCAL_WEEKLY_COLUMN_TASKS = frozenset(
+    {
+        "weekly_key_week_focus",
+        "weekly_environment_setup",
+        "weekly_habit_culture",
+        "weekly_home_cooperation",
+    }
+)
+LOCAL_INSTRUCTION_FIELD = "instructions"
 
 OPERATION_EDIT = "ai_prompt_edit"
 OPERATION_ACCEPT = "ai_prompt_accept"
@@ -70,8 +84,8 @@ _PROMPT_ACTIONS = (OPERATION_EDIT, OPERATION_ACCEPT, OPERATION_REJECT, OPERATION
 
 
 def _normalize_task_type(value: object) -> str:
-    if not isinstance(value, str) or value not in TASK_TYPES:
-        raise LocalValidationError("不支持的日任务类型")
+    if not isinstance(value, str) or value not in REGISTERED_TASK_TYPES:
+        raise LocalValidationError("不支持的任务类型")
     return value
 
 
@@ -168,20 +182,45 @@ def _bundle_fields(bundle: LocalPromptBundle) -> tuple[str, ...]:
     return tuple(guidance.keys())
 
 
+def _local_fields(task_type: str) -> tuple[str, ...]:
+    return (
+        (LOCAL_INSTRUCTION_FIELD,)
+        if task_type in LOCAL_WEEKLY_COLUMN_TASKS
+        else ()
+    )
+
+
+def _allowed_fields(bundle: LocalPromptBundle, task_type: str) -> tuple[str, ...]:
+    return _bundle_fields(bundle) + _local_fields(task_type)
+
+
 def _check_field_set(
-    bundle: LocalPromptBundle, guidance: dict[str, str]
+    bundle: LocalPromptBundle, guidance: dict[str, str], task_type: str
 ) -> None:
-    expected = _bundle_fields(bundle)
-    if sorted(guidance.keys()) != sorted(expected):
+    expected = _allowed_fields(bundle, task_type)
+    base = _bundle_fields(bundle)
+    keys = set(guidance.keys())
+    # The local weekly instruction is optional for older API callers; every
+    # bundle field remains required, and no unknown key is accepted.
+    if keys not in (set(base), set(expected)):
         raise LocalValidationError("guidance 字段集必须与目标契约完全一致")
 
 
-def _fields(bundle: LocalPromptBundle) -> list[dict]:
+def _fields(bundle: LocalPromptBundle, task_type: str) -> list[dict]:
     guidance = bundle.guidance_defaults_json
-    return [
+    fields = [
         {"key": key, "label": key, "default_text": guidance[key]}
         for key in guidance.keys()
     ]
+    if task_type in LOCAL_WEEKLY_COLUMN_TASKS:
+        fields.append(
+            {
+                "key": LOCAL_INSTRUCTION_FIELD,
+                "label": "本地补充指导（仅本机）",
+                "default_text": "",
+            }
+        )
+    return fields
 
 
 def _merge_orphaned(
@@ -218,8 +257,10 @@ def _prompt_out(
         head.required_contract_version,
         head.latest_default_revision,
     )
-    required_fields = _bundle_fields(required)
+    required_fields = _allowed_fields(required, head.task_type)
     guidance = dict(version.guidance_json)
+    if head.task_type in LOCAL_WEEKLY_COLUMN_TASKS:
+        guidance.setdefault(LOCAL_INSTRUCTION_FIELD, "")
     # Fields the personal version still keeps but the required contract no
     # longer defines are surfaced as orphaned (never sent to the model); a
     # re-added field keeps its latest value, not a stale removal copy.
@@ -234,7 +275,7 @@ def _prompt_out(
         "required_contract_version": head.required_contract_version,
         "latest_default_revision": head.latest_default_revision,
         "guidance": guidance,
-        "fields": _fields(required),
+        "fields": _fields(required, head.task_type),
         "rejected_default_revision": version.rejected_default_revision,
         "adaptation_required": (
             version.contract_version != head.required_contract_version
@@ -352,13 +393,30 @@ def _new_version(
 # ---------------------------------------------------------------------------
 
 
-def list_prompts(session: Session) -> dict:
+def list_prompts(session: Session, *, scope: str = "daily") -> dict:
+    if scope not in {"daily", "all"}:
+        raise LocalValidationError("scope 只能是 daily 或 all")
+    task_types = REGISTERED_TASK_TYPES if scope == "all" else TASK_TYPES
     with read_scope(session):
         profile_id = _profile_id(session)
         items = []
-        for task_type in TASK_TYPES:
-            head = _head(session, profile_id, task_type)
-            version = _version(session, profile_id, task_type, head.current_revision)
+        for task_type in task_types:
+            head = session.get(LocalPersonalPromptHead, (profile_id, task_type))
+            version = (
+                session.get(
+                    LocalPersonalPromptVersion,
+                    (profile_id, task_type, head.current_revision),
+                )
+                if head is not None
+                else None
+            )
+            if head is None or version is None:
+                # Required daily/reflection heads stay a hard gate. Optional
+                # extended heads are skipped so one missing legacy row cannot
+                # hide every other editable prompt.
+                if task_type in TASK_TYPES:
+                    raise LocalStorageError("个人指导头缺失")
+                continue
             items.append(_prompt_out(session, head, version))
         return {"items": items}
 
@@ -385,12 +443,15 @@ def get_default(
     with read_scope(session):
         _profile_id(session)
         bundle = _require_bundle(session, tt, contract, default)
+        guidance = dict(bundle.guidance_defaults_json)
+        if tt in LOCAL_WEEKLY_COLUMN_TASKS:
+            guidance.setdefault(LOCAL_INSTRUCTION_FIELD, "")
         return {
             "task_type": tt,
             "contract_version": contract,
             "default_revision": default,
-            "guidance": dict(bundle.guidance_defaults_json),
-            "fields": _fields(bundle),
+            "guidance": guidance,
+            "fields": _fields(bundle, tt),
             "bundle_hash": bundle.bundle_hash,
         }
 
@@ -422,6 +483,8 @@ def save_prompt(
     )
     contract = _strict_positive_int(contract_version, "contract_version")
     normalized = _normalize_guidance_raw(guidance)
+    if tt in LOCAL_WEEKLY_COLUMN_TASKS:
+        normalized.setdefault(LOCAL_INSTRUCTION_FIELD, "")
     rid = normalize_request_id(request_id)
     fingerprint = _fingerprint(
         OPERATION_EDIT,
@@ -461,9 +524,12 @@ def save_prompt(
         bundle = _require_bundle(
             session, tt, version.contract_version, version.based_default_revision
         )
-        _check_field_set(bundle, normalized)
+        _check_field_set(bundle, normalized, tt)
         now = utc_now()
-        if normalized == dict(version.guidance_json):
+        current_guidance = dict(version.guidance_json)
+        if tt in LOCAL_WEEKLY_COLUMN_TASKS:
+            current_guidance.setdefault(LOCAL_INSTRUCTION_FIELD, "")
+        if normalized == current_guidance:
             result = _prompt_out(session, head, version)
         else:
             new_version = _new_version(
@@ -477,7 +543,7 @@ def save_prompt(
                 guidance=normalized,
                 orphaned=_merge_orphaned(
                     version.orphaned_guidance_json,
-                    _bundle_fields(bundle),
+                    _allowed_fields(bundle, tt),
                     normalized,
                 ),
                 rejected_default_revision=version.rejected_default_revision,
@@ -566,11 +632,13 @@ def accept_default(
             )
         _require_same_required_contract(head, version, target_contract)
         bundle = _require_bundle(session, tt, target_contract, target_default)
-        allowed = _bundle_fields(bundle)
+        allowed = _allowed_fields(bundle, tt)
         for field in fields:
             if field not in allowed:
                 raise LocalValidationError(f"未知指导字段 {field}")
-        defaults = bundle.guidance_defaults_json
+        defaults = dict(bundle.guidance_defaults_json)
+        if tt in LOCAL_WEEKLY_COLUMN_TASKS:
+            defaults.setdefault(LOCAL_INSTRUCTION_FIELD, "")
         new_guidance = dict(version.guidance_json)
         for field in fields:
             new_guidance[field] = defaults[field]
@@ -591,7 +659,9 @@ def accept_default(
                 based_default_revision=target_default,
                 guidance=new_guidance,
                 orphaned=_merge_orphaned(
-                    version.orphaned_guidance_json, allowed, new_guidance
+                    version.orphaned_guidance_json,
+                    _allowed_fields(bundle, tt),
+                    new_guidance,
                 ),
                 rejected_default_revision=version.rejected_default_revision,
                 now=now,
@@ -679,7 +749,7 @@ def reject_default(
                 guidance=dict(version.guidance_json),
                 orphaned=_merge_orphaned(
                     version.orphaned_guidance_json,
-                    _bundle_fields(bundle),
+                    _allowed_fields(bundle, tt),
                     dict(version.guidance_json),
                 ),
                 rejected_default_revision=target_default,
@@ -723,6 +793,8 @@ def adapt_prompt(
         target_default_revision, "target_default_revision"
     )
     normalized = _normalize_guidance_raw(guidance)
+    if tt in LOCAL_WEEKLY_COLUMN_TASKS:
+        normalized.setdefault(LOCAL_INSTRUCTION_FIELD, "")
     rid = normalize_request_id(request_id)
     fingerprint = _fingerprint(
         OPERATION_ADAPT,
@@ -759,8 +831,8 @@ def adapt_prompt(
                 details={"required_contract_version": head.required_contract_version}
             )
         bundle = _require_bundle(session, tt, target_contract, target_default)
-        _check_field_set(bundle, normalized)
-        new_fields = set(_bundle_fields(bundle))
+        _check_field_set(bundle, normalized, tt)
+        new_fields = set(_allowed_fields(bundle, tt))
         orphaned = _merge_orphaned(
             version.orphaned_guidance_json,
             new_fields,

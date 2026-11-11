@@ -48,6 +48,7 @@ const guidance = ref('')
 /** The real server state (not the live draft). */
 const confirmed = ref<GameSnapshot | null>(null)
 const preview = ref<ConfigPreview | null>(null)
+const previewInputSeq = ref<number | null>(null)
 const previewing = ref(false)
 const applying = ref(false)
 const errorText = ref('')
@@ -258,6 +259,7 @@ function rebaseFrom(fresh: ClassGames, baseline: GameSnapshot | null): void {
     guidance: fresh.change.guidance ?? '',
   }
   preview.value = null
+  previewInputSeq.value = null
   inputSeq += 1
   applyKnownCommittedConfig()
 }
@@ -767,17 +769,34 @@ function removeLocation(index: number): void {
 function invalidate(): void {
   inputSeq += 1
   preview.value = null
+  previewInputSeq.value = null
 }
 
-async function previewChange(): Promise<void> {
-  if (inputsBlocked() || previewing.value || applying.value || !current.value) return
+async function confirmInlineCandidate(): Promise<void> {
+  if (!parseCandidate.value || inputsBlocked() || previewing.value || applying.value) {
+    return
+  }
+  const candidateId = parseCandidate.value.candidate_id
+  const seq = inputSeq
+  preview.value = null
+  previewInputSeq.value = null
+  const changed = await previewChange()
+  if (parseCandidate.value?.candidate_id !== candidateId) return
+  if (seq !== inputSeq || previewInputSeq.value !== seq) return
+  if (changed) await applyPreview()
+}
+
+async function previewChange(): Promise<boolean> {
+  if (inputsBlocked() || previewing.value || applying.value || !current.value) return false
   applyKnownCommittedConfig()
   const names = locations.value.map((location) => location.name.trim())
   if (names.some((name) => name === '')) {
     errorText.value = '地点名称不能为空'
-    return
+    return false
   }
   const seq = inputSeq
+  preview.value = null
+  previewInputSeq.value = null
   previewing.value = true
   errorText.value = ''
   messageText.value = ''
@@ -786,10 +805,13 @@ async function previewChange(): Promise<void> {
       expected_config_version: current.value.config_version,
       change: changeObject(),
     })
-    if (seq !== inputSeq) return
+    if (seq !== inputSeq) return false
     preview.value = result
+    previewInputSeq.value = seq
+    return result.changed
   } catch (err) {
     handleError(err)
+    return false
   } finally {
     previewing.value = false
   }
@@ -808,9 +830,16 @@ async function finishApplied(submitted: GameSnapshot, version: number | null): P
 
 async function applyPreview(): Promise<void> {
   if (inputsBlocked() || !preview.value || applying.value) return
+  if (previewInputSeq.value !== inputSeq) {
+    preview.value = null
+    previewInputSeq.value = null
+    errorText.value = '预览对应的编辑已变化：请重新确认应用'
+    return
+  }
   if (!preview.value.changed) {
     ElMessage.info('没有实际修改')
     preview.value = null
+    previewInputSeq.value = null
     return
   }
   const submitted = snapshot()
@@ -946,18 +975,40 @@ function cancelDraft(): void {
   ElMessage.info('已取消班级游戏配置编辑')
 }
 
+const GAME_KIND_LABELS: Record<string, string> = {
+  area: '区域',
+  special_room: '专用室',
+  outdoor: '户外场地',
+}
+const GAME_FIELD_LABELS: Record<string, string> = {
+  locations: '地点',
+  game_scope: '游戏范围',
+  guidance: '通用限制 / 指导',
+}
+function describeLocation(value: unknown): string {
+  const item = value && typeof value === 'object'
+    ? value as Record<string, unknown>
+    : {}
+  const kind = GAME_KIND_LABELS[String(item.kind ?? '')] ?? '地点'
+  const name = String(item.name ?? '').trim() || '（未命名）'
+  const guidance = String(item.guidance ?? '').trim()
+  return `${kind}「${name}」${guidance ? `：${guidance}` : ''}`
+}
 function describeValue(value: unknown): string {
   if (value === null || value === undefined) return '（空）'
   if (typeof value === 'string') return value === '' ? '（空字符串）' : value
   if (Array.isArray(value)) {
+    if (value.every((item) => item && typeof item === 'object' && 'kind' in item)) {
+      return value.map(describeLocation).join('；')
+    }
     return value
       .map((item) => (typeof item === 'object' && item ? describeValue(item) : String(item)))
       .join('；')
   }
   if (typeof value === 'object') {
     return Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => `${key}=${describeValue(item)}`)
-      .join('，')
+      .map(([key, item]) => `${GAME_FIELD_LABELS[key] ?? key}：${describeValue(item)}`)
+      .join('；')
   }
   return String(value)
 }
@@ -1214,9 +1265,24 @@ defineExpose({ draftTargets, focusDraftTarget })
     <el-button size="small" data-d1="game-add-location" :disabled="inputsBlocked()" @click="addLocation">添加地点</el-button>
     <div class="field"><label>游戏范围（可空）</label><el-input v-model="gameScope" type="textarea" :rows="2" maxlength="8000" :disabled="inputsBlocked()" @input="invalidate" /></div>
     <div class="field"><label>通用限制 / 指导（可空）</label><el-input v-model="guidance" type="textarea" :rows="2" maxlength="8000" :disabled="inputsBlocked()" @input="invalidate" /></div>
+    <p v-if="parseCandidate" class="muted" data-d1="game-candidate-inline">
+      候选已内联到下方表单；确认应用后会先校验再写入，取消编辑不写入。
+    </p>
     <div class="row">
-      <el-button size="small" data-d1="game-preview" :loading="previewing" :disabled="inputsBlocked()" @click="previewChange">预览修改</el-button>
+      <el-button v-if="!parseCandidate" size="small" data-d1="game-preview" :loading="previewing" :disabled="inputsBlocked()" @click="previewChange">预览修改</el-button>
       <el-button
+        v-if="parseCandidate"
+        size="small"
+        type="primary"
+        data-d1="game-candidate-apply"
+        :loading="previewing || applying"
+        :disabled="inputsBlocked()"
+        @click="confirmInlineCandidate"
+      >
+        确认应用
+      </el-button>
+      <el-button
+        v-else
         size="small"
         type="primary"
         data-d1="game-apply"

@@ -38,7 +38,6 @@ from app.local.errors import (
     LocalAiNotFound,
     LocalAiRetryAckRequired,
     LocalAiTaskStateConflict,
-    LocalMaterialContextRequired,
     LocalPromptAdaptationRequired,
     LocalStorageError,
     LocalWeeklyAiRequestConflict,
@@ -604,11 +603,18 @@ class WeeklyAIServiceTests(WeeklyAIServiceFixture):
             "weekly_key_week_focus", raw, content.content_json
         )
         self.assertEqual(projected.task_type, "weekly_key_week_focus")
-        with self.assertRaises(weekly_ai_contracts.WeeklyAIContractError) as missing:
-            weekly_ai_inputs.project_weekly_input(
-                "weekly_materials_generate", raw, content.content_json
-            )
-        self.assertEqual(missing.exception.code, "MATERIAL_CONTEXT_REQUIRED")
+        projected_materials = weekly_ai_inputs.project_weekly_input(
+            "weekly_materials_generate", raw, content.content_json
+        )
+        self.assertEqual(projected_materials.task_type, "weekly_materials_generate")
+        self.assertIsNone(projected_materials.payload["selection"]["focus_area"])
+        self.assertEqual(
+            projected_materials.payload["suggestion_context"]["mode"], "suggested"
+        )
+        self.assertEqual(
+            projected_materials.payload["suggestion_context"]["theme"],
+            saved_content["theme"],
+        )
 
         before = self._ai_counts()
         result, created = weekly_ai_service.create_weekly_tasks(
@@ -701,23 +707,33 @@ class WeeklyAIServiceTests(WeeklyAIServiceFixture):
             after_columns["local_ai_tasks"], before["local_ai_tasks"] + 1
         )
 
-        with self.assertRaises(LocalMaterialContextRequired):
-            weekly_ai_service.create_weekly_tasks(
-                self.session,
-                runtime=None,
-                profile_id=self.profile.id,
-                plan_id=self.plan_id,
-                request_id=str(uuid.uuid4()),
-                expected_draft_version=new_version,
-                operation_kind=weekly_ai_service.MATERIALS,
-                task_specs=[
-                    weekly_ai_service.WeeklyTaskSpec(
-                        "weekly_materials_generate", "materials"
-                    )
-                ],
-            )
+        materials_before = self._ai_counts()
+        materials_result, materials_created = weekly_ai_service.create_weekly_tasks(
+            self.session,
+            runtime=None,
+            profile_id=self.profile.id,
+            plan_id=self.plan_id,
+            request_id=str(uuid.uuid4()),
+            expected_draft_version=new_version,
+            operation_kind=weekly_ai_service.MATERIALS,
+            task_specs=[
+                weekly_ai_service.WeeklyTaskSpec(
+                    "weekly_materials_generate", "materials"
+                )
+            ],
+        )
+        self.assertTrue(materials_created)
+        self.assertEqual(materials_result["tasks"][0]["target"], "materials")
         self.session.expire_all()
-        self.assertEqual(self._ai_counts(), after_columns)
+        after_materials = self._ai_counts()
+        self.assertEqual(
+            after_materials["local_ai_inputs"],
+            materials_before["local_ai_inputs"] + 1,
+        )
+        self.assertEqual(
+            after_materials["local_ai_tasks"],
+            materials_before["local_ai_tasks"] + 1,
+        )
 
     def test_columns_one_operation_and_active_conflict(self):
         specs = [
@@ -753,20 +769,172 @@ class WeeklyAIServiceTests(WeeklyAIServiceFixture):
             )
         self.assertEqual(self.session.query(LocalAITask).count(), 2)
 
-    def test_materials_missing_focus_has_no_receipt_or_task(self):
-        with self.assertRaises(LocalMaterialContextRequired):
-            self._create(
-                weekly_ai_service.MATERIALS,
-                [weekly_ai_service.WeeklyTaskSpec("weekly_materials_generate", "materials")],
-            )
+    def test_materials_without_focus_creates_suggested_task(self):
+        result, created = self._create(
+            weekly_ai_service.MATERIALS,
+            [weekly_ai_service.WeeklyTaskSpec("weekly_materials_generate", "materials")],
+        )
+        self.assertTrue(created)
+        self.assertEqual(result["tasks"][0]["target"], "materials")
         self.assertEqual(
             self.session.query(LocalAIOperation)
             .filter(LocalAIOperation.operation_kind == weekly_ai_service.MATERIALS)
             .count(),
-            0,
+            1,
         )
-        self.assertEqual(self.session.query(LocalAITask).count(), 0)
-        self.assertEqual(self.session.query(LocalAIInput).count(), 0)
+        task = self.session.query(LocalAITask).one()
+        self.assertEqual(task.task_type, "weekly_materials_generate")
+        inp = self.session.get(LocalAIInput, task.input_id)
+        self.assertIsNone(inp.payload_json["selection"]["focus_area"])
+        self.assertEqual(
+            inp.payload_json["suggestion_context"]["mode"], "suggested"
+        )
+        self.assertIsInstance(
+            inp.payload_json["suggestion_context"]["theme"], str
+        )
+        task_id = result["tasks"][0]["task_id"]
+        claim = ai_task_service.claim_next(
+            self.runtime, now=ai_task_service._now(), started_ticks=1
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.task_id, task_id)
+        self.assertTrue(
+            ai_task_service.commit_dispatch_mark(
+                self.session, claim, ai_task_service._now()
+            )
+        )
+        text = '{"items":[{"text":"彩纸","origin":"suggested","evidence_refs":[]}]}'
+        self.assertTrue(
+            ai_task_service.finalize_success(
+                self.session,
+                claim,
+                {"kind": "success", "candidate_text": text},
+                ai_task_service._now(),
+            )
+        )
+        candidate = self.session.scalars(
+            select(LocalAICandidate).where(LocalAICandidate.task_id == task_id)
+        ).one()
+        preview = weekly_ai_adoption.preview_adoption(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            plan_id=self.plan_id,
+            expected_draft_version=self.version,
+            selections=[{"candidate_id": candidate.id, "target": "materials"}],
+            launch_id=self.runtime.launch_id,
+            session_scope_hash="scope",
+        )
+        adopted = weekly_ai_adoption.adopt(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            plan_id=self.plan_id,
+            request_id=str(uuid.uuid4()),
+            expected_draft_version=self.version,
+            preview_token=preview["preview_token"],
+            launch_id=self.runtime.launch_id,
+            session_scope_hash="scope",
+        )
+        reopened = weekly_plan_service.get_detail(
+            self.session, profile_id=self.profile.id, plan_id=self.plan_id
+        )
+        self.assertEqual(
+            reopened["draft"]["content"]["materials"], "彩纸"
+        )
+        self.assertEqual(
+            reopened["draft"]["content"]["materials_provenance"]["items"][0]["origin"],
+            "suggested",
+        )
+
+    def test_no_focus_rejects_extracted_even_with_selected_morning_handle(self):
+        plan = self.session.get(LocalWeeklyPlan, self.plan_id)
+        snapshot = weekly_plan_service._live_snapshot(self.session, plan)
+        morning = next(
+            item
+            for item in weekly_plan_content.build_source_candidates(snapshot)
+            if item["category"] == "collective"
+        )
+        selector = {
+            key: morning[key]
+            for key in (
+                "source_kind",
+                "daily_plan_id",
+                "content_id",
+                "content_version",
+                "content_hash",
+                "section",
+                "group_id",
+                "game_id",
+            )
+        }
+        saved = weekly_plan_service.save_draft(
+            self.session,
+            profile_id=self.profile.id,
+            request_id=str(uuid.uuid4()),
+            plan_id=self.plan_id,
+            expected_draft_version=self.version,
+            patch={"outdoor_game_slots": {"collective_1": selector}},
+        )
+        version = saved["draft"]["version"]
+        result, created = self._create(
+            weekly_ai_service.MATERIALS,
+            [weekly_ai_service.WeeklyTaskSpec("weekly_materials_generate", "materials")],
+            version=version,
+        )
+        self.assertTrue(created)
+        task_id = result["tasks"][0]["task_id"]
+        claim = ai_task_service.claim_next(
+            self.runtime, now=ai_task_service._now(), started_ticks=1
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.task_id, task_id)
+        self.assertIsNone(claim.payload["selection"]["focus_area"])
+        selected_slot = claim.payload["selection"]["outdoor_game_slots"]["collective_1"]
+        handle = selected_slot["source_handle"]
+        name = selected_slot["name"]
+        text = json.dumps(
+            {
+                "items": [
+                    {
+                        "text": name,
+                        "origin": "extracted",
+                        "evidence_refs": [
+                            {
+                                "source_handle": handle,
+                                "field_path": "name",
+                                "start": 0,
+                                "end": len(name),
+                                "quote": name,
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+        self.assertTrue(
+            ai_task_service.commit_dispatch_mark(
+                self.session, claim, ai_task_service._now()
+            )
+        )
+        self.assertTrue(
+            ai_task_service.finalize_success(
+                self.session,
+                claim,
+                {"kind": "success", "candidate_text": text},
+                ai_task_service._now(),
+            )
+        )
+        self.assertEqual(
+            self.session.get(LocalAITask, task_id).status, "failed"
+        )
+        self.assertEqual(
+            self.session.scalars(
+                select(LocalAICandidate).where(LocalAICandidate.task_id == task_id)
+            ).all(),
+            [],
+        )
 
     def test_executor_claim_and_success_candidate_stay_weekly(self):
         self._succeed_games()

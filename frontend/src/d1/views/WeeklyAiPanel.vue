@@ -6,6 +6,7 @@ import { computed, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
 import { createWeeklyApi, newWeeklyRequestId } from '../weekly'
 import { getSessionEpoch } from '../client'
 import { isIndeterminate } from '../operations'
+import { acceptedProgress, progressPhaseLabel, progressMatchesTask, type AiProgressView } from '../ai-progress'
 import { WEEKLY_AI_COLUMNS, candidateLines, createWeeklyAiApi, groupStatus, groupStatusLabel, eligibilityLabel, taskStatusLabel, certaintyLabel, targetLabel, projectWeeklyAiError, weeklyEditSignature, type WeeklyAiCandidate, type WeeklyAiColumn, type WeeklyAiCreateOut, type WeeklyAiSelection, type WeeklyAiTask, type WeeklyAiAdoptionPreview, type WeeklyAiAdoptionResult } from '../weekly-ai'
 import DirectionalRevisionDialog from '../components/DirectionalRevisionDialog.vue'
 import DirectionalRevisionTrigger from '../components/DirectionalRevisionTrigger.vue'
@@ -67,11 +68,10 @@ let refreshGeneration = 0
 function beginAiBusy(): number { const token = ++aiBusyToken; aiBusy.value = true; return token }
 function endAiBusy(token: number): void { if (token === aiBusyToken) aiBusy.value = false }
 onBeforeUnmount(() => { alive = false; aiBusyToken += 1; refreshGeneration += 1; panelRequestFlight = false; directionalOpen.value = false; directionalBusy.value = false; directionalRequest.value = null; releaseAdoptGate(); emit('busy', false); emit('blocking', null) })
-const progress = ref<Record<string, string>>({})
+const progress = ref<Record<string, AiProgressView>>({})
 const materialsFocusReady = computed(() => props.focusSelected || Boolean(props.controller.getContent().focus_area))
-const focusHint = '生成材料前需要先选择“重点区域”；若没有可选来源，请先保存对应日计划，再点“刷新来源预览”后选择'
+const focusHint = '未选择重点区域时，AI 只依据当前班级年龄、已保存周主题和已有可靠选择给出“建议材料”，每项无原文证据，请预览核对后采用。'
 watch(materialsFocusReady, (ready) => { if (ready && notice.value === focusHint) notice.value = '' })
-function liveFocusSelected(): boolean { return Boolean(props.controller.getContent().focus_area) }
 function saveBlockedMessage(outcome: SaveOutcome): string {
   const failure = props.controller.getLastFailure?.() ?? null
   const message = failure?.message ?? (outcome === 'indeterminate' ? '保存结果未确认，请先核对原请求' : '保存未完成')
@@ -525,7 +525,6 @@ async function ensureSaved(ctx: PanelEpoch): Promise<boolean> {
  */
 function materialsContextSaved(ctx: PanelEpoch): boolean {
   if (!currentEpoch(ctx)) return false
-  if (!liveFocusSelected()) { error.value = focusHint; notice.value = ''; return false }
   if (!props.controller.isDirty()) return true
   error.value = '保存开始后选择的“重点区域”或较晚输入尚未保存到服务器；本次未生成材料，当前输入已保留。请先点“保存”，保存成功后再生成材料'
   notice.value = ''
@@ -611,13 +610,6 @@ async function sendCreate(kind: 'games' | 'columns' | 'materials', body: Record<
 }
 async function create(kind: 'games' | 'columns' | 'materials'): Promise<void> {
   if (!alive || props.disabled || aiBusy.value || panelRequestFlight || pendingCreate.value || pendingAdopt.value || pendingAction.value) { if (alive && !aiBusy.value) error.value = '请先处理已保留的未确认 AI 请求'; return }
-  if (kind === 'materials' && !liveFocusSelected()) {
-    error.value = props.controller.hasUnknown?.()
-      ? '周计划保存结果未确认，请先核对原提交；本次未生成材料'
-      : focusHint
-    notice.value = ''
-    return
-  }
   panelRequestFlight = true
   const ctx = epoch()
   if (!(await ensureSaved(ctx))) { panelRequestFlight = false; return }
@@ -672,13 +664,39 @@ async function retryCreate(): Promise<void> {
     fail(errorValue)
   } finally { release(); endAiBusy(busyToken) }
 }
+function progressFor(task: WeeklyAiTask): AiProgressView | null {
+  const stored = progress.value[task.task_id]
+  if (!stored) return null
+  return progressMatchesTask(
+    task.task_id,
+    task.execution?.id ?? null,
+    null,
+    stored,
+  )
+    ? stored
+    : null
+}
+
+function progressReasoningFor(task: WeeklyAiTask): string {
+  return progressFor(task)?.reasoning?.trim() ?? ''
+}
+
 async function loadProgress(task: WeeklyAiTask): Promise<void> {
   const ctx = epoch()
   try {
     const value = await api.progress(ctx.plan, task.task_id)
     if (!currentEpoch(ctx)) return
-    const raw = value.detail ?? value.state ?? value.available
-    progress.value = { ...progress.value, [task.task_id]: typeof raw === 'string' ? raw : '只读进度已读取' }
+    const accepted = acceptedProgress(
+      task.task_id,
+      task.execution?.id ?? null,
+      null,
+      value,
+    )
+    if (!accepted) {
+      notice.value = '进度回包与当前任务执行不一致：已忽略，不影响任务状态'
+      return
+    }
+    progress.value = { ...progress.value, [task.task_id]: accepted }
   } catch (errorValue) { if (!currentEpoch(ctx)) return; fail(errorValue) }
 }
 async function action(task: WeeklyAiTask, kind: 'cancel' | 'resume' | 'retry'): Promise<void> {
@@ -1087,7 +1105,7 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
     <div class="actions">
       <el-button :disabled="disabled || aiBusy" @click="create('games')">选择周游戏</el-button>
       <el-button :disabled="disabled || aiBusy || !selectedFields.length" @click="create('columns')">生成所选周栏目</el-button>
-      <el-button :disabled="disabled || aiBusy || !materialsFocusReady" @click="create('materials')">生成材料</el-button>
+      <el-button :disabled="disabled || aiBusy" @click="create('materials')">生成材料</el-button>
       <el-button :disabled="disabled || aiBusy" @click="refreshBatch">刷新候选与状态</el-button>
     </div>
     <div class="columns">
@@ -1134,7 +1152,10 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
           <el-button v-if="task.allowed_actions.includes('resume')" size="small" :disabled="disabled || aiBusy || !task.execution" @click="action(task, 'resume')">继续</el-button>
           <el-button v-if="task.allowed_actions.includes('retry')" size="small" :disabled="disabled || aiBusy || !task.execution" @click="action(task, 'retry')">明确重试</el-button>
           <el-checkbox v-if="task.retry_requires_ack" v-model="retryAckByTask[task.task_id]">我确认此任务重试可能产生新的请求或费用</el-checkbox>
-          <span v-if="progress[task.task_id]">{{ progress[task.task_id] }}</span>
+          <span v-if="progressFor(task)" class="muted" data-d1="weekly-ai-progress-phase">
+            {{ progressPhaseLabel(progressFor(task)?.phase ?? '') }}
+          </span>
+          <pre v-if="progressReasoningFor(task)" class="progress-reasoning" data-d1="weekly-ai-progress-reasoning">{{ progressReasoningFor(task) }}</pre>
         </div>
       </div>
       <div v-for="candidate in visibleCandidates" :key="candidate.candidate_id" class="candidate" :data-d1="`weekly-candidate-${candidate.candidate_id}`">
@@ -1329,6 +1350,15 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
 </template>
 
 <style scoped>
+.progress-reasoning {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  background: var(--kgm-bg);
+  border-radius: 4px;
+}
 .weekly-ai { margin: 1rem 0; }
 .actions { display: flex; gap: .4rem; flex-wrap: wrap; margin: .4rem 0; }
 .columns { display: flex; gap: .5rem; flex-wrap: wrap; margin: .4rem 0; }

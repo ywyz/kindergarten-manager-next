@@ -40,9 +40,16 @@ SPLIT_CANDIDATE = {
         "preparation": "准备",
         "key_points": "重点",
         "difficult_points": "难点",
-        "process": "一、导入\n二、观察",
+        "process": "1. 导入\n2. 观察",
     }
 }
+# The #23 split cleanup gate requires every factual field to have a textual
+# basis in the raw lesson; this fixture is the smallest lesson that supports
+# the candidate above.
+SPLIT_RAW = (
+    "活动主题：主题\n活动目标：目标\n活动准备：准备\n"
+    "活动重点：重点\n活动难点：难点\n活动过程：1. 导入\n2. 观察"
+)
 
 
 class TaskCase(LocalTestCase):
@@ -79,14 +86,14 @@ class TaskCase(LocalTestCase):
             self.db, "SELECT input_id FROM local_ai_tasks WHERE id = ?", (task_id,)
         )
 
-    def make_plan(self, plan_date=date(2026, 9, 2), raw="原始教案正文", adopted=None):
+    def make_plan(self, plan_date=date(2026, 9, 2), raw=SPLIT_RAW, adopted=None):
         payload, _created = daily_plan_service.create_or_open(
             self.session,
             plan_date=plan_date,
             raw_lesson_plan=raw,
             adopted_content=adopted
             or {
-                "group_activity": {"process": "一、导入\n二、观察"},
+                "group_activity": {"process": "1. 导入\n2. 观察"},
                 "reflection": "反思",
             },
         )
@@ -159,7 +166,7 @@ class SubmissionTests(TaskCase):
             self.create(plan["id"], request_id=str(uuid.uuid4()))
         # A different type is allowed and both are queued FIFO.
         other, created = self.create(
-            plan["id"], task_type="daily_process_adapt", request_id=str(uuid.uuid4())
+            plan["id"], task_type="daily_other_activities", request_id=str(uuid.uuid4())
         )
         self.assertTrue(created)
 
@@ -247,9 +254,9 @@ class ProjectionTests(TaskCase):
             self.session,
             plan_id=plan["id"],
             expected_content_version=1,
-            raw_lesson_plan="原始教案正文",
+            raw_lesson_plan=SPLIT_RAW,
             adopted_content={
-                "group_activity": {"process": "一、导入\n二、观察"},
+                "group_activity": {"process": "1. 导入\n2. 观察"},
                 "reflection": "改写后的反思",
             },
         )
@@ -266,12 +273,12 @@ class ProjectionTests(TaskCase):
     def test_process_change_breaks_source(self):
         self.configure_ai()
         plan = self.make_plan()
-        result, _ = self.create(plan["id"], task_type="daily_process_adapt")
+        result, _ = self.create(plan["id"], task_type="daily_other_activities")
         daily_plan_service.save(
             self.session,
             plan_id=plan["id"],
             expected_content_version=1,
-            raw_lesson_plan="原始教案正文",
+            raw_lesson_plan=SPLIT_RAW,
             adopted_content={
                 "group_activity": {"process": "完全不同的过程"},
                 "reflection": "反思",

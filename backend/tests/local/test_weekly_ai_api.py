@@ -251,17 +251,18 @@ class WeeklyAIApiTests(WeeklyAIServiceFixture):
         self.assertEqual(status, 409, rejected)
         self.assertEqual(rejected["error"]["code"], "WEEKLY_AI_CONTRACT_OBSOLETE")
 
-    def test_materials_context_required_is_422_without_task(self):
+    def test_materials_without_focus_creates_suggested_task(self):
         body = {
             "request_id": str(uuid.uuid4()),
             "expected_draft_version": self.version,
         }
         status, payload = self.client.post(self._path("/materials"), body)
-        self.assertEqual(status, 422, payload)
-        self.assertEqual(payload["error"]["code"], "MATERIAL_CONTEXT_REQUIRED")
+        self.assertEqual(status, 202, payload)
+        self.assertEqual(payload["tasks"][0]["target"], "materials")
         status, tasks = self.client.get(self._path("/tasks"))
         self.assertEqual(status, 200, tasks)
-        self.assertEqual(tasks["items"], [])
+        self.assertEqual(len(tasks["items"]), 1)
+        self.assertEqual(tasks["items"][0]["target"], "materials")
 
     def test_candidate_list_scope_and_columns_dto(self):
         body = {

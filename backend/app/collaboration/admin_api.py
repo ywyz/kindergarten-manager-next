@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -22,9 +22,11 @@ from .admin_service import (
     issue_code,
     list_schools,
     list_teachers,
+    list_terms,
     login_admin,
     redeem_code,
     revoke_admin_session,
+    update_term_name,
     verify_csrf,
 )
 from .api import get_session, get_settings
@@ -62,6 +64,19 @@ class AdminTeacherOut(_StrictModel):
     teacher_id: UUID
     display_name: str
     active: bool
+
+
+class AdminTermOut(_StrictModel):
+    term_id: UUID
+    school_id: UUID
+    name: str
+    start_date: date
+    end_date: date
+
+
+class AdminTermUpdateIn(_StrictModel):
+    expected_name: str = Field(..., min_length=1, max_length=80)
+    new_name: str = Field(..., min_length=1, max_length=80)
 
 
 class AdminCodeIn(_StrictModel):
@@ -271,6 +286,59 @@ def admin_teachers(
         )
         for row in list_teachers(session, school_id)
     ]
+
+
+@router.get(
+    "/api/collaboration/admin/schools/{school_id}/terms",
+    response_model=list[AdminTermOut],
+)
+def admin_terms(
+    school_id: UUID,
+    response: Response,
+    session: Session = Depends(get_session),
+    _principal: AdminPrincipal = Depends(get_admin_principal),
+) -> list[AdminTermOut]:
+    _no_store(response)
+    return [
+        AdminTermOut(
+            term_id=row.term_id,
+            school_id=row.school_id,
+            name=row.name,
+            start_date=row.start_date,
+            end_date=row.end_date,
+        )
+        for row in list_terms(session, school_id)
+    ]
+
+
+@router.patch(
+    "/api/collaboration/admin/schools/{school_id}/terms/{term_id}",
+    response_model=AdminTermOut,
+)
+def admin_update_term(
+    school_id: UUID,
+    term_id: UUID,
+    data: AdminTermUpdateIn,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+) -> AdminTermOut:
+    updated = update_term_name(
+        session,
+        principal,
+        school_id=school_id,
+        term_id=term_id,
+        expected_name=data.expected_name,
+        new_name=data.new_name,
+    )
+    _no_store(response)
+    return AdminTermOut(
+        term_id=updated.term_id,
+        school_id=updated.school_id,
+        name=updated.name,
+        start_date=updated.start_date,
+        end_date=updated.end_date,
+    )
 
 
 @router.post(

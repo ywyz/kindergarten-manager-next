@@ -1,5 +1,6 @@
 import { ApiError, apiGet, apiPost, pathSegment } from './client'
 import { newWeeklyRequestId, type WeeklyDetail } from './weekly'
+import type { AiTaskProgress } from './types'
 
 export type WeeklyAITarget = 'games' | 'key_week_focus' | 'environment_setup' | 'habit_culture' | 'home_cooperation' | 'materials'
 export type WeeklyAiEligibility = 'eligible' | 'source_changed' | 'contract_obsolete'
@@ -90,7 +91,7 @@ export interface WeeklyAiApi {
   materials(planId: string, input: { request_id: string; expected_draft_version: number }): Promise<WeeklyAiCreateOut>
   tasks(planId: string, query?: { create_operation_id?: string; status?: string; cursor?: string; limit?: number }): Promise<WeeklyAiTaskList>
   task(planId: string, taskId: string): Promise<WeeklyAiTask>
-  progress(planId: string, taskId: string): Promise<Record<string, unknown>>
+  progress(planId: string, taskId: string): Promise<AiTaskProgress>
   operation(planId: string, requestId: string): Promise<WeeklyAiOperation>
   taskOperation(requestId: string): Promise<WeeklyAiTaskOperation>
   candidates(planId: string, query?: { create_operation_id?: string; task_id?: string; cursor?: string; limit?: number }): Promise<{ items: WeeklyAiCandidate[]; next_cursor: string | null }>

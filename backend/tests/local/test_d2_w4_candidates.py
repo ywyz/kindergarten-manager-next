@@ -63,10 +63,10 @@ SPLIT_CANDIDATE = {
         "preparation": "树叶若干",
         "key_points": "观察",
         "difficult_points": "比较",
-        "process": "一、导入\n二、观察",
+        "process": "1. 导入\n2. 观察",
     }
 }
-ADAPT_CANDIDATE = {"process": "调整后的过程\n第二步：比较"}
+ADAPT_CANDIDATE = {"process": "1. 导入\n2. 观察\n师：看看树叶。"}
 OTHER_CANDIDATE = {
     "morning_games": [
         {
@@ -93,10 +93,13 @@ OTHER_CANDIDATE = {
 }
 
 DEFAULT_ADOPTED = {
-    "group_activity": {"process": "一、导入\n二、观察"},
+    "group_activity": {"process": "1. 导入\n2. 观察"},
     "reflection": "反思",
 }
-DEFAULT_RAW = "原始教案正文"
+DEFAULT_RAW = (
+    "活动主题：秋天的树叶\n活动目标：观察树叶\n活动准备：树叶若干\n"
+    "活动重点：观察\n活动难点：比较\n活动过程：1. 导入\n2. 观察"
+)
 
 
 def corrupt_sql(db, sql: str, params: tuple = ()) -> None:
@@ -241,7 +244,7 @@ class CandidateReadTests(W4Case):
 
     def test_list_excludes_material_paginates_and_foreign_plan_404(self):
         self.generate(self.plan["id"], "daily_lesson_split", SPLIT_CANDIDATE)
-        self.generate(self.plan["id"], "daily_process_adapt", ADAPT_CANDIDATE)
+        self.generate(self.plan["id"], "daily_lesson_split", SPLIT_CANDIDATE)
         self.generate(self.plan["id"], "daily_other_activities", OTHER_CANDIDATE)
 
         page = ai_candidates.list_candidates(self.session, plan_id=self.plan["id"], limit=2)
@@ -339,7 +342,7 @@ class PreviewValidationTests(W4Case):
         )
         self.assertTrue(preview["preview_token"])
         self.assertEqual(preview["content_version"], 1)
-        self.assertEqual(preview["before"], {"group_activity": {"process": "一、导入\n二、观察"}})
+        self.assertEqual(preview["before"], {"group_activity": {"process": "1. 导入\n2. 观察"}})
         self.assertEqual(preview["after"], {"group_activity": SPLIT_CANDIDATE["group_activity"]})
         after = {
             table: query_scalar(self.db, f"SELECT count(*) FROM {table}")
@@ -510,6 +513,28 @@ class AdoptFlowTests(W4Case):
         self.assertEqual(provenance["baseline_candidate_id"], split_id)
         self.assertEqual(provenance["adopted_candidate_id"], adapt_id)
 
+    def test_adapt_patch_is_expanded_to_full_process_before_storage(self):
+        split_id = self.generate(self.plan["id"], "daily_lesson_split", SPLIT_CANDIDATE)
+        preview = self.preview(self.plan["id"], split_id, ["group_activity"], SPLIT_CANDIDATE)
+        self.adopt(self.plan["id"], split_id, preview["preview_token"])
+
+        adapt_id = self.generate(
+            self.plan["id"],
+            "daily_process_adapt",
+            {"operation": "replace", "step_index": 2, "text": "观察\n师：看看树叶。"},
+        )
+        detail = ai_candidates.get_candidate(
+            self.session, plan_id=self.plan["id"], candidate_id=adapt_id
+        )
+        self.assertEqual(
+            detail["raw_candidate"],
+            {
+                "process": (
+                    "1. 导入\n2. 观察\n师：看看树叶。"
+                )
+            },
+        )
+
     def test_other_activities_replaces_selected_boards_only(self):
         candidate_id = self.generate(
             self.plan["id"], "daily_other_activities", OTHER_CANDIDATE
@@ -562,7 +587,7 @@ class AdoptFlowTests(W4Case):
             self.plan["id"],
             1,
             {
-                "group_activity": {"process": "一、导入\n二、观察"},
+                "group_activity": {"process": "1. 导入\n2. 观察"},
                 "morning_talk": {"topic": "今日话题", "questions": "你想说什么？"},
                 "reflection": "反思",
             },
@@ -865,7 +890,7 @@ class SourceTargetVersionTests(W4Case):
             self.plan["id"],
             1,
             {
-                "group_activity": {"process": "一、导入\n二、观察"},
+                "group_activity": {"process": "1. 导入\n2. 观察"},
                 "reflection": "改写的反思",
             },
         )
@@ -879,7 +904,7 @@ class SourceTargetVersionTests(W4Case):
             1,
             {
                 "group_activity": {
-                    "process": "一、导入\n二、观察",
+                    "process": "1. 导入\n2. 观察",
                     "theme": "教师另写主题",
                 },
                 "reflection": "反思",
@@ -894,7 +919,7 @@ class SourceTargetVersionTests(W4Case):
             self.plan["id"],
             1,
             {
-                "group_activity": {"process": "一、导入\n二、观察"},
+                "group_activity": {"process": "1. 导入\n2. 观察"},
                 "reflection": "反思",
             },
             raw="全新的原文",
@@ -909,7 +934,7 @@ class SourceTargetVersionTests(W4Case):
             self.plan["id"],
             1,
             {
-                "group_activity": {"process": "一、导入\n二、观察"},
+                "group_activity": {"process": "1. 导入\n2. 观察"},
                 "reflection": "改写的反思",
             },
         )
@@ -931,7 +956,7 @@ class SourceTargetVersionTests(W4Case):
             self.plan["id"],
             1,
             {
-                "group_activity": {"process": "一、导入\n二、观察"},
+                "group_activity": {"process": "1. 导入\n2. 观察"},
                 "morning_talk": {"topic": "教师改过的话题", "questions": "问题"},
                 "reflection": "反思",
             },
@@ -1207,7 +1232,7 @@ class PersistenceChainTests(W4Case):
             {
                 "group_activity": {
                     **SPLIT_CANDIDATE["group_activity"],
-                    "process": "一、导入\n二、观察\n三、教师新增整理",
+                    "process": "1. 导入\n2. 观察\n三、教师新增整理",
                 },
                 "reflection": "反思",
             },

@@ -16,6 +16,13 @@ import ts from 'typescript'
 const d1Dir = path.dirname(fileURLToPath(import.meta.url))
 const viewFile = path.join(d1Dir, 'views', 'EditorView.vue')
 const viewSource = fs.readFileSync(viewFile, 'utf8')
+assert.match(viewSource, /data-d1="split-needs-save"/)
+assert.match(viewSource, /data-d1="reflection-guidance"/)
+assert.ok(
+  viewSource.indexOf('data-d1="raw-lesson"') <
+    viewSource.indexOf('data-d1="split-needs-save"'),
+  'split action is visible under the raw lesson card',
+)
 const descriptor = parse(viewSource, { filename: viewFile }).descriptor
 const scriptCode = ts.transpileModule(
   compileScript(descriptor, { id: 'EditorView.vue' }).content,

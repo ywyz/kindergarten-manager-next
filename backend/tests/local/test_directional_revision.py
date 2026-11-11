@@ -32,7 +32,7 @@ from app.local.errors import (
     LocalAiTaskActive,
     LocalValidationError,
 )
-from app.local.migrate import alembic_config
+from app.local.migrate import alembic_config, head_revision
 from app.local.models import (
     LocalAICandidate,
     LocalAIInput,
@@ -1017,7 +1017,7 @@ class DirectionalMigrationTests(LocalTestCase):
                 connection.execute(
                     "SELECT version_num FROM local_alembic_version"
                 ).fetchone()[0],
-                "20261110_0019_local_directional_revisions",
+                head_revision(),
             )
             self.assertEqual(
                 connection.execute(

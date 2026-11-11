@@ -26,7 +26,7 @@ from app.local.errors import (
     LocalAiSourceChanged,
     LocalValidationError,
 )
-from app.local.migrate import alembic_config
+from app.local.migrate import alembic_config, head_revision
 from app.local.models import LocalAIInput, LocalAITask, LocalPromptBundle
 from app.local.normalize import normalize_initialization
 from app.local.prompt_bundles import CandidateInvalid
@@ -1459,7 +1459,7 @@ class CurriculumAIMigrationTests(LocalTestCase):
                 connection.execute(
                     "SELECT version_num FROM local_alembic_version"
                 ).fetchone()[0],
-                "20261110_0019_local_directional_revisions",
+                head_revision(),
             )
             self.assertEqual(
                 connection.execute(

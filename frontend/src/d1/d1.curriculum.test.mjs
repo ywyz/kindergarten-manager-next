@@ -1096,6 +1096,21 @@ const exportPreview = {
   assert.match(editor, /data-d1="curriculum-ai-generate"/)
   assert.match(editor, /data-d1="curriculum-ai-edit-selection"/)
   assert.match(editor, /data-curriculum-field="lesson_original"/)
+  const originalCard = editor.indexOf(
+    'data-d1="curriculum-lesson-original-card"',
+  )
+  const reviewCard = editor.indexOf('data-d1="curriculum-ai-review"')
+  const goalsCard = editor.indexOf('data-d1="curriculum-goals-original"')
+  const revisedCard = editor.indexOf(
+    'data-d1="curriculum-lesson-revised-card"',
+  )
+  assert.ok(
+    originalCard >= 0 &&
+      goalsCard > originalCard &&
+      reviewCard > goalsCard &&
+      revisedCard > reviewCard,
+    'curriculum order: original -> adjustment -> split/review/edit suggestion -> revised',
+  )
   const aiDialog = fs.readFileSync(
     path.join(d1Dir, 'views/CurriculumAiDialog.vue'),
     'utf8',

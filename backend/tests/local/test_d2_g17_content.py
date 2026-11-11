@@ -15,7 +15,10 @@ import uuid
 from datetime import date
 from unittest import mock
 
+from sqlalchemy import text
+
 from app.local import (
+    ai_adoption,
     ai_config_service,
     ai_task_service,
     daily_plan_service,
@@ -39,6 +42,20 @@ TASKS = (
     "daily_process_adapt",
     "daily_other_activities",
 )
+G17_SPLIT_CANDIDATE = {
+    "group_activity": {
+        "theme": "主题",
+        "objectives": "目标",
+        "preparation": "准备",
+        "key_points": "重点",
+        "difficult_points": "难点",
+        "process": "1. 导入\n2. 观察",
+    }
+}
+G17_SPLIT_RAW = (
+    "活动主题：主题\n活动目标：目标\n活动准备：准备\n"
+    "活动重点：重点\n活动难点：难点\n活动过程：1. 导入\n2. 观察"
+)
 R1_HASHES = {
     "daily_lesson_split": "223a77eb9d2f992e910fd59a0d7793e7bb5c63fef1a5e190549c554094db28c5",
     "daily_process_adapt": "33dd13f4800ae428f74b157cdaa484abf50588258b6a4a2e00c12af24f0c73e6",
@@ -47,7 +64,7 @@ R1_HASHES = {
 R2_HASHES = {
     "daily_lesson_split": "16c155a30a898e81d17ddd1a12be9c709cfb68209ce1be9541bb63bfa5b394b1",
     "daily_process_adapt": "dd3aaf65c22a600e4aa50b85360f17bf9c2e6395ededdff5d9428491e7e98751",
-    "daily_other_activities": "4700755f7c65380c628bba4104d8f210ec3b6fea6656814f80eb81d593f87a75",
+    "daily_other_activities": "8ae36b156332244cf91536de3063060d5f9423c3ad375ca22a523c5ce7bf12ff",
 }
 
 
@@ -93,6 +110,12 @@ class G17ContentTests(LocalTestCase):
                     ),
                     expected,
                 )
+        self.assertIn(
+            "4700755f7c65380c628bba4104d8f210ec3b6fea6656814f80eb81d593f87a75",
+            prompt_bundles.HISTORICAL_BUNDLE_HASHES[
+                ("daily_other_activities", 1, 2)
+            ],
+        )
 
     def test_new_archive_seeds_current_defaults(self):
         runtime = self.make_runtime()
@@ -100,7 +123,11 @@ class G17ContentTests(LocalTestCase):
         session = runtime.session()
         try:
             for task_type in TASKS:
-                expected = 3 if task_type == "daily_process_adapt" else 2
+                expected = {
+                    "daily_lesson_split": 2,
+                    "daily_process_adapt": 3,
+                    "daily_other_activities": 2,
+                }[task_type]
                 out = prompt_service.get_prompt(session, task_type=task_type)
                 self.assertEqual(out["based_default_revision"], expected)
                 self.assertEqual(out["latest_default_revision"], expected)
@@ -180,18 +207,18 @@ class G17ContentTests(LocalTestCase):
             self.assertIn("真实换行", instructions)
             self.assertIn("1. ", instructions)
             if task_type == "daily_lesson_split":
-                self.assertIn("只整理这些已有条目", instructions)
+                self.assertIn("只整理已有条目的编号和换行", instructions)
+                self.assertIn("theme", instructions)
+                self.assertIn("不要写“无”", instructions)
             if task_type == "daily_process_adapt":
-                self.assertIn("可以改写表达、步骤和难度", instructions)
-                self.assertIn("即使无需年龄适宜性调整", instructions)
-                self.assertIn("教师可直接说的具体话语", instructions)
-                self.assertIn("引导语、提问和教师的预设回应或支持语", instructions)
-                self.assertIn("保持目标年级适宜的活动难度", instructions)
-                self.assertIn("不因话语增加认知或表达要求", instructions)
-                self.assertIn("即使无需年龄适宜性调整", instructions)
-                self.assertIn("补齐教师可直接说的具体话语", instructions)
+                self.assertIn("只允许修改一个已有环节", instructions)
+                self.assertIn("仅编号顺延不算修改", instructions)
+                self.assertIn("逐字保留", instructions)
+                self.assertIn("教师可直接说的话", instructions)
+                self.assertIn("教师的预设回应或支持语", instructions)
+                self.assertIn("其他环节不要补写教师话语", instructions)
+                self.assertNotIn("每个环节都要写出", instructions)
                 self.assertNotIn("不得为列表编造原文没有的步骤", instructions)
-                self.assertNotIn("不需要调整时返回原过程", instructions)
             if task_type == "daily_other_activities":
                 self.assertIn("均为户外活动", instructions)
                 self.assertIn("不含区域游戏", instructions)
@@ -206,34 +233,104 @@ class G17AdaptR3UpgradeTests(LocalTestCase):
         )
         with mock.patch.object(prompt_bundles, "PROMPT_BUNDLE_MANIFEST", r2_only):
             runtime = self.make_runtime(data_dir=self.tmp_root / "r2-upgrade")
+            session = runtime.session()
+            try:
+                profile_service.initialize(
+                    session, normalize_initialization(**initialize_body())
+                )
+                prompt_bundles.sync_prompt_bundles(session)
+                ai_config_service.patch_config(
+                    session,
+                    expected_ai_config_version=0,
+                    base_url="https://api.example.com/v1",
+                    model="g17-talk-model",
+                    secret="s3cret",
+                    secret_provided=True,
+                    request_id=str(uuid.uuid4()),
+                    credential_root=runtime.credential_root,
+                )
+                plan, _created = daily_plan_service.create_or_open(
+                    session,
+                    plan_date=date(2026, 9, 2),
+                    raw_lesson_plan=G17_SPLIT_RAW,
+                    adopted_content={
+                        "group_activity": {"process": "1. 导入\n2. 观察"},
+                        "reflection": "反思",
+                    },
+                )
+                split_task = ai_task_service.create_task(
+                    session,
+                    plan_id=plan["id"],
+                    task_type="daily_lesson_split",
+                    expected_content_version=plan["current_content_version"],
+                    target_grade="middle",
+                    request_id=str(uuid.uuid4()),
+                )[0]
+                split_claim = ai_task_service.claim_next(
+                    runtime, now=utc_now(), started_ticks=now_ticks()
+                )
+                self.assertIsNotNone(split_claim)
+                ai_task_service.commit_dispatch_mark(
+                    session, split_claim, utc_now()
+                )
+                self.assertTrue(
+                    ai_task_service.finalize_success(
+                        session,
+                        split_claim,
+                        {
+                            "kind": "success",
+                            "candidate_text": json.dumps(
+                                G17_SPLIT_CANDIDATE, ensure_ascii=False
+                            ),
+                        },
+                        utc_now(),
+                    )
+                )
+                candidate_id = session.execute(
+                    text(
+                        "SELECT id FROM local_ai_candidates WHERE execution_id = :e"
+                    ),
+                    {"e": split_claim.execution_id},
+                ).scalar_one()
+                preview = ai_adoption.preview_adoption(
+                    session,
+                    plan_id=plan["id"],
+                    candidate_id=candidate_id,
+                    expected_content_version=1,
+                    selected_targets=["group_activity"],
+                    edited_candidate=G17_SPLIT_CANDIDATE,
+                )
+                ai_adoption.adopt(
+                    session,
+                    plan_id=plan["id"],
+                    candidate_id=candidate_id,
+                    expected_content_version=1,
+                    preview_token=preview["preview_token"],
+                    request_id=str(uuid.uuid4()),
+                )
+                plan = daily_plan_service.get_plan(
+                    session, plan_id=plan["id"]
+                )
+                session.commit()
+            finally:
+                session.close()
+        return runtime, plan
+
+    def _publish_r3(self, runtime):
+        """Publish the historical r3 teacher-talk default only.
+
+        The current build also ships adapt r4, but this regression keeps the
+        r2 -> r3 upgrade path isolated so the historical acceptance/rejection
+        behavior remains testable.
+        """
+        r3 = tuple(
+            b for b in PROMPT_BUNDLE_MANIFEST if b["default_revision"] <= 3
+        )
         session = runtime.session()
         try:
-            profile_service.initialize(
-                session, normalize_initialization(**initialize_body())
-            )
-            prompt_bundles.sync_prompt_bundles(session)
-            ai_config_service.patch_config(
-                session,
-                expected_ai_config_version=0,
-                base_url="https://api.example.com/v1",
-                model="g17-talk-model",
-                secret="s3cret",
-                secret_provided=True,
-                request_id=str(uuid.uuid4()),
-                credential_root=runtime.credential_root,
-            )
-            plan, _created = daily_plan_service.create_or_open(
-                session,
-                plan_date=date(2026, 9, 2),
-                raw_lesson_plan="G17 教师话语合成原文",
-                adopted_content={
-                    "group_activity": {"process": "1. 导入\n2. 观察"},
-                    "reflection": "反思",
-                },
-            )
+            prompt_bundles.sync_prompt_bundles(session, r3)
         finally:
             session.close()
-        return runtime, plan
 
     def _claim_adapt(self, runtime, plan):
         session = runtime.session()
@@ -258,6 +355,7 @@ class G17AdaptR3UpgradeTests(LocalTestCase):
 
     def test_r2_profile_views_accepts_r3_and_pins_teacher_talk(self):
         runtime, plan = self._r2_runtime()
+        self._publish_r3(runtime)
         session = runtime.session()
         try:
             before = prompt_service.get_prompt(
@@ -303,7 +401,7 @@ class G17AdaptR3UpgradeTests(LocalTestCase):
             _bundle("daily_process_adapt", 3)["guidance_defaults_json"],
         )
         instructions = "\n".join(payload["instructions"])
-        self.assertIn("教师可直接说的具体话语", instructions)
+        self.assertIn("教师可直接说的话", instructions)
         self.assertIn("教师的预设回应或支持语", instructions)
 
     def test_accepted_r3_controlled_http_receives_teacher_talk_rules(self):
@@ -311,6 +409,7 @@ class G17AdaptR3UpgradeTests(LocalTestCase):
         from app.local.models import LocalAITask
 
         runtime, plan = self._r2_runtime()
+        self._publish_r3(runtime)
         session = runtime.session()
         try:
             prompt_service.accept_default(
@@ -384,15 +483,16 @@ class G17AdaptR3UpgradeTests(LocalTestCase):
                 _bundle("daily_process_adapt", 3)["guidance_defaults_json"],
             )
             instructions = "\n".join(system["instructions"])
-            self.assertIn("教师可直接说的具体话语", instructions)
+            self.assertIn("教师可直接说的话", instructions)
             self.assertIn("教师的预设回应或支持语", instructions)
-            self.assertIn("保持目标年级适宜的活动难度", instructions)
+            self.assertIn("正文数字、单位、事实和顺序不得变化", instructions)
         finally:
             executor.dispose()
             server.stop()
 
     def test_r2_profile_rejects_r3_keeps_r2_and_pins_r2(self):
         runtime, plan = self._r2_runtime()
+        self._publish_r3(runtime)
         session = runtime.session()
         try:
             rejected = prompt_service.reject_default(
@@ -441,7 +541,7 @@ class G17ClaimSnapshotTests(ExecutorCase):
         )
         instructions = "\n".join(payload["instructions"])
         self.assertIn("真实换行", instructions)
-        self.assertIn("只整理这些已有条目", instructions)
+        self.assertIn("只整理已有条目的编号和换行", instructions)
 
         other_task = self.submit(plan["id"], task_type="daily_other_activities")
         other = ai_task_service.claim_next(
@@ -461,23 +561,22 @@ class G17ClaimSnapshotTests(ExecutorCase):
         self.assertIn("均为户外活动", other_instructions)
         self.assertIn("不含区域游戏", other_instructions)
 
-        adapt_task = self.submit(plan["id"], task_type="daily_process_adapt")
-        adapt = ai_task_service.claim_next(
-            self.runtime, now=utc_now(), started_ticks=now_ticks()
+        adapt_bundle = _bundle("daily_process_adapt", 3)
+        adapt_payload = json.loads(
+            ai_task_service._render_system_text(
+                "daily_process_adapt",
+                1,
+                adapt_bundle["output_schema_json"],
+                adapt_bundle["guidance_defaults_json"],
+            )
         )
-        self.assertIsNotNone(adapt)
-        assert adapt is not None
-        self.assertEqual(adapt.task_id, adapt_task["id"])
-        self.assertEqual(adapt.default_revision, 3)
-        self.assertEqual(adapt.personal_revision, 1)
-        adapt_payload = json.loads(adapt.system_text)
         self.assertEqual(
             adapt_payload["guidance"],
-            _bundle("daily_process_adapt", 3)["guidance_defaults_json"],
+            adapt_bundle["guidance_defaults_json"],
         )
         adapt_instructions = "\n".join(adapt_payload["instructions"])
-        self.assertIn("教师可直接说的具体话语", adapt_instructions)
-        self.assertIn("引导语、提问和教师的预设回应或支持语", adapt_instructions)
+        self.assertIn("只允许修改一个已有环节", adapt_instructions)
+        self.assertIn("其他环节不要补写教师话语", adapt_instructions)
 
 
 if __name__ == "__main__":

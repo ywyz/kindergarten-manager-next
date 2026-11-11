@@ -141,6 +141,69 @@ def _wire_items(manifest: dict) -> list[dict]:
     ]
 
 
+def test_suggested_materials_without_focus_adopt_through_existing_flow():
+    snapshot, _selected = _selected_content()
+    content = w.new_content(snapshot)  # no focus_area, no selected slots
+    manifest = _manifest(content, snapshot)
+    basis = m.build_materials_basis(grade="small", content=content)
+    assert basis["selected"]["focus_area"] is None
+    wire = [{"text": "彩纸", "origin": "suggested", "evidence_refs": []}]
+    items = m.materialize_materials_items(wire, server_manifest=manifest)
+    provenance = m.build_materials_provenance(
+        candidate_id="candidate-suggested",
+        candidate_hash="a" * 64,
+        input_id="input-suggested",
+        execution_id="execution-suggested",
+        contract_version=1,
+        dependency_hash="b" * 64,
+        basis=basis,
+        items=items,
+        original_text="彩纸",
+        adopter_profile_id="profile-1",
+        adopted_draft_id="draft-2",
+        adopted_draft_version=2,
+        adopted_at="2026-11-03T00:00:00+00:00",
+    )
+    adopted = w.apply_weekly_ai_adoption(
+        content,
+        target="materials",
+        candidate_value={"items": wire},
+        adoption={
+            "candidate_id": provenance["candidate_id"],
+            "candidate_hash": provenance["candidate_hash"],
+            "input_id": provenance["input_id"],
+            "execution_id": provenance["execution_id"],
+            "contract_version": provenance["contract_version"],
+            "dependency_hash": provenance["dependency_hash"],
+            "adopter_profile_id": provenance["adopter_profile_id"],
+            "adopted_draft_id": provenance["adopted_draft_id"],
+            "adopted_draft_version": provenance["adopted_draft_version"],
+            "adopted_at": provenance["adopted_at"],
+        },
+        basis=basis,
+        server_manifest=manifest,
+    )
+    assert adopted["materials"] == "彩纸"
+    assert adopted["materials_provenance"]["items"][0]["origin"] == "suggested"
+    assert adopted["materials_provenance"]["basis"]["selected"]["focus_area"] is None
+    m.validate_materials_provenance(
+        adopted["materials_provenance"],
+        materials=adopted["materials"],
+        content=adopted,
+    )
+    with pytest.raises(w.WeeklyContentError):
+        m.materialize_materials_items(
+            [
+                {
+                    "text": "伪来源",
+                    "origin": "suggested",
+                    "evidence_refs": [{"source_handle": "m1"}],
+                }
+            ],
+            server_manifest=manifest,
+        )
+
+
 def test_selected_and_materials_basis_are_exact_and_context_bounded():
     snapshot, content = _selected_content()
     selected = m.build_selected_basis(grade="small", content=content)
@@ -167,9 +230,12 @@ def test_selected_and_materials_basis_are_exact_and_context_bounded():
     assert basis["calendar"] is None
     assert basis["config"] == []  # no selected AI item in this fixture
 
-    with pytest.raises(w.WeeklyContentError) as exc:
-        m.build_materials_basis(grade="small", content=w.new_content(snapshot))
-    assert exc.value.code == "MATERIAL_CONTEXT_REQUIRED"
+    no_focus_basis = m.build_materials_basis(
+        grade="small", content=w.new_content(snapshot)
+    )
+    assert no_focus_basis["selected"]["focus_area"] is None
+    assert no_focus_basis["theme"] is None
+    assert no_focus_basis["config"] == []
 
 
 def test_materialize_items_attaches_typed_source_and_rejects_fake_evidence():
@@ -197,6 +263,61 @@ def test_synthesis_uses_one_newline_and_no_trailing_newline():
     assert m.synthesize_materials_text([{"text": "a"}, {"text": "b"}]) == "a\nb"
     with pytest.raises(w.WeeklyContentError):
         m.synthesize_materials_text([{"text": ""}])
+
+
+def test_no_focus_provenance_rejects_extracted_material_even_with_handle():
+    snapshot = _snapshot()
+    content = w.new_content(snapshot)
+    content = w.apply_patch(
+        content,
+        {
+            "outdoor_game_slots": {
+                "collective_1": _selector(_candidate(snapshot, "collective")),
+            }
+        },
+        snapshot,
+    )
+    manifest = _manifest(content, snapshot)
+    handle = next(
+        key
+        for key, entry in manifest["handles"].items()
+        if entry["kind"] in ("morning_game", "post_group_game")
+    )
+    name = manifest["handles"][handle]["name"]
+    wire = [
+        {
+            "text": name,
+            "origin": "extracted",
+            "evidence_refs": [
+                {
+                    "source_handle": handle,
+                    "field_path": "name",
+                    "start": 0,
+                    "end": len(name),
+                    "quote": name,
+                }
+            ],
+        }
+    ]
+    items = m.materialize_materials_items(wire, server_manifest=manifest)
+    basis = m.build_materials_basis(grade="small", content=content)
+    assert basis["selected"]["focus_area"] is None
+    with pytest.raises(w.WeeklyContentError):
+        m.build_materials_provenance(
+            candidate_id="candidate-extracted",
+            candidate_hash="a" * 64,
+            input_id="input-extracted",
+            execution_id="execution-extracted",
+            contract_version=1,
+            dependency_hash="b" * 64,
+            basis=basis,
+            items=items,
+            original_text=m.synthesize_materials_text(items),
+            adopter_profile_id="profile-1",
+            adopted_draft_id="draft-2",
+            adopted_draft_version=2,
+            adopted_at="2026-11-03T00:00:00+00:00",
+        )
 
 
 def test_build_and_validate_materials_provenance_exact_keys():

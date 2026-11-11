@@ -16,7 +16,7 @@
  * - the prompt-package card is read/manual-check only: it never blocks manual
  *   work and an unconfigured source performs no network.
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, apiPatch, apiPost, ApiError, pathSegment } from '../client'
 import { queryAiReceipt, receiptMessage, isIndeterminate } from '../operations'
@@ -26,9 +26,8 @@ import type {
   PromptDefault,
   PromptList,
   PromptPackageStatus,
-  TaskType,
 } from '../types'
-import { TASK_TYPE_LABELS, TASK_TYPES, displayFieldLabel } from '../ai'
+import { displayFieldLabel, taskTypeLabel } from '../ai'
 
 const props = defineProps<{ frozen?: boolean }>()
 
@@ -45,7 +44,7 @@ interface PendingWrite {
   path: string
   body: Record<string, unknown>
   kind: WriteKind
-  taskType?: TaskType
+  taskType?: string
   mergedFields?: string[]
   beforeMap?: Record<string, string>
   secretSubmitted?: string
@@ -156,9 +155,42 @@ async function checkPromptPackage(): Promise<void> {
   }
 }
 
-function promptFor(taskType: TaskType): Prompt | null {
+function promptFor(taskType: string): Prompt | null {
   return prompts.value.find((prompt) => prompt.task_type === taskType) ?? null
 }
+
+const PROMPT_GROUPS: Array<{ key: string; label: string; matches: (type: string) => boolean }> = [
+  { key: 'daily', label: '日计划', matches: (type) => type.startsWith('daily_') },
+  { key: 'weekly', label: '周计划', matches: (type) => type.startsWith('weekly_') },
+  { key: 'listening', label: '一对一倾听', matches: (type) => type.startsWith('listening_') },
+  { key: 'observation', label: '游戏观察', matches: (type) => type.startsWith('game_observation_') },
+  { key: 'curriculum', label: '课程审议', matches: (type) => type.startsWith('curriculum_') },
+  { key: 'config', label: '班级游戏配置', matches: (type) => type === 'class_game_config_extract' },
+  { key: 'directional', label: '定向修改', matches: (type) => type === 'directional_revision' },
+]
+function promptGroupKey(taskType: string): string {
+  return PROMPT_GROUPS.find((group) => group.matches(taskType))?.key ?? 'other'
+}
+const promptGroups = computed(() => {
+  const groups = new Map<string, { key: string; label: string; items: Prompt[] }>()
+  for (const prompt of prompts.value) {
+    const key = promptGroupKey(prompt.task_type)
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        label: PROMPT_GROUPS.find((group) => group.key === key)?.label ?? '其他提示词',
+        items: [],
+      })
+    }
+    groups.get(key)!.items.push(prompt)
+  }
+  const order = new Map(PROMPT_GROUPS.map((group, index) => [group.key, index]))
+  return [...groups.values()].sort(
+    (left, right) =>
+      (order.get(left.key) ?? Number.MAX_SAFE_INTEGER) -
+      (order.get(right.key) ?? Number.MAX_SAFE_INTEGER),
+  )
+})
 
 /** The required-contract fields, prefilled from the required default. */
 function guidanceFromPrompt(prompt: Prompt): Record<string, string> {
@@ -180,7 +212,8 @@ const configDirty = computed(() => {
 })
 
 const promptsDirty = computed(() => {
-  for (const taskType of TASK_TYPES) {
+  const taskTypes = new Set([...Object.keys(promptGuides.value), ...Object.keys(confirmedGuides.value)])
+  for (const taskType of taskTypes) {
     const current = promptGuides.value[taskType] ?? {}
     const confirmed = confirmedGuides.value[taskType] ?? {}
     const keys = new Set([...Object.keys(current), ...Object.keys(confirmed)])
@@ -261,7 +294,7 @@ async function loadPrompts(force = false): Promise<void> {
   const seq = ++promptLoadSeq
   const task = (async () => {
     try {
-      const data = await apiGet<PromptList>('/api/local/ai/prompts')
+      const data = await apiGet<PromptList>('/api/local/ai/prompts?scope=all')
       // A newer load (for example the one started after a package update) owns
       // the state; a late older response must not overwrite it.
       if (seq !== promptLoadSeq) return
@@ -322,7 +355,7 @@ function mergeSavedPrompt(
   )
 }
 
-function setGuidanceField(taskType: TaskType, key: string, value: string): void {
+function setGuidanceField(taskType: string, key: string, value: string): void {
   if (guard() || !promptsLoaded.value) return
   const map = { ...(promptGuides.value[taskType] ?? {}) }
   map[key] = value
@@ -511,7 +544,7 @@ async function clearSecret(): Promise<void> {
 
 // --- prompts -----------------------------------------------------------------
 
-function currentSubmitted(taskType: TaskType): Record<string, string> {
+function currentSubmitted(taskType: string): Record<string, string> {
   const prompt = promptFor(taskType)
   const live = promptGuides.value[taskType] ?? {}
   const map: Record<string, string> = {}
@@ -521,7 +554,7 @@ function currentSubmitted(taskType: TaskType): Record<string, string> {
   return map
 }
 
-async function savePrompt(taskType: TaskType): Promise<void> {
+async function savePrompt(taskType: string): Promise<void> {
   const prompt = promptFor(taskType)
   if (!prompt || !promptsLoaded.value) return
   const key = `prompt-${taskType}`
@@ -532,7 +565,7 @@ async function savePrompt(taskType: TaskType): Promise<void> {
   const submitted = currentSubmitted(taskType)
   await runWrite({
     key,
-    label: `${TASK_TYPE_LABELS[taskType]} 指导保存`,
+    label: `${taskTypeLabel(taskType)} 指导保存`,
     method: 'PATCH',
     path: `/api/local/ai/prompts/${pathSegment(taskType)}`,
     body: {
@@ -545,11 +578,11 @@ async function savePrompt(taskType: TaskType): Promise<void> {
     taskType,
     mergedFields: Object.keys(submitted),
     beforeMap: submitted,
-    success: `${TASK_TYPE_LABELS[taskType]} 指导已保存`,
+    success: `${taskTypeLabel(taskType)} 指导已保存`,
   })
 }
 
-async function viewDefault(taskType: TaskType): Promise<void> {
+async function viewDefault(taskType: string): Promise<void> {
   const prompt = promptFor(taskType)
   if (guard() || !prompt || busy.value) return
   busy.value = `default-${taskType}`
@@ -567,7 +600,7 @@ async function viewDefault(taskType: TaskType): Promise<void> {
   }
 }
 
-function toggleAcceptField(taskType: TaskType, key: string, checked: boolean): void {
+function toggleAcceptField(taskType: string, key: string, checked: boolean): void {
   if (guard()) return
   const current = new Set(acceptFields.value[taskType] ?? [])
   if (checked) current.add(key)
@@ -575,7 +608,7 @@ function toggleAcceptField(taskType: TaskType, key: string, checked: boolean): v
   acceptFields.value = { ...acceptFields.value, [taskType]: [...current] }
 }
 
-async function acceptDefault(taskType: TaskType): Promise<void> {
+async function acceptDefault(taskType: string): Promise<void> {
   const prompt = promptFor(taskType)
   const target = defaults.value[taskType]
   if (!prompt || !target) return
@@ -592,7 +625,7 @@ async function acceptDefault(taskType: TaskType): Promise<void> {
   const before = currentSubmitted(taskType)
   await runWrite({
     key,
-    label: `${TASK_TYPE_LABELS[taskType]} 接受默认`,
+    label: `${taskTypeLabel(taskType)} 接受默认`,
     method: 'POST',
     path: `/api/local/ai/prompts/${pathSegment(taskType)}/accept-default`,
     body: {
@@ -611,7 +644,7 @@ async function acceptDefault(taskType: TaskType): Promise<void> {
   })
 }
 
-async function rejectDefault(taskType: TaskType): Promise<void> {
+async function rejectDefault(taskType: string): Promise<void> {
   const prompt = promptFor(taskType)
   const target = defaults.value[taskType]
   if (!prompt || !target) return
@@ -622,7 +655,7 @@ async function rejectDefault(taskType: TaskType): Promise<void> {
   }
   await runWrite({
     key,
-    label: `${TASK_TYPE_LABELS[taskType]} 拒绝默认`,
+    label: `${taskTypeLabel(taskType)} 拒绝默认`,
     method: 'POST',
     path: `/api/local/ai/prompts/${pathSegment(taskType)}/reject-default`,
     body: {
@@ -640,7 +673,7 @@ async function rejectDefault(taskType: TaskType): Promise<void> {
   })
 }
 
-async function adaptPrompt(taskType: TaskType): Promise<void> {
+async function adaptPrompt(taskType: string): Promise<void> {
   const prompt = promptFor(taskType)
   if (!prompt || !promptsLoaded.value) return
   const key = `adapt-${taskType}`
@@ -651,7 +684,7 @@ async function adaptPrompt(taskType: TaskType): Promise<void> {
   const submitted = currentSubmitted(taskType)
   await runWrite({
     key,
-    label: `${TASK_TYPE_LABELS[taskType]} 适配新契约`,
+    label: `${taskTypeLabel(taskType)} 适配新契约`,
     method: 'POST',
     path: `/api/local/ai/prompts/${pathSegment(taskType)}/adapt`,
     body: {
@@ -665,7 +698,7 @@ async function adaptPrompt(taskType: TaskType): Promise<void> {
     taskType,
     mergedFields: Object.keys(submitted),
     beforeMap: submitted,
-    success: `${TASK_TYPE_LABELS[taskType]} 已适配到当前必需契约版本`,
+    success: `${taskTypeLabel(taskType)} 已适配到当前必需契约版本`,
   })
 }
 
@@ -709,26 +742,26 @@ onMounted(() => {
     promptPackage: () => promptPackage.value,
     promptPackageChecking: () => promptPackageChecking.value,
     checkPromptPackage: () => checkPromptPackage(),
-    promptGuide: (taskType: TaskType) => promptGuides.value[taskType] ?? {},
-    confirmedGuide: (taskType: TaskType) => confirmedGuides.value[taskType] ?? {},
-    defaults: (taskType: TaskType) => defaults.value[taskType] ?? null,
+    promptGuide: (taskType: string) => promptGuides.value[taskType] ?? {},
+    confirmedGuide: (taskType: string) => confirmedGuides.value[taskType] ?? {},
+    defaults: (taskType: string) => defaults.value[taskType] ?? null,
     setConfigDraft: (baseUrl: string, model: string, secret: string) => {
       if (guard() || !configLoaded.value) return
       configForm.base_url = baseUrl
       configForm.model = model
       configForm.secret = secret
     },
-    setGuidance: (taskType: TaskType, key: string, value: string) =>
+    setGuidance: (taskType: string, key: string, value: string) =>
       setGuidanceField(taskType, key, value),
     saveConfig: () => saveConfig(),
     clearSecret: () => clearSecret(),
-    savePrompt: (taskType: TaskType) => savePrompt(taskType),
-    viewDefault: (taskType: TaskType) => viewDefault(taskType),
-    toggleAcceptField: (taskType: TaskType, key: string, checked: boolean) =>
+    savePrompt: (taskType: string) => savePrompt(taskType),
+    viewDefault: (taskType: string) => viewDefault(taskType),
+    toggleAcceptField: (taskType: string, key: string, checked: boolean) =>
       toggleAcceptField(taskType, key, checked),
-    acceptDefault: (taskType: TaskType) => acceptDefault(taskType),
-    rejectDefault: (taskType: TaskType) => rejectDefault(taskType),
-    adaptPrompt: (taskType: TaskType) => adaptPrompt(taskType),
+    acceptDefault: (taskType: string) => acceptDefault(taskType),
+    rejectDefault: (taskType: string) => rejectDefault(taskType),
+    adaptPrompt: (taskType: string) => adaptPrompt(taskType),
     queryWrite: (key: string) => queryWrite(key),
     resubmitWrite: (key: string) => resubmitWrite(key),
     discardDrafts: () => discardDrafts(),
@@ -747,8 +780,22 @@ onBeforeUnmount(() => {
   emit('draft-active', false)
   delete (window as unknown as { __d1AiSettings?: object }).__d1AiSettings
 })
+const providerOpen = ref(false)
+const promptsOpen = ref(false)
+function onPartToggle(kind: 'provider' | 'prompts', event: Event): void {
+  const target = event.target as HTMLDetailsElement | null
+  if (!target) return
+  if (kind === 'provider') providerOpen.value = target.open
+  else promptsOpen.value = target.open
+}
+async function openPart(kind: string): Promise<void> {
+  if (kind === 'ai-prompts') promptsOpen.value = true
+  else providerOpen.value = true
+  await nextTick()
+}
 /** Prefer the matching unresolved receipt, then the region/control itself. */
-function focusDraftTarget(kind: string): void {
+async function focusDraftTarget(kind: string): Promise<void> {
+  await openPart(kind)
   const prefixes = kind === 'ai-prompts'
     ? ['prompt-', 'default-', 'accept-', 'reject-', 'adapt-']
     : ['config', 'clear']
@@ -770,11 +817,30 @@ function focusDraftTarget(kind: string): void {
   if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
   element.focus?.()
 }
+/** Open the prompt group and locate one registered task's guidance block. */
+async function focusPromptTask(taskType: string): Promise<void> {
+  promptsOpen.value = true
+  await nextTick()
+  const element = document.querySelector(
+    `[data-d1="prompt-${taskType}"]`,
+  ) as HTMLElement | null
+  if (!element) return
+  element.scrollIntoView?.({ block: 'center' })
+  if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
+  element.focus?.()
+}
 
-defineExpose({ draftTargets, focusDraftTarget })
+defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
 </script>
 
 <template>
+  <details
+    class="settings-group settings-part"
+    data-d1="settings-group-ai-provider"
+    :open="providerOpen"
+    @toggle="onPartToggle('provider', $event)"
+  >
+    <summary>AI 供应商 <span class="muted">地址、模型、密钥</span></summary>
   <el-card class="section" shadow="never" data-d1="ai-settings">
     <template #header>AI 配置（地址 / 模型 / 密钥）</template>
     <p class="muted">
@@ -812,6 +878,14 @@ defineExpose({ draftTargets, focusDraftTarget })
     </el-card>
   </el-card>
 
+  </details>
+  <details
+    class="settings-group settings-part"
+    data-d1="settings-group-ai-prompts"
+    :open="promptsOpen"
+    @toggle="onPartToggle('prompts', $event)"
+  >
+    <summary>提示词 <span class="muted">默认指导、个人修改与功能包</span></summary>
   <el-card class="section" shadow="never" data-d1="ai-prompt-package">
     <template #header>提示词功能包（默认指导）</template>
     <p class="muted">
@@ -858,69 +932,84 @@ defineExpose({ draftTargets, focusDraftTarget })
   </el-card>
 
   <el-card class="section" shadow="never" data-d1="ai-prompts">
-    <template #header>三类任务指导（默认文字 / 个人修改）</template>
+    <template #header>已登记任务指导（按模块分组，默认文字 / 个人修改）</template>
     <p class="muted">指导只在任务开始时取当时有效版本；接受默认只覆盖所选字段并绑定实际查看的修订。</p>
-    <div v-for="taskType in TASK_TYPES" :key="taskType" class="prompt-block" :data-d1="`prompt-${taskType}`">
-      <div class="prompt-head">
-        <strong>{{ TASK_TYPE_LABELS[taskType] }}</strong>
-        <el-tag v-if="promptFor(taskType)?.adaptation_required" size="small" type="warning">需要适配新契约</el-tag>
-        <span v-if="promptFor(taskType)" class="muted">
-          个人修订 r{{ promptFor(taskType)?.personal_revision }} · 契约 v{{ promptFor(taskType)?.contract_version }}
-          · 必需契约 v{{ promptFor(taskType)?.required_contract_version }}
-          · 最新默认 r{{ promptFor(taskType)?.latest_default_revision }}
-        </span>
-      </div>
-      <p v-if="promptFor(taskType)?.rejected_default_revision" class="muted">
-        已拒绝默认修订 r{{ promptFor(taskType)?.rejected_default_revision }}（个人文字未改动）
-      </p>
-      <div v-for="field in promptFor(taskType)?.fields ?? []" :key="field.key" class="field">
-        <label>{{ displayFieldLabel(field) }}</label>
-        <el-input
-          type="textarea"
-          :rows="2"
-          :disabled="frozen || !promptsLoaded"
-          :model-value="(promptGuides[taskType] ?? {})[field.key] ?? field.default_text"
-          @update:model-value="(value: string) => setGuidanceField(taskType, field.key, value)"
-        />
-      </div>
-      <div v-if="Object.keys(promptFor(taskType)?.orphaned_guidance ?? {}).length" class="orphan">
-        <span class="muted">已移出当前契约、不再发送给模型的个人字段：</span>
-        <span v-for="(value, key) in promptFor(taskType)?.orphaned_guidance" :key="key" class="orphan-item">{{ key }}（{{ value }}）</span>
-      </div>
-      <div class="row">
-        <el-button size="small" :disabled="frozen || !promptsLoaded || hasPending(`prompt-${taskType}`)" :loading="busy === `prompt-${taskType}`" @click="savePrompt(taskType)">保存指导</el-button>
-        <el-button size="small" :disabled="frozen || !promptsLoaded" :loading="busy === `default-${taskType}`" @click="viewDefault(taskType)">查看最新默认</el-button>
-        <el-button
-          v-if="promptFor(taskType)?.adaptation_required"
-          size="small"
-          type="warning"
-          :disabled="frozen || !promptsLoaded || hasPending(`adapt-${taskType}`)"
-          :loading="busy === `adapt-${taskType}`"
-          @click="adaptPrompt(taskType)"
-        >
-          适配新契约
-        </el-button>
-      </div>
-      <div v-if="defaults[taskType]" class="default-block" :data-d1="`default-${taskType}`">
-        <h4>默认修订 r{{ defaults[taskType]?.default_revision }}（契约 v{{ defaults[taskType]?.contract_version }}）</h4>
-        <div v-for="field in defaults[taskType]?.fields ?? []" :key="field.key" class="default-field">
-          <el-checkbox
-            :model-value="(acceptFields[taskType] ?? []).includes(field.key)"
-            :disabled="frozen"
-            @update:model-value="(checked: boolean) => toggleAcceptField(taskType, field.key, checked)"
-          >
-            {{ displayFieldLabel(field) }}
-          </el-checkbox>
-          <pre class="block">{{ defaults[taskType]?.guidance[field.key] || '（空）' }}</pre>
+        <div
+      v-for="group in promptGroups"
+      :key="group.key"
+      class="prompt-group"
+      :data-d1="`prompt-group-${group.key}`"
+    >
+      <h4 class="prompt-group-title">{{ group.label }}</h4>
+      <div
+        v-for="prompt in group.items"
+        :key="prompt.task_type"
+        class="prompt-block"
+        :data-d1="`prompt-${prompt.task_type}`"
+      >
+        <div class="prompt-head">
+          <strong>{{ taskTypeLabel(prompt.task_type) }}</strong>
+          <el-tag v-if="prompt.adaptation_required" size="small" type="warning">需要适配新契约</el-tag>
+          <span class="muted">
+            个人修订 r{{ prompt.personal_revision }} · 契约 v{{ prompt.contract_version }}
+            · 必需契约 v{{ prompt.required_contract_version }}
+            · 最新默认 r{{ prompt.latest_default_revision }}
+          </span>
+        </div>
+        <p v-if="prompt.rejected_default_revision" class="muted">
+          已拒绝默认修订 r{{ prompt.rejected_default_revision }}（个人文字未改动）
+        </p>
+        <div v-for="field in prompt.fields" :key="field.key" class="field">
+          <label>{{ displayFieldLabel(field) }}</label>
+          <el-input
+            type="textarea"
+            :rows="2"
+            :disabled="frozen || !promptsLoaded"
+            :model-value="(promptGuides[prompt.task_type] ?? {})[field.key] ?? field.default_text"
+            @update:model-value="(value: string) => setGuidanceField(prompt.task_type, field.key, value)"
+          />
+        </div>
+        <div v-if="Object.keys(prompt.orphaned_guidance).length" class="orphan">
+          <span class="muted">已移出当前契约、不再发送给模型的个人字段：</span>
+          <span v-for="(value, key) in prompt.orphaned_guidance" :key="key" class="orphan-item">{{ key }}（{{ value }}）</span>
         </div>
         <div class="row">
-          <el-button size="small" type="primary" :disabled="frozen || hasPending(`accept-${taskType}`)" :loading="busy === `accept-${taskType}`" @click="acceptDefault(taskType)">接受所选默认</el-button>
-          <el-button size="small" :disabled="frozen || hasPending(`reject-${taskType}`)" :loading="busy === `reject-${taskType}`" @click="rejectDefault(taskType)">拒绝该默认修订</el-button>
+          <el-button size="small" :disabled="frozen || !promptsLoaded || hasPending(`prompt-${prompt.task_type}`)" :loading="busy === `prompt-${prompt.task_type}`" @click="savePrompt(prompt.task_type)">保存指导</el-button>
+          <el-button size="small" :disabled="frozen || !promptsLoaded" :loading="busy === `default-${prompt.task_type}`" @click="viewDefault(prompt.task_type)">查看最新默认</el-button>
+          <el-button
+            v-if="prompt.adaptation_required"
+            size="small"
+            type="warning"
+            :disabled="frozen || !promptsLoaded || hasPending(`adapt-${prompt.task_type}`)"
+            :loading="busy === `adapt-${prompt.task_type}`"
+            @click="adaptPrompt(prompt.task_type)"
+          >
+            适配新契约
+          </el-button>
+        </div>
+        <div v-if="defaults[prompt.task_type]" class="default-block" :data-d1="`default-${prompt.task_type}`">
+          <h4>默认修订 r{{ defaults[prompt.task_type]?.default_revision }}（契约 v{{ defaults[prompt.task_type]?.contract_version }}）</h4>
+          <div v-for="field in defaults[prompt.task_type]?.fields ?? []" :key="field.key" class="default-field">
+            <el-checkbox
+              :model-value="(acceptFields[prompt.task_type] ?? []).includes(field.key)"
+              :disabled="frozen"
+              @update:model-value="(checked: boolean) => toggleAcceptField(prompt.task_type, field.key, checked)"
+            >
+              {{ displayFieldLabel(field) }}
+            </el-checkbox>
+            <pre class="block">{{ defaults[prompt.task_type]?.guidance[field.key] || '（空）' }}</pre>
+          </div>
+          <div class="row">
+            <el-button size="small" type="primary" :disabled="frozen || hasPending(`accept-${prompt.task_type}`)" :loading="busy === `accept-${prompt.task_type}`" @click="acceptDefault(prompt.task_type)">接受所选默认</el-button>
+            <el-button size="small" :disabled="frozen || hasPending(`reject-${prompt.task_type}`)" :loading="busy === `reject-${prompt.task_type}`" @click="rejectDefault(prompt.task_type)">拒绝该默认修订</el-button>
+          </div>
         </div>
       </div>
     </div>
+
   </el-card>
 
+  </details>
   <el-alert v-if="errorText" type="error" :closable="false" class="section" data-d1="ai-settings-error" :title="errorText" />
   <el-alert v-if="messageText" type="success" :closable="false" class="section" data-d1="ai-settings-message" :title="messageText" />
 </template>
@@ -928,6 +1017,19 @@ defineExpose({ draftTargets, focusDraftTarget })
 <style scoped>
 .section {
   margin-top: 16px;
+}
+.settings-part {
+  margin-top: 16px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 6px;
+  padding: 0 14px 14px;
+}
+.settings-part > summary {
+  cursor: pointer;
+  padding: 12px 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--kgm-text);
 }
 .fields {
   display: flex;
@@ -954,6 +1056,14 @@ defineExpose({ draftTargets, focusDraftTarget })
   margin-top: 12px;
   flex-wrap: wrap;
   align-items: center;
+}
+.prompt-group {
+  margin-top: 18px;
+}
+.prompt-group-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+  color: var(--kgm-text);
 }
 .prompt-block {
   border-top: 1px dashed var(--kgm-border);

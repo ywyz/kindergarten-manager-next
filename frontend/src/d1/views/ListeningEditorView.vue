@@ -50,6 +50,7 @@ import {
   listeningApi,
   newRequestId,
   dateFieldsChanged,
+  dayInRange,
   listeningDateIssues,
   normalizeText,
   parseListeningDate,
@@ -59,6 +60,7 @@ import {
   rotationQuarters,
   rotationTransform,
   swapListeningBatchTargets,
+  monthInRange,
   termMonthRange,
   workDateRange,
   validateListeningBatchSelection,
@@ -97,7 +99,6 @@ const actionCount = ref(0)
 let actionChain: Promise<unknown> = Promise.resolve()
 const aiBusy = ref(false)
 const aiDraft = ref(false)
-const aiPanel = ref<{ startGoal: () => void } | null>(null)
 const directionalOpen = ref(false)
 const directionalBusy = ref(false)
 const directionalRequest = ref<DirectionalOpenRequest | null>(null)
@@ -132,13 +133,7 @@ const batchPreviewUrls = ref<string[]>([])
 let batchGeneration = 0
 const form = computed(() => session.form())
 const template = computed(() => session.template())
-const goalHasMaterial = computed(() =>
-  (form.value?.groups ?? []).some(
-    (group) =>
-      Boolean(group.asset_id) ||
-      Boolean((group.listening_text ?? '').trim()),
-  ),
-)
+
 const record = computed(() => state.record)
 const termName = computed(() => {
   const termId = record.value?.term_id
@@ -213,9 +208,8 @@ function legacyWorkDate(value: string | null | undefined): boolean {
   return Boolean(value && !parseListeningDate(value))
 }
 
-function setObservationMonth(event: Event): void {
+function setObservationMonth(value: string | null): void {
   if (!canEdit.value) return
-  const value = (event.target as HTMLInputElement).value
   setField('observation_date', value || '')
 }
 
@@ -224,9 +218,16 @@ function clearObservationMonth(): void {
   setField('observation_date', '')
 }
 
-function setWorkDate(groupId: string, event: Event): void {
+function disabledObservationDate(value: Date): boolean {
+  return !monthInRange(value, termRange.value)
+}
+
+function disabledWorkDate(value: Date): boolean {
+  return !dayInRange(value, workRange.value)
+}
+
+function setWorkDate(groupId: string, value: string | null): void {
   if (!canEdit.value || !observationMonth.value) return
-  const value = (event.target as HTMLInputElement).value
   setGroupField(groupId, 'work_date', value || '')
 }
 
@@ -959,11 +960,15 @@ function fileSizeText(size: number): string {
 }
 
 const batchSummary = computed(() => {
-  const total = batchFiles.value.reduce((sum, file) => sum + file.size, 0)
+  const retained = batchFiles.value.slice(0, MAX_BATCH_PHOTOS)
+  const skipped = batchFiles.value.length - retained.length
+  const total = retained.reduce((sum, file) => sum + file.size, 0)
   const mib = (total / (1024 * 1024)).toFixed(1)
   const perFile = MAX_BATCH_PHOTO_BYTES / (1024 * 1024)
   const totalLimit = MAX_BATCH_TOTAL_BYTES / (1024 * 1024)
-  return `已选 ${batchFiles.value.length}/${MAX_BATCH_PHOTOS} 张，合计 ${mib} MB；单张不超过 ${perFile} MB，整批不超过 ${totalLimit} MB。`
+  return `已选 ${batchFiles.value.length} 张${
+    skipped ? `，按选择顺序取前 ${retained.length} 张，略过 ${skipped} 张` : ''
+  }；入批合计 ${mib} MB；单张不超过 ${perFile} MB，整批不超过 ${totalLimit} MB。`
 })
 
 async function confirmBatch(): Promise<void> {
@@ -990,10 +995,14 @@ async function confirmBatch(): Promise<void> {
   const lockedAssignments = batchAssignments.value.map(
     (assignment) => ({ ...assignment }),
   )
-  const count = lockedFiles.length
+  const count = lockedAssignments.length
+  const skippedNote =
+    batchFiles.value.length > count
+      ? `另 ${batchFiles.value.length - count} 张本次略过。`
+      : ''
   try {
     await ElMessageBox.confirm(
-      `将把 ${count} 张照片一次保存到 ${count} 个空图位；已有照片不会被替换。确认保存整批？`,
+      `将把 ${count} 张照片一次保存到 ${count} 个空图位；已有照片不会被替换。${skippedNote}确认保存整批？`,
       '确认整批保存',
       {
         confirmButtonText: '确认保存整批',
@@ -1323,15 +1332,20 @@ defineExpose({
         <div class="header-grid">
           <label>
             <span>观察月份（限记录所属学期）</span>
-            <input
+            <el-date-picker
               class="native-date"
               type="month"
-              :value="observationMonthValue"
+              value-format="YYYY-MM"
+              :model-value="observationMonthValue"
               :min="termRange?.min ?? ''"
               :max="termRange?.max ?? ''"
+              :editable="false"
+              :disabled-date="disabledObservationDate"
+              :clearable="true"
               :disabled="!canEdit || !termRange"
+              placeholder="选择观察月份"
               data-d1="listening-observation-month"
-              @change="setObservationMonth"
+              @update:model-value="setObservationMonth"
             />
             <span
               v-if="legacyObservationDate"
@@ -1384,17 +1398,6 @@ defineExpose({
               @update:model-value="setField('goal', String($event))"
             />
             <div class="goal-ai-row">
-              <el-button
-                size="small"
-                data-d1="listening-goal-ai"
-                :disabled="!canMutate || !goalHasMaterial"
-                @click.stop="aiPanel?.startGoal()"
-              >
-                生成观察目标建议
-              </el-button>
-              <span v-if="!goalHasMaterial" class="muted">
-                本领域暂无可发送的已存文字或照片材料
-              </span>
               <DirectionalRevisionTrigger
                 test-id="listening-directional-goal"
                 :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
@@ -1404,6 +1407,21 @@ defineExpose({
           </label>
         </div>
 
+        <ListeningAiPanel
+          v-if="state.loaded && form && template"
+          ref="aiPanel"
+          :record-id="props.recordId"
+          :domain="state.domain"
+          :groups="form.groups"
+          :saved-groups="savedDirectionalGroups"
+          :revision="state.revision"
+          :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+          :profile-epoch="props.profileEpoch ?? 0"
+          :ensure-saved="ensureAiSaved"
+          @busy="handleAiBusy"
+          @draft="handleAiDraft"
+          @adopted="handleAiAdopted"
+        />
         <div class="groups">
           <el-card
             v-for="(group, index) in form.groups"
@@ -1511,16 +1529,21 @@ defineExpose({
               <div class="text-cell">
                 <label>
                   <span>作品日期（观察月与学期交集）</span>
-                  <input
+                  <el-date-picker
                     class="native-date"
                     type="date"
-                    :value="canonicalWorkDate(group.work_date)"
+                    value-format="YYYY-MM-DD"
+                    :model-value="canonicalWorkDate(group.work_date)"
                     :min="workRange?.min ?? ''"
                     :max="workRange?.max ?? ''"
+                    :editable="false"
+                    :disabled-date="disabledWorkDate"
+                    :clearable="true"
                     :disabled="!canEdit || !observationMonth || !workRange"
+                    placeholder="选择作品日期"
                     data-d1="listening-work-date-picker"
                     :data-group-id="group.group_id"
-                    @change="setWorkDate(group.group_id, $event)"
+                    @update:model-value="setWorkDate(group.group_id, $event)"
                   />
                   <span
                     v-if="legacyWorkDate(group.work_date)"
@@ -1669,21 +1692,6 @@ defineExpose({
       </el-card>
     </template>
 
-    <ListeningAiPanel
-      v-if="state.loaded && form && template"
-      ref="aiPanel"
-      :record-id="props.recordId"
-      :domain="state.domain"
-      :groups="form.groups"
-      :saved-groups="savedDirectionalGroups"
-      :revision="state.revision"
-      :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-      :profile-epoch="props.profileEpoch ?? 0"
-      :ensure-saved="ensureAiSaved"
-      @busy="handleAiBusy"
-      @draft="handleAiDraft"
-      @adopted="handleAiAdopted"
-    />
 
     <el-alert
       v-if="directionalNotice"
@@ -1727,7 +1735,7 @@ defineExpose({
           class="file-label"
           :class="{ disabled: batchBusy || !canMutate }"
         >
-          {{ batchFiles.length ? '重新选择照片' : '选择 1～15 张照片' }}
+          {{ batchFiles.length ? '重新选择照片' : '选择照片（最多前 15 张入批）' }}
           <input
             :key="batchInputKey"
             type="file"
@@ -1810,7 +1818,7 @@ defineExpose({
               batchBusy ||
               batchFiles.length === 0 ||
               !!batchError ||
-              batchAssignments.length !== batchFiles.length
+              batchAssignments.length !== Math.min(batchFiles.length, MAX_BATCH_PHOTOS)
             "
             @click="confirmBatch"
           >

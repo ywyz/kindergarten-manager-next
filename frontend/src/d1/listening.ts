@@ -206,6 +206,7 @@ export const MAX_BATCH_TOTAL_BYTES = 75 * 1024 * 1024
 export interface ListeningBatchFileInfo {
   name: string
   size: number
+  type?: string
 }
 
 export interface ListeningBatchAssignment {
@@ -220,6 +221,9 @@ export interface ListeningBatchAssignment {
 export interface ListeningBatchPlan {
   assignments: ListeningBatchAssignment[]
   totalBytes: number
+  files: ListeningBatchFileInfo[]
+  requestedCount: number
+  skippedCount: number
 }
 
 export type ListeningBatchPlanResult =
@@ -257,16 +261,30 @@ export function planListeningPhotoBatch(
   forms: Partial<Record<ListeningDomain, ListeningDomainState>>,
 ): ListeningBatchPlanResult {
   if (files.length < 1) {
-    return { ok: false, reason: '请一次选择 1～15 张照片' }
-  }
-  if (files.length > MAX_BATCH_PHOTOS) {
     return {
       ok: false,
-      reason: `一次最多选择 ${MAX_BATCH_PHOTOS} 张照片，本次选择了 ${files.length} 张`,
+      reason: `请至少选择 1 张照片；一次最多入批前 ${MAX_BATCH_PHOTOS} 张`,
     }
   }
-  const sizeReason = batchSizeReason(files)
+  const retained = files.slice(0, MAX_BATCH_PHOTOS)
+  const sizeReason = batchSizeReason(retained)
   if (sizeReason) return { ok: false, reason: sizeReason }
+  const allowedTypes = new Set([
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+    'image/bmp',
+  ])
+  for (let index = 0; index < retained.length; index += 1) {
+    const file = retained[index]
+    if (file.type && !allowedTypes.has(file.type.toLowerCase())) {
+      return {
+        ok: false,
+        reason: `第 ${index + 1} 张照片「${file.name || '未命名'}」类型不支持`,
+      }
+    }
+  }
 
   const slots: Array<{
     domain: ListeningDomain
@@ -293,13 +311,13 @@ export function planListeningPhotoBatch(
       reason: '当前记录没有空余图位；已有照片不会被替换，请先移除照片或减少选择',
     }
   }
-  if (slots.length < files.length) {
+  if (slots.length < retained.length) {
     return {
       ok: false,
-      reason: `当前只有 ${slots.length} 个空余图位，本批选择了 ${files.length} 张；已有照片不会被替换，请减少照片或先移除已有照片`,
+      reason: `当前只有 ${slots.length} 个空余图位，本批入批 ${retained.length} 张；已有照片不会被替换，请减少照片或先移除已有照片`,
     }
   }
-  const assignments = files.map((file, index) => {
+  const assignments = retained.map((file, index) => {
     const slot = slots[index]
     return {
       domain: slot.domain,
@@ -314,7 +332,10 @@ export function planListeningPhotoBatch(
     ok: true,
     plan: {
       assignments,
-      totalBytes: files.reduce((sum, file) => sum + file.size, 0),
+      totalBytes: retained.reduce((sum, file) => sum + file.size, 0),
+      files: retained,
+      requestedCount: files.length,
+      skippedCount: files.length - retained.length,
     },
   }
 }
@@ -337,7 +358,7 @@ export function validateListeningBatchSelection(
 ): ListeningBatchSelectionCheck {
   const plan = planListeningPhotoBatch(files, forms)
   if (!plan.ok) return plan
-  if (assignments.length !== files.length) {
+  if (assignments.length !== plan.plan.files.length) {
     return {
       ok: false,
       reason: '本批照片落位数量不一致，已保留本批选择；请重新预览后再试',
@@ -357,7 +378,7 @@ export function validateListeningBatchSelection(
     if (
       !Number.isInteger(assignment.fileIndex) ||
       assignment.fileIndex < 0 ||
-      assignment.fileIndex >= files.length ||
+      assignment.fileIndex >= plan.plan.files.length ||
       fileIndexes.has(assignment.fileIndex)
     ) {
       return {
@@ -569,6 +590,28 @@ export function workDateRange(
   const min = first > start.iso ? first : start.iso
   const max = last < end.iso ? last : end.iso
   return min <= max ? { min, max } : null
+}
+
+function localIsoDay(value: Date): string {
+  return `${value.getFullYear()}-${pad2(value.getMonth() + 1)}-${pad2(value.getDate())}`
+}
+
+export function dayInRange(
+  value: Date,
+  range: ListeningDateRange | null,
+): boolean {
+  if (!range) return false
+  const day = localIsoDay(value)
+  return day >= range.min && day <= range.max
+}
+
+export function monthInRange(
+  value: Date,
+  range: ListeningDateRange | null,
+): boolean {
+  if (!range) return false
+  const month = localIsoDay(value).slice(0, 7)
+  return month >= range.min && month <= range.max
 }
 
 /**
@@ -901,6 +944,52 @@ export function cloneDomain(domain: ListeningDomainState): ListeningDomainState 
   return JSON.parse(JSON.stringify(domain)) as ListeningDomainState
 }
 
+const SHARED_HEADER_FIELDS = ['adult_count', 'child_age'] as const
+
+/**
+ * Fill only empty adult_count/child_age fields from values already saved in
+ * another domain of the same record.  Existing non-empty fields (including a
+ * teacher's earlier correction) are never overwritten.
+ */
+type SharedHeaderAutoFill = Partial<
+  Record<
+    ListeningDomain,
+    Partial<Record<(typeof SHARED_HEADER_FIELDS)[number], string>>
+  >
+>
+
+export function applySavedSharedHeaderDefaults(
+  forms: Partial<Record<ListeningDomain, ListeningDomainState>>,
+  baselines: Partial<Record<ListeningDomain, ListeningDomainState>>,
+  autoFill?: SharedHeaderAutoFill,
+): boolean {
+  const sources: Partial<Record<(typeof SHARED_HEADER_FIELDS)[number], string>> = {}
+  for (const domain of LISTENING_DOMAINS) {
+    const baseline = baselines[domain]
+    if (!baseline) continue
+    for (const field of SHARED_HEADER_FIELDS) {
+      if (!sources[field]) {
+        const saved = normalizeText(baseline[field])
+        if (saved) sources[field] = saved
+      }
+    }
+  }
+  let changed = false
+  for (const domain of LISTENING_DOMAINS) {
+    const form = forms[domain]
+    if (!form) continue
+    for (const field of SHARED_HEADER_FIELDS) {
+      const source = sources[field]
+      if (source && !normalizeText(form[field])) {
+        form[field] = source
+        if (autoFill) autoFill[domain] = { ...(autoFill[domain] ?? {}), [field]: source }
+        changed = true
+      }
+    }
+  }
+  return changed
+}
+
 const HEADER_FIELDS = [
   'observation_date',
   'adult_count',
@@ -1056,6 +1145,7 @@ export function createListeningState(
     loadSeq: 0,
     lifecycle: 0,
     savePromise: null,
+    sharedHeaderAutoFill: {},
   }
 }
 
@@ -1090,6 +1180,7 @@ export interface ListeningSessionState {
   /** Invalidates every late save/retry/receipt result after reset. */
   lifecycle: number
   savePromise: Promise<SaveOutcome> | null
+  sharedHeaderAutoFill: SharedHeaderAutoFill
 }
 
 function isApiError(error: unknown): error is ApiError {
@@ -1243,6 +1334,21 @@ export class ListeningSession {
         boundTemplates[domain] = template
       }
       this.state.record = record
+      this.state.sharedHeaderAutoFill = {}
+      applySavedSharedHeaderDefaults(
+        forms,
+        baselines,
+        this.state.sharedHeaderAutoFill,
+      )
+      for (const domain of LISTENING_DOMAINS) {
+        const projected = this.state.sharedHeaderAutoFill[domain]
+        const baseline = baselines[domain]
+        const form = forms[domain]
+        if (!projected || !baseline || !form) continue
+        for (const field of SHARED_HEADER_FIELDS) {
+          if (projected[field] !== undefined) baseline[field] = form[field]
+        }
+      }
       this.state.forms = forms
       this.state.baselines = baselines
       this.state.rotations = normalizedRotations
@@ -1274,6 +1380,27 @@ export class ListeningSession {
     const form = this.form()
     if (!form) return
     form[field] = value
+    if (field === 'adult_count' || field === 'child_age') {
+      if (this.state.sharedHeaderAutoFill[this.state.domain]) {
+        delete this.state.sharedHeaderAutoFill[this.state.domain]![field]
+      }
+      if (normalizeText(value)) {
+        for (const domain of LISTENING_DOMAINS) {
+          const other = this.state.forms[domain]
+          if (!other || other === form) continue
+          const auto = this.state.sharedHeaderAutoFill[domain]?.[field]
+          if (!normalizeText(other[field]) || auto === other[field]) {
+            const baseline = this.state.baselines[domain]
+            if (auto !== undefined && baseline) baseline[field] = null
+            other[field] = value
+            this.state.sharedHeaderAutoFill[domain] = {
+              ...(this.state.sharedHeaderAutoFill[domain] ?? {}),
+              [field]: value,
+            }
+          }
+        }
+      }
+    }
     this.state.editEpoch += 1
   }
 

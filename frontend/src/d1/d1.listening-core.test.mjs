@@ -523,4 +523,75 @@ function stateAsset(session) {
   ok('isDirty checks every domain, not only the visible tab')
 }
 
+{
+  const record = makeRecord()
+  record.domains.find((item) => item.domain === 'health').adult_count = '2 位'
+  record.domains.find((item) => item.domain === 'language').child_age = '5 岁'
+  record.domains.find((item) => item.domain === 'social').adult_count = '原有 3 位'
+  const api = new FakeApi(record)
+  const { state, session } = await loaded(api)
+  assert.equal(state.forms.health.adult_count, '2 位')
+  assert.equal(state.forms.health.child_age, '5 岁')
+  assert.equal(state.forms.language.adult_count, '2 位')
+  assert.equal(state.forms.language.child_age, '5 岁')
+  assert.equal(state.forms.social.adult_count, '原有 3 位')
+  assert.equal(state.forms.social.child_age, '5 岁')
+  session.setField('adult_count', '4 位')
+  assert.equal(state.forms.health.adult_count, '4 位')
+  assert.equal(state.forms.social.adult_count, '原有 3 位')
+  assert.equal(state.forms.art.adult_count, '4 位')
+  assert.equal(core.buildDomainPatch(state.forms.art, state.baselines.art).adult_count, '4 位')
+  ok('saved adult count and child age fill only empty domains and preserve explicit values')
+}
+{
+  const api = new FakeApi(makeRecord())
+  const { state, session } = await loaded(api)
+  session.setField('adult_count', '4 位')
+  session.setField('child_age', '6 岁')
+  assert.ok(DOMAINS.every((domain) => state.forms[domain].adult_count === '4 位'))
+  assert.ok(DOMAINS.every((domain) => state.forms[domain].child_age === '6 岁'))
+  const patches = []
+  const originalSave = api.saveDomain.bind(api)
+  api.saveDomain = async (recordId, domain, requestId, expectedRevision, patch) => {
+    patches.push([domain, JSON.parse(JSON.stringify(patch))])
+    const target = api.record.domains.find((item) => item.domain === domain)
+    if ('adult_count' in patch) target.adult_count = patch.adult_count
+    if ('child_age' in patch) target.child_age = patch.child_age
+    return originalSave(recordId, domain, requestId, expectedRevision, patch)
+  }
+  assert.equal(await session.saveCurrent(), 'saved')
+  assert.equal(patches.length, DOMAINS.length)
+  assert.ok(patches.every(([, patch]) => patch.adult_count === '4 位'))
+  assert.ok(patches.every(([, patch]) => patch.child_age === '6 岁'))
+  const reopenedState = core.createListeningState('record-1')
+  const reopened = new core.ListeningSession(api, reopenedState)
+  assert.equal(await reopened.load(), true)
+  assert.ok(DOMAINS.every((domain) => reopenedState.forms[domain].adult_count === '4 位'))
+  assert.ok(DOMAINS.every((domain) => reopenedState.forms[domain].child_age === '6 岁'))
+  ok('shared adult/child values are saved per domain and read back after reopening')
+}
+{
+  const record = makeRecord()
+  record.domains.find((item) => item.domain === 'health').adult_count = '2 位'
+  record.domains.find((item) => item.domain === 'health').child_age = '5 岁'
+  const api = new FakeApi(record)
+  const { state, session } = await loaded(api)
+  assert.equal(state.forms.language.adult_count, '2 位')
+  assert.equal(state.forms.art.child_age, '5 岁')
+  assert.equal(session.isDirty(), false)
+  assert.equal(api.calls.some(([name]) => name === 'saveDomain'), false)
+  ok('an old record projects shared headers without becoming dirty or saving five domains')
+}
+{
+  const termRange = { min: '2026-03', max: '2026-06' }
+  assert.equal(core.monthInRange(new Date(2026, 2, 1), termRange), true)
+  assert.equal(core.monthInRange(new Date(2026, 1, 28), termRange), false)
+  assert.equal(core.monthInRange(new Date(2026, 6, 1), termRange), false)
+  const workRange = { min: '2026-04-01', max: '2026-04-30' }
+  assert.equal(core.dayInRange(new Date(2026, 3, 1), workRange), true)
+  assert.equal(core.dayInRange(new Date(2026, 3, 30), workRange), true)
+  assert.equal(core.dayInRange(new Date(2026, 2, 31), workRange), false)
+  assert.equal(core.dayInRange(new Date(2026, 4, 1), workRange), false)
+  ok('month and work date ranges reject dates outside the term/month intersection')
+}
 console.log(`listening-core: ${passed} checks passed`)

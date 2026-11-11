@@ -90,7 +90,10 @@ class ExecutorCase(LocalTestCase):
         payload, _ = daily_plan_service.create_or_open(
             self.session,
             plan_date=plan_date,
-            raw_lesson_plan="原始教案正文",
+            raw_lesson_plan=(
+                "活动主题：主题\n活动目标：目标\n活动准备：准备\n"
+                "活动重点：重点\n活动难点：难点\n活动过程：过程"
+            ),
             adopted_content={"group_activity": {"process": "一、导入"}, "reflection": "反思"},
         )
         return payload

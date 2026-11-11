@@ -5,7 +5,9 @@ from __future__ import annotations
 import unittest
 
 from app.daily_process_contract import (
+    ADAPT_PATCH_SCHEMA,
     DailyProcessContractError,
+    expand_adapt_patch,
     validate_adapt_change,
     validate_split_cleanup,
 )
@@ -27,6 +29,72 @@ def changed(index: int, text: str, process: str = BASE) -> str:
 
 
 class SplitCleanupTests(unittest.TestCase):
+    def test_equivalent_line_numbering_is_allowed_but_body_numbers_are_not(self):
+        raw = (
+            "一、开始部分\n1. 导入\n师：拿3张卡纸。\n"
+            "二、基本部分\n（1）探索\n师：比较两片叶子。\n"
+            "三、放松活动\n师：分享发现。"
+        )
+        validate_split_cleanup(
+            raw,
+            [
+                "1. 开始部分\n1. 导入\n师：拿3张卡纸。\n"
+                "2. 基本部分\n(1) 探索\n师：比较两片叶子。\n"
+                "3. 放松活动\n师：分享发现。"
+            ],
+        )
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(
+                raw,
+                ["1. 开始部分\n1. 导入\n师：拿4张卡纸。\n2. 基本部分\n(1) 探索\n师：比较两片叶子。"],
+            )
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(
+                raw,
+                ["1. 开始部分\n1. 导入\n师：拿三张卡纸。\n2. 基本部分\n(1) 探索\n师：比较两片叶子。"],
+            )
+
+    def test_step_deletion_reorder_and_unit_change_are_rejected(self):
+        raw = "1. 导入\n师：拿50cm绳子。\n2. 探索\n师：比较两片叶子。\n3. 回顾\n师：分享发现。"
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(raw, ["1. 导入\n师：拿50cm绳子。\n3. 回顾\n师：分享发现。"])
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(raw, ["1. 探索\n师：比较两片叶子。\n2. 导入\n师：拿50cm绳子。\n3. 回顾\n师：分享发现。"])
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(raw, ["1. 导入\n师：拿50米绳子。\n2. 探索\n师：比较两片叶子。\n3. 回顾\n师：分享发现。"])
+
+    def test_number_that_appears_elsewhere_in_raw_is_still_a_change(self):
+        raw = (
+            "热身：第7次练习。\n"
+            "1. 导入\n师：第10次练习。\n2. 探索\n师：比较两片叶子。\n3. 回顾\n师：分享发现。"
+        )
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(
+                raw,
+                ["1. 导入\n师：第7次练习。\n2. 探索\n师：比较两片叶子。\n3. 回顾\n师：分享发现。"],
+            )
+
+    def test_activity_theme_is_limited_to_256_utf8_bytes(self):
+        from app.local.prompt_bundles import CandidateInvalid, validate_candidate
+
+        base = {
+            "group_activity": {
+                "theme": "汉" * 86,
+                "objectives": "",
+                "preparation": "",
+                "key_points": "",
+                "difficult_points": "",
+                "process": "",
+            }
+        }
+        with self.assertRaises(CandidateInvalid):
+            validate_candidate("daily_lesson_split", base)
+        base["group_activity"]["theme"] = "汉" * 85
+        self.assertEqual(
+            validate_candidate("daily_lesson_split", base)["group_activity"]["theme"],
+            "汉" * 85,
+        )
+
     def test_obvious_typo_punctuation_and_stray_letter_pass(self):
         fields = [
             "导入",
@@ -75,6 +143,14 @@ class SplitCleanupTests(unittest.TestCase):
 
 
 class AdaptOneStepTests(unittest.TestCase):
+    def test_chinese_line_numbering_one_step_change_passes(self):
+        baseline = "一、导入\n师：说说颜色。\n二、探索\n师：比较两片叶子。"
+        validate_adapt_change(
+            baseline,
+            baseline,
+            "1. 导入\n师：说说颜色。\n2. 探索\n师：请找相同形状的叶子。",
+        )
+
     def test_one_modified_step_passes(self):
         final = changed(1, "2. 探索\n师：请找两片相同形状的叶子。")
         validate_adapt_change(BASE, SAVED, final)
@@ -132,6 +208,208 @@ class ProductionGateTests(unittest.TestCase):
             payload,
             {},
         )
+
+
+class AdaptPatchTests(unittest.TestCase):
+    SAVED = "1. 导入\n师：说说颜色。\n2. 探索\n师：比较两片叶子。\n3. 回顾\n师：分享发现。"
+
+    def test_replace_keeps_other_steps_and_returns_full_process(self):
+        result = expand_adapt_patch(
+            {"operation": "replace", "step_index": 2, "text": "探索\n师：请找相同形状的叶子。"},
+            self.SAVED,
+            self.SAVED,
+        )
+        self.assertEqual(
+            result["process"],
+            "1. 导入\n师：说说颜色。\n2. 探索\n师：请找相同形状的叶子。\n3. 回顾\n师：分享发现。",
+        )
+
+    def test_insert_after_step_and_no_change(self):
+        inserted = expand_adapt_patch(
+            {"operation": "insert", "after_step_index": 1, "text": "安全提示\n师：先摸一摸再拿。"},
+            self.SAVED,
+            self.SAVED,
+        )
+        self.assertEqual(
+            inserted["process"],
+            "1. 导入\n师：说说颜色。\n2. 安全提示\n师：先摸一摸再拿。\n3. 探索\n师：比较两片叶子。\n4. 回顾\n师：分享发现。",
+        )
+        self.assertEqual(
+            expand_adapt_patch({"operation": "no_change"}, self.SAVED, self.SAVED),
+            {"process": self.SAVED},
+        )
+
+    def test_invalid_patch_variants_are_rejected(self):
+        for patch in (
+            {"operation": "replace", "step_index": 0, "text": "x"},
+            {"operation": "replace", "step_index": 9, "text": "x"},
+            {"operation": "replace", "step_index": 2},
+            {"operation": "replace", "step_index": 2, "text": "  "},
+            {"operation": "replace", "step_index": 2, "text": "x", "extra": 1},
+            {"operation": "insert", "after_step_index": 9, "text": "x"},
+            {"operation": "insert", "after_step_index": 1},
+            {"operation": "no_change", "text": "x"},
+            {"operation": "unknown"},
+        ):
+            with self.subTest(patch=patch):
+                with self.assertRaises(DailyProcessContractError):
+                    expand_adapt_patch(patch, self.SAVED, self.SAVED)
+
+    def test_patch_cannot_smuggle_multiple_steps(self):
+        with self.assertRaises(DailyProcessContractError):
+            expand_adapt_patch(
+                {
+                    "operation": "replace",
+                    "step_index": 2,
+                    "text": "探索\n师：新内容。\n3. 另一个环节\n师：又一段。",
+                },
+                self.SAVED,
+                self.SAVED,
+            )
+
+    def test_old_full_process_protocol_still_passes_through(self):
+        old = {"process": self.SAVED}
+        self.assertEqual(expand_adapt_patch(old, self.SAVED, self.SAVED), old)
+
+    MIXED = (
+        "一、导入\r\n\r\n二、探索\r\n（1）铺纸板\r\n（2）摆纸杯\r\n\r\n三、结束\r\n"
+    )
+
+    def test_replace_preserves_mixed_hierarchy_crlf_and_blanks(self):
+        result = expand_adapt_patch(
+            {
+                "operation": "replace",
+                "step_index": 3,
+                "text": "铺纸板\r\n师：请把纸板铺平。",
+            },
+            self.MIXED,
+            self.MIXED,
+        )
+        expected = (
+            "一、导入\r\n\r\n二、探索\r\n（1）铺纸板\r\n师：请把纸板铺平。\r\n"
+            "（2）摆纸杯\r\n\r\n三、结束\r\n"
+        )
+        self.assertEqual(result["process"], expected)
+        self.assertNotIn("\n", result["process"].replace("\r\n", ""))
+
+    def test_insert_after_parent_preserves_children_and_shifts_only_siblings(self):
+        result = expand_adapt_patch(
+            {
+                "operation": "insert",
+                "after_step_index": 2,
+                "text": "三、新环节\r\n师：一起试一试。",
+            },
+            self.MIXED,
+            self.MIXED,
+        )
+        expected = (
+            "一、导入\r\n\r\n二、探索\r\n（1）铺纸板\r\n（2）摆纸杯\r\n"
+            "三、新环节\r\n师：一起试一试。\r\n\r\n四、结束\r\n"
+        )
+        self.assertEqual(result["process"], expected)
+        self.assertNotIn("\n", result["process"].replace("\r\n", ""))
+
+    def test_insert_after_child_shifts_only_same_level_siblings(self):
+        result = expand_adapt_patch(
+            {
+                "operation": "insert",
+                "after_step_index": 3,
+                "text": "（2）新子项\r\n师：先摆一个。",
+            },
+            self.MIXED,
+            self.MIXED,
+        )
+        expected = (
+            "一、导入\r\n\r\n二、探索\r\n（1）铺纸板\r\n（2）新子项\r\n"
+            "师：先摆一个。\r\n（3）摆纸杯\r\n\r\n三、结束\r\n"
+        )
+        self.assertEqual(result["process"], expected)
+        self.assertNotIn("\n", result["process"].replace("\r\n", ""))
+
+    def test_mixed_hierarchy_patch_cannot_inject_extra_steps(self):
+        with self.assertRaises(DailyProcessContractError):
+            expand_adapt_patch(
+                {
+                    "operation": "replace",
+                    "step_index": 3,
+                    "text": "铺纸板\r\n（2）注入的子项\r\n师：不应出现。",
+                },
+                self.MIXED,
+                self.MIXED,
+            )
+
+
+class AdaptWireTests(unittest.TestCase):
+    MIXED = (
+        "一、导入\r\n\r\n二、探索\r\n（1）铺纸板\r\n（2）摆纸杯\r\n\r\n三、结束\r\n"
+    )
+
+    def test_step_index_matches_expander_and_marks_parents(self):
+        from app.daily_process_contract import adapt_step_index
+
+        steps = adapt_step_index(self.MIXED)
+        self.assertEqual([item["index"] for item in steps], [1, 2, 3, 4, 5])
+        self.assertEqual([item["level"] for item in steps], [1, 1, 2, 2, 1])
+        self.assertTrue(steps[1]["has_children"])
+        self.assertFalse(steps[2]["has_children"])
+        self.assertEqual(steps[2]["title"], "铺纸板")
+
+    def test_wire_payload_index_is_counted_in_real_serialized_size(self):
+        import json
+
+        from app.local import ai_task_service, ai_transport
+
+        payload = {
+            "process_source": self.MIXED,
+            "grade": "middle",
+            "split_baseline_process": self.MIXED,
+        }
+        enriched = ai_task_service.adapt_wire_payload(payload)
+        self.assertIn("adapt_steps", enriched)
+        self.assertNotIn("adapt_steps", payload)
+        size = ai_task_service.serialized_request_bytes(
+            task_type="daily_process_adapt",
+            contract_version=1,
+            output_schema={},
+            guidance={},
+            payload=payload,
+            model="m",
+        )
+        body = ai_transport.build_request(
+            model="m",
+            system_text=ai_task_service._render_system_text(
+                "daily_process_adapt", 1, {}, {}
+            ),
+            user_text=json.dumps(
+                enriched, ensure_ascii=False, separators=(",", ":")
+            ),
+        )
+        self.assertEqual(size, len(body))
+
+    def test_adapt_system_text_has_no_full_process_conflict(self):
+        import json
+
+        from app.local import ai_task_service
+
+        payload = json.loads(
+            ai_task_service._render_system_text(
+                "daily_process_adapt",
+                1,
+                {},
+                {},
+            )
+        )
+        contract = payload["output_contract"]
+        self.assertEqual(
+            contract["properties"]["operation"]["enum"],
+            ["replace", "insert", "no_change"],
+        )
+        instructions = "\n".join(payload["instructions"])
+        self.assertNotIn("输出完整过程，按", instructions)
+        self.assertNotIn("按实际步骤真实换行并编号", instructions)
+        self.assertIn("adapt_steps", instructions)
+        self.assertIn("只写一个实际步骤", instructions)
+        self.assertIn("个人指导只决定当前这一个环节", instructions)
 
 
 class NewlineAndSingleStepTests(unittest.TestCase):

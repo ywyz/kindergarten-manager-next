@@ -24,6 +24,7 @@ from tests.local.support import (
 )
 from tests.local.test_d2_w4_candidates import (
     ADAPT_CANDIDATE,
+    DEFAULT_RAW,
     OTHER_CANDIDATE,
     SPLIT_CANDIDATE,
     W4Case,
@@ -261,10 +262,10 @@ class HttpFlowTests(W4ApiCase):
             self.plan["id"],
             1,
             {
-                "group_activity": {"process": "一、导入\n二、观察"},
+                "group_activity": {"process": "1. 导入\n2. 观察"},
                 "reflection": "反思",
             },
-            raw="新的原文",
+            raw=DEFAULT_RAW + "\n新的说明",
         )
         status, body = self.adopt_http(candidate_id, token, request_id=str(uuid.uuid4()), expected=1)
         self.assertEqual(status, 409, body)
@@ -285,12 +286,12 @@ class HttpFlowTests(W4ApiCase):
             version,
             {
                 "group_activity": {
-                    "process": "一、导入\n二、观察",
+                    "process": "1. 导入\n2. 观察",
                     "theme": "教师主题",
                 },
                 "reflection": "反思",
             },
-            raw="新的原文",
+            raw=DEFAULT_RAW + "\n新的说明",
         )
         status, body = self.adopt_http(
             candidate_id2, preview2["preview_token"], request_id=str(uuid.uuid4()), expected=version

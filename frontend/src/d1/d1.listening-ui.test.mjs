@@ -20,7 +20,14 @@ const editorSource = fs.readFileSync(
   'utf8',
 )
 assert.doesNotMatch(editorSource, /data-d1="listening-observation-area"/)
-assert.match(editorSource, /data-d1="listening-goal-ai"/)
+assert.match(editorSource, /<ListeningAiPanel/)
+assert.ok(
+  editorSource.indexOf('<ListeningAiPanel') < editorSource.indexOf('<div class="groups">'),
+)
+assert.doesNotMatch(editorSource, /data-d1="listening-goal-ai"/)
+assert.match(editorSource, /:disabled-date="disabledObservationDate"/)
+assert.match(editorSource, /:disabled-date="disabledWorkDate"/)
+assert.equal((editorSource.match(/:editable="false"/g) || []).length, 2)
 let uuidCounter = 0
 function uuid() {
   uuidCounter += 1

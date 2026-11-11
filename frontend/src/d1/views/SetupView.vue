@@ -175,7 +175,7 @@ async function submit(): Promise<void> {
                 :value="index + 1"
               />
             </el-select>
-            <span class="class-preview" data-d1="class-name-preview">
+            <span class="class-preview" aria-live="polite" data-d1="class-name-preview">
               {{ derivedClassName || '请选择班号' }}
             </span>
           </div>
@@ -226,9 +226,26 @@ async function submit(): Promise<void> {
 .class-picker {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.class-picker :deep(.el-select) {
+  flex: 1 1 132px;
+  min-width: 112px;
 }
 .class-preview {
+  flex: 1 1 120px;
+  min-width: 0;
   color: var(--kgm-text);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .setup {
+    margin: 16px 12px 0;
+  }
+  .setup :deep(.el-form-item__label) {
+    width: 72px !important;
+  }
 }
 </style>

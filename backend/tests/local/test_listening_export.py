@@ -252,6 +252,41 @@ class ListeningExportServiceTests(unittest.TestCase):
             first["export_id"],
         )
 
+    def test_shared_header_fallback_matches_display_and_word(self) -> None:
+        record = self._create()
+        self._patch(
+            record["record_id"],
+            "health",
+            {"adult_count": "2 位", "child_age": "5 岁"},
+            revision=1,
+        )
+        self._patch(
+            record["record_id"],
+            "language",
+            {"adult_count": "3 位"},
+            revision=2,
+        )
+        preview = self._preview(
+            mode="record",
+            record_id=record["record_id"],
+            term_id=self.term_id,
+        )
+        ready = self.manager.generate(
+            preview_id=preview["preview_id"],
+            request_id=str(uuid.uuid4()),
+            filename=preview["default_filename"],
+            ack_missing=True,
+        )
+        payload = self.manager.content(ready["export_id"])
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            root = __import__("lxml.etree", fromlist=["etree"]).fromstring(
+                archive.read("word/document.xml")
+            )
+        text = "".join(root.itertext())
+        self.assertEqual(text.count("成人数目：2 位"), 4)
+        self.assertEqual(text.count("成人数目：3 位"), 1)
+        self.assertEqual(text.count("幼儿年龄：5 岁"), 5)
+
     def test_missing_ack_is_required_and_leaves_cells_blank(self) -> None:
         record = self._create()
         preview = self._preview(

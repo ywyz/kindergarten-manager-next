@@ -18,6 +18,7 @@ function loadTsModule(file) {
   return mod.exports
 }
 const weeklyCore = loadTsModule(path.join(d1Dir, 'weekly.ts'))
+const aiProgress = loadTsModule(path.join(d1Dir, 'ai-progress.ts'))
 const actualEditor = loadTsModule(path.join(d1Dir, 'weekly-editor.ts'))
 const viewFile = path.join(d1Dir, 'views', 'WeeklyAiPanel.vue')
 const source = fs.readFileSync(viewFile, 'utf8')
@@ -92,7 +93,7 @@ const aiStub = {
     adopt: async (planId, body) => { calls.push({ kind: 'adopt', planId, body: clone(body) }); if (failAdoptOnce) { failAdoptOnce = false; throw new Error('offline') }; if (malformedAdoptShape === 'null-selections') return { ...clone(adopted), request_id: body.request_id, selections: null }; if (malformedAdoptShape === 'missing-draft') return { ...clone(adopted), request_id: body.request_id, draft: null }; return { ...clone(adopted), request_id: body.request_id } },
     operation: async (planId, requestId) => requestId === 'req-test' ? { request_id: 'req-test', operation_kind: 'games', status: 'committed', result: clone(createOut) } : { request_id: requestId, operation_kind: 'weekly_ai_adopt', status: 'committed', result: { ...clone(adopted), request_id: requestId } },
     taskOperation: async (requestId) => ({ request_id: requestId, operation_kind: 'ai_task_retry', result: { ...task, source_kind: 'weekly_plan', source_id: 'p1', weekly_plan_id: taskOperationWrongPlan ? 'other-plan' : 'p1' }, committed_at: '2026-11-03T00:00:00Z' }),
-    progress: async () => ({ state: '只读' }), cancel: async () => { actionCalls.push('cancel'); return task }, resume: async () => { actionCalls.push('resume'); return task }, retry: async () => { actionCalls.push('retry'); if (failActionOnce) { failActionOnce = false; throw new Error('offline') }; return task },
+    progress: async (_planId, taskId) => ({ available: true, task_id: taskId, execution_id: 'e1', attempt_id: 'a1', attempt_no: null, seq: 2, phase: 'thinking', elapsed_ms: 900, last_data_age_ms: 100, reasoning: '思考增量：先核对周计划来源', content_chars: 18, truncated: false }), cancel: async () => { actionCalls.push('cancel'); return task }, resume: async () => { actionCalls.push('resume'); return task }, retry: async () => { actionCalls.push('retry'); if (failActionOnce) { failActionOnce = false; throw new Error('offline') }; return task },
   }),
 }
 const weeklyStub = { newWeeklyRequestId: () => 'req-test', createWeeklyApi: () => ({ get: async () => { if (getDelay && getGate) await getGate; return detail() } }) }
@@ -100,7 +101,7 @@ const mod = { exports: {} }
 const mounted = []
 const vueStub = { ...vue, onMounted: (fn) => mounted.push(fn), onBeforeUnmount: (fn) => unmounts.push(fn) }
 const directionalStub = { captureDirectionalSelection: () => null, directionalSelectionKey: (field, group = '', candidate = '') => `${candidate}:${field}:${group}`, validateDirectionalSelection: () => '', wholeDirectionalSelection: (text) => ({ start: 0, end: text.length, text }) }
-const requireStub = (spec) => { if (spec === 'vue') return vueStub; if (spec === '../weekly-ai') return aiStub; if (spec === '../client') return { getSessionEpoch: () => sessionValue }; if (spec === '../weekly') return weeklyStub; if (spec === '../leave') return {}; if (spec === '../operations') return { isIndeterminate: (error) => error?.status === 0 || (typeof error?.status === 'number' && error.status >= 500) }; if (spec === '../components/DirectionalRevisionDialog.vue' || spec === '../components/DirectionalRevisionTrigger.vue') return { default: {} }; if (spec === '../directional-revision') return directionalStub; throw new Error(`unexpected ${spec}`) }
+const requireStub = (spec) => { if (spec === 'vue') return vueStub; if (spec === '../weekly-ai') return aiStub; if (spec === '../ai-progress') return aiProgress; if (spec === '../client') return { getSessionEpoch: () => sessionValue }; if (spec === '../weekly') return weeklyStub; if (spec === '../leave') return {}; if (spec === '../operations') return { isIndeterminate: (error) => error?.status === 0 || (typeof error?.status === 'number' && error.status >= 500) }; if (spec === '../components/DirectionalRevisionDialog.vue' || spec === '../components/DirectionalRevisionTrigger.vue') return { default: {} }; if (spec === '../directional-revision') return directionalStub; throw new Error(`unexpected ${spec}`) }
 const js = ts.transpileModule(compiled, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }, fileName: viewFile }).outputText
 vm.runInNewContext(js, { module: mod, exports: mod.exports, require: requireStub, console, Date, JSON, Math, Promise, URLSearchParams, crypto: { randomUUID: () => 'uuid' } }, { filename: viewFile })
 const emitted = []
@@ -109,6 +110,15 @@ const state = mod.exports.default.setup(props, { expose() {}, emit: (...args) =>
 await (async () => { mounted[0](); await new Promise((resolve) => setTimeout(resolve, 0)) })()
 assert.equal(state.tasks.value.length, 1)
 assert.equal(state.candidates.value.length, 2)
+await state.loadProgress(state.tasks.value[0])
+assert.equal(state.progressFor(state.tasks.value[0])?.task_id, 't1')
+assert.equal(state.progressFor(state.tasks.value[0])?.phase, 'thinking')
+assert.match(state.progressReasoningFor(state.tasks.value[0]), /思考增量/)
+assert.equal(
+  state.progressFor({ ...state.tasks.value[0], execution: { id: 'other' } }),
+  null,
+  'a progress snapshot from another execution is ignored',
+)
   ok('reentered panel loads persisted tasks and candidate details through paginated APIs')
 {
   taskPageMode = true
@@ -480,13 +490,15 @@ function p2Detail() { const value = detail(); value.plan.id = 'p2'; return value
   await new Promise((resolve) => setTimeout(resolve, 0))
   const before = calls.filter((item) => item.kind === 'materials').length
   await panelState.create('materials')
-  assert.equal(calls.filter((item) => item.kind === 'materials').length, before)
-  assert.equal(target.saves.length, 0)
+  const submitted = calls.filter((item) => item.kind === 'materials').slice(before)
+  assert.equal(submitted.length, 1)
+  assert.equal(submitted[0].body.expected_draft_version, 6)
+  assert.equal(target.saves.length, 1)
   assert.equal(panelState.materialsFocusReady.value, false)
-  assert.match(panelState.error.value, /重点区域/)
+  assert.equal(panelState.error.value, '')
   panelState.requestFocusArea()
   assert.ok(panelEmitted.some(([name]) => name === 'focus-area'))
-  ok('no live focus blocks materials before any save or POST and offers the focus-area action')
+  ok('no live focus still creates a suggested-materials task and keeps the optional focus-area action')
 }
 {
   const target = focusController('p2u', { version: 5, dirty: true, focus: focusChoice })
@@ -764,11 +776,11 @@ await panelState.refreshBatch()
   ok('an HTTP 200 receipt without draft keeps the pending ticket')
 }
 
+assert.match(source, /未选择重点区域/)
+assert.match(source, /建议材料/)
 assert.match(source, /前往重点区域/)
-assert.match(source, /刷新来源预览/)
-assert.match(source, /日计划/)
 assert.match(compiled, /materialsFocusReady/)
-ok('panel source gates materials on live focus and exposes a concrete focus-area action')
+ok('panel explains suggested materials when no focus and keeps the optional focus-area action')
 
 assert.equal(source.includes('v-html'), false)
 assert.equal(source.includes('JSON.stringify'), false)

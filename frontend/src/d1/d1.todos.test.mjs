@@ -40,6 +40,7 @@ function makeTodo(id, title, due = null, version = 1) {
     title,
     due_date: due,
     completed: false,
+    archived_at: null,
     version,
     created_at: `2026-11-0${version}T10:00:00`,
     updated_at: `2026-11-0${version}T10:00:00`,
@@ -57,7 +58,9 @@ class FakeTodoApi {
     this.unknownPreCommitNext = false
     this.failRetryNext = false
     this.listGate = null
+    this.listFailNext = false
     this.gate = null
+    this.batchCalls = 0
   }
 
   _copy(value) {
@@ -75,9 +78,17 @@ class FakeTodoApi {
       : null
   }
 
-  async list() {
+  async list(archived = false) {
+    if (this.listFailNext) {
+      this.listFailNext = false
+      throw new ApiError(500, '合成列表失败', 'TODO_INTERNAL')
+    }
     if (this.listGate) await this.listGate.promise
-    return { items: this._copy(this.items) }
+    return {
+      items: this._copy(
+        this.items.filter((item) => Boolean(item.archived_at) === archived),
+      ),
+    }
   }
 
   async create(body) {
@@ -180,6 +191,75 @@ class FakeTodoApi {
     return result
   }
 
+  async batch(body) {
+    this.batchCalls += 1
+    if (this.failRetryNext) {
+      this.failRetryNext = false
+      throw new ApiError(500, '合成重试失败', 'TODO_INTERNAL')
+    }
+    const replay = this._replay(body.request_id)
+    if (replay) return replay
+    if (body.action !== 'archive' && body.action !== 'delete') {
+      throw new ApiError(422, '合成批量动作非法', 'TODO_INVALID')
+    }
+    if (!Array.isArray(body.items) || !body.items.length) {
+      throw new ApiError(422, '合成批量项目为空', 'TODO_INVALID')
+    }
+    const ids = new Set()
+    const rows = []
+    for (const item of body.items) {
+      if (ids.has(item.todo_id)) {
+        throw new ApiError(422, '合成批量 ID 重复', 'TODO_INVALID')
+      }
+      ids.add(item.todo_id)
+      const row = this.items.find((candidate) => candidate.todo_id === item.todo_id)
+      if (!row) throw new ApiError(404, '待办不存在', 'TODO_NOT_FOUND')
+      if (row.version !== item.expected_version) {
+        throw new ApiError(409, '版本冲突', 'TODO_VERSION_CONFLICT', {
+          todo: this._copy(row),
+        })
+      }
+      if (body.action === 'archive' && !row.completed) {
+        throw new ApiError(422, '只能归档已完成的待办', 'TODO_INVALID')
+      }
+      rows.push(row)
+    }
+    if (this.failNext) {
+      this.failNext = false
+      throw new ApiError(500, '合成批量失败', 'TODO_INTERNAL')
+    }
+    if (this.gate) await this.gate.promise
+    const resultItems = []
+    for (const row of rows) {
+      if (body.action === 'archive') {
+        row.archived_at = '2026-11-11T12:00:00'
+        row.version += 1
+        row.updated_at = '2026-11-11T12:00:00'
+        resultItems.push(this._copy(row))
+      } else {
+        resultItems.push(this._copy(row))
+      }
+    }
+    if (body.action === 'delete') {
+      this.items = this.items.filter((row) => !ids.has(row.todo_id))
+    }
+    const result = {
+      action: body.action,
+      items: resultItems,
+      deleted: body.action === 'delete',
+    }
+    this._receipt(body.request_id, result)
+    if (this.commitUnknownNext) {
+      this.commitUnknownNext = false
+      throw new ApiError(503, '提交结果不确定', 'TODO_COMMIT_UNCERTAIN')
+    }
+    if (this.unknownNext) {
+      this.unknownNext = false
+      throw new ApiError(0, '合成网络中断')
+    }
+    return this._copy(result)
+  }
+
   async operation(requestId) {
     const result = this._replay(requestId)
     if (!result) {
@@ -204,13 +284,15 @@ function loadTodoModule(api) {
     ApiError,
     pathSegment: (value) => encodeURIComponent(String(value)),
     apiGet: async (url) => {
-      if (url === '/api/local/todos') return api.list()
+      if (url === '/api/local/todos') return api.list(false)
+      if (url === '/api/local/todos?archived=true') return api.list(true)
       const match = String(url).match(/\/api\/local\/todos\/operations\/([^/]+)$/)
       if (match) return api.operation(decodeURIComponent(match[1]))
       throw new ApiError(404, `unexpected GET ${url}`)
     },
     apiPost: async (url, body) => {
       if (url === '/api/local/todos') return api.create(body)
+      if (url === '/api/local/todos/batch') return api.batch(body)
       throw new ApiError(404, `unexpected POST ${url}`)
     },
     apiPatch: async (url, body) => {
@@ -270,6 +352,10 @@ for (const marker of [
   'data-d1="workbench-todos"', 'data-d1="todo-title"', 'data-d1="todo-due"',
   'data-d1="todo-save"', 'data-d1="todo-pending"', 'data-d1="todo-query"',
   'data-d1="todo-retry"', 'todo-row-',
+  'data-d1="todo-view-active"', 'data-d1="todo-view-archived"',
+  'data-d1="todo-batch-archive"', 'data-d1="todo-batch-delete"',
+  'data-d1="todo-selected-count"', 'todo-select-',
+  '确认归档已完成的', '确认删除所选的',
 ]) assert.ok(panel.includes(marker), marker)
 ok('workbench normal entry and minimal todo controls are present')
 
@@ -525,4 +611,172 @@ ok('workbench normal entry and minimal todo controls are present')
   ok('an old confirmed receipt cannot overwrite a newer item version')
 }
 
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [
+    { ...makeTodo('a1', '完成甲'), completed: true },
+    { ...makeTodo('a2', '完成乙'), completed: true },
+    { ...makeTodo('a3', '未完成'), completed: false },
+  ]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.load()
+  store.state.draftTitle = '切换视图也不丢的草稿'
+  store.toggleSelected('a1', true)
+  store.toggleSelected('a2', true)
+  assert.equal(store.state.selectedIds.length, 2)
+  await store.archiveBatch(store.state.items.filter((item) => item.completed))
+  assert.equal(store.state.items.length, 1)
+  assert.equal(store.state.items[0].todo_id, 'a3')
+  assert.equal(store.state.selectedIds.length, 0)
+  assert.equal(store.state.draftTitle, '切换视图也不丢的草稿')
+  assert.match(store.state.notice, /已归档 2 项/)
+
+  await store.setArchivedView(true)
+  assert.equal(store.state.showArchived, true)
+  assert.equal(store.state.items.length, 2)
+  assert.ok(store.state.items.every((item) => item.archived_at))
+  assert.equal(store.state.draftTitle, '切换视图也不丢的草稿')
+
+  await store.deleteBatch(store.state.items)
+  assert.equal(store.state.items.length, 0)
+  await store.setArchivedView(false)
+  assert.equal(store.state.showArchived, false)
+  assert.equal(api.items.length, 1)
+  assert.equal(api.items[0].todo_id, 'a3')
+  ok('completed selection archives, archived view loads, batch delete confirms, and drafts survive view switches')
+}
+
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [{ ...makeTodo('b1', '完成'), completed: true }]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.load()
+  api.commitUnknownNext = true
+  await store.archiveBatch([store.state.items[0]])
+  assert.equal(store.state.pending?.action, 'batch_archive')
+  assert.equal(store.state.items.length, 1)
+  assert.equal(store.busy.value, true)
+  await store.queryPending()
+  assert.equal(store.state.pending, null)
+  assert.equal(store.state.items.length, 0)
+  assert.equal(store.busy.value, false)
+  ok('an unknown batch archive keeps its original request and resolves from the receipt')
+}
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [
+    { ...makeTodo('c1', '完成一'), completed: true },
+    { ...makeTodo('c2', '完成二'), completed: true },
+  ]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.load()
+  store.toggleSelected('c1', true)
+  store.toggleSelected('c2', true)
+  const gate = deferred()
+  api.gate = gate
+  const first = store.archiveBatch(store.state.items)
+  const second = store.archiveBatch(store.state.items)
+  assert.equal(store.state.batching, true)
+  assert.equal(api.batchCalls, 1)
+  gate.resolve()
+  await Promise.all([first, second])
+  assert.equal(store.state.batching, false)
+  assert.equal(api.batchCalls, 1)
+  ok('batch actions are single-flight and never send a duplicate while pending')
+}
+
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [
+    { ...makeTodo('d1', '完成一'), completed: true },
+    { ...makeTodo('d2', '完成二'), completed: true },
+  ]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.load()
+  api.items[1].version = 2
+  await store.archiveBatch(store.state.items)
+  assert.match(store.state.error, /其他窗口/)
+  assert.equal(store.state.pending, null)
+  assert.ok(api.items.every((item) => item.archived_at === null))
+  assert.equal(store.state.items.length, 2)
+  ok('a batch version conflict changes no rows and keeps the selected working list')
+}
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [
+    { ...makeTodo('active', '活动待办'), completed: false },
+    { ...makeTodo('old', '已归档'), completed: true, archived_at: '2026-11-01T10:00:00' },
+  ]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.load()
+  store.startEdit(store.state.items.find((item) => item.todo_id === 'active'))
+  store.state.draftTitle = '活动草稿改标题'
+  await store.setArchivedView(true)
+  assert.equal(store.state.items.length, 1)
+  assert.equal(store.state.items[0].todo_id, 'old')
+  store.state.draftTitle = '归档视图里继续保存活动草稿'
+  await store.save()
+  assert.equal(store.state.items.length, 1)
+  assert.equal(store.state.items[0].todo_id, 'old')
+  assert.equal(api.items.find((item) => item.todo_id === 'active').title, '归档视图里继续保存活动草稿')
+  store.state.draftTitle = '归档视图新建'
+  await store.save()
+  assert.equal(store.state.items.length, 1)
+  assert.equal(store.state.showArchived, true)
+  assert.equal(api.items.filter((item) => !item.archived_at).length, 2)
+  await store.setArchivedView(false)
+  assert.equal(store.state.items.length, 2)
+  ok('active drafts and new rows never leak into the archived projection')
+}
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [{ ...makeTodo('live', '活动行') }]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.load()
+  store.toggleSelected('live', true)
+  api.listFailNext = true
+  await store.setArchivedView(true)
+  assert.equal(store.state.showArchived, true)
+  assert.equal(store.state.items.length, 0)
+  assert.equal(store.state.selectedIds.length, 0)
+  assert.equal(store.state.listReady, false)
+  store.toggleSelected('live', true)
+  assert.equal(store.state.selectedIds.length, 0)
+  await store.load()
+  assert.equal(store.state.listReady, true)
+  assert.equal(store.state.items.length, 0)
+  ok('a failed view GET clears the old projection and keeps a retryable empty view')
+}
+
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [{ ...makeTodo('stale', '并发项'), completed: true }]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.load()
+  api.commitUnknownNext = true
+  await store.archiveBatch([store.state.items[0]])
+  assert.equal(store.state.pending?.action, 'batch_archive')
+  store.state.items[0].version = 3
+  await store.queryPending()
+  assert.equal(store.state.pending, null)
+  assert.equal(store.state.items.length, 1)
+  assert.equal(store.state.items[0].todo_id, 'stale')
+  assert.equal(store.state.items[0].version, 3)
+  assert.equal(store.state.items[0].archived_at, null)
+  ok('a stale batch receipt cannot remove a newer visible row')
+}
 console.log(`\n${passed} todo checks passed`)

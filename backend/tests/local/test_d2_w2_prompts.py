@@ -20,9 +20,10 @@ import unittest
 import uuid
 from unittest import mock
 
-from app.local import prompt_bundles, prompt_service
+from app.local import ai_task_service, prompt_bundles, prompt_service
 from app.local.errors import LocalError, LocalStorageError
-from app.local.prompt_bundles import PROMPT_BUNDLE_MANIFEST
+from app.local.models import LocalPersonalPromptHead, LocalPromptBundle
+from app.local.prompt_bundles import PROMPT_BUNDLE_MANIFEST, REGISTERED_TASK_TYPES
 from app.local.runtime import LocalRuntime
 from tests.local.support import (
     LocalTestCase,
@@ -31,7 +32,12 @@ from tests.local.support import (
     query_scalar,
 )
 
-TASKS = ("daily_lesson_split", "daily_process_adapt", "daily_other_activities")
+TASKS = (
+    "daily_lesson_split",
+    "daily_process_adapt",
+    "daily_other_activities",
+    "daily_reflection_generate",
+)
 
 
 def _task_bundle(task_type: str) -> dict:
@@ -150,7 +156,7 @@ class PromptCase(LocalTestCase):
 
 
 class PromptReadTests(PromptCase):
-    def test_list_only_three_daily_tasks_and_no_version_bump(self):
+    def test_list_all_four_daily_tasks_and_no_version_bump(self):
         before = query_scalar(
             self.db, "SELECT count(*) FROM local_personal_prompt_versions"
         )
@@ -166,6 +172,233 @@ class PromptReadTests(PromptCase):
             ),
             before,
         )
+        self.assertIn("daily_reflection_generate", [item["task_type"] for item in out["items"]])
+
+    def test_reflection_prompt_is_editable(self):
+        out = self.prompt("daily_reflection_generate")
+        guidance = dict(out["guidance"])
+        guidance["reflection"] = "教师自定义反思指导"
+        edited = self.edit(
+            "daily_reflection_generate",
+            guidance,
+            expected=out["personal_revision"],
+            contract=out["contract_version"],
+        )
+        self.assertEqual(edited["guidance"]["reflection"], "教师自定义反思指导")
+        self.assertEqual([field["key"] for field in edited["fields"]], ["reflection"])
+
+    def test_scope_all_skips_missing_optional_head_but_keeps_daily_gate(self):
+        profile_id = query_scalar(self.db, "SELECT id FROM local_profile")
+        session = self.session()
+        try:
+            optional = session.get(
+                LocalPersonalPromptHead, (profile_id, "weekly_games_select")
+            )
+            session.delete(optional)
+            session.commit()
+            all_items = prompt_service.list_prompts(session, scope="all")
+            task_types = {item["task_type"] for item in all_items["items"]}
+            self.assertNotIn("weekly_games_select", task_types)
+            self.assertIn("daily_reflection_generate", task_types)
+            self.assertIn("listening_goal_suggest", task_types)
+            daily = session.get(
+                LocalPersonalPromptHead, (profile_id, "daily_lesson_split")
+            )
+            session.delete(daily)
+            session.commit()
+            with self.assertRaises(LocalStorageError):
+                prompt_service.list_prompts(session, scope="all")
+        finally:
+            session.close()
+
+    def test_scope_all_lists_every_registered_task_without_writes(self):
+        before = query_scalar(
+            self.db, "SELECT count(*) FROM local_personal_prompt_versions"
+        )
+        session = self.session()
+        try:
+            daily = prompt_service.list_prompts(session)
+            all_items = prompt_service.list_prompts(session, scope="all")
+        finally:
+            session.close()
+        self.assertEqual([item["task_type"] for item in daily["items"]], list(TASKS))
+        self.assertEqual(
+            [item["task_type"] for item in all_items["items"]],
+            list(REGISTERED_TASK_TYPES),
+        )
+        required = {
+            "daily_reflection_generate",
+            "game_observation_generate",
+            "game_observation_rewrite",
+            "weekly_games_select",
+            "weekly_key_week_focus",
+            "weekly_environment_setup",
+            "weekly_habit_culture",
+            "weekly_home_cooperation",
+            "weekly_materials_generate",
+            "listening_note_draft",
+            "listening_domain_evaluate",
+            "listening_group_notes",
+            "listening_goal_suggest",
+            "curriculum_split",
+            "curriculum_review",
+            "curriculum_edit",
+            "class_game_config_extract",
+            "directional_revision",
+        }
+        self.assertTrue(required.issubset({item["task_type"] for item in all_items["items"]}))
+        self.assertEqual(
+            query_scalar(
+                self.db, "SELECT count(*) FROM local_personal_prompt_versions"
+            ),
+            before,
+        )
+        session = self.session()
+        try:
+            with self.assertRaises(LocalError) as ctx:
+                prompt_service.list_prompts(session, scope="unknown")
+        finally:
+            session.close()
+        self.assertEqual(ctx.exception.code, "VALIDATION_ERROR")
+
+    def test_registered_module_prompts_edit_and_drive_current_task_prompt(self):
+        task_types = (
+            "weekly_games_select",
+            "weekly_materials_generate",
+            "listening_note_draft",
+            "listening_domain_evaluate",
+            "listening_group_notes",
+            "listening_goal_suggest",
+            "game_observation_generate",
+            "game_observation_rewrite",
+            "curriculum_split",
+            "curriculum_review",
+            "curriculum_edit",
+            "daily_reflection_generate",
+        )
+        profile_id = query_scalar(self.db, "SELECT id FROM local_profile")
+        session = self.session()
+        try:
+            for task_type in task_types:
+                out = prompt_service.get_prompt(session, task_type=task_type)
+                guidance = dict(out["guidance"])
+                key = next(iter(guidance))
+                guidance[key] = f"教师自定义-{task_type}"
+                edited = prompt_service.save_prompt(
+                    session,
+                    task_type=task_type,
+                    expected_personal_revision=out["personal_revision"],
+                    contract_version=out["contract_version"],
+                    guidance=guidance,
+                    request_id=str(uuid.uuid4()),
+                )
+                self.assertEqual(edited["guidance"][key], f"教师自定义-{task_type}")
+                reread = prompt_service.get_prompt(session, task_type=task_type)
+                self.assertEqual(reread["guidance"][key], f"教师自定义-{task_type}")
+                _head, current = ai_task_service._current_prompt(
+                    session, profile_id, task_type
+                )
+                self.assertIsNotNone(current)
+                self.assertEqual(
+                    current.guidance_json[key], f"教师自定义-{task_type}"
+                )
+        finally:
+            session.close()
+
+    def test_initial_seed_keeps_remote_identity_and_reflection_r2(self):
+        seed = prompt_bundles.initial_prompt_seed()
+        self.assertEqual(seed["daily_lesson_split"]["default_revision"], 2)
+        self.assertEqual(seed["daily_process_adapt"]["default_revision"], 3)
+        self.assertEqual(seed["daily_other_activities"]["default_revision"], 2)
+        self.assertEqual(seed["daily_reflection_generate"]["default_revision"], 2)
+        reflection = seed["daily_reflection_generate"]["guidance"]["reflection"]
+        self.assertIn("100～200", reflection)
+        self.assertIn("实施材料", reflection)
+
+    def test_historical_other_activities_r2_content_and_digest_are_accepted(self):
+        old_guidance = dict(prompt_bundles._OTHER_GUIDANCE_R2)
+        old_guidance["afternoon_outdoor"] = old_guidance[
+            "afternoon_outdoor"
+        ].replace("不虚构", "不伪造")
+        session = self.session()
+        try:
+            row = session.get(LocalPromptBundle, ("daily_other_activities", 1, 2))
+            self.assertIsNotNone(row)
+            digest = prompt_bundles.bundle_hash(
+                row.input_schema_json,
+                row.output_schema_json,
+                old_guidance,
+            )
+            self.assertIn(
+                digest,
+                prompt_bundles.HISTORICAL_BUNDLE_HASHES[
+                    ("daily_other_activities", 1, 2)
+                ],
+            )
+            row.guidance_defaults_json = old_guidance
+            row.bundle_hash = digest
+            session.commit()
+        finally:
+            session.close()
+        self.sync(PROMPT_BUNDLE_MANIFEST)
+        row = query_rows(
+            self.db,
+            "SELECT guidance_defaults_json, bundle_hash FROM local_prompt_bundles "
+            "WHERE task_type='daily_other_activities' AND contract_version=1 "
+            "AND default_revision=2",
+        )[0]
+        guidance = (
+            row["guidance_defaults_json"]
+            if isinstance(row["guidance_defaults_json"], dict)
+            else __import__("json").loads(row["guidance_defaults_json"])
+        )
+        self.assertEqual(guidance["afternoon_outdoor"], old_guidance["afternoon_outdoor"])
+        self.assertEqual(
+            row["bundle_hash"],
+            next(
+                iter(
+                    prompt_bundles.HISTORICAL_BUNDLE_HASHES[
+                        ("daily_other_activities", 1, 2)
+                    ]
+                )
+            ),
+        )
+
+    def test_historical_digest_on_tampered_content_is_rejected(self):
+        session = self.session()
+        try:
+            row = session.get(LocalPromptBundle, ("daily_other_activities", 1, 2))
+            self.assertIsNotNone(row)
+            guidance = dict(row.guidance_defaults_json)
+            guidance["morning_games"] = "被篡改的晨间游戏文字"
+            row.guidance_defaults_json = guidance
+            # Copy the known historical digest without matching its content.
+            row.bundle_hash = next(
+                iter(
+                    prompt_bundles.HISTORICAL_BUNDLE_HASHES[
+                        ("daily_other_activities", 1, 2)
+                    ]
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+        with self.assertRaises(LocalError) as ctx:
+            self.sync(PROMPT_BUNDLE_MANIFEST)
+        self.assertEqual(ctx.exception.code, "PROMPT_BUNDLE_CONFLICT")
+
+    def test_other_activities_arbitrary_hash_still_conflicts(self):
+        session = self.session()
+        try:
+            row = session.get(LocalPromptBundle, ("daily_other_activities", 1, 2))
+            self.assertIsNotNone(row)
+            row.bundle_hash = "0" * 64
+            session.commit()
+        finally:
+            session.close()
+        with self.assertRaises(LocalError) as ctx:
+            self.sync(PROMPT_BUNDLE_MANIFEST)
+        self.assertEqual(ctx.exception.code, "PROMPT_BUNDLE_CONFLICT")
 
     def test_get_prompt_is_read_only(self):
         out = self.prompt("daily_lesson_split")
@@ -263,10 +496,124 @@ class PromptEditTests(PromptCase):
         self.assertEqual(ctx.exception.details["personal_revision"], 1)
 
 
+    def test_local_weekly_column_instructions_preserve_bundle(self):
+        task_types = (
+            "weekly_key_week_focus",
+            "weekly_environment_setup",
+            "weekly_habit_culture",
+            "weekly_home_cooperation",
+        )
+        profile_id = query_scalar(self.db, "SELECT id FROM local_profile")
+        session = self.session()
+        try:
+            for task_type in task_types:
+                out = prompt_service.get_prompt(session, task_type=task_type)
+                self.assertEqual(out["guidance"]["instructions"], "")
+                self.assertTrue(
+                    any(
+                        field["key"] == "instructions"
+                        and field["default_text"] == ""
+                        for field in out["fields"]
+                    )
+                )
+                bundle = session.get(
+                    LocalPromptBundle,
+                    (
+                        task_type,
+                        out["contract_version"],
+                        out["based_default_revision"],
+                    ),
+                )
+                self.assertIsNotNone(bundle)
+                before_guidance = dict(bundle.guidance_defaults_json)
+                before_hash = bundle.bundle_hash
+                self.assertNotIn("instructions", before_guidance)
+                guidance = dict(out["guidance"])
+                guidance["instructions"] = f"本地补充-{task_type}"
+                edited = prompt_service.save_prompt(
+                    session,
+                    task_type=task_type,
+                    expected_personal_revision=out["personal_revision"],
+                    contract_version=out["contract_version"],
+                    guidance=guidance,
+                    request_id=str(uuid.uuid4()),
+                )
+                self.assertEqual(
+                    edited["guidance"]["instructions"], f"本地补充-{task_type}"
+                )
+                reread = prompt_service.get_prompt(session, task_type=task_type)
+                self.assertEqual(
+                    reread["guidance"]["instructions"], f"本地补充-{task_type}"
+                )
+                _head, current = ai_task_service._current_prompt(
+                    session, profile_id, task_type
+                )
+                self.assertEqual(
+                    current.guidance_json["instructions"],
+                    f"本地补充-{task_type}",
+                )
+                session.refresh(bundle)
+                self.assertEqual(dict(bundle.guidance_defaults_json), before_guidance)
+                self.assertEqual(bundle.bundle_hash, before_hash)
+                self.assertEqual(
+                    prompt_bundles.bundle_hash(
+                        bundle.input_schema_json,
+                        bundle.output_schema_json,
+                        bundle.guidance_defaults_json,
+                    ),
+                    before_hash,
+                )
+                self.assertEqual(reread["guidance"]["target"], before_guidance["target"])
+        finally:
+            session.close()
 class PromptAcceptRejectTests(PromptCase):
+    def test_accept_default_clears_local_weekly_instruction(self):
+        out = self.prompt("weekly_key_week_focus")
+        guidance = dict(out["guidance"])
+        guidance["instructions"] = "教师先写的本地补充"
+        edited = self.edit(
+            "weekly_key_week_focus",
+            guidance,
+            expected=out["personal_revision"],
+            contract=out["contract_version"],
+        )
+        default_session = self.session()
+        try:
+            default = prompt_service.get_default(
+                default_session,
+                task_type="weekly_key_week_focus",
+                contract_version=out["required_contract_version"],
+                default_revision=out["latest_default_revision"],
+            )
+        finally:
+            default_session.close()
+        self.assertEqual(default["guidance"]["instructions"], "")
+        self.assertTrue(
+            any(field["key"] == "instructions" for field in default["fields"])
+        )
+        session = self.session()
+        try:
+            accepted = prompt_service.accept_default(
+                session,
+                task_type="weekly_key_week_focus",
+                expected_personal_revision=edited["personal_revision"],
+                target_contract_version=out["required_contract_version"],
+                target_default_revision=out["latest_default_revision"],
+                selected_fields=["instructions"],
+                request_id=str(uuid.uuid4()),
+            )
+            self.assertEqual(accepted["guidance"]["instructions"], "")
+            reread = prompt_service.get_prompt(
+                session, task_type="weekly_key_week_focus"
+            )
+            self.assertEqual(reread["guidance"]["instructions"], "")
+        finally:
+            session.close()
+
     def test_accept_r2_while_r3_published_only_selected_fields(self):
         # Keep a custom process in the personal version, then accept only the
-        # r2 theme after r3 is published. The unselected process must survive.
+        # r2 theme while r3 is the current default. The unselected process must
+        # survive and r3 stays pending.
         custom = dict(_task_bundle("daily_lesson_split")["guidance_defaults_json"])
         custom["process"] = "教师自定义过程\n不得被默认覆盖"
         custom["theme"] = "教师自定义主题"
@@ -336,7 +683,7 @@ class PromptAcceptRejectTests(PromptCase):
             session.close()
 
     def test_reject_records_exact_revision_and_is_idempotent(self):
-        self.sync([make_bundle("daily_lesson_split", 1, 3, text={"theme": "r3"})])
+        self.sync([make_bundle("daily_lesson_split", 1, 10, text={"theme": "r10"})])
         session = self.session()
         try:
             rejected = prompt_service.reject_default(
@@ -344,10 +691,10 @@ class PromptAcceptRejectTests(PromptCase):
                 task_type="daily_lesson_split",
                 expected_personal_revision=1,
                 target_contract_version=1,
-                target_default_revision=3,
+                target_default_revision=10,
                 request_id=str(uuid.uuid4()),
             )
-            self.assertEqual(rejected["rejected_default_revision"], 3)
+            self.assertEqual(rejected["rejected_default_revision"], 10)
             self.assertEqual(rejected["personal_revision"], 2)
             self.assertEqual(
                 rejected["guidance"]["theme"],
@@ -359,7 +706,7 @@ class PromptAcceptRejectTests(PromptCase):
                 task_type="daily_lesson_split",
                 expected_personal_revision=2,
                 target_contract_version=1,
-                target_default_revision=3,
+                target_default_revision=10,
                 request_id=str(uuid.uuid4()),
             )
             self.assertEqual(again["personal_revision"], 2)
@@ -652,6 +999,19 @@ class PromptHttpTests(PromptCase):
         status, body = self.client.get("/api/local/ai/prompts")
         self.assertEqual(status, 200, body)
         self.assertEqual(body["items"][0]["task_type"], "daily_lesson_split")
+
+    def test_scope_all_query_is_compatible_and_default_stays_daily(self):
+        status, body = self.client.get("/api/local/ai/prompts")
+        self.assertEqual(status, 200, body)
+        self.assertEqual([item["task_type"] for item in body["items"]], list(TASKS))
+        status, body = self.client.get("/api/local/ai/prompts?scope=all")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(
+            [item["task_type"] for item in body["items"]],
+            list(REGISTERED_TASK_TYPES),
+        )
+        status, _body = self.client.get("/api/local/ai/prompts?scope=invalid")
+        self.assertEqual(status, 422)
 
     def test_extra_field_and_strict_int_rejected_over_http(self):
         status, body = self.client.patch(

@@ -46,11 +46,16 @@ class SqlTodoRepository:
         self.session = session
         self.profile_id = profile_id
 
-    def list_todos(self) -> list[dict[str, Any]]:
+    def list_todos(self, archived: bool = False) -> list[dict[str, Any]]:
         with read_scope(self.session):
+            archive_filter = (
+                LocalTodo.archived_at.is_not(None)
+                if archived
+                else LocalTodo.archived_at.is_(None)
+            )
             rows = self.session.scalars(
                 select(LocalTodo)
-                .where(LocalTodo.profile_id == self.profile_id)
+                .where(LocalTodo.profile_id == self.profile_id, archive_filter)
                 .order_by(
                     LocalTodo.completed.asc(),
                     case((LocalTodo.due_date.is_(None), 1), else_=0),
@@ -114,7 +119,7 @@ class SqlTodoRepository:
         row = self.session.get(LocalTodo, todo_id)
         if row is None or row.profile_id != self.profile_id:
             raise domain.TodoNotFound()
-        for key in ("title", "due_date", "completed", "version", "updated_at"):
+        for key in ("title", "due_date", "completed", "archived_at", "version", "updated_at"):
             if key in fields:
                 setattr(row, key, fields[key])
         self.session.flush()

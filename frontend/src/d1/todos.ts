@@ -22,6 +22,7 @@ export interface LocalTodo {
   title: string
   due_date: string | null
   completed: boolean
+  archived_at: string | null
   version: number
   created_at: string
   updated_at: string
@@ -32,13 +33,15 @@ export interface TodoListPayload {
 }
 
 export interface TodoOperationResult {
-  todo: LocalTodo
+  todo?: LocalTodo
   deleted?: boolean
+  action?: 'archive' | 'delete'
+  items?: LocalTodo[]
 }
 
 export interface TodoWritePending {
   requestId: string
-  action: 'create' | 'update' | 'delete'
+  action: 'create' | 'update' | 'delete' | 'batch_archive' | 'batch_delete'
   todoId: string | null
   fields: Record<string, unknown>
   ownsDraft: boolean
@@ -53,10 +56,11 @@ export interface TodoUiError {
 }
 
 export interface TodoApi {
-  list: () => Promise<TodoListPayload>
+  list: (archived?: boolean) => Promise<TodoListPayload>
   create: (body: Record<string, unknown>) => Promise<LocalTodo>
   update: (todoId: string, body: Record<string, unknown>) => Promise<LocalTodo>
   remove: (todoId: string, body: Record<string, unknown>) => Promise<TodoOperationResult>
+  batch: (body: Record<string, unknown>) => Promise<TodoOperationResult>
   operation: (requestId: string) => Promise<TodoOperationResult>
 }
 
@@ -64,12 +68,14 @@ const TODO_ROOT = '/api/local/todos'
 
 export function createTodoApi(): TodoApi {
   return {
-    list: () => apiGet<TodoListPayload>(TODO_ROOT),
+    list: (archived = false) =>
+      apiGet<TodoListPayload>(archived ? `${TODO_ROOT}?archived=true` : TODO_ROOT),
     create: (body) => apiPost<LocalTodo>(TODO_ROOT, body),
     update: (todoId, body) =>
       apiPatch<LocalTodo>(`${TODO_ROOT}/${pathSegment(todoId)}`, body),
     remove: (todoId, body) =>
       apiDelete<TodoOperationResult>(`${TODO_ROOT}/${pathSegment(todoId)}`, body),
+    batch: (body) => apiPost<TodoOperationResult>(`${TODO_ROOT}/batch`, body),
     operation: (requestId) =>
       apiGet<TodoOperationResult>(
         `${TODO_ROOT}/operations/${pathSegment(requestId)}`,
@@ -196,12 +202,18 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
     editingId: null as string | null,
     editingVersion: 0,
     pending: null as TodoWritePending | null,
+    showArchived: false,
+    selectedIds: [] as string[],
+    batching: false,
+    listReady: false,
   })
   let loadSeq = 0
   let mutationSeq = 0
   let draftSession = 0
 
-  const busy = computed(() => state.saving || state.checking || state.pending !== null)
+  const busy = computed(
+    () => state.saving || state.batching || state.checking || state.pending !== null,
+  )
   const editing = computed(() => state.editingId !== null)
 
   function setProfile(profileId: string): void {
@@ -220,12 +232,27 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
     state.editingId = null
     state.editingVersion = 0
     state.pending = null
+    state.showArchived = false
+    state.selectedIds = []
+    state.batching = false
+    state.listReady = false
     mutationSeq += 1
     draftSession += 1
   }
 
+  function inCurrentView(todo: LocalTodo): boolean {
+    return Boolean(todo.archived_at) === state.showArchived
+  }
+
   function applyTodo(todo: LocalTodo): boolean {
     const index = state.items.findIndex((item) => item.todo_id === todo.todo_id)
+    if (!inCurrentView(todo)) {
+      if (index < 0) return false
+      if (state.items[index].version > todo.version) return false
+      state.items.splice(index, 1)
+      mutationSeq += 1
+      return true
+    }
     if (index >= 0) {
       if (state.items[index].version > todo.version) return false
       state.items[index] = todo
@@ -245,9 +272,26 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
     return true
   }
 
+  function applyBatchResult(result: TodoOperationResult): boolean {
+    const items = result.items ?? []
+    let changed = false
+    for (const item of items) {
+      if (result.action === 'delete') {
+        changed = removeTodo(item.todo_id, item.version) || changed
+      } else {
+        changed = applyTodo(item) || changed
+      }
+    }
+    return changed
+  }
+
   function applyResult(result: TodoOperationResult): boolean {
-    if (result.deleted) return removeTodo(result.todo.todo_id, result.todo.version)
-    return applyTodo(result.todo)
+    if (result.items) return applyBatchResult(result)
+    if (result.deleted && result.todo) {
+      return removeTodo(result.todo.todo_id, result.todo.version)
+    }
+    if (result.todo) return applyTodo(result.todo)
+    return false
   }
 
   function finishDraft(): void {
@@ -285,21 +329,57 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
     state.loading = true
     state.error = ''
     try {
-      const result = await api.list()
+      const result = await api.list(state.showArchived)
       if (seq !== loadSeq || state.profileId !== profileAtStart) return
-      if (mutationSeq !== mutationAtStart) return
+      if (mutationSeq !== mutationAtStart) {
+        state.listReady = true
+        return
+      }
       state.items = [...result.items].sort(todoOrder)
+      const present = new Set(state.items.map((item) => item.todo_id))
+      state.selectedIds = state.selectedIds.filter((id) => present.has(id))
+      state.listReady = true
       state.conflict = false
     } catch (error) {
       if (seq !== loadSeq) return
       state.error = projectTodoError(error).message
+      state.listReady = false
     } finally {
       if (seq === loadSeq) state.loading = false
     }
   }
 
+  async function setArchivedView(archived: boolean): Promise<void> {
+    if (
+      state.showArchived === archived
+      || state.pending
+      || state.batching
+      || state.saving
+      || state.loading
+    ) return
+    state.showArchived = archived
+    state.items = []
+    state.selectedIds = []
+    state.listReady = false
+    state.error = ''
+    state.notice = ''
+    await load()
+  }
+
+  function toggleSelected(todoId: string, selected: boolean): void {
+    if (state.pending || state.batching || state.saving || !state.listReady) return
+    const ids = new Set(state.selectedIds)
+    if (selected) ids.add(todoId)
+    else ids.delete(todoId)
+    state.selectedIds = [...ids]
+  }
+
+  function clearSelection(): void {
+    state.selectedIds = []
+  }
+
   function startEdit(item: LocalTodo): void {
-    if (state.pending || state.saving) return
+    if (state.pending || state.saving || state.batching || !state.listReady) return
     draftSession += 1
     state.editingId = item.todo_id
     state.editingVersion = item.version
@@ -311,13 +391,19 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
   }
 
   function cancelEdit(): void {
-    if (state.saving) return
+    if (state.saving || state.batching) return
     finishDraft()
     state.error = ''
   }
 
   async function save(): Promise<void> {
-    if (state.pending || state.saving || !state.profileId) return
+    if (
+      state.pending
+      || state.saving
+      || state.batching
+      || !state.profileId
+      || !state.listReady
+    ) return
     const title = cleanTitle(state.draftTitle)
     if (!title) {
       state.error = '待办标题不能为空，且不超过 200 个字符'
@@ -389,7 +475,7 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
   }
 
   async function toggle(item: LocalTodo): Promise<void> {
-    if (state.pending || state.saving) return
+    if (state.pending || state.saving || state.batching || !state.listReady) return
     const profileId = state.profileId
     const requestId = crypto.randomUUID()
     const attempt: TodoWritePending = {
@@ -429,7 +515,7 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
   }
 
   async function remove(item: LocalTodo): Promise<void> {
-    if (state.pending || state.saving) return
+    if (state.pending || state.saving || state.batching || !state.listReady) return
     const profileId = state.profileId
     const requestId = crypto.randomUUID()
     const attempt: TodoWritePending = {
@@ -469,9 +555,85 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
     }
   }
 
+  async function runBatch(
+    action: 'archive' | 'delete',
+    selected: LocalTodo[],
+  ): Promise<void> {
+    if (
+      state.pending
+      || state.saving
+      || state.batching
+      || !state.profileId
+      || !state.listReady
+    ) return
+    const unique = [...new Map(selected.map((item) => [item.todo_id, item])).values()]
+    if (!unique.length) return
+    if (action === 'archive' && unique.some((item) => !item.completed)) {
+      state.error = '只能归档已完成的待办'
+      return
+    }
+    if (action === 'archive' && unique.some((item) => item.archived_at)) {
+      state.error = '所选待办已归档'
+      return
+    }
+    const profileId = state.profileId
+    const requestId = crypto.randomUUID()
+    const items = unique.map((item) => ({
+      todo_id: item.todo_id,
+      expected_version: item.version,
+    }))
+    const attempt: TodoWritePending = {
+      requestId,
+      action: action === 'archive' ? 'batch_archive' : 'batch_delete',
+      todoId: null,
+      fields: { action, items },
+      ownsDraft: false,
+      draftSession,
+    }
+    state.error = ''
+    state.notice = ''
+    state.batching = true
+    try {
+      const result = await api.batch({
+        request_id: requestId,
+        action,
+        items,
+      })
+      if (state.profileId !== profileId) return
+      applyResult(result)
+      state.conflict = false
+      state.selectedIds = []
+      const count = result.items?.length ?? items.length
+      state.notice = action === 'archive'
+        ? `已归档 ${count} 项待办`
+        : `已删除 ${count} 项待办`
+    } catch (error) {
+      if (state.profileId !== profileId) return
+      const projected = projectTodoError(error)
+      if (projected.unknown) {
+        state.pending = attempt
+        state.notice = projected.message
+      } else if (projected.code === 'TODO_VERSION_CONFLICT') {
+        applyConflict(projected)
+      } else {
+        state.error = projected.message
+      }
+    } finally {
+      if (state.profileId === profileId) state.batching = false
+    }
+  }
+
+  function archiveBatch(items: LocalTodo[]): Promise<void> {
+    return runBatch('archive', items)
+  }
+
+  function deleteBatch(items: LocalTodo[]): Promise<void> {
+    return runBatch('delete', items)
+  }
+
   async function queryPending(): Promise<void> {
     const pending = state.pending
-    if (!pending || state.saving || state.checking) return
+    if (!pending || state.saving || state.batching || state.checking) return
     const profileId = state.profileId
     state.checking = true
     state.error = ''
@@ -480,6 +642,7 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
       if (state.profileId !== profileId) return
       applyResult(result)
       state.pending = null
+      state.selectedIds = []
       state.notice = '已恢复原操作结果'
       finishOwnedDraft(pending)
     } catch (error) {
@@ -499,7 +662,15 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
     state.error = ''
     try {
       let result: TodoOperationResult
-      if (pending.action === 'create') {
+      if (
+        pending.action === 'batch_archive'
+        || pending.action === 'batch_delete'
+      ) {
+        result = await api.batch({
+          request_id: pending.requestId,
+          ...pending.fields,
+        })
+      } else if (pending.action === 'create') {
         result = {
           todo: await api.create({
             request_id: pending.requestId,
@@ -522,6 +693,7 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
       if (state.profileId !== profileId) return
       applyResult(result)
       state.pending = null
+      state.selectedIds = []
       state.notice = '原请求已确认'
       finishOwnedDraft(pending)
     } catch (error) {
@@ -555,12 +727,17 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
     busy,
     editing,
     setProfile,
+    setArchivedView,
+    toggleSelected,
+    clearSelection,
     load,
     startEdit,
     cancelEdit,
     save,
     toggle,
     remove,
+    archiveBatch,
+    deleteBatch,
     queryPending,
     retryPending,
   }

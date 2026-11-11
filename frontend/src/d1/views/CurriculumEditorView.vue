@@ -1177,57 +1177,20 @@ defineExpose({
         </div>
       </el-card>
 
-      <el-card shadow="never" class="block" data-d1="curriculum-ai-review">
-        <template #header>AI 审议建议</template>
+      <el-card shadow="never" class="block" data-d1="curriculum-lesson-original-card">
+        <template #header>原稿教案（先粘贴原件）</template>
         <p class="muted">
-          先粘贴原稿教案，再生成。候选只作预览，明确采用后才进入保存；未知受理不会自动重发。
+          先粘贴原稿教案，再拆分并核对；保留段落、换行和编号文字。原件与二次稿分开显示。
         </p>
-        <el-button
-          type="primary"
-          data-d1="curriculum-ai-generate"
-          :disabled="!canMutate || !form.lesson_original.trim()"
-          @click="openReviewAi"
-        >
-          生成审议建议
-        </el-button>
-        <span v-if="!form.lesson_original.trim()" class="muted">
-          请先在「添加原稿教案」粘贴正文
-        </span>
-        <div class="ai-selection-row">
-          <el-button
-            size="small"
-            data-d1="curriculum-ai-edit-selection"
-            :disabled="!canMutate"
-            @click="openEditAiFromSelection"
-          >
-            让 AI 修改这里
-          </el-button>
-          <span class="muted" data-d1="curriculum-ai-selection-summary">
-            {{ lastSelectionSummary }}
-          </span>
-        </div>
-        <div class="ai-selection-row">
-          <el-select
-            v-model="wholeField"
-            style="width: 240px"
-            data-d1="curriculum-ai-whole-field"
-          >
-            <el-option
-              v-for="item in CURRICULUM_AI_EDIT_FIELDS"
-              :key="item.field"
-              :label="item.label"
-              :value="item.field"
-            />
-          </el-select>
-          <el-button
-            size="small"
-            data-d1="curriculum-ai-edit-whole"
-            :disabled="!canMutate || !wholeField"
-            @click="selectWholeAndEdit(wholeField)"
-          >
-            整栏修改
-          </el-button>
-        </div>
+        <el-input
+          type="textarea"
+          :rows="10"
+          :model-value="form.lesson_original"
+          data-d1="curriculum-lesson-original"
+          data-curriculum-field="lesson_original"
+          :disabled="!canEdit"
+          @update:model-value="setField('lesson_original', $event)"
+        />
       </el-card>
 
       <el-card shadow="never" class="block">
@@ -1502,39 +1465,73 @@ defineExpose({
           @update:model-value="setField('reason', $event)"
         />
       </el-card>
-      <el-card shadow="never" class="block">
-        <template #header>教案材料</template>
-        <p class="muted">直接粘贴正文；保留段落、换行和编号文字。</p>
-        <div class="pair-grid">
-          <label>
-            <span>添加原稿教案</span>
-            <el-input
-              type="textarea"
-              :rows="10"
-              :model-value="form.lesson_original"
-              data-d1="curriculum-lesson-original"
-              data-curriculum-field="lesson_original"
-              :disabled="!canEdit"
-              @update:model-value="
-                setField('lesson_original', $event)
-              "
-            />
-          </label>
-          <label>
-            <span>添加二次修改</span>
-            <el-input
-              type="textarea"
-              :rows="10"
-              :model-value="form.lesson_revised"
-              data-d1="curriculum-lesson-revised"
-              data-curriculum-field="lesson_revised"
-              :disabled="!canEdit"
-              @update:model-value="
-                setField('lesson_revised', $event)
-              "
-            />
-          </label>
+      <el-card shadow="never" class="block" data-d1="curriculum-ai-review">
+        <template #header>拆分、核对与审议建议</template>
+        <p class="muted">
+          按需拆分、核对原稿后生成审议建议或局部修改。候选只作预览，明确采用后才进入保存；未知受理不会自动重发。
+        </p>
+        <el-button
+          type="primary"
+          data-d1="curriculum-ai-generate"
+          :disabled="!canMutate || !form.lesson_original.trim()"
+          @click="openReviewAi"
+        >
+          生成审议建议
+        </el-button>
+        <span v-if="!form.lesson_original.trim()" class="muted">
+          请先在「添加原稿教案」粘贴正文
+        </span>
+        <div class="ai-selection-row">
+          <el-button
+            size="small"
+            data-d1="curriculum-ai-edit-selection"
+            :disabled="!canMutate"
+            @click="openEditAiFromSelection"
+          >
+            让 AI 修改这里
+          </el-button>
+          <span class="muted" data-d1="curriculum-ai-selection-summary">
+            {{ lastSelectionSummary }}
+          </span>
         </div>
+        <div class="ai-selection-row">
+          <el-select
+            v-model="wholeField"
+            style="width: 240px"
+            data-d1="curriculum-ai-whole-field"
+          >
+            <el-option
+              v-for="item in CURRICULUM_AI_EDIT_FIELDS"
+              :key="item.field"
+              :label="item.label"
+              :value="item.field"
+            />
+          </el-select>
+          <el-button
+            size="small"
+            data-d1="curriculum-ai-edit-whole"
+            :disabled="!canMutate || !wholeField"
+            @click="selectWholeAndEdit(wholeField)"
+          >
+            整栏修改
+          </el-button>
+        </div>
+      </el-card>
+
+      <el-card shadow="never" class="block" data-d1="curriculum-lesson-revised-card">
+        <template #header>二次稿</template>
+        <p class="muted">
+          经调整、拆分核对和审议建议后形成的二次稿；采用仍走原有确认，不自动覆盖原稿。
+        </p>
+        <el-input
+          type="textarea"
+          :rows="10"
+          :model-value="form.lesson_revised"
+          data-d1="curriculum-lesson-revised"
+          data-curriculum-field="lesson_revised"
+          :disabled="!canEdit"
+          @update:model-value="setField('lesson_revised', $event)"
+        />
       </el-card>
     </template>
 

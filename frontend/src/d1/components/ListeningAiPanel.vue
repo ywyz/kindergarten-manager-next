@@ -10,6 +10,7 @@ import {
   createListeningAITask,
   getListeningAICandidate,
   getListeningAIOperation,
+  getListeningAIProgress,
   getListeningAITask,
   ListeningAIAdoptionResponseError,
   listeningAIAdoptionIsUncertain,
@@ -28,6 +29,12 @@ import {
   type ListeningGroupNoteProposal,
 } from '../listening-ai'
 import { newRequestId, type ListeningDomain } from '../listening'
+import {
+  acceptedProgress,
+  progressMatchesTask,
+  progressPhaseLabel,
+  type AiProgressView,
+} from '../ai-progress'
 import DirectionalRevisionDialog from './DirectionalRevisionDialog.vue'
 import DirectionalRevisionTrigger from './DirectionalRevisionTrigger.vue'
 import {
@@ -82,6 +89,8 @@ const pendingCreate = ref<{
 } | null>(null)
 const error = ref('')
 const activeTaskId = ref('')
+const progressById = ref<Record<string, AiProgressView>>({})
+const progressLoading = ref<Record<string, boolean>>({})
 const candidate = ref<ListeningAICandidateEnvelope | null>(null)
 const preview = ref<ListeningAIAdoptionPreview | null>(null)
 const groupNotes = ref<ListeningGroupNoteProposal[]>([])
@@ -151,14 +160,39 @@ const photoPositionsKey = computed(() => photoPositions.value.join(','))
 const activeTask = computed(
   () => tasks.value.find((task) => task.task_id === activeTaskId.value) ?? null,
 )
+const selectedField = ref<'goal' | 'note' | 'evaluation'>('goal')
+const hasLiveTask = computed(() => tasks.value.some(taskIsLive))
 const canCreate = computed(
   () =>
     !props.disabled &&
     !busy.value &&
     !!props.recordId &&
     props.revision >= 1 &&
-    !pendingCreate.value,
+    !pendingCreate.value &&
+    !hasLiveTask.value,
 )
+const goalHasMaterial = computed(() =>
+  props.groups.some(
+    (group) =>
+      Boolean(group.asset_id) ||
+      Boolean((group.listening_text ?? '').trim()),
+  ),
+)
+const canRunSelected = computed(() => {
+  if (!canCreate.value) return false
+  if (selectedField.value === 'goal') return goalHasMaterial.value
+  if (selectedField.value === 'note') {
+    return photoGroups.value.length > 0 && Boolean(groupId.value)
+  }
+  return true
+})
+const actionLabel = computed(() => {
+  if (selectedField.value === 'goal') return '生成观察目标'
+  if (selectedField.value === 'note') {
+    return `整理本组倾听记录（${photoGroups.value.length} 张有效照片）`
+  }
+  return '生成本领域评价建议'
+})
 
 function updateDraft(): void {
   draft.value =
@@ -186,6 +220,46 @@ function statusLabel(status: string): string {
 
 function targetStateLabel(state: string): string {
   return { eligible: '可核对采用', changed: '已被手改', adopted: '已采用' }[state] ?? state
+}
+
+function progressForTask(task: ListeningAITask): AiProgressView | null {
+  const stored = progressById.value[task.task_id]
+  if (!stored) return null
+  return progressMatchesTask(
+    task.task_id,
+    task.execution?.id ?? null,
+    task.execution?.attempt_no ?? null,
+    stored,
+  )
+    ? stored
+    : null
+}
+
+function progressReasoningFor(task: ListeningAITask): string {
+  return progressForTask(task)?.reasoning?.trim() ?? ''
+}
+
+async function loadProgress(task: ListeningAITask): Promise<void> {
+  if (progressLoading.value[task.task_id]) return
+  progressLoading.value = { ...progressLoading.value, [task.task_id]: true }
+  try {
+    const data = await getListeningAIProgress(props.recordId, task.task_id)
+    const accepted = acceptedProgress(
+      task.task_id,
+      task.execution?.id ?? null,
+      task.execution?.attempt_no ?? null,
+      data,
+    )
+    if (!accepted) {
+      error.value = '进度回包与当前任务执行不一致：已忽略，不影响任务状态'
+      return
+    }
+    progressById.value = { ...progressById.value, [task.task_id]: accepted }
+  } catch (exc) {
+    error.value = exc instanceof Error ? exc.message : String(exc)
+  } finally {
+    progressLoading.value = { ...progressLoading.value, [task.task_id]: false }
+  }
 }
 
 function markDraft(): void {
@@ -1302,11 +1376,21 @@ onBeforeUnmount(() => {
   emit('draft', false)
 })
 
+function startSelected(): void {
+  if (selectedField.value === 'goal') {
+    void startTask('listening_goal_suggest')
+  } else if (selectedField.value === 'note') {
+    void startTask('listening_group_notes')
+  } else {
+    void startTask('listening_domain_evaluate')
+  }
+}
+
 function startGoal(): void {
   void startTask('listening_goal_suggest')
 }
 
-defineExpose({ reset, markDraft, startGoal })
+defineExpose({ reset, markDraft, startGoal, startSelected })
 </script>
 
 <template>
@@ -1321,16 +1405,28 @@ defineExpose({ reset, markDraft, startGoal })
   >
     <template #header>
       <div class="ai-header">
-        <span>AI 建议</span>
+        <span>AI 协助填写</span>
         <span class="muted">只使用已保存内容；候选不会自动写入 Word</span>
       </div>
     </template>
     <div class="ai-actions">
+      <span class="muted">栏位</span>
       <el-select
+        v-model="selectedField"
+        size="small"
+        data-d1="listening-ai-field"
+        :disabled="disabled || busy || hasLiveTask"
+      >
+        <el-option label="观察目标" value="goal" />
+        <el-option label="本组倾听正文" value="note" />
+        <el-option label="评价与支持" value="evaluation" />
+      </el-select>
+      <el-select
+        v-if="selectedField === 'note'"
         v-model="selectedGroup"
         size="small"
         data-d1="listening-ai-group"
-        :disabled="disabled || busy"
+        :disabled="disabled || busy || hasLiveTask"
       >
         <el-option
           v-for="group in groups"
@@ -1342,31 +1438,16 @@ defineExpose({ reset, markDraft, startGoal })
       <el-button
         size="small"
         type="primary"
-        data-d1="listening-ai-group-notes"
-        :loading="creating && creatingType === 'listening_group_notes'"
-        :disabled="!canCreate || photoGroups.length === 0"
-        @click="startTask('listening_group_notes')"
+        data-d1="listening-ai-run"
+        :loading="creating"
+        :disabled="!canRunSelected"
+        @click="startSelected"
       >
-        整理本组倾听记录（{{ photoGroups.length }} 张有效照片）
+        {{ actionLabel }}
       </el-button>
-      <el-button
-        size="small"
-        data-d1="listening-ai-note"
-        :loading="creating && creatingType === 'listening_note_draft'"
-        :disabled="!canCreate || !groupId"
-        @click="startTask('listening_note_draft')"
-      >
-        旧版单张建议
-      </el-button>
-      <el-button
-        size="small"
-        data-d1="listening-ai-domain"
-        :loading="creating && creatingType === 'listening_domain_evaluate'"
-        :disabled="!canCreate"
-        @click="startTask('listening_domain_evaluate')"
-      >
-        生成本领域评价建议
-      </el-button>
+      <span v-if="selectedField === 'goal' && !goalHasMaterial" class="muted">
+        本领域暂无可发送的已存文字或照片材料
+      </span>
     </div>
 
     <el-alert
@@ -1400,6 +1481,27 @@ defineExpose({ reset, markDraft, startGoal })
     <div v-if="activeTask && !candidate" class="task-status" data-d1="listening-ai-task">
       <span>任务 {{ activeTask.task_id.slice(0, 8) }} · {{ statusLabel(activeTask.status) }}</span>
       <span v-if="activeTask.reason" class="muted">（{{ activeTask.reason }}）</span>
+      <el-button
+        size="small"
+        text
+        :loading="!!progressLoading[activeTask.task_id]"
+        data-d1="listening-ai-progress-load"
+        @click="loadProgress(activeTask)"
+      >
+        只读进度
+      </el-button>
+      <span
+        v-if="progressForTask(activeTask)"
+        class="muted"
+        data-d1="listening-ai-progress-phase"
+      >
+        {{ progressPhaseLabel(progressForTask(activeTask)?.phase ?? '') }}
+      </span>
+      <pre
+        v-if="progressReasoningFor(activeTask)"
+        class="progress-reasoning"
+        data-d1="listening-ai-progress-reasoning"
+      >{{ progressReasoningFor(activeTask) }}</pre>
     </div>
 
     <div v-if="candidateLoading" class="muted">正在读取候选…</div>

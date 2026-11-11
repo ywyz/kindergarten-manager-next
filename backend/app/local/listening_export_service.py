@@ -36,6 +36,11 @@ from app.local.base import utc_now
 from app.local.errors import LocalError, LocalValidationError
 from app.local.models import LocalListeningAsset, LocalListeningRecord
 from app.local.normalize import normalize_request_id
+from app.local.term_names import (
+    TermNameChange,
+    load_term_name_changes,
+    resolve_term_name,
+)
 from app.services.word_export_listening import (
     ListeningWordError,
     ListeningWordGroup,
@@ -234,6 +239,32 @@ def _clean_text(value: str | None) -> str | None:
         return None
     text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
     return text or None
+
+
+SHARED_HEADER_FIELDS = ("adult_count", "child_age")
+
+
+def _shared_header_fallbacks(dto: dict[str, Any]) -> dict[str, str]:
+    """Deterministic first saved value across the record's five domains.
+
+    Explicit per-domain values always win at the call site.  This fallback is
+    display/Word-only and never writes an empty domain's stored row.
+    """
+    by_domain = {
+        item.get("domain"): item for item in dto.get("domains", [])
+    }
+    fallbacks: dict[str, str] = {}
+    for domain in listening_templates.DOMAINS:
+        item = by_domain.get(domain)
+        if not item:
+            continue
+        for field in SHARED_HEADER_FIELDS:
+            if field in fallbacks:
+                continue
+            value = _clean_text(item.get(field))
+            if value:
+                fallbacks[field] = value
+    return fallbacks
 
 
 def _text_bytes(values: Iterable[Any]) -> int:
@@ -555,11 +586,29 @@ class ListeningExportManager:
             if not owners:
                 self._pins.pop(export_id, None)
 
-    def _record_term_name(self, context, term_id: str) -> str:
+    def _record_term_name(
+        self,
+        context,
+        term_id: str,
+        recorded_at: datetime,
+        name_changes: dict[str, tuple[TermNameChange, ...]],
+    ) -> str:
+        current_name: str | None = None
         for term in context.terms:
             if term.id == term_id:
-                return term.name
-        raise ListeningExportSelectionInvalid("记录学期不属于当前档案")
+                current_name = term.name
+                break
+        if current_name is None:
+            raise ListeningExportSelectionInvalid("记录学期不属于当前档案")
+        changes = name_changes.get(term_id, ())
+        # Listening has no stored term snapshot.  The name before the first
+        # committed rename is the fallback for a record created before it.
+        fallback = changes[0].old_name if changes else current_name
+        return resolve_term_name(
+            changes,
+            recorded_at=recorded_at,
+            fallback_name=fallback,
+        )
 
     def _load_unit(
         self,
@@ -569,6 +618,7 @@ class ListeningExportManager:
         record_id: str,
         domain: str,
         tracker: dict[str, int],
+        name_changes: dict[str, tuple[TermNameChange, ...]],
     ) -> _Unit:
         try:
             record = session.get(LocalListeningRecord, record_id)
@@ -686,10 +736,13 @@ class ListeningExportManager:
             for item in domain_dto["evaluation"]
         }
         item_ids = tuple(item.item_id for item in template.items)
+        fallbacks = _shared_header_fallbacks(dto)
         values = {
             "observation_date": _clean_text(domain_dto.get("observation_date")),
-            "adult_count": _clean_text(domain_dto.get("adult_count")),
-            "child_age": _clean_text(domain_dto.get("child_age")),
+            "adult_count": _clean_text(domain_dto.get("adult_count"))
+            or fallbacks.get("adult_count"),
+            "child_age": _clean_text(domain_dto.get("child_age"))
+            or fallbacks.get("child_age"),
             "goal": _clean_text(domain_dto.get("goal")),
             "observation_area": _clean_text(domain_dto.get("observation_area")),
             "overall_evaluation": _clean_text(
@@ -703,7 +756,12 @@ class ListeningExportManager:
             domain=domain,
             domain_label=listening_templates.DOMAIN_LABELS[domain],
             grade=record.grade,
-            term_name=self._record_term_name(context, record.term_id),
+            term_name=self._record_term_name(
+                context,
+                record.term_id,
+                record.created_at,
+                name_changes,
+            ),
             class_name=context.school_class.name,
             revision=dto["revision"],
             observation_date=values["observation_date"],
@@ -806,6 +864,7 @@ class ListeningExportManager:
         if term_id is not None and not isinstance(term_id, str):
             raise ListeningExportSelectionInvalid("学期标识不合法")
         terms_by_id = {term.id: term for term in context.terms}
+        name_changes = load_term_name_changes(session, terms_by_id)
         requested_term = None
         if term_id is not None:
             if term_id not in terms_by_id:
@@ -907,6 +966,7 @@ class ListeningExportManager:
                         selected_id,
                         item_domain,
                         tracker,
+                        name_changes,
                     )
                 )
         term_id = selected_term

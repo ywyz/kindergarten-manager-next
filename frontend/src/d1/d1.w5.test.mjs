@@ -393,6 +393,14 @@ function promptFixture(overrides = {}) {
   }
 }
 
+function modulePromptFixture(taskType, fields) {
+  return promptFixture({
+    task_type: taskType,
+    guidance: Object.fromEntries(fields.map((field) => [field.key, field.default_text])),
+    fields,
+  })
+}
+
 function promptsFixture(overrides = {}) {
   return {
     items: [
@@ -1178,8 +1186,10 @@ async function testTaskProgressPendingWithoutExecutionHasTimer() {
     () => nodeText(byD1(root, 'ai-progress-task1')).includes('排队等待处理'),
     'pending waiting feedback',
   )
-  await new Promise((resolve) => setTimeout(resolve, 1100))
-  await settle()
+  await waitUntil(
+    () => /已等待 [1-9][0-9]* 秒/.test(nodeText(byD1(root, 'ai-progress-task1'))),
+    'positive pending waiting timer',
+  )
   assert.match(nodeText(byD1(root, 'ai-progress-task1')), /已等待 [1-9][0-9]* 秒/)
   assert.equal(progressCalls, 0, 'a pending task with no execution starts no progress request')
   ok('tasks streaming: a newly registered pending task has a stable waiting timer')
@@ -2933,6 +2943,76 @@ async function testSettingsSavingOneGuidanceKeepsOtherDrafts() {
   ok('settings R08: saving one guidance keeps another task\'s unsaved draft')
 }
 
+async function testSettingsShowsAndSavesAllPromptModules() {
+  const specs = [
+    ['daily_reflection_generate', '反思指导', '默认反思指导'],
+    ['weekly_games_select', 'instructions', '默认周游戏指导'],
+    ['weekly_materials_generate', 'instructions', '默认周材料指导'],
+    ['weekly_key_week_focus', 'instructions', ''],
+    ['listening_goal_suggest', 'instructions', '默认倾听目标指导'],
+    ['game_observation_rewrite', 'instructions', '默认观察改写指导'],
+    ['curriculum_review', 'instructions', '默认课程审议指导'],
+  ]
+  const server = new Map()
+  for (const [taskType, key, defaultText] of specs) {
+    const fields = [{ key, label: key, default_text: defaultText }]
+    if (taskType === 'weekly_key_week_focus') {
+      fields.unshift({ key: 'target', label: '目标对象', default_text: 'key_week_focus' })
+      fields[1].label = '本地补充指导（仅本机）'
+    }
+    server.set(taskType, modulePromptFixture(taskType, fields))
+  }
+  const routes = settingsRoutes({
+    'GET /api/local/ai/prompts': () =>
+      jsonResponse(200, { items: [...server.values()].map((item) => plain(item)) }),
+  })
+  for (const [taskType] of specs) {
+    routes[`PATCH /api/local/ai/prompts/${taskType}`] = ({ body }) => {
+      const previous = server.get(taskType)
+      const updated = {
+        ...plain(previous),
+        personal_revision: previous.personal_revision + 1,
+        guidance: plain(body.guidance),
+      }
+      server.set(taskType, updated)
+      return jsonResponse(200, plain(updated))
+    }
+  }
+  const { state, calls } = await mountSettings({ routes })
+  await settle()
+  assert.ok(calls.some((call) => call.url === '/api/local/ai/prompts?scope=all'))
+  assert.deepEqual(
+    plain(state.promptGroups.value.map((group) => group.label)),
+    ['日计划', '周计划', '一对一倾听', '游戏观察', '课程审议'],
+  )
+  const weekly = state.promptFor('weekly_key_week_focus')
+  assert.ok(weekly)
+  const weeklyInstructions = weekly.fields.find((field) => field.key === 'instructions')
+  assert.equal(weeklyInstructions?.default_text, '')
+  assert.equal(weeklyInstructions?.label, '本地补充指导（仅本机）')
+  assert.equal(state.promptGuides.value.weekly_key_week_focus.instructions, '')
+  assert.ok(state.promptFor('daily_reflection_generate'))
+  for (let index = 0; index < specs.length; index += 1) {
+    const [taskType, key] = specs[index]
+    const value = `教师保存-${taskType}`
+    state.setGuidanceField(taskType, key, value)
+    await settle()
+    await state.savePrompt(taskType)
+    await settle()
+    assert.equal(server.get(taskType).guidance[key], value)
+  }
+  await state.loadPrompts(true)
+  await settle()
+  for (const [taskType, key] of specs) {
+    assert.equal(
+      state.promptGuides.value[taskType][key],
+      `教师保存-${taskType}`,
+      `${taskType} can reopen its saved guidance`,
+    )
+  }
+  ok('settings: all registered modules group and save/reopen through the real prompt UI')
+}
+
 async function testSettingsConflictKeepsDraft() {
   const routes = settingsRoutes({
     'PATCH /api/local/ai/prompts/daily_lesson_split': () =>
@@ -3615,7 +3695,8 @@ async function testGameConfigReadPreviewApplyBeforeAfter() {
   await state.previewChange()
   await settle()
   assert.equal(previewBody.change.kind, 'class_games')
-  assert.match(hook.beforeText(), /locations/)
+  assert.match(hook.beforeText(), /地点/)
+  assert.ok(!hook.beforeText().includes('locations'))
   assert.match(hook.afterText(), /东操场/)
   await state.applyPreview()
   await settle()
@@ -4487,6 +4568,7 @@ const tests = [
   testSettingsSaveConfigNeverProbesSupplier,
   testSettingsConfigSuccessKeepsNewerInput,
   testSettingsSavingOneGuidanceKeepsOtherDrafts,
+  testSettingsShowsAndSavesAllPromptModules,
   testSettingsConflictKeepsDraft,
   testSettingsRequiredFieldPrefilledFromDefault,
   testSettingsPromptLostResponseKeepsSameKey,

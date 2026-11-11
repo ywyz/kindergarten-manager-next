@@ -1330,7 +1330,7 @@ def _materials_payload(
         for index, location in enumerate(config.get("locations") or [])
         if index in config_handles
     }
-    return {
+    payload = {
         "schema_version": 1,
         "task_type": "weekly_materials_generate",
         "grade": raw["header"]["grade"],
@@ -1340,6 +1340,21 @@ def _materials_payload(
         ),
         "config": _config_payload(config, config_handles),
     }
+    if selected_basis.get("focus_area") is None:
+        # Payload-only suggestion context; the frozen basis/provenance schema
+        # is unchanged and still has no focus entry in this mode.
+        payload["suggestion_context"] = {
+            "mode": "suggested",
+            "reason": "no_focus_area",
+            "grade": raw["header"]["grade"],
+            "grade_label": GRADE_LABELS[raw["header"]["grade"]],
+            "theme": content["theme"],
+            "has_selected_context": any(
+                item is not None
+                for item in (selected_basis.get("outdoor_game_slots") or {}).values()
+            ),
+        }
+    return payload
 
 
 def _habit_basis_morning_groups(groups: Sequence[Mapping[str, Any]]) -> list[dict]:
@@ -1923,12 +1938,6 @@ def project_weekly_input(
     grade = raw["header"]["grade"]
     selected: dict | None = None
     if task_type in ("weekly_environment_setup", "weekly_materials_generate"):
-        if task_type == "weekly_materials_generate" and saved["focus_area"] is None:
-            _fail(
-                "材料任务必须有明确重点区域",
-                "focus_area",
-                code="MATERIAL_CONTEXT_REQUIRED",
-            )
         selected = _resolved_selected_basis(raw, saved)
     handles_mapping, handles, filtered_config = _build_handles(
         task_type, raw, saved, selected
@@ -2136,36 +2145,33 @@ def build_ai_facts(
         mark_target_stale(target, "ai_basis_changed")
     materials = fixed.get("materials_provenance")
     if materials is not None:
-        if fixed["focus_area"] is None:
-            fact(missing, "materials_context_missing", "materials_provenance.basis")
-        else:
-            current: dict | None
-            try:
-                current = _current_dependencies(
-                    "weekly_materials_generate", raw, fixed
-                )
-            except contracts.WeeklyAIContractError as exc:
-                if exc.code == "MATERIAL_CONTEXT_REQUIRED":
-                    fact(missing, "materials_context_missing", "materials_provenance.basis")
-                else:
-                    fact(
-                        stale,
-                        "stale_source",
-                        "materials_provenance.basis",
-                        details={"reason": "materials_basis_unresolved"},
-                    )
-                current = None
-            if current is not None and _canonical(
-                _comparison_view(_basis_view(materials["basis"]), drop_manual_text=True)
-            ) != _canonical(
-                _comparison_view(_basis_view(current), drop_manual_text=True)
-            ):
+        current: dict | None
+        try:
+            current = _current_dependencies(
+                "weekly_materials_generate", raw, fixed
+            )
+        except contracts.WeeklyAIContractError as exc:
+            if exc.code == "MATERIAL_CONTEXT_REQUIRED":
+                fact(missing, "materials_context_missing", "materials_provenance.basis")
+            else:
                 fact(
                     stale,
                     "stale_source",
                     "materials_provenance.basis",
-                    details={"reason": "materials_basis_changed"},
+                    details={"reason": "materials_basis_unresolved"},
                 )
+            current = None
+        if current is not None and _canonical(
+            _comparison_view(_basis_view(materials["basis"]), drop_manual_text=True)
+        ) != _canonical(
+            _comparison_view(_basis_view(current), drop_manual_text=True)
+        ):
+            fact(
+                stale,
+                "stale_source",
+                "materials_provenance.basis",
+                details={"reason": "materials_basis_changed"},
+            )
     return {"missing": missing, "stale_sources": stale, "warnings": warnings}
 
 

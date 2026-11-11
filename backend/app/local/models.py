@@ -11,6 +11,7 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -122,6 +123,54 @@ class LocalTerm(LocalBase):
         DateTime(timezone=False), default=utc_now, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalTermNameChange(LocalBase):
+    """One committed local term rename and its existing-document scope.
+
+    The row is append-only.  ``old_name``/``new_name`` are the exact committed
+    names, ``changed_at`` is the record-time boundary and
+    ``update_existing_documents`` says whether records created before this
+    rename project the new name.  Historical observation snapshots and already
+    exported Word files are never rewritten.
+    """
+
+    __tablename__ = "local_term_name_changes"
+    __table_args__ = (
+        CheckConstraint(
+            "length(old_name) BETWEEN 1 AND 80",
+            name="ck_local_term_name_changes_old_name",
+        ),
+        CheckConstraint(
+            "length(new_name) BETWEEN 1 AND 80",
+            name="ck_local_term_name_changes_new_name",
+        ),
+        CheckConstraint(
+            "config_version >= 1",
+            name="ck_local_term_name_changes_config_version",
+        ),
+        ForeignKeyConstraint(
+            ["term_id"],
+            ["local_terms.id"],
+            name="fk_local_term_name_changes_term",
+        ),
+        Index(
+            "ix_local_term_name_changes_term_time",
+            "term_id", "changed_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    term_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    old_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    new_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    update_existing_documents: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=utc_now, nullable=False
     )
 

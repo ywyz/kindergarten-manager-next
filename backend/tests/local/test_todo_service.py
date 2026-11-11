@@ -29,8 +29,12 @@ class FakeTodoRepository:
         self.fail_rollback = False
         self.rollback_calls = 0
 
-    def list_todos(self):
-        return [copy.deepcopy(row) for row in self.todos.values()]
+    def list_todos(self, archived=False):
+        return [
+            copy.deepcopy(row)
+            for row in self.todos.values()
+            if (row.get("archived_at") is not None) == bool(archived)
+        ]
 
     def read_operation(self, request_id):
         return copy.deepcopy(self.operations.get(request_id))
@@ -89,7 +93,7 @@ class TodoServicePureTests(unittest.TestCase):
         self.assertFalse(created["completed"])
         self.assertEqual(created["version"], 1)
         self.assertEqual(set(created), {
-            "todo_id", "title", "due_date", "completed", "version",
+            "todo_id", "title", "due_date", "completed", "archived_at", "version",
             "created_at", "updated_at",
         })
         listed = todo_service.list_todos(self.repo)
@@ -163,6 +167,152 @@ class TodoServicePureTests(unittest.TestCase):
                 request_id=request_id(),
                 expected_version=1,
             )
+
+    def test_batch_archive_delete_and_original_receipt(self):
+        first = self.make("完成一")
+        second = self.make("完成二")
+        for current in (first, second):
+            todo_service.update_todo(
+                self.repo,
+                todo_id=current["todo_id"],
+                request_id=request_id(),
+                expected_version=1,
+                fields={"completed": True},
+            )
+        open_item = self.make("未完成不归档")
+        archive_rid = request_id()
+        archived = todo_service.batch_todos(
+            self.repo,
+            request_id=archive_rid,
+            action="archive",
+            items=[
+                {"todo_id": first["todo_id"], "expected_version": 2},
+                {"todo_id": second["todo_id"], "expected_version": 2},
+            ],
+        )
+        self.assertEqual(archived["action"], "archive")
+        self.assertEqual(len(archived["items"]), 2)
+        self.assertTrue(all(item["archived_at"] for item in archived["items"]))
+        self.assertEqual(
+            [item["todo_id"] for item in todo_service.list_todos(self.repo)],
+            [open_item["todo_id"]],
+        )
+        self.assertEqual(
+            {item["todo_id"] for item in todo_service.list_todos(self.repo, archived=True)},
+            {first["todo_id"], second["todo_id"]},
+        )
+        replay = todo_service.batch_todos(
+            self.repo,
+            request_id=archive_rid,
+            action="archive",
+            items=[
+                {"todo_id": first["todo_id"], "expected_version": 2},
+                {"todo_id": second["todo_id"], "expected_version": 2},
+            ],
+        )
+        self.assertEqual(replay, archived)
+        delete_rid = request_id()
+        deleted = todo_service.batch_todos(
+            self.repo,
+            request_id=delete_rid,
+            action="delete",
+            items=[
+                {"todo_id": first["todo_id"], "expected_version": 3},
+                {"todo_id": second["todo_id"], "expected_version": 3},
+            ],
+        )
+        self.assertTrue(deleted["deleted"])
+        self.assertEqual(todo_service.list_todos(self.repo, archived=True), [])
+        delete_replay = todo_service.batch_todos(
+            self.repo,
+            request_id=delete_rid,
+            action="delete",
+            items=[
+                {"todo_id": first["todo_id"], "expected_version": 3},
+                {"todo_id": second["todo_id"], "expected_version": 3},
+            ],
+        )
+        self.assertEqual(delete_replay, deleted)
+    def test_batch_validation_is_atomic(self):
+        first = self.make("可归档")
+        second = self.make("版本冲突")
+        for current in (first, second):
+            todo_service.update_todo(
+                self.repo,
+                todo_id=current["todo_id"],
+                request_id=request_id(),
+                expected_version=1,
+                fields={"completed": True},
+            )
+        archive_rid = request_id()
+        with self.assertRaises(domain.TodoVersionConflict):
+            todo_service.batch_todos(
+                self.repo,
+                request_id=archive_rid,
+                action="archive",
+                items=[
+                    {"todo_id": first["todo_id"], "expected_version": 2},
+                    {"todo_id": second["todo_id"], "expected_version": 1},
+                ],
+            )
+        self.assertIsNone(self.repo.todos[first["todo_id"]].get("archived_at"))
+        self.assertIsNone(self.repo.todos[second["todo_id"]].get("archived_at"))
+        self.assertNotIn(archive_rid, self.repo.operations)
+        with self.assertRaises(domain.TodoInputError):
+            todo_service.batch_todos(
+                self.repo,
+                request_id=request_id(),
+                action="archive",
+                items=[
+                    {"todo_id": first["todo_id"], "expected_version": 2},
+                    {"todo_id": first["todo_id"], "expected_version": 2},
+                ],
+            )
+        open_item = self.make("未完成")
+        with self.assertRaises(domain.TodoInputError):
+            todo_service.batch_todos(
+                self.repo,
+                request_id=request_id(),
+                action="archive",
+                items=[{"todo_id": open_item["todo_id"], "expected_version": 1}],
+            )
+        self.assertIsNone(self.repo.todos[open_item["todo_id"]].get("archived_at"))
+    def test_archived_todo_editable_but_cannot_reopen(self):
+        created = self.make("归档后修改")
+        todo_service.update_todo(
+            self.repo,
+            todo_id=created["todo_id"],
+            request_id=request_id(),
+            expected_version=1,
+            fields={"completed": True},
+        )
+        todo_service.batch_todos(
+            self.repo,
+            request_id=request_id(),
+            action="archive",
+            items=[{"todo_id": created["todo_id"], "expected_version": 2}],
+        )
+        edited = todo_service.update_todo(
+            self.repo,
+            todo_id=created["todo_id"],
+            request_id=request_id(),
+            expected_version=3,
+            fields={"title": "归档后新标题", "due_date": date.today()},
+        )
+        self.assertEqual(edited["title"], "归档后新标题")
+        self.assertTrue(edited["archived_at"])
+        self.assertTrue(edited["completed"])
+        self.assertEqual(edited["version"], 4)
+        with self.assertRaises(domain.TodoInputError):
+            todo_service.update_todo(
+                self.repo,
+                todo_id=created["todo_id"],
+                request_id=request_id(),
+                expected_version=4,
+                fields={"completed": False},
+            )
+        self.assertTrue(self.repo.todos[created["todo_id"]]["completed"])
+        self.assertEqual(self.repo.todos[created["todo_id"]]["version"], 4)
 
     def test_old_update_receipt_survives_later_changes(self):
         created = self.make("v1")

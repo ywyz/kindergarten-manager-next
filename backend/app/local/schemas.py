@@ -360,6 +360,8 @@ class ConfigTermUpdateIn(BaseModel):
     name: str
     start_date: date
     end_date: date
+    # Omitted preserves the existing client contract and means false.
+    update_existing_documents: bool | None = Field(default=None, strict=True)
 
 
 class ConfigCalendarOverrideIn(BaseModel):

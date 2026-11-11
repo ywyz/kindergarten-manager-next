@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from app.local.migrate import ensure_local_schema
+from app.local.migrate import ensure_local_schema, head_revision
 from tests.local.listening_ai_fixture_support import create_0009_weekly_ai_fixture
 from tests.local.support import LocalTestCase
 
@@ -18,7 +18,7 @@ class ListeningAIMigrationTests(LocalTestCase):
             revision = connection.execute(
                 "SELECT version_num FROM local_alembic_version"
             ).fetchone()[0]
-            self.assertEqual(revision, "20261107_0010_local_listening_ai")
+            self.assertEqual(revision, head_revision())
             for table in (
                 "local_ai_inputs",
                 "local_ai_tasks",
@@ -132,7 +132,7 @@ class ListeningAIMigrationTests(LocalTestCase):
                 connection.execute(
                     "SELECT version_num FROM local_alembic_version"
                 ).fetchone(),
-                ("20261107_0010_local_listening_ai",),
+                (head_revision(),),
             )
             old_columns = {
                 table: columns for table, (columns, _rows) in before.items()

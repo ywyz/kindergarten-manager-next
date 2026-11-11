@@ -1345,7 +1345,13 @@ def _encode_bootstrap(
         "source_kind": claim.source_kind,
         "task_type": claim.task_type,
         "system_text": claim.system_text,
-        "user_text": json.dumps(claim.payload, ensure_ascii=False, separators=(",", ":")),
+        "user_text": json.dumps(
+            ai_task_service.adapt_wire_payload(claim.payload)
+            if claim.task_type == "daily_process_adapt"
+            else claim.payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
     }
     # The actual serialized body must fit the 1 MiB request limit (a heavy
     # escape or multi-byte payload can exceed it even when the input JSON did
@@ -1375,6 +1381,8 @@ def _encode_bootstrap(
 def ai_worker_frame_limit(claim: Any | None = None) -> int:
     from app.local import ai_worker
 
+    if claim is not None and getattr(claim, "image_urls", None):
+        return ai_transport.VISION_TEXT_RESPONSE_BUDGET.result_ipc_max_bytes
     if claim is not None:
         budget = ai_transport.text_response_budget(
             getattr(claim, "task_type", None),

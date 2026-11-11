@@ -86,6 +86,21 @@
         </div>
       </section>
 
+      <section>
+        <h2>已有学期名称</h2>
+        <p class="muted">只修改名称，学期 ID、开始日期和结束日期保持不变。</p>
+        <div class="row">
+          <div>
+            <label for="term-school">园所</label>
+            <select id="term-school"></select>
+          </div>
+        </div>
+        <p class="muted hidden" id="term-empty">该园所暂无学期。</p>
+        <p class="error" id="term-error" role="alert"></p>
+        <p class="muted" id="term-notice"></p>
+        <div class="list-block" id="term-list"></div>
+      </section>
+
       <details id="prompt-release-panel" class="release-panel">
         <summary>提示词发布</summary>
         <div id="prompt-release-body">
@@ -149,6 +164,7 @@
         csrf: "",
         schools: [],
         teachers: [],
+        terms: [],
         promptLoaded: false,
         promptBusy: false,
         prompt: null,
@@ -164,6 +180,11 @@
       var loginButton = document.getElementById("login-button");
       var schoolSelect = document.getElementById("school");
       var teacherSelect = document.getElementById("teacher");
+      var termSchool = document.getElementById("term-school");
+      var termEmpty = document.getElementById("term-empty");
+      var termError = document.getElementById("term-error");
+      var termNotice = document.getElementById("term-notice");
+      var termList = document.getElementById("term-list");
       var purposeSelect = document.getElementById("purpose");
       var issueButton = document.getElementById("issue-button");
       var issueError = document.getElementById("issue-error");
@@ -272,13 +293,115 @@
         var data = await request("/api/collaboration/admin/schools");
         state.schools = data || [];
         schoolSelect.textContent = "";
+        termSchool.textContent = "";
         state.schools.forEach(function (school) {
           var option = document.createElement("option");
           option.value = school.school_id;
           option.textContent = school.name;
           schoolSelect.appendChild(option);
+          var termOption = document.createElement("option");
+          termOption.value = school.school_id;
+          termOption.textContent = school.name;
+          termSchool.appendChild(termOption);
         });
         await loadTeachers();
+        await loadTerms();
+      }
+
+      function renderTerms() {
+        termList.textContent = "";
+        termEmpty.classList.toggle("hidden", state.terms.length > 0);
+        state.terms.forEach(function (term) {
+          var row = document.createElement("div");
+          row.className = "row";
+          row.setAttribute("data-d1", "term-" + term.term_id);
+          var info = document.createElement("div");
+          var title = document.createElement("strong");
+          title.textContent = term.name;
+          var dates = document.createElement("p");
+          dates.className = "muted";
+          dates.textContent = term.start_date + " 至 " + term.end_date;
+          info.appendChild(title);
+          info.appendChild(dates);
+          var editor = document.createElement("div");
+          var label = document.createElement("label");
+          label.textContent = "学期名称";
+          label.htmlFor = "term-name-" + term.term_id;
+          var input = document.createElement("input");
+          input.id = "term-name-" + term.term_id;
+          input.value = term.name;
+          input.maxLength = 80;
+          var button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "保存名称";
+          button.addEventListener("click", function () {
+            void saveTerm(term, input, button);
+          });
+          editor.appendChild(label);
+          editor.appendChild(input);
+          editor.appendChild(button);
+          row.appendChild(info);
+          row.appendChild(editor);
+          termList.appendChild(row);
+        });
+      }
+
+      async function loadTerms() {
+        state.terms = [];
+        termError.textContent = "";
+        termNotice.textContent = "";
+        if (!termSchool.value) {
+          renderTerms();
+          return;
+        }
+        try {
+          var data = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(termSchool.value) + "/terms"
+          );
+          state.terms = data || [];
+          renderTerms();
+        } catch (err) {
+          termError.textContent = errorText(err);
+          renderTerms();
+        }
+      }
+
+      async function saveTerm(term, input, button) {
+        termError.textContent = "";
+        termNotice.textContent = "";
+        var next = input.value.trim();
+        if (!next) {
+          termError.textContent = "学期名称不能为空";
+          return;
+        }
+        var expected = term.name;
+        button.disabled = true;
+        try {
+          var updated = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(termSchool.value) +
+              "/terms/" + encodeURIComponent(term.term_id),
+            {
+              method: "PATCH",
+              body: { expected_name: expected, new_name: next }
+            }
+          );
+          term.name = updated.name;
+          term.start_date = updated.start_date;
+          term.end_date = updated.end_date;
+          renderTerms();
+          termNotice.textContent = "学期名称已保存；日期和 ID 未改变。";
+        } catch (err) {
+          if (err.status === 409) {
+            termError.textContent =
+              "学期名称已在其他窗口修改，请刷新后按最新名称重试";
+          } else {
+            termError.textContent = errorText(err);
+          }
+        } finally {
+          button.disabled = false;
+        }
       }
 
       async function loadTeachers() {
@@ -854,6 +977,10 @@
         loadTeachers().catch(function (err) {
           issueError.textContent = errorText(err);
         });
+      });
+
+      termSchool.addEventListener("change", function () {
+        void loadTerms();
       });
 
       issueButton.addEventListener("click", async function () {

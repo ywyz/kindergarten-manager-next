@@ -39,6 +39,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     ValidationError,
+    field_validator,
     model_validator,
 )
 from sqlalchemy import select
@@ -131,6 +132,19 @@ PACKAGE_LATEST_DEFAULT_REVISION = 2
 # The adapt task gets a teacher-talk content revision without changing split or
 # other activities; never bump the shared latest/revision constants for this.
 PACKAGE_ADAPT_DEFAULT_REVISION = 3
+# Reflection is local-only (not in PACKAGE_TASK_TYPES), so its r2 text can ship
+# independently without changing a remotely publishable identity.
+PACKAGE_REFLECTION_DEFAULT_REVISION = 2
+# Exact known historical hashes for a key whose content was validly shipped by
+# an earlier build but differs from this build's manifest (for example the
+# 0007 synthetic archive's one-character "不伪造/不虚构" wording).  Only these
+# exact, locally re-computed digests are accepted; any other same-key content
+# or a copied digest still fails closed.
+HISTORICAL_BUNDLE_HASHES: dict[tuple[str, int, int], frozenset[str]] = {
+    ("daily_other_activities", 1, 2): frozenset(
+        {"4700755f7c65380c628bba4104d8f210ec3b6fea6656814f80eb81d593f87a75"}
+    ),
+}
 
 GUIDANCE_MAX_CHARS = 8000
 # Engineering capacity caps (spec §5.3): serialized candidate/teacher edit is
@@ -560,7 +574,6 @@ _OTHER_GUIDANCE_R2 = {
     "post_group_games": "根据班级年级、可用游戏配置和当前日计划，生成集体活动之后的室内区域/户外/专用室游戏建议，可含目标、指导和支持策略。多项游戏、目标、指导或支持策略使用真实换行并依次编号，数量按实际，不强行凑三条。可提出新游戏建议，不把生成内容声称为真实日计划来源。节日仅供参考。",
     "afternoon_outdoor": "根据班级年级、可用户外游戏配置和当前日计划，生成一组下午户外游戏安排建议，可含区域、游戏名称、观察重点、目标、指导和支持策略。多个游戏、目标或指导要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；名称等短单值不编号。可提出新游戏建议，不虚构真实来源或活动事实。节日仅供参考。",
 }
-
 _REFLECTION_INPUT_SCHEMA = {
     "$schema": _JSON_SCHEMA_DRAFT,
     "type": "object",
@@ -621,6 +634,9 @@ _REFLECTION_OUTPUT_SCHEMA = {
 }
 _REFLECTION_GUIDANCE = {
     "reflection": "根据已保存的日计划与教师提供的活动实施材料，写一段可直接使用的活动反思。材料只代表教师提供的实施情况，计划只代表原定安排；不得把计划中的步骤写成已经发生的事实，不得编造材料没有提到的幼儿反应、对话、结果或时间。材料不足时只写材料能支持的内容，并明确还需要教师补充观察；不要补写未发生的课堂。"
+}
+_REFLECTION_GUIDANCE_R2 = {
+    "reflection": "根据教师提供的活动实施材料写一段可直接使用的活动反思。implementation_materials 是唯一的实施事实来源，已保存日计划只表示原定安排；不得把计划步骤写成已经发生的事实，不得编造材料没有提到的幼儿反应、对话、结果、困难或时间。以自然段落书写，围绕今日亮点、存在问题、调整策略，篇幅约100～200字；不单列“一、二、三”标题，不使用 Markdown 或列表编号。材料不足时只写材料能支持的内容，并明确还需要教师补充观察。"
 }
 
 # Observation bundles are registered as data for E06/E07.  They are not added
@@ -930,6 +946,13 @@ PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
         _REFLECTION_OUTPUT_SCHEMA,
         _REFLECTION_GUIDANCE,
     ),
+    _bundle(
+        "daily_reflection_generate",
+        _REFLECTION_INPUT_SCHEMA,
+        _REFLECTION_OUTPUT_SCHEMA,
+        _REFLECTION_GUIDANCE_R2,
+        default_revision=PACKAGE_REFLECTION_DEFAULT_REVISION,
+    ),
     # Observation data foundation only: fixed package bundles, no editor and no
     # claimable execution in this slice.
     _bundle(
@@ -1068,6 +1091,15 @@ class _SplitGroupActivity(_StrictModel):
     key_points: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
     difficult_points: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
     process: StrictStr = Field(..., max_length=MAX_STRING_CHARS)
+
+    @field_validator("theme")
+    @classmethod
+    def _theme_utf8_limit(cls, value: str) -> str:
+        # The activity short name is the one field the report fixes at 256
+        # UTF-8 bytes; the other five fields keep the existing 100k char cap.
+        if len(value.encode("utf-8")) > 256:
+            raise ValueError("theme 不能超过 256 UTF-8 字节")
+        return value
 
 
 class SplitCandidate(_StrictModel):
@@ -1787,26 +1819,27 @@ def effective_prompt_seed(
     requested = tuple(task_types or TASK_TYPES)
     required = set(required_task_types if required_task_types is not None else requested)
     if builtin_only:
-        # No verified package cache: a brand-new profile must use the build's
-        # built-in defaults even if historical remote bundle rows remain.
+        # No verified package cache: prefer this build's manifest target, but
+        # fall back to the frozen contract-v1/r1 row that migration 0004 (or a
+        # later task registration) actually committed.  This keeps a refused
+        # package sync from blocking manual first-time setup while never
+        # selecting an arbitrary historical remote revision.
         builtin = initial_prompt_seed()
         seed = {}
         for task_type in requested:
             item = builtin.get(task_type)
-            if item is None:
-                if task_type in required:
-                    raise LocalStorageError(
-                        "内置提示词包缺失，无法建立初版个人指导"
-                    )
-                continue
-            row = session.get(
-                LocalPromptBundle,
-                (
-                    task_type,
-                    item["contract_version"],
-                    item["default_revision"],
-                ),
-            )
+            row = None
+            if item is not None:
+                row = session.get(
+                    LocalPromptBundle,
+                    (
+                        task_type,
+                        item["contract_version"],
+                        item["default_revision"],
+                    ),
+                )
+            if row is None:
+                row = session.get(LocalPromptBundle, (task_type, 1, 1))
             if row is None:
                 if task_type in required:
                     raise LocalStorageError(
@@ -2233,10 +2266,32 @@ def sync_prompt_bundles(
                     "同一契约的默认修订结构不一致，必须使用新的契约版本"
                 )
             contract_shapes[(tt, contract)] = shape
+        for key, row in existing.items():
+            computed = bundle_hash(
+                row.input_schema_json,
+                row.output_schema_json,
+                row.guidance_defaults_json,
+            )
+            if computed != row.bundle_hash:
+                raise LocalPromptBundleConflict(
+                    details={
+                        "task_type": key[0],
+                        "contract_version": key[1],
+                        "default_revision": key[2],
+                    }
+                )
         for key, item in items.items():
             row = existing.get(key)
             if row is not None:
                 if row.bundle_hash != item["bundle_hash"]:
+                    if row.bundle_hash in HISTORICAL_BUNDLE_HASHES.get(
+                        key, frozenset()
+                    ):
+                        # The stored digest was just re-computed from the actual
+                        # schemas/guidance above.  Only that exact historical
+                        # content is accepted; a copied digest with different
+                        # content already failed the integrity check.
+                        continue
                     raise LocalPromptBundleConflict(
                         details={
                             "task_type": key[0],
@@ -2334,6 +2389,8 @@ __all__ = [
     "PACKAGE_DEFAULT_REVISION",
     "PACKAGE_LATEST_DEFAULT_REVISION",
     "PACKAGE_ADAPT_DEFAULT_REVISION",
+    "PACKAGE_REFLECTION_DEFAULT_REVISION",
+    "HISTORICAL_BUNDLE_HASHES",
     "GUIDANCE_FIELDS",
     "GUIDANCE_MAX_CHARS",
     "MAX_SERIALIZED_CHARS",

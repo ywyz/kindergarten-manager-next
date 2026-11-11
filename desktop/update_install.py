@@ -23,7 +23,12 @@ from pathlib import Path
 from typing import Any
 
 import update_paths
-from update_fs import PathSafetyError, ensure_safe_path, ensure_safe_tree
+from update_fs import (
+    PathSafetyError,
+    ensure_safe_path,
+    ensure_safe_tree,
+    has_multiple_hard_links,
+)
 from update_identity import AppIdentity
 from update_manifest import (
     MAX_PACKAGE_BYTES,
@@ -253,8 +258,38 @@ def build_install_plan(
         helper_command = [str(candidate)]
     helper = Path(helper_command[0])
     if not test_only:
+        expected_app = install / "app"
+        expected_helper = install / "updater" / DEFAULT_HELPER_NAME
+        expected_staging = install / update_paths.UPDATES_DIR_NAME / update_paths.STAGING_DIR_NAME
+        if app.resolve() != expected_app.resolve():
+            raise InstallPlanError(
+                "INSTALL_PRODUCT_LAYOUT", "程序目录不是受管布局的 app 目录"
+            )
+        if helper.resolve() != expected_helper.resolve():
+            raise InstallPlanError(
+                "INSTALL_PRODUCT_LAYOUT", "更新器不是受管布局的固定入口"
+            )
+        if staging.resolve() != expected_staging.resolve() and (
+            expected_staging.resolve() not in staging.resolve().parents
+        ):
+            raise InstallPlanError(
+                "INSTALL_PRODUCT_LAYOUT", "暂存目录不是受管布局的同卷暂存目录"
+            )
+        if update_paths.resolve_install_root(app) != install.resolve():
+            raise InstallPlanError(
+                "INSTALL_PRODUCT_LAYOUT", "程序目录不在安装注册根"
+            )
         if not helper.is_file():
             raise InstallPlanError("INSTALL_HELPER_MISSING", "独立更新器不存在")
+        try:
+            if has_multiple_hard_links(helper):
+                raise InstallPlanError(
+                    "INSTALL_PRODUCT_LAYOUT", "独立更新器存在硬链接"
+                )
+        except PathSafetyError as exc:
+            raise InstallPlanError(
+                "INSTALL_PRODUCT_LAYOUT", "无法核对独立更新器链接属性"
+            ) from exc
         if _overlaps(helper, app):
             raise InstallPlanError("INSTALL_HELPER_IN_APP", "更新器不得位于待切换程序目录")
     old = old_process or current_process_identity()

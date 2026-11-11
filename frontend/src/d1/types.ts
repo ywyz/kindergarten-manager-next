@@ -158,6 +158,7 @@ export type ConfigChange =
       name: string
       start_date: string
       end_date: string
+      update_existing_documents?: boolean
     }
   | {
       kind: 'calendar_override'
@@ -323,7 +324,7 @@ export interface PromptField {
 
 /** One of the three daily personal prompts (engineering spec §5.1). */
 export interface Prompt {
-  task_type: TaskType
+  task_type: string
   personal_revision: number
   contract_version: number
   based_default_revision: number
@@ -341,7 +342,7 @@ export interface PromptList {
 }
 
 export interface PromptDefault {
-  task_type: TaskType
+  task_type: string
   contract_version: number
   default_revision: number
   guidance: Record<string, string>

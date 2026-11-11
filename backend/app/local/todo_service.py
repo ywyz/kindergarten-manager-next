@@ -20,7 +20,7 @@ from app.local.normalize import normalize_request_id
 class TodoRepository(Protocol):
     profile_id: str
 
-    def list_todos(self) -> list[dict[str, Any]]: ...
+    def list_todos(self, archived: bool = False) -> list[dict[str, Any]]: ...
     def read_operation(self, request_id: str) -> dict[str, Any] | None: ...
     def begin_write(self) -> None: ...
     def commit(self) -> None: ...
@@ -72,8 +72,10 @@ def _replay(
     return dict(result)
 
 
-def list_todos(repo: TodoRepository) -> list[dict[str, Any]]:
-    return domain.sort_todos(repo.list_todos())
+def list_todos(
+    repo: TodoRepository, *, archived: bool = False
+) -> list[dict[str, Any]]:
+    return domain.sort_todos(repo.list_todos(archived=archived))
 
 
 def create_todo(
@@ -165,6 +167,11 @@ def update_todo(
                 "待办已在其他窗口更新",
                 details={"todo": domain.todo_to_dict(current)},
             )
+        if current.get("archived_at") is not None and normalized.get("completed") is False:
+            raise domain.TodoInputError(
+                "已归档待办不能改回未完成",
+                details={"todo": domain.todo_to_dict(current)},
+            )
         now = utc_now()
         repo.update_todo(
             todo_id,
@@ -242,6 +249,95 @@ def delete_todo(
         raise
 
 
+def batch_todos(
+    repo: TodoRepository,
+    *,
+    request_id: object,
+    action: object,
+    items: object,
+) -> dict[str, Any]:
+    rid = normalize_request_id(request_id)
+    batch_action = domain.normalize_batch_action(action)
+    normalized = domain.normalize_batch_items(items)
+    internal_action = "update" if batch_action == "archive" else "delete"
+    fingerprint = domain.batch_fingerprint(batch_action, normalized)
+    repo.begin_write()
+    try:
+        replay = _replay(repo, rid, internal_action, fingerprint)
+        if replay is not None:
+            _safe_rollback(repo)
+            return replay
+        current_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for item in normalized:
+            current = repo.get_todo(item["todo_id"])
+            if current is None:
+                raise domain.TodoNotFound(
+                    "待办不存在或不属于当前档案",
+                    details={"todo_id": item["todo_id"]},
+                )
+            expected = item["expected_version"]
+            if int(current["version"]) != expected:
+                raise domain.TodoVersionConflict(
+                    "待办已在其他窗口更新",
+                    details={"todo": domain.todo_to_dict(current), **item},
+                )
+            if batch_action == "archive":
+                if not bool(current.get("completed")):
+                    raise domain.TodoInputError(
+                        "只能归档已完成的待办",
+                        details={"todo_id": item["todo_id"]},
+                    )
+                if current.get("archived_at") is not None:
+                    raise domain.TodoInputError(
+                        "待办已归档",
+                        details={"todo_id": item["todo_id"]},
+                    )
+            current_rows.append((current, item))
+        now = utc_now()
+        result_items: list[dict[str, Any]] = []
+        for current, item in current_rows:
+            if batch_action == "archive":
+                updated = {
+                    **current,
+                    "archived_at": now,
+                    "version": int(current["version"]) + 1,
+                    "updated_at": now,
+                }
+                repo.update_todo(
+                    item["todo_id"],
+                    {
+                        "archived_at": now,
+                        "version": updated["version"],
+                        "updated_at": now,
+                    },
+                )
+                result_items.append(domain.todo_to_dict(updated))
+            else:
+                repo.delete_todo(item["todo_id"])
+                result_items.append(domain.todo_to_dict(current))
+        result = {
+            "action": batch_action,
+            "items": result_items,
+            "deleted": batch_action == "delete",
+        }
+        repo.insert_operation(
+            {
+                "profile_id": repo.profile_id,
+                "request_id": rid,
+                "action": internal_action,
+                "todo_id": None,
+                "input_fingerprint": fingerprint,
+                "result_json": result,
+                "created_at": now,
+            }
+        )
+        _commit(repo)
+    except BaseException:
+        _safe_rollback(repo)
+        raise
+    return result
+
+
 def get_operation(repo: TodoRepository, *, request_id: object) -> dict[str, Any]:
     rid = normalize_request_id(request_id)
     operation = repo.read_operation(rid)
@@ -255,6 +351,7 @@ def get_operation(repo: TodoRepository, *, request_id: object) -> dict[str, Any]
 
 __all__ = [
     "TodoRepository",
+    "batch_todos",
     "create_todo",
     "delete_todo",
     "get_operation",

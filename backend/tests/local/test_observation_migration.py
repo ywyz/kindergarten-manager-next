@@ -287,15 +287,27 @@ class ObservationMigrationTests(LocalTestCase):
         )
         for row in old_prompt_rows:
             self.assertIn(row, new_daily_prompt_rows)
+        new_daily_versions = query_rows(
+            db,
+            "SELECT profile_id,task_type,revision,guidance_json "
+            "FROM local_personal_prompt_versions WHERE task_type LIKE 'daily_%' "
+            "ORDER BY task_type,revision",
+        )
+        old_task_types = {row["task_type"] for row in old_daily_version}
         self.assertEqual(
-            query_rows(
-                db,
-                "SELECT profile_id,task_type,revision,guidance_json "
-                "FROM local_personal_prompt_versions WHERE task_type LIKE 'daily_%' "
-                "ORDER BY task_type,revision",
-            ),
+            [row for row in new_daily_versions if row["task_type"] in old_task_types],
             old_daily_version,
         )
+        reflection_versions = [
+            row
+            for row in new_daily_versions
+            if row["task_type"] == "daily_reflection_generate"
+        ]
+        self.assertEqual(len(reflection_versions), 1)
+        self.assertEqual(reflection_versions[0]["revision"], 1)
+        self.assertIn("100", reflection_versions[0]["guidance_json"])
+        self.assertIn("200", reflection_versions[0]["guidance_json"])
+        self.assertIn("Markdown", reflection_versions[0]["guidance_json"])
         heads = {
             row["task_type"]
             for row in query_rows(

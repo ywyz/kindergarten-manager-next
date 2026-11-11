@@ -148,7 +148,7 @@ def _claim(task_type: str) -> SimpleNamespace:
 
 
 class WeeklyStreamBudgetTests(unittest.TestCase):
-    def test_small_candidate_above_old_wire_limit_succeeds_weekly_but_daily_rejected(self):
+    def test_small_candidate_above_old_wire_limit_succeeds_weekly_and_daily(self):
         body = _sse(reasoning_chunks=80)  # ~1.28 MiB SSE wire, tiny valid JSON content
         self.assertGreater(len(body), tr.RESPONSE_MAX_BYTES)
         self.assertLess(len(body), tr.WEEKLY_TEXT_RESPONSE_BUDGET.wire_max_bytes)
@@ -159,9 +159,8 @@ class WeeklyStreamBudgetTests(unittest.TestCase):
         self.assertEqual(len(weekly_sock.sent), 1)
 
         daily, daily_sock = _send(_http(body), task_type="daily_lesson_split")
-        self.assertEqual(daily.kind, tr.PROVIDER_ERROR)
-        self.assertEqual(daily.detail, tr.DETAIL["body_too_large"])
-        self.assertIsNone(daily.candidate_text)
+        self.assertEqual(daily.kind, tr.SUCCESS, daily)
+        self.assertEqual(daily.candidate_text, '{"text":"ok"}')
         self.assertEqual(len(daily_sock.sent), 1)
 
     def test_weekly_wire_limit_overrun_is_body_too_large(self):
@@ -264,7 +263,7 @@ class WeeklyStreamBudgetTests(unittest.TestCase):
         )
         self.assertEqual(
             ai_executor.ai_worker_frame_limit(_claim("daily_lesson_split")),
-            ai_worker.RESPONSE_FRAME_MAX,
+            tr.DAILY_TEXT_RESPONSE_BUDGET.result_ipc_max_bytes,
         )
 
     def test_missing_stop_is_failed_and_truncated_length_is_unknown(self):
@@ -349,7 +348,7 @@ class WeeklyStreamBudgetTests(unittest.TestCase):
             budget = tr.text_response_budget(
                 task_type, source_kind="daily_plan"
             )
-            self.assertEqual(budget, tr.DEFAULT_TEXT_RESPONSE_BUDGET)
+            self.assertEqual(budget, tr.DAILY_TEXT_RESPONSE_BUDGET)
             self.assertIsNone(budget.max_tokens)
             daily_request = json.loads(
                 ai_executor._encode_bootstrap(_claim(task_type), 60_000)[0].decode(
@@ -400,7 +399,7 @@ class WeeklyStreamBudgetTests(unittest.TestCase):
         )
         daily_request = daily_frame["request"]
         daily_budget, daily_body = ai_worker.text_request_body(daily_request)
-        self.assertEqual(daily_budget, tr.DEFAULT_TEXT_RESPONSE_BUDGET)
+        self.assertEqual(daily_budget, tr.DAILY_TEXT_RESPONSE_BUDGET)
         self.assertNotIn("max_tokens", json.loads(daily_body))
         self.assertNotIn("max_tokens", json.loads(
             tr.build_request(

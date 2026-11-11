@@ -20,11 +20,14 @@ import type { SettingsDraftTarget, SettingsDraftTargetKind } from '../leave'
 import AiSettingsPanel from './AiSettingsPanel.vue'
 import GameConfigPanel from './GameConfigPanel.vue'
 import CollaborationPanel from './CollaborationPanel.vue'
+import { createCollaborationApi } from '../collaboration'
+import type { CollaborationPromotionTerm } from '../collaboration'
 
 const props = defineProps<{
   context: LocalContext
   frozen?: boolean
   section?: 'collaboration' | null
+  focusPrompt?: string
   reloadContext?: () => Promise<LocalContext>
 }>()
 const emit = defineEmits<{
@@ -36,17 +39,17 @@ const emit = defineEmits<{
 }>()
 
 type SettingsSection = 'main' | 'collaboration'
-type SettingsGroup = 'backup' | 'terms' | 'calendar' | 'games' | 'ai'
+type SettingsGroup = 'backup' | 'terms' | 'calendar' | 'games'
 
 const activeSection = ref<SettingsSection>(
   props.section === 'collaboration' ? 'collaboration' : 'main',
 )
+
 const expandedGroups = reactive<Record<SettingsGroup, boolean>>({
   backup: false,
   terms: false,
   calendar: false,
   games: false,
-  ai: false,
 })
 
 const TARGET_GROUPS: Partial<Record<SettingsDraftTargetKind, SettingsGroup>> = {
@@ -54,8 +57,6 @@ const TARGET_GROUPS: Partial<Record<SettingsDraftTargetKind, SettingsGroup>> = {
   'new-term': 'terms',
   override: 'calendar',
   'game-config': 'games',
-  'ai-config': 'ai',
-  'ai-prompts': 'ai',
 }
 
 function setSettingsSection(section: SettingsSection): void {
@@ -143,6 +144,23 @@ const termForms = ref<TermForm[]>(
     end_date: term.end_date,
   })),
 )
+const updateExistingDocuments = reactive<Record<string, boolean>>({})
+const readingPromotionTerms = ref(false)
+const promotionTermNotice = ref('')
+const promotionTerms = ref<CollaborationPromotionTerm[]>([])
+
+function termNameChanged(form: TermForm): boolean {
+  return form.name !== (currentTerm(form.id)?.name ?? '')
+}
+
+function termUpdateExisting(form: TermForm): boolean {
+  return updateExistingDocuments[form.id] === true
+}
+
+function setTermUpdateExisting(form: TermForm, value: boolean): void {
+  updateExistingDocuments[form.id] = value
+}
+
 const newTermName = ref('')
 const newTermRange = ref<string[]>([])
 
@@ -162,18 +180,32 @@ const confirmedContext = ref<LocalContext>(props.context)
 const aiDraftActive = ref(false)
 const gameDraftActive = ref(false)
 const collaborationDraftActive = ref(false)
-const aiPanelRef = ref<{ draftTargets?: () => SettingsDraftTargetKind[]; focusDraftTarget?: (kind?: string) => void } | null>(null)
+const aiPanelRef = ref<{ draftTargets?: () => SettingsDraftTargetKind[]; focusDraftTarget?: (kind?: string) => void; focusPromptTask?: (taskType: string) => void | Promise<void> } | null>(null)
 const gamePanelRef = ref<{ draftTargets?: () => SettingsDraftTargetKind[]; focusDraftTarget?: (kind?: string) => void } | null>(null)
+watch(
+  () => props.focusPrompt,
+  async (value) => {
+    if (!value) return
+    setSettingsSection('main')
+    await nextTick()
+    await aiPanelRef.value?.focusPromptTask?.(value)
+  },
+  { immediate: true },
+)
 const collaborationPanelRef = ref<{
   draftTargets?: () => string[]
   pendingWrite?: () => unknown
   pendingPromotion?: () => unknown
   promotionStale?: () => boolean
-  currentStatus?: () => { connected: boolean } | null
+  currentStatus?: () => {
+    connected: boolean
+    teacher?: { teacher_id: string; school_id: string } | null
+  } | null
   currentPreview?: () => unknown
   currentPublishPreview?: () => unknown
 } | null>(null)
 let pendingRequestId = ''
+let promotionReadGeneration = 0
 /**
  * Input version: bumped by every local input change / preview cancel /
  * context update / unmount. A preview response only lands when its captured
@@ -321,14 +353,7 @@ function currentChangeFor(change: ConfigChange): ConfigChange | null {
   if (change.kind === 'current_class') return changeClass()
   if (change.kind === 'term_update') {
     const form = termForms.value.find((term) => term.id === change.term_id)
-    if (!form) return null
-    return {
-      kind: 'term_update',
-      term_id: form.id,
-      name: form.name,
-      start_date: form.start_date,
-      end_date: form.end_date,
-    }
+    return form ? termChange(form) : null
   }
   if (change.kind === 'term_create') {
     if (!newTermName.value.trim() || newTermRange.value.length !== 2) return null
@@ -486,6 +511,7 @@ onBeforeUnmount(() => {
   // A response arriving after leaving settings must never restore a
   // confirmation on the next visit.
   inputSeq += 1
+  promotionReadGeneration += 1
   previewBinding = null
 })
 
@@ -493,7 +519,17 @@ watch(
   [profileName, schoolName, className, classGrade, headerTeacherNamesText, caregiverName],
   () => clearPreview(),
 )
-watch(termForms, () => clearPreview(), { deep: true })
+watch(
+  termForms,
+  () => {
+    clearPreview()
+    for (const form of termForms.value) {
+      if (!termNameChanged(form)) updateExistingDocuments[form.id] = false
+    }
+  },
+  { deep: true },
+)
+watch(updateExistingDocuments, () => clearPreview(), { deep: true })
 watch([newTermName, newTermRange], () => clearPreview())
 watch([overrideTermId, overrideDate, overrideState, overrideReason], () => clearPreview())
 
@@ -654,13 +690,7 @@ async function previewChange(change: ConfigChange): Promise<void> {
 }
 
 async function previewTermChange(form: TermForm): Promise<void> {
-  await previewChange({
-    kind: 'term_update',
-    term_id: form.id,
-    name: form.name,
-    start_date: form.start_date,
-    end_date: form.end_date,
-  })
+  await previewChange(termChange(form))
 }
 
 async function previewNewTerm(): Promise<void> {
@@ -675,6 +705,117 @@ async function previewNewTerm(): Promise<void> {
     start_date: newTermRange.value[0],
     end_date: newTermRange.value[1],
   })
+}
+
+async function readPromotionTerms(): Promise<void> {
+  if (props.frozen || readingPromotionTerms.value) return
+  const status = collaborationPanelRef.value?.currentStatus?.()
+  const teacher = status?.teacher
+  if (status?.connected !== true || !teacher) {
+    promotionTermNotice.value = ''
+    errorText.value = '请先连接在线班级，再读取园所学期名称'
+    return
+  }
+  if (previewData.value || pendingConfirm.value || queuedConfirm.value) {
+    errorText.value = '请先处理当前预览或未定提交，再读取园所学期名称'
+    return
+  }
+  const identity = `${teacher.teacher_id}:${teacher.school_id}`
+  const generation = promotionReadGeneration
+  const startSeq = inputSeq
+  const previewToken = (previewData.value as ConfigPreview | null)?.preview_token ?? ''
+  const originalNames = new Map(
+    termForms.value.map((form) => [form.id, form.name]),
+  )
+  readingPromotionTerms.value = true
+  errorText.value = ''
+  promotionTermNotice.value = ''
+  try {
+    const overview = await createCollaborationApi().getPromotion()
+    const currentStatus = collaborationPanelRef.value?.currentStatus?.()
+    const currentTeacher = currentStatus?.teacher
+    const currentIdentity = currentTeacher
+      ? `${currentTeacher.teacher_id}:${currentTeacher.school_id}`
+      : ''
+    if (
+      generation !== promotionReadGeneration
+      || props.frozen
+      || inputSeq !== startSeq
+      || ((previewData.value as ConfigPreview | null)?.preview_token ?? '') !== previewToken
+      || currentStatus?.connected !== true
+      || currentIdentity !== identity
+    ) {
+      if (generation === promotionReadGeneration && !props.frozen) {
+        promotionTermNotice.value =
+          '在线连接或当前表单已变化，本次读取结果已忽略；未修改当前表单。'
+      }
+      return
+    }
+    const terms = Array.isArray(overview.terms) ? overview.terms : []
+    promotionTerms.value = terms
+    if (terms.length === 0) {
+      promotionTermNotice.value = '园所当前没有可读取的学期名称；未修改当前表单。'
+      return
+    }
+    let filled = 0
+    let parsed = 0
+    let missing = 0
+    let ambiguous = 0
+    for (const form of termForms.value) {
+      if (form.name !== originalNames.get(form.id)) {
+        parsed += 1
+        continue
+      }
+      const matches = terms.filter(
+        (term) =>
+          term.start_date === form.start_date
+          && term.end_date === form.end_date,
+      )
+      if (matches.length === 0) {
+        missing += 1
+        continue
+      }
+      if (matches.length > 1) {
+        ambiguous += 1
+        continue
+      }
+      const original = currentTerm(form.id)
+      if (!form.name.trim() || form.name === original?.name) {
+        form.name = matches[0].name
+        filled += 1
+      } else {
+        parsed += 1
+      }
+    }
+    if (filled === 0) {
+      if (parsed > 0) {
+        promotionTermNotice.value =
+          '已读取园所学期名称；当前表单已有自定义名称，未覆盖。本操作未提交修改。'
+      } else if (ambiguous > 0) {
+        promotionTermNotice.value =
+          '园所学期存在起止日期完全相同的多条记录，未自动填入；本操作未提交修改。'
+      } else {
+        promotionTermNotice.value =
+          '未找到起止日期完全一致的园所学期；未修改当前表单，也未提交修改。'
+      }
+      return
+    }
+    const extras = [
+      parsed > 0 ? `${parsed} 个自定义名称保留` : '',
+      missing > 0 ? `${missing} 个学期没有日期匹配` : '',
+      ambiguous > 0 ? `${ambiguous} 个学期有多条同日期记录` : '',
+    ].filter(Boolean)
+    promotionTermNotice.value =
+      `已读取园所学期名称，填入 ${filled} 个当前表单`
+      + (extras.length ? `；${extras.join('，')}` : '')
+      + '。请核对后自行预览并确认，本操作未提交修改。'
+  } catch (exc) {
+    errorText.value = exc instanceof ApiError
+      ? exc.message
+      : '读取园所学期名称失败，请检查在线连接后重试'
+  } finally {
+    readingPromotionTerms.value = false
+  }
 }
 
 async function previewOverride(): Promise<void> {
@@ -858,13 +999,17 @@ function finishPendingConfirm(pending: PendingConfirm, result: ConfigApplyResult
   requestContextReload(result.config_version)
 }
 function termChange(form: TermForm): ConfigChange {
-  return {
+  const change: ConfigChange = {
     kind: 'term_update',
     term_id: form.id,
     name: form.name,
     start_date: form.start_date,
     end_date: form.end_date,
   }
+  if (termNameChanged(form)) {
+    change.update_existing_documents = termUpdateExisting(form)
+  }
+  return change
 }
 
 function currentTermChange(form: TermForm): ConfigChange | null {
@@ -1331,7 +1476,10 @@ defineExpose({
       </el-card>
 
       <el-card class="section" shadow="never" data-d1="settings-current-class">
-        <template #header>当前本地班级（升班沿用同一班级）</template>
+        <template #header>当前本地班级</template>
+        <p class="muted" data-d1="settings-class-summary">
+          当前：{{ className || '（未填写班级名称）' }} · {{ GRADE_LABELS[classGrade] }}
+        </p>
         <div class="fields">
           <div class="field">
             <label>班级名称</label>
@@ -1339,7 +1487,7 @@ defineExpose({
           </div>
           <div class="field">
             <label>年级</label>
-            <el-select v-model="classGrade" :disabled="frozen" data-d1="settings-class-grade">
+            <el-select v-model="classGrade" class="class-grade-select" :disabled="frozen" data-d1="settings-class-grade">
               <el-option label="小班" value="small" />
               <el-option label="中班" value="middle" />
               <el-option label="大班" value="large" />
@@ -1551,6 +1699,26 @@ defineExpose({
         <summary>其他学期与新建 <span class="muted">学期名称、起止日期、新建</span></summary>
         <el-card class="section group-card" shadow="never">
           <template #header>学期维护</template>
+          <div class="row promotion-term-read">
+            <el-button
+              size="small"
+              data-d1="settings-read-promotion-terms"
+              :loading="readingPromotionTerms"
+              :disabled="frozen || readingPromotionTerms"
+              @click="readPromotionTerms"
+            >
+              读取园所学期名称
+            </el-button>
+            <span class="muted">仅在已连接在线班级时读取；只填入起止日期唯一匹配的名称，不提交修改。</span>
+          </div>
+          <el-alert
+            v-if="promotionTermNotice"
+            type="info"
+            :closable="false"
+            class="block"
+            data-d1="settings-promotion-term-notice"
+            :title="promotionTermNotice"
+          />
           <div v-for="(form, index) in termForms" :key="form.id" class="term-row" data-d1="term-row" :data-term-id="form.id">
             <el-input v-model="form.name" maxlength="80" class="term-name" :disabled="frozen" />
             <el-date-picker
@@ -1572,6 +1740,17 @@ defineExpose({
             <el-button size="small" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmTermChange(form)">
               确认修改
             </el-button>
+            <el-checkbox
+              v-if="termNameChanged(form)"
+              class="term-doc-update"
+              data-d1="term-update-existing-documents"
+              title="只影响应用内旧记录的显示和重新导出；既有确认快照与已导出文件不变"
+              :model-value="termUpdateExisting(form)"
+              :disabled="frozen"
+              @update:model-value="setTermUpdateExisting(form, $event === true)"
+            >
+              同时更新旧记录中的学期名称（默认保留）
+            </el-checkbox>
           </div>
           <div class="term-row new-term">
             <el-input v-model="newTermName" maxlength="80" placeholder="新学期名称" class="term-name" :disabled="frozen" data-d1="new-term-name" />
@@ -1645,6 +1824,7 @@ defineExpose({
         </el-card>
       </details>
 
+      <AiSettingsPanel ref="aiPanelRef" :frozen="frozen" @draft-active="(value: boolean) => (aiDraftActive = value)" />
       <details
         class="settings-group"
         data-d1="settings-group-games"
@@ -1661,15 +1841,6 @@ defineExpose({
         />
       </details>
 
-      <details
-        class="settings-group"
-        data-d1="settings-group-ai"
-        :open="expandedGroups.ai"
-        @toggle="onGroupToggle('ai', $event)"
-      >
-        <summary>AI 供应商与提示词 <span class="muted">密钥、模型、个人指导与栏目提示词</span></summary>
-        <AiSettingsPanel ref="aiPanelRef" :frozen="frozen" @draft-active="(value: boolean) => (aiDraftActive = value)" />
-      </details>
 
       <details
         class="settings-group"
@@ -1733,6 +1904,10 @@ defineExpose({
 .settings-main[hidden],
 .settings-collaboration[hidden] {
   display: none !important;
+}
+.class-grade-select {
+  width: 100%;
+  min-width: 140px;
 }
 .settings-group {
   margin-top: 16px;

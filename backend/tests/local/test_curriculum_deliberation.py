@@ -17,6 +17,7 @@ from lxml import etree
 
 from app.local import curriculum_content, curriculum_service
 from app.local.base import utc_now
+from app.local.migrate import head_revision
 from app.local.models import LocalClass, LocalCurriculumDeliberation
 from app.local.runtime import LocalRuntime
 from app.services.word_export_curriculum import render_curriculum_docx
@@ -1096,7 +1097,7 @@ class CurriculumMigrationTests(LocalTestCase):
         runtime = self.make_runtime()
         self.assertEqual(
             runtime.current_revision,
-            "20261110_0019_local_directional_revisions",
+            head_revision(),
         )
         db = runtime.db_path
         tables = {

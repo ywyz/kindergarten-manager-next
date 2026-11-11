@@ -23,11 +23,28 @@ export const TASK_TYPES: TaskType[] = [
   'daily_other_activities',
 ]
 
-export const TASK_TYPE_LABELS: Record<TaskType, string> = {
+export const TASK_TYPE_LABELS: Record<string, string> = {
   daily_lesson_split: '教案拆分',
   daily_process_adapt: '过程适龄调整',
   daily_other_activities: '其他活动生成',
   daily_reflection_generate: '活动反思生成',
+  game_observation_generate: '游戏观察生成',
+  game_observation_rewrite: '游戏观察改写',
+  weekly_games_select: '周计划·游戏选择',
+  weekly_key_week_focus: '周计划·本周重点',
+  weekly_environment_setup: '周计划·环境创设',
+  weekly_habit_culture: '周计划·习惯与文化',
+  weekly_home_cooperation: '周计划·家园合作',
+  weekly_materials_generate: '周计划·材料生成',
+  listening_note_draft: '倾听·记录草稿',
+  listening_domain_evaluate: '倾听·领域评价',
+  listening_group_notes: '倾听·小组记录',
+  listening_goal_suggest: '倾听·目标建议',
+  curriculum_split: '课程审议·原稿拆分',
+  curriculum_review: '课程审议·审议建议',
+  curriculum_edit: '课程审议·局部修改',
+  class_game_config_extract: '游戏配置·文本解析',
+  directional_revision: '定向修改',
 }
 
 export const TASK_TYPE_HINTS: Record<TaskType, string> = {
@@ -164,6 +181,16 @@ export const FIELD_LABELS: Record<string, string> = {
   observation_focus: '重点观察',
   guidance: '指导',
   support_strategy: '支持策略',
+  target: '目标对象',
+  language: '输出语言',
+  strict_json: '严格 JSON 输出',
+  no_fabricated_sources: '不伪造来源',
+  allowed_input_fields: '允许使用的输入字段',
+  instructions: '任务指导',
+  shared: '共用指导',
+  task: '任务专属指导',
+  reflection: '反思指导',
+  text: '文字内容',
 }
 
 export function displayFieldLabel(field: {

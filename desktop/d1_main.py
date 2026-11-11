@@ -515,11 +515,22 @@ def build_runtime(args):
                 raise RuntimeError("更新后的程序构建身份与安装计划不一致")
         source = None
         frozen = bool(getattr(sys, "frozen", False))
+        managed_root = None
+        managed_helper = None
+        if frozen:
+            app_dir = Path(sys.executable).parent
+            managed_root = update_paths.resolve_install_root(app_dir)
+            if managed_root is not None:
+                candidate_helper = update_paths.managed_layout(managed_root)[2]
+                if update_paths.is_safe_existing(candidate_helper):
+                    managed_helper = candidate_helper
         # GitHub version discovery is useful in a source run too; product
-        # install/replacement remains disabled unless the frozen identity is
-        # present.
+        # install/replacement remains disabled unless a frozen identity, a
+        # process-confirmed managed root and its independent helper are present.
         update_enabled = True
-        allow_install = frozen
+        allow_install = (
+            frozen and managed_root is not None and managed_helper is not None
+        )
         if u3_config is not None:
             source = update_u3_harness.release_source(u3_config)
             update_enabled = True
@@ -544,6 +555,14 @@ def build_runtime(args):
         # its own fixed updater-directory copy; the check path never rewrites
         # either trust file.
         release_config_path = d1_paths.package_root() / "update_release.json"
+        if u3_config is not None:
+            staging_root = Path(u3_config["staging_root"])
+        elif managed_root is not None:
+            staging_root = update_paths.managed_layout(managed_root)[3]
+        else:
+            # Discovery-only copy: never borrow another install's registered
+            # root/staging area.
+            staging_root = update_paths.neutral_staging_root()
         update_manager = update_service.UpdateManager(
             identity,
             source=source,
@@ -555,9 +574,7 @@ def build_runtime(args):
             ),
             data_dir=runtime.data_dir,
             credential_root=runtime.credential_root,
-            staging_root=(
-                Path(u3_config["staging_root"]) if u3_config is not None else None
-            ),
+            staging_root=staging_root,
             allow_install=allow_install,
         )
         install_coordinator = None
@@ -577,14 +594,14 @@ def build_runtime(args):
                         test_only=True,
                         new_app_command=list(u3_config["new_app_command"]),
                     )
-                else:
+                elif managed_root is not None and managed_helper is not None:
                     install_coordinator = update_install.InstallCoordinator(
                         identity=identity,
                         data_dir=runtime.data_dir,
                         credential_root=runtime.credential_root,
-                        install_root=update_paths.install_root(),
+                        install_root=managed_root,
                         app_dir=Path(sys.executable).parent,
-                        helper_command=[str(update_paths.updater_exe())],
+                        helper_command=[str(managed_helper)],
                         release_config=release_config_path,
                     )
             except Exception:

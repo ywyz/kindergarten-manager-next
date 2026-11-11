@@ -23,6 +23,7 @@ class ObservationBundleContractTests(unittest.TestCase):
                 "daily_lesson_split",
                 "daily_process_adapt",
                 "daily_other_activities",
+                "daily_reflection_generate",
             },
         )
         self.assertEqual(
@@ -37,9 +38,18 @@ class ObservationBundleContractTests(unittest.TestCase):
                 "weekly_habit_culture",
                 "weekly_home_cooperation",
                 "weekly_materials_generate",
+                "listening_note_draft",
+                "listening_domain_evaluate",
+                "listening_group_notes",
+                "listening_goal_suggest",
+                "class_game_config_extract",
+                "curriculum_split",
+                "curriculum_review",
+                "curriculum_edit",
+                "directional_revision",
             },
         )
-        self.assertEqual(len(prompt_bundles.REGISTERED_TASK_TYPES), 11)
+        self.assertEqual(len(prompt_bundles.REGISTERED_TASK_TYPES), 21)
         self.assertIn(
             "game_observation_generate", prompt_bundles._OUTPUT_MODELS
         )

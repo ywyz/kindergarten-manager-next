@@ -61,6 +61,7 @@ from app.local.models import (
     LocalProfile,
     LocalSettings,
     LocalTerm,
+    LocalTermNameChange,
     LocalWeeklyPlan,
 )
 from app.local.normalize import normalize_display_name, normalize_request_id
@@ -208,13 +209,23 @@ def normalize_change(change: object) -> dict:
     if kind == "term_create":
         return _normalize_term_fields({"kind": "term_create"}, change)
     if kind == "term_update":
-        return _normalize_term_fields(
+        normalized = _normalize_term_fields(
             {
                 "kind": "term_update",
                 "term_id": _normalize_term_id(change.get("term_id")),
             },
             change,
         )
+        if "update_existing_documents" in change:
+            value = change["update_existing_documents"]
+            if not isinstance(value, bool):
+                raise LocalValidationError(
+                    "update_existing_documents 必须是布尔值"
+                )
+            # Omission is kept omitted so an existing client's normalized
+            # change (and receipt fingerprint) stays byte-for-byte compatible.
+            normalized["update_existing_documents"] = value
+        return normalized
     if kind == "class_games":
         return _normalize_class_games(change)
     # calendar_override
@@ -1139,6 +1150,16 @@ def _before_after(
         return (snapshot.game_payload, _game_payload(normalized))
     if kind == "term_update":
         assert snapshot.target_term is not None
+        after = {
+            "term_id": normalized["term_id"],
+            "name": normalized["name"],
+            "start_date": normalized["start_date"],
+            "end_date": normalized["end_date"],
+        }
+        if "update_existing_documents" in normalized:
+            after["update_existing_documents"] = normalized[
+                "update_existing_documents"
+            ]
         return (
             {
                 "term_id": snapshot.target_term.id,
@@ -1146,12 +1167,7 @@ def _before_after(
                 "start_date": snapshot.target_term.start_date.isoformat(),
                 "end_date": snapshot.target_term.end_date.isoformat(),
             },
-            {
-                "term_id": normalized["term_id"],
-                "name": normalized["name"],
-                "start_date": normalized["start_date"],
-                "end_date": normalized["end_date"],
-            },
+            after,
         )
     return None, None
 
@@ -1714,6 +1730,21 @@ def _apply_change(
         term = session.get(LocalTerm, normalized["term_id"])
         if term is None:  # pragma: no cover - validated in snapshot
             raise LocalTermNotFound()
+        old_name = term.name
+        if old_name != normalized["name"]:
+            session.add(
+                LocalTermNameChange(
+                    id=new_opaque_id(),
+                    term_id=term.id,
+                    old_name=old_name,
+                    new_name=normalized["name"],
+                    update_existing_documents=bool(
+                        normalized.get("update_existing_documents", False)
+                    ),
+                    config_version=new_config_version,
+                    changed_at=now,
+                )
+            )
         term.name = normalized["name"]
         term.updated_at = now
         if candidate.revision is not None:

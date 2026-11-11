@@ -36,7 +36,10 @@ from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
 from app.daily_process_contract import (
+    ADAPT_PATCH_SCHEMA,
     DailyProcessContractError,
+    adapt_step_index,
+    expand_adapt_patch,
     normalize_daily_candidate,
     validate_adapt_change,
     validate_split_cleanup,
@@ -2063,26 +2066,44 @@ def _render_system_text(
         "严格遵循 output_contract 的字段与类型，不要输出未列出的字段或 ID。",
         "多项内容、活动步骤、目标、准备、要点、问题或游戏建议：每项使用真实换行，并以“1. ”、“2. ”、“3. ”阿拉伯数字依次编号；数量按实际内容，不强行凑三条；名称、主题等短单值不编号。JSON 字符串中的换行必须使用转义换行，解码后是真实换行，不能向教师显示字面 \\n。",
     ]
+    if task_type == "daily_process_adapt":
+        # The patch protocol replaces the generic full-document numbering rule;
+        # otherwise the model is told both "return one patch" and "renumber all
+        # steps", and it falls back to copying/rewriting the whole process.
+        common = [
+            rule
+            for rule in common
+            if not rule.startswith("多项内容、活动步骤")
+        ]
+        common.append(
+            "本任务只返回一个局部补丁 JSON，不返回完整过程；patch 的 text 只写一个实际步骤的正文，不带标题、编号或 Markdown。text 内可用真实换行写“师：/幼：”话语。payload.adapt_steps 给出本机计算的稳定 index、level、title 和 has_children；只可选其中存在的 index，父标题后有子项时请选具体子项。"
+        )
     per_task: dict[str, list[str]] = {
         "daily_lesson_split": [
             "只从教师提供的原始教案中摘取内容，不得补写或编造教案里没有的环节；原始教案本身保持原样。",
             "若输入含 revision_instruction，只能用于整理或清理原教案已有文字，不得据此补写原教案没有的环节或事实。",
             "base_candidate 是上一候选的只读文字参照，不是原始教案事实；不得把候选内容冒充原教案、跨计划/任务引用或据此补写未提供的内容。",
-            "原始教案未写到的字段返回空字符串，不要猜测。",
-            "原文已有可识别条目时，只整理已有条目的编号和换行；只清理常见的明显错字、错标点和误入的英文字母。",
+            "theme 优先使用原文明确的活动主题或活动名称；原文没有单列时，可从活动目标、准备或过程的首个明确活动名称推断一个短名称，不编号，不另造与原教案无关的活动；活动短名不超过 256 UTF-8 字节。",
+            "key_points 和 difficult_points 优先摘原文明确语句；原文未单列时，从活动目标或过程中选取与要求最贴近的原文语句，不得改写成新结论；确实找不到可引用语句时返回空字符串，不要写“无”，交教师核对。",
+            "优先保留原文已有的标题层级和编号形式（一、二、三 或 1. 2. 3.，以及（一）/（1）子级），不要为了统一格式改写编号。若原文编号与输出格式不一致，只允许在行首把中文/阿拉伯一级编号或括号级别做等价转换并保持原序；正文中的数字、单位、事实和顺序不得变化。",
+            "原文已有可识别条目时，只整理已有条目的编号和换行；原文子步骤保留“（1）”“（2）”等编号并另起一行。",
+            "只清理常见的明显错字、错标点和误入的英文字母。",
             "语义不确定、需要改写才能通顺或无法确认是否为笔误的内容，保留原文，交教师核对；不擅自选择改写哪一段。",
             "保留原文语句、顺序和教学含义，不为列表扩写、补写或改写原文事实。",
         ],
         "daily_process_adapt": [
+            "本任务的 provider 输出不是完整过程，而是且仅是一个局部补丁 JSON：replace 用 step_index 指向已保存过程的一个环节并给出替换后的该环节正文；insert 用 after_step_index（0 表示最前）并给出新增环节正文；no_change 不修改。只允许一个修改，不得输出完整过程、多个补丁、额外键或 Markdown。其余环节由本机按教师已保存过程原样回填。",
             "输入包含已保存的拆分基准过程与教师已保存过程；两者都是真实基准，不得改写基准本身。",
             "只允许修改一个已有环节，或新增一个环节；修改与新增只能选其一。",
             "除这一个环节外，其余环节必须逐字保留教师已保存过程的原字、原序和换行；仅编号顺延不算修改。",
-            "新增或修改的环节可调整年龄适宜性并写教师可直接说的话，但不得虚构课堂事实；其他环节不要补写教师话语。",
-            "输出完整过程，按实际步骤真实换行并编号；数量按实际，不强凑三条。",
-            "如果无法安全识别环节结构或无法确定只改哪一处，返回输入的教师已保存过程并保持原样，交教师核对；不要擅自选择多个环节。",
+            "新增或修改的环节可调整年龄适宜性，并写出教师可直接说的话：在关键处包含引导语、提问和教师的预设回应或支持语，简短自然、衔接操作；不得虚构课堂事实或幼儿实际回答；其他环节不要补写教师话语。",
+            "patch 的 text 只写该环节的正文，不带“一、”“（1）”“1.”等标题或编号，也不要回抄其他步骤；用真实换行保留“师：/幼：”等话语。编号、父标题、子项层级、空行和其余原文由本机按已保存过程保留；正文数字、单位、事实和顺序不得变化。",
+            "个人指导只决定当前这一个环节的教学调整内容；结构、编号和保真以本局部补丁协议为准。旧个人指导中要求回抄完整过程、补齐所有环节或重新编号的文字，不适用于本任务输出。",
+            "如果无法安全识别环节结构或无法确定只改哪一处，返回 no_change，交教师核对；不要擅自选择多个环节。",
         ],
         "daily_other_activities": [
             "可以根据日期、周次、班级年级、可用游戏配置和当前日计划，提出新的游戏与活动建议。",
+            "只填写 output_contract 已有的 morning_games、morning_talk、post_group_games、afternoon_outdoor 板块及其字段；不合并、改名或新增板块，不输出未列出的字段。",
             "若输入含 revision_instruction，只能在现有候选板块/游戏组结构内调整，不得绕过结构、编造日计划事实或新增未提供的板块。",
             "base_candidate 是上一候选的只读文字参照，不是日计划事实；不得复制出未提供的板块、冒用其它计划/任务内容或把候选说成已保存记录。",
             "晨间游戏的一项集体与一项自选/自主均为户外活动，不含区域游戏、室内或专用室活动；优先使用 game_config 中 kind=outdoor 的场地及限制，没有户外配置时只给一般户外建议并明确未结合配置，不冒充已配置场地。",
@@ -2094,7 +2115,7 @@ def _render_system_text(
         "daily_reflection_generate": [
             "plan_snapshot 是教师已保存的日计划，只表示原定安排；implementation_materials 是教师提供的活动实施材料，只表示教师明确说已经发生的情况。",
             "计划中的活动步骤不能改写成已经实施的事实；材料没有提到的幼儿反应、对话、结果、困难或时间不得补写。",
-            "只输出一段可直接编辑的反思正文，不输出标题、列表、审核说明或候选元数据。",
+            "只输出一段可直接编辑的反思正文，以自然段落书写，围绕今日亮点、存在问题、调整策略，篇幅约100～200字；不输出标题、列表编号、审核说明或候选元数据。",
             "材料不足以支持具体判断时，只写材料能够支持的内容，并明确还需教师补充观察；不要用计划内容替代实施事实，也不要声称已经发生的课堂。",
             "保留材料中的教师原意、活动名称、人数、材料名称和关键细节；不引入未提供的姓名、班级或家庭信息。",
         ],
@@ -2128,12 +2149,20 @@ def _render_system_text(
         common.append(
             "日计划 AI 文字的换行只转义一层：JSON 解码后，编号各项和“师：/幼：”等话语段落必须是真实换行；不得输出字面反斜杠+n、双层转义或把多段串成一行。"
         )
+        common.append(
+            "日计划所有栏目均为纯文本，不使用 Markdown 标记（**、#、- 列表前缀、代码围栏等）；编号使用“1. ”或“（1）”。"
+        )
+    contract = (
+        ADAPT_PATCH_SCHEMA
+        if task_type == "daily_process_adapt"
+        else output_schema
+    )
     return canonical_json(
         {
             "task_type": task_type,
             "protocol": protocol,
             "contract_version": contract_version,
-            "output_contract": output_schema,
+            "output_contract": contract,
             "guidance": guidance,
             "instructions": common + per_task.get(task_type, []),
         }
@@ -2346,6 +2375,26 @@ def _pick_candidate(runtime: Any, now: datetime) -> tuple[_Pick | None, bool]:
         session.close()
 
 
+def adapt_wire_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add the program-computed step index to the provider payload only.
+
+    The persisted input projection, its hashes and historical candidates stay
+    unchanged; this copy is only serialized into the current request body and
+    is included in the real preflight size.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    process = payload.get("process_source")
+    if not isinstance(process, str) or not process.strip():
+        return payload
+    steps = adapt_step_index(process)
+    if not steps:
+        return payload
+    enriched = dict(payload)
+    enriched["adapt_steps"] = steps
+    return enriched
+
+
 def serialized_request_bytes(
     *,
     task_type: str,
@@ -2362,6 +2411,8 @@ def serialized_request_bytes(
     never used as the limit check (spec §4.2 / §11: serialized request ≤ 1 MiB).
     """
     system_text = _render_system_text(task_type, contract_version, output_schema, guidance)
+    if task_type == "daily_process_adapt":
+        payload = adapt_wire_payload(payload)
     user_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     budget = ai_transport.text_response_budget(task_type)
     return len(
@@ -2822,9 +2873,23 @@ def validate_daily_candidate_contract(
     try:
         if task_type == "daily_lesson_split":
             group = candidate.get("group_activity") or {}
+            # The theme may be a short name inferred from the lesson title,
+            # objective or process (the report's explicit requirement), so it
+            # is not forced through the verbatim-cleanup check.  The five
+            # factual fields still need a textual basis in the raw lesson.
             validate_split_cleanup(
                 str(payload.get("raw_lesson_plan") or ""),
-                [value for value in group.values() if isinstance(value, str)],
+                [
+                    group.get(key)
+                    for key in (
+                        "objectives",
+                        "preparation",
+                        "key_points",
+                        "difficult_points",
+                        "process",
+                    )
+                    if isinstance(group.get(key), str)
+                ],
             )
         elif task_type == "daily_process_adapt":
             baseline = payload.get("split_baseline_process")
@@ -2914,6 +2979,16 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
                 validated = weekly_ai_contracts.parse_materials_candidate(
                     text, server_manifest=manifest
                 )
+                selected = dict(inp.dependencies_json or {}).get("selected") or {}
+                if selected.get("focus_area") is None:
+                    if any(
+                        item.get("origin") != "suggested"
+                        or item.get("evidence_refs")
+                        for item in validated.get("items") or []
+                    ):
+                        raise CandidateInvalid(
+                            "无重点区域时材料只能为 suggested 且不得有证据"
+                        )
             else:
                 validated = weekly_ai_contracts.parse_column_candidate(
                     text, task_type=claim.task_type
@@ -2929,6 +3004,20 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
                 raise CandidateInvalid(str(exc)) from None
         else:
             parsed = ai_transport.parse_strict_json_object(text)
+            if claim.task_type == "daily_process_adapt" and input_row is not None:
+                payload = dict(input_row.payload_json or {})
+                baseline = payload.get("split_baseline_process")
+                if not isinstance(baseline, str) or not baseline.strip():
+                    reference = dict(input_row.dependencies_json or {}).get(
+                        "split_baseline"
+                    )
+                    if isinstance(reference, dict):
+                        baseline = reference.get("group_activity_process")
+                parsed = expand_adapt_patch(
+                    parsed,
+                    str(payload.get("process_source") or ""),
+                    baseline if isinstance(baseline, str) else None,
+                )
             validated = validate_candidate(claim.task_type, parsed)
             validated = normalize_daily_candidate(claim.task_type, validated)
             if input_row is not None and claim.task_type in (

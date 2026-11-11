@@ -820,9 +820,11 @@ def test_migration_chain_covers_full_linear_history_and_has_one_head():
         "20261109_0017_local_curriculum_deliberations.py",
         "20261110_0018_local_curriculum_ai.py",
         "20261110_0019_local_directional_revisions.py",
+        "20261111_0020_local_todo_archive.py",
+        "20261112_0021_local_term_name_changes.py",
     ]
-    assert chain["head_revision"] == "20261110_0019_local_directional_revisions"
-    assert chain["head_file"] == "20261110_0019_local_directional_revisions.py"
+    assert chain["head_revision"] == "20261112_0021_local_term_name_changes"
+    assert chain["head_file"] == "20261112_0021_local_term_name_changes.py"
     assert chain["revisions"][-1] == chain["head_revision"]
     source_files = verify_e14_package.source_migration_files(
         build_e14.MIGRATIONS_DIR
@@ -831,7 +833,7 @@ def test_migration_chain_covers_full_linear_history_and_has_one_head():
         "env.py",
         *[f"versions/{name}" for name in chain["files"]],
     ]
-    assert len(source_files) == 20
+    assert len(source_files) == 22
 
 
 def test_source_freeze_contains_every_migration_and_env():
@@ -1038,7 +1040,7 @@ def test_directory_checks_reject_wrong_identity_version_channel_and_head(tmp_pat
     assert identity["uuid"] is True
     assert identity["not_source_id"] is False
     assert identity["valid"] is False
-    assert head == "20261110_0019_local_directional_revisions"
+    assert head == "20261112_0021_local_term_name_changes"
 
 
 def test_package_info_freeze_commit_contract():
@@ -1647,10 +1649,10 @@ def test_missing_listening_template_fails_before_any_build(tmp_path, monkeypatch
 
 def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
     chain = verify_e14_package.discover_migration_chain(build_e14.MIGRATIONS_DIR)
-    assert chain["head_revision"] == "20261110_0019_local_directional_revisions"
-    assert chain["head_file"] == "20261110_0019_local_directional_revisions.py"
-    assert len(chain["files"]) == 19
-    assert len(verify_e14_package.source_migration_files(build_e14.MIGRATIONS_DIR)) == 20
+    assert chain["head_revision"] == "20261112_0021_local_term_name_changes"
+    assert chain["head_file"] == "20261112_0021_local_term_name_changes.py"
+    assert len(chain["files"]) == 21
+    assert len(verify_e14_package.source_migration_files(build_e14.MIGRATIONS_DIR)) == 22
     new_modules = {
         "weekly_ai_adoption", "weekly_ai_api", "weekly_ai_candidates",
         "weekly_ai_contracts", "weekly_ai_inputs", "weekly_ai_service",
@@ -1692,7 +1694,7 @@ def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
         assert relative in verify_e14_package.LISTENING_TEMPLATE_REQUIRED_FILES
     assert verify_e14_portable_archive.discover_migration_chain(
         verify_e14_portable_archive.SOURCE_MIGRATIONS
-    )["head_revision"] == "20261110_0019_local_directional_revisions"
+    )["head_revision"] == "20261112_0021_local_term_name_changes"
     freeze = build_e14.source_freeze()
     paths = {item["path"] for item in freeze["files"]}
     for name in new_modules:

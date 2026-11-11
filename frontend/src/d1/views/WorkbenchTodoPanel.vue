@@ -6,6 +6,7 @@
  * explicitly initiated unknown write.
  */
 import { computed, onMounted, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import {
   todoStore,
   type LocalTodo,
@@ -28,9 +29,23 @@ const writeDisabled = computed(
     props.disabled
     || state.saving
     || state.checking
+    || state.batching
+    || state.loading
+    || !state.listReady
     || state.pending !== null,
 )
 const saveLabel = computed(() => (state.editingId ? '保存修改' : '新建待办'))
+const selectedItems = computed(() =>
+  state.items.filter((item) => state.selectedIds.includes(item.todo_id)),
+)
+const selectedCount = computed(() => selectedItems.value.length)
+const viewLocked = computed(() =>
+  state.saving
+  || state.batching
+  || state.checking
+  || state.loading
+  || state.pending !== null,
+)
 
 watch(
   () => activeStore.busy.value,
@@ -49,6 +64,48 @@ onMounted(() => {
   if (props.profileId) void activeStore.load()
 })
 
+function switchView(value: string | number | boolean): void {
+  void activeStore.setArchivedView(value === 'archived')
+}
+
+function toggleSelection(item: LocalTodo, selected: boolean): void {
+  activeStore.toggleSelected(item.todo_id, selected)
+}
+
+async function archiveSelected(): Promise<void> {
+  const items = selectedItems.value
+  if (!items.length) return
+  if (items.some((item) => !item.completed)) {
+    state.error = '只能归档已完成的待办'
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认归档已完成的 ${items.length} 项待办？`,
+      '归档待办',
+      { confirmButtonText: '归档', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  await activeStore.archiveBatch(items)
+}
+
+async function deleteSelected(): Promise<void> {
+  const items = selectedItems.value
+  if (!items.length) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除所选的 ${items.length} 项待办？删除后不可恢复。`,
+      '删除待办',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  await activeStore.deleteBatch(items)
+}
+
 function beginEdit(item: LocalTodo): void {
   activeStore.startEdit(item)
 }
@@ -61,6 +118,15 @@ function beginEdit(item: LocalTodo): void {
         <span>个人待办</span>
         <span class="muted">仅本人可见，不随班级或学期变化</span>
       </div>
+      <el-radio-group
+        class="todo-view-switch"
+        :model-value="state.showArchived ? 'archived' : 'active'"
+        :disabled="viewLocked"
+        @change="switchView"
+      >
+        <el-radio value="active" data-d1="todo-view-active">活动待办</el-radio>
+        <el-radio value="archived" data-d1="todo-view-archived">已归档</el-radio>
+      </el-radio-group>
     </template>
 
     <div class="todo-form">
@@ -101,7 +167,7 @@ function beginEdit(item: LocalTodo): void {
         取消
       </el-button>
       <el-button
-        v-if="state.conflict"
+        v-if="state.conflict || !!state.error"
         :disabled="state.saving"
         data-d1="todo-reload"
         @click="activeStore.load()"
@@ -156,18 +222,63 @@ function beginEdit(item: LocalTodo): void {
       </div>
     </el-alert>
 
+    <div class="todo-batchbar">
+      <span class="muted" data-d1="todo-selected-count">
+        已选 {{ selectedCount }} 项
+      </span>
+      <el-button
+        v-if="!state.showArchived"
+        size="small"
+        :disabled="writeDisabled || !selectedCount"
+        data-d1="todo-batch-archive"
+        @click="archiveSelected"
+      >
+        归档所选（{{ selectedCount }}）
+      </el-button>
+      <el-button
+        size="small"
+        type="danger"
+        :disabled="writeDisabled || !selectedCount"
+        data-d1="todo-batch-delete"
+        @click="deleteSelected"
+      >
+        删除所选（{{ selectedCount }}）
+      </el-button>
+      <el-button
+        v-if="selectedCount"
+        size="small"
+        text
+        :disabled="writeDisabled"
+        data-d1="todo-clear-selection"
+        @click="activeStore.clearSelection()"
+      >
+        清空选择
+      </el-button>
+    </div>
+
     <div v-loading="state.loading" class="todo-list">
-      <el-empty v-if="!state.items.length && !state.loading" description="暂无待办" />
+      <el-empty
+        v-if="!state.items.length && !state.loading"
+        :description="state.showArchived ? '暂无已归档待办' : '暂无待办'"
+      />
       <div
         v-for="item in state.items"
         :key="item.todo_id"
         class="todo-row"
-        :class="{ completed: item.completed }"
+        :class="{ completed: item.completed, selected: state.selectedIds.includes(item.todo_id) }"
         :data-d1="`todo-row-${item.todo_id}`"
       >
         <el-checkbox
-          :model-value="item.completed"
+          :model-value="state.selectedIds.includes(item.todo_id)"
           :disabled="writeDisabled"
+          :aria-label="`选择待办 ${item.title}`"
+          :data-d1="`todo-select-${item.todo_id}`"
+          @change="toggleSelection(item, $event === true)"
+        />
+        <el-checkbox
+          :model-value="item.completed"
+          :disabled="writeDisabled || !!item.archived_at"
+          :aria-label="`完成待办 ${item.title}`"
           :data-d1="`todo-toggle-${item.todo_id}`"
           @change="activeStore.toggle(item)"
         />
@@ -177,6 +288,7 @@ function beginEdit(item: LocalTodo): void {
             <span v-if="item.due_date">截止 {{ item.due_date }}</span>
             <span v-else>无截止日</span>
             <span v-if="item.completed">已完成</span>
+            <span v-if="item.archived_at">已归档</span>
           </div>
         </div>
         <el-button
@@ -212,6 +324,19 @@ function beginEdit(item: LocalTodo): void {
   gap: 10px;
   align-items: baseline;
   flex-wrap: wrap;
+}
+.todo-view-switch {
+  margin-top: 8px;
+}
+.todo-batchbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.todo-row.selected {
+  background: var(--el-fill-color-light);
 }
 .todo-form {
   display: flex;

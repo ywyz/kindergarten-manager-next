@@ -388,7 +388,11 @@ def run(conn: Any) -> None:
         ca_pem = synthetic.get("ca_pem") or None
 
     vision = request.get("protocol") == ai_transport.VISION_PROTOCOL_ID
-    budget = ai_transport.DEFAULT_TEXT_RESPONSE_BUDGET
+    budget = (
+        ai_transport.VISION_TEXT_RESPONSE_BUDGET
+        if vision
+        else ai_transport.DEFAULT_TEXT_RESPONSE_BUDGET
+    )
     if vision and not ai_transport.vision_capability(
         request.get("base_url"), request.get("model")
     ):

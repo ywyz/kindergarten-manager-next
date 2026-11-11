@@ -484,11 +484,12 @@ def ai_prompt_package_check(request: Request):
 @local_router.get("/ai/prompts", response_model=LocalPromptListOut)
 def ai_prompts_list(
     request: Request,
+    scope: str = Query(default="daily", pattern="^(daily|all)$"),
     session: Session = Depends(get_session),
 ):
     with storage_errors():
         _require_prompt_sync(request)
-        return list_prompts(session)
+        return list_prompts(session, scope=scope)
 
 
 @local_router.get(

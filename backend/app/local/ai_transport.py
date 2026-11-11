@@ -435,6 +435,36 @@ DEFAULT_TEXT_RESPONSE_BUDGET = ResponseBudget(
     wire_max_bytes=RESPONSE_MAX_BYTES,
     content_max_bytes=RESPONSE_MAX_BYTES,
 )
+# Daily tasks used the frozen 1 MiB default even though the provider streams a
+# separate reasoning channel before the final JSON.  A long lesson plan can
+# legitimately produce more than 1 MiB of SSE framing/reasoning while the final
+# JSON stays below 1 MiB, so the attempt failed as body_too_large before the
+# answer was complete.  This budget keeps the final content at 1 MiB and gives
+# the wire/event/buffer/IPC layers their own bounded room, matching the already
+# verified weekly/listening shape.  No max_tokens is set: DeepSeek documents a
+# 64K thinking-mode default, and a smaller local cap would risk a length stop.
+DAILY_TEXT_RESPONSE_BUDGET = ResponseBudget(
+    max_tokens=None,
+    wire_max_bytes=16 * 1024 * 1024,
+    content_max_bytes=1_048_576,
+    event_max_bytes=2 * 1_048_576 + 16 * 1024,
+    buffer_max_bytes=2 * 1_048_576 + 16 * 1024,
+    result_ipc_max_bytes=6 * 1_048_576 + 16 * 1024,
+    require_terminal=True,
+)
+# The vision adapter streams the same reasoning/content envelope.  Its request
+# may carry up to 600 ordered images, so a long generate/reasoning stream must
+# not be mistaken for an oversized request response.  The final content and
+# non-SSE response remain at the old 1 MiB bounds.
+VISION_TEXT_RESPONSE_BUDGET = ResponseBudget(
+    max_tokens=None,
+    wire_max_bytes=16 * 1024 * 1024,
+    content_max_bytes=1_048_576,
+    event_max_bytes=2 * 1_048_576 + 16 * 1024,
+    buffer_max_bytes=2 * 1_048_576 + 16 * 1024,
+    result_ipc_max_bytes=6 * 1_048_576 + 16 * 1024,
+    require_terminal=True,
+)
 WEEKLY_TEXT_RESPONSE_BUDGET = ResponseBudget(
     max_tokens=16_384,
     wire_max_bytes=16 * 1024 * 1024,
@@ -495,7 +525,7 @@ def text_response_budget(
     if task_type in DAILY_TEXT_TASK_TYPES:
         if source_kind is not None and source_kind != "daily_plan":
             return None
-        return DEFAULT_TEXT_RESPONSE_BUDGET
+        return DAILY_TEXT_RESPONSE_BUDGET
     if task_type in LISTENING_TEXT_TASK_TYPES:
         if source_kind is not None and source_kind != "one_to_one_listening":
             return None
@@ -1488,6 +1518,7 @@ __all__ = [
     "AUTH",
     "CURRICULUM_TEXT_RESPONSE_BUDGET",
     "CURRICULUM_TEXT_TASK_TYPES",
+    "DAILY_TEXT_RESPONSE_BUDGET",
     "DAILY_TEXT_TASK_TYPES",
     "DIRECTIONAL_TEXT_TASK_TYPES",
     "DEFAULT_TEXT_RESPONSE_BUDGET",
@@ -1506,6 +1537,7 @@ __all__ = [
     "VISION_IPC_FRAME_MAX",
     "VISION_MAX_IMAGES",
     "VISION_PROTOCOL_ID",
+    "VISION_TEXT_RESPONSE_BUDGET",
     "build_http_request",
     "build_request",
     "build_target",

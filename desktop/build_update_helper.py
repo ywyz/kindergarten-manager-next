@@ -1,9 +1,9 @@
 """Build the small independent U2 updater (Windows PyInstaller support).
 
-The updater is a separate onedir program under
-``%LOCALAPPDATA%/Programs/KindergartenManager/updater`` and never loads the
-application package it is switching.  This script is build support only; the
-U2 engineering round does not execute it or build/run a frozen package.
+The updater is a separate onedir program under the registered install root's
+``updater`` directory (``{app}/updater``) and never loads the application
+package it is switching.  This script is build support only; the U2 engineering
+round does not execute it or build/run a frozen package.
 """
 
 from __future__ import annotations

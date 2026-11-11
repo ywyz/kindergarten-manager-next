@@ -83,7 +83,7 @@ type View =
       isNew: boolean
       defaults?: CurriculumContent
     }
-  | { name: 'settings'; section?: 'collaboration' }
+  | { name: 'settings'; section?: 'collaboration'; focusPrompt?: string }
 
 let pageTicket = ''
 const bootState = ref<'connecting' | 'uninitialized' | 'ready' | 'error'>(
@@ -932,6 +932,17 @@ async function goSettings(
 
 function openSettingsView(section?: 'collaboration'): void {
   void leaveForAction('settings', () => goSettings(section))
+}
+
+async function openSettingsForPrompt(focusPrompt?: string): Promise<void> {
+  await leaveForAction('settings', () => {
+    view.value = { name: 'settings', focusPrompt }
+    return 'left'
+  })
+}
+
+function onEditorOpenSettings(focus?: string): void {
+  void openSettingsForPrompt(focus)
 }
 
 function onSettingsSection(section: 'collaboration' | null): void {
@@ -2195,6 +2206,7 @@ onMounted(() => {
         :frozen="closeLocked"
         @register-editor="registerEditor"
         @leave="(kind, run) => void leaveForAction(kind, run)"
+        @open-settings="onEditorOpenSettings"
         @open-editor="(date, mode, planId) => view = { name: 'editor', planDate: date, mode, planId }"
         @refresh-context="reloadContext"
         @export-busy="(value) => exportBusy = value"
@@ -2205,6 +2217,7 @@ onMounted(() => {
         :context="context!"
         :frozen="closeLocked"
         :section="view.section ?? null"
+        :focus-prompt="view.focusPrompt ?? ''"
         :reload-context="reloadContext"
         @draft-active="(active) => settingsDraftActive = active"
         @draft-targets="(targets) => settingsDraftTargets = targets"

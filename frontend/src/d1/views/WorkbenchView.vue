@@ -316,6 +316,19 @@ function openListItem(plan: PlanListItem | TermPlanListItem): void {
   emit('open-editor', plan.plan_date, 'open', plan.id, termId)
 }
 
+const todayPlan = computed(
+  () =>
+    (termPlans.value ?? monthPlans.value).find(
+      (plan) => plan.plan_date === todayIso.value,
+    ) ?? null,
+)
+
+const dailyPlanModule = ref<HTMLElement | null>(null)
+function openDailyPlanModule(): void {
+  if (frozenNow()) return
+  dailyPlanModule.value?.scrollIntoView?.({ block: 'start' })
+}
+
 async function openSettings(): Promise<void> {
   if (frozenNow()) return
   emit('open-settings')
@@ -376,6 +389,9 @@ defineExpose({ reload: load })
         </p>
       </div>
       <div class="actions">
+        <el-button data-d1="open-daily-plan" :disabled="frozen" @click="openDailyPlanModule">
+          日计划
+        </el-button>
         <el-button data-d1="open-observations" :disabled="frozen" @click="emit('open-observations')">
           游戏观察
         </el-button>
@@ -398,6 +414,7 @@ defineExpose({ reload: load })
       </div>
     </div>
 
+
     <WorkbenchTodoPanel
       :profile-id="props.context.profile?.id ?? ''"
       :disabled="frozen"
@@ -414,7 +431,21 @@ defineExpose({ reload: load })
       <el-button size="small" @click="load">重试</el-button>
     </el-alert>
 
-    <el-card shadow="never" class="block">
+    <section
+      ref="dailyPlanModule"
+      class="daily-plan-module"
+      data-d1="daily-plan-module"
+    >
+      <div class="module-head">
+        <h3>日计划</h3>
+        <span v-if="todayPlan" class="muted" data-d1="daily-plan-module-status">
+          今天已有计划 · 内容版本 v{{ todayPlan.current_content_version }}
+        </span>
+        <span v-else class="muted" data-d1="daily-plan-module-status">
+          今天尚无已保存计划；可在下方日历确认新建。
+        </span>
+      </div>
+      <el-card shadow="never" class="block">
       <div class="filters">
         <el-button data-d1="term-all" :disabled="frozen" @click="returnToToday">
           回到今天
@@ -478,7 +509,7 @@ defineExpose({ reload: load })
 
     <el-card shadow="never" class="block">
       <template #header>
-        <span>{{ selectedTerm ? '该学期已保存计划' : '本月已保存计划' }}</span>
+        <span>日计划历史 · {{ selectedTerm ? '该学期已保存计划' : '本月已保存计划' }}</span>
       </template>
       <el-empty
         v-if="!(termPlans ?? monthPlans).length"
@@ -512,6 +543,7 @@ defineExpose({ reload: load })
         </el-table-column>
       </el-table>
     </el-card>
+    </section>
   </div>
 </template>
 
@@ -520,9 +552,36 @@ defineExpose({ reload: load })
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.topbar .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .block {
   margin-top: 16px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.daily-plan-module {
+  margin-top: 16px;
+  border-left: 3px solid var(--kgm-accent);
+  padding-left: 12px;
+}
+.module-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.module-head h3 {
+  margin: 0;
 }
 .filters {
   display: flex;

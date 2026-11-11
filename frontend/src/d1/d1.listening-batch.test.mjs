@@ -155,8 +155,8 @@ function formsWith(occupied = {}) {
   return forms
 }
 
-function file(name, size = 1024) {
-  return { name, size }
+function file(name, size = 1024, type = 'image/png') {
+  return { name, size, type }
 }
 
 // Planning order and existing-photo safety.
@@ -198,12 +198,26 @@ function file(name, size = 1024) {
 
 // Invalid batches are explicit refusals before any call.
 {
-  const tooMany = core.planListeningPhotoBatch(
-    Array.from({ length: 16 }, (_, index) => file(`${index}.png`)),
+  const capped = core.planListeningPhotoBatch(
+    Array.from({ length: 18 }, (_, index) => file(`${index}.png`)),
     formsWith(),
   )
-  assert.equal(tooMany.ok, false)
-  assert.match(tooMany.reason, /最多选择 15 张/)
+  assert.equal(capped.ok, true)
+  assert.equal(capped.plan.requestedCount, 18)
+  assert.equal(capped.plan.files.length, 15)
+  assert.equal(capped.plan.assignments.length, 15)
+  assert.equal(capped.plan.skippedCount, 3)
+  assert.deepEqual(
+    capped.plan.assignments.map((item) => item.fileIndex),
+    Array.from({ length: 15 }, (_, index) => index),
+  )
+
+  const badType = core.planListeningPhotoBatch(
+    [file('bad.tiff', 1024, 'image/tiff')],
+    formsWith(),
+  )
+  assert.equal(badType.ok, false)
+  assert.match(badType.reason, /类型不支持/)
 
   const excess = core.planListeningPhotoBatch(
     Array.from({ length: 4 }, (_, index) => file(`${index}.png`)),

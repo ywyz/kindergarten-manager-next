@@ -10,6 +10,34 @@ import * as vue from 'vue'
 
 const d1Dir = path.dirname(fileURLToPath(import.meta.url))
 
+function loadAiProgress() {
+  const progressFile = path.join(d1Dir, 'ai-progress.ts')
+  const compiled = ts.transpileModule(fs.readFileSync(progressFile, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+    fileName: progressFile,
+  }).outputText
+  const module = { exports: {} }
+  vm.runInNewContext(compiled, {
+    module,
+    exports: module.exports,
+    require: (spec) => {
+      throw new Error(`unexpected import ${spec}`)
+    },
+    Date,
+    JSON,
+    Math,
+    Object,
+    Set,
+    String,
+    Number,
+  })
+  return module.exports
+}
+const aiProgress = loadAiProgress()
+
 function loadRealListeningAi() {
   const aiFile = path.join(d1Dir, 'listening-ai.ts')
   const compiled = ts.transpileModule(fs.readFileSync(aiFile, 'utf8'), {
@@ -66,6 +94,9 @@ const file = path.join(d1Dir, 'components/ListeningAiPanel.vue')
 const source = fs.readFileSync(file, 'utf8')
 assert.match(source, /整理本组倾听记录/)
 assert.match(source, /生成本领域评价建议/)
+assert.match(source, /AI 协助填写/)
+assert.match(source, /data-d1="listening-ai-field"/)
+assert.doesNotMatch(source, /旧版单张建议/)
 assert.match(source, /只使用已保存内容/)
 assert.match(source, /候选不会自动写入 Word/)
 assert.match(source, /仅据照片起草，待教师核实/)
@@ -105,6 +136,7 @@ const task = {
   listening_record_id: 'record-1',
   listening_domain: 'health',
   listening_group_id: null,
+  execution: { id: 'exec-1', attempt_no: 1 },
 }
 const candidateEnvelope = {
   task,
@@ -178,6 +210,20 @@ const ai = {
   },
   getListeningAITask: async () => task,
   getListeningAICandidate: async () => candidateEnvelope,
+  getListeningAIProgress: async (_recordId, taskId) => ({
+    available: true,
+    task_id: taskId,
+    execution_id: 'exec-1',
+    attempt_id: 'attempt-1',
+    attempt_no: 1,
+    seq: 3,
+    phase: 'thinking',
+    elapsed_ms: 1200,
+    last_data_age_ms: 150,
+    reasoning: '思考增量：先核对已保存材料',
+    content_chars: 12,
+    truncated: false,
+  }),
   previewListeningAICandidate: async (recordId, candidateId) => {
     calls.preview.push([recordId, candidateId])
     return previewAfterAdopt || previewValue()
@@ -221,6 +267,7 @@ vm.runInNewContext(js, {
       return { ApiError, getSessionEpoch: () => 1 }
     }
     if (spec === '../listening-ai') return ai
+    if (spec === '../ai-progress') return aiProgress
     if (spec === '../listening') return { newRequestId: () => `request-${++uuid}` }
     if (spec === './DirectionalRevisionDialog.vue') return { default: {} }
     if (spec === './DirectionalRevisionTrigger.vue') return { default: {} }
@@ -290,6 +337,15 @@ await state.pollTask()
 await tick()
 assert.ok(state.candidate.value)
 assert.equal(state.draft.value, false, 'viewing a candidate is not an edit')
+await state.loadProgress(task)
+assert.equal(state.progressForTask(task)?.task_id, 'task-1')
+assert.equal(state.progressForTask(task)?.phase, 'thinking')
+assert.match(state.progressReasoningFor(task), /思考增量/)
+assert.equal(
+  state.progressForTask({ ...task, execution: { id: 'other-exec', attempt_no: 1 } }),
+  null,
+  'a progress snapshot from another execution is ignored',
+)
 
 // Adopt support only, keep the same candidate and refresh target states.
 state.supportText.value = '支持策略建议'

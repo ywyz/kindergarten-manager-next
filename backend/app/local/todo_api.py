@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -29,6 +29,7 @@ class TodoOut(BaseModel):
     title: str
     due_date: str | None = None
     completed: bool
+    archived_at: str | None = None
     version: int
     created_at: str
     updated_at: str
@@ -39,8 +40,10 @@ class TodoListOut(BaseModel):
 
 
 class TodoOperationOut(BaseModel):
-    todo: TodoOut
+    todo: TodoOut | None = None
     deleted: bool = False
+    action: str | None = None
+    items: list[TodoOut] | None = None
 
 
 class TodoCreateIn(BaseModel):
@@ -60,6 +63,17 @@ class TodoUpdateIn(BaseModel):
 class TodoDeleteIn(BaseModel):
     request_id: str
     expected_version: int
+
+
+class TodoBatchItemIn(BaseModel):
+    todo_id: str
+    expected_version: int
+
+
+class TodoBatchIn(BaseModel):
+    request_id: str
+    action: str
+    items: list[TodoBatchItemIn]
 
 
 def _error_response(exc: domain.TodoError) -> JSONResponse:
@@ -97,10 +111,27 @@ def _repository(session: Session) -> todo_repository.SqlTodoRepository:
 
 
 @todos_router.get("", response_model=TodoListOut)
-def list_todos(session: Session = Depends(get_session)):
+def list_todos(
+    archived: bool = Query(default=False),
+    session: Session = Depends(get_session),
+):
     def action():
         repo = _repository(session)
-        return {"items": todo_service.list_todos(repo)}
+        return {"items": todo_service.list_todos(repo, archived=archived)}
+
+    return _handle(action)
+
+
+@todos_router.post("/batch", response_model=TodoOperationOut)
+def batch_todos(data: TodoBatchIn, session: Session = Depends(get_session)):
+    def action():
+        repo = _repository(session)
+        return todo_service.batch_todos(
+            repo,
+            request_id=data.request_id,
+            action=data.action,
+            items=[item.model_dump() for item in data.items],
+        )
 
     return _handle(action)
 

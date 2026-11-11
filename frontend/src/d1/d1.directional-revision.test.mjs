@@ -823,6 +823,13 @@ ok('directional clarify/no_change never adopt')
   )
   assert.ok(weekly.includes('materialEvidence'))
   assert.ok(weekly.includes('sourceLineFor'))
+  const trigger = fs.readFileSync(
+    path.join(d1Dir, 'components', 'DirectionalRevisionTrigger.vue'),
+    'utf8',
+  )
+  assert.match(trigger, /<el-dropdown/)
+  assert.match(trigger, /-edit/)
+  assert.match(trigger, /-whole/)
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(d1Dir, '../../package.json'), 'utf8'),
   )

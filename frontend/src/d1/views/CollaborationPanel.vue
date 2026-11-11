@@ -1682,7 +1682,7 @@ defineExpose({
           data-d1="collaboration-manual-credential"
           :open="(pendingWrite !== null || pendingPromotion !== null) && !status.connected"
         >
-          <summary>使用部署方手工凭据（低频）</summary>
+          <summary>使用部署方手工凭据</summary>
           <div class="connect-row">
             <el-input
               v-model="credential"

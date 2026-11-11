@@ -116,7 +116,11 @@ def fingerprint_code(code: types.CodeType) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    # A source regex may contain a legal lone surrogate escape (for example
+    # ``\ud800-\udfff`` in the XML sanitizer).  ``surrogatepass`` is byte-for-
+    # byte identical to plain UTF-8 for every normal string and only supplies
+    # the stable encoding for those surrogate code points.
+    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def fingerprint_source(path: str | Path) -> str:
