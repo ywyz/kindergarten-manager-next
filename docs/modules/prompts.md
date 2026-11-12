@@ -48,6 +48,12 @@ Architecture v2 的本地提示词合同依据 [ADR 0004](../adr/0004-local-desk
 
 2026-10-17 D2已确认三类日计划能力分别明确触发，首片仅提供对应三类个人字段指导；普通保存、采用候选或修改指导不会自动发起下一类AI。可配置OpenAI兼容接入、默认指导本地适配与接口草案见[D2规格](../specs/desktop-ai-daily-plan.md)，不据此开放周任务或改字段结构；产品决定已确认，[E1–E5工程规格](../specs/desktop-ai-engineering.md)设计核查完成，后续W1数据基础与W2本地提示词已完成限定环境工程核查，见[W2核查](../bootstrap/desktop-d2-w2-review.md)；任务执行/候选/界面及真实AI未验。
 
-2026-11-08 的桌面功能包已通过源码及合成核查。正式来源、公钥配置和实际发布仍待安排，见 [Windows 教师反馈核查](../bootstrap/desktop-teacher-feedback-repair-review.md#第五批-6-提示词功能包接续)。既有 [提示词实施规格](../specs/prompts-implementation.md) 与 [协同索引](../specs/ai-capabilities-implementation.md) 保留历史实现及验收身份。与 v2 兼容的字段适配、候选采用和默认修订保护可作为复用审查依据。
+2026-11-08 的桌面功能包已通过源码及合成核查。线上测试发布已经存在（预览 v9、正式 v11），但普通签名 `20261114` 构建尚未嵌入提示词包来源及验签公钥；正式发行来源、公钥配置和客户端自动接收仍需另行配置。见 [Windows 教师反馈核查](../bootstrap/desktop-teacher-feedback-repair-review.md#第五批-6-提示词功能包接续)及[在线协作联调](../bootstrap/online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)。既有 [提示词实施规格](../specs/prompts-implementation.md) 与 [协同索引](../specs/ai-capabilities-implementation.md) 保留历史实现及验收身份。与 v2 兼容的字段适配、候选采用和默认修订保护可作为复用审查依据。
 
 旧规格须先映射到本 Contract 与 ADR 0004，不能直接作为桌面实施指令。本次不宣称桌面迁移或验收完成；后续入口见[Architecture v2 实施入口](../bootstrap/architecture-v2-readiness.md)。
+
+## 2026-11-12 线上发布状态
+
+- 本次待发提示词草稿覆盖 7 项任务、19 个字段，已通过线上允许列表校验；模块目录不止该草稿，测试渠道现存预览 v9、正式 v11，草稿尚未发布。草稿/预览/正式/回滚链及 Ed25519 签名包已在真实 HTTPS 上核对。
+- 普通签名 `20261114` 构建没有嵌入提示词包来源及验签公钥；它不会自动接收线上包。后续自动接收前必须配置固定 HTTPS 来源、公钥、渠道和兼容范围，并重新验签。
+- 发布端点、缓存、签名和客户端未嵌入边界见 [在线协作 Contract](online-collaboration.md#提示词发布与客户端信任)；实际部署记录见 [联调核查](../bootstrap/online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)。

@@ -1,6 +1,6 @@
 # Windows 教师手测修复提示词
 
-2026-11-07 教师已授权逐项开工。适用基线为 Windows 安装测试版 `v0.1.0-listening-test.20261107`，对应 `codex/desktop-one-to-one-listening` 的 `cfae26b`。当前执行进度及每段派工见 [当前任务](../tasks/current.md)。反馈涉及设置、工作台、日计划、游戏观察、周计划和一对一倾听。
+2026-11-07 教师已授权逐项开工。**历史基线**为 Windows 安装测试版 `v0.1.0-listening-test.20261107`，对应 `codex/desktop-one-to-one-listening` 的 `cfae26b`；本页保留原合同与验收边界，不代表当前分支或当前发布。当前状态、签名预览和在线部署见[多设备预览验收](../bootstrap/desktop-multi-device-preview-review.md)、[在线协作联调](../bootstrap/online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)及[当前任务](../tasks/current.md)。反馈涉及设置、工作台、日计划、游戏观察、周计划和一对一倾听。
 
 ## 开工与交付
 

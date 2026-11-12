@@ -14,7 +14,7 @@
 | 维护者与项目关系 | [MAINTAINERS.md](https://github.com/ywyz/kindergarten-manager-next/blob/main/MAINTAINERS.md) |
 | 维护者 GitHub 账号 | [ywyz](https://github.com/ywyz) |
 
-本页公开证据链接指向默认 `main`；后续桌面开发继续在 [`codex/desktop-one-to-one-listening`](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-one-to-one-listening) 分支进行。公开账号不等于已核验实名；若申请姓名与公开账号不同，向 Certum 确认还需何种署名或项目关系证明，再由申请人提供适当信息。
+本页公开证据链接指向默认 `main`；当前开发集成为 `dev/0.1`，旧 [`codex/desktop-one-to-one-listening`](https://github.com/ywyz/kindergarten-manager-next/tree/codex/desktop-one-to-one-listening) 分支保留历史身份。签名预览 `v0.1.0-listening-test.20261114` 已公开，稳定正式发行仍待定。公开账号不等于已核验实名；若申请姓名与公开账号不同，向 Certum 确认还需何种署名或项目关系证明，再由申请人提供适当信息。
 
 ## 申请人私下准备
 

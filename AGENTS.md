@@ -6,7 +6,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-课程审议设计分支为 `codex/teaching-documents-design`，在线协作联调基线分支为 `codex/desktop-one-to-one-listening`。唯一执行入口为 [当前任务](docs/tasks/current.md)，在线协作四阶段合成核查见 [联调结果](docs/bootstrap/online-collaboration-integration-review.md)。Windows 教师反馈修复的源码和合成核查及待验项目见 [教师反馈核查](docs/bootstrap/desktop-teacher-feedback-repair-review.md)。一对一倾听 L1–L4 的源码结论及原 Windows 11 测试机补验归 [原核查记录](docs/bootstrap/desktop-one-to-one-listening-review.md)。关闭／恢复专项及历史白屏、Word 差异归 [原测试机记录](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。
+当前开发集成使用 dev 分支加小版本号，本轮为 `dev/0.1`。`main` 为稳定线，`docs` 用于文档维护，修复分支按 `fix/<问题>` 命名。本轮预览更新测试使用 `fix/preview-update`。历史 `codex/*` 分支保留至本轮用户测试结束。唯一执行入口为 [当前任务](docs/tasks/current.md)。在线协作见 [模块合同](docs/modules/online-collaboration.md) 和 [部署联调](docs/bootstrap/online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)。Windows 教师反馈、长文本和签名预览见 [多设备预览验收](docs/bootstrap/desktop-multi-device-preview-review.md)。倾听、关闭／恢复和旧测试机证据见 [倾听核查](docs/bootstrap/desktop-one-to-one-listening-review.md) 及 [原测试机记录](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。
 
 Codex 维护正式规格和审核记录。已结束轮次的写入白名单与原生会话权限归各轮结果，后续工作按当轮责任执行。
 
@@ -24,7 +24,7 @@ Codex 维护正式规格和审核记录。已结束轮次的写入白名单与�
 
 OpenCode是实现、测试、迁移及构建脚本写入者；Command Code仅在当轮明确授权和互斥文件责任内参与。Codex负责规划／规格、技术审核、执行验证、文档及Git／发布管理，不另起业务实现者。已有授权内持续推进，不重复索要确认；历史某轮的修复、真AI、部署或签名授权不自动延续。
 
-原生会话的当轮A/B/C/D互斥白名单及G0–G4门槛按相应结果记录保留，固定DeepSeek V4.1 Flash max；不fork／另派子代理，不并行改同一文件，不接管在途任务或还原他方修改。已完成责任归结果记录，不重放旧在途白名单。原OpenCode负责共享整合和最终Git；按Codex具体文件/blob/parent/tree门禁普通提交推送，仅在用户当轮明确要求时合入 main。不 add-all、amend、rebase／force 或改默认分支、可见性、tag、Release。
+原生会话的当轮A/B/C/D互斥白名单及G0–G4门槛按相应结果记录保留，固定DeepSeek V4.1 Flash max；不fork／另派子代理，不并行改同一文件，不接管在途任务或还原他方修改。已完成责任归结果记录，不重放旧在途白名单。原OpenCode负责 `dev/0.1` 共享整合和最终Git；按Codex具体文件/blob/parent/tree门禁普通提交推送。`main` 只在用户当轮明确要求且合并条件满足时接收整合；`docs` 分支只写文档，`fix/preview-update` 只承接预览更新修复，不写无关功能。不 add-all、amend、rebase／force 或改默认分支、可见性、tag、Release。
 
 代码与迁移／候选构建、付费AI、远程操作、签名、发行各按当前实际范围，不从架构确认、提示词准备或历史结论推导自动启动。
 

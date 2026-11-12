@@ -2,6 +2,15 @@
 
 当前工作只从[任务入口](../tasks/current.md)接续。[项目协作规则](../../AGENTS.md)、[v2 实施状态](architecture-v2-readiness.md)及[系统架构](../../ARCHITECTURE.md)分别说明权限、证据和架构职责。
 
+## 当前状态（2026-11-12）
+
+- 当前集成为 `dev/0.1`（`d1a4261`），`main` 为稳定线；签名预览为 `v0.1.0-listening-test.20261114`，不是稳定正式发行。入口与待验见[当前任务](../tasks/current.md)。
+- 多设备反馈、长文本、备份/提示词兼容和更新验签见[多设备预览验收](desktop-multi-device-preview-review.md)。
+- 在线管理端、学期更名、共享周和提示词发布见[在线协作联调](online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)，模块合同见[在线协作 Contract](../modules/online-collaboration.md)。
+- 备份恢复、倾听、定向修改和课程审议分别见[备份核查](desktop-backup-restore-release-review.md)、[倾听核查](desktop-one-to-one-listening-review.md)、[定向修改核查](desktop-directional-revision-review.md)和[课程审议核查](desktop-curriculum-deliberation-review.md)。
+
+以下“历史阶段索引”保留当时任务、包身份和证据；旧日期不表示删除或重新授权。
+
 ## 一对一倾听记录设计与上一轮验证
 
 一对一倾听的教师流程与样稿结果见[产品规格](../specs/desktop-one-to-one-listening.md)，保存、备份、Word 及 AI 的接入范围见[工程设计](../specs/desktop-one-to-one-listening-engineering.md)。关闭／恢复专项的源码修复及独立反例见[开发机 §10](desktop-regression-repair-review.md#10-2026-11-06测试机回执接收与关闭交错回修)。同源 `b657363` 候选的原 Windows 11 运行、完整指纹和 renderer 提示键盘补验见[测试机 §10–10.6](desktop-windows11-white-concurrency-review.md#10-2026-11-06b657363-原-windows-11-关闭恢复增量)。
@@ -38,7 +47,7 @@ Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／
 
 ## 文档适用范围与分支
 
-桌面基础工作在 `codex/desktop-v2-foundation` 完成；`main` 承接合并基线，一对一倾听后续在 `codex/desktop-one-to-one-listening` 开发。2026-11-01[文档维护核查](documentation-maintenance-review.md)已修正过时入口、历史计划标识及旧环境附件链接；旧实际证据保留，AGENTS中的独有历史边界已归并该记录。日期旧不自动表示可删除；唯一执行提示词仍为current。
+桌面基础工作在 `codex/desktop-v2-foundation` 完成；`main` 承接合并基线，当前开发集成为 `dev/0.1`，旧 `codex/*` 分支保留历史身份。2026-11-01[文档维护核查](documentation-maintenance-review.md)已修正过时入口、历史计划标识及旧环境附件链接；旧实际证据保留，AGENTS中的独有历史边界已归并该记录。日期旧不自动表示可删除；唯一执行提示词仍为current。
 
 ## 已完成：源码合并与完整本地备份／恢复
 
@@ -74,7 +83,7 @@ Q1–Q6已确认；Q1–Q4首片及明暗已实施，backend1006／desktop553／
 
 2026-10-23 [后续定因与关闭处理](desktop-d2-g17-result.md#8-4551定因与设置窗口关闭2026-10-23)：4551已确认是Smart App Control的VerifiedAndReputableDesktop策略拒绝未签名新EXE；无下载来源标记，本机两个My存储无代码签名证书。微软单EXE复核曾获授权，但在登录前停止；用户随后明确取消提交，EXE和说明均未上传，材料保留。国内渠道核对与签名前清点见[G17结果§9](desktop-d2-g17-result.md#9-国内签名渠道与下一步提示词2026-10-23)：腾讯云自营仅企业，阿里云市场Certum个人SKU／用途待确认；现包99个PE候选中76个签名Valid、23个NotSigned。此前个人签名资格提示词现由顶部D3-A任务替代，未联系商家、申请或购买，尚未解除拦截或恢复真实B／C。旧MiMo窗口的独立AI草稿已通过对应取消按钮还原并正常关闭，两库hash／版本／调用数保持。未改安全设置或实现代码。
 
-已进入 `codex/desktop-v2-foundation`，采用 Windows 11 原生开发。OpenCode 写实现、测试、迁移及构建脚本；Codex 负责技术核查、规划设计、审阅、相关验证与 Git／发布管理，均按当前授权执行。
+当时进入 `codex/desktop-v2-foundation`，采用 Windows 11 原生开发；当前入口见上节。OpenCode 写实现、测试、迁移及构建脚本；Codex 负责技术核查、规划设计、审阅、相关验证与 Git／发布管理，均按当前授权执行。
 
 - D2 W1数据迁移／凭据保存已由OpenCode实施并经Codex核查关闭。[W1实现结果](desktop-d2-w1-result.md)。[产品规格](../specs/desktop-ai-daily-plan.md)、[工程规格及清单](../specs/desktop-ai-engineering.md)、[W1独立核查](desktop-d2-w1-review.md)。W1独立全local286项、迁移18项及冻结重启探针通过，R01–R09已关闭（核查§12）；[W2](desktop-d2-w2-review.md)已由OpenCode使用Go套餐DeepSeek V4.1 Flash交付并经Codex核查通过；[实现结果](desktop-d2-w2-result.md)含后续接口交接；[W3实现](desktop-d2-w3-result.md)及[独立核查](desktop-d2-w3-review.md)已完成，当前Windows 11合成环境工程通过；[W4实现](desktop-d2-w4-result.md)及[独立核查§10](desktop-d2-w4-review.md#10-最终工程结论w4通过停在w4)已完成，独立全local470项／桌面146项及API复核通过，R01–R09关闭；[W5实现](desktop-d2-w5-result.md)与[W5独立核查§8](desktop-d2-w5-review.md#8-最终工程结论w5限定源码集成通过)已完成，三类候选采用及退出已用独立真实源码窗口复核；[W6实现](desktop-d2-w6-result.md)及[Codex独立核查§9](desktop-d2-w6-review.md#9-最终工程结论w6限定环境工程核查通过)已完成，独立477项local／168项桌面、前端及新完整包130项通过，54归档模块和真实入口同源，R01–R09关闭；后续指定Word及合成人工验收结果以本页上方2026-10-20收口记录为准；G17最新真实结果见上方2026-10-22记录，不宣布D2完整产品或发行完成。
 - [D1本轮教师体验收口](desktop-d1-result.md#208-t6-b核对与本轮教师体验收口2026-10-17)与[独立复核](desktop-d1-review.md#209-t6-b复核与本轮人工验证收口2026-10-17)：原R1–R17工程通过、R18关闭、T6-A／T6-B／T7通过；配置v4、新旧表头和两份单日文件已核对。微软拼音按用户反馈正常，不再复验或穷举输入法。长园所2页、合并7页及起始页1／4／6、121导出相关／146桌面和c6dc1928…包证据保持，产品与发行未整体验收。

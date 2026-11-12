@@ -4,7 +4,7 @@
 
 ## 产品范围与交付顺序
 
-本地模式面向教师个人，首发保证 Windows 11，Windows 10 后续验证。支持不同电脑顺序接续使用，个人业务由本地档案管理。可选在线协作首段限于同班关系及班级游戏配置的预览与带入。共享周计划仍处于提议阶段，见 [ADR 0005](docs/adr/0005-optional-online-class-collaboration.md)。
+本地模式面向教师个人，首发保证 Windows 11，Windows 10 后续验证。支持不同电脑顺序接续使用，个人业务由本地档案管理。可选在线协作首段包含同班关系、班级游戏配置及共享周计划；共享周的晨谈、集体活动和游戏槽位已实现，个人资料、照片和 Word 仍留本地，见 [ADR 0005](docs/adr/0005-optional-online-class-collaboration.md) 和 [在线协作 Contract](docs/modules/online-collaboration.md)。
 
 2026-10-08 用户进一步确认：首版采用一个本地教师档案，首次填写姓名、班级和学期，之后直接进入工作台，无需旧注册、账号密码登录与等待管理员分班。用户说明目前云端没有数据，首版使用全新本地数据，不安排旧业务数据导入；这不授权清理远程实例或历史测试记录。
 
@@ -22,8 +22,8 @@
 | 本地业务与 API | Python、FastAPI | 保留前后端分离与本机 API 边界，具体接口按个人使用语义适配 |
 | 数据访问与迁移 | SQLAlchemy 2.x、Alembic | 模型与迁移须验证 SQLite 兼容性 |
 | 数据库 | SQLite | 桌面运行数据权威；v1 MySQL模型／环境不作为桌面默认值 |
-| 桌面窗口 | 优先验证 pywebview＋WebView2 | 在目标 Windows 电脑验证后定版 |
-| 应用打包 | PyInstaller 候选 | 目录包及运行资源由构建合同管理，具体实测范围另记 |
+| 桌面窗口 | pywebview＋WebView2 | Windows 11 当前发布路径；其他环境按目标机验证记录另列 |
+| 应用打包 | PyInstaller | 当前发布路径；目录包及运行资源由构建合同管理，签名与目标机结果按记录另列 |
 | 跨设备与备份 | WebDAV | 应用管理一致性快照、接续检查及恢复；协议待细化 |
 | 历史版本 | 数据库业务版本与确认快照 | 内容历史、恢复和确认快照由业务模块管理；Git留作后续候选 |
 
@@ -39,7 +39,7 @@ Windows 桌面窗口（Vue）
 
 Vue 构建产物与本机 API 同源加载。服务只监听回环地址，校验应用会话与请求来源，不能让不受信任网页任意调用本机服务。桌面容器与本地服务的启动、停止及端口管理在运行规格中细化。
 
-启用在线协作时，桌面经 HTTPS 业务 API 访问独立的协作服务，共享班级配置以该服务为权威。数据库连接由服务端管理。个人业务仍由本地 SQLite 管理，数据库选型和后续接入边界见 [ADR 0005](docs/adr/0005-optional-online-class-collaboration.md)。
+启用在线协作时，桌面经 HTTPS 业务 API 访问独立的协作服务，共享班级配置、共享周计划和稳定班级关系以该服务为权威；联调环境使用 MySQL 8.4，数据库连接由服务端在私有网络内管理。个人业务仍由本地 SQLite 管理，具体合同见 [在线协作 Contract](docs/modules/online-collaboration.md) 和 [ADR 0005](docs/adr/0005-optional-online-class-collaboration.md)。
 
 AI 请求从教师电脑发出。本地业务不依赖中央服务器转发 AI；这减少了中转环节，但不保证消除供应商、网络或本机状态导致的超时。不得用旧部署的体验反馈宣称根因已定位。
 
@@ -55,7 +55,8 @@ AI 请求从教师电脑发出。本地业务不依赖中央服务器转发 AI�
 | [提示词](docs/modules/prompts.md) | 字段契约、默认与个人指导、版本适配 | 本地身份、操作记录 |
 | [AI Service](docs/modules/ai-service.md) | 教师配置、统一调用、结果校验、失败分类 | 提示词、任务状态、操作记录 |
 | [日计划](docs/modules/daily-plans.md) | 原始教案、拆分基准、候选与最终采用内容 | 身份与班级配置、提示词、AI Service |
-| [周计划](docs/modules/weekly-plans.md) | 本人来源、手填另一位教师信息、候选与确认版本 | 身份与班级配置、日计划、提示词、AI Service |
+| [周计划](docs/modules/weekly-plans.md) | 本人来源、手填另一位教师信息、候选与确认版本；在线共享周按模块合同处理 | 身份与班级配置、日计划、提示词、AI Service、在线协作 |
+| [在线协作](docs/modules/online-collaboration.md) | 同班身份、选班/升班、班级游戏配置、共享周计划与提示词发布的服务端权威边界 | 独立 HTTPS 服务、MySQL 8.4、本机代理 |
 | [Word 导出](docs/modules/word-export.md) | 固定模板、范围筛选、合并、原文比较标红 | 日计划、周计划及指定内容版本 |
 | [操作记录](docs/modules/audit-log.md) | 本地操作与调用元信息、脱敏诊断依据 | 操作者与对象标识 |
 

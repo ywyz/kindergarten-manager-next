@@ -1,8 +1,16 @@
 # Architecture v2 实施状态与验证门槛
 
-更新：2026-11-07。当前架构仍按 [ARCHITECTURE.md](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)，唯一执行入口是 [current.md](../tasks/current.md)。历史授权、旧“当前任务”和旧测试数字不自动适用于本轮。
+更新：2026-11-12。当前架构仍按 [ARCHITECTURE.md](../../ARCHITECTURE.md)／[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)，唯一执行入口是 [current.md](../tasks/current.md)。历史授权、旧“当前任务”和旧测试数字不自动适用于本轮。
 
-## 最新状态与下一步
+## 2026-11-12 当前状态
+
+- 当前集成为 `dev/0.1` 的 `d1a4261`；父提交为签名预览源码 `54bce96` 与远端 `main` 的 `209fee5`，合并树与已发预览源码树一致。
+- 公开 Windows 签名预览为 `v0.1.0-listening-test.20261114`；公开 GitHub 下载验签已达到 `ready`，实际安装替换和重启仍待用户设备确认，第二台 Windows 未验。
+- 在线协作已在隔离 HTTPS/MySQL 8.4 测试环境完成管理端、学期更名、发码/选班/升班、共享周保存/确认和本地 Word 联调；当前模块合同见 [在线协作 Contract](../modules/online-collaboration.md)。
+- 本次待发提示词草稿覆盖 7 项任务、19 个字段，经线上允许列表校验；模块目录不止该草稿，测试渠道现存预览 v9、正式 v11，草稿尚未发布。普通签名 `20261114` 尚未嵌入提示词包来源及验签公钥，后续自动接收须配置发行信任。
+- 实际证据入口：[多设备预览验收](desktop-multi-device-preview-review.md)、[在线协作联调](online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)、[备份核查](desktop-backup-restore-release-review.md)、[定向修改核查](desktop-directional-revision-review.md)、[课程审议核查](desktop-curriculum-deliberation-review.md)。
+
+## 历史状态与下一步（2026-11-07，保留原表）
 
 关闭／恢复的开发机限定源码核查与原 Windows 11 测试机增量均已完成。普通保存关闭、两类故障恢复、独立冷开及 renderer 提示键盘验收归同一候选 `b657363`。实包内一次性关闭许可是否能被再次使用、关闭确认与故障回调的精确交错、内部对象身份与退休顺序及真实回调阻塞仍未直接观测。详见[开发机 §10](desktop-regression-repair-review.md#10-2026-11-06测试机回执接收与关闭交错回修)及[目标机 §10](desktop-windows11-white-concurrency-review.md#10-2026-11-06b657363-原-windows-11-关闭恢复增量)。一对一倾听正按[产品规格](../specs/desktop-one-to-one-listening.md)细化[工程设计](../specs/desktop-one-to-one-listening-engineering.md)。
 

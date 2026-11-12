@@ -165,3 +165,10 @@
 定向修改的明确采用只写入当前编辑区。倾听正文沿用表单保存，倾听和周计划候选沿用各自的正式采用流程。提交后如果当前文本、范围、来源版本或会话已经变化，应用保留当前编辑与建议供核对。未知受理通过原请求查询或同一请求重试。用于生成的是所选文字、有限邻文及修改意见，已有照片及身份信息留在本机。
 
 一对一倾听的候选区由 [ListeningAiPanel.vue](../../frontend/src/d1/components/ListeningAiPanel.vue) 提供，领域和已保存正文见 [ListeningEditorView.vue](../../frontend/src/d1/views/ListeningEditorView.vue)。本机周计划的现有重新生成入口及候选字段见 [WeeklyAiPanel.vue](../../frontend/src/d1/views/WeeklyAiPanel.vue)。在线共享周计划继续按其独立的共享字段和权限合同处理。
+
+## 课程审议 AI 已实现接口（迁自旧 current）
+
+- 本机前缀为 `/api/local/curriculum-deliberations`。原记录、版本保存、导出预览和 Word 接口继续使用；记录读取和保存增加可选 `document`，用于保存后重开时定位正文对应段。20 个表单字段继续作为 Word 正文来源。
+- `POST /{id}/ai/tasks` 接收 `request_id, kind, version, content`，按步骤可增加 `age_group, instruction, document, split_task_id, resolutions, selection`。`kind` 为 `split, review, edit`。选区含 `field, start, end, text`，按浏览器 UTF-16 偏移绑定原文；原任务可通过 `GET /{id}/ai/tasks/{task_id}` 查询，相同请求 ID 和内容只受理一次。
+- 成功候选含 `kind, patch, document, questions, status, reason_suggestion`。拆分待核对项须经老师明确归属后才进入审议；采用候选核对记录、档案代次、已保存版本和本次草稿。理由单独采用，导出按明确保存的版本读取，过期预览重新核对。
+- 采用、保存和 Word 仍按上文表单/导出合同及既有候选确认流程执行；本接口不新增第二次模型调用。
