@@ -557,6 +557,21 @@ def test_live_process_wrong_exe_or_missing_exe_is_not_gone(tmp_path):
     assert update_process.wait_for_process_exit(missing_exe, 0.1) is False
 
 
+def test_exited_process_image_query_failure_is_still_gone(tmp_path):
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(0.2)"]
+    )
+    identity = update_process.process_identity(process.pid)
+    assert identity is not None
+    process.wait(timeout=10)
+    # The old host may exit before the helper opens its wait handle.  Windows
+    # can then fail QueryFullProcessImageName for the terminated process while
+    # the process object is still signaled; the helper must not record a
+    # 60-second old-process timeout in that case.
+    assert update_process.process_matches(identity) is False
+    assert update_process.wait_for_process_exit(identity, 0.1) is True
+
+
 def test_helper_old_process_timeout_does_not_switch(tmp_path):
     plan, _data, _cred, old_app = _plan(
         tmp_path, target_revision=HEAD_REV, old_revision=HEAD_REV
@@ -629,6 +644,11 @@ def test_helper_reverifies_original_zip_and_switches_directory(tmp_path):
         assert observer.state()["install_state"] == "idle"
         assert (old_app / "old-marker.txt").exists() is False
         assert (old_app / "_internal" / "build_identity.json").is_file()
+        installed_identity = json.loads(
+            (old_app / "_internal" / "build_identity.json").read_text(encoding="utf-8")
+        )
+        assert installed_identity["version"] == plan.target["version"]
+        assert installed_identity["build_id"] == plan.target["build_id"]
         assert (Path(plan.backup_dir) / "old-marker.txt").is_file()
         assert (Path(plan.state_dir) / "ready.json").is_file()
         assert (Path(plan.state_dir) / "install-result.json").is_file()
@@ -1125,6 +1145,69 @@ def test_interrupted_directory_switch_keeps_old_backup_without_new_process(tmp_p
         if old.poll() is None:
             old.terminate()
         _wait_process_exit(old)
+
+
+def test_failed_new_directory_move_restores_old_tree_and_unblocks_retry(
+    monkeypatch, tmp_path
+):
+    plan, data, cred, old_app = _plan(
+        tmp_path, target_revision=HEAD_REV, old_revision=HEAD_REV
+    )
+    old_marker = (old_app / "old-marker.txt").read_bytes()
+    old_exe = (old_app / "KindergartenManager.exe").read_bytes()
+    sleeper = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(0.5)"]
+    )
+    try:
+        plan = _replace_old_process(plan, sleeper.pid)
+        sleeper.wait(timeout=10)
+    finally:
+        if sleeper.poll() is None:
+            sleeper.terminate()
+            sleeper.wait(timeout=5)
+    update_install.write_authorization(
+        plan,
+        state="authorized",
+        close_request_id="close-rollback",
+        close_generation=1,
+    )
+    real_rename = update_helper._rename_with_retry
+    calls: list[tuple[str, str]] = []
+
+    def fail_new_move(source: Path, target: Path, timeout: float = 2.0) -> None:
+        calls.append((Path(source).name, Path(target).name))
+        if len(calls) == 2:
+            raise OSError("simulated new directory busy")
+        return real_rename(source, target, timeout)
+
+    monkeypatch.setattr(update_helper, "_rename_with_retry", fail_new_move)
+    assert update_helper.run(plan.plan_path, verification_context=True) == 0
+    result = _result(plan, timeout=5)
+    assert result["status"] == "failed"
+    assert result["code"] == "INSTALL_SWITCH_FAILED"
+    assert result.get("step") == "new"
+    assert old_app.is_dir()
+    assert (old_app / "old-marker.txt").read_bytes() == old_marker
+    assert (old_app / "KindergartenManager.exe").read_bytes() == old_exe
+    assert not Path(plan.backup_dir).exists()
+    assert "old_app_restored" in {
+        item.get("phase") for item in update_install.read_phases(plan)
+    }
+    # The in-process helper identity is still this test process; real helpers
+    # exit before a restart observes their record.
+    plan.helper_process_path.unlink()
+    coordinator = update_install.InstallCoordinator(
+        identity=_identity(HEAD_REV),
+        data_dir=data,
+        credential_root=cred,
+        install_root=plan.install_root,
+        app_dir=old_app,
+        helper_command=[sys.executable, str(HELPER)],
+        release_config=Path(plan.release_config),
+        test_only=True,
+    )
+    assert coordinator.install_available() is True
+    assert coordinator.state()["install_state"] == "idle"
 
 
 def test_missing_page_ready_is_unknown_and_keeps_backup(tmp_path):

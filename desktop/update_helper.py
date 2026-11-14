@@ -743,6 +743,7 @@ def run(
                 _rename_with_retry(backup, app)
             except OSError:
                 return _fail(plan, "unknown", "INSTALL_SWITCH_UNKNOWN", step="new")
+            _record(plan, "old_app_restored")
             return _fail(plan, "failed", "INSTALL_SWITCH_FAILED", step="new")
         _record(plan, "new_app_moved")
         if test_raise_after_launch:

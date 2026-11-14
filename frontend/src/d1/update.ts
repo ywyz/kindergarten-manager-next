@@ -65,6 +65,7 @@ export interface UpdateStatus {
   install_available: boolean
   download_available?: boolean
   allow_install?: boolean
+  install_block_reason?: string | null
   install_state?: string
   install_plan_id?: string | null
   install_reason?: string | null
@@ -91,6 +92,7 @@ export const EMPTY_UPDATE_STATUS: UpdateStatus = {
   error_message: null,
   install_available: false,
   download_id: null,
+  install_block_reason: null,
   check_channel: 'stable',
   available_channels: ['stable'],
   channel_switch_available: false,

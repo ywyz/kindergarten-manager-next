@@ -180,6 +180,46 @@ class InstallPlan:
         return Path(self.state_dir) / "helper-process.json"
 
 
+def managed_helper_trust_error(
+    helper_path: str | Path,
+    app_source: ReleaseSource | None,
+) -> str | None:
+    """Return a bounded reason when the independent helper cannot verify.
+
+    The host may only advertise in-app installation when the updater's own
+    fixed ``update_release.json`` is present, is a valid GitHub source and
+    carries the same embedded public keys as the running application.  The
+    helper deliberately never trusts the plan's config path, so a helper
+    installed without its trust file would otherwise accept a download and
+    then fail after the old window has closed.  ``None`` means the helper is
+    ready; the caller may still refuse install for layout/identity reasons.
+    """
+    helper = Path(helper_path)
+    config = helper.parent / "update_release.json"
+    try:
+        ensure_safe_path(helper)
+        ensure_safe_path(config)
+    except PathSafetyError:
+        return "UPDATE_INSTALL_HELPER_UNCONFIGURED"
+    if not config.is_file():
+        return "UPDATE_INSTALL_HELPER_UNCONFIGURED"
+    try:
+        helper_source = load_release_source(config)
+    except (OSError, ValueError, ReleaseConfigError):
+        return "UPDATE_INSTALL_HELPER_UNCONFIGURED"
+    if (
+        helper_source is None
+        or helper_source.provider != "github"
+        or not helper_source.public_keys
+    ):
+        return "UPDATE_INSTALL_HELPER_UNCONFIGURED"
+    if app_source is None or not app_source.public_keys:
+        return "UPDATE_INSTALL_APP_TRUST_UNCONFIGURED"
+    if helper_source.public_keys != app_source.public_keys:
+        return "UPDATE_INSTALL_HELPER_TRUST_MISMATCH"
+    return None
+
+
 def _target_from_manifest(manifest: UpdateManifest) -> dict[str, Any]:
     return {
         "app_id": manifest.app_id,
@@ -793,7 +833,15 @@ class InstallCoordinator:
                     "new_app_moved",
                     "new_process_started",
                 }
-                if any(item.get("phase") in unsafe for item in phases):
+                phase_names = {item.get("phase") for item in phases}
+                switched = {"new_app_moved", "new_process_started"} & phase_names
+                # A failed directory switch that restored the unchanged old
+                # tree is a definite pre-launch failure, not an ambiguous
+                # half-install.  Only a later move/start or a missing restore
+                # record keeps the plan in needs_review.
+                if "old_app_restored" in phase_names and not switched:
+                    continue
+                if phase_names & unsafe:
                     return "INSTALL_RESULT_NEEDS_REVIEW"
                 # A definite pre-switch failure/revocation is terminal and
                 # does not block a later, separate install.

@@ -28,6 +28,8 @@ from tests.local import w3_tls
 
 import d1_host_api
 import update_fs
+import update_github
+import update_install
 from update_identity import AppIdentity
 from update_manifest import canonical_json, parse_signed_manifest
 from update_service import UpdateManager
@@ -482,6 +484,104 @@ def test_real_tls_check_and_download(tmp_path):
         assert len(requests) == 2
     finally:
         manager.shutdown()
+        server.stop()
+
+
+def test_snapshot_reports_install_block_reason_without_leaking_paths(tmp_path):
+    source = update_github.api_source({})
+    manager = UpdateManager(
+        CURRENT,
+        source=source,
+        staging_root=tmp_path / "updates",
+        allow_install=False,
+        install_block_reason="UPDATE_INSTALL_HELPER_UNCONFIGURED",
+    )
+    try:
+        state = manager.state()
+        assert state["allow_install"] is False
+        assert state["download_available"] is False
+        assert (
+            state["install_block_reason"]
+            == "UPDATE_INSTALL_HELPER_UNCONFIGURED"
+        )
+        assert str(tmp_path) not in json.dumps(state, ensure_ascii=False)
+    finally:
+        manager.shutdown()
+
+
+def test_download_only_and_normal_restart_do_not_touch_old_program(tmp_path):
+    package, build_id, package_sha, package_size = _make_package(tmp_path)
+    fixture = TlsFixture(tmp_path)
+    key = fixture.make_key()
+    metadata = _metadata(package_sha, package_size, build_id, key)
+
+    def factory(request: bytes):
+        if b"/stable/windows-x64/manifest.json" in request:
+            return _http(metadata)
+        if b"/releases/package.zip" in request:
+            return _http(package.read_bytes(), content_type="application/octet-stream")
+        return _http(b"{}", status="404 Not Found")
+
+    server = w3_tls.TlsServer(
+        cert=fixture.leaf_cert, key=fixture.leaf_key, reply_factory=factory
+    ).start()
+    program = tmp_path / "program"
+    app = program / "app"
+    app.mkdir(parents=True)
+    old_exe = b"MZ old program"
+    (app / "KindergartenManager.exe").write_bytes(old_exe)
+    data = tmp_path / "data"
+    credential = tmp_path / "credentials"
+    credential.mkdir()
+    staging = tmp_path / "updates"
+    manager = UpdateManager(
+        CURRENT,
+        source=fixture.source(server.port),
+        staging_root=staging,
+        data_dir=data,
+        credential_root=credential,
+    )
+    try:
+        manager.check()
+        _wait(manager, {"available"})
+        manager.download()
+        ready = _wait(manager, {"ready"})
+        assert ready["state"] == "ready"
+        assert (app / "KindergartenManager.exe").read_bytes() == old_exe
+        assert not (program / "install-state").exists()
+        manager.shutdown()
+        manager = None
+
+        restarted = UpdateManager(
+            CURRENT,
+            source=fixture.source(server.port),
+            staging_root=staging,
+            data_dir=data,
+            credential_root=credential,
+        )
+        try:
+            assert restarted.state()["state"] == "idle"
+            assert restarted.state()["download_available"] is False
+            coordinator = update_install.InstallCoordinator(
+                identity=CURRENT,
+                data_dir=data,
+                credential_root=credential,
+                install_root=program,
+                app_dir=app,
+                helper_command=[
+                    str(Path(__file__).resolve().parents[1] / "update_helper.py")
+                ],
+                test_only=True,
+            )
+            assert coordinator.install_available() is True
+            assert coordinator.state()["install_plan_id"] is None
+            assert (app / "KindergartenManager.exe").read_bytes() == old_exe
+            assert not (program / "install-state").exists()
+        finally:
+            restarted.shutdown()
+    finally:
+        if manager is not None:
+            manager.shutdown()
         server.stop()
 
 

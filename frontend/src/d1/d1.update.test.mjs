@@ -726,7 +726,23 @@ async function testReadyInstallConfirmation() {
   assert.equal(byButton(withoutInstall.mountEl, 'update-install'), null)
   const text = nodeText(withoutInstall.mountEl)
   assert.match(text, /当前程序和数据尚未改动/)
+  assert.match(text, /仅下载不会安装/)
   ok('update U1: ready without host authorization still has no install action')
+
+  const blocked = await mountPanel({
+    status: status({
+      state: 'ready',
+      target,
+      install_available: false,
+      install_state: 'needs_review',
+      install_reason: 'INSTALL_RESULT_UNKNOWN',
+      progress: { downloaded: 2048, total: 2048, percent: 100 },
+    }),
+  })
+  assert.ok(byD1(blocked.mountEl, 'update-install-blocked'))
+  assert.match(nodeText(blocked.mountEl), /安装状态待核对/)
+  assert.equal(byButton(blocked.mountEl, 'update-install'), null)
+  ok('update U2: a blocked install handoff is explained instead of silently omitted')
 
   const ready = status({
     state: 'ready',
@@ -817,6 +833,20 @@ async function testNoReleaseAndUnavailableDownload() {
   assert.ok(byD1(unavailable.mountEl, 'update-unavailable'))
   assert.equal(byButton(unavailable.mountEl, 'update-download'), null)
   assert.match(nodeText(unavailable.mountEl), /缺少固定更新清单|源码运行/)
+
+  const helperMissing = await mountPanel({
+    status: status({
+      state: 'available',
+      target,
+      download_available: false,
+      allow_install: false,
+      install_block_reason: 'UPDATE_INSTALL_HELPER_MISSING',
+    }),
+  })
+  assert.ok(byD1(helperMissing.mountEl, 'update-unavailable'))
+  assert.equal(byButton(helperMissing.mountEl, 'update-download'), null)
+  assert.match(nodeText(helperMissing.mountEl), /未包含独立更新器/)
+  assert.match(nodeText(helperMissing.mountEl), /手工安装/)
   ok('update GitHub: no formal Release and discovered-but-unavailable are distinct')
 }
 

@@ -103,7 +103,7 @@ def _filetime_value(value: wtypes.FILETIME) -> int:
     return (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
 
 
-def _query_handle_identity(handle) -> tuple[int, str]:
+def _query_creation_time(handle) -> int:
     created = wtypes.FILETIME()
     exited = wtypes.FILETIME()
     kernel = wtypes.FILETIME()
@@ -121,6 +121,10 @@ def _query_handle_identity(handle) -> tuple[int, str]:
     creation_time = _filetime_value(created)
     if creation_time <= 0:
         raise ProcessIdentityError("进程创建时间为空")
+    return creation_time
+
+
+def _query_image(handle) -> str:
     size = wtypes.DWORD(32768)
     buffer = ctypes.create_unicode_buffer(size.value)
     if not _kernel32.QueryFullProcessImageNameW(
@@ -132,6 +136,12 @@ def _query_handle_identity(handle) -> tuple[int, str]:
     executable = buffer.value
     if not executable:
         raise ProcessIdentityError("进程可执行路径为空")
+    return executable
+
+
+def _query_handle_identity(handle) -> tuple[int, str]:
+    creation_time = _query_creation_time(handle)
+    executable = _query_image(handle)
     return creation_time, executable
 
 
@@ -240,8 +250,15 @@ def _open_identity_handle(identity: ProcessIdentity):
         if error in (ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND):
             return None, True
         return None, False
+    # A signaled process object is already gone.  Check this before reading
+    # the creation time or image path: both queries may fail for a terminated
+    # process even though the handle is valid and the original process is
+    # definitely not running.
+    if _kernel32.WaitForSingleObject(handle, 0) == WAIT_OBJECT_0:
+        _kernel32.CloseHandle(handle)
+        return None, True
     try:
-        creation_time, executable = _query_handle_identity(handle)
+        creation_time = _query_creation_time(handle)
     except ProcessIdentityError:
         _kernel32.CloseHandle(handle)
         return None, False
@@ -249,6 +266,11 @@ def _open_identity_handle(identity: ProcessIdentity):
         _kernel32.CloseHandle(handle)
         return None, True
     if identity.executable:
+        try:
+            executable = _query_image(handle)
+        except ProcessIdentityError:
+            _kernel32.CloseHandle(handle)
+            return None, False
         if os.path.normcase(os.path.abspath(identity.executable)) != os.path.normcase(
             os.path.abspath(executable)
         ):

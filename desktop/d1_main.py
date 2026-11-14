@@ -125,6 +125,23 @@ H2_SPLIT_OUT = json.dumps(
     },
     ensure_ascii=False,
 )
+# The controlled provider returns the exact field texts above.  The split
+# contract requires each factual field (including the multiline process) to be
+# present in the submitted raw lesson plan, so the selftest fixture must put
+# them there before the manual save that precedes the AI task.  The previous
+# fillAll-only fixture submitted "原始教案 历史v1", which is a valid manual
+# save but cannot support this mocked split candidate.
+H2_RAW_LESSON_PLAN = "\n".join(
+    json.loads(H2_SPLIT_OUT)["group_activity"][key]
+    for key in (
+        "theme",
+        "objectives",
+        "preparation",
+        "key_points",
+        "difficult_points",
+        "process",
+    )
+)
 
 # Verification-only page injection used by drive_d3_h2_ui. Kept as a module
 # constant so the cleanup regression executes the exact production JS, not a
@@ -551,6 +568,22 @@ def build_runtime(args):
                 source = update_github.load_github_source()
             except update_trust.ReleaseConfigError:
                 source = None
+        install_block_reason = None
+        if u3_config is None:
+            if identity_unavailable:
+                install_block_reason = "UPDATE_INSTALL_IDENTITY_UNAVAILABLE"
+            elif not frozen:
+                install_block_reason = "UPDATE_INSTALL_SOURCE_RUN"
+            elif managed_root is None:
+                install_block_reason = "UPDATE_INSTALL_LAYOUT_UNSUPPORTED"
+            elif managed_helper is None:
+                install_block_reason = "UPDATE_INSTALL_HELPER_MISSING"
+            else:
+                install_block_reason = update_install.managed_helper_trust_error(
+                    managed_helper, source
+                )
+        if install_block_reason is not None:
+            allow_install = False
         # The embedded package config is the trust authority. The helper reads
         # its own fixed updater-directory copy; the check path never rewrites
         # either trust file.
@@ -576,6 +609,7 @@ def build_runtime(args):
             credential_root=runtime.credential_root,
             staging_root=staging_root,
             allow_install=allow_install,
+            install_block_reason=install_block_reason,
         )
         install_coordinator = None
         if allow_install:
@@ -1050,6 +1084,18 @@ def drive_d3_h2_ui(driver, args, summary, checks, host_api, port) -> None:
 
     def save_initial():
         driver.eval("window.__d1Editor.fillAll('历史v1')")
+        # The real split task is submitted after this manual save.  Keep the
+        # historical UI tag, but give the raw lesson the exact H2 synthetic
+        # fields (including the original process) that the controlled provider
+        # returns.  This mirrors the strict excerpt contract rather than
+        # relying on fillAll's placeholder raw text.
+        driver.eval(
+            "window.__d1Editor.setText("
+            + json.dumps(H2_RAW_LESSON_PLAN, ensure_ascii=False)
+            + ", "
+            + json.dumps("反思 历史v1", ensure_ascii=False)
+            + ")"
+        )
         driver.wait_until("window.__d1Editor.dirty() === true", what="H2 初始内容变脏", timeout=15)
         driver.eval("window.__d1Editor.save()")
         driver.wait_until(

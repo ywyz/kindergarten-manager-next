@@ -81,8 +81,23 @@ const downloadUnavailable = computed(
     props.status?.download_available === false,
 )
 const unavailableTitle = computed(() => {
-  if (props.status?.allow_install === false) {
-    return '当前为源码运行：只能检查 GitHub 版本，不能下载或安装替换'
+  switch (props.status?.install_block_reason) {
+    case 'UPDATE_INSTALL_SOURCE_RUN':
+      return '当前为源码运行：只能检查 GitHub 版本，不能下载或安装替换'
+    case 'UPDATE_INSTALL_IDENTITY_UNAVAILABLE':
+      return '当前安装身份无法确认：不能下载或安装替换'
+    case 'UPDATE_INSTALL_LAYOUT_UNSUPPORTED':
+      return '当前目录不是受管安装布局：请在完整安装包的安装目录中运行，或使用完整安装包手工安装'
+    case 'UPDATE_INSTALL_HELPER_MISSING':
+      return '此安装未包含独立更新器：无法在应用内安装，请使用完整安装包手工安装'
+    case 'UPDATE_INSTALL_HELPER_UNCONFIGURED':
+      return '独立更新器缺少发行信任配置：无法在应用内安装，请使用完整安装包手工安装'
+    case 'UPDATE_INSTALL_HELPER_TRUST_MISMATCH':
+      return '独立更新器信任配置与当前程序不一致：无法在应用内安装，请使用完整安装包手工安装'
+    case 'UPDATE_INSTALL_APP_TRUST_UNCONFIGURED':
+      return '当前安装缺少发行公钥：只能检查版本，请使用完整安装包手工安装'
+    default:
+      break
   }
   if (props.status?.error_code === 'UPDATE_ASSETS_MISSING') {
     return '发现新版，但该 Release 缺少固定更新清单或完整包'
@@ -93,7 +108,28 @@ const unavailableTitle = computed(() => {
   if (props.status?.error_code === 'UPDATE_PREVIEW_TRUST_PENDING') {
     return '发现预览版；下载与安装待签名清单和关闭交接审核后开放'
   }
+  if (props.status?.allow_install === false) {
+    return '当前安装不支持应用内下载或安装；请继续使用当前版本或完整安装包手工安装'
+  }
   return '发现新版，但当前暂不可安全下载'
+})
+const installBlocked = computed(
+  () =>
+    props.status?.state === 'ready'
+    && props.status.install_available !== true,
+)
+const installBlockedText = computed(() => {
+  const reason = props.status?.install_state ?? ''
+  if (reason === 'needs_review') {
+    return '上次更新安装状态待核对：当前未开放再次安装。请保留现场并用完整安装包手工安装或联系维护者；程序和数据不会被自动回滚。'
+  }
+  if (reason === 'unknown') {
+    return '上次安装结果尚未确认：为避免重复切换，当前未开放再次安装。请先核对安装记录或用完整安装包手工安装。'
+  }
+  if (reason === 'pending' || reason === 'bound' || reason === 'authorized') {
+    return '安装交接仍在进行；完成前不会重复安装。'
+  }
+  return '更新包已校验，但当前没有可用的安装交接；请关闭面板后重新打开，或用完整安装包手工安装。'
 })
 const showUnconfigured = computed(
   () => props.status?.state === 'unconfigured' || props.status?.state === 'disabled',
@@ -232,7 +268,17 @@ function requestChannel(value: string | number | boolean | undefined): void {
         安装会先保存并关闭当前应用，旧进程退出后才切换程序目录，再用原数据根和凭据根启动新版。
         当前程序和数据尚未改动。
       </p>
+      <p>仅下载不会安装；普通关闭或重启仍使用当前版本。</p>
     </el-alert>
+
+    <el-alert
+      v-if="installBlocked"
+      type="warning"
+      :closable="false"
+      class="section"
+      data-d1="update-install-blocked"
+      :title="installBlockedText"
+    />
 
     <el-alert
       v-if="showError"

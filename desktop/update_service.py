@@ -397,6 +397,7 @@ class UpdateManager:
         data_dir: str | Path | None = None,
         credential_root: str | Path | None = None,
         allow_install: bool = True,
+        install_block_reason: str | None = None,
         channel_preference_path: str | Path | None = None,
     ):
         self.identity = identity
@@ -413,6 +414,9 @@ class UpdateManager:
             Path(staging_root) if staging_root is not None else _default_staging_root()
         )
         self.allow_install = bool(allow_install)
+        self.install_block_reason = (
+            None if self.allow_install else install_block_reason
+        )
         self._channel_preference_path = (
             Path(channel_preference_path)
             if channel_preference_path is not None
@@ -543,6 +547,9 @@ class UpdateManager:
                 "install_available": False,
                 "download_available": bool(self._manifest and self.allow_install),
                 "allow_install": self.allow_install,
+                "install_block_reason": (
+                    None if self.allow_install else self.install_block_reason
+                ),
                 "download_id": self._download_id,
                 "installed_channel": self.identity.channel,
                 "check_channel": self._channel,

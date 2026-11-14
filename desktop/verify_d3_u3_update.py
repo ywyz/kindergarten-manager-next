@@ -45,12 +45,14 @@ from verify_d3_h2_window import (  # noqa: E402
 )
 import update_install  # noqa: E402
 import update_process  # noqa: E402
+import update_identity  # noqa: E402
 from update_identity import AppIdentity  # noqa: E402
 from app.local import ai_config_service  # noqa: E402
+from app.local.migrate import head_revision  # noqa: E402
 from app.local.runtime import LocalRuntime  # noqa: E402
 import test_update_u2 as u2  # noqa: E402
 
-HEAD_REV = "20261023_0005_local_history"
+HEAD_REV = head_revision() or "20261023_0005_local_history"
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
@@ -330,6 +332,40 @@ def main() -> int:
         program = root / "program"
         app = program / "app"
         app.mkdir(parents=True, exist_ok=True)
+        # The old source app runs from this checkout, so its plan identity is
+        # the deterministic source identity at the seeded database revision.
+        # The helper re-reads the installed tree's own build_identity.json and
+        # requires it to match the host plan after the old process exits.
+        current_identity = AppIdentity(
+            app_id=update_identity.APP_ID,
+            app_name=update_identity.APP_NAME,
+            channel=update_identity.CHANNEL,
+            version=update_identity.APP_VERSION,
+            build_id=update_identity.SOURCE_BUILD_ID,
+            package_format=update_identity.PACKAGE_FORMAT,
+            platform=update_identity.PLATFORM,
+            arch=update_identity.ARCH,
+            python=update_identity.PYTHON_VERSION,
+            database_revision=HEAD_REV,
+        )
+        old_identity_path = app / "_internal" / "build_identity.json"
+        old_identity_path.parent.mkdir(parents=True, exist_ok=True)
+        old_identity_path.write_text(
+            json.dumps(current_identity.as_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        loaded_old_identity = update_identity.load_app_identity(
+            database_revision=current_identity.database_revision,
+            path=old_identity_path,
+            require_packaged=True,
+        )
+        assert loaded_old_identity is not None
+        assert loaded_old_identity.version == current_identity.version
+        assert loaded_old_identity.build_id == current_identity.build_id
+        assert (
+            loaded_old_identity.database_revision
+            == current_identity.database_revision
+        )
         (app / "old-marker.txt").write_text("old-program", encoding="utf-8")
         (app / "KindergartenManager.exe").write_bytes(b"MZ old synthetic exe")
         (root / "updates" / "staging").mkdir(parents=True, exist_ok=True)

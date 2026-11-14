@@ -7,11 +7,13 @@ an in-memory location so the actual HKCU record is never touched.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 import pytest
 
+import update_github
 import update_helper
 import update_install
 import update_paths
@@ -220,6 +222,53 @@ def test_other_volume_staging_is_rejected(monkeypatch, tmp_path):
             test_only=False,
         )
     assert error.value.code == "INSTALL_VOLUME_MISMATCH"
+
+
+def test_managed_helper_requires_matching_github_trust_config(tmp_path):
+    root = _layout(tmp_path / "Custom Install")
+    helper = root / "updater" / "KindergartenManagerUpdater.exe"
+    config = helper.parent / "update_release.json"
+    keys = {"release-key": bytes(range(32))}
+    app_source = update_github.api_source(keys)
+
+    assert (
+        update_install.managed_helper_trust_error(helper, app_source)
+        == "UPDATE_INSTALL_HELPER_UNCONFIGURED"
+    )
+
+    config.write_text(
+        json.dumps(update_github.api_source(keys).as_config()),
+        encoding="utf-8",
+    )
+    assert update_install.managed_helper_trust_error(helper, app_source) is None
+
+    other = update_github.api_source({"release-key": b"x" * 32})
+    assert (
+        update_install.managed_helper_trust_error(helper, other)
+        == "UPDATE_INSTALL_HELPER_TRUST_MISMATCH"
+    )
+    assert (
+        update_install.managed_helper_trust_error(helper, None)
+        == "UPDATE_INSTALL_APP_TRUST_UNCONFIGURED"
+    )
+    assert (
+        update_install.managed_helper_trust_error(
+            helper, update_github.api_source({})
+        )
+        == "UPDATE_INSTALL_APP_TRUST_UNCONFIGURED"
+    )
+
+    config.write_text("{not-json", encoding="utf-8")
+    assert (
+        update_install.managed_helper_trust_error(helper, app_source)
+        == "UPDATE_INSTALL_HELPER_UNCONFIGURED"
+    )
+
+    config.unlink()
+    assert (
+        update_install.managed_helper_trust_error(helper, app_source)
+        == "UPDATE_INSTALL_HELPER_UNCONFIGURED"
+    )
 
 
 def test_old_preview_without_helper_reports_specific_error(monkeypatch, tmp_path):
