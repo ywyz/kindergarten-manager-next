@@ -72,21 +72,33 @@ def _cell_paragraphs(rows, label: str) -> list[str]:
     raise AssertionError(f"row {label!r} not found")
 
 
+def _morning_detail_paragraphs(rows) -> list[str]:
+    """Return the shared-detail cell's real paragraphs, in document order."""
+    for index, row in enumerate(rows):
+        if row and row[0] and row[0][0].strip() == "晨间活动：":
+            return rows[index + 1][1]
+    raise AssertionError("morning detail row not found")
+
+
 def _all_paragraphs(rows) -> list[str]:
     return [text for row in rows for cell in row for text in cell if text]
 
 
-def _block_text(rows, label: str, count: int) -> str:
+def _block_rows(rows, label: str, count: int):
     for index, row in enumerate(rows):
         if row and row[0] and row[0][0].strip() == label:
-            return "\n".join(
-                text
-                for block_row in rows[index : index + count]
-                for cell in block_row
-                for text in cell
-                if text
-            )
+            return rows[index : index + count]
     raise AssertionError(f"block {label!r} not found")
+
+
+def _block_text(rows, label: str, count: int) -> str:
+    return "\n".join(
+        text
+        for block_row in _block_rows(rows, label, count)
+        for cell in block_row
+        for text in cell
+        if text
+    )
 
 
 class DailyWordDetailSemanticsTests(unittest.TestCase):
@@ -125,6 +137,52 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
         self.assertNotIn("集体重点甲；自选重点乙", text)
         self.assertNotIn("自选重点乙；集体重点甲", text)
         self.assertEqual(text.count("重点指导："), 1)
+
+    def test_morning_shared_multiline_values_use_separate_paragraphs(self):
+        content = {
+            "morning_games": [
+                {
+                    "group_id": "c1",
+                    "group_kind": "collective",
+                    "games": [{"game_id": "g1", "name": "集体游戏甲"}],
+                    "focus_guidance": "1. 集体重点一\n2. 集体重点二",
+                    "shared_objectives": "1. 集体目标一\n2. 集体目标二",
+                    "guidance_points": "1. 集体要点一\n2. 集体要点二",
+                },
+                {
+                    "group_id": "f1",
+                    "group_kind": "free_choice",
+                    "games": [{"game_id": "g2", "name": "自选游戏乙"}],
+                    "focus_guidance": "1. 自选重点一\n2. 自选重点二",
+                    "shared_objectives": "1. 自选目标一\n2. 自选目标二",
+                    "guidance_points": "1. 自选要点一\n2. 自选要点二",
+                },
+            ]
+        }
+        detail = _morning_detail_paragraphs(_rows(_payload(content)))
+        expected = [
+            "重点指导：",
+            "集体游戏：1. 集体重点一",
+            "2. 集体重点二",
+            "自主游戏：1. 自选重点一",
+            "2. 自选重点二",
+            "活动目标：",
+            "集体游戏：1. 集体目标一",
+            "2. 集体目标二",
+            "自主游戏：1. 自选目标一",
+            "2. 自选目标二",
+            "指导要点：",
+            "集体游戏：1. 集体要点一",
+            "2. 集体要点二",
+            "自主游戏：1. 自选要点一",
+            "2. 自选要点二",
+        ]
+        # Both groups number their own entries 1./2.; each numbered line must
+        # be its own paragraph, never merged into one w:t or duplicated.
+        self.assertEqual(detail, expected)
+        for paragraph in detail:
+            self.assertNotIn("\n", paragraph)
+            self.assertNotIn("\r", paragraph)
 
     def test_numbered_text_is_not_numbered_again_by_template_paragraphs(self):
         content = {
@@ -201,6 +259,7 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
         rows = _rows(_payload(content))
         area_text = _block_text(rows, "室内区域游戏：", 3)
         room_text = _block_text(rows, "专用室游戏：", 3)
+        afternoon_rows = _block_rows(rows, "下午：", 3)
         afternoon_text = _block_text(rows, "下午：", 3)
 
         self.assertIn("游戏区域：合成建构区", area_text)
@@ -209,11 +268,104 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
         self.assertIn("游戏区域：合成美工室", room_text)
         self.assertIn("游戏：合成专用室游戏乙", room_text)
         self.assertNotIn("合成建构区", room_text)
-        self.assertIn("游戏区域：合成操场", afternoon_text)
-        self.assertIn("游戏：合成户外游戏丙", afternoon_text)
-        self.assertIn("重点观察：合成户外观察丙", afternoon_text)
+        self.assertEqual(afternoon_rows[0][1], ["游戏区域：合成操场"])
+        self.assertEqual(
+            afternoon_rows[1][1],
+            [
+                "重点观察：合成户外游戏丙",
+                "观察要点：合成户外观察丙",
+                "活动目标：合成户外目标丙",
+                "指导要点：合成户外指导丙",
+            ],
+        )
+        self.assertEqual(afternoon_rows[2][1], ["支持策略：合成户外支持丙"])
         self.assertNotIn("合成建构区", afternoon_text)
         self.assertNotIn("合成美工室", afternoon_text)
+
+    def test_afternoon_outdoor_focus_and_points_follow_existing_values(self):
+        cases = (
+            (
+                "area_game_points",
+                {
+                    "area": "合成操场",
+                    "games": [{"game_id": "o1", "name": "合成户外游戏丙"}],
+                    "observation_focus": "1. 合成观察甲\n2. 合成观察乙",
+                    "objectives": "合成户外目标丙",
+                    "guidance": "合成户外指导丙",
+                    "support_strategy": "合成户外支持丙",
+                },
+                ["游戏区域：合成操场"],
+                [
+                    "重点观察：合成户外游戏丙",
+                    "观察要点：1. 合成观察甲",
+                    "2. 合成观察乙",
+                    "活动目标：合成户外目标丙",
+                    "指导要点：合成户外指导丙",
+                ],
+                ["支持策略：合成户外支持丙"],
+            ),
+            (
+                "area_without_game",
+                {"area": "只有区域的操场"},
+                ["游戏区域：只有区域的操场"],
+                [
+                    "重点观察：只有区域的操场",
+                    "活动目标：",
+                    "指导要点：",
+                ],
+                ["支持策略："],
+            ),
+            (
+                "points_without_game_name",
+                {
+                    "area": "有要点的操场",
+                    "observation_focus": "独立观察要点",
+                },
+                ["游戏区域：有要点的操场"],
+                [
+                    "重点观察：有要点的操场",
+                    "观察要点：独立观察要点",
+                    "活动目标：",
+                    "指导要点：",
+                ],
+                ["支持策略："],
+            ),
+            (
+                "game_without_points",
+                {
+                    "area": "有游戏的操场",
+                    "games": [{"game_id": "o2", "name": "合成户外游戏丁"}],
+                },
+                ["游戏区域：有游戏的操场"],
+                [
+                    "重点观察：合成户外游戏丁",
+                    "活动目标：",
+                    "指导要点：",
+                ],
+                ["支持策略："],
+            ),
+        )
+        for name, afternoon, area_lines, detail_lines, support_lines in cases:
+            with self.subTest(name=name):
+                rows = _block_rows(
+                    _rows(_payload({"afternoon_outdoor": afternoon})),
+                    "下午：",
+                    3,
+                )
+                # ``重点观察`` carries the existing game name, falling back to
+                # the existing area; the separate game-name line is gone.
+                self.assertEqual(rows[0][1], area_lines)
+                self.assertEqual(rows[1][1], detail_lines)
+                self.assertEqual(rows[2][1], support_lines)
+                for paragraph in rows[0][1] + rows[1][1] + rows[2][1]:
+                    self.assertFalse(paragraph.startswith("游戏："))
+                    self.assertNotIn("\n", paragraph)
+                    self.assertNotIn("\r", paragraph)
+                # ``观察要点`` appears only when stored observation text exists.
+                self.assertEqual(
+                    any(line.startswith("观察要点：") for line in rows[1][1]),
+                    bool(afternoon.get("observation_focus")),
+                )
 
     def test_manual_and_historical_text_is_not_rewritten(self):
         content = {

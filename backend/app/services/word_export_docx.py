@@ -551,7 +551,10 @@ def _fill_daily_morning_shared(row_group, morning_games):
         for name, group in (("集体游戏", collective), ("自主游戏", free_choice)):
             value = _morning_group_field(group, field_name)
             if value:
-                writer.line(f"{name}：{value}")
+                # ``field`` turns embedded newlines into real paragraphs;
+                # ``line`` would keep them inside one w:t, which Word shows
+                # as a single line (teacher report 2026-11-14).
+                writer.field(f"{name}：", value)
 
     group_values("重点指导：", "focus_guidance")
     group_values("活动目标：", "shared_objectives")
@@ -655,9 +658,21 @@ def _fill_daily_afternoon(block_rows, afternoon, legacy_groups=None):
     games = _game_names(afternoon)
     area_writer = _CellWriter(_cells(block_rows[0])[1])
     area_writer.field("游戏区域：", area)
-    area_writer.field("游戏：", games)
+    # The afternoon focus follows the teacher's form: the existing game name,
+    # or the existing area when no game is named. Never synthesize a name.
+    # The former standalone ``游戏：`` line is intentionally omitted so the
+    # same game name is not shown twice.
+    focus = games or _nonempty_text(area)
     writer = _CellWriter(_cells(block_rows[1])[1])
-    writer.field("重点观察：", afternoon.get("observation_focus") if afternoon else None)
+    writer.field("重点观察：", focus)
+    observation = (
+        _nonempty_text(afternoon.get("observation_focus"))
+        if isinstance(afternoon, dict)
+        else ""
+    )
+    # Optional separate field: absent/blank stored text keeps no extra label.
+    if observation:
+        writer.field("观察要点：", observation)
     writer.field("活动目标：", afternoon.get("objectives") if afternoon else None)
     writer.field("指导要点：", afternoon.get("guidance") if afternoon else None)
     _CellWriter(_cells(block_rows[2])[1]).field(

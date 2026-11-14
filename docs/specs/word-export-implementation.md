@@ -254,13 +254,13 @@
 | 固定字样“体能大循环”（不改写） | 晨间固定标题 |
 | `morning_games` 中 `collective` 组名称 | 集体游戏 |
 | `morning_games` 中 `free_choice` 组名称 | 自主游戏（保留模板名，不写“自选”） |
-| 组的 `focus_guidance` / `shared_objectives` / `guidance_points` | 重点指导 / 活动目标 / 指导要点（整组共用，不按游戏拆分） |
+| 组的 `focus_guidance` / `shared_objectives` / `guidance_points` | 重点指导 / 活动目标 / 指导要点。各栏分别标明集体游戏和自主游戏，组内多行各占一段并保留原序号 |
 | `morning_talk.topic` / `questions` | 话题 / 问题设计 |
 | `group_activity.theme` | 活动主题（必填输出，不得丢失） |
 | `group_activity.objectives/preparation/key_points/difficult_points` | 各同名栏位 |
 | `group_activity.process` | 活动过程（**唯一标红对象**，见 §5.5） |
 | `post_group_games` 按 `context_kind`（`area`/`outdoor`/`special_room`） | 室内区域游戏 / 户外或专用室对应位置（区域、重点指导、目标、指导、支持策略） |
-| `afternoon_outdoor`（`observation_focus` 等） | 下午户外游戏各子栏 |
+| `afternoon_outdoor.area` / `games[].name` / `observation_focus` | 游戏区域显示区域。重点观察显示游戏名称，缺游戏名称时显示区域。教师原有 `observation_focus` 文字单列为观察要点，有内容时输出 |
 | `reflection` | 一日活动反思 |
 | 快照 `school_name/class_name/grade` + `creator_display_name` | 表头园所/班级/年级/教师 |
 
