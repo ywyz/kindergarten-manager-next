@@ -309,7 +309,7 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                 {"area": "只有区域的操场"},
                 ["游戏区域：只有区域的操场"],
                 [
-                    "重点观察：只有区域的操场",
+                    "重点观察：",
                     "活动目标：",
                     "指导要点：",
                 ],
@@ -323,8 +323,25 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                 },
                 ["游戏区域：有要点的操场"],
                 [
-                    "重点观察：有要点的操场",
+                    "重点观察：",
                     "观察要点：独立观察要点",
+                    "活动目标：",
+                    "指导要点：",
+                ],
+                ["支持策略："],
+            ),
+            (
+                "multiple_games_keep_order",
+                {
+                    "area": "多游戏操场",
+                    "games": [
+                        {"game_id": "o3", "name": "合成游戏乙"},
+                        {"game_id": "o4", "name": "合成游戏甲"},
+                    ],
+                },
+                ["游戏区域：多游戏操场"],
+                [
+                    "重点观察：合成游戏乙、合成游戏甲",
                     "活动目标：",
                     "指导要点：",
                 ],
@@ -352,8 +369,8 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                     "下午：",
                     3,
                 )
-                # ``重点观察`` carries the existing game name, falling back to
-                # the existing area; the separate game-name line is gone.
+                # ``重点观察`` only carries selected game names; no selected
+                # name stays empty instead of falling back to the area.
                 self.assertEqual(rows[0][1], area_lines)
                 self.assertEqual(rows[1][1], detail_lines)
                 self.assertEqual(rows[2][1], support_lines)

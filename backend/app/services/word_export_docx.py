@@ -658,13 +658,12 @@ def _fill_daily_afternoon(block_rows, afternoon, legacy_groups=None):
     games = _game_names(afternoon)
     area_writer = _CellWriter(_cells(block_rows[0])[1])
     area_writer.field("游戏区域：", area)
-    # The afternoon focus follows the teacher's form: the existing game name,
-    # or the existing area when no game is named. Never synthesize a name.
-    # The former standalone ``游戏：`` line is intentionally omitted so the
-    # same game name is not shown twice.
-    focus = games or _nonempty_text(area)
+    # The afternoon focus is only the selected game names. An unselected or
+    # missing name stays empty and never falls back to the area. The former
+    # standalone ``游戏：`` line is intentionally omitted so the same name is
+    # not shown twice.
     writer = _CellWriter(_cells(block_rows[1])[1])
-    writer.field("重点观察：", focus)
+    writer.field("重点观察：", games)
     observation = (
         _nonempty_text(afternoon.get("observation_focus"))
         if isinstance(afternoon, dict)
