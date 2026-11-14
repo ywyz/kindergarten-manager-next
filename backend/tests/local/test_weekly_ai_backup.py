@@ -17,6 +17,15 @@ from tests.local.backup_fixture_support import (
 )
 PROMPT_TABLES = {"local_prompt_bundles", "local_personal_prompt_heads",
                   "local_personal_prompt_versions"}
+# Current build adds one built-in default revision to these three tasks.  Their
+# uncustomised heads advance latest_default_revision while retaining the same
+# current personal revision; all other old heads must stay byte-identical.
+DEFAULT_HEAD_BUMP_TASKS = {
+    "daily_other_activities",
+    "game_observation_generate",
+    "game_observation_rewrite",
+}
+HEAD_KEY_COLUMNS = ("profile_id", "task_type")
 # Original 0007 archive/fidelity and plaintext/password restore tests use
 # create_old_0007_fixture() with its default frozen rows.  Current-build weekly
 # AI business tests explicitly pass align_default_prompts=True; that synthetic
@@ -35,11 +44,76 @@ def _copy_old_tree(source: Path, target: Path) -> None:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, destination)
 
-def _old_rows_preserved(before: dict, after: dict) -> None:
+def _sql_value(value: object) -> object:
+    if not isinstance(value, list) or not value:
+        return value
+    if value[0] == "null":
+        return None
+    if value[0] in ("text", "int", "float"):
+        return value[1]
+    return value
+
+
+def _row_value(row: str) -> dict:
+    return {key: _sql_value(value) for key, value in json.loads(row)}
+
+
+def _head_key(row: dict) -> tuple:
+    return tuple(
+        json.dumps(row[column], ensure_ascii=False, sort_keys=True)
+        for column in HEAD_KEY_COLUMNS
+    )
+
+
+def _old_head_rows_preserved(old_rows: list[str], new_rows: list[str]) -> None:
+    new_by_key = {
+        _head_key(_row_value(row)): _row_value(row)
+        for row in new_rows
+    }
+    for row in old_rows:
+        before_row = _row_value(row)
+        key = _head_key(before_row)
+        after_row = new_by_key.get(key)
+        assert after_row is not None, key
+        task_type = before_row["task_type"]
+        if task_type in DEFAULT_HEAD_BUMP_TASKS:
+            # Only the default pointer and update stamp may advance, and only
+            # when the current sync actually registers that new default.  The
+            # chosen personal revision (customised or not) stays put; the
+            # existing personal version row is checked by the additive table
+            # assertion below.  Migration-only paths legitimately leave it
+            # unchanged.
+            assert after_row["current_revision"] == before_row["current_revision"], key
+            assert (
+                after_row["required_contract_version"]
+                == before_row["required_contract_version"]
+            ), key
+            assert after_row["created_at"] == before_row["created_at"], key
+            if after_row != before_row:
+                assert (
+                    after_row["latest_default_revision"]
+                    == before_row["latest_default_revision"] + 1
+                ), key
+        else:
+            assert after_row == before_row, key
+
+
+def _old_rows_preserved(before: dict, after: dict, *,
+                        allow_default_head_bump: bool = False) -> None:
+    # The three default head bumps are only legal where the current build runs
+    # its ordinary package sync against an old archive: the 0007 runtime
+    # prepare and the reopen after restoring an old package.  Migration-only
+    # mirrors and restores of an already-current package stay row-for-row
+    # strict, so the default is False and only those two callers opt in.
     for table, item in before["tables"].items():
         old = item["rows"]
         new = after["tables"][table]["rows"]
-        if table in PROMPT_TABLES:
+        if table == "local_personal_prompt_heads":
+            if allow_default_head_bump:
+                _old_head_rows_preserved(old, new)
+            else:
+                assert old == new, table
+        elif table in PROMPT_TABLES:
             assert all(new.count(row) >= old.count(row) for row in old), table
         else:
             assert old == new, table
@@ -226,7 +300,22 @@ def test_0007_aligned_runtime_sync_adds_only_weekly_prompt_rows(tmp_path):
     finally:
         runtime.dispose()
     after = migration_rows(runtime_data / "kindergarten.db")
-    _old_rows_preserved(before, after)
+    _old_rows_preserved(before, after, allow_default_head_bump=True)
+    before_heads = {
+        _head_key(row): row
+        for row in map(_row_value, before["tables"]["local_personal_prompt_heads"]["rows"])
+    }
+    after_heads = {
+        _head_key(row): row
+        for row in map(_row_value, after["tables"]["local_personal_prompt_heads"]["rows"])
+    }
+    changed_head_keys = {
+        key for key, row in before_heads.items() if after_heads.get(key) != row
+    }
+    assert {
+        before_heads[key]["task_type"] for key in changed_head_keys
+    } == DEFAULT_HEAD_BUMP_TASKS
+    assert len(changed_head_keys) == 3
     # The frozen archive may already carry this build's current defaults; the
     # meaningful invariant is that no old bundle is removed and the full
     # weekly set is registered below.
@@ -299,7 +388,7 @@ def test_0007_plain_and_encrypted_packages_verify_and_restore(tmp_path):
             assert result.state == "installed_retired", result
             assert core.reopen().state == "reopened"
             after = migration_rows(target_data / "kindergarten.db")
-            _old_rows_preserved(before, after)
+            _old_rows_preserved(before, after, allow_default_head_bump=True)
             assert target.launch_id is None
         finally:
             target.dispose()

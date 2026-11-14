@@ -10,6 +10,7 @@ from datetime import date
 from app.local import (
     daily_plan_service,
     profile_service,
+    weekly_plan_content,
     weekly_plan_service,
     weekly_plan_snapshot as snapshots,
 )
@@ -684,7 +685,7 @@ class WeeklyPlanServiceTests(LocalTestCase):
             {"confirmation", "snapshot", "note", "confirmed_by", "confirmed_at"},
         )
 
-    def test_stale_source_is_reported_from_live_snapshot(self) -> None:
+    def test_daily_source_follows_live_saved_value(self) -> None:
         daily_id = self._create_daily()
         result, _ = self._create()
         plan_id = result["weekly_plan_id"]
@@ -700,13 +701,224 @@ class WeeklyPlanServiceTests(LocalTestCase):
         detail = weekly_plan_service.get_detail(
             self.session, profile_id=self.profile.id, plan_id=plan_id
         )
-        self.assertTrue(detail["facts"]["stale_sources"])
-        self.assertTrue(
+        self.assertTrue(detail["daily_follow"]["changed"])
+        self.assertEqual(
+            detail["draft"]["content_hash"],
+            weekly_plan_content.content_hash(detail["draft"]["content"]),
+            "stored draft hash always matches its stored content",
+        )
+        self.assertNotEqual(
+            detail["daily_follow"]["content_hash"],
+            detail["draft"]["content_hash"],
+        )
+        row = next(
+            item
+            for item in detail["daily_follow"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(row["source"]["morning_talk_topic"], "改过的主题")
+        self.assertEqual(row["source"]["content_version"], 2)
+        self.assertEqual(row["effective"]["morning_talk_topic"], "改过的主题")
+        stored_row = next(
+            item
+            for item in detail["draft"]["content"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(
+            stored_row["effective"]["morning_talk_topic"], "秋天的树叶"
+        )
+        self.assertFalse(
             any(
-                fact.get("old_ref") and fact.get("new_ref")
+                fact.get("field_path", "").startswith("deterministic[")
                 for fact in detail["facts"]["stale_sources"]
             )
         )
+
+    def test_confirmation_materializes_followed_draft_without_manual_edit(self) -> None:
+        daily_id = self._create_daily()
+        result, _ = self._create()
+        plan_id = result["weekly_plan_id"]
+        current = daily_plan_service.get_plan(self.session, plan_id=daily_id)
+        adopted = dict(current["content"]["adopted_content"])
+        adopted["morning_talk"] = {"topic": "预确认最新晨谈", "questions": "问题"}
+        daily_plan_service.save(
+            self.session,
+            plan_id=daily_id,
+            expected_content_version=current["content"]["version"],
+            adopted_content=adopted,
+        )
+        preview = weekly_plan_service.confirmation_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            plan_id=plan_id,
+            expected_draft_version=1,
+        )
+        row = next(
+            item
+            for item in preview["target"]["content"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(row["source"]["morning_talk_topic"], "预确认最新晨谈")
+        self.assertEqual(row["effective"]["morning_talk_topic"], "预确认最新晨谈")
+        self.assertEqual(preview["target"]["draft_version"], 2)
+        confirmed = weekly_plan_service.confirm(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.launch,
+            session_scope_hash=self.scope,
+            request_id=str(uuid.uuid4()),
+            plan_id=plan_id,
+            expected_draft_version=1,
+            context_token=preview["preview_token"],
+            ack_missing=True,
+            ack_stale=True,
+            note=None,
+        )
+        self.assertEqual(confirmed["draft"]["version"], 2)
+        self.assertEqual(confirmed["confirmation"]["draft_version"], 2)
+        snapshot = weekly_plan_service.get_confirmation(
+            self.session,
+            profile_id=self.profile.id,
+            plan_id=plan_id,
+            confirmation_id=confirmed["confirmation"]["id"],
+        )["snapshot"]
+        snapshot_row = next(
+            item
+            for item in snapshot["content"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(snapshot_row["effective"]["morning_talk_topic"], "预确认最新晨谈")
+        detail = weekly_plan_service.get_detail(
+            self.session, profile_id=self.profile.id, plan_id=plan_id
+        )
+        self.assertEqual(detail["draft"]["version"], 2)
+        self.assertFalse(detail["daily_follow"]["changed"])
+        self.assertEqual(
+            detail["draft"]["content_hash"],
+            detail["daily_follow"]["content_hash"],
+        )
+        detail_row = next(
+            item
+            for item in detail["draft"]["content"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(
+            detail_row["effective"]["morning_talk_topic"], "预确认最新晨谈"
+        )
+
+    def test_explicit_override_and_clear_survive_daily_follow_and_old_confirmation(self) -> None:
+        daily_id = self._create_daily()
+        result, _ = self._create()
+        plan_id = result["weekly_plan_id"]
+        first = self._confirm(plan_id, 1)
+        first_id = first["confirmation"]["id"]
+        first_history = weekly_plan_service.get_confirmation(
+            self.session,
+            profile_id=self.profile.id,
+            plan_id=plan_id,
+            confirmation_id=first_id,
+        )
+        first_snapshot = copy.deepcopy(first_history["snapshot"])
+
+        saved = weekly_plan_service.save_draft(
+            self.session,
+            profile_id=self.profile.id,
+            request_id=str(uuid.uuid4()),
+            plan_id=plan_id,
+            expected_draft_version=1,
+            patch={
+                "deterministic_overrides": {
+                    PLAN_DATE.isoformat(): {
+                        "morning_talk_topic": "教师保留",
+                        "group_activity_theme": "",
+                    }
+                }
+            },
+        )
+        self.assertEqual(saved["draft"]["version"], 2)
+
+        current = daily_plan_service.get_plan(self.session, plan_id=daily_id)
+        adopted = dict(current["content"]["adopted_content"])
+        adopted["morning_talk"] = {"topic": "最新晨谈", "questions": "问题"}
+        adopted["group_activity"] = {
+            "theme": "最新集体活动",
+            "objectives": "观察",
+            "process": "看一看",
+        }
+        daily_plan_service.save(
+            self.session,
+            plan_id=daily_id,
+            expected_content_version=current["content"]["version"],
+            adopted_content=adopted,
+        )
+        self.session.expire_all()
+
+        detail = weekly_plan_service.get_detail(
+            self.session, profile_id=self.profile.id, plan_id=plan_id
+        )
+        self.assertTrue(detail["daily_follow"]["changed"])
+        row = next(
+            item
+            for item in detail["daily_follow"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(row["source"]["morning_talk_topic"], "最新晨谈")
+        self.assertEqual(row["source"]["content_version"], 2)
+        self.assertEqual(row["override"]["morning_talk_topic"], "教师保留")
+        self.assertEqual(row["effective"]["morning_talk_topic"], "教师保留")
+        self.assertEqual(row["override"]["group_activity_theme"], "")
+        self.assertEqual(row["effective"]["group_activity_theme"], "")
+
+        saved_again = weekly_plan_service.save_draft(
+            self.session,
+            profile_id=self.profile.id,
+            request_id=str(uuid.uuid4()),
+            plan_id=plan_id,
+            expected_draft_version=2,
+            patch={"theme": "跨日保存"},
+        )
+        self.assertEqual(saved_again["draft"]["version"], 3)
+        persisted = saved_again["draft"]["content"]["deterministic"]
+        persisted_row = next(
+            item for item in persisted if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(persisted_row["source"]["morning_talk_topic"], "最新晨谈")
+        self.assertEqual(persisted_row["effective"]["morning_talk_topic"], "教师保留")
+        self.assertEqual(persisted_row["effective"]["group_activity_theme"], "")
+
+        confirmed = self._confirm(plan_id, 3)
+        history = weekly_plan_service.get_confirmation(
+            self.session,
+            profile_id=self.profile.id,
+            plan_id=plan_id,
+            confirmation_id=confirmed["confirmation"]["id"],
+        )
+        target_row = next(
+            item
+            for item in history["snapshot"]["content"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(target_row["source"]["morning_talk_topic"], "最新晨谈")
+        self.assertEqual(target_row["effective"]["morning_talk_topic"], "教师保留")
+        self.assertEqual(target_row["effective"]["group_activity_theme"], "")
+
+        unchanged = weekly_plan_service.get_confirmation(
+            self.session,
+            profile_id=self.profile.id,
+            plan_id=plan_id,
+            confirmation_id=first_id,
+        )
+        self.assertEqual(unchanged["snapshot"], first_snapshot)
+        old_row = next(
+            item
+            for item in unchanged["snapshot"]["content"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(old_row["effective"]["morning_talk_topic"], "秋天的树叶")
 
     def test_refresh_updates_resolvable_source_and_preserves_manual_text(self) -> None:
         daily_id = self._create_daily()

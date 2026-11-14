@@ -1037,6 +1037,83 @@ onBeforeUnmount(() => {
     <el-alert v-else-if="phase === 'failed'" type="error" :closable="false" :title="errorText || '读取候选失败'" />
     <template v-else-if="candidate">
       <el-alert v-if="stateNote" type="warning" :closable="false" class="section" data-d1="candidate-state" :title="stateNote" />
+      <!-- Daily-plan directional modification: kept at the top of this daily
+           candidate so the teacher can state the intended change first. This is
+           the daily-plan instance only; the shared listening/weekly dialog is
+           not involved. -->
+      <div
+        v-if="taskType && taskType !== 'daily_reflection_generate' && (taskType !== 'daily_process_adapt' || preview)"
+        class="regenerate-block"
+        data-d1="adapt-regenerate"
+      >
+        <div class="field">
+          <label>定向修改要求（可选：哪个环节、希望怎么改）</label>
+          <el-input
+            v-model="regenerateInstruction"
+            type="textarea"
+            :rows="2"
+            maxlength="500"
+            placeholder="例如：第 2 环节对中班偏难，请改成两步；其余环节保持原意"
+            :disabled="disabled || regenerating || !!pendingRegenerate"
+            data-d1="adapt-regeneration-instruction"
+          />
+        </div>
+        <div class="row">
+          <template v-if="pendingRegenerate">
+            <el-button size="small" type="warning" data-d1="adapt-regenerate-query" @click="queryPendingRegenerate">
+              查询提交结果
+            </el-button>
+            <el-button
+              size="small"
+              type="danger"
+              :loading="regenerating"
+              data-d1="adapt-regenerate-resubmit"
+              @click="resubmitPendingRegenerate"
+            >
+              重试原提交（同一请求）
+            </el-button>
+          </template>
+          <el-button
+            v-else
+            size="small"
+            type="primary"
+            :loading="regenerating"
+            :disabled="disabled || !editable || operationBlocked || (taskType === 'daily_process_adapt' && !previewContext)"
+            data-d1="adapt-regenerate"
+            @click="regenerateAdapt"
+          >
+            重新生成
+          </el-button>
+        </div>
+        <div v-if="regenerateAccepted" class="row" data-d1="adapt-regenerate-accepted">
+          <el-alert
+            type="info"
+            :closable="false"
+            class="section"
+            :title="regenerateStatusTitle()"
+          />
+          <el-button
+            size="small"
+            data-d1="adapt-regenerate-open"
+            :disabled="regenerateQuerying || !regenerateAccepted.newCandidateId"
+            @click="openAcceptedCandidate"
+          >
+            打开新候选
+          </el-button>
+          <el-button
+            size="small"
+            text
+            data-d1="adapt-regenerate-refresh"
+            :loading="regenerateQuerying"
+            @click="refreshAcceptedRegenerate"
+          >
+            刷新进度
+          </el-button>
+        </div>
+        <p class="muted">
+          重新生成会绑定当前原候选、已保存内容版本与真实拆分基准；新结果不会自动采用，原候选与已保存教案保持不变。
+        </p>
+      </div>
       <div class="source-block">
         <p v-for="(line, index) in sourceLines" :key="index" class="muted">{{ line }}</p>
         <p class="muted">候选类型：{{ taskTypeLabel(taskType) }} · 契约 v{{ candidate.contract_version }} · 内容版本 v{{ candidate.latest_content_version }}</p>
@@ -1229,80 +1306,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <p v-if="preview.warnings.length" class="warn">{{ preview.warnings.join('；') }}</p>
-      </div>
-
-      <div
-        v-if="taskType && taskType !== 'daily_reflection_generate' && (taskType !== 'daily_process_adapt' || preview)"
-        class="regenerate-block"
-        data-d1="adapt-regenerate"
-      >
-        <div class="field">
-          <label>定向修改要求（可选：哪个环节、希望怎么改）</label>
-          <el-input
-            v-model="regenerateInstruction"
-            type="textarea"
-            :rows="2"
-            maxlength="500"
-            placeholder="例如：第 2 环节对中班偏难，请改成两步；其余环节保持原意"
-            :disabled="disabled || regenerating || !!pendingRegenerate"
-            data-d1="adapt-regeneration-instruction"
-          />
-        </div>
-        <div class="row">
-          <template v-if="pendingRegenerate">
-            <el-button size="small" type="warning" data-d1="adapt-regenerate-query" @click="queryPendingRegenerate">
-              查询提交结果
-            </el-button>
-            <el-button
-              size="small"
-              type="danger"
-              :loading="regenerating"
-              data-d1="adapt-regenerate-resubmit"
-              @click="resubmitPendingRegenerate"
-            >
-              重试原提交（同一请求）
-            </el-button>
-          </template>
-          <el-button
-            v-else
-            size="small"
-            type="primary"
-            :loading="regenerating"
-            :disabled="disabled || !editable || operationBlocked || (taskType === 'daily_process_adapt' && !previewContext)"
-            data-d1="adapt-regenerate"
-            @click="regenerateAdapt"
-          >
-            重新生成
-          </el-button>
-        </div>
-        <div v-if="regenerateAccepted" class="row" data-d1="adapt-regenerate-accepted">
-          <el-alert
-            type="info"
-            :closable="false"
-            class="section"
-            :title="regenerateStatusTitle()"
-          />
-          <el-button
-            size="small"
-            data-d1="adapt-regenerate-open"
-            :disabled="regenerateQuerying || !regenerateAccepted.newCandidateId"
-            @click="openAcceptedCandidate"
-          >
-            打开新候选
-          </el-button>
-          <el-button
-            size="small"
-            text
-            data-d1="adapt-regenerate-refresh"
-            :loading="regenerateQuerying"
-            @click="refreshAcceptedRegenerate"
-          >
-            刷新进度
-          </el-button>
-        </div>
-        <p class="muted">
-          重新生成会绑定当前原候选、已保存内容版本与真实拆分基准；新结果不会自动采用，原候选与已保存教案保持不变。
-        </p>
       </div>
 
       <div class="footer">

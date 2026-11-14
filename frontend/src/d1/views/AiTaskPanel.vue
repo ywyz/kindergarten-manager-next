@@ -53,6 +53,13 @@ const emit = defineEmits<{
   (e: 'open-candidate', candidateId: string, taskType: TaskType): void
   (e: 'open-guidance', taskType: TaskType): void
   (e: 'draft-active', active: boolean): void
+  /**
+   * A task accepted by this page (create or query recovery), or one observed
+   * live here, has succeeded with a candidate. Used for direct-filling the
+   * current daily draft; a task that was already successful on first load
+   * (background page reopen) is never announced.
+   */
+  (e: 'other-generated', task: AiTask): void
 }>()
 
 const GRADE_LABELS: Record<Grade, string> = { small: '小班', middle: '中班', large: '大班' }
@@ -114,6 +121,9 @@ const progressTerminalAt = ref<Record<string, number>>({})
 const progressClosingFetched = new Set<string>()
 const pendingSince = ref<Record<string, number>>({})
 const lastTaskStatus = ref<Record<string, string>>({})
+/** Tasks accepted or observed live in this panel mount; initial success is not. */
+const seenLiveTasks = new Set<string>()
+const announcedOtherCandidates = new Set<string>()
 
 const TERMINAL_PROGRESS_PHASES = [
   'completed',
@@ -449,6 +459,32 @@ function putTask(task: AiTask): void {
   }
 }
 
+/** Announce one succeeded other-activities task, exactly once. */
+function announceOtherTask(task: AiTask): void {
+  if (
+    task.task_type !== 'daily_other_activities' ||
+    task.status !== 'succeeded' ||
+    !task.candidate_id ||
+    announcedOtherCandidates.has(task.id)
+  ) {
+    return
+  }
+  announcedOtherCandidates.add(task.id)
+  emit('other-generated', task)
+}
+
+/**
+ * A successful create/recovery response is an acceptance by *this page*, even
+ * when the task is already succeeded before the first refresh. Mark it before
+ * any poll so the live→succeeded transition cannot be missed; a merely
+ * historical succeeded row loaded at mount never passes through here.
+ */
+function trackAcceptedTask(task: AiTask): void {
+  if (task.task_type !== 'daily_other_activities') return
+  seenLiveTasks.add(task.id)
+  announceOtherTask(task)
+}
+
 function requestId(): string {
   return crypto.randomUUID()
 }
@@ -474,6 +510,17 @@ async function refresh(): Promise<void> {
     } while (cursor)
     if (seq !== refreshSeq) return
     tasks.value = collected
+    // Direct-fill only for a task this panel actually watched transition from
+    // live to succeeded. A page reopened after completion has no live
+    // observation and must not overwrite the freshly loaded draft.
+    for (const task of collected) {
+      if (task.task_type !== 'daily_other_activities') continue
+      if (isLiveTask(task)) {
+        seenLiveTasks.add(task.id)
+        continue
+      }
+      if (seenLiveTasks.has(task.id)) announceOtherTask(task)
+    }
     // Stable wait start per live task/execution/attempt: a missing progress
     // snapshot must not reset the visible elapsed time on every render.
     const starts = { ...progressWaitSince.value }
@@ -612,6 +659,7 @@ async function submitCreate(
       body,
     )
     putTask(created)
+    trackAcceptedTask(created)
     void fetchProgress()
     schedulePoll()
     return true
@@ -689,7 +737,12 @@ async function queryCreate(taskType: TaskType): Promise<void> {
   // A late receipt must never overwrite a newer operation for this task type.
   if (pendingCreates.value[taskType]?.requestId !== pending.requestId) return
   if (query.state === 'found') {
-    putTask(query.result as unknown as AiTask)
+    const recovered = query.result as unknown as AiTask
+    putTask(recovered)
+    // A receipt recovered for this pending create is still an acceptance by
+    // this page: it must notify even when the original task already finished
+    // before the first poll.
+    trackAcceptedTask(recovered)
     clearPendingCreate(taskType)
     createError.value = { ...createError.value, [taskType]: '' }
     schedulePoll()

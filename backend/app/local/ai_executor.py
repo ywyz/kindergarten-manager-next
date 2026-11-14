@@ -1294,6 +1294,7 @@ def _encode_bootstrap(
             system_text=claim.system_text,
             user_text=user_text,
             image_urls=list(claim.image_urls),
+            json_mode=True,
         )
         if len(body) > ai_transport.VISION_BODY_MAX_BYTES:
             raise ValueError("request_too_large")

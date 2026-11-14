@@ -44,6 +44,9 @@ let taskDelay = false
 let taskGate = null
 let taskPageMode = false
 let taskReturnAll = false
+let pollLiveMode = false
+let candidateListCalls = 0
+let progressAttempt = null
 let tasksErrorOnce = false
 let candidateErrorOnce = false
 let oldDetailDelay = false
@@ -55,6 +58,8 @@ let getGate = null
 let busyCount = 0
 let sessionValue = 2
 let mutateSessionOnPreview = false
+let progressExecution = 'e1'
+let refreshedExecution = 'e1'
 const unmounts = []
 let reconcileArgs = null
 const fakeController = {
@@ -70,6 +75,7 @@ const fakeController = {
 }
 const task = { task_id: 't1', source_kind: 'weekly_plan', source_id: 'p1', weekly_plan_id: 'p1', target: 'games', task_type: 'games', status: 'outcome_unknown', reason: null, processing_certainty: 'unknown', user_stop_requested: false, draft: { id: 'd1', version: 8 }, execution: { id: 'e1' }, candidate_id: null, allowed_actions: ['cancel', 'retry'], retry_requires_ack: true }
 const task2 = { ...task, task_id: 't2', target: 'key_week_focus', task_type: 'key_week_focus', status: 'succeeded', allowed_actions: ['view'], retry_requires_ack: false }
+const liveTask = { ...task, task_id: 't3', status: 'pending', allowed_actions: ['cancel'], retry_requires_ack: false, execution: { id: 'e1', attempt_no: 2 } }
 const createOut = { request_id: 'req-test', operation_kind: 'games', weekly_plan_id: 'p1', draft: { id: 'd1', version: 8 }, tasks: [{ target: 'games', task_id: 't1' }], replayed: false }
 const candidate = { candidate_id: 'c1', task_id: 't1', target: 'games', candidate_hash: 'ch1', eligibility: 'eligible', available_targets: ['games'], create_operation_id: null, data: { outdoor_game_slots: { collective_1: { source_kind: 'daily_plan', name: '爬行', shared_objectives: '目标' } } }, basis: {}, warnings: [], unavailable_inputs: [] }
 const preview = { preview_token: 'pt1', expires_at: '2026-11-03T00:00:00Z', weekly_plan_id: 'p1', draft: { id: 'd1', version: 8 }, selections: [{ candidate_id: 'c1', target: 'games' }], before: { games: '旧' }, after: { games: '新' }, warnings: [] }
@@ -86,14 +92,16 @@ const aiStub = {
     games: async (planId, body) => { calls.push({ kind: 'games', planId, body: clone(body) }); if (failGamesOnce) { failGamesOnce = false; throw new Error('offline') }; return clone(createOut) },
     columns: async (planId, body) => { calls.push({ kind: 'columns', planId, body: clone(body) }); if (failColumnsOnce) { failColumnsOnce = false; throw new Error('offline') }; return { request_id: 'req-2', operation_kind: 'columns', weekly_plan_id: 'p1', draft: { id: 'd1', version: 8 }, tasks: [{ target: 'key_week_focus', task_id: 't2' }], replayed: false } },
     materials: async (planId, body) => { calls.push({ kind: 'materials', planId, body: clone(body) }); return { request_id: body.request_id, operation_kind: 'materials', weekly_plan_id: planId, draft: { id: 'd1', version: body.expected_draft_version }, tasks: [], replayed: false } },
-    tasks: async (_planId, query = {}) => { if (tasksErrorOnce) { tasksErrorOnce = false; throw new Error('raw tasks error') }; if (taskDelay && taskGate) await taskGate; if (taskPageMode) return query.cursor ? { items: [task2], next_cursor: null } : { items: [task], next_cursor: 'next' }; if (taskReturnAll) return { items: [task, task2], next_cursor: null }; return { items: [task], next_cursor: null } },
-    candidates: async () => ({ items: [candidate, { ...candidate, candidate_id: 'c2', task_id: 't2', target: 'key_week_focus', available_targets: ['key_week_focus'], data: { text: '新批候选' } }], next_cursor: null }),
+    tasks: async (_planId, query = {}) => { if (tasksErrorOnce) { tasksErrorOnce = false; throw new Error('raw tasks error') }; if (taskDelay && taskGate) await taskGate; if (pollLiveMode) return { items: [clone(liveTask)], next_cursor: null }; if (taskPageMode) return query.cursor ? { items: [task2], next_cursor: null } : { items: [task], next_cursor: 'next' }; if (taskReturnAll) return { items: [task, task2], next_cursor: null }; return { items: [task], next_cursor: null } },
+    candidates: async () => { candidateListCalls += 1; return { items: [candidate, { ...candidate, candidate_id: 'c2', task_id: 't2', target: 'key_week_focus', available_targets: ['key_week_focus'], data: { text: '新批候选' } }], next_cursor: null } },
     candidate: async (_planId, candidateId) => { if (candidateErrorOnce) { candidateErrorOnce = false; throw new Error('raw candidate error') }; if (oldDetailDelay && candidateId === 'c1') { await oldDetailGate; if (oldDetailFail) throw new Error('raw old detail error') }; return candidateId === 'c2' ? { ...candidate, candidate_id: 'c2', task_id: 't2', target: 'key_week_focus', available_targets: ['key_week_focus'], data: { text: '新批候选' } } : clone(candidate) },
     adoptionPreview: async (planId, body) => { calls.push({ kind: 'preview', planId, body: clone(body) }); if (mutateSessionOnPreview) { mutateSessionOnPreview = false; sessionValue = 3 }; return clone(preview) },
     adopt: async (planId, body) => { calls.push({ kind: 'adopt', planId, body: clone(body) }); if (failAdoptOnce) { failAdoptOnce = false; throw new Error('offline') }; if (malformedAdoptShape === 'null-selections') return { ...clone(adopted), request_id: body.request_id, selections: null }; if (malformedAdoptShape === 'missing-draft') return { ...clone(adopted), request_id: body.request_id, draft: null }; return { ...clone(adopted), request_id: body.request_id } },
     operation: async (planId, requestId) => requestId === 'req-test' ? { request_id: 'req-test', operation_kind: 'games', status: 'committed', result: clone(createOut) } : { request_id: requestId, operation_kind: 'weekly_ai_adopt', status: 'committed', result: { ...clone(adopted), request_id: requestId } },
     taskOperation: async (requestId) => ({ request_id: requestId, operation_kind: 'ai_task_retry', result: { ...task, source_kind: 'weekly_plan', source_id: 'p1', weekly_plan_id: taskOperationWrongPlan ? 'other-plan' : 'p1' }, committed_at: '2026-11-03T00:00:00Z' }),
-    progress: async (_planId, taskId) => ({ available: true, task_id: taskId, execution_id: 'e1', attempt_id: 'a1', attempt_no: null, seq: 2, phase: 'thinking', elapsed_ms: 900, last_data_age_ms: 100, reasoning: '思考增量：先核对周计划来源', content_chars: 18, truncated: false }), cancel: async () => { actionCalls.push('cancel'); return task }, resume: async () => { actionCalls.push('resume'); return task }, retry: async () => { actionCalls.push('retry'); if (failActionOnce) { failActionOnce = false; throw new Error('offline') }; return task },
+    progress: async (_planId, taskId) => ({ available: true, task_id: taskId, execution_id: progressExecution, attempt_id: 'a1', attempt_no: progressAttempt, seq: 2, phase: 'thinking', elapsed_ms: 900, last_data_age_ms: 100, reasoning: '思考增量：先核对周计划来源', content_chars: 18, truncated: false }),
+    task: async (_planId, taskId) => ({ ...clone(task), task_id: taskId, execution: { id: refreshedExecution } }),
+    cancel: async () => { actionCalls.push('cancel'); return task }, resume: async () => { actionCalls.push('resume'); return task }, retry: async () => { actionCalls.push('retry'); if (failActionOnce) { failActionOnce = false; throw new Error('offline') }; return task },
   }),
 }
 const weeklyStub = { newWeeklyRequestId: () => 'req-test', createWeeklyApi: () => ({ get: async () => { if (getDelay && getGate) await getGate; return detail() } }) }
@@ -119,6 +127,53 @@ assert.equal(
   null,
   'a progress snapshot from another execution is ignored',
 )
+{
+  progressExecution = 'e2'
+  refreshedExecution = 'e2'
+  await state.loadProgress(state.tasks.value[0])
+  assert.equal(state.tasks.value[0].execution.id, 'e2')
+  assert.equal(state.progressFor(state.tasks.value[0])?.execution_id, 'e2')
+  assert.match(state.progressReasoningFor(state.tasks.value[0]), /思考增量/)
+
+  progressExecution = 'e1'
+  refreshedExecution = 'e2'
+  await state.loadProgress(state.tasks.value[0])
+  assert.equal(state.progressFor(state.tasks.value[0])?.execution_id, 'e2')
+  assert.match(state.notice.value, /不一致/)
+  progressExecution = 'e1'
+  refreshedExecution = 'e1'
+  ok('a lagging task identity is refreshed once, while an old execution progress stays rejected')
+}
+{
+  pollLiveMode = true
+  liveTask.status = 'pending'
+  progressAttempt = 1
+  progressExecution = 'e1'
+  state.batch.value = null
+  state.tasks.value = []
+  const candidateReadsBefore = candidateListCalls
+  await state.pollLiveTasks()
+  assert.equal(state.tasks.value.length, 1)
+  assert.equal(
+    state.progressFor(state.tasks.value[0]),
+    null,
+    'mismatched attempt is not shown as current progress',
+  )
+  progressAttempt = 2
+  await state.pollLiveTasks()
+  assert.equal(state.progressFor(state.tasks.value[0])?.phase, 'thinking')
+  assert.equal(candidateListCalls, candidateReadsBefore, 'a still-live poll does not refresh candidates')
+  liveTask.status = 'succeeded'
+  await state.pollLiveTasks()
+  assert.equal(candidateListCalls, candidateReadsBefore + 1, 'a live-to-terminal transition refreshes candidates once')
+  await state.pollLiveTasks()
+  assert.equal(candidateListCalls, candidateReadsBefore + 1, 'an old succeeded task does not keep refreshing the batch')
+  state.stopTaskPoll()
+  pollLiveMode = false
+  progressAttempt = null
+  liveTask.status = 'pending'
+  ok('live polling follows paginated task generations, refreshes matching progress and candidates only on transition')
+}
   ok('reentered panel loads persisted tasks and candidate details through paginated APIs')
 {
   taskPageMode = true
@@ -776,12 +831,20 @@ await panelState.refreshBatch()
   ok('an HTTP 200 receipt without draft keeps the pending ticket')
 }
 
+const editorSource = fs.readFileSync(path.join(d1Dir, 'views', 'WeeklyPlanEditorView.vue'), 'utf8')
 assert.match(source, /未选择重点区域/)
 assert.match(source, /建议材料/)
-assert.match(source, /前往重点区域/)
+assert.match(editorSource, /前往重点区域/)
 assert.match(compiled, /materialsFocusReady/)
-ok('panel explains suggested materials when no focus and keeps the optional focus-area action')
+ok('materials form explains suggested materials when no focus and keeps the optional focus-area action')
 
+assert.equal(source.includes('v-html'), false)
+assert.equal(source.includes('JSON.stringify'), false)
+assert.equal(source.includes('选择周游戏'), false)
+assert.match(compiled, /startGames/)
+assert.match(compiled, /startColumns/)
+assert.match(compiled, /startMaterials/)
+ok('panel exposes per-form AI entry points without a standalone weekly-game tab')
 assert.equal(source.includes('v-html'), false)
 assert.equal(source.includes('JSON.stringify'), false)
 ok('panel source interpolates teacher text without v-html or JSON dump')

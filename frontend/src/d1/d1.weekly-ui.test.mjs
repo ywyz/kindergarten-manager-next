@@ -57,19 +57,28 @@ assert.match(editor.script, /refreshSources/)
 assert.match(editor.script, /confirmationPreview/)
 assert.match(editor.script, /retryOriginalOperation/)
 assert.match(editor.script, /openExport/)
+assert.match(editor.script, /WeeklyCurrentExportDialog/)
 assert.match(editor.script, /WeeklyExportDialog/)
 assert.match(editor.script, /WeeklyHistoryPanel/)
-assert.equal(editor.script.includes('startCurrentExport'), false)
+assert.equal(editor.script.includes('openConfirmation'), false)
+assert.equal(editor.script.includes('ackMissing'), false)
+assert.equal(editor.script.includes('ackStale'), false)
 assert.match(editor.script, /openHistory/)
 assert.match(editor.script, /historyOpen/)
 assert.equal(editor.script.includes('createWeeklyExportApi'), false)
-assert.match(editor.template, /历史确认/)
+assert.match(editor.template, /查看共享周计划/)
+assert.match(editor.template, /本地确认历史|openHistoryFromShared/)
 assert.match(editor.source, /weekly-reissue-source|beginReissue/)
 assert.match(editor.source, /<el-form label-width="90px" @submit\.prevent>/)
 assert.match(editor.template, /保存/)
 assert.match(editor.template, /刷新来源预览/)
 assert.match(editor.template, /导出/)
-ok('editor compiles with confirm/export actions, save/refresh auxiliaries and history reissue entry')
+assert.match(editor.source, /dailyCellValue/)
+assert.match(editor.source, /dailyCellOverridden/)
+assert.match(editor.source, /AI 补充游戏/)
+assert.match(editor.source, /AI 生成所选栏目/)
+assert.match(editor.source, /AI 生成材料/)
+ok('editor compiles with save/back/export/shared actions, daily-follow cells and inline AI entry points')
 
 const history = compileView('WeeklyHistoryPanel.vue')
 assert.match(history.script, /listConfirmations/)
@@ -101,15 +110,37 @@ assert.match(exportDialog.source, /@change="autoPreviewRange"/)
 assert.equal((exportDialog.source.match(/@change="autoPreviewRange"/g) || []).length, 2)
 ok('export dialog compiles with one displayed missing summary, derived ack and automatic range preview')
 
-for (const [name, compiled] of [['plans', plans], ['editor', editor], ['history', history], ['export', exportDialog]]) {
+const currentExport = compileView('WeeklyCurrentExportDialog.vue')
+assert.match(currentExport.script, /saveCurrent/)
+assert.match(currentExport.script, /confirmationPreview/)
+assert.match(currentExport.script, /controller\.confirm/)
+assert.match(currentExport.script, /api\.preview/)
+assert.match(currentExport.script, /api\.create/)
+assert.match(currentExport.script, /save_weekly_export/)
+assert.match(currentExport.script, /queryOperation/)
+assert.match(currentExport.script, /queryOriginal/)
+assert.match(currentExport.template, /保存并生成/)
+assert.match(currentExport.template, /关闭/)
+assert.equal((currentExport.source.match(/@click="close"/g) || []).length, 1)
+assert.equal((currentExport.source.match(/@click="generate"/g) || []).length, 1)
+assert.equal(currentExport.template.includes('重新预览'), false)
+assert.equal(currentExport.template.includes('我确认'), false)
+ok('current export dialog only offers close and save-and-generate at the footer and keeps explicit receipt queries')
+
+const plansSource = plans.source
+assert.match(plansSource, /previewGames|previewGameSlots/)
+assert.match(plansSource, /自动读取本周本人有效日计划/)
+assert.match(plansSource, /无候选，可手工填写/)
+
+for (const [name, compiled] of [['plans', plans], ['editor', editor], ['history', history], ['export', exportDialog], ['current-export', currentExport]]) {
   assert.ok(compiled.template.includes('_createElementVNode'), `${name}: render output`)
 }
 assert.equal(plans.source.includes('JSON.stringify'), false)
 assert.equal(editor.source.includes('JSON.stringify'), false)
-assert.equal(editor.source.includes('材料候选'), false)
-ok('views render real controls without JSON dumps or material/AI entry points')
+assert.match(editor.source, /材料候选/)
+assert.match(editor.source, /AI 生成材料/)
+ok('views render real controls without JSON dumps while materials and per-form AI entries stay inline')
 
-console.log(`weekly-ui: ${passed} checks passed`)
 
 import vm from 'node:vm'
 import ts from 'typescript'
@@ -229,6 +260,14 @@ FakeController.prototype.resetForContext = function () {}
   state.updateColumn('home_cooperation', '真实合作')
   assert.equal(FakeController.last.content.weekly_columns.key_week_focus, '真实重点')
   assert.equal(FakeController.last.content.weekly_columns.home_cooperation, '真实合作')
+  const followed = { date: '2026-11-02', day_state: 'teaching', source_state: 'saved', source: null, override: { morning_talk_topic: null, group_activity_theme: null }, effective: { morning_talk_topic: '日计划晨谈', group_activity_theme: '日计划活动' } }
+  assert.equal(state.dailyCellValue(followed, 'morning_talk_topic'), '日计划晨谈')
+  assert.equal(state.dailyCellStateLabel(followed, 'morning_talk_topic'), '跟随日计划')
+  const cleared = { ...followed, override: { morning_talk_topic: '', group_activity_theme: '教师覆盖' } }
+  assert.equal(state.dailyCellValue(cleared, 'morning_talk_topic'), '')
+  assert.equal(state.dailyCellStateLabel(cleared, 'morning_talk_topic'), '已明确清空')
+  assert.equal(state.dailyCellValue(cleared, 'group_activity_theme'), '教师覆盖')
+  assert.equal(state.dailyCellStateLabel(cleared, 'group_activity_theme'), '已明确覆盖')
   assert.match(template, /updateColumn/)
   FakeController.last.unknown = true
   FakeController.last.emit()
@@ -431,11 +470,10 @@ FakeController.prototype.resetForContext = function () {}
     await new Promise((resolve) => setTimeout(resolve, 0))
     state.openExport()
     assert.equal(state.exportOpen.value, true)
-    assert.equal(state.exportConfirmation.value.id, 'c1')
-    assert.equal(state.exportConfirmation.value.version, 2)
+    assert.equal(state.exportConfirmation.value, null)
     assert.equal(previewCalls, 0)
     assert.equal(confirmCalls, 0)
-    ok('editor Export opens the existing confirmed version without confirmation preview, confirm or new write')
+    ok('editor Export opens the current-draft save-and-generate path without an implicit confirmation')
   } finally {
     FakeController.prototype.confirmationPreview = originalPreview
     FakeController.prototype.confirm = originalConfirm
@@ -1898,3 +1936,112 @@ for (const [code, message, noticePattern] of [
   assert.equal(state.selected.value.confirmation.id, 'h4')
   ok('history panel clears stale selection while loading and ignores wrong or late confirmations')
 }
+
+{
+  const previewCalls = []
+  const createCalls = []
+  const hostCalls = []
+  let dirty = true
+  let saveCalls = 0
+  const confirmCalls = []
+  const target = {
+    schema_version: 1,
+    weekly_plan_id: 'p1',
+    profile_id: 'me',
+    class_id: 'class1',
+    term_id: 't1',
+    draft_id: 'd1',
+    draft_version: 1,
+    content_hash: 'h',
+    header: { school_name: '园', class_name: '一班', grade: 'middle', header_teacher_names: ['甲'], caregiver_name: '乙' },
+    creation_context: { week_anchor_date: '2026-11-02', week_number_snapshot: 1, term_start: '2026-09-01', term_end: '2027-01-31', calendar_revision_id: 'c' },
+    content: contentFixture(),
+    date_range: { start: '2026-11-02', end: '2026-11-08' },
+    columns: [],
+    facts: { missing: [{ code: 'empty_theme', field_path: 'theme' }], stale_sources: [], warnings: [] },
+  }
+  const confirmationPreview = { target, target_hash: 'target-hash', preview_token: 'preview-token', expires_at: 'later' }
+  const controller = {
+    identity: () => 'p1:1',
+    settle: async () => {},
+    isDirty: () => dirty,
+    saveCurrent: async () => { saveCalls += 1; dirty = false; return 'saved' },
+    hasUnknown: () => false,
+    confirmationPreview: async () => confirmationPreview,
+    confirm: async (previewArg, options) => {
+      confirmCalls.push({ target: previewArg.target_hash, options })
+      return {
+        result: 'saved',
+        write: { confirmation: { id: 'c1', version: 1, draft_version: 1, snapshot_hash: 'target-hash' } },
+      }
+    },
+    snapshot: () => ({ identity: 'p1:1', loaded_draft_version: 1, dirty, input_revision: 1, sequence: 1, busy: false, blocking: false, status: 'idle' }),
+    savedDraftRef: () => ({ id: 'd1', version: 1, content_hash: 'h' }),
+    getLastFailure: () => null,
+    queryOperation: async () => null,
+  }
+  const exportPreview = {
+    context_token: 'ctx', manifest_hash: 'm', expires_at: 'later',
+    selection: [{ weekly_plan_id: 'p1', confirmation_id: 'c1', confirmation_version: 1, draft_id: 'd1', draft_version: 1, content_hash: 'h', confirmation_hash: 'target-hash', week_anchor_date: '2026-11-02', week_number: 1, date_range: { start: '2026-11-02', end: '2026-11-08' } }],
+    items: [], missing: [], warnings: [], warnings_as_of: 'now', suggested_filename: '周计划.docx',
+  }
+  let createFailsOnce = true
+  const api = {
+    preview: async (input) => { previewCalls.push(clone(input)); return clone(exportPreview) },
+    create: async (input) => {
+      createCalls.push(clone(input))
+      if (createFailsOnce) { createFailsOnce = false; throw new Error('export-lost') }
+      return { operation_id: 'o', request_id: input.request_id, generation_status: 'generated', snapshot_id: 's', manifest_hash: 'm', export_id: 'e', expires_at: 'later' }
+    },
+    getOperation: async () => ({ operation_id: 'o', request_id: 'r', generation_status: 'generated', snapshot_id: 's', manifest_hash: 'm', export_id: 'e', expires_at: 'later' }),
+  }
+  const host = { save_weekly_export: async (input) => { hostCalls.push(clone(input)); return { status: 'saved', filename: input.filename } }, get_weekly_export_result: async () => ({ status: 'saved' }) }
+  const stub = {
+    createWeeklyExportApi: () => api,
+    newWeeklyRequestId: () => idWeekly.newWeeklyRequestId(),
+    projectWeeklyError: (error) => ({ message: String(error), retry: 'none' }),
+    weeklyFrozenSourceDates: () => ({}),
+    fetchWeeklySourceDate: async () => '2026-11-02',
+    formatFrozenWeeklyTarget: () => [],
+    formatWeeklyFact: () => '',
+  }
+  const harness = new SfcHarness({ '../weekly': stub })
+  const { state } = harness.setup('WeeklyCurrentExportDialog.vue', {
+    open: true, planId: 'p1', controller, detail: detailFixture(), host, disabled: false,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(saveCalls, 0, 'opening the dialog must not save')
+  assert.equal(state.preview.value, null, 'a dirty draft has no unseen confirmation preview')
+  assert.equal(state.needsSave.value, true)
+  state.close()
+  assert.equal(saveCalls, 0, 'closing a read-only preview must not write')
+  assert.equal(confirmCalls.length, 0)
+  await state.generate()
+  assert.equal(saveCalls, 1, 'the explicit button saves the dirty draft')
+  assert.equal(confirmCalls.length, 1, 'the same explicit click prepares and confirms the exact saved target')
+  assert.equal(confirmCalls[0].options.ack_missing, true)
+  assert.equal(confirmCalls[0].options.ack_stale, false)
+  assert.deepEqual(previewCalls[0], { mode: 'single', weekly_plan_id: 'p1', confirmation_id: 'c1' })
+  assert.equal(createCalls.length, 1)
+  assert.equal(hostCalls.length, 0)
+  assert.ok(state.currentConfirmation.value)
+  await state.generate()
+  assert.equal(confirmCalls.length, 1, 'an immutable confirmation is reused, not appended twice')
+  assert.equal(createCalls.length, 2)
+  assert.equal(hostCalls.length, 1)
+  assert.equal(state.done.value, true)
+  await state.generate()
+  assert.equal(confirmCalls.length, 1)
+  assert.equal(createCalls.length, 2)
+  assert.equal(hostCalls.length, 1)
+  const cleanHarness = new SfcHarness({ '../weekly': stub })
+  const { state: cleanState } = cleanHarness.setup('WeeklyCurrentExportDialog.vue', {
+    open: true, planId: 'p1', controller, detail: detailFixture(), host, disabled: false,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(saveCalls, 1, 'a clean open reads the confirmation preview without saving')
+  assert.equal(cleanState.preview.value.target_hash, 'target-hash')
+  ok('current export opens read-only, the explicit click saves+prepares+confirms, and success never duplicates')
+}
+
+console.log(`weekly-ui: ${passed} checks passed`)

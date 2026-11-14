@@ -1425,7 +1425,7 @@ def _source_state(
 
 DEFAULT_REVIEW_WARNING = {
     "code": "ai_supplemented_details",
-    "message": "候选中的对话、动作衔接等细节可能由 AI 补写，请结合观察核对；提示只在审核区显示，不进入正文。",
+    "message": "候选中的匿名对话、动作衔接等情境细节可能由 AI 结合照片和已填资料补写，请结合观察证据核对；提示只在审核区显示，不进入正文。",
 }
 REVIEW_METADATA_VERSION = 1
 REVIEW_METADATA_PREFIX = "cr:"

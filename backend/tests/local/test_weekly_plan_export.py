@@ -881,6 +881,179 @@ class WeeklyExportTests(LocalTestCase):
         )
         self.assertEqual(retired["generation_status"], "transfer_expired")
         self.assertNotIn("export_id", retired)
+    def test_daily_follow_materializes_confirmation_and_both_exports_stay_valid(self) -> None:
+        daily_id = self._create_daily()["id"]
+        preview = weekly_plan_service.create_preview(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.manager.launch_id,
+            session_scope_hash=self.manager.session_scope_hash,
+            term_id=self.term.id,
+            week_anchor_date=ANCHOR,
+        )
+        result, created = weekly_plan_service.create_or_open(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            launch_id=self.manager.launch_id,
+            session_scope_hash=self.manager.session_scope_hash,
+            request_id=str(uuid.uuid4()),
+            term_id=self.term.id,
+            week_anchor_date=ANCHOR,
+            expected_config_version=self.settings.config_version,
+            context_token=preview["create_token"],
+        )
+        self.assertTrue(created)
+        plan_id = result["weekly_plan_id"]
+        self.manager.close()
+        server = self.start_server(self.runtime)
+        client = server.client()
+
+        status, old_target = client.post(
+            f"/api/weekly-plans/{plan_id}/confirmation-preview",
+            {"expected_draft_version": 1},
+        )
+        self.assertEqual(status, 200, old_target)
+        request_id = str(uuid.uuid4())
+        status, old_confirmed = client.post(
+            f"/api/weekly-plans/{plan_id}/confirm",
+            {
+                "request_id": request_id,
+                "expected_draft_version": 1,
+                "context_token": old_target["preview_token"],
+                "ack_missing": True,
+                "ack_stale": True,
+                "note": None,
+                "source_confirmation_id": None,
+            },
+        )
+        self.assertEqual(status, 200, old_confirmed)
+        old_confirmation_id = old_confirmed["confirmation"]["id"]
+
+        current = daily_plan_service.get_plan(self.session, plan_id=daily_id)
+        adopted = dict(current["content"]["adopted_content"])
+        adopted["morning_talk"] = {"topic": "最新晨谈", "questions": "最新问题"}
+        daily_plan_service.save(
+            self.session,
+            plan_id=daily_id,
+            expected_content_version=current["content"]["version"],
+            adopted_content=adopted,
+        )
+        self.session.expire_all()
+
+        status, detail = client.get(f"/api/weekly-plans/{plan_id}")
+        self.assertEqual(status, 200, detail)
+        self.assertTrue(detail["daily_follow"]["changed"])
+        self.assertEqual(detail["draft"]["version"], 1)
+        self.assertNotEqual(
+            detail["daily_follow"]["content_hash"],
+            detail["draft"]["content_hash"],
+        )
+        stored_row = next(
+            item
+            for item in detail["draft"]["content"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        followed_row = next(
+            item
+            for item in detail["daily_follow"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(stored_row["effective"]["morning_talk_topic"], "秋天的树叶")
+        self.assertEqual(followed_row["effective"]["morning_talk_topic"], "最新晨谈")
+
+        status, new_target = client.post(
+            f"/api/weekly-plans/{plan_id}/confirmation-preview",
+            {"expected_draft_version": 1},
+        )
+        self.assertEqual(status, 200, new_target)
+        self.assertEqual(new_target["target"]["draft_version"], 2)
+        target_row = next(
+            item
+            for item in new_target["target"]["content"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(target_row["effective"]["morning_talk_topic"], "最新晨谈")
+
+        status, new_confirmed = client.post(
+            f"/api/weekly-plans/{plan_id}/confirm",
+            {
+                "request_id": str(uuid.uuid4()),
+                "expected_draft_version": 1,
+                "context_token": new_target["preview_token"],
+                "ack_missing": True,
+                "ack_stale": True,
+                "note": None,
+                "source_confirmation_id": None,
+            },
+        )
+        self.assertEqual(status, 200, new_confirmed)
+        self.assertEqual(new_confirmed["draft"]["version"], 2)
+        self.assertEqual(new_confirmed["confirmation"]["draft_version"], 2)
+        new_confirmation_id = new_confirmed["confirmation"]["id"]
+
+        def export_text(confirmation_id: str, filename: str) -> str:
+            status, export_preview = client.post(
+                "/api/weekly-exports/preview",
+                {
+                    "mode": "single",
+                    "weekly_plan_id": plan_id,
+                    "confirmation_id": confirmation_id,
+                },
+            )
+            self.assertEqual(status, 200, export_preview)
+            status, created = client.post(
+                "/api/weekly-exports",
+                {
+                    "request_id": str(uuid.uuid4()),
+                    "context_token": export_preview["context_token"],
+                    "ack_missing": True,
+                },
+            )
+            self.assertEqual(status, 201, created)
+            status, _attempt = client.post(
+                f"/api/weekly-exports/{created['export_id']}/attempts",
+                {"filename": filename},
+            )
+            self.assertEqual(status, 200)
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", server.port, timeout=30
+            )
+            try:
+                connection.request(
+                    "GET",
+                    f"/api/weekly-exports/{created['export_id']}/content",
+                    headers={"X-App-Session": server.token},
+                )
+                response = connection.getresponse()
+                data = response.read()
+            finally:
+                connection.close()
+            self.assertEqual(response.status, 200)
+            return _xml_text(_weekly_table(data)[0])
+
+        latest_text = export_text(new_confirmation_id, "最新周计划.docx")
+        self.assertIn("最新晨谈", latest_text)
+        old_text = export_text(old_confirmation_id, "旧周计划.docx")
+        self.assertIn("秋天的树叶", old_text)
+        self.assertNotIn("最新晨谈", old_text)
+
+        old_history = weekly_plan_service.get_confirmation(
+            self.session,
+            profile_id=self.profile.id,
+            plan_id=plan_id,
+            confirmation_id=old_confirmation_id,
+        )
+        old_snapshot_row = next(
+            item
+            for item in old_history["snapshot"]["content"]["deterministic"]
+            if item["date"] == PLAN_DATE.isoformat()
+        )
+        self.assertEqual(
+            old_snapshot_row["effective"]["morning_talk_topic"], "秋天的树叶"
+        )
+
     def test_http_contract_content_headers_and_attempt(self) -> None:
         plan_id, confirmation_id, _ = self._make_confirmation()
         self.manager.close()

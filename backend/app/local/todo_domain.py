@@ -170,6 +170,17 @@ def batch_fingerprint(action: str, items: list[dict[str, Any]]) -> str:
     )
 
 
+def unarchive_fingerprint(todo_id: str, expected_version: int) -> str:
+    return todo_fingerprint(
+        "update",
+        {
+            "todo_id": todo_id,
+            "expected_version": expected_version,
+            "unarchive": True,
+        },
+    )
+
+
 def todo_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "todo_id": str(row.get("todo_id") or row.get("id")),
@@ -220,4 +231,5 @@ __all__ = [
     "todo_fingerprint",
     "todo_order_key",
     "todo_to_dict",
+    "unarchive_fingerprint",
 ]

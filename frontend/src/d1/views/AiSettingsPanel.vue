@@ -171,6 +171,35 @@ const PROMPT_GROUPS: Array<{ key: string; label: string; matches: (type: string)
 function promptGroupKey(taskType: string): string {
   return PROMPT_GROUPS.find((group) => group.matches(taskType))?.key ?? 'other'
 }
+const PROMPT_GROUP_HINTS: Record<string, string> = {
+  daily: '教案拆分、过程适龄调整、其他活动与活动反思。',
+  weekly: '周计划各栏目的文字、游戏与材料建议。',
+  listening: '一对一倾听的记录草稿与领域评价。',
+  observation: '游戏观察的目标、过程、五领域评价与支持策略。',
+  curriculum: '课程审议的原稿拆分、审议建议与局部修改。',
+  config: '从教师文字中提取班级游戏配置。',
+  directional: '只改选中文字，保留未选内容的含义、顺序与事实。',
+}
+const PROMPT_FIELD_LABELS: Record<string, string> = {
+  observation_goal: '观察目标',
+  observation_process: '观察过程',
+  analysis_evaluation: '分析评价',
+  support_strategy: '支持策略',
+  target: '改写目标',
+  text: '文字内容',
+  instructions: '栏目指导',
+  uncertainties: '不确定事项',
+  overall_evaluation: '整体评价',
+  items: '逐条评价',
+  fidelity: '忠实原文',
+  listening_evidence: '倾听证据',
+  weekly_source: '周计划来源',
+}
+function promptFieldLabel(field: { key: string; label?: string | null }): string {
+  const label = field.label ?? ''
+  if (label !== '' && label !== field.key) return label
+  return PROMPT_FIELD_LABELS[field.key] ?? displayFieldLabel(field)
+}
 const promptGroups = computed(() => {
   const groups = new Map<string, { key: string; label: string; items: Prompt[] }>()
   for (const prompt of prompts.value) {
@@ -780,7 +809,7 @@ onBeforeUnmount(() => {
   emit('draft-active', false)
   delete (window as unknown as { __d1AiSettings?: object }).__d1AiSettings
 })
-const providerOpen = ref(false)
+const providerOpen = ref(true)
 const promptsOpen = ref(false)
 function onPartToggle(kind: 'provider' | 'prompts', event: Event): void {
   const target = event.target as HTMLDetailsElement | null
@@ -844,7 +873,7 @@ defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
   <el-card class="section" shadow="never" data-d1="ai-settings">
     <template #header>AI 配置（地址 / 模型 / 密钥）</template>
     <p class="muted">
-      保存与读取只做本机格式与加密校验，不会试调用供应商；密钥仅保存期间留存，成功后清空输入框。
+      保存与读取只做本机校验，不会试调用供应商；密钥只在本机加密保存，不会上传到在线协作或提示词发布。
     </p>
     <el-alert v-if="config" type="info" :closable="false" class="section" :title="configStatusText" />
     <div class="fields">
@@ -933,6 +962,10 @@ defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
 
   <el-card class="section" shadow="never" data-d1="ai-prompts">
     <template #header>已登记任务指导（按模块分组，默认文字 / 个人修改）</template>
+    <p class="muted">
+      按日计划、周计划、游戏观察、一对一倾听、课程审议、班级游戏配置和定向修改分组。
+      修改只写入本机个人档案，不上传密钥或本机档案。
+    </p>
     <p class="muted">指导只在任务开始时取当时有效版本；接受默认只覆盖所选字段并绑定实际查看的修订。</p>
         <div
       v-for="group in promptGroups"
@@ -941,6 +974,7 @@ defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
       :data-d1="`prompt-group-${group.key}`"
     >
       <h4 class="prompt-group-title">{{ group.label }}</h4>
+      <p class="muted prompt-group-hint">{{ PROMPT_GROUP_HINTS[group.key] }}</p>
       <div
         v-for="prompt in group.items"
         :key="prompt.task_type"
@@ -960,7 +994,7 @@ defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
           已拒绝默认修订 r{{ prompt.rejected_default_revision }}（个人文字未改动）
         </p>
         <div v-for="field in prompt.fields" :key="field.key" class="field">
-          <label>{{ displayFieldLabel(field) }}</label>
+          <label>{{ promptFieldLabel(field) }}</label>
           <el-input
             type="textarea"
             :rows="2"
@@ -995,7 +1029,7 @@ defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
               :disabled="frozen"
               @update:model-value="(checked: boolean) => toggleAcceptField(prompt.task_type, field.key, checked)"
             >
-              {{ displayFieldLabel(field) }}
+              {{ promptFieldLabel(field) }}
             </el-checkbox>
             <pre class="block">{{ defaults[prompt.task_type]?.guidance[field.key] || '（空）' }}</pre>
           </div>

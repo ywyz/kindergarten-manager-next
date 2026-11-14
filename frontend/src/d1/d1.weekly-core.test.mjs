@@ -179,12 +179,13 @@ function makeApi() {
 function manualGame(clientKey, name) {
   return { source_kind: 'manual', manual_item_id: null, client_key: clientKey, daily_plan_id: null, content_id: null, content_version: null, content_hash: null, section: null, group_id: null, game_id: null, name, shared_objectives: null, guidance_points: null, focus_guidance: null }
 }
-function makeController(version = 1, content = makeContent()) {
+function makeController(version = 1, content = makeContent(), viewContent = undefined) {
   const api = makeApi()
   let request = 0
   const controller = new editor.WeeklyEditorController({
     detail: makeDetail(version, content), api, editorEpoch: 1,
     requestId: () => `request-${++request}`,
+    viewContent,
   })
   return { api, controller }
 }
@@ -218,6 +219,34 @@ function makeController(version = 1, content = makeContent()) {
   assert.equal('focus_area' in patch, false)
   assert.equal('deterministic_overrides' in patch, false)
   ok('unchanged historical selectors are not re-sent')
+}
+
+{
+  const stored = makeContent()
+  stored.deterministic[0] = {
+    ...stored.deterministic[0],
+    source_state: 'saved',
+    source: {
+      daily_plan_id: 'dp1', content_id: 'old-content', content_version: 1,
+      content_hash: 'h1', morning_talk_topic: '旧晨谈', group_activity_theme: '旧活动',
+    },
+    effective: { morning_talk_topic: '旧晨谈', group_activity_theme: '旧活动' },
+  }
+  const projected = weekly.cloneWeekly(stored)
+  projected.deterministic[0].source = {
+    daily_plan_id: 'dp1', content_id: 'new-content', content_version: 2,
+    content_hash: 'h2', morning_talk_topic: '最新晨谈', group_activity_theme: '最新活动',
+  }
+  projected.deterministic[0].effective = {
+    morning_talk_topic: '最新晨谈', group_activity_theme: '最新活动',
+  }
+  const { controller } = makeController(1, stored, projected)
+  assert.equal(controller.getContent().deterministic[0].effective.morning_talk_topic, '最新晨谈')
+  assert.equal(controller.isDirty(), false)
+  controller.updateContent((draft) => { draft.theme = '只改主题' })
+  assert.equal(controller.isDirty(), true)
+  jsonEqual(editor.weeklyPatchFrom(stored, controller.getContent()), { theme: '只改主题' })
+  ok('read-only daily projection drives the form without pretending the stored draft hash changed')
 }
 
 {

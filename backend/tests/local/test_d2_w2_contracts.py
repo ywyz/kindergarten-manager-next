@@ -355,36 +355,96 @@ class BundleSeedTests(LocalTestCase):
             runtime.db_path,
             "SELECT task_type, contract_version, default_revision, bundle_hash "
             "FROM local_prompt_bundles WHERE task_type LIKE 'daily_%' "
-            "ORDER BY task_type",
+            "ORDER BY task_type, contract_version, default_revision",
         )
-        self.assertEqual(len(rows), 7)
-        observation_rows = query_rows(
-            runtime.db_path,
-            "SELECT task_type, contract_version, default_revision, bundle_hash "
-            "FROM local_prompt_bundles WHERE task_type LIKE 'game_observation_%' "
-            "ORDER BY task_type",
-        )
-        self.assertEqual(len(observation_rows), 2)
+        # The seven migration/runtime baseline identities stay immutable.
+        baseline_keys = {
+            ("daily_lesson_split", 1, 1),
+            ("daily_process_adapt", 1, 1),
+            ("daily_other_activities", 1, 1),
+            ("daily_lesson_split", 1, 2),
+            ("daily_process_adapt", 1, 2),
+            ("daily_process_adapt", 1, 3),
+            ("daily_other_activities", 1, 2),
+        }
+        # Three later daily identities are additive: reflection r1/r2 and the
+        # other-activities r3 wording revision. No baseline row is replaced.
+        new_daily_keys = {
+            ("daily_other_activities", 1, 3),
+            ("daily_reflection_generate", 1, 1),
+            ("daily_reflection_generate", 1, 2),
+        }
+        self.assertEqual(len(rows), 10)
+        daily_by_key = {
+            (row["task_type"], row["contract_version"], row["default_revision"]): row[
+                "bundle_hash"
+            ]
+            for row in rows
+        }
+        self.assertEqual(set(daily_by_key), baseline_keys | new_daily_keys)
         manifest = {
             (b["task_type"], b["contract_version"], b["default_revision"]): b[
                 "bundle_hash"
             ]
             for b in PROMPT_BUNDLE_MANIFEST
         }
-        for row in rows:
-            self.assertEqual(
-                row["bundle_hash"],
-                manifest[
-                    (row["task_type"], row["contract_version"], row["default_revision"])
-                ],
-            )
-        r1 = [r for r in rows if r["default_revision"] == 1]
-        r2 = [r for r in rows if r["default_revision"] == 2]
-        r3 = [r for r in rows if r["default_revision"] == 3]
-        self.assertEqual(len(r1), 3)
-        self.assertEqual(len(r2), 3)
-        self.assertEqual(len(r3), 1)
-        self.assertEqual(r3[0]["task_type"], "daily_process_adapt")
+        for key in baseline_keys | new_daily_keys:
+            self.assertEqual(daily_by_key[key], manifest[key])
+
+        latest: dict[str, tuple[int, int]] = {}
+        for task_type, contract_version, default_revision in daily_by_key:
+            current = latest.get(task_type)
+            if current is None or (contract_version, default_revision) > current:
+                latest[task_type] = (contract_version, default_revision)
+        self.assertEqual(
+            latest,
+            {
+                "daily_lesson_split": (1, 2),
+                "daily_process_adapt": (1, 3),
+                "daily_other_activities": (1, 3),
+                "daily_reflection_generate": (1, 2),
+            },
+        )
+
+        observation_rows = query_rows(
+            runtime.db_path,
+            "SELECT task_type, contract_version, default_revision, bundle_hash "
+            "FROM local_prompt_bundles WHERE task_type LIKE 'game_observation_%' "
+            "ORDER BY task_type, contract_version, default_revision",
+        )
+        observation_baseline_keys = {
+            ("game_observation_generate", 1, 1),
+            ("game_observation_rewrite", 1, 1),
+        }
+        observation_new_keys = {
+            ("game_observation_generate", 1, 2),
+            ("game_observation_rewrite", 1, 2),
+        }
+        self.assertEqual(len(observation_rows), 4)
+        observation_by_key = {
+            (row["task_type"], row["contract_version"], row["default_revision"]): row[
+                "bundle_hash"
+            ]
+            for row in observation_rows
+        }
+        self.assertEqual(
+            set(observation_by_key),
+            observation_baseline_keys | observation_new_keys,
+        )
+        for key in observation_baseline_keys | observation_new_keys:
+            self.assertEqual(observation_by_key[key], manifest[key])
+        observation_latest = {}
+        for task_type, contract_version, default_revision in observation_by_key:
+            current = observation_latest.get(task_type)
+            if current is None or (contract_version, default_revision) > current:
+                observation_latest[task_type] = (contract_version, default_revision)
+        self.assertEqual(
+            observation_latest,
+            {
+                "game_observation_generate": (1, 2),
+                "game_observation_rewrite": (1, 2),
+            },
+        )
 
     def initialize_profile(self, runtime) -> None:
         from app.local import profile_service

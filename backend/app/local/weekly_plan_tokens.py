@@ -104,6 +104,8 @@ def issue_token(
     source_context_hash: str | None = None,
     facts_hash: str | None = None,
     target_hash: str | None = None,
+    draft_id: str | None = None,
+    draft_version: int | None = None,
     ttl: int = PREVIEW_TTL_SECONDS,
 ) -> str:
     if purpose not in PURPOSES:
@@ -120,6 +122,8 @@ def issue_token(
         "source_context_hash": source_context_hash,
         "facts_hash": facts_hash,
         "target_hash": target_hash,
+        "draft_id": draft_id,
+        "draft_version": draft_version,
         "iat": now,
         "exp": now + int(ttl),
         "nonce": secrets.token_hex(8),

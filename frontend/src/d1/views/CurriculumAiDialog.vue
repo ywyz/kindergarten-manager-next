@@ -18,6 +18,7 @@ import {
   curriculumErrorMessage,
   curriculumFieldLabel,
   getCurriculumAiTask,
+  getCurriculumAiTaskProgress,
   isCurriculumAiIndeterminateError,
   newCurriculumRecordId,
   validateCurriculumSelection,
@@ -35,6 +36,7 @@ import {
   type CurriculumContent,
   type CurriculumDocument,
 } from '../curriculum'
+import type { AiTaskProgress } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -80,9 +82,60 @@ const pendingSubmit = ref<{
 } | null>(null)
 const lastTaskId = ref('')
 const lastKind = ref<CurriculumAiKind>('split')
+/** Display-only progress for the exact accepted execution/attempt. */
+const progress = ref<AiTaskProgress | null>(null)
+const progressReceivedAt = ref(0)
+const progressNow = ref(Date.now())
+let progressSeq = 0
+let progressFetching = false
+let progressTimer: ReturnType<typeof setInterval> | null = null
 let operationSeq = 0
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let unmounted = false
+
+const PROGRESS_LABELS: Record<string, string> = {
+  waiting: '等待服务响应',
+  thinking: '正在思考',
+  generating: '正在生成结果',
+  validating: '正在校验结果',
+  completed: '已收到结果',
+  failed: '已失败',
+  unknown: '结果不明',
+  paused: '已暂停',
+  cancelled: '已取消',
+  retry_wait: '等待安全重试',
+  unavailable: '暂无进度',
+}
+
+const progressVisible = computed(
+  () =>
+    !!task.value &&
+    !!progress.value &&
+    (curriculumAiTaskIsLive(task.value.status) ||
+      progress.value.phase === 'completed' ||
+      progress.value.phase === 'validating'),
+)
+
+const progressPhase = computed(() =>
+  progress.value
+    ? PROGRESS_LABELS[progress.value.phase] ?? '处理中'
+    : '',
+)
+
+const progressElapsed = computed(() => {
+  const value = progress.value
+  if (!value) return 0
+  const terminal =
+    value.phase === 'completed' ||
+    value.phase === 'failed' ||
+    value.phase === 'unknown' ||
+    value.phase === 'cancelled' ||
+    value.phase === 'paused'
+  const local = terminal
+    ? 0
+    : Math.max(0, progressNow.value - progressReceivedAt.value)
+  return Math.max(0, Math.floor((value.elapsed_ms + local) / 1000))
+})
 
 function snapshotNow(): CurriculumAiSnapshot {
   return captureCurriculumAiSnapshot({
@@ -202,9 +255,72 @@ function stopPolling(): void {
   }
 }
 
+function stopProgressTimer(): void {
+  if (progressTimer !== null) {
+    clearInterval(progressTimer)
+    progressTimer = null
+  }
+}
+
+function clearProgress(): void {
+  progressSeq += 1
+  progress.value = null
+  progressReceivedAt.value = 0
+  progressFetching = false
+}
+
+function startProgressTimer(): void {
+  stopProgressTimer()
+  progressTimer = setInterval(() => {
+    progressNow.value = Date.now()
+  }, 1000)
+}
+
+async function fetchProgress(): Promise<void> {
+  const current = task.value
+  const execution = current?.execution
+  if (!current || !execution?.id || progressFetching) return
+  const seq = ++progressSeq
+  const taskId = current.id
+  const executionId = execution.id
+  const attemptNo = execution.attempt_no
+  progressFetching = true
+  try {
+    const data = await getCurriculumAiTaskProgress(props.recordId, taskId)
+    // A late reply from an older task/execution/attempt is ignored; it never
+    // replaces the current execution's displayed text.
+    const latest = task.value
+    if (
+      seq !== progressSeq ||
+      unmounted ||
+      !latest ||
+      latest.id !== taskId ||
+      latest.execution?.id !== executionId ||
+      (attemptNo !== null &&
+        latest.execution?.attempt_no !== null &&
+        latest.execution?.attempt_no !== attemptNo) ||
+      (data.execution_id !== null && data.execution_id !== executionId) ||
+      (attemptNo !== null &&
+        data.attempt_no !== null &&
+        data.attempt_no !== attemptNo)
+    ) {
+      return
+    }
+    progress.value = data
+    progressReceivedAt.value = Date.now()
+    progressNow.value = Date.now()
+  } catch {
+    // A progress read failure never changes task status or fabricates text.
+  } finally {
+    progressFetching = false
+  }
+}
+
 function reset(): void {
   operationSeq += 1
   stopPolling()
+  stopProgressTimer()
+  clearProgress()
   submitting.value = false
   polling.value = false
   stage.value = 'config'
@@ -236,6 +352,8 @@ watch(
     }
     operationSeq += 1
     stopPolling()
+    stopProgressTimer()
+    clearProgress()
     submitting.value = false
     polling.value = false
   },
@@ -312,6 +430,8 @@ async function submitTask(
   candidate.value = null
   stage.value = 'config'
   lastKind.value = kind
+  stopProgressTimer()
+  clearProgress()
   try {
     const result = await createCurriculumAiTask(props.recordId, body)
     if (seq !== operationSeq || !props.open) return
@@ -346,10 +466,31 @@ function handleTask(
   if (curriculumAiTaskIsLive(result.status)) {
     polling.value = true
     infoText.value = `任务 ${result.id.slice(0, 8)}… 已受理，正在生成`
+    if (!progress.value) {
+      progress.value = {
+        available: false,
+        task_id: result.id,
+        execution_id: result.execution?.id ?? null,
+        attempt_id: null,
+        attempt_no: result.execution?.attempt_no ?? null,
+        seq: 0,
+        phase: 'waiting',
+        elapsed_ms: 0,
+        last_data_age_ms: null,
+        reasoning: '',
+        content_chars: 0,
+        truncated: false,
+      }
+      progressReceivedAt.value = Date.now()
+    }
+    startProgressTimer()
+    void fetchProgress()
     schedulePoll(result.id, kind, seq)
     return
   }
   polling.value = false
+  stopProgressTimer()
+  void fetchProgress()
   if (result.status === 'succeeded') {
     applySucceeded(result, kind)
     return
@@ -546,6 +687,7 @@ async function pollTask(
     const next = await getCurriculumAiTask(props.recordId, taskId)
     if (seq !== operationSeq || !props.open) return
     handleTask(next, kind, seq)
+    if (curriculumAiTaskIsLive(next.status)) void fetchProgress()
   } catch {
     if (seq !== operationSeq) return
     polling.value = false
@@ -565,6 +707,8 @@ async function queryTask(): Promise<void> {
 function startOver(): void {
   operationSeq += 1
   stopPolling()
+  stopProgressTimer()
+  clearProgress()
   submitting.value = false
   polling.value = false
   stage.value = 'config'
@@ -674,7 +818,9 @@ function adoptCandidate(mode: CurriculumAiAdoptMode): void {
 onBeforeUnmount(() => {
   unmounted = true
   operationSeq += 1
+  progressSeq += 1
   stopPolling()
+  stopProgressTimer()
   emit('busy', false)
 })
 </script>
@@ -1041,6 +1187,27 @@ onBeforeUnmount(() => {
       {{ statusLine }}
     </p>
     <div
+      v-if="progressVisible"
+      class="progress-block"
+      data-d1="curriculum-ai-progress"
+    >
+      <div class="progress-head">
+        <strong data-d1="curriculum-ai-progress-phase">{{ progressPhase }}</strong>
+        <span class="muted">已等待 {{ progressElapsed }} 秒</span>
+      </div>
+      <p class="muted progress-note">
+        供应商返回的中间内容，最终结果尚未校验；只读，不写入正文。
+      </p>
+      <pre
+        v-if="progress?.reasoning"
+        class="progress-text"
+        data-d1="curriculum-ai-progress-reasoning"
+      >{{ progress.reasoning }}</pre>
+      <p v-else class="muted" data-d1="curriculum-ai-progress-waiting">
+        尚未收到思考文字；无文字不表示失败，请勿重复提交。
+      </p>
+    </div>
+    <div
       v-if="lastTaskId && !polling && !submitting && !pendingSubmit && task && task.status !== 'succeeded' && task.status !== 'failed' && task.status !== 'cancelled'"
       class="actions"
     >
@@ -1088,6 +1255,34 @@ onBeforeUnmount(() => {
 <style scoped>
 .section {
   margin-top: 12px;
+}
+.progress-block {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 4px;
+  background: var(--kgm-bg);
+}
+.progress-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.progress-note {
+  margin: 4px 0;
+}
+.progress-text {
+  margin: 4px 0 0;
+  padding: 8px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--kgm-surface);
+  border: 1px solid var(--kgm-border);
+  border-radius: 4px;
+  font-size: 0.8rem;
 }
 .field {
   display: flex;

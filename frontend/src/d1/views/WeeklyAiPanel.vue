@@ -7,7 +7,7 @@ import { createWeeklyApi, newWeeklyRequestId } from '../weekly'
 import { getSessionEpoch } from '../client'
 import { isIndeterminate } from '../operations'
 import { acceptedProgress, progressPhaseLabel, progressMatchesTask, type AiProgressView } from '../ai-progress'
-import { WEEKLY_AI_COLUMNS, candidateLines, createWeeklyAiApi, groupStatus, groupStatusLabel, eligibilityLabel, taskStatusLabel, certaintyLabel, targetLabel, projectWeeklyAiError, weeklyEditSignature, type WeeklyAiCandidate, type WeeklyAiColumn, type WeeklyAiCreateOut, type WeeklyAiSelection, type WeeklyAiTask, type WeeklyAiAdoptionPreview, type WeeklyAiAdoptionResult } from '../weekly-ai'
+import { candidateLines, createWeeklyAiApi, groupStatus, groupStatusLabel, eligibilityLabel, taskStatusLabel, certaintyLabel, targetLabel, projectWeeklyAiError, weeklyEditSignature, type WeeklyAiCandidate, type WeeklyAiColumn, type WeeklyAiCreateOut, type WeeklyAiSelection, type WeeklyAiTask, type WeeklyAiAdoptionPreview, type WeeklyAiAdoptionResult } from '../weekly-ai'
 import DirectionalRevisionDialog from '../components/DirectionalRevisionDialog.vue'
 import DirectionalRevisionTrigger from '../components/DirectionalRevisionTrigger.vue'
 import {
@@ -21,11 +21,10 @@ import {
   type DirectionalScope,
   type DirectionalSelection,
 } from '../directional-revision'
-const props = withDefaults(defineProps<{ controller: WeeklyEditorController; planId: string; detail: WeeklyDetail | null; focusSelected?: boolean; disabled?: boolean; profileEpoch?: number; sessionEpoch?: number }>(), { disabled: false, focusSelected: false, profileEpoch: 0, sessionEpoch: 0 })
-const emit = defineEmits<{ (e: 'busy', value: boolean): void; (e: 'blocking', value: BlockingDraft | null): void; (e: 'focus-area'): void }>()
+const props = withDefaults(defineProps<{ controller: WeeklyEditorController; planId: string; detail: WeeklyDetail | null; focusSelected?: boolean; selectedColumns?: WeeklyAiColumn[]; disabled?: boolean; profileEpoch?: number; sessionEpoch?: number }>(), { disabled: false, focusSelected: false, selectedColumns: () => [] as WeeklyAiColumn[], profileEpoch: 0, sessionEpoch: 0 })
+const emit = defineEmits<{ (e: 'busy', value: boolean): void; (e: 'blocking', value: BlockingDraft | null): void; (e: 'focus-area'): void; (e: 'update:selectedColumns', value: WeeklyAiColumn[]): void }>()
 const api = createWeeklyAiApi()
 const weeklyApi = createWeeklyApi()
-const selectedFields = ref<WeeklyAiColumn[]>([])
 const tasks = ref<WeeklyAiTask[]>([])
 const candidates = ref<WeeklyAiCandidate[]>([])
 const preservedCandidates = ref<WeeklyAiCandidate[]>([])
@@ -67,7 +66,7 @@ let panelRequestFlight = false
 let refreshGeneration = 0
 function beginAiBusy(): number { const token = ++aiBusyToken; aiBusy.value = true; return token }
 function endAiBusy(token: number): void { if (token === aiBusyToken) aiBusy.value = false }
-onBeforeUnmount(() => { alive = false; aiBusyToken += 1; refreshGeneration += 1; panelRequestFlight = false; directionalOpen.value = false; directionalBusy.value = false; directionalRequest.value = null; releaseAdoptGate(); emit('busy', false); emit('blocking', null) })
+onBeforeUnmount(() => { alive = false; aiBusyToken += 1; refreshGeneration += 1; panelRequestFlight = false; stopTaskPoll(); directionalOpen.value = false; directionalBusy.value = false; directionalRequest.value = null; releaseAdoptGate(); emit('busy', false); emit('blocking', null) })
 const progress = ref<Record<string, AiProgressView>>({})
 const materialsFocusReady = computed(() => props.focusSelected || Boolean(props.controller.getContent().focus_area))
 const focusHint = '未选择重点区域时，AI 只依据当前班级年龄、已保存周主题和已有可靠选择给出“建议材料”，每项无原文证据，请预览核对后采用。'
@@ -116,6 +115,7 @@ function syncMaterialFromActual(): void {
 watch(() => props.detail, syncMaterialFromActual, { immediate: true })
 watch(() => props.planId, () => {
   refreshGeneration += 1
+  stopTaskPoll()
   batch.value = null; tasks.value = []; candidates.value = []; selectedKeys.value = []; candidateEdits.value = {}; candidateEditBaselines.value = {}; regenerateInstructions.value = {}; regeneratedNotice.value = ''; preview.value = null; pendingCreate.value = null; pendingAdopt.value = null; adoptCommitted.value = null; pendingAction.value = null; releaseAdoptGate(); progress.value = {}; error.value = ''; readError.value = ''; batchReadPending.value = false; notice.value = ''; directionalOpen.value = false; directionalBusy.value = false; directionalRequest.value = null; directionalSelections.value = {}; directionalNotice.value = ''; directionalNoticeCandidateId.value = ''
   void refreshBatch()
 })
@@ -572,18 +572,27 @@ function activateBatch(response: WeeklyAiCreateOut, preservePrevious = false): v
   batchReadPending.value = true
   readError.value = ''
 }
+function knownTaskIds(): Set<string> | null {
+  return batch.value
+    ? new Set(batch.value.tasks.map((item) => item.task_id))
+    : null
+}
+function scopedTaskRows(rows: WeeklyAiTask[]): WeeklyAiTask[] {
+  const known = knownTaskIds()
+  return known ? rows.filter((item) => known.has(item.task_id)) : rows
+}
 async function refreshBatch(): Promise<void> {
   const ctx = epoch()
   const planId = ctx.plan
   const generation = ++refreshGeneration
   const currentGeneration = (): boolean => generation === refreshGeneration
-  const known = batch.value ? new Set(batch.value.tasks.map((item) => item.task_id)) : null
   try {
     const allTaskRows = await allTasks(planId, ctx)
     if (!allTaskRows || !currentEpoch(ctx) || !currentGeneration()) return
-    const taskRows = known ? allTaskRows.filter((item) => known.has(item.task_id)) : allTaskRows
+    const taskRows = scopedTaskRows(allTaskRows)
     const listed = await allCandidates(planId, ctx)
     if (!listed || !currentEpoch(ctx) || !currentGeneration()) return
+    const known = knownTaskIds()
     const candidatesInScope = known ? listed.filter((item) => known.has(item.task_id)) : listed
     const details: WeeklyAiCandidate[] = []
     for (const item of candidatesInScope) {
@@ -597,6 +606,7 @@ async function refreshBatch(): Promise<void> {
     syncCandidateEdits()
     batchReadPending.value = false
     readError.value = ''
+    scheduleTaskPoll()
   } catch {
     if (!currentEpoch(ctx) || !currentGeneration()) return
     readError.value = 'AI 任务与候选读取失败，请刷新后重试；原任务和候选不会被修改'
@@ -617,7 +627,7 @@ async function create(kind: 'games' | 'columns' | 'materials'): Promise<void> {
   if (kind === 'materials' && !materialsContextSaved(ctx)) { panelRequestFlight = false; return }
   const saved = props.controller.savedDraftRef()
   const common = { request_id: newWeeklyRequestId(), expected_draft_version: saved.version }
-  const body: Record<string, unknown> = kind === 'columns' ? { ...common, selected_fields: [...selectedFields.value] } : common
+  const body: Record<string, unknown> = kind === 'columns' ? { ...common, selected_fields: [...props.selectedColumns] } : common
   pendingCreate.value = { kind, body, planId: ctx.plan, requestId: common.request_id, epoch: ctx, preservePrevious: false }
   submitted.value = props.controller.getContent()
   const busyToken = beginAiBusy(); error.value = ''; notice.value = ''
@@ -670,7 +680,7 @@ function progressFor(task: WeeklyAiTask): AiProgressView | null {
   return progressMatchesTask(
     task.task_id,
     task.execution?.id ?? null,
-    null,
+    task.execution?.attempt_no ?? null,
     stored,
   )
     ? stored
@@ -686,18 +696,119 @@ async function loadProgress(task: WeeklyAiTask): Promise<void> {
   try {
     const value = await api.progress(ctx.plan, task.task_id)
     if (!currentEpoch(ctx)) return
-    const accepted = acceptedProgress(
+    let accepted = acceptedProgress(
       task.task_id,
       task.execution?.id ?? null,
-      null,
+      task.execution?.attempt_no ?? null,
       value,
     )
+    if (!accepted) {
+      // The task list can lag one execution behind a retry/resume. Refresh
+      // only the task identity and retry the same read against that identity;
+      // an old execution's progress still stays rejected.  A failed identity
+      // refresh is not a task failure and must not replace the task state.
+      let fresh: WeeklyAiTask | null = null
+      try {
+        fresh = await api.task(ctx.plan, task.task_id)
+      } catch {
+        fresh = null
+      }
+      if (!currentEpoch(ctx)) return
+      if (fresh?.task_id === task.task_id) {
+        tasks.value = tasks.value.map((row) => (row.task_id === fresh.task_id ? fresh : row))
+        accepted = acceptedProgress(
+          fresh.task_id,
+          fresh.execution?.id ?? null,
+          fresh.execution?.attempt_no ?? null,
+          value,
+        )
+      }
+    }
     if (!accepted) {
       notice.value = '进度回包与当前任务执行不一致：已忽略，不影响任务状态'
       return
     }
     progress.value = { ...progress.value, [task.task_id]: accepted }
+    scheduleTaskPoll()
   } catch (errorValue) { if (!currentEpoch(ctx)) return; fail(errorValue) }
+}
+
+let taskPollTimer: ReturnType<typeof setTimeout> | null = null
+let taskPollGeneration = 0
+const LIVE_TASK_STATUSES = new Set(['pending', 'claimed', 'dispatching', 'retry_wait'])
+function stopTaskPoll(): void {
+  taskPollGeneration += 1
+  if (taskPollTimer !== null) {
+    clearTimeout(taskPollTimer)
+    taskPollTimer = null
+  }
+}
+function scheduleTaskPoll(): void {
+  stopTaskPoll()
+  if (!alive || !tasks.value.some((task) => LIVE_TASK_STATUSES.has(task.status))) return
+  const generation = taskPollGeneration
+  taskPollTimer = setTimeout(() => {
+    taskPollTimer = null
+    if (generation !== taskPollGeneration) return
+    void pollLiveTasks()
+  }, 1200)
+}
+async function pollLiveTasks(): Promise<void> {
+  const ctx = epoch()
+  const generation = taskPollGeneration
+  const batchKey = batch.value?.request_id ?? null
+  const refreshAtStart = refreshGeneration
+  const stillCurrent = (): boolean => (
+    currentEpoch(ctx)
+    && generation === taskPollGeneration
+    && refreshAtStart === refreshGeneration
+    && (batch.value?.request_id ?? null) === batchKey
+  )
+  const previous = new Map(tasks.value.map((task) => [task.task_id, task] as const))
+  try {
+    const allTaskRows = await allTasks(ctx.plan, ctx)
+    if (!allTaskRows || !stillCurrent()) return
+    const taskRows = scopedTaskRows(allTaskRows)
+    tasks.value = taskRows
+    const progressTargets = taskRows.filter((task) => {
+      const before = previous.get(task.task_id)
+      return LIVE_TASK_STATUSES.has(task.status)
+        || Boolean(before && LIVE_TASK_STATUSES.has(before.status))
+    })
+    for (const task of progressTargets) {
+      if (!stillCurrent()) return
+      try {
+        const value = await api.progress(ctx.plan, task.task_id)
+        if (!stillCurrent()) return
+        const accepted = acceptedProgress(
+          task.task_id,
+          task.execution?.id ?? null,
+          task.execution?.attempt_no ?? null,
+          value,
+        )
+        if (!accepted) continue
+        progress.value = { ...progress.value, [task.task_id]: accepted }
+      } catch {
+        // Progress is display-only.  A read failure keeps the last accepted
+        // snapshot and the next poll retries only this read.
+      }
+    }
+    const transitioned = taskRows.some((task) => {
+      const before = previous.get(task.task_id)
+      return Boolean(
+        before
+        && LIVE_TASK_STATUSES.has(before.status)
+        && !LIVE_TASK_STATUSES.has(task.status),
+      )
+    })
+    if (transitioned) {
+      await refreshBatch()
+      return
+    }
+    scheduleTaskPoll()
+  } catch {
+    if (stillCurrent()) scheduleTaskPoll()
+  }
 }
 async function action(task: WeeklyAiTask, kind: 'cancel' | 'resume' | 'retry'): Promise<void> {
   if (!alive || props.disabled || aiBusy.value || panelRequestFlight || pendingCreate.value || pendingAdopt.value || pendingAction.value) return
@@ -1089,6 +1200,17 @@ async function saveMaterials(): Promise<void> {
 function selectionKey(candidate: WeeklyAiCandidate, target: WeeklyAiSelection['target']): string { return `${candidate.candidate_id}:${target}` }
 const batchStatus = computed(() => groupStatus(tasks.value))
 const materialEditable = computed(() => Boolean(props.detail?.draft.content.materials_provenance))
+defineExpose({
+  startGames: () => create('games'),
+  startColumns: () => create('columns'),
+  startMaterials: () => create('materials'),
+  refreshBatch,
+  create,
+  materialText,
+  materialEditable,
+  onMaterialInput,
+  saveMaterials,
+})
 </script>
 
 <template>
@@ -1100,21 +1222,11 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
     @keyup.capture="rememberDirectionalSelection"
     @blur.capture="rememberDirectionalSelection"
   >
-    <h3>周计划 AI 辅助</h3>
-    <p>三个操作各自生成候选；普通保存、改选和采用均不会自动连发。</p>
-    <div class="actions">
-      <el-button :disabled="disabled || aiBusy" @click="create('games')">选择周游戏</el-button>
-      <el-button :disabled="disabled || aiBusy || !selectedFields.length" @click="create('columns')">生成所选周栏目</el-button>
-      <el-button :disabled="disabled || aiBusy" @click="create('materials')">生成材料</el-button>
-      <el-button :disabled="disabled || aiBusy" @click="refreshBatch">刷新候选与状态</el-button>
+    <div class="ai-head">
+      <h3>AI 候选与任务</h3>
+      <el-button size="small" :disabled="disabled || aiBusy" @click="refreshBatch">刷新候选与状态</el-button>
     </div>
-    <div class="columns">
-      <el-checkbox v-for="field in WEEKLY_AI_COLUMNS" :key="field" v-model="selectedFields" :value="field" :disabled="disabled || aiBusy">{{ field === 'key_week_focus' ? '本周重点' : field === 'environment_setup' ? '环境创设' : field === 'habit_culture' ? '习惯与文化' : '家园合作' }}</el-checkbox>
-    </div>
-    <p v-if="!materialsFocusReady" class="focus-hint">
-      {{ focusHint }}
-      <el-button size="small" :disabled="disabled || aiBusy" @click="requestFocusArea">前往重点区域</el-button>
-    </p>
+    <p class="muted">AI 由各表单标题右侧按项发起，只生成候选；普通保存、改选和采用均不会自动连发。</p>
     <el-alert v-if="error" :title="error" type="warning" :closable="false" />
     <el-alert v-if="readError" :title="readError" type="warning" :closable="false" />
     <div v-if="readError" class="actions"><el-button :disabled="disabled || aiBusy" @click="refreshBatch">重新读取任务与候选</el-button></div>
@@ -1325,12 +1437,6 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
       </div>
       <el-alert v-if="regeneratedNotice" type="info" :closable="false" :title="`已提交重新生成（原候选 ${regeneratedNotice} 仍保留）`" />
     </template>
-    <el-card v-if="materialEditable" shadow="never" class="materials">
-      <h4>材料正文（已采用依据保留）</h4>
-      <el-input v-model="materialText" type="textarea" :disabled="disabled || aiBusy" @input="onMaterialInput" />
-      <el-button :disabled="disabled || aiBusy" @click="saveMaterials">保存材料正文</el-button>
-    </el-card>
-
     <DirectionalRevisionDialog
       v-if="directionalRequest"
       :open="directionalOpen"
@@ -1360,6 +1466,9 @@ const materialEditable = computed(() => Boolean(props.detail?.draft.content.mate
   border-radius: 4px;
 }
 .weekly-ai { margin: 1rem 0; }
+.ai-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
+.ai-head h3 { margin: .3rem 0; }
+.muted { color: var(--kgm-muted); }
 .actions { display: flex; gap: .4rem; flex-wrap: wrap; margin: .4rem 0; }
 .columns { display: flex; gap: .5rem; flex-wrap: wrap; margin: .4rem 0; }
 .focus-hint { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; color: var(--kgm-muted); margin: .2rem 0 .5rem; }

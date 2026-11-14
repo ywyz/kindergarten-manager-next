@@ -437,6 +437,65 @@ def list_schools(session: Session) -> list[School]:
     )
 
 
+def school_name_conflict(current_name: str) -> CollaborationError:
+    return CollaborationError(
+        409,
+        "SCHOOL_NAME_CONFLICT",
+        "园所名称已被其他窗口修改，请刷新后重试",
+        details={"current_name": current_name},
+    )
+
+
+def _valid_school_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise admin_validation("园所名称必须是字符串")
+    name = value.strip()
+    if not (1 <= len(name) <= 120) or "\x00" in name:
+        raise admin_validation("园所名称长度必须为 1–120 个字符")
+    return name
+
+
+def update_school_name(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    expected_name: object,
+    new_name: object,
+) -> School:
+    """Rename one existing school without touching any stable ID.
+
+    ``expected_name`` is the old-name baseline.  A retry after a successful
+    rename is idempotent when the current name already equals ``new_name``; a
+    different concurrent name returns a 409 with the current value.
+    """
+    if not isinstance(expected_name, str):
+        raise admin_validation("旧名称必须是字符串")
+    expected = expected_name
+    if not (1 <= len(expected.strip()) <= 120) or "\x00" in expected:
+        raise admin_validation("旧名称长度必须为 1–120 个字符")
+    new = _valid_school_name(new_name)
+    with session.begin():
+        admin = session.get(AdminUser, principal.admin_id)
+        if admin is None or not admin.active:
+            raise admin_auth_required()
+        school = session.get(School, school_id, with_for_update=True)
+        if school is None:
+            raise CollaborationError(
+                404, "SCHOOL_NOT_FOUND", "没有找到该园所"
+            )
+        current = school.name
+        if current == expected:
+            if new != current:
+                school.name = new
+                session.flush()
+            return school
+        if current == new:
+            # Same request retried after the first response was lost.
+            return school
+        raise school_name_conflict(current)
+
+
 def list_teachers(session: Session, school_id: UUID) -> list[Teacher]:
     return list(
         session.scalars(

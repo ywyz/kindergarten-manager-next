@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta
 
 from app.local import todo_domain as domain
 from app.local import todo_service
+from app.local.todo_models import LocalTodo
+from app.local.todo_repository import _row
 
 
 def request_id() -> str:
@@ -459,6 +461,120 @@ class TodoServicePureTests(unittest.TestCase):
                 expected_version=0,
                 fields={"title": "x"},
             )
+
+    def test_unarchive_restores_completed_item_and_replays_receipt(self):
+        created = self.make("归档恢复")
+        todo_service.update_todo(
+            self.repo,
+            todo_id=created["todo_id"],
+            request_id=request_id(),
+            expected_version=1,
+            fields={"completed": True},
+        )
+        todo_service.batch_todos(
+            self.repo,
+            request_id=request_id(),
+            action="archive",
+            items=[{"todo_id": created["todo_id"], "expected_version": 2}],
+        )
+        rid = request_id()
+        restored = todo_service.unarchive_todo(
+            self.repo,
+            todo_id=created["todo_id"],
+            request_id=rid,
+            expected_version=3,
+        )
+        self.assertTrue(restored["completed"])
+        self.assertIsNone(restored["archived_at"])
+        self.assertEqual(restored["version"], 4)
+        self.assertEqual(
+            [item["todo_id"] for item in todo_service.list_todos(self.repo)],
+            [created["todo_id"]],
+        )
+        self.assertEqual(todo_service.list_todos(self.repo, archived=True), [])
+        self.assertEqual(
+            todo_service.get_operation(self.repo, request_id=rid)["todo"],
+            restored,
+        )
+        replay = todo_service.unarchive_todo(
+            self.repo,
+            todo_id=created["todo_id"],
+            request_id=rid,
+            expected_version=3,
+        )
+        self.assertEqual(replay, restored)
+        with self.assertRaises(domain.TodoVersionConflict):
+            todo_service.unarchive_todo(
+                self.repo,
+                todo_id=created["todo_id"],
+                request_id=request_id(),
+                expected_version=3,
+            )
+        self.assertTrue(self.repo.todos[created["todo_id"]]["completed"])
+        self.assertIsNone(self.repo.todos[created["todo_id"]]["archived_at"])
+
+    def test_unarchive_rejects_active_item_and_keeps_commit_uncertain_receipt(self):
+        active = self.make("活动待办")
+        with self.assertRaises(domain.TodoInputError):
+            todo_service.unarchive_todo(
+                self.repo,
+                todo_id=active["todo_id"],
+                request_id=request_id(),
+                expected_version=1,
+            )
+        todo_service.update_todo(
+            self.repo,
+            todo_id=active["todo_id"],
+            request_id=request_id(),
+            expected_version=1,
+            fields={"completed": True},
+        )
+        todo_service.batch_todos(
+            self.repo,
+            request_id=request_id(),
+            action="archive",
+            items=[{"todo_id": active["todo_id"], "expected_version": 2}],
+        )
+        rid = request_id()
+        self.repo.fail_commit = True
+        with self.assertRaises(domain.TodoCommitUncertain):
+            todo_service.unarchive_todo(
+                self.repo,
+                todo_id=active["todo_id"],
+                request_id=rid,
+                expected_version=3,
+            )
+        receipt = todo_service.get_operation(self.repo, request_id=rid)
+        self.assertTrue(receipt["todo"]["completed"])
+        self.assertIsNone(receipt["todo"]["archived_at"])
+        self.repo.fail_commit = False
+        replay = todo_service.unarchive_todo(
+            self.repo,
+            todo_id=active["todo_id"],
+            request_id=rid,
+            expected_version=3,
+        )
+        self.assertEqual(replay, receipt["todo"])
+
+    def test_repository_row_projection_includes_archived_at(self):
+        stamp = datetime(2026, 11, 1, 10, 0, 0)
+        row = LocalTodo(
+            id="todo-1",
+            profile_id="profile-1",
+            title="归档待办",
+            due_date=None,
+            completed=True,
+            version=3,
+            created_at=stamp,
+            updated_at=stamp,
+            archived_at=stamp,
+        )
+        projected = _row(row)
+        self.assertEqual(projected["archived_at"], stamp)
+        self.assertEqual(
+            domain.todo_to_dict(projected)["archived_at"],
+            stamp.isoformat(),
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

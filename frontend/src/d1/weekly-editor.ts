@@ -56,6 +56,8 @@ export interface WeeklyEditorOptions {
   editorEpoch?: number
   settle?: () => Promise<void>
   requestId?: () => string
+  /** Read-only daily-follow rows used for the form; stored draft stays as baseline. */
+  viewContent?: WeeklyDraftContent
 }
 
 export interface WeeklyWriteTicket {
@@ -294,7 +296,9 @@ export class WeeklyEditorController {
 
   constructor(options: WeeklyEditorOptions) {
     this.detail = options.detail
-    this.form = cloneWeekly(options.detail.draft.content)
+    this.form = cloneWeekly(
+      options.viewContent ?? options.detail.draft.content,
+    )
     this.baseline = cloneWeekly(options.detail.draft.content)
     this.loadedVersion = options.detail.draft.version
     this.editorEpoch = options.editorEpoch ?? 0
@@ -619,7 +623,8 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
         ) {
           this.applySaved(result, ticket)
         } else if (ticket.action === 'confirm' && result.confirmation) {
-          if (result.confirmation) this.applyConfirmation(result.confirmation)
+          if (result.draft) this.applySaved(result, ticket)
+          this.applyConfirmation(result.confirmation)
         }
       }
       return result
@@ -691,10 +696,11 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
           })
           if (this.identity() !== ticket.identity) return null
           this.lastOperation = result
+          if (result.draft) this.applySaved(result, ticket)
           if (result.confirmation) this.applyConfirmation(result.confirmation)
           this.unknown = false
           this.lastFailure = null
-          this.status = 'idle'
+          if (this.status !== 'conflict') this.status = 'idle'
           return result
         }
         return null
@@ -835,10 +841,25 @@ async refreshSources(preview: WeeklyRefreshPreview): Promise<WeeklyWriteOutcome>
       })
       if (this.identity() !== identity) return { result: 'failed' }
       if (!result.confirmation) return { result: 'failed' }
-      this.applyConfirmation(result.confirmation)
-      this.lastOperation = result
-      this.unknown = false
-      this.status = 'idle'
+      if (result.draft) {
+        if (!this.applySaved(result, ticket)) {
+          this.applyConfirmation(result.confirmation)
+          this.lastOperation = result
+          this.lastFailure = {
+            code: 'WEEKLY_INVALID',
+            message: '确认已写入新草稿，但回执与当前输入不一致，请核对后刷新',
+            retry: 'reload',
+          }
+          this.status = 'conflict'
+          return { result: 'conflict', write: result }
+        }
+        this.applyConfirmation(result.confirmation)
+      } else {
+        this.applyConfirmation(result.confirmation)
+        this.lastOperation = result
+        this.unknown = false
+        this.status = 'idle'
+      }
       return { result: 'saved', write: result }
     } catch (error) {
       if (this.identity() !== identity) return { result: 'failed' }

@@ -68,6 +68,7 @@ const leavingClass = ref(false)
 const classSelectionUnknown = ref(false)
 const classSelectionUnknownMessage = ref('')
 const classes = ref<CollaborationClass[]>([])
+const directoryLoaded = ref(false)
 const membership = ref<CollaborationMembership | null>(null)
 const classmates = ref<CollaborationClassmate[]>([])
 const onlineConfig = ref<CollaborationConfig | null>(null)
@@ -377,6 +378,7 @@ function clearClassConfiguration(): void {
 }
 function clearSessionData(): void {
   classes.value = []
+  directoryLoaded.value = false
   classSelectionUnknown.value = false
   classSelectionUnknownMessage.value = ''
   pendingPromotion.value = null
@@ -504,6 +506,7 @@ async function loadDirectory(epoch: number): Promise<void> {
     if (!current(epoch)) return
     classes.value = classList
     membership.value = currentMembership
+    directoryLoaded.value = true
     classSelectionUnknown.value = false
     classSelectionUnknownMessage.value = ''
     preview.value = null
@@ -622,14 +625,17 @@ async function redeemWithCode(): Promise<void> {
     }
     await loadDirectory(epoch)
     if (!current(epoch)) return
+    const boundSchool = result.teacher?.school_name ?? '在线园所'
     if (result.purpose === 'recovery' && !membership.value) {
       recoveryNoClass.value = true
       redeemNotice.value =
-        '恢复码已确认该教师身份，但服务端没有仍有效的原班级。请从本园班级目录中明确选择一个班级；不会自动选班。'
+        `恢复码已确认教师与园所「${boundSchool}」，但服务端没有仍有效的原班级。请从本园班级目录中明确选择一个班级；不会自动选班，也不会改变本机园所和班级。`
     } else if (result.purpose === 'recovery') {
-      redeemNotice.value = `已恢复在线身份并进入仍有效的原班级：${membership.value?.class_name ?? ''}`
+      redeemNotice.value =
+        `已恢复在线身份并进入仍有效的原班级：${membership.value?.class_name ?? ''}；本机园所和班级未改变。`
     } else {
-      redeemNotice.value = '首次加入码已确认教师与园所。请从下方本园班级目录选择班级；不会自动选班。'
+      redeemNotice.value =
+        `首次加入码已确认教师与园所「${boundSchool}」。请从下方本园班级目录自主选择班级；不会按名称自动选班，也不会改变本机园所和班级。`
     }
     noticeText.value = '一次性码只在本机内存中提交；兑换成功后已清除输入，不写入本地数据库或浏览器存储'
   } catch (err) {
@@ -1595,6 +1601,13 @@ defineExpose({
       show-icon
     />
     <el-alert
+      title="在线只保存园所／教师、班级关系、同班在线游戏配置和共享周；本机档案、计划、观察与密钥不会自动上传，日计划共享与 AI 在线设置当前不同步。"
+      type="info"
+      :closable="false"
+      show-icon
+      data-d1="collaboration-data-boundary"
+    />
+    <el-alert
       v-if="statusLoaded && !status.configured"
       :title="status.message ?? '未配置在线协作服务地址，请联系部署方'"
       type="warning"
@@ -1675,7 +1688,7 @@ defineExpose({
               兑换并连接
             </el-button>
           </div>
-          <p class="muted">加入码只确认教师和园所，随后选择班级；恢复码读取仍有效的原班。兑换码不会自动重发。</p>
+          <p class="muted">兑换只确认教师和园所，不会按名称自动选择、创建或覆盖班级，也不改本机园所和班级；加入码随后自主选班，恢复码只读取原班。兑换码不自动重发。</p>
         </div>
         <details
           class="low-frequency"
@@ -1708,7 +1721,9 @@ defineExpose({
       <template v-else>
         <div class="current-line">
           <span>已连接：{{ status.teacher?.display_name ?? '在线教师' }}</span>
-          <span class="muted">{{ status.teacher?.school_name ?? '在线园所' }}</span>
+          <span class="muted" data-d1="collaboration-bound-school">
+            已绑定园所：{{ status.teacher?.school_name ?? '在线园所' }}
+          </span>
           <el-button
             size="small"
             text
@@ -1745,6 +1760,9 @@ defineExpose({
               刷新
             </el-button>
           </div>
+          <p class="muted" data-d1="collaboration-local-unchanged">
+            在线选班不改本机园所和班级。
+          </p>
           <details class="technical">
             <summary>稳定班级 ID</summary>
             <code class="class-id">{{ membership.class_id }}</code>
@@ -1778,7 +1796,9 @@ defineExpose({
           </el-table>
           <p v-else class="muted">当前班级暂无其他同班老师。</p>
         </div>
-        <p v-else class="muted">尚未选择在线班级。</p>
+        <div v-else class="muted" data-d1="collaboration-no-class">
+          <p>已绑定园所：{{ status.teacher?.school_name ?? '在线园所' }}。尚未选择在线班级；请从下方班级目录自主选择，不会按名称自动匹配。</p>
+        </div>
 
         <details
           class="fold"
@@ -1810,6 +1830,9 @@ defineExpose({
               </el-button>
             </div>
           </div>
+          <p v-else-if="directoryLoaded" class="muted" data-d1="collaboration-no-candidates">
+            该园所暂无可选班级，请联系管理员。
+          </p>
           <p v-else class="muted">尚未读取班级目录。</p>
           <div v-if="membership" class="actions">
             <el-button

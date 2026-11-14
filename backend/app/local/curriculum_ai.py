@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Mapping
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.local import curriculum_ai_contracts as contracts
@@ -29,6 +29,7 @@ from app.local.errors import (
     LocalValidationError,
 )
 from app.local.models import (
+    LocalAIAttempt,
     LocalAICandidate,
     LocalAIExecution,
     LocalAIInput,
@@ -1798,11 +1799,26 @@ def get_candidate(
 
 
 def task_payload(session: Session, task: LocalAITask) -> dict[str, Any]:
+    execution_out = None
+    if task.current_execution_id:
+        execution = session.get(LocalAIExecution, task.current_execution_id)
+        if execution is not None:
+            attempt_no = session.scalar(
+                select(func.max(LocalAIAttempt.attempt_no)).where(
+                    LocalAIAttempt.execution_id == execution.id
+                )
+            )
+            execution_out = {
+                "id": execution.id,
+                "generation": execution.generation,
+                "attempt_no": int(attempt_no) if attempt_no else None,
+            }
     return {
         "id": task.id,
         "status": task.status,
         "reason": task.reason,
         "candidate": get_candidate(session, task),
+        "execution": execution_out,
     }
 
 

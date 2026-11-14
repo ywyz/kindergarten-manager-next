@@ -162,6 +162,42 @@ class FakeTodoApi {
     return this._copy(item)
   }
 
+  async unarchive(todoId, body) {
+    if (this.failRetryNext) {
+      this.failRetryNext = false
+      throw new ApiError(500, '合成重试失败', 'TODO_INTERNAL')
+    }
+    const replay = this._replay(body.request_id)
+    if (replay) return replay.todo
+    if (this.unknownPreCommitNext) {
+      this.unknownPreCommitNext = false
+      throw new ApiError(0, '合成网络中断（未提交）')
+    }
+    const item = this.items.find((row) => row.todo_id === todoId)
+    if (!item) throw new ApiError(404, '待办不存在', 'TODO_NOT_FOUND')
+    if (item.version !== body.expected_version) {
+      throw new ApiError(409, '版本冲突', 'TODO_VERSION_CONFLICT', {
+        todo: this._copy(item),
+      })
+    }
+    if (!item.archived_at) {
+      throw new ApiError(422, '待办未归档', 'TODO_INVALID')
+    }
+    item.archived_at = null
+    item.version += 1
+    item.updated_at = `2026-11-0${item.version}T10:00:00`
+    this._receipt(body.request_id, { todo: this._copy(item) })
+    if (this.commitUnknownNext) {
+      this.commitUnknownNext = false
+      throw new ApiError(503, '提交结果不确定', 'TODO_COMMIT_UNCERTAIN')
+    }
+    if (this.unknownNext) {
+      this.unknownNext = false
+      throw new ApiError(0, '合成网络中断')
+    }
+    return this._copy(item)
+  }
+
   async remove(todoId, body) {
     if (this.failRetryNext) {
       this.failRetryNext = false
@@ -292,6 +328,8 @@ function loadTodoModule(api) {
     },
     apiPost: async (url, body) => {
       if (url === '/api/local/todos') return api.create(body)
+      const unarchive = String(url).match(/\/api\/local\/todos\/([^/]+)\/unarchive$/)
+      if (unarchive) return api.unarchive(decodeURIComponent(unarchive[1]), body)
       if (url === '/api/local/todos/batch') return api.batch(body)
       throw new ApiError(404, `unexpected POST ${url}`)
     },
@@ -355,8 +393,11 @@ for (const marker of [
   'data-d1="todo-view-active"', 'data-d1="todo-view-archived"',
   'data-d1="todo-batch-archive"', 'data-d1="todo-batch-delete"',
   'data-d1="todo-selected-count"', 'todo-select-',
+  'todo-unarchive-', 'todo-complete-toggle', 'todo-select-box',
   '确认归档已完成的', '确认删除所选的',
 ]) assert.ok(panel.includes(marker), marker)
+assert.match(panel, /:aria-pressed="item\.completed"/)
+assert.match(panel, /border-radius:\s*50%/)
 ok('workbench normal entry and minimal todo controls are present')
 
 {
@@ -779,4 +820,80 @@ ok('workbench normal entry and minimal todo controls are present')
   assert.equal(store.state.items[0].archived_at, null)
   ok('a stale batch receipt cannot remove a newer visible row')
 }
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [
+    {
+      ...makeTodo('u1', '已归档待办'),
+      completed: true,
+      archived_at: '2026-11-01T10:00:00',
+    },
+  ]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.setArchivedView(true)
+  assert.equal(store.state.items.length, 1)
+  await store.unarchive(store.state.items[0])
+  assert.equal(store.state.items.length, 0)
+  assert.equal(store.state.notice, '待办已取消归档')
+  assert.equal(api.items[0].completed, true)
+  assert.equal(api.items[0].archived_at, null)
+  assert.equal(api.items[0].version, 2)
+  await store.setArchivedView(false)
+  assert.equal(store.state.items.length, 1)
+  assert.equal(store.state.items[0].todo_id, 'u1')
+  assert.equal(store.state.items[0].completed, true)
+  ok('unarchive returns the archived item to the active list with completion preserved')
+}
+
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [
+    {
+      ...makeTodo('u2', '未决取消归档'),
+      completed: true,
+      archived_at: '2026-11-01T10:00:00',
+    },
+  ]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.setArchivedView(true)
+  api.commitUnknownNext = true
+  await store.unarchive(store.state.items[0])
+  assert.equal(store.state.pending?.action, 'unarchive')
+  assert.equal(store.state.items.length, 1)
+  assert.equal(store.busy.value, true)
+  await store.queryPending()
+  assert.equal(store.state.pending, null)
+  assert.equal(store.state.items.length, 0)
+  assert.equal(store.busy.value, false)
+  ok('an unknown unarchive resolves from the original receipt')
+}
+
+{
+  const api = new FakeTodoApi()
+  const mod = loadTodoModule(api)
+  api.items = [
+    {
+      ...makeTodo('u3', '重试取消归档'),
+      completed: true,
+      archived_at: '2026-11-01T10:00:00',
+    },
+  ]
+  const store = mod.createTodoStore(api)
+  store.setProfile('p1')
+  await store.setArchivedView(true)
+  api.unknownPreCommitNext = true
+  await store.unarchive(store.state.items[0])
+  assert.equal(store.state.pending?.action, 'unarchive')
+  await store.retryPending()
+  assert.equal(store.state.pending, null)
+  assert.equal(store.state.items.length, 0)
+  assert.equal(api.items[0].archived_at, null)
+  assert.equal(api.items[0].completed, true)
+  ok('explicit retry replays the original unarchive request')
+}
+
 console.log(`\n${passed} todo checks passed`)

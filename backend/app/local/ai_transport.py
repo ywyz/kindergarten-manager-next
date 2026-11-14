@@ -512,6 +512,23 @@ DIRECTIONAL_TEXT_RESPONSE_BUDGET = ResponseBudget(
 )
 
 
+def text_json_mode(task_type: object, *, source_kind: object = None) -> bool:
+    """True only for the reviewed daily/curriculum JSON document tasks.
+
+    Weekly, listening, configuration and directional-revision requests keep
+    their existing body shape; this round only changes the daily and curriculum
+    structured-output paths (plus the observation vision path at its own
+    builder).  The flag is never derived from model/user input.
+    """
+    if not isinstance(task_type, str):
+        return False
+    if task_type in DAILY_TEXT_TASK_TYPES:
+        return source_kind is None or source_kind == "daily_plan"
+    if task_type in CURRICULUM_TEXT_TASK_TYPES:
+        return source_kind is None or source_kind == "curriculum_deliberation"
+    return False
+
+
 def text_response_budget(
     task_type: object, *, source_kind: object = None
 ) -> ResponseBudget | None:
@@ -552,6 +569,7 @@ def build_request(
     user_text: str,
     stream: bool = True,
     max_tokens: int | None = None,
+    json_mode: bool = False,
 ) -> bytes:
     payload = {
         "model": model,
@@ -561,6 +579,11 @@ def build_request(
         ],
         "stream": bool(stream),
     }
+    if json_mode:
+        # One JSON-mode request only.  The local strict parser still decides
+        # whether the returned content is a valid candidate; this flag never
+        # permits a retry or a reasoning-only result.
+        payload["response_format"] = {"type": "json_object"}
     if max_tokens is not None:
         if (
             type(max_tokens) is not int
@@ -579,6 +602,7 @@ def build_vision_request(
     user_text: str,
     image_urls: Sequence[str],
     stream: bool = True,
+    json_mode: bool = False,
 ) -> bytes:
     """Standard chat-completions vision body with inline data URLs.
 
@@ -602,6 +626,10 @@ def build_vision_request(
         ],
         "stream": bool(stream),
     }
+    if json_mode:
+        # Observation tasks also return one strict JSON object; the flag is
+        # sent once and never changes the strict local candidate validation.
+        payload["response_format"] = {"type": "json_object"}
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
@@ -1529,6 +1557,7 @@ __all__ = [
     "WEEKLY_TEXT_TASK_TYPES",
     "LISTENING_TEXT_TASK_TYPES",
     "LISTENING_VISION_TASK_TYPES",
+    "text_json_mode",
     "text_response_budget",
     "TransportResult",
     "VISION_ATTEMPT_BUDGET_MS",

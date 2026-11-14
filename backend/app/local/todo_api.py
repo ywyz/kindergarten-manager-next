@@ -65,6 +65,11 @@ class TodoDeleteIn(BaseModel):
     expected_version: int
 
 
+class TodoUnarchiveIn(BaseModel):
+    request_id: str
+    expected_version: int
+
+
 class TodoBatchItemIn(BaseModel):
     todo_id: str
     expected_version: int
@@ -184,6 +189,24 @@ def update_todo(
             request_id=data.request_id,
             expected_version=data.expected_version,
             fields=fields,
+        )
+
+    return _handle(action)
+
+
+@todos_router.post("/{todo_id}/unarchive", response_model=TodoOut)
+def unarchive_todo(
+    todo_id: str,
+    data: TodoUnarchiveIn,
+    session: Session = Depends(get_session),
+):
+    def action():
+        repo = _repository(session)
+        return todo_service.unarchive_todo(
+            repo,
+            todo_id=todo_id,
+            request_id=data.request_id,
+            expected_version=data.expected_version,
         )
 
     return _handle(action)

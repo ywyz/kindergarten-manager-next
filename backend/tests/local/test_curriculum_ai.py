@@ -1280,6 +1280,11 @@ class CurriculumAIExecutorTests(LocalTestCase):
             session.close()
         self.assertEqual(out["candidate"]["kind"], "split")
         self.assertEqual(len(server.requests), 1)
+        # The accepted execution identity is exposed so the dialog can bind
+        # progress reads to this exact execution/attempt.
+        self.assertIsNotNone(out["execution"])
+        self.assertTrue(out["execution"]["id"])
+        self.assertEqual(out["execution"]["attempt_no"], 1)
 
     def test_real_executor_edit_echoes_advertised_target_id(self) -> None:
         ca_dir = self.tmp_root / "curriculum-edit-ca"
@@ -1837,3 +1842,13 @@ class CurriculumAIHttpTests(LocalTestCase):
         )
         self.assertEqual(status, 200, task)
         self.assertEqual(task["id"], created["id"])
+        self.assertEqual(task["execution"], None)
+        status, progress = client.get(
+            f"/api/local/curriculum-deliberations/{record_id}/ai/tasks/"
+            f"{created['id']}/progress"
+        )
+        self.assertEqual(status, 200, progress)
+        self.assertEqual(progress["task_id"], created["id"])
+        self.assertFalse(progress["available"])
+        self.assertEqual(progress["phase"], "waiting")
+        self.assertEqual(progress["reasoning"], "")

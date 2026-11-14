@@ -157,6 +157,43 @@ class DailyLongStreamTests(unittest.TestCase):
         self.assertEqual(result.kind, tr.OUTPUT_INVALID)
         self.assertEqual(result.detail, tr.DETAIL["stream_truncated"])
 
+    def test_reasoning_final_answer_is_display_only_not_the_candidate(self):
+        reasoning = "需要先摘出六字段。\nFinal answer:\n{\"group_activity\":{\"theme\":\"模型思考里的答案\"}}"
+        body = (
+            _reasoning(reasoning)
+            + _content('{"group_activity":{"theme":"正文答案","objectives":"","preparation":"","key_points":"","difficult_points":"","process":""}}')
+            + b"data: [DONE]\n\n"
+        )
+        result, sock = _send(_http(body), budget=tr.DAILY_TEXT_RESPONSE_BUDGET)
+        self.assertEqual(result.kind, tr.SUCCESS, result)
+        self.assertIn("正文答案", result.candidate_text)
+        self.assertNotIn("模型思考里的答案", result.candidate_text)
+        self.assertNotIn("Final answer", result.candidate_text)
+        self.assertEqual(len(sock.sent), 1)
+
+    def test_reasoning_only_final_answer_is_never_accepted(self):
+        body = (
+            _reasoning('思考结束。\nFinal answer:\n{"group_activity":{"theme":"只有思考"}}')
+            + b"data: [DONE]\n\n"
+        )
+        result, sock = _send(_http(body), budget=tr.DAILY_TEXT_RESPONSE_BUDGET)
+        self.assertEqual(result.kind, tr.OUTPUT_INVALID)
+        self.assertEqual(result.detail, tr.DETAIL["reasoning_only"])
+        self.assertIsNone(result.candidate_text)
+        self.assertEqual(len(sock.sent), 1)
+
+    def test_final_answer_prefix_inside_content_is_not_silently_accepted(self):
+        body = (
+            _reasoning("思考一")
+            + _content('Final answer:\n{"group_activity":{"theme":"前缀答案"}}')
+            + b"data: [DONE]\n\n"
+        )
+        result, sock = _send(_http(body), budget=tr.DAILY_TEXT_RESPONSE_BUDGET)
+        self.assertEqual(result.kind, tr.OUTPUT_INVALID)
+        self.assertEqual(result.detail, tr.DETAIL["invalid_candidate_json"])
+        self.assertIsNone(result.candidate_text)
+        self.assertEqual(len(sock.sent), 1)
+
     def test_daily_non_sse_body_keeps_one_mib_limit(self):
         body = b"x" * (tr.RESPONSE_MAX_BYTES + 1)
         result, _ = _send(
@@ -190,7 +227,8 @@ class DailyLongStreamTests(unittest.TestCase):
         self.assertIs(payload["stream"], True)
         self.assertEqual(len(payload["messages"]), 2)
         self.assertNotIn("max_tokens", payload)
-        self.assertNotIn("response_format", payload)
+        # One explicit JSON-mode request, never a retry or an extra call.
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertEqual(
             ai_executor.ai_worker_frame_limit(_daily_claim()),
             tr.DAILY_TEXT_RESPONSE_BUDGET.result_ipc_max_bytes,

@@ -132,6 +132,12 @@ PACKAGE_LATEST_DEFAULT_REVISION = 2
 # The adapt task gets a teacher-talk content revision without changing split or
 # other activities; never bump the shared latest/revision constants for this.
 PACKAGE_ADAPT_DEFAULT_REVISION = 3
+# Other-activities r3 only tightens the post-group-games wording; the output
+# schema and every other board stay identical to r2.
+PACKAGE_OTHER_DEFAULT_REVISION = 3
+# Observation r2 tightens the evidence/disclaimer wording; the schema is
+# unchanged from r1.
+PACKAGE_OBSERVATION_DEFAULT_REVISION = 2
 # Reflection is local-only (not in PACKAGE_TASK_TYPES), so its r2 text can ship
 # independently without changing a remotely publishable identity.
 PACKAGE_REFLECTION_DEFAULT_REVISION = 2
@@ -580,6 +586,10 @@ _OTHER_GUIDANCE_R2 = {
     "post_group_games": "根据班级年级、可用游戏配置和当前日计划，生成集体活动之后的室内区域/户外/专用室游戏建议，可含目标、指导和支持策略。多项游戏、目标、指导或支持策略使用真实换行并依次编号，数量按实际，不强行凑三条。可提出新游戏建议，不把生成内容声称为真实日计划来源。节日仅供参考。",
     "afternoon_outdoor": "根据班级年级、可用户外游戏配置和当前日计划，生成一组下午户外游戏安排建议，可含区域、游戏名称、观察重点、目标、指导和支持策略。多个游戏、目标或指导要点使用真实换行并以“1. ”、“2. ”、“3. ”依次编号，数量按实际，不强行凑三条；名称等短单值不编号。可提出新游戏建议，不虚构真实来源或活动事实。节日仅供参考。",
 }
+_OTHER_GUIDANCE_R3 = {
+    **_OTHER_GUIDANCE_R2,
+    "post_group_games": "根据班级年级、可用游戏配置和当前日计划，生成集体活动之后的室内区域/户外/专用室游戏建议，可含目标、指导和支持策略。必须先承接 daily_plan_snapshot.group_activity 中真实提供的主题、目标、准备和过程；游戏目标、重点指导和支持策略要能看出与该集体活动的衔接。不得写“集体活动未提供”“以下是一般性建议”“信息不足”等说明；即使集体活动正文为空，也直接写教师可执行的游戏目标、指导和支持策略，不解释缺失、不冒充已结合不存在的内容。多项游戏、目标、指导或支持策略使用真实换行并依次编号，数量按实际，不强行凑三条。可提出新游戏建议，不把生成内容声称为真实日计划来源。节日仅供参考。",
+}
 _REFLECTION_INPUT_SCHEMA = {
     "$schema": _JSON_SCHEMA_DRAFT,
     "type": "object",
@@ -850,6 +860,17 @@ _OBSERVATION_REWRITE_GUIDANCE = {
     "text": "重写文本须与观察证据一致；多人无法对应姓名时写共同情境，不猜姓名动作。",
     "analysis_evaluation": "评价分析目标返回健康、语言、社会、科学、艺术五领域完整对象；证据不足如实说明。",
 }
+_OBSERVATION_GUIDANCE_R2 = {
+    "observation_goal": "写清本次观察想了解的重点，结合已有资料，不虚构未提供的目标。",
+    "observation_process": "观察记录以照片和教师已填资料能够支持的动作、材料、场景、顺序和幼儿表现为事实基础；可以在有依据处补写匿名情境中的对话和动作衔接，但不把对话或动作归到具体姓名、不声称从静态照片听到了原话、不编造未提供的完整新事件、精确分钟/时长、心理活动或因果关系。教师明确给出的原话、时间和人物对应优先。不得把“照片未呈现”“仅凭静态照片无法确认”“信息不足”“无法判断”等模型局限、证据缺口或免责说明写进观察记录。",
+    "analysis_evaluation": "按健康、语言、社会、科学、艺术五个领域写有证据的教学判断：说明可观察到的表现、对应的学习经验和后续支持依据，不写空泛套话；AI补写的匿名对话和动作衔接只作情境衔接，不作为已核实的评价依据。不得把模型局限、证据缺口或免责说明写进评价。",
+    "support_strategy": "提出与观察证据对应的后续支持策略，写教师可执行的步骤；不把AI补写的匿名情境当作已核实事实，不写模型局限或证据缺口说明。",
+}
+_OBSERVATION_REWRITE_GUIDANCE_R2 = {
+    "target": "只重写目标栏，返回目标字段名；评价分析目标必须返回五领域完整对象。",
+    "text": "重写文本须与观察证据一致；可保留或补写贴合证据的匿名情境对话和动作衔接，但不归到具体姓名、不声称从静态照片听到原话、不编造完整新事件、精确分钟/时长、心理活动或因果关系；教师明确给出的原话、时间和人物对应优先。不得把“照片未呈现”“仅凭静态照片无法确认”“信息不足”“无法判断”等模型局限、证据缺口或免责说明写进目标正文。",
+    "analysis_evaluation": "评价分析目标返回健康、语言、社会、科学、艺术五领域完整对象；用有证据的教学判断说明可观察表现和支持依据，AI补写的匿名对话和动作衔接不作为已核实的评价依据，不写模型局限或证据缺口说明。",
+}
 
 
 def canonical_json(value: Any) -> str:
@@ -944,6 +965,13 @@ PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
         _OTHER_GUIDANCE_R2,
         default_revision=PACKAGE_LATEST_DEFAULT_REVISION,
     ),
+    _bundle(
+        "daily_other_activities",
+        _OTHER_INPUT_SCHEMA,
+        _OTHER_OUTPUT_SCHEMA,
+        _OTHER_GUIDANCE_R3,
+        default_revision=PACKAGE_OTHER_DEFAULT_REVISION,
+    ),
     # #27 is a new independent daily task; existing three bundle identities
     # above stay byte-for-byte unchanged.
     _bundle(
@@ -972,6 +1000,20 @@ PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
         _OBSERVATION_INPUT_SCHEMA,
         _OBSERVATION_REWRITE_OUTPUT_SCHEMA,
         _OBSERVATION_REWRITE_GUIDANCE,
+    ),
+    _bundle(
+        "game_observation_generate",
+        _OBSERVATION_INPUT_SCHEMA,
+        _OBSERVATION_GENERATE_OUTPUT_SCHEMA,
+        _OBSERVATION_GUIDANCE_R2,
+        default_revision=PACKAGE_OBSERVATION_DEFAULT_REVISION,
+    ),
+    _bundle(
+        "game_observation_rewrite",
+        _OBSERVATION_INPUT_SCHEMA,
+        _OBSERVATION_REWRITE_OUTPUT_SCHEMA,
+        _OBSERVATION_REWRITE_GUIDANCE_R2,
+        default_revision=PACKAGE_OBSERVATION_DEFAULT_REVISION,
     ),
     # Class game-config import is deliberately outside the daily three: its
     # prompt bundle exists so the formal task lifecycle can pin/validate it,
@@ -2395,6 +2437,8 @@ __all__ = [
     "PACKAGE_DEFAULT_REVISION",
     "PACKAGE_LATEST_DEFAULT_REVISION",
     "PACKAGE_ADAPT_DEFAULT_REVISION",
+    "PACKAGE_OTHER_DEFAULT_REVISION",
+    "PACKAGE_OBSERVATION_DEFAULT_REVISION",
     "PACKAGE_REFLECTION_DEFAULT_REVISION",
     "HISTORICAL_BUNDLE_HASHES",
     "GUIDANCE_FIELDS",

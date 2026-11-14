@@ -383,6 +383,7 @@ class AdaptWireTests(unittest.TestCase):
             user_text=json.dumps(
                 enriched, ensure_ascii=False, separators=(",", ":")
             ),
+            json_mode=ai_transport.text_json_mode("daily_process_adapt"),
         )
         self.assertEqual(size, len(body))
 

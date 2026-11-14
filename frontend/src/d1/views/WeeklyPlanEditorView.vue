@@ -16,6 +16,7 @@ import {
   type WeeklyConfirmationHistory,
   type WeeklyDetail,
   type WeeklyDraftContent,
+  type WeeklyDay,
   type WeeklyFocusArea,
   type WeeklyFocusChoice,
   type WeeklyGameChoice,
@@ -25,8 +26,10 @@ import {
   type WeeklySlot,
   type WeeklySourceCandidate,
 } from '../weekly'
+import { WEEKLY_AI_COLUMNS, type WeeklyAiColumn } from '../weekly-ai'
 import { WeeklyEditorController, weeklySaveNotice } from '../weekly-editor'
 import WeeklyExportDialog from './WeeklyExportDialog.vue'
+import WeeklyCurrentExportDialog from './WeeklyCurrentExportDialog.vue'
 import WeeklyAiPanel from './WeeklyAiPanel.vue'
 import WeeklyCollaborationPanel from './WeeklyCollaborationPanel.vue'
 import WeeklyHistoryPanel from './WeeklyHistoryPanel.vue'
@@ -77,18 +80,24 @@ const reissuePending = ref(false)
 let reissueGeneration = 0
 const confirmOpen = ref(false)
 const confirmPreview = ref<WeeklyConfirmationPreview | null>(null)
-const ackMissing = ref(false)
-const ackStale = ref(false)
 const confirmNote = ref('')
 const exportOpen = ref(false)
+const historyExportOpen = ref(false)
 const exportConfirmation = ref<WeeklyConfirmationSummary | null>(null)
+const selectedAiColumns = ref<WeeklyAiColumn[]>([...WEEKLY_AI_COLUMNS])
+const aiPanel = ref<{
+  startGames: () => Promise<void>
+  startColumns: () => Promise<void>
+  startMaterials: () => Promise<void>
+} | null>(null)
+const materialNotice = ref('')
 const focusCard = ref<HTMLElement | null>(null)
 const weeklyHost = computed<HostApi | null>(() => props.host)
 const sourceCandidates = computed(() => detail.value?.source_candidates ?? [])
 const factsPending = ref(false)
 const factsStale = ref(false)
 const currentSourceDates = computed(() => {
-  const map = detail.value ? weeklyFrozenSourceDates(detail.value.draft.content) : {}
+  const map = content.value ? weeklyFrozenSourceDates(content.value) : {}
   for (const candidate of sourceCandidates.value) {
     if (!map[candidate.daily_plan_id]) map[candidate.daily_plan_id] = candidate.date
   }
@@ -100,6 +109,20 @@ const confirmDateNotice = ref('')
 let confirmDateGeneration = 0
 
 const facts = computed(() => detail.value?.facts ?? { missing: [], stale_sources: [], warnings: [] })
+const materialEditable = computed(() => Boolean(content.value?.materials_provenance))
+const focusSelected = computed(() => Boolean(content.value?.focus_area))
+
+function dailyCellValue(row: WeeklyDay, field: 'morning_talk_topic' | 'group_activity_theme'): string {
+  const override = row.override[field]
+  return override === null ? row.effective[field] : override
+}
+function dailyCellOverridden(row: WeeklyDay, field: 'morning_talk_topic' | 'group_activity_theme'): boolean {
+  return row.override[field] !== null
+}
+function dailyCellStateLabel(row: WeeklyDay, field: 'morning_talk_topic' | 'group_activity_theme'): string {
+  if (!dailyCellOverridden(row, field)) return '跟随日计划'
+  return row.override[field] === '' ? '已明确清空' : '已明确覆盖'
+}
 
 function overviewMissingLabel(count: number | undefined): string {
   if (!count || count < 1) return ''
@@ -157,6 +180,14 @@ function registerBridge(): void {
   syncState()
 }
 
+function viewContentFor(next: WeeklyDetail): WeeklyDraftContent | undefined {
+  if (!next.daily_follow) return undefined
+  return {
+    ...next.draft.content,
+    deterministic: next.daily_follow.deterministic,
+  }
+}
+
 async function load(): Promise<void> {
   if (!alive) return
   const epoch = ++loadEpoch
@@ -169,7 +200,11 @@ async function load(): Promise<void> {
     detail.value = next
     unsubscribe?.()
     controller = new WeeklyEditorController({
-      detail: next, api, editorEpoch, settle: () => settleComposition(),
+      detail: next,
+      api,
+      editorEpoch,
+      settle: () => settleComposition(),
+      viewContent: viewContentFor(next),
     })
     unsubscribe = controller.subscribe(syncState)
     registerBridge()
@@ -210,7 +245,11 @@ function resetForContext(): void {
   confirmPreview.value = null
   confirmDateGeneration += 1
   exportOpen.value = false
+  historyExportOpen.value = false
   exportConfirmation.value = null
+  selectedAiColumns.value = [...WEEKLY_AI_COLUMNS]
+  aiPanel.value = null
+  materialNotice.value = ''
   releaseComposition()
   loadError.value = ''
   emit('register-editor', null)
@@ -268,6 +307,37 @@ function updateManual(slot: WeeklySlot, field: 'name' | 'shared_objectives' | 'g
     const game = draft.outdoor_game_slots[slot]
     if (game?.source_kind === 'manual') game[field] = value
   })
+}
+function updateMaterials(value: string): void {
+  if (!materialEditable.value) return
+  edit((draft) => { draft.materials = value })
+  materialNotice.value = ''
+}
+async function saveMaterials(): Promise<void> {
+  if (!controller || props.disabled || !materialEditable.value) return
+  const current = controller
+  const identity = current.identity()
+  const outcome = await current.saveCurrent()
+  if (controller !== current || current.identity() !== identity) return
+  syncState()
+  materialNotice.value = outcome === 'saved' || outcome === 'unchanged'
+    ? '材料正文已保存'
+    : weeklySaveNotice(outcome, current.getLastFailure())
+}
+function requestFocusArea(): void {
+  if (props.disabled) return
+  void nextTick(() => {
+    const element = focusCard.value
+    if (!element) return
+    element.scrollIntoView?.({ block: 'center' })
+    element.focus()
+  })
+}
+async function startAi(kind: 'games' | 'columns' | 'materials'): Promise<void> {
+  if (props.disabled || !aiPanel.value) return
+  if (kind === 'games') await aiPanel.value.startGames()
+  else if (kind === 'columns') await aiPanel.value.startColumns()
+  else await aiPanel.value.startMaterials()
 }
 function candidateGame(candidate: WeeklySourceCandidate): WeeklyDailyGame | null {
   if (candidate.section !== 'morning_games' || (candidate.category !== 'collective' && candidate.category !== 'free_choice')) return null
@@ -489,8 +559,6 @@ async function beginReissue(history: WeeklyConfirmationHistory): Promise<void> {
     reissueSource.value = history
     confirmPreview.value = preview
     historyOpen.value = false
-    ackMissing.value = false
-    ackStale.value = false
     confirmNote.value = ''
     confirmOpen.value = true
     void loadConfirmDates(preview.target)
@@ -514,29 +582,16 @@ async function beginReissue(history: WeeklyConfirmationHistory): Promise<void> {
   }
 }
 
-async function openConfirmation(): Promise<void> {
-  if (!controller || props.disabled || reissuePending.value) return
-  try {
-    reissueSource.value = null
-    confirmPreview.value = await controller.confirmationPreview()
-    void loadConfirmDates(confirmPreview.value.target)
-    ackMissing.value = false
-    ackStale.value = false
-    confirmNote.value = ''
-    confirmOpen.value = true
-  } catch (error) { notice.value = projectWeeklyError(error).message }
-  syncState()
-}
-
 async function confirmTarget(): Promise<void> {
   if (busy.value || reissuePending.value) return
   if (!controller || !confirmPreview.value || props.disabled) return
   const current = controller
   const source = reissueSource.value
   const sourceId = source?.confirmation.id ?? null
+  const facts = confirmPreview.value.target.facts
   const outcome = await current.confirm(confirmPreview.value, {
-    ack_missing: ackMissing.value,
-    ack_stale: ackStale.value,
+    ack_missing: facts.missing.length > 0,
+    ack_stale: facts.stale_sources.length > 0,
     note: confirmNote.value || null,
     source_confirmation_id: sourceId,
   })
@@ -558,24 +613,21 @@ function exportHistoryConfirmation(confirmation: WeeklyConfirmationSummary): voi
   if (props.disabled) return
   exportConfirmation.value = confirmation
   historyOpen.value = false
-  exportOpen.value = true
+  historyExportOpen.value = true
 }
 
 function openExport(): void {
-  if (props.disabled) return
-  exportConfirmation.value = detail.value?.confirmed ?? null
+  if (props.disabled || !controller) return
   exportOpen.value = true
+}
+function openHistoryFromShared(): void {
+  if (props.disabled) return
+  sharedOpen.value = false
+  openHistory()
 }
 function onAiBusy(value: boolean): void { aiBusy.value = value; syncState() }
 function onAiBlocking(value: BlockingDraft | null): void { aiBlocking.value = value; syncState() }
-function onAiFocusArea(): void {
-  void nextTick(() => {
-    const element = focusCard.value
-    if (!element) return
-    element.scrollIntoView?.({ block: 'center' })
-    element.focus()
-  })
-}
+function onAiFocusArea(): void { requestFocusArea() }
 function onExportBusy(value: boolean): void { exportBusy.value = value; syncState() }
 function onSharedBusy(value: boolean): void { sharedBusy.value = value; syncState() }
 function onSharedBlocking(value: BlockingDraft | null): void { sharedBlocking.value = value; syncState() }
@@ -585,35 +637,35 @@ defineExpose({ resetForContext })
 <template>
   <section class="weekly-editor" data-d1="weekly-editor" @compositionstart="onCompositionStart" @compositionend="onCompositionEnd">
     <header class="topbar">
-      <div><el-button :disabled="disabled" @click="emit('back')">返回列表</el-button><h2>周计划编辑</h2></div>
+      <h2>周计划编辑</h2>
       <div class="actions">
-        <el-button :disabled="disabled || busy" @click="save">保存</el-button>
+        <el-button data-d1="weekly-save" :disabled="disabled || busy" @click="save">保存</el-button>
+        <el-button data-d1="weekly-back" :disabled="disabled" @click="emit('back')">返回</el-button>
+        <el-button data-d1="weekly-export" type="primary" :disabled="disabled || busy || !controller" @click="openExport">导出</el-button>
         <el-button
           data-d1="weekly-shared-open"
           :disabled="disabled || loading || !detail"
           @click="sharedOpen = true"
         >
-          共享本周
+          查看共享周计划
         </el-button>
-        <el-button :disabled="disabled || busy" @click="refreshPreview">刷新来源预览</el-button>
-        <el-button type="primary" :disabled="disabled || busy" @click="openConfirmation">确认</el-button>
-        <el-button data-d1="weekly-history-open" :disabled="disabled || busy" @click="openHistory">历史确认</el-button>
-        <el-button type="primary" :disabled="disabled || busy" @click="openExport">导出</el-button>
-        <el-button v-if="unknown" :disabled="disabled" @click="queryOperation">核对原提交</el-button>
-        <el-button v-if="unknown" :disabled="disabled" @click="retryOriginal">明确再次提交原请求</el-button>
       </div>
     </header>
     <el-alert v-if="loading" title="正在读取周计划" type="info" :closable="false" />
     <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" />
     <el-alert v-if="notice" :title="notice" type="warning" :closable="false" />
     <el-alert v-if="blocking" :title="blocking.message" type="warning" :closable="false" />
+    <el-alert v-if="unknown" title="提交结果未确认。原始请求已保留；请先只读核对，或明确再次提交同一请求。" type="warning" :closable="false" />
+    <div v-if="unknown" class="actions">
+      <el-button :disabled="disabled" @click="queryOperation">核对原提交</el-button>
+      <el-button :disabled="disabled" @click="retryOriginal">明确再次提交原请求</el-button>
+    </div>
     <el-alert v-if="factsPending" title="事实/来源候选待只读核对；当前稿版本已保存，但旧事实不再显示为实时" type="warning" :closable="false" />
     <el-alert v-if="factsStale" title="服务器最新版本已变化；保留当前回执与输入，请另行核对，不自动替换" type="warning" :closable="false" />
     <el-alert v-if="!weeklyHost?.save_weekly_export && !weeklyHost?.get_weekly_export_result"
       title="原生周导出尚未就绪；查看、编辑和确认仍可正常使用" type="info" :closable="false" />
 
     <template v-if="detail && content">
-    <WeeklyAiPanel v-if="controller" :controller="controller" :plan-id="planId" :detail="detail" :focus-selected="Boolean(content.focus_area)" :disabled="disabled || loading" :profile-epoch="profileEpoch" :session-epoch="sessionEpoch" @busy="onAiBusy" @blocking="onAiBlocking" @focus-area="onAiFocusArea" />
       <el-card shadow="never" class="block">
         <h3>{{ detail.plan.header.class_name }} · {{ detail.plan.week_anchor_date }}</h3>
         <p>{{ detail.plan.header.school_name }} · 第 {{ detail.plan.week_number_snapshot }} 周 ·
@@ -626,17 +678,37 @@ defineExpose({ resetForContext })
       </el-card>
 
       <el-card shadow="never" class="block">
-        <h3>每日最终格</h3>
+        <div class="card-head">
+          <h3>每日最终格</h3>
+          <el-button size="small" :disabled="disabled || busy" @click="refreshPreview">刷新来源预览</el-button>
+        </div>
+        <p class="muted">默认跟随本周本人有效日计划；直接编辑即形成明确覆盖，清空也表示明确覆盖为空。不会再要求另选来源。</p>
         <el-table :data="content.deterministic" size="small">
           <el-table-column prop="date" label="日期" width="110" />
-          <el-table-column label="来源/最终值" min-width="260">
+          <el-table-column label="来源/最终值" min-width="300">
             <template #default="{ row, $index }">
               <div v-if="row.source" class="source-line">本人日计划 v{{ row.source.content_version }} · {{ row.source.morning_talk_topic || '—' }} / {{ row.source.group_activity_theme || '—' }}</div>
               <div v-else class="muted">无本人日计划（{{ sourceStateLabel(row.source_state) }} · {{ dayStateLabel(row.day_state) }}）</div>
-              <el-input :model-value="row.override.morning_talk_topic ?? ''" :disabled="disabled" placeholder="晨谈最终格" @update:model-value="(value: string) => updateOverride($index, 'morning_talk_topic', value)" />
-              <el-input :model-value="row.override.group_activity_theme ?? ''" :disabled="disabled" placeholder="集体活动最终格" @update:model-value="(value: string) => updateOverride($index, 'group_activity_theme', value)" />
-              <el-button text :disabled="disabled" @click="followDay($index, 'morning_talk_topic')">晨谈跟随日值</el-button>
-              <el-button text :disabled="disabled" @click="followDay($index, 'group_activity_theme')">集体跟随日值</el-button>
+              <el-input
+                :model-value="dailyCellValue(row, 'morning_talk_topic')"
+                :disabled="disabled"
+                placeholder="晨谈最终格；输入即覆盖日计划"
+                @update:model-value="(value: string) => updateOverride($index, 'morning_talk_topic', value)"
+              />
+              <div class="override-line">
+                <span data-d1="weekly-daily-state">{{ dailyCellStateLabel(row, 'morning_talk_topic') }}</span>
+                <el-button v-if="dailyCellOverridden(row, 'morning_talk_topic')" text :disabled="disabled" @click="followDay($index, 'morning_talk_topic')">恢复跟随日计划</el-button>
+              </div>
+              <el-input
+                :model-value="dailyCellValue(row, 'group_activity_theme')"
+                :disabled="disabled"
+                placeholder="集体活动最终格；输入即覆盖日计划"
+                @update:model-value="(value: string) => updateOverride($index, 'group_activity_theme', value)"
+              />
+              <div class="override-line">
+                <span data-d1="weekly-daily-state">{{ dailyCellStateLabel(row, 'group_activity_theme') }}</span>
+                <el-button v-if="dailyCellOverridden(row, 'group_activity_theme')" text :disabled="disabled" @click="followDay($index, 'group_activity_theme')">恢复跟随日计划</el-button>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="实际显示" min-width="220"><template #default="{ row }">{{ row.effective.morning_talk_topic || '—' }} / {{ row.effective.group_activity_theme || '—' }}</template></el-table-column>
@@ -644,7 +716,11 @@ defineExpose({ resetForContext })
       </el-card>
 
       <el-card shadow="never" class="block">
-        <h3>户外活动三槽</h3>
+        <div class="card-head">
+          <h3>户外活动三槽</h3>
+          <el-button size="small" :disabled="disabled || busy || !aiPanel" @click="startAi('games')">AI 补充游戏</el-button>
+        </div>
+        <p class="muted">游戏候选在确定周次时从本周本人有效日计划自动读取并按类别列为备选，不会自动写入；无候选仍可手工填写。</p>
         <div v-for="slot in outdoorSlots" :key="slot" class="slot">
           <h4>{{ slotLabels[slot] }}</h4><p>{{ gameText(slotOf(slot)) }}</p>
           <el-button size="small" :disabled="disabled" @click="clearSlot(slot)">清空</el-button>
@@ -653,6 +729,7 @@ defineExpose({ resetForContext })
             <span>{{ candidateText(candidate) }}</span>
             <el-button size="small" :disabled="disabled || !candidateGame(candidate)" @click="candidateGame(candidate) && setSlot(slot, candidateGame(candidate)!)">采用此来源</el-button>
           </div>
+          <p v-if="!candidatesFor(slot).length" class="muted">本周本人日计划暂无该类游戏候选；可手工填写或使用 AI 补充。</p>
           <div v-if="manualOf(slot)" class="manual-fields">
             <el-input :model-value="manualOf(slot)?.name ?? ''" :disabled="disabled" placeholder="名称" @update:model-value="(value: string) => updateManual(slot, 'name', value)" />
             <el-input :model-value="manualOf(slot)?.shared_objectives ?? ''" :disabled="disabled" placeholder="共同目标" @update:model-value="(value: string) => updateManual(slot, 'shared_objectives', value)" />
@@ -674,13 +751,45 @@ defineExpose({ resetForContext })
       </div>
 
       <el-card shadow="never" class="block">
-        <h3>四周栏目</h3>
+        <div class="card-head">
+          <h3>四周栏目</h3>
+          <div class="ai-inline">
+            <el-checkbox-group v-model="selectedAiColumns" :disabled="disabled || busy">
+              <el-checkbox v-for="field in WEEKLY_AI_COLUMNS" :key="field" :value="field">
+                {{ field === 'key_week_focus' ? '本周重点' : field === 'environment_setup' ? '环境创设' : field === 'habit_culture' ? '习惯与文化' : '家园合作' }}
+              </el-checkbox>
+            </el-checkbox-group>
+            <el-button size="small" :disabled="disabled || busy || !selectedAiColumns.length || !aiPanel" @click="startAi('columns')">AI 生成所选栏目</el-button>
+          </div>
+        </div>
         <el-form label-width="110px">
           <el-form-item label="本周重点"><el-input :model-value="content.weekly_columns.key_week_focus" :disabled="disabled" type="textarea" @update:model-value="(value: string) => updateColumn('key_week_focus', value)" /></el-form-item>
           <el-form-item label="环境创设"><el-input :model-value="content.weekly_columns.environment_setup" :disabled="disabled" type="textarea" @update:model-value="(value: string) => updateColumn('environment_setup', value)" /></el-form-item>
           <el-form-item label="习惯与文化"><el-input :model-value="content.weekly_columns.habit_culture" :disabled="disabled" type="textarea" @update:model-value="(value: string) => updateColumn('habit_culture', value)" /></el-form-item>
           <el-form-item label="家园合作"><el-input :model-value="content.weekly_columns.home_cooperation" :disabled="disabled" type="textarea" @update:model-value="(value: string) => updateColumn('home_cooperation', value)" /></el-form-item>
         </el-form>
+      </el-card>
+
+      <el-card shadow="never" class="block">
+        <div class="card-head">
+          <h3>材料</h3>
+          <el-button size="small" :disabled="disabled || busy || !aiPanel" @click="startAi('materials')">AI 生成材料</el-button>
+        </div>
+        <p v-if="!focusSelected" class="muted">
+          未选择重点区域时，AI 只依据当前班级年龄、已保存周主题和已有可靠选择给出“建议材料”，每项无原文证据，请预览核对后采用。
+          <el-button text :disabled="disabled" @click="requestFocusArea">前往重点区域</el-button>
+        </p>
+        <el-input
+          v-if="materialEditable"
+          :model-value="content.materials ?? ''"
+          type="textarea"
+          :disabled="disabled"
+          placeholder="已采用材料正文；可编辑或清空"
+          @update:model-value="updateMaterials"
+        />
+        <p v-else class="muted">尚无已采用材料候选；生成并采用后可编辑或清空。</p>
+        <el-button v-if="materialEditable" size="small" :disabled="disabled || busy" @click="saveMaterials">保存材料正文</el-button>
+        <p v-if="materialNotice" class="muted">{{ materialNotice }}</p>
       </el-card>
 
       <el-card v-if="overviewMissingLabel(facts.missing.length) || overviewStaleLabel(facts.stale_sources.length)" shadow="never" class="block">
@@ -701,33 +810,48 @@ defineExpose({ resetForContext })
         <el-button :disabled="disabled" @click="refreshPreviewData = null">取消刷新预览</el-button>
       </el-card>
 
-      <div v-if="busy" class="muted">正在处理保存/刷新/确认/导出；仍可继续编辑表单。</div>
+      <WeeklyAiPanel
+        ref="aiPanel"
+        v-if="controller"
+        v-model:selected-columns="selectedAiColumns"
+        :controller="controller"
+        :plan-id="planId"
+        :detail="detail"
+        :focus-selected="focusSelected"
+        :disabled="disabled || loading"
+        :profile-epoch="profileEpoch"
+        :session-epoch="sessionEpoch"
+        @busy="onAiBusy"
+        @blocking="onAiBlocking"
+        @focus-area="onAiFocusArea"
+      />
+
+      <div v-if="busy" class="muted">正在处理保存/刷新/AI/确认/导出；仍可继续编辑表单。</div>
     </template>
 
-    <el-dialog v-model="confirmOpen" :title="reissueSource ? '另存为当前学期名版本' : '确认当前周计划'" width="760px">
+    <el-dialog v-model="confirmOpen" title="另存为当前学期名版本" width="760px">
       <template v-if="confirmPreview">
         <p v-if="reissueSource" data-d1="weekly-reissue-source">
           来源历史确认 v{{ reissueSource.confirmation.version }}（{{ reissueSource.term_name ?? reissueSource.snapshot.term_name ?? '历史学期' }}）
           → 目标名称：{{ confirmPreview.target.term_name ?? '当前学期' }}。
-          确认后追加新的历史版本；当前已存草稿保留。
+          确认后追加新的历史版本；当前已存草稿和现有历史快照均保留。
         </p>
         <p>真实日期：{{ confirmPreview.target.date_range.start }} ~ {{ confirmPreview.target.date_range.end }} · 草稿 v{{ confirmPreview.target.draft_version }} · {{ confirmPreview.target.header.class_name }}</p>
         <h4>完整目标</h4><ul><li v-for="line in targetLines(confirmPreview.target)" :key="line">{{ line }}</li></ul>
         <p v-if="confirmDateLoading">正在只读核对来源日期…</p>
         <p v-if="confirmDateNotice">来源日期：{{ confirmDateNotice }}</p>
-        <h4>缺项/来源变化（需明确确认）</h4>
+        <h4>缺项/来源变化</h4>
         <p v-if="!confirmPreview.target.facts.missing.length && !confirmPreview.target.facts.stale_sources.length">无</p>
         <ul>
           <li v-for="fact in confirmPreview.target.facts.missing" :key="'cm' + fact.code + fact.field_path">{{ formatWeeklyFact(fact) }}</li>
           <li v-for="fact in confirmPreview.target.facts.stale_sources" :key="'cs' + fact.code + fact.field_path">{{ formatWeeklyFact(fact) }}</li>
         </ul>
-        <el-checkbox v-model="ackMissing">我确认已知悉缺项</el-checkbox>
-        <el-checkbox v-model="ackStale">我确认已知悉旧来源/变化</el-checkbox>
+        <p class="muted">点击“确认另存”即表示已核对上述内容；现有历史快照不会被改写。</p>
         <el-input v-model="confirmNote" type="textarea" placeholder="可选备注" />
       </template>
       <template #footer>
         <el-button :disabled="disabled" @click="confirmOpen = false">取消</el-button>
-        <el-button type="primary" :disabled="disabled || busy" @click="confirmTarget">确认此目标</el-button>
+        <el-button type="primary" :disabled="disabled || busy" @click="confirmTarget">确认另存</el-button>
       </template>
     </el-dialog>
 
@@ -739,6 +863,7 @@ defineExpose({ resetForContext })
       :disabled="disabled || loading || reissuePending"
       @busy="onSharedBusy"
       @blocking="onSharedBlocking"
+      @open-history="openHistoryFromShared"
     />
 
     <WeeklyHistoryPanel
@@ -751,7 +876,18 @@ defineExpose({ resetForContext })
       @close="onHistoryClosed"
     />
 
-    <WeeklyExportDialog v-if="detail" v-model:open="exportOpen" :plan-id="detail.plan.id" mode="single" :confirmation="exportConfirmation" :disabled="disabled" :host="weeklyHost" @busy="onExportBusy" />
+    <WeeklyCurrentExportDialog
+      v-if="detail && controller"
+      v-model:open="exportOpen"
+      :plan-id="detail.plan.id"
+      :controller="controller"
+      :detail="detail"
+      :disabled="disabled"
+      :host="weeklyHost"
+      @busy="onExportBusy"
+    />
+
+    <WeeklyExportDialog v-if="detail" v-model:open="historyExportOpen" :plan-id="detail.plan.id" mode="single" :confirmation="exportConfirmation" :disabled="disabled" :host="weeklyHost" @busy="onExportBusy" />
   </section>
 </template>
 
@@ -760,6 +896,11 @@ defineExpose({ resetForContext })
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
 .actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .block { margin: 0.75rem 0; border-color: var(--kgm-border); background: var(--kgm-surface); }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+.card-head h3 { margin: 0.25rem 0; }
+.ai-inline { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.ai-inline :deep(.el-checkbox-group) { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.override-line { display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0.3rem; color: var(--kgm-muted); font-size: 0.8rem; }
 .focus-anchor:focus { outline: 2px solid var(--kgm-accent); outline-offset: 4px; }
 .focus-anchor:focus .block { border-color: var(--kgm-accent); }
 .source-line, .muted { color: var(--kgm-muted); margin-bottom: 0.25rem; }

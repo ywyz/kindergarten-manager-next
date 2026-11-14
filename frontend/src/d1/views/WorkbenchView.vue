@@ -9,7 +9,7 @@
  * All date/term/list reads carry a request sequence so only the response for
  * the current selection is applied.
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiGet, ApiError, pathSegment } from '../client'
 import WorkbenchTodoPanel from './WorkbenchTodoPanel.vue'
@@ -53,6 +53,7 @@ function frozenNow(): boolean {
 }
 
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
+const activePanel = ref<'daily' | 'todos'>('daily')
 const termFilter = ref<string | null>(null)
 const month = ref<string>(currentMonth())
 const todayIso = ref(toIso(new Date()))
@@ -324,9 +325,26 @@ const todayPlan = computed(
 )
 
 const dailyPlanModule = ref<HTMLElement | null>(null)
+
+function showPanel(panel: 'daily' | 'todos'): void {
+  if (frozenNow()) return
+  activePanel.value = panel
+}
+
+function showDailyPlan(): void {
+  showPanel('daily')
+}
+
+function showTodos(): void {
+  showPanel('todos')
+}
+
 function openDailyPlanModule(): void {
   if (frozenNow()) return
-  dailyPlanModule.value?.scrollIntoView?.({ block: 'start' })
+  activePanel.value = 'daily'
+  void nextTick(() => {
+    dailyPlanModule.value?.scrollIntoView?.({ block: 'start' })
+  })
 }
 
 async function openSettings(): Promise<void> {
@@ -415,135 +433,176 @@ defineExpose({ reload: load })
     </div>
 
 
-    <WorkbenchTodoPanel
-      :profile-id="props.context.profile?.id ?? ''"
-      :disabled="frozen"
-      @busy="onTodoBusy"
-    />
-
-    <el-alert
-      v-if="loadError"
-      type="error"
-      :closable="false"
-      :title="loadError"
-      class="block"
-    >
-      <el-button size="small" @click="load">重试</el-button>
-    </el-alert>
-
-    <section
-      ref="dailyPlanModule"
-      class="daily-plan-module"
-      data-d1="daily-plan-module"
-    >
-      <div class="module-head">
-        <h3>日计划</h3>
-        <span v-if="todayPlan" class="muted" data-d1="daily-plan-module-status">
-          今天已有计划 · 内容版本 v{{ todayPlan.current_content_version }}
-        </span>
-        <span v-else class="muted" data-d1="daily-plan-module-status">
-          今天尚无已保存计划；可在下方日历确认新建。
-        </span>
-      </div>
-      <el-card shadow="never" class="block">
-      <div class="filters">
-        <el-button data-d1="term-all" :disabled="frozen" @click="returnToToday">
-          回到今天
-        </el-button>
-        <el-radio-group
-          :model-value="termFilter ?? ''"
-          :disabled="frozen"
-          @change="onTermChange"
-        >
-          <el-radio-button
-            v-for="term in props.context.terms"
-            :key="term.id"
-            :value="term.id"
-            :data-d1="`term-${term.id}`"
-          >
-            {{ term.name }}
-          </el-radio-button>
-        </el-radio-group>
-        <el-date-picker
-          v-model="month"
-          type="month"
-          value-format="YYYY-MM"
-          :clearable="false"
-          :disabled="frozen"
-          data-d1="month-picker"
-        />
-      </div>
-      <p class="muted">
-        {{ heading }}；点击可创建的日期先确认再新建，已有计划直接打开。
-      </p>
-
-      <div v-loading="loading" class="calendar" data-d1="calendar" aria-label="月历">
-        <div v-for="label in WEEKDAY_LABELS" :key="label" class="weekday" data-d1="weekday">
-          {{ label }}
-        </div>
-        <template v-for="cell in calendarCells" :key="cell.key">
-          <div
-            v-if="cell.day"
-            class="day"
-            :class="cellClasses(cell.day)"
-            :data-d1="`day-${cell.day.date}`"
-            :data-today="cell.day.date === todayIso ? 'true' : undefined"
-            :aria-current="cell.day.date === todayIso ? 'date' : undefined"
-            @click="clickCell(cell)"
-          >
-            <div class="day-date">
-              {{ cell.day.date }}<span v-if="cell.day.date === todayIso" class="today-badge">今天</span>
-            </div>
-            <div class="day-state">
-              {{ stateLabel(cell.day.effective_state) }}
-              <template v-if="cell.day.week_number">· 第{{ cell.day.week_number }}周</template>
-            </div>
-            <div class="day-note">
-              {{ cellNote(cell.day) }}
-            </div>
-          </div>
-          <div v-else class="day blank" aria-hidden="true"></div>
-        </template>
-      </div>
-    </el-card>
-
-    <el-card shadow="never" class="block">
-      <template #header>
-        <span>日计划历史 · {{ selectedTerm ? '该学期已保存计划' : '本月已保存计划' }}</span>
-      </template>
-      <el-empty
-        v-if="!(termPlans ?? monthPlans).length"
-        description="暂无已保存的日计划"
-      />
-      <el-table
-        v-else
-        :data="termPlans ?? monthPlans"
-        size="small"
-        data-d1="plan-list"
+    <div class="workbench-body">
+      <nav
+        class="workbench-sidebar"
+        aria-label="工作台模块"
+        data-d1="workbench-sidebar"
       >
-        <el-table-column prop="plan_date" label="日期" width="120" />
-        <el-table-column label="周次" width="90">
-          <template #default="{ row }">第{{ row.week_number }}周</template>
-        </el-table-column>
-        <el-table-column prop="current_content_version" label="内容版本" width="90" />
-        <el-table-column label="状态提示">
-          <template #default="{ row }">
-            <span v-if="selectedTerm">
-              {{ termStatusByDate[row.plan_date] || '当前范围有效' }}
-            </span>
-            <span v-else>当前月份</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="" width="100">
-          <template #default="{ row }">
-            <el-button size="small" data-d1="open-plan" @click="openListItem(row)">
-              打开
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-    </section>
+        <el-button
+          :type="activePanel === 'daily' ? 'primary' : 'default'"
+          :aria-current="activePanel === 'daily' ? 'page' : undefined"
+          :disabled="frozen"
+          data-d1="workbench-nav-daily"
+          @click="showDailyPlan"
+        >
+          日计划
+        </el-button>
+        <el-button
+          :type="activePanel === 'todos' ? 'primary' : 'default'"
+          :aria-current="activePanel === 'todos' ? 'page' : undefined"
+          :disabled="frozen"
+          data-d1="workbench-nav-todos"
+          @click="showTodos"
+        >
+          个人待办
+        </el-button>
+      </nav>
+
+      <div class="workbench-content">
+        <el-alert
+          v-if="loadError"
+          type="error"
+          :closable="false"
+          :title="loadError"
+          class="block"
+        >
+          <el-button size="small" @click="load">重试</el-button>
+        </el-alert>
+
+        <div
+          v-show="activePanel === 'todos'"
+          class="workbench-pane"
+          data-d1="workbench-todos-pane"
+        >
+          <WorkbenchTodoPanel
+            :profile-id="props.context.profile?.id ?? ''"
+            :disabled="frozen"
+            @busy="onTodoBusy"
+          />
+        </div>
+
+        <div
+          v-show="activePanel === 'daily'"
+          class="workbench-pane"
+          data-d1="workbench-daily-pane"
+        >
+          <section
+            ref="dailyPlanModule"
+            class="daily-plan-module"
+            data-d1="daily-plan-module"
+          >
+            <div class="module-head">
+              <h3>日计划</h3>
+              <span v-if="todayPlan" class="muted" data-d1="daily-plan-module-status">
+                今天已有计划 · 内容版本 v{{ todayPlan.current_content_version }}
+              </span>
+              <span v-else class="muted" data-d1="daily-plan-module-status">
+                今天尚无已保存计划；可在下方日历确认新建。
+              </span>
+            </div>
+            <el-card shadow="never" class="block">
+            <div class="filters">
+              <el-button data-d1="term-all" :disabled="frozen" @click="returnToToday">
+                回到今天
+              </el-button>
+              <el-radio-group
+                :model-value="termFilter ?? ''"
+                :disabled="frozen"
+                @change="onTermChange"
+              >
+                <el-radio-button
+                  v-for="term in props.context.terms"
+                  :key="term.id"
+                  :value="term.id"
+                  :data-d1="`term-${term.id}`"
+                >
+                  {{ term.name }}
+                </el-radio-button>
+              </el-radio-group>
+              <el-date-picker
+                v-model="month"
+                type="month"
+                value-format="YYYY-MM"
+                :clearable="false"
+                :disabled="frozen"
+                data-d1="month-picker"
+              />
+            </div>
+            <p class="muted">
+              {{ heading }}；点击可创建的日期先确认再新建，已有计划直接打开。
+            </p>
+
+            <div v-loading="loading" class="calendar" data-d1="calendar" aria-label="月历">
+              <div v-for="label in WEEKDAY_LABELS" :key="label" class="weekday" data-d1="weekday">
+                {{ label }}
+              </div>
+              <template v-for="cell in calendarCells" :key="cell.key">
+                <div
+                  v-if="cell.day"
+                  class="day"
+                  :class="cellClasses(cell.day)"
+                  :data-d1="`day-${cell.day.date}`"
+                  :data-today="cell.day.date === todayIso ? 'true' : undefined"
+                  :aria-current="cell.day.date === todayIso ? 'date' : undefined"
+                  @click="clickCell(cell)"
+                >
+                  <div class="day-date">
+                    {{ cell.day.date }}<span v-if="cell.day.date === todayIso" class="today-badge">今天</span>
+                  </div>
+                  <div class="day-state">
+                    {{ stateLabel(cell.day.effective_state) }}
+                    <template v-if="cell.day.week_number">· 第{{ cell.day.week_number }}周</template>
+                  </div>
+                  <div class="day-note">
+                    {{ cellNote(cell.day) }}
+                  </div>
+                </div>
+                <div v-else class="day blank" aria-hidden="true"></div>
+              </template>
+            </div>
+          </el-card>
+
+          <el-card shadow="never" class="block">
+            <template #header>
+              <span>日计划历史 · {{ selectedTerm ? '该学期已保存计划' : '本月已保存计划' }}</span>
+            </template>
+            <el-empty
+              v-if="!(termPlans ?? monthPlans).length"
+              description="暂无已保存的日计划"
+            />
+            <el-table
+              v-else
+              :data="termPlans ?? monthPlans"
+              size="small"
+              data-d1="plan-list"
+            >
+              <el-table-column prop="plan_date" label="日期" width="120" />
+              <el-table-column label="周次" width="90">
+                <template #default="{ row }">第{{ row.week_number }}周</template>
+              </el-table-column>
+              <el-table-column prop="current_content_version" label="内容版本" width="90" />
+              <el-table-column label="状态提示">
+                <template #default="{ row }">
+                  <span v-if="selectedTerm">
+                    {{ termStatusByDate[row.plan_date] || '当前范围有效' }}
+                  </span>
+                  <span v-else>当前月份</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="" width="100">
+                <template #default="{ row }">
+                  <el-button size="small" data-d1="open-plan" @click="openListItem(row)">
+                    打开
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+          </section>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -560,6 +619,39 @@ defineExpose({ reload: load })
   flex-wrap: wrap;
   gap: 8px;
 }
+.workbench-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 16px;
+}
+.workbench-sidebar {
+  flex: 0 0 128px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: sticky;
+  top: 12px;
+}
+.workbench-sidebar :deep(.el-button) {
+  margin-left: 0;
+  width: 100%;
+  justify-content: flex-start;
+}
+.workbench-sidebar :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+.workbench-content {
+  flex: 1;
+  min-width: 0;
+}
+.workbench-pane {
+  min-width: 0;
+}
+.workbench-pane .daily-plan-module,
+.workbench-pane :deep(.block) {
+  margin-top: 0;
+}
 .block {
   margin-top: 16px;
 }
@@ -573,6 +665,27 @@ defineExpose({ reload: load })
   margin-top: 16px;
   border-left: 3px solid var(--kgm-accent);
   padding-left: 12px;
+}
+@media (max-width: 760px) {
+  .workbench-body {
+    flex-direction: column;
+    gap: 0;
+  }
+  .workbench-sidebar {
+    position: static;
+    flex-basis: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .workbench-sidebar :deep(.el-button) {
+    flex: 1 1 140px;
+    width: auto;
+    justify-content: center;
+  }
+  .workbench-content {
+    width: 100%;
+  }
 }
 .module-head {
   display: flex;

@@ -17,6 +17,7 @@ import {
   type WeeklyFacts,
   type WeeklyList,
   type WeeklyPlanSummary,
+  type WeeklySourceCandidate,
 } from '../weekly'
 import type { LocalContext, LocalTermContext } from '../types'
 
@@ -363,6 +364,17 @@ watch([createTermId, createWeekNumber, createAnchor], () => {
 })
 const previewHeader = computed(() => preview.value ? (preview.value.status === 'new' ? preview.value.header : preview.value.plan.header) : null)
 const previewFacts = computed(() => preview.value?.facts ?? { missing: [], stale_sources: [], warnings: [] })
+const previewCandidates = computed(() => preview.value?.source_candidates ?? [])
+const previewGameSlots = [
+  { key: 'collective_1', label: '集体游戏一', category: 'collective' },
+  { key: 'collective_2', label: '集体游戏二', category: 'collective' },
+  { key: 'free_choice_1', label: '自选游戏', category: 'free_choice' },
+] as const
+function previewGames(category: 'collective' | 'free_choice'): WeeklySourceCandidate[] {
+  return previewCandidates.value.filter(
+    (candidate) => candidate.section === 'morning_games' && candidate.category === category,
+  )
+}
 function overviewMissingLabel(count: number | undefined): string {
   if (!count || count < 1) return ''
   return count === 1 ? '有一项未填写' : '多项未填写'
@@ -441,6 +453,16 @@ onMounted(async () => { await loadTerms(); await load(true) })
         <h4>日期与来源</h4>
         <p v-if="preview.status === 'new'">{{ preview.calendar.term_start }} ~ {{ preview.calendar.term_end }}；来源 {{ preview.source_candidates.length }} 项</p>
         <p v-if="preview.status === 'existing'">已有周计划，打开现有记录，不重新播种来源。</p>
+        <p>已自动读取本周本人有效日计划；游戏仅列为备选，不会自动写入，仍可手工填写。</p>
+        <ul class="preview-games">
+          <li v-for="slot in previewGameSlots" :key="slot.key">
+            {{ slot.label }}：
+            <template v-if="previewGames(slot.category).length">
+              {{ previewGames(slot.category).map((candidate) => `${candidate.date} ${candidate.name}`).join('、') }}
+            </template>
+            <template v-else>无候选，可手工填写</template>
+          </li>
+        </ul>
         <ul v-if="previewFacts.missing.length">
           <li v-for="fact in previewFacts.missing" :key="fact.code + fact.field_path">{{ formatWeeklyFact(fact) }}</li>
         </ul>

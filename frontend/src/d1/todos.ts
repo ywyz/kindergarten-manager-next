@@ -41,7 +41,7 @@ export interface TodoOperationResult {
 
 export interface TodoWritePending {
   requestId: string
-  action: 'create' | 'update' | 'delete' | 'batch_archive' | 'batch_delete'
+  action: 'create' | 'update' | 'delete' | 'unarchive' | 'batch_archive' | 'batch_delete'
   todoId: string | null
   fields: Record<string, unknown>
   ownsDraft: boolean
@@ -60,6 +60,7 @@ export interface TodoApi {
   create: (body: Record<string, unknown>) => Promise<LocalTodo>
   update: (todoId: string, body: Record<string, unknown>) => Promise<LocalTodo>
   remove: (todoId: string, body: Record<string, unknown>) => Promise<TodoOperationResult>
+  unarchive: (todoId: string, body: Record<string, unknown>) => Promise<LocalTodo>
   batch: (body: Record<string, unknown>) => Promise<TodoOperationResult>
   operation: (requestId: string) => Promise<TodoOperationResult>
 }
@@ -75,6 +76,8 @@ export function createTodoApi(): TodoApi {
       apiPatch<LocalTodo>(`${TODO_ROOT}/${pathSegment(todoId)}`, body),
     remove: (todoId, body) =>
       apiDelete<TodoOperationResult>(`${TODO_ROOT}/${pathSegment(todoId)}`, body),
+    unarchive: (todoId, body) =>
+      apiPost<LocalTodo>(`${TODO_ROOT}/${pathSegment(todoId)}/unarchive`, body),
     batch: (body) => apiPost<TodoOperationResult>(`${TODO_ROOT}/batch`, body),
     operation: (requestId) =>
       apiGet<TodoOperationResult>(
@@ -555,6 +558,47 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
     }
   }
 
+  async function unarchive(item: LocalTodo): Promise<void> {
+    if (state.pending || state.saving || state.batching || !state.listReady) return
+    if (!item.archived_at) return
+    const profileId = state.profileId
+    const requestId = crypto.randomUUID()
+    const attempt: TodoWritePending = {
+      requestId,
+      action: 'unarchive',
+      todoId: item.todo_id,
+      fields: { expected_version: item.version },
+      ownsDraft: false,
+      draftSession,
+    }
+    state.error = ''
+    state.notice = ''
+    state.saving = true
+    try {
+      const todo = await api.unarchive(item.todo_id, {
+        request_id: requestId,
+        ...attempt.fields,
+      })
+      if (state.profileId !== profileId) return
+      applyTodo(todo)
+      state.conflict = false
+      state.notice = '待办已取消归档'
+    } catch (error) {
+      if (state.profileId !== profileId) return
+      const projected = projectTodoError(error)
+      if (projected.unknown) {
+        state.pending = attempt
+        state.notice = projected.message
+      } else if (projected.code === 'TODO_VERSION_CONFLICT') {
+        applyConflict(projected)
+      } else {
+        state.error = projected.message
+      }
+    } finally {
+      if (state.profileId === profileId) state.saving = false
+    }
+  }
+
   async function runBatch(
     action: 'archive' | 'delete',
     selected: LocalTodo[],
@@ -677,6 +721,13 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
             ...pending.fields,
           }),
         }
+      } else if (pending.action === 'unarchive') {
+        result = {
+          todo: await api.unarchive(pending.todoId!, {
+            request_id: pending.requestId,
+            ...pending.fields,
+          }),
+        }
       } else if (pending.action === 'delete') {
         result = await api.remove(pending.todoId!, {
           request_id: pending.requestId,
@@ -736,6 +787,7 @@ export function createTodoStore(api: TodoApi = createTodoApi()) {
     save,
     toggle,
     remove,
+    unarchive,
     archiveBatch,
     deleteBatch,
     queryPending,

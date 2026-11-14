@@ -138,10 +138,6 @@ def _weekly_date_range(start: date, end: date) -> str:
     )
 
 
-def _joined(values) -> str:
-    return "；".join(v for v in values if isinstance(v, str) and v)
-
-
 def _game_names(group) -> str:
     if not isinstance(group, dict):
         return ""
@@ -539,36 +535,27 @@ def _fill_daily_morning(row_body, morning_games):
 
 
 def _fill_daily_morning_shared(row_group, morning_games):
+    """Write each morning group's own value under one fixed field label.
+
+    The collective and free-choice groups are independent form sections; joining
+    them with a separator made the Word detail look like one shared value and
+    risked cross-group content.  The fixed label stays once so an empty export
+    keeps the template's labels, then each non-empty group is named explicitly.
+    """
     collective = morning_games.get("collective")
     free_choice = morning_games.get("free_choice")
     writer = _CellWriter(_cells(row_group)[1])
-    writer.field(
-        "重点指导：",
-        _joined(
-            [
-                _morning_group_field(collective, "focus_guidance"),
-                _morning_group_field(free_choice, "focus_guidance"),
-            ]
-        ),
-    )
-    writer.field(
-        "活动目标：",
-        _joined(
-            [
-                _morning_group_field(collective, "shared_objectives"),
-                _morning_group_field(free_choice, "shared_objectives"),
-            ]
-        ),
-    )
-    writer.field(
-        "指导要点：",
-        _joined(
-            [
-                _morning_group_field(collective, "guidance_points"),
-                _morning_group_field(free_choice, "guidance_points"),
-            ]
-        ),
-    )
+
+    def group_values(label: str, field_name: str) -> None:
+        writer.line(label)
+        for name, group in (("集体游戏", collective), ("自主游戏", free_choice)):
+            value = _morning_group_field(group, field_name)
+            if value:
+                writer.line(f"{name}：{value}")
+
+    group_values("重点指导：", "focus_guidance")
+    group_values("活动目标：", "shared_objectives")
+    group_values("指导要点：", "guidance_points")
 
 
 def _fill_daily_talk(rows, talk):
@@ -600,9 +587,11 @@ def _fill_daily_post_block(block_rows, group):
 
     area = group.get("area") if isinstance(group, dict) else None
     games = _game_names(group)
-    area_text = "、".join(part for part in [area, games] if part)
     writer = _CellWriter(_cells(block_rows[0])[1])
-    writer.field("游戏区域：", area_text)
+    # Area and game names are separate detail fields; keep them on their own
+    # lines so a game name can never be mistaken for part of the area name.
+    writer.field("游戏区域：", area)
+    writer.field("游戏：", games)
 
     writer = _CellWriter(_cells(block_rows[1])[1])
     writer.field("重点指导：", group.get("focus_guidance") if group else None)
@@ -630,11 +619,11 @@ def _fill_daily_legacy_afternoon(block_rows, groups):
         if not isinstance(group, dict):
             continue
         area = _nonempty_text(group.get("area"))
-        area_text = "、".join(
-            part for part in [area, _game_names(group)] if part
-        )
-        if area_text:
-            area_writer.line(f"游戏区域：{area_text}")
+        games = _game_names(group)
+        if area:
+            area_writer.line(f"游戏区域：{area}")
+        if games:
+            area_writer.line(f"游戏：{games}")
 
     field_writer = _CellWriter(_cells(block_rows[1])[1])
     for group in groups:
@@ -664,8 +653,9 @@ def _fill_daily_afternoon(block_rows, afternoon, legacy_groups=None):
         return
     area = afternoon.get("area") if isinstance(afternoon, dict) else None
     games = _game_names(afternoon)
-    area_text = "、".join(part for part in [area, games] if part)
-    _CellWriter(_cells(block_rows[0])[1]).field("游戏区域：", area_text)
+    area_writer = _CellWriter(_cells(block_rows[0])[1])
+    area_writer.field("游戏区域：", area)
+    area_writer.field("游戏：", games)
     writer = _CellWriter(_cells(block_rows[1])[1])
     writer.field("重点观察：", afternoon.get("observation_focus") if afternoon else None)
     writer.field("活动目标：", afternoon.get("objectives") if afternoon else None)

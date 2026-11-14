@@ -269,19 +269,25 @@ function beginEdit(item: LocalTodo): void {
         :data-d1="`todo-row-${item.todo_id}`"
       >
         <el-checkbox
+          class="todo-select-box"
           :model-value="state.selectedIds.includes(item.todo_id)"
           :disabled="writeDisabled"
           :aria-label="`选择待办 ${item.title}`"
           :data-d1="`todo-select-${item.todo_id}`"
           @change="toggleSelection(item, $event === true)"
         />
-        <el-checkbox
-          :model-value="item.completed"
+        <button
+          type="button"
+          class="todo-complete-toggle"
+          :class="{ completed: item.completed }"
           :disabled="writeDisabled || !!item.archived_at"
-          :aria-label="`完成待办 ${item.title}`"
+          :aria-label="item.completed ? `将待办标记为未完成：${item.title}` : `将待办标记为已完成：${item.title}`"
+          :aria-pressed="item.completed"
           :data-d1="`todo-toggle-${item.todo_id}`"
-          @change="activeStore.toggle(item)"
-        />
+          @click="activeStore.toggle(item)"
+        >
+          <span class="todo-complete-mark" aria-hidden="true">✓</span>
+        </button>
         <div class="todo-main">
           <div class="todo-title">{{ item.title }}</div>
           <div class="todo-meta">
@@ -299,6 +305,17 @@ function beginEdit(item: LocalTodo): void {
           @click="beginEdit(item)"
         >
           编辑
+        </el-button>
+        <el-button
+          v-if="state.showArchived"
+          size="small"
+          text
+          type="primary"
+          :disabled="writeDisabled"
+          :data-d1="`todo-unarchive-${item.todo_id}`"
+          @click="activeStore.unarchive(item)"
+        >
+          取消归档
         </el-button>
         <el-button
           size="small"
@@ -337,6 +354,44 @@ function beginEdit(item: LocalTodo): void {
 }
 .todo-row.selected {
   background: var(--el-fill-color-light);
+}
+.todo-select-box :deep(.el-checkbox__inner) {
+  border-radius: 2px;
+}
+.todo-complete-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 2px solid var(--kgm-border);
+  border-radius: 50%;
+  background: var(--kgm-surface);
+  color: transparent;
+  cursor: pointer;
+  line-height: 1;
+}
+.todo-complete-toggle:hover:not(:disabled) {
+  border-color: var(--kgm-success);
+}
+.todo-complete-toggle:focus-visible {
+  outline: 2px solid var(--kgm-focus);
+  outline-offset: 2px;
+}
+.todo-complete-toggle.completed {
+  border-color: var(--kgm-success);
+  background: var(--kgm-success);
+  color: #fff;
+}
+.todo-complete-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.todo-complete-mark {
+  font-size: 14px;
+  font-weight: 700;
 }
 .todo-form {
   display: flex;
@@ -389,5 +444,20 @@ function beginEdit(item: LocalTodo): void {
   font-size: 12px;
   margin-top: 2px;
   flex-wrap: wrap;
+}
+@media (max-width: 640px) {
+  .todo-form :deep(.el-input) {
+    min-width: 0;
+    width: 100%;
+  }
+  .todo-form :deep(.el-date-editor) {
+    width: 100%;
+  }
+  .todo-row {
+    flex-wrap: wrap;
+  }
+  .todo-main {
+    flex-basis: calc(100% - 68px);
+  }
 }
 </style>

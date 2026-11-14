@@ -20,6 +20,17 @@ const viewFile = process.env.KGM_WORKBENCH_VIEW || path.join(d1Dir, 'views', 'Wo
 const source = fs.readFileSync(viewFile, 'utf8')
 assert.match(source, /data-d1="daily-plan-module"/)
 assert.match(source, /data-d1="open-daily-plan"/)
+assert.match(source, /data-d1="workbench-sidebar"/)
+assert.match(source, /data-d1="workbench-nav-daily"/)
+assert.match(source, /data-d1="workbench-nav-todos"/)
+assert.match(source, /data-d1="workbench-daily-pane"/)
+assert.match(source, /data-d1="workbench-todos-pane"/)
+assert.match(source, /v-show="activePanel === 'daily'"/)
+assert.match(source, /v-show="activePanel === 'todos'"/)
+assert.ok(
+  source.includes("const activePanel = ref<'daily' | 'todos'>('daily')"),
+  'daily plan is the default workbench pane',
+)
 assert.ok(
   source.indexOf('data-d1="open-daily-plan"') <
     source.indexOf('<WorkbenchTodoPanel'),
@@ -599,8 +610,48 @@ function assertMonthGrid(section, month) {
 {
   assert.match(source, /grid-template-columns:\s*repeat\(7,\s*minmax\(88px,\s*1fr\)\)/)
   assert.match(source, /overflow-x:\s*auto/)
+  assert.match(source, /@media \(max-width: 760px\)/)
   assert.equal(/grid-auto-flow|auto-fill|auto-fit/.test(source), false)
-  ok('calendar CSS keeps seven fixed columns with horizontal scrolling')
+  ok('calendar CSS keeps seven fixed columns with horizontal scrolling and a narrow-window breakpoint')
+}
+
+// Workbench side navigation shows one pane without refetching or losing state.
+{
+  let calendarCalls = 0
+  const apiGet = async (url) => {
+    const target = String(url)
+    if (target.startsWith('/api/local/calendar')) {
+      calendarCalls += 1
+      return {
+        from_date: '',
+        to_date: '',
+        items: monthDates(monthFromUrl(target)).map((date) => calendarItem(date)),
+      }
+    }
+    if (target.startsWith('/api/daily-plans')) return { items: [], next_cursor: null }
+    throw new Error(`unexpected apiGet ${target}`)
+  }
+  const { state } = await mountWorkbench({ apiGet })
+  assert.equal(state.activePanel.value, 'daily')
+  const callsAfterMount = calendarCalls
+  const monthBefore = state.month.value
+  state.showTodos()
+  assert.equal(state.activePanel.value, 'todos')
+  await settle()
+  assert.equal(calendarCalls, callsAfterMount)
+  assert.equal(state.month.value, monthBefore)
+  const todosHtml = await renderWorkbench(state, state.props)
+  assert.match(todosHtml, /data-d1="workbench-daily-pane"[^>]*display:\s*none/)
+  assert.match(todosHtml, /data-d1="workbench-todos-pane"/)
+  state.showDailyPlan()
+  assert.equal(state.activePanel.value, 'daily')
+  const dailyHtml = await renderWorkbench(state, state.props)
+  assert.match(dailyHtml, /data-d1="workbench-todos-pane"[^>]*display:\s*none/)
+  assert.match(dailyHtml, /data-d1="workbench-daily-pane"/)
+  state.props.frozen = true
+  state.showTodos()
+  assert.equal(state.activePanel.value, 'daily')
+  ok('workbench sidebar switches one pane, keeps the month query and state, and respects freeze')
 }
 
 console.log(`workbench: ${passed} checks passed`)

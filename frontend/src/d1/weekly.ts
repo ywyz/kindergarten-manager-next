@@ -320,9 +320,18 @@ export interface WeeklyList {
   term_week_numbers?: number[]
 }
 
+export interface WeeklyDailyFollow {
+  deterministic: WeeklyDay[]
+  source_manifest_sources: Array<Record<string, unknown>>
+  content_hash: string
+  changed: boolean
+}
+
 export interface WeeklyDetail {
   plan: WeeklyPlanSummary
   draft: WeeklyDraft
+  /** Read-only projection of the latest saved daily text; never a draft write. */
+  daily_follow?: WeeklyDailyFollow | null
   confirmed: WeeklyConfirmationSummary | null
   source_candidates: WeeklySourceCandidate[]
   source_context_hash: string

@@ -87,6 +87,14 @@
       </section>
 
       <section>
+        <h2>已有园所名称</h2>
+        <p class="muted">只修改园所显示名称；园所和班级稳定 ID、班级关系与教师绑定保持不变。</p>
+        <p class="error" id="school-error" role="alert"></p>
+        <p class="muted" id="school-notice"></p>
+        <div class="list-block" id="school-list"></div>
+      </section>
+
+      <section>
         <h2>已有学期名称</h2>
         <p class="muted">只修改名称，学期 ID、开始日期和结束日期保持不变。</p>
         <div class="row">
@@ -180,6 +188,9 @@
       var loginButton = document.getElementById("login-button");
       var schoolSelect = document.getElementById("school");
       var teacherSelect = document.getElementById("teacher");
+      var schoolList = document.getElementById("school-list");
+      var schoolError = document.getElementById("school-error");
+      var schoolNotice = document.getElementById("school-notice");
       var termSchool = document.getElementById("term-school");
       var termEmpty = document.getElementById("term-empty");
       var termError = document.getElementById("term-error");
@@ -304,6 +315,7 @@
           termOption.textContent = school.name;
           termSchool.appendChild(termOption);
         });
+        renderSchools();
         await loadTeachers();
         await loadTerms();
       }
@@ -404,6 +416,102 @@
         }
       }
 
+      function refreshSchoolOptions(select) {
+        var selected = select.value;
+        select.textContent = "";
+        state.schools.forEach(function (school) {
+          var option = document.createElement("option");
+          option.value = school.school_id;
+          option.textContent = school.name;
+          select.appendChild(option);
+        });
+        var exists = state.schools.some(function (school) {
+          return school.school_id === selected;
+        });
+        if (exists) select.value = selected;
+      }
+      function renderSchools() {
+        schoolList.textContent = "";
+        if (!state.schools.length) {
+          var empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "尚无园所记录。";
+          schoolList.appendChild(empty);
+          return;
+        }
+        state.schools.forEach(function (school) {
+          var row = document.createElement("div");
+          row.className = "row";
+          row.setAttribute("data-d1", "school-" + school.school_id);
+          var info = document.createElement("div");
+          var title = document.createElement("strong");
+          title.textContent = school.name;
+          var idLine = document.createElement("p");
+          idLine.className = "muted";
+          idLine.textContent = "稳定园所 ID：" + school.school_id;
+          info.appendChild(title);
+          info.appendChild(idLine);
+
+          var editor = document.createElement("div");
+          var label = document.createElement("label");
+          label.textContent = "园所显示名称";
+          label.htmlFor = "school-name-" + school.school_id;
+          var input = document.createElement("input");
+          input.id = "school-name-" + school.school_id;
+          input.value = school.name;
+          input.maxLength = 120;
+          var button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "保存园所名称";
+          button.addEventListener("click", function () {
+            void saveSchool(school, input, button);
+          });
+          editor.appendChild(label);
+          editor.appendChild(input);
+          editor.appendChild(button);
+          row.appendChild(info);
+          row.appendChild(editor);
+          schoolList.appendChild(row);
+        });
+      }
+
+      async function saveSchool(school, input, button) {
+        schoolError.textContent = "";
+        schoolNotice.textContent = "";
+        var next = input.value.trim();
+        if (!next) {
+          schoolError.textContent = "园所名称不能为空";
+          return;
+        }
+        var expected = school.name;
+        button.disabled = true;
+        try {
+          var updated = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(school.school_id),
+            {
+              method: "PATCH",
+              body: { expected_name: expected, new_name: next }
+            }
+          );
+          school.name = updated.name;
+          refreshSchoolOptions(schoolSelect);
+          refreshSchoolOptions(termSchool);
+          renderSchools();
+          schoolNotice.textContent =
+            "园所名称已保存；园所和班级稳定 ID 未改变。";
+        } catch (err) {
+          if (err.status === 409) {
+            schoolError.textContent =
+              "园所名称已在其他窗口修改，请刷新后按最新名称重试";
+          } else {
+            schoolError.textContent = errorText(err);
+          }
+        } finally {
+          button.disabled = false;
+        }
+      }
+
       async function loadTeachers() {
         state.teachers = [];
         teacherSelect.textContent = "";
@@ -443,6 +551,29 @@
         return null;
       }
 
+      function promptTaskLabel(taskType) {
+        var task = promptTaskInfo(taskType);
+        if (task && typeof task.task_label === "string" && task.task_label) {
+          return task.task_label;
+        }
+        return "其他任务";
+      }
+
+      function promptFieldLabel(taskType, fieldName) {
+        var task = promptTaskInfo(taskType);
+        var labels = task && task.field_labels && typeof task.field_labels === "object"
+          ? task.field_labels
+          : null;
+        if (labels && typeof labels[fieldName] === "string" && labels[fieldName]) {
+          return labels[fieldName];
+        }
+        return "其他字段";
+      }
+
+      function promptTaskFieldText(taskType, fieldName) {
+        return promptTaskLabel(taskType) + "（" + taskType + "） / " +
+          promptFieldLabel(taskType, fieldName) + "（" + fieldName + "）";
+      }
       function promptFieldNames(taskType) {
         var task = promptTaskInfo(taskType);
         if (!task || !task.fields || typeof task.fields !== "object") return [];
@@ -503,7 +634,8 @@
         names.forEach(function (fieldName) {
           var option = document.createElement("option");
           option.value = fieldName;
-          option.textContent = fieldName;
+          option.textContent = promptFieldLabel(taskType, fieldName);
+          option.title = fieldName;
           promptField.appendChild(option);
         });
         if (names.indexOf(previous) >= 0) promptField.value = previous;
@@ -519,7 +651,8 @@
         editable.forEach(function (task) {
           var option = document.createElement("option");
           option.value = task.task_type;
-          option.textContent = task.task_type;
+          option.textContent = promptTaskLabel(task.task_type);
+          option.title = task.task_type;
           promptTask.appendChild(option);
         });
         var values = editable.map(function (task) { return task.task_type; });
@@ -546,7 +679,7 @@
             var row = document.createElement("div");
             row.className = "release-row";
             var title = document.createElement("p");
-            title.textContent = taskType + " / " + fieldName;
+            title.textContent = promptTaskFieldText(taskType, fieldName);
             var value = document.createElement("p");
             value.className = "muted";
             value.textContent = fields[fieldName];
@@ -663,7 +796,7 @@
               && hasOwn(changes[task.task_type], fieldName)
               ? changes[task.task_type][fieldName]
               : fields[fieldName];
-            lines.push(task.task_type + " / " + fieldName + "：");
+            lines.push(promptTaskFieldText(task.task_type, fieldName) + "：");
             lines.push(typeof changed === "string" ? changed : "");
             lines.push("");
           });
@@ -674,7 +807,7 @@
             var known = promptTaskInfo(taskType)
               && hasOwn(promptTaskInfo(taskType).fields, fieldName);
             if (known) return;
-            lines.push(taskType + " / " + fieldName + "：");
+            lines.push(promptTaskFieldText(taskType, fieldName) + "：");
             lines.push(String(fields[fieldName]));
             lines.push("");
           });

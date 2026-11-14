@@ -202,6 +202,65 @@ def update_todo(
         raise
 
 
+def unarchive_todo(
+    repo: TodoRepository,
+    *,
+    todo_id: str,
+    request_id: object,
+    expected_version: object,
+) -> dict[str, Any]:
+    rid = normalize_request_id(request_id)
+    expected = domain.normalize_expected_version(expected_version)
+    fingerprint = domain.unarchive_fingerprint(todo_id, expected)
+    repo.begin_write()
+    try:
+        replay = _replay(repo, rid, "update", fingerprint)
+        if replay is not None:
+            _safe_rollback(repo)
+            return replay["todo"]
+        current = repo.get_todo(todo_id)
+        if current is None:
+            raise domain.TodoNotFound()
+        if int(current["version"]) != expected:
+            raise domain.TodoVersionConflict(
+                "待办已在其他窗口更新",
+                details={"todo": domain.todo_to_dict(current)},
+            )
+        if current.get("archived_at") is None:
+            raise domain.TodoInputError(
+                "待办未归档",
+                details={"todo": domain.todo_to_dict(current)},
+            )
+        now = utc_now()
+        updated = {
+            **current,
+            "archived_at": None,
+            "version": expected + 1,
+            "updated_at": now,
+        }
+        repo.update_todo(
+            todo_id,
+            {"archived_at": None, "version": expected + 1, "updated_at": now},
+        )
+        result = {"todo": domain.todo_to_dict(updated)}
+        repo.insert_operation(
+            {
+                "profile_id": repo.profile_id,
+                "request_id": rid,
+                "action": "update",
+                "todo_id": todo_id,
+                "input_fingerprint": fingerprint,
+                "result_json": result,
+                "created_at": now,
+            }
+        )
+        _commit(repo)
+        return result["todo"]
+    except BaseException:
+        _safe_rollback(repo)
+        raise
+
+
 def delete_todo(
     repo: TodoRepository,
     *,
@@ -356,5 +415,6 @@ __all__ = [
     "delete_todo",
     "get_operation",
     "list_todos",
+    "unarchive_todo",
     "update_todo",
 ]

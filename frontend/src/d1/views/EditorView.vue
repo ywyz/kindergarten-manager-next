@@ -18,7 +18,15 @@ import {
   ref,
 } from 'vue'
 import { ElMessage } from 'element-plus'
-import { apiGet, apiPatch, apiPost, apiPostWithStatus, ApiError, pathSegment } from '../client'
+import {
+  apiGet,
+  apiPatch,
+  apiPost,
+  apiPostWithStatus,
+  ApiError,
+  getSessionEpoch,
+  pathSegment,
+} from '../client'
 import { queryAiReceipt, receiptMessage, isIndeterminate } from '../operations'
 import {
   buildSavePayload,
@@ -38,7 +46,12 @@ import {
   type PlanContentForm,
 } from '../../daily-plan-content'
 import type { AdoptedContent } from '../../types'
-import type { AiTask, DailyPlan, Grade, LocalContext, TaskType } from '../types'
+import {
+  applyOtherCandidateToForm,
+  otherBoardsProvided,
+  type OtherBoardName,
+} from '../daily-other-draft'
+import type { AiTask, CandidateDetail, DailyPlan, Grade, LocalContext, TaskType } from '../types'
 import type { SaveOutcome, BlockingDraft } from '../leave'
 import ExportDialog from './ExportDialog.vue'
 import AiTaskPanel from './AiTaskPanel.vue'
@@ -157,6 +170,20 @@ const splitTarget = ref<HTMLElement | null>(null)
 const processTarget = ref<HTMLElement | null>(null)
 const otherTarget = ref<HTMLElement | null>(null)
 const reflectionTarget = ref<HTMLElement | null>(null)
+/**
+ * Direct-fill outcome for a successful other-activities task. `applied` means
+ * the generated boards entered the current form draft; `pending` means the
+ * draft had newer edits and the teacher can still choose to fill explicitly.
+ */
+const otherGenerated = ref<{
+  candidateId: string
+  taskId: string
+  contentVersion: number
+  boards: OtherBoardName[]
+  state: 'applied' | 'pending'
+  message: string
+} | null>(null)
+const otherFillBusy = ref(false)
 /** D3-A: history dialog and its restore write protection. */
 const historyOpen = ref(false)
 const historyBusy = ref(false)
@@ -232,6 +259,9 @@ function applyPlan(next: DailyPlan, options: { preserveEditorKey?: boolean } = {
   conflictNotice.value = ''
   indeterminate.value = null
   errorText.value = ''
+  // An applied fill is now the saved baseline; a pending result stays visible
+  // so the teacher can still make the explicit recovery decision.
+  if (otherGenerated.value?.state === 'applied') otherGenerated.value = null
   phase.value = 'ready'
 }
 
@@ -239,6 +269,7 @@ function startDraft(): void {
   plan.value = null
   form.value = emptyContentForm()
   rawLessonPlan.value = ''
+  otherGenerated.value = null
   baseline.value = null
   draftActive.value = true
   draftBaseline.value = {
@@ -1083,6 +1114,269 @@ async function openCandidate(
   candidateOpen.value = true
 }
 
+function otherCandidateVersion(detail: CandidateDetail): number | null {
+  return detail.source?.content_version ?? detail.latest_content_version ?? null
+}
+
+function applyOtherGeneratedCandidate(
+  detail: CandidateDetail,
+  boards: OtherBoardName[],
+): void {
+  const result = applyOtherCandidateToForm(
+    form.value,
+    detail.raw_candidate,
+    detail.available_targets,
+  )
+  form.value = result.form
+  // The fill is a real local edit: invalidate any older save/adopt ordering
+  // and leave the normal dirty/expected-version save path in charge.
+  editEpoch.value += 1
+  otherGenerated.value = {
+    candidateId: detail.id,
+    taskId: detail.task_id,
+    contentVersion: otherCandidateVersion(detail) ?? 0,
+    boards: result.appliedBoards,
+    state: 'applied',
+    message: '已填入当前草稿，可直接核对、修改并保存；未另存候选版本。',
+  }
+  const labels = result.appliedBoards
+    .map((board) => {
+      if (board === 'morning_games') return '晨间游戏'
+      if (board === 'morning_talk') return '晨间谈话'
+      if (board === 'post_group_games') return '集体活动后游戏'
+      return '下午户外活动'
+    })
+    .join('、')
+  ElMessage.success(`已填入${labels || '生成内容'}；请核对后保存`)
+}
+
+/**
+ * A live-watched other-activities task succeeded. Fill the current draft only
+ * when the exact execution's source version and the live form are unchanged;
+ * otherwise keep the generated candidate for an explicit recovery click.
+ */
+async function onOtherGenerated(task: AiTask): Promise<void> {
+  if (
+    otherFillBusy.value ||
+    !plan.value ||
+    task.plan_id !== plan.value.id ||
+    task.task_type !== 'daily_other_activities' ||
+    !task.candidate_id
+  ) {
+    return
+  }
+  const planId = plan.value.id
+  const editorKeyAtStart = editorKey.value
+  const sessionEpochAtStart = getSessionEpoch()
+  const contentVersionAtStart = plan.value.current_content_version
+  otherFillBusy.value = true
+  try {
+    const detail = await apiGet<CandidateDetail>(
+      `/api/daily-plans/${pathSegment(planId)}/ai-candidates/${pathSegment(task.candidate_id)}`,
+    )
+    if (!editorAlive || !plan.value) return
+    if (
+      plan.value.id !== planId ||
+      editorKey.value !== editorKeyAtStart ||
+      getSessionEpoch() !== sessionEpochAtStart
+    ) {
+      return
+    }
+    if (plan.value.current_content_version !== contentVersionAtStart) {
+      otherGenerated.value = {
+        candidateId: detail.id,
+        taskId: detail.task_id,
+        contentVersion: contentVersionAtStart,
+        boards: [],
+        state: 'pending',
+        message:
+          '读取生成结果期间计划版本已变化：未自动覆盖，请核对当前草稿后重新生成或手动填写。',
+      }
+      return
+    }
+    if (
+      detail.task_type !== 'daily_other_activities' ||
+      detail.plan_id !== planId ||
+      detail.task_id !== task.id ||
+      detail.id !== task.candidate_id ||
+      (task.execution?.id !== undefined &&
+        task.execution?.id !== null &&
+        detail.execution_id !== task.execution.id) ||
+      detail.adoption_state !== 'eligible'
+    ) {
+      otherGenerated.value = {
+        candidateId: detail.id,
+        taskId: detail.task_id,
+        contentVersion: otherCandidateVersion(detail) ?? 0,
+        boards: [],
+        state: 'pending',
+        message: '生成结果已失效或不属于当前计划：未填入草稿，请重新生成。',
+      }
+      return
+    }
+    const boards = otherBoardsProvided(
+      detail.raw_candidate,
+      detail.available_targets,
+    )
+    if (boards.length === 0) {
+      otherGenerated.value = {
+        candidateId: detail.id,
+        taskId: detail.task_id,
+        contentVersion: otherCandidateVersion(detail) ?? 0,
+        boards: [],
+        state: 'pending',
+        message: '本次没有生成可填入的活动板块：当前草稿保持不变。',
+      }
+      return
+    }
+    const sourceVersion = otherCandidateVersion(detail)
+    if (
+      sourceVersion === null ||
+      sourceVersion !== plan.value.current_content_version ||
+      task.input_summary.content_version !== sourceVersion
+    ) {
+      otherGenerated.value = {
+        candidateId: detail.id,
+        taskId: detail.task_id,
+        contentVersion: sourceVersion ?? 0,
+        boards,
+        state: 'pending',
+        message:
+          '生成所依据的保存版本与当前计划不一致：未自动覆盖，请核对后重新生成或手动填入。',
+      }
+      return
+    }
+    const safe =
+      !dirty.value &&
+      !locked.value &&
+      !props.frozen &&
+      !candidateOpen.value &&
+      !candidateDraftActive.value &&
+      !historyRestoreBlocked.value
+    if (!safe) {
+      otherGenerated.value = {
+        candidateId: detail.id,
+        taskId: detail.task_id,
+        contentVersion: sourceVersion,
+        boards,
+        state: 'pending',
+        message:
+          '生成已完成，但当前草稿有未保存编辑或正在处理其它操作：未自动覆盖。可核对后显式填入。',
+      }
+      return
+    }
+    applyOtherGeneratedCandidate(detail, boards)
+  } catch (err) {
+    if (!editorAlive) return
+    otherGenerated.value = {
+      candidateId: task.candidate_id,
+      taskId: task.id,
+      contentVersion: task.input_summary.content_version ?? 0,
+      boards: [],
+      state: 'pending',
+      message:
+        err instanceof ApiError
+          ? `生成结果读取失败：${err.message}`
+          : '生成结果读取失败：当前草稿保持不变。',
+    }
+  } finally {
+    otherFillBusy.value = false
+  }
+}
+
+/** Explicit recovery: never silently overwrite a newer edit. */
+async function fillPendingOtherGenerated(): Promise<void> {
+  const pending = otherGenerated.value
+  if (!pending || pending.state !== 'pending' || otherFillBusy.value) return
+  if (!plan.value || !pending.candidateId) return
+  if (dirty.value) {
+    ElMessage.warning(
+      '当前草稿有未保存编辑：请先保存或撤销编辑，再填入生成结果，避免覆盖。',
+    )
+    return
+  }
+  if (
+    locked.value ||
+    props.frozen ||
+    candidateOpen.value ||
+    candidateDraftActive.value ||
+    historyRestoreBlocked.value
+  ) {
+    ElMessage.warning('当前正在处理其它操作：暂不能填入生成结果')
+    return
+  }
+  const planId = plan.value.id
+  const epochAtStart = editEpoch.value
+  const editorKeyAtStart = editorKey.value
+  const sessionEpochAtStart = getSessionEpoch()
+  const contentVersionAtStart = plan.value.current_content_version
+  const profileIdAtStart = props.context.profile?.id ?? null
+  otherFillBusy.value = true
+  try {
+    const detail = await apiGet<CandidateDetail>(
+      `/api/daily-plans/${pathSegment(planId)}/ai-candidates/${pathSegment(pending.candidateId)}`,
+    )
+    if (!editorAlive || !plan.value) return
+    if (
+      plan.value.id !== planId ||
+      editorKey.value !== editorKeyAtStart ||
+      editEpoch.value !== epochAtStart ||
+      getSessionEpoch() !== sessionEpochAtStart ||
+      (props.context.profile?.id ?? null) !== profileIdAtStart ||
+      plan.value.current_content_version !== contentVersionAtStart
+    ) {
+      ElMessage.warning(
+        '读取生成结果期间当前页面、输入或版本已变化：未填入草稿，原输入已保留',
+      )
+      return
+    }
+    // Re-check every live write guard after the await: the teacher may have
+    // typed, started a save, opened a candidate or frozen the window while the
+    // candidate detail request was in flight.
+    if (
+      dirty.value ||
+      locked.value ||
+      props.frozen ||
+      candidateOpen.value ||
+      candidateDraftActive.value ||
+      historyRestoreBlocked.value
+    ) {
+      ElMessage.warning(
+        '读取生成结果期间当前草稿或操作状态已变化：未填入草稿，原输入已保留',
+      )
+      return
+    }
+    if (
+      detail.task_type !== 'daily_other_activities' ||
+      detail.plan_id !== planId ||
+      detail.id !== pending.candidateId ||
+      detail.task_id !== pending.taskId ||
+      detail.adoption_state !== 'eligible' ||
+      otherCandidateVersion(detail) !== contentVersionAtStart
+    ) {
+      ElMessage.warning('生成结果已失效：未填入草稿，请重新生成')
+      return
+    }
+    const boards = otherBoardsProvided(
+      detail.raw_candidate,
+      detail.available_targets,
+    )
+    if (boards.length === 0) {
+      ElMessage.warning('本次没有可填入的活动板块')
+      return
+    }
+    applyOtherGeneratedCandidate(detail, boards)
+  } catch (err) {
+    ElMessage.warning(
+      err instanceof ApiError
+        ? `生成结果读取失败：${err.message}`
+        : '生成结果读取失败：当前草稿保持不变。',
+    )
+  } finally {
+    otherFillBusy.value = false
+  }
+}
+
 function reflectionStatusText(): string {
   if (reflectionPending.value) {
     return '反思任务提交结果尚未确定：当前反思与已保存版本保持不变，不会自动重发。'
@@ -1854,6 +2148,7 @@ onBeforeUnmount(() => {
         :other-target="otherTarget"
         @open-candidate="(id: string, taskType: TaskType) => openCandidate(id, taskType)"
         @open-guidance="openGuidance"
+        @other-generated="onOtherGenerated"
       />
       <el-alert
         v-if="draftActive"
@@ -1969,6 +2264,25 @@ onBeforeUnmount(() => {
           class="ai-action-anchor"
           data-d1="ai-slot-daily_other_activities"
         ></div>
+        <el-alert
+          v-if="otherGenerated"
+          :type="otherGenerated.state === 'applied' ? 'success' : 'warning'"
+          :closable="false"
+          class="section"
+          data-d1="other-generated-notice"
+          :title="otherGenerated.message"
+        >
+          <el-button
+            v-if="otherGenerated.state === 'pending' && otherGenerated.boards.length"
+            size="small"
+            type="warning"
+            :loading="otherFillBusy"
+            data-d1="other-generated-apply"
+            @click="fillPendingOtherGenerated"
+          >
+            填入生成结果
+          </el-button>
+        </el-alert>
         <div v-for="(group, gi) in form.morning_games" :key="group.group_id || (group as any)._tmp || `m-${gi}`" class="group-block">
           <div class="group-head">
             <el-tag size="small">

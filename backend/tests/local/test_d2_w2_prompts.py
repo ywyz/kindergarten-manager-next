@@ -309,8 +309,10 @@ class PromptReadTests(PromptCase):
         seed = prompt_bundles.initial_prompt_seed()
         self.assertEqual(seed["daily_lesson_split"]["default_revision"], 2)
         self.assertEqual(seed["daily_process_adapt"]["default_revision"], 3)
-        self.assertEqual(seed["daily_other_activities"]["default_revision"], 2)
+        self.assertEqual(seed["daily_other_activities"]["default_revision"], 3)
         self.assertEqual(seed["daily_reflection_generate"]["default_revision"], 2)
+        self.assertEqual(seed["game_observation_generate"]["default_revision"], 2)
+        self.assertEqual(seed["game_observation_rewrite"]["default_revision"], 2)
         reflection = seed["daily_reflection_generate"]["guidance"]["reflection"]
         self.assertIn("100～200", reflection)
         self.assertIn("实施材料", reflection)

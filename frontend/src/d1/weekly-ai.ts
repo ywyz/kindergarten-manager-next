@@ -22,7 +22,7 @@ export interface WeeklyAiTask {
   user_stop_requested: boolean
   draft: { id: string; version: number }
   candidate_id: string | null
-  execution?: { id: string } | null
+  execution?: { id: string; attempt_no?: number | null } | null
   allowed_actions: string[]
   retry_requires_ack: boolean
   input_summary?: Record<string, unknown>

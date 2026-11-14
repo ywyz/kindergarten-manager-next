@@ -271,6 +271,63 @@ def _candidates(snapshot: dict) -> list[dict]:
     return _content_call(_content_module().build_source_candidates, snapshot)
 
 
+def _followed_content(content: LocalWeeklyPlanContent, snapshot: dict) -> dict:
+    """Read-only daily-follow projection for the current saved week.
+
+    Only the per-date deterministic source/effective values follow the latest
+    saved daily plan.  Explicit overrides (including "") stay untouched, and
+    game slots/focus/material/calendar identity remain the stored draft so an
+    explicit source refresh still owns those choices.
+
+    The projection is never persisted by GET.  Save applies its patch on top of
+    this projection, and confirmation preview/confirm build their snapshot from
+    it, so screen, saved draft and confirmed Word describe the same daily text.
+    """
+    module = _content_module()
+    refreshed = _content_call(
+        module.refresh_content, content.content_json, snapshot
+    )["content"]
+    followed = copy.deepcopy(content.content_json)
+    refreshed_rows = {
+        row["date"]: row for row in refreshed["deterministic"]
+    }
+    rows: list[dict] = []
+    for old in followed["deterministic"]:
+        live = refreshed_rows.get(old["date"])
+        if (
+            live is None
+            or old["day_state"] != "teaching"
+            or live["day_state"] != "teaching"
+        ):
+            # The stored calendar identity is frozen.  A moved term/calendar
+            # must not turn a stored teaching day into a rest day here; that
+            # remains the explicit refresh/confirm path.
+            rows.append(old)
+            continue
+        rows.append(
+            {
+                **old,
+                "source_state": live["source_state"],
+                "source": copy.deepcopy(live["source"]),
+                "effective": copy.deepcopy(live["effective"]),
+            }
+        )
+    followed["deterministic"] = rows
+    followed["source_manifest"]["sources"] = [
+        {
+            "date": row["date"],
+            "source_state": row["source_state"],
+            "daily_plan_id": row["source"]["daily_plan_id"] if row["source"] else None,
+            "content_id": row["source"]["content_id"] if row["source"] else None,
+            "content_version": row["source"]["content_version"] if row["source"] else None,
+            "content_hash": row["source"]["content_hash"] if row["source"] else None,
+        }
+        for row in rows
+    ]
+    _content_call(module.validate_content, followed)
+    return followed
+
+
 def _new_content(snapshot: dict, *, theme: str = "") -> dict:
     return _content_call(_content_module().new_content, snapshot, theme=theme)
 
@@ -384,10 +441,11 @@ def _insert_content(
     content: dict,
     editor_profile_id: str,
     now: datetime,
+    row_id: str | None = None,
 ) -> LocalWeeklyPlanContent:
     content_hash = _content_call(_content_module().content_hash, content)
     row = LocalWeeklyPlanContent(
-        id=new_opaque_id(),
+        id=row_id or new_opaque_id(),
         weekly_plan_id=plan.id,
         version=version,
         schema_version=_content_call(
@@ -902,7 +960,9 @@ def list_plans(
             content = _current_content(session, plan)
             snapshot = _live_snapshot(session, plan)
             item = _summary(plan)
-            item["facts"] = _facts(session, plan, content.content_json, snapshot)
+            item["facts"] = _facts(
+                session, plan, _followed_content(content, snapshot), snapshot
+            )
             items.append(item)
         next_cursor = None
         if has_more and rows:
@@ -924,6 +984,7 @@ def get_detail(session: Session, *, profile_id: str, plan_id: str) -> dict:
         plan = _plan_or_404(session, profile_id, plan_id)
         content = _current_content(session, plan)
         snapshot = _live_snapshot(session, plan)
+        followed = _followed_content(content, snapshot)
         confirmation = None
         if plan.current_confirmed_id:
             row = session.get(
@@ -931,13 +992,20 @@ def get_detail(session: Session, *, profile_id: str, plan_id: str) -> dict:
             )
             if row is not None and row.weekly_plan_id == plan.id:
                 confirmation = _confirmation_summary(row)
+        followed_hash = _content_call(_content_module().content_hash, followed)
         return {
             "plan": _summary(plan),
             "draft": _draft_payload(content),
+            "daily_follow": {
+                "deterministic": followed["deterministic"],
+                "source_manifest_sources": followed["source_manifest"]["sources"],
+                "content_hash": followed_hash,
+                "changed": followed_hash != content.content_hash,
+            },
             "confirmed": confirmation,
             "source_candidates": _candidates(snapshot),
             "source_context_hash": snapshot["source_context_hash"],
-            "facts": _facts(session, plan, content.content_json, snapshot),
+            "facts": _facts(session, plan, followed, snapshot),
         }
 
 
@@ -997,7 +1065,9 @@ def save_draft(
                 details={"draft_version": content.version}
             )
         snapshot = _live_snapshot(session, plan)
-        new_content = _apply_patch(content.content_json, patch, snapshot)
+        new_content = _apply_patch(
+            _followed_content(content, snapshot), patch, snapshot
+        )
         new_hash = _content_call(
             _content_module().content_hash, new_content
         )
@@ -1299,11 +1369,30 @@ def confirmation_preview(
             )
             facts_hash = _hash(target["facts"])
             source_context_hash = source_hash
+            projected_id = target["draft_id"]
+            projected_version = target["draft_version"]
         else:
             live = _live_snapshot(session, plan)
-            facts = _facts(session, plan, content.content_json, live)
+            followed = _followed_content(content, live)
+            followed_hash = _content_call(
+                _content_module().content_hash, followed
+            )
+            projected_id = content.id
+            projected_version = content.version
+            if followed_hash != content.content_hash:
+                # The confirmation will materialize this exact projection as a
+                # new immutable draft before writing the confirmation.
+                projected_id = new_opaque_id()
+                projected_version = content.version + 1
+            facts = _facts(session, plan, followed, live)
             target = _confirmation_snapshot(
-                plan, content, facts, term_name=term_name
+                plan,
+                content,
+                facts,
+                term_name=term_name,
+                followed=followed,
+                draft_id=projected_id,
+                draft_version=projected_version,
             )
             target_hash = confirmation_schema.snapshot_hash(target)
             facts_hash = _hash(facts)
@@ -1319,6 +1408,8 @@ def confirmation_preview(
         source_context_hash=source_context_hash,
         facts_hash=facts_hash,
         target_hash=target_hash,
+        draft_id=projected_id,
+        draft_version=projected_version,
     )
     return {
         "target": target,
@@ -1334,15 +1425,24 @@ def _confirmation_snapshot(
     facts: dict,
     *,
     term_name: str | None = None,
+    followed: dict | None = None,
+    draft_id: str | None = None,
+    draft_version: int | None = None,
 ) -> dict:
+    body = content.content_json if followed is None else followed
+    content_hash = (
+        content.content_hash
+        if followed is None
+        else _content_call(_content_module().content_hash, body)
+    )
     return confirmation_schema.build_confirmation_snapshot(
         weekly_plan_id=plan.id,
         profile_id=plan.profile_id,
         class_id=plan.class_id,
         term_id=plan.term_id,
-        draft_id=content.id,
-        draft_version=content.version,
-        content_hash=content.content_hash,
+        draft_id=draft_id or content.id,
+        draft_version=draft_version or content.version,
+        content_hash=content_hash,
         header=plan.header_json,
         creation_context={
             "week_anchor_date": plan.week_anchor_date.isoformat(),
@@ -1351,7 +1451,7 @@ def _confirmation_snapshot(
             "term_end": plan.term_end_date.isoformat(),
             "calendar_revision_id": plan.calendar_revision_id,
         },
-        content=content.content_json,
+        content=body,
         facts=facts,
         term_name=term_name,
     )
@@ -1432,32 +1532,113 @@ def confirm(
             confirmation_draft_version = snapshot_json["draft_version"]
         else:
             live = _live_snapshot(session, plan)
-            facts = _facts(session, plan, content.content_json, live)
-            facts_hash = _hash(facts)
-            snapshot_json = _confirmation_snapshot(
-                plan, content, facts, term_name=term_name
+            followed = _followed_content(content, live)
+            followed_hash = _content_call(
+                _content_module().content_hash, followed
             )
-            snapshot_hash = confirmation_schema.snapshot_hash(snapshot_json)
+            facts = _facts(session, plan, followed, live)
+            facts_hash = _hash(facts)
             source_context_hash = live["source_context_hash"]
-            confirmation_draft_id = content.id
-            confirmation_draft_version = content.version
-        tokens.verify_token(
-            runtime,
-            context_token,
-            purpose="confirm",
-            profile_id=profile_id,
-            launch_id=launch_id,
-            session_scope_hash=session_scope_hash,
-            object_id=plan.id,
-            expected_version=expected,
-            source_context_hash=source_context_hash,
-            facts_hash=facts_hash,
-            target_hash=snapshot_hash,
-        )
-        if facts.get("missing") and not ack_missing:
-            raise LocalWeeklyAckRequired(details={"reason": "missing"})
-        if facts.get("stale_sources") and not ack_stale:
-            raise LocalWeeklyAckRequired(details={"reason": "stale"})
+            payload = tokens.verify_token(
+                runtime,
+                context_token,
+                purpose="confirm",
+                profile_id=profile_id,
+                launch_id=launch_id,
+                session_scope_hash=session_scope_hash,
+                object_id=plan.id,
+                expected_version=expected,
+                source_context_hash=source_context_hash,
+                facts_hash=facts_hash,
+            )
+            token_draft_id = payload.get("draft_id")
+            token_draft_version = payload.get("draft_version")
+            if (
+                not isinstance(token_draft_id, str)
+                or not token_draft_id
+                or isinstance(token_draft_version, bool)
+                or not isinstance(token_draft_version, int)
+            ):
+                raise LocalWeeklyPreviewStale()
+            if followed_hash != content.content_hash:
+                if token_draft_version != content.version + 1:
+                    raise LocalWeeklyPreviewStale()
+                snapshot_json = _confirmation_snapshot(
+                    plan,
+                    content,
+                    facts,
+                    term_name=term_name,
+                    followed=followed,
+                    draft_id=token_draft_id,
+                    draft_version=token_draft_version,
+                )
+                snapshot_hash = confirmation_schema.snapshot_hash(
+                    snapshot_json
+                )
+                if payload.get("target_hash") != snapshot_hash:
+                    raise LocalWeeklyPreviewStale()
+                if facts.get("missing") and not ack_missing:
+                    raise LocalWeeklyAckRequired(details={"reason": "missing"})
+                if facts.get("stale_sources") and not ack_stale:
+                    raise LocalWeeklyAckRequired(details={"reason": "stale"})
+                # Only after the preview token and acknowledgements are
+                # verified may the source-follow projection become a new
+                # immutable draft row.  Confirmation then binds that row's
+                # actual id/version/hash, which the export loader re-checks.
+                content = _insert_content(
+                    session,
+                    plan=plan,
+                    version=token_draft_version,
+                    content=followed,
+                    editor_profile_id=profile_id,
+                    now=_utc_now(),
+                    row_id=token_draft_id,
+                )
+                materialized = _confirmation_snapshot(
+                    plan, content, facts, term_name=term_name
+                )
+                if (
+                    confirmation_schema.snapshot_hash(materialized)
+                    != snapshot_hash
+                ):
+                    raise LocalWeeklyPreviewStale()
+                snapshot_json = materialized
+                confirmation_draft_id = content.id
+                confirmation_draft_version = content.version
+            else:
+                if (
+                    token_draft_id != content.id
+                    or token_draft_version != content.version
+                ):
+                    raise LocalWeeklyPreviewStale()
+                snapshot_json = _confirmation_snapshot(
+                    plan, content, facts, term_name=term_name
+                )
+                snapshot_hash = confirmation_schema.snapshot_hash(
+                    snapshot_json
+                )
+                if payload.get("target_hash") != snapshot_hash:
+                    raise LocalWeeklyPreviewStale()
+                confirmation_draft_id = content.id
+                confirmation_draft_version = content.version
+        if source_confirmation_id is not None:
+            tokens.verify_token(
+                runtime,
+                context_token,
+                purpose="confirm",
+                profile_id=profile_id,
+                launch_id=launch_id,
+                session_scope_hash=session_scope_hash,
+                object_id=plan.id,
+                expected_version=expected,
+                source_context_hash=source_context_hash,
+                facts_hash=facts_hash,
+                target_hash=snapshot_hash,
+            )
+            if facts.get("missing") and not ack_missing:
+                raise LocalWeeklyAckRequired(details={"reason": "missing"})
+            if facts.get("stale_sources") and not ack_stale:
+                raise LocalWeeklyAckRequired(details={"reason": "stale"})
         if source_confirmation_id is not None:
             duplicate = next(
                 (

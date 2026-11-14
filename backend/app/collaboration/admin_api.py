@@ -26,6 +26,7 @@ from .admin_service import (
     login_admin,
     redeem_code,
     revoke_admin_session,
+    update_school_name,
     update_term_name,
     verify_csrf,
 )
@@ -58,6 +59,11 @@ class AdminSessionOut(_StrictModel):
 class AdminSchoolOut(_StrictModel):
     school_id: UUID
     name: str
+
+
+class AdminSchoolUpdateIn(_StrictModel):
+    expected_name: str = Field(..., min_length=1, max_length=120)
+    new_name: str = Field(..., min_length=1, max_length=120)
 
 
 class AdminTeacherOut(_StrictModel):
@@ -265,6 +271,28 @@ def admin_schools(
         AdminSchoolOut(school_id=row.id, name=row.name)
         for row in list_schools(session)
     ]
+
+
+@router.patch(
+    "/api/collaboration/admin/schools/{school_id}",
+    response_model=AdminSchoolOut,
+)
+def admin_update_school(
+    school_id: UUID,
+    data: AdminSchoolUpdateIn,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+) -> AdminSchoolOut:
+    updated = update_school_name(
+        session,
+        principal,
+        school_id=school_id,
+        expected_name=data.expected_name,
+        new_name=data.new_name,
+    )
+    _no_store(response)
+    return AdminSchoolOut(school_id=updated.id, name=updated.name)
 
 
 @router.get(

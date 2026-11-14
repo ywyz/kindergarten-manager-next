@@ -720,6 +720,7 @@ def preflight_vision_request(
             system_text=system_text,
             user_text=user_text,
             image_urls=image_urls,
+            json_mode=True,
         )
     except ValueError as exc:
         raise LocalAiInputTooLarge("图片 data URL 非法") from exc

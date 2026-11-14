@@ -173,12 +173,36 @@ class ObservationMigrationTests(LocalTestCase):
             self.assertIn(name, tables)
         observation_bundles = query_rows(
             db,
-            "SELECT task_type FROM local_prompt_bundles "
-            "WHERE task_type LIKE 'game_observation_%' ORDER BY task_type",
+            "SELECT task_type,contract_version,default_revision "
+            "FROM local_prompt_bundles WHERE task_type LIKE 'game_observation_%' "
+            "ORDER BY task_type,contract_version,default_revision",
         )
+        # The builtin r1 is retained as the historical bundle identity while
+        # the new default r2 is also registered for both observation tasks.
         self.assertEqual(
-            [row["task_type"] for row in observation_bundles],
-            ["game_observation_generate", "game_observation_rewrite"],
+            observation_bundles,
+            [
+                {
+                    "task_type": "game_observation_generate",
+                    "contract_version": 1,
+                    "default_revision": 1,
+                },
+                {
+                    "task_type": "game_observation_generate",
+                    "contract_version": 1,
+                    "default_revision": 2,
+                },
+                {
+                    "task_type": "game_observation_rewrite",
+                    "contract_version": 1,
+                    "default_revision": 1,
+                },
+                {
+                    "task_type": "game_observation_rewrite",
+                    "contract_version": 1,
+                    "default_revision": 2,
+                },
+            ],
         )
         self.assertEqual(
             query_scalar(db, "SELECT count(*) FROM local_personal_prompt_heads"),
@@ -199,6 +223,53 @@ class ObservationMigrationTests(LocalTestCase):
         self.assertEqual(
             [row["task_type"] for row in heads],
             sorted(prompt_bundles.REGISTERED_TASK_TYPES),
+        )
+        observation_heads = query_rows(
+            db,
+            "SELECT task_type,required_contract_version,latest_default_revision "
+            "FROM local_personal_prompt_heads "
+            "WHERE task_type LIKE 'game_observation_%' ORDER BY task_type",
+        )
+        self.assertEqual(
+            observation_heads,
+            [
+                {
+                    "task_type": "game_observation_generate",
+                    "required_contract_version": 1,
+                    "latest_default_revision": 2,
+                },
+                {
+                    "task_type": "game_observation_rewrite",
+                    "required_contract_version": 1,
+                    "latest_default_revision": 2,
+                },
+            ],
+        )
+        observation_versions = query_rows(
+            db,
+            "SELECT h.task_type,v.revision,v.contract_version,"
+            "v.based_default_revision FROM local_personal_prompt_heads h "
+            "JOIN local_personal_prompt_versions v "
+            "ON v.profile_id=h.profile_id AND v.task_type=h.task_type "
+            "AND v.revision=h.current_revision "
+            "WHERE h.task_type LIKE 'game_observation_%' ORDER BY h.task_type",
+        )
+        self.assertEqual(
+            observation_versions,
+            [
+                {
+                    "task_type": "game_observation_generate",
+                    "revision": 1,
+                    "contract_version": 1,
+                    "based_default_revision": 2,
+                },
+                {
+                    "task_type": "game_observation_rewrite",
+                    "revision": 1,
+                    "contract_version": 1,
+                    "based_default_revision": 2,
+                },
+            ],
         )
 
     def test_real_0005_upgrade_preserves_old_digest_and_backfills_source(self):
@@ -658,21 +729,58 @@ class ObservationMigrationTests(LocalTestCase):
         self.addCleanup(normal.dispose)
         normal.prepare()
         self.assertIsNone(normal.prompt_sync_error)
+        # Both the historical r1 and the new default r2 bundle rows remain; the
+        # normal startup registers four observation bundle identities.
         self.assertEqual(
-            query_scalar(
+            query_rows(
                 db,
-                "SELECT count(*) FROM local_prompt_bundles "
-                "WHERE task_type LIKE 'game_observation_%'",
+                "SELECT task_type,contract_version,default_revision "
+                "FROM local_prompt_bundles "
+                "WHERE task_type LIKE 'game_observation_%' "
+                "ORDER BY task_type,contract_version,default_revision",
             ),
-            2,
+            [
+                {
+                    "task_type": "game_observation_generate",
+                    "contract_version": 1,
+                    "default_revision": 1,
+                },
+                {
+                    "task_type": "game_observation_generate",
+                    "contract_version": 1,
+                    "default_revision": 2,
+                },
+                {
+                    "task_type": "game_observation_rewrite",
+                    "contract_version": 1,
+                    "default_revision": 1,
+                },
+                {
+                    "task_type": "game_observation_rewrite",
+                    "contract_version": 1,
+                    "default_revision": 2,
+                },
+            ],
         )
         self.assertEqual(
-            query_scalar(
+            query_rows(
                 db,
-                "SELECT count(*) FROM local_personal_prompt_heads "
-                "WHERE task_type LIKE 'game_observation_%'",
+                "SELECT task_type,required_contract_version,latest_default_revision "
+                "FROM local_personal_prompt_heads "
+                "WHERE task_type LIKE 'game_observation_%' ORDER BY task_type",
             ),
-            2,
+            [
+                {
+                    "task_type": "game_observation_generate",
+                    "required_contract_version": 1,
+                    "latest_default_revision": 2,
+                },
+                {
+                    "task_type": "game_observation_rewrite",
+                    "required_contract_version": 1,
+                    "latest_default_revision": 2,
+                },
+            ],
         )
         normal.dispose()
 
@@ -805,10 +913,59 @@ class ObservationMigrationTests(LocalTestCase):
                 )
             }
             self.assertEqual(first_counts, {
-                "local_prompt_bundles": 2,
+                "local_prompt_bundles": 4,
                 "local_personal_prompt_versions": 2,
                 "local_personal_prompt_heads": 2,
             })
+            # The two current heads select the new default r2, and their
+            # initial personal snapshots are based on that same active bundle.
+            self.assertEqual(
+                query_rows(
+                    source,
+                    "SELECT task_type,required_contract_version,"
+                    "latest_default_revision FROM local_personal_prompt_heads "
+                    "WHERE task_type LIKE 'game_observation_%' "
+                    "ORDER BY task_type",
+                ),
+                [
+                    {
+                        "task_type": "game_observation_generate",
+                        "required_contract_version": 1,
+                        "latest_default_revision": 2,
+                    },
+                    {
+                        "task_type": "game_observation_rewrite",
+                        "required_contract_version": 1,
+                        "latest_default_revision": 2,
+                    },
+                ],
+            )
+            self.assertEqual(
+                query_rows(
+                    source,
+                    "SELECT h.task_type,v.revision,v.contract_version,"
+                    "v.based_default_revision FROM local_personal_prompt_heads h "
+                    "JOIN local_personal_prompt_versions v "
+                    "ON v.profile_id=h.profile_id AND v.task_type=h.task_type "
+                    "AND v.revision=h.current_revision "
+                    "WHERE h.task_type LIKE 'game_observation_%' "
+                    "ORDER BY h.task_type",
+                ),
+                [
+                    {
+                        "task_type": "game_observation_generate",
+                        "revision": 1,
+                        "contract_version": 1,
+                        "based_default_revision": 2,
+                    },
+                    {
+                        "task_type": "game_observation_rewrite",
+                        "revision": 1,
+                        "contract_version": 1,
+                        "based_default_revision": 2,
+                    },
+                ],
+            )
             prompt_bundles.sync_prompt_bundles(session)
             second_counts = {
                 table: query_scalar(

@@ -7,6 +7,7 @@
  */
 import { ApiError, apiGet, apiPost, pathSegment, sessionHeaders } from './client'
 import { isIndeterminate } from './operations'
+import type { AiTaskProgress } from './types'
 
 export type CurriculumFormKind =
   | ''
@@ -582,11 +583,18 @@ export interface CurriculumAiCandidate {
   reason_suggestion: string
 }
 
+export interface CurriculumAiExecution {
+  id: string
+  generation: number
+  attempt_no: number | null
+}
+
 export interface CurriculumAiTask {
   id: string
   status: CurriculumAiTaskStatus
   reason: string | null
   candidate: CurriculumAiCandidate | null
+  execution: CurriculumAiExecution | null
 }
 
 export interface CurriculumAiSelection {
@@ -781,6 +789,19 @@ function normalizeAiCandidate(value: unknown): CurriculumAiCandidate | null {
     reason_suggestion: stringValue(raw.reason_suggestion),
   }
 }
+function normalizeAiExecution(value: unknown): CurriculumAiExecution | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = value as Record<string, unknown>
+  const id = stringValue(raw.id)
+  if (!id) return null
+  const generation = typeof raw.generation === 'number' ? raw.generation : 0
+  const attempt =
+    typeof raw.attempt_no === 'number' && Number.isFinite(raw.attempt_no)
+      ? raw.attempt_no
+      : null
+  return { id, generation, attempt_no: attempt }
+}
+
 export function normalizeCurriculumAiTask(
   value: unknown,
   fallbackId = '',
@@ -795,6 +816,7 @@ export function normalizeCurriculumAiTask(
     status: (status || 'failed') as CurriculumAiTaskStatus,
     reason: typeof raw.reason === 'string' ? raw.reason : null,
     candidate: normalizeAiCandidate(raw.candidate),
+    execution: normalizeAiExecution(raw.execution),
   }
 }
 
@@ -817,6 +839,16 @@ export async function getCurriculumAiTask(
     `${API_ROOT}/${pathSegment(recordId)}/ai/tasks/${pathSegment(taskId)}`,
   )
   return normalizeCurriculumAiTask(data, taskId)
+}
+
+/** Read-only provider progress for this record's current execution. */
+export async function getCurriculumAiTaskProgress(
+  recordId: string,
+  taskId: string,
+): Promise<AiTaskProgress> {
+  return apiGet<AiTaskProgress>(
+    `${API_ROOT}/${pathSegment(recordId)}/ai/tasks/${pathSegment(taskId)}/progress`,
+  )
 }
 
 export function isCurriculumAiIndeterminateError(error: unknown): boolean {

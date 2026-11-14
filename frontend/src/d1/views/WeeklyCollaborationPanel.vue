@@ -46,6 +46,7 @@ const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
   (e: 'busy', value: boolean): void
   (e: 'blocking', value: BlockingDraft | null): void
+  (e: 'open-history'): void
 }>()
 
 const api = createWeeklyCollaborationApi()
@@ -713,6 +714,14 @@ function loadLocalProjection(): void {
   useLocalProjection()
 }
 
+function openLocalHistory(): void {
+  if (blockingDraft.value) {
+    errorText.value = blockingDraft.value.message
+    return
+  }
+  emit('open-history')
+}
+
 onBeforeUnmount(() => {
   alive = false
   scopeEpoch += 1
@@ -938,6 +947,7 @@ defineExpose({
       </template>
     </div>
     <template #footer>
+      <el-button data-d1="weekly-shared-history" :disabled="!!pending || saving || confirming || exportBusy" @click="openLocalHistory">本地确认历史</el-button>
       <el-button :disabled="!!pending || saving || confirming || exportBusy" @click="close">关闭</el-button>
       <el-button
         :disabled="!!pending || saving || confirming || !dirty"

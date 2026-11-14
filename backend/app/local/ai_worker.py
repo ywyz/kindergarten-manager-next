@@ -321,6 +321,7 @@ def text_request_body(request: Any) -> tuple[ai_transport.ResponseBudget, bytes]
         system_text=str(request.get("system_text") or ""),
         user_text=str(request.get("user_text") or ""),
         max_tokens=budget.max_tokens,
+        json_mode=ai_transport.text_json_mode(task_type, source_kind=source_kind),
     )
     return budget, body
 
@@ -420,6 +421,7 @@ def run(conn: Any) -> None:
                 system_text=str(request.get("system_text") or ""),
                 user_text=str(request.get("user_text") or ""),
                 image_urls=image_urls,
+                json_mode=request.get("source_kind") == "game_observation",
             )
         except ValueError:
             _send(conn, _result_frame(ai_transport.TransportResult(

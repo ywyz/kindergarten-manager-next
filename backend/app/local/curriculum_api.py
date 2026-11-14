@@ -17,7 +17,7 @@ from app.local import (
     curriculum_service,
     profile_service,
 )
-from app.local.api import _require_executor, get_session
+from app.local.api import _require_executor, _task_progress, get_session
 from app.local.errors import (
     LocalAiExecutorUnavailable,
     LocalAiNotFound,
@@ -224,6 +224,28 @@ def read_curriculum_ai_task(
             if task.profile_id != profile_id:
                 raise LocalAiNotFound("未找到该 AI 任务")
             return curriculum_ai.task_payload(session, task)
+
+
+@curriculum_router.get(
+    "/{record_id}/ai/tasks/{task_id}/progress", response_model=dict[str, Any]
+)
+def read_curriculum_ai_task_progress(
+    record_id: str,
+    task_id: str,
+    session: Session = Depends(get_session),
+):
+    """Display-only progress for this record's accepted execution.
+
+    The shared read path binds the source kind and record id, so another
+    record's task or a stale execution can never be projected here.
+    """
+    rid = curriculum_service.normalize_record_id(record_id)
+    return _task_progress(
+        session,
+        task_id,
+        source_kind=curriculum_ai.SOURCE_KIND,
+        source_id=rid,
+    )
 
 
 @curriculum_router.get("/{record_id}", response_model=dict[str, Any])

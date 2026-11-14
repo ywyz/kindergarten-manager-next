@@ -76,9 +76,37 @@ assert.match(source, /promptStage\.addEventListener/)
 assert.match(source, /promptSaveDraft\.addEventListener/)
 ok('allowed task/field selection and draft save are wired')
 
+assert.match(source, /task_label/)
+assert.match(source, /field_labels/)
+assert.match(source, /function promptTaskLabel/)
+assert.match(source, /function promptFieldLabel/)
+assert.match(source, /function promptTaskFieldText/)
+assert.match(source, /其他任务/)
+assert.match(source, /其他字段/)
+assert.match(source, /option\.textContent = promptTaskLabel\(task\.task_type\);/)
+assert.match(source, /option\.title = task\.task_type;/)
+assert.match(source, /option\.textContent = promptFieldLabel\(taskType, fieldName\);/)
+assert.match(source, /option\.title = fieldName;/)
+assert.doesNotMatch(source, /option\.textContent =\s*promptTaskLabel\(task\.task_type\) \+/)
+assert.doesNotMatch(source, /option\.textContent =\s*promptFieldLabel\(taskType, fieldName\) \+/)
+ok('task and field choices show Chinese labels while keeping protocol IDs')
+
+assert.match(source, /<h2>已有园所名称<\/h2>/)
+assert.match(source, /id="school-list"/)
+assert.match(source, /id="school-error"/)
+assert.match(source, /保存园所名称/)
+assert.match(source, /稳定园所 ID/)
+assert.match(source, /expected_name: expected, new_name: next/)
+assert.match(source, /SCHOOL_NAME_CONFLICT|园所名称已在其他窗口修改/)
+ok('existing school display name can be renamed with an old-name baseline')
+
 assert.doesNotMatch(source, /innerHTML|insertAdjacentHTML|document\.write/)
 assert.match(source, /textContent/)
 ok('dynamic DOM uses textContent only')
+
+assert.ok(!source.includes('\r'), 'admin page keeps LF line endings')
+assert.ok(!source.includes(');          school.name'))
+assert.ok(!source.startsWith('\ufeff'), 'admin page has no BOM')
 
 const script = source.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? ''
 assert.ok(script.length > 0, 'admin script exists')
@@ -87,5 +115,34 @@ assert.doesNotThrow(() => {
   new Function(script)
 }, 'admin script compiles')
 ok('admin script compiles')
+
+const collaborationSource = fs.readFileSync(
+  path.resolve(here, 'views/CollaborationPanel.vue'),
+  'utf8',
+)
+const settingsSource = fs.readFileSync(
+  path.resolve(here, 'views/SettingsView.vue'),
+  'utf8',
+)
+const aiSettingsSource = fs.readFileSync(
+  path.resolve(here, 'views/AiSettingsPanel.vue'),
+  'utf8',
+)
+assert.match(collaborationSource, /collaboration-bound-school/)
+assert.match(collaborationSource, /collaboration-no-class/)
+assert.match(collaborationSource, /collaboration-no-candidates/)
+assert.match(collaborationSource, /collaboration-data-boundary/)
+assert.match(collaborationSource, /directoryLoaded/)
+const redeemBlock = collaborationSource.slice(
+  collaborationSource.indexOf('async function redeemWithCode'),
+  collaborationSource.indexOf('async function disconnect'),
+)
+assert.doesNotMatch(redeemBlock, /selectClass\(/)
+assert.match(settingsSource, /settings-data-boundary/)
+assert.match(settingsSource, /:open="groupOpen\('games'\)"/)
+assert.match(aiSettingsSource, /providerOpen = ref\(true\)/)
+assert.match(aiSettingsSource, /PROMPT_FIELD_LABELS/)
+assert.match(aiSettingsSource, /observation_goal: '观察目标'/)
+ok('collaboration and settings boundary/default-open contracts are present')
 
 console.log(`\n${passed} checks passed`)

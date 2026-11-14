@@ -51,6 +51,15 @@ const expandedGroups = reactive<Record<SettingsGroup, boolean>>({
   calendar: false,
   games: false,
 })
+const autoOpenGroups = reactive<Record<SettingsGroup, boolean>>({
+  backup: false,
+  terms: false,
+  calendar: false,
+  games: true,
+})
+function groupOpen(name: SettingsGroup): boolean {
+  return expandedGroups[name] || autoOpenGroups[name]
+}
 
 const TARGET_GROUPS: Partial<Record<SettingsDraftTargetKind, SettingsGroup>> = {
   term: 'terms',
@@ -74,6 +83,7 @@ function openMainSection(): void {
 
 function onGroupToggle(name: SettingsGroup, event: Event): void {
   const target = event.target as HTMLDetailsElement | null
+  autoOpenGroups[name] = false
   if (target) expandedGroups[name] = target.open
 }
 
@@ -1432,6 +1442,19 @@ defineExpose({
       <el-alert v-if="errorText" type="error" :closable="false" class="section" data-d1="settings-error" :title="errorText" />
       <el-alert v-if="applyResultText" type="success" :closable="false" class="section" data-d1="settings-applied" :title="applyResultText" />
 
+      <el-card class="section" shadow="never" data-d1="settings-data-boundary">
+        <template #header>本机与在线数据边界</template>
+        <p class="muted">
+          本机 SQLite：个人档案、学期与日历、日计划、观察、周计划和本地班级游戏配置只保存在本机。
+        </p>
+        <p class="muted">
+          在线 MySQL：只保存园所／教师、班级关系、同班在线游戏配置和在线共享周。
+        </p>
+        <p class="muted">
+          日计划共享与 AI 在线设置当前不同步；密钥和本机档案不会上传。
+        </p>
+      </el-card>
+
       <el-card class="section" shadow="never" data-d1="settings-profile">
         <template #header>姓名与园所</template>
         <div class="fields">
@@ -1793,7 +1816,7 @@ defineExpose({
       <details
         class="settings-group"
         data-d1="settings-group-games"
-        :open="expandedGroups.games"
+        :open="groupOpen('games')"
         @toggle="onGroupToggle('games', $event)"
       >
         <summary>班级游戏配置 <span class="muted">本地配置、来源带入与预览确认</span></summary>

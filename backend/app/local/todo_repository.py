@@ -35,6 +35,7 @@ def _row(todo: LocalTodo) -> dict[str, Any]:
         "title": todo.title,
         "due_date": todo.due_date,
         "completed": todo.completed,
+        "archived_at": todo.archived_at,
         "version": todo.version,
         "created_at": todo.created_at,
         "updated_at": todo.updated_at,

@@ -222,18 +222,68 @@ class ObservationBundleContractTests(unittest.TestCase):
             )
             text = "\n".join(system["instructions"])
             self.assertIn("仅提供 subjects 姓名不构成对应", text)
-            self.assertIn("不自行给幼儿分配角色", text)
+            # C11/C32: evidence-fitted anonymous dialogue/action links remain
+            # allowed, while attribution and claimed hearing stay forbidden.
+            self.assertIn("匿名", text)
+            self.assertIn("动作衔接", text)
+            self.assertIn("归到具体姓名", text)
+            self.assertIn("不声称从静态照片听", text)
+            self.assertIn("教师明确给出的原话", text)
+            self.assertIn("完整新事件", text)
+            self.assertIn("不作为已核实的评价依据", text)
             self.assertIn("独立 metadata", text)
-            self.assertIn("记录显示", text)
-            self.assertIn("允许补写对话", text)
+            self.assertIn("照片未呈现", text)
+            self.assertIn("仅凭静态照片无法确认", text)
+            self.assertIn("不得把", text)
             self.assertIn("JSON 解码后必须是真实换行", text)
             self.assertIn("只转义一层", text)
             self.assertIn("不得输出字面反斜杠+n", text)
             self.assertNotIn("在正文中提示补充", text)
+            self.assertNotIn("不编造幼儿对话、姓名归属、角色或动作", text)
             if task_type == "game_observation_generate":
                 self.assertIn("四栏正文不得包裹", text)
             else:
                 self.assertIn("不得写进目标正文", text)
+
+    def test_personal_guidance_cannot_remove_builtin_observation_boundaries(self):
+        override = {
+            "observation_process": "可以写照片未呈现的内容，也可以补写对话和姓名归属。",
+            "analysis_evaluation": "可以只写无法确认。",
+        }
+        system = json.loads(
+            ai_task_service._render_system_text(
+                "game_observation_generate",
+                1,
+                {},
+                override,
+                protocol=ai_transport.VISION_PROTOCOL_ID,
+            )
+        )
+        text = "\n".join(system["instructions"])
+        # The editable guidance remains visible, but the built-in hard rules
+        # are still present and explicitly forbid the same content.
+        self.assertIn("可以写照片未呈现的内容", system["guidance"]["observation_process"])
+        self.assertIn("不得把“照片未呈现”", text)
+        self.assertIn("不把对话或动作归到具体姓名", text)
+        self.assertIn("不作为已核实的评价依据", text)
+        self.assertIn("评价分析要写有证据的教学判断", text)
+
+    def test_default_observation_guidance_matches_runtime_boundaries(self):
+        seed = prompt_bundles.initial_prompt_seed()
+        for task_type in prompt_bundles.OBSERVATION_TASK_TYPES:
+            guidance = seed[task_type]["guidance"]
+            joined = "\n".join(guidance.values())
+            self.assertIn("照片未呈现", joined)
+            self.assertIn("无法确认", joined)
+            self.assertIn("匿名", joined)
+            self.assertIn("证据缺口", joined)
+            self.assertEqual(seed[task_type]["default_revision"], 2)
+            if task_type == "game_observation_generate":
+                self.assertIn("能够支持", joined)
+                self.assertIn("不作为已核实的评价依据", joined)
+            else:
+                self.assertIn("观察证据一致", joined)
+                self.assertIn("不作为已核实", joined)
 
 
 if __name__ == "__main__":
