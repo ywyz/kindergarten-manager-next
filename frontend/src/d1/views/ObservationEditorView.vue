@@ -307,6 +307,8 @@ let photoDragDepth = 0
 const exportBusy = ref(false)
 const photoBusy = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const photoSection = ref<HTMLElement | null>(null)
+const candidateAudit = ref<HTMLElement | null>(null)
 const PHOTO_CHUNK_SIZE = 8
 const photoChunks = computed(() => chunkPhotos(photos.value, PHOTO_CHUNK_SIZE))
 const visiblePhotos = computed(
@@ -347,6 +349,8 @@ const candidateCursor = ref<string | null>(null)
 const candidateId = ref('')
 const candidateDetail = ref<CandidateDetail | null>(null)
 const candidateOpen = ref(false)
+const candidateDetailLoading = ref(false)
+const candidateDetailError = ref('')
 const candidateTargets = ref<ObservationTarget[]>([])
 const candidateEdit = ref<ObservationCandidateEdit>({})
 const candidateEditBaseline = ref('')
@@ -887,7 +891,7 @@ function onDraftInput(event: Event): void {
   if (!target || typeof target.closest !== 'function') return
   if (
     target.closest(
-      'input[type="checkbox"], [data-d1="obs-ai"], [data-d1="obs-history"], [data-d1="obs-term-dialog"], .el-dialog, .el-select-dropdown, .el-picker-panel',
+      'input[type="checkbox"], [data-d1="obs-ai"], [data-d1="obs-candidate"], [data-d1="obs-history"], [data-d1="obs-term-dialog"], .el-dialog, .el-select-dropdown, .el-picker-panel',
     )
   ) {
     return
@@ -1112,6 +1116,16 @@ function changePhotoChunk(delta: number): void {
   photoUrls.value = {}
   photoFailures.value = {}
   void refreshPhotoChunk()
+}
+
+function focusPhotoSection(): void {
+  if (props.frozen) return
+  void nextTick(() => {
+    const element = photoSection.value
+    if (!element) return
+    element.scrollIntoView?.({ block: 'center' })
+    element.focus?.()
+  })
 }
 
 function retryPhoto(assetId: string): void {
@@ -2212,6 +2226,8 @@ function cancelCandidateEdit(): void {
   resetCandidateEdit()
   candidateOpen.value = false
   candidateId.value = ''
+  candidateDetailLoading.value = false
+  candidateDetailError.value = ''
   regeneratedCandidateId.value = ''
   ElMessage.info('已取消本次候选编辑；正文未写入')
 }
@@ -2753,31 +2769,69 @@ async function loadMoreCandidates(): Promise<void> {
   await loadCandidates(undefined, false)
 }
 
+async function loadCandidateDetail(id: string): Promise<void> {
+  if (!editorAlive || !candidateOpen.value || candidateId.value !== id) return
+  const seq = ++candidateSeq
+  const observationId = props.observationId
+  candidateDetailLoading.value = true
+  candidateDetailError.value = ''
+  try {
+    const detail = await apiGet<CandidateDetail>(
+      `/api/observations/${pathSegment(observationId)}/ai-candidates/${pathSegment(id)}`,
+    )
+    if (
+      !editorAlive ||
+      seq !== candidateSeq ||
+      !candidateOpen.value ||
+      candidateId.value !== id ||
+      props.observationId !== observationId
+    ) return
+    candidateDetail.value = detail
+    candidateTargets.value = availableTargets(detail.task_type, detail.raw_candidate)
+    resetCandidateEdit(detail)
+    void nextTick(() => {
+      candidateAudit.value?.scrollIntoView?.({ block: 'start' })
+    })
+  } catch (err) {
+    if (
+      !editorAlive ||
+      seq !== candidateSeq ||
+      !candidateOpen.value ||
+      candidateId.value !== id ||
+      props.observationId !== observationId
+    ) return
+    candidateDetail.value = null
+    candidateDetailError.value = err instanceof ApiError
+      ? err.message
+      : `候选读取失败：${String(err)}`
+    ElMessage.error(candidateDetailError.value)
+  } finally {
+    if (seq === candidateSeq && candidateId.value === id) {
+      candidateDetailLoading.value = false
+    }
+  }
+}
+
 async function openCandidate(id: string): Promise<void> {
   if (!id) return
   if (adoptCommitted.value) {
     ElMessage.warning('采用已保存，但正文读取待完成：请先重试读取')
     return
   }
-  const seq = ++candidateSeq
   candidateId.value = id
   candidateOpen.value = true
   candidateDetail.value = null
+  candidateDetailError.value = ''
   invalidateAdoptionPreview()
-  try {
-    const detail = await apiGet<CandidateDetail>(
-      `/api/observations/${pathSegment(props.observationId)}/ai-candidates/${pathSegment(id)}`,
-    )
-    if (seq !== candidateSeq || candidateId.value !== id) return
-    candidateDetail.value = detail
-    candidateTargets.value = availableTargets(detail.task_type, detail.raw_candidate)
-    resetCandidateEdit(detail)
-  } catch (err) {
-    if (seq !== candidateSeq) return
-    ElMessage.error(
-      err instanceof ApiError ? err.message : `候选读取失败：${String(err)}`,
-    )
-  }
+  await loadCandidateDetail(id)
+}
+
+function retryCandidateDetail(): void {
+  if (candidateDetailLoading.value) return
+  if (adoptionFlowBusy.value || adoptBusy.value || adoptUnknown.value || adoptCommitted.value) return
+  const id = candidateId.value
+  if (!id || !candidateOpen.value) return
+  void loadCandidateDetail(id)
 }
 
 function toggleTarget(target: ObservationTarget): void {
@@ -3942,6 +3996,8 @@ onMounted(() => {
     candidateOpen: () => candidateOpen.value,
     candidateId: () => candidateId.value,
     openCandidate: (id: string) => openCandidate(id),
+    candidateDetailLoading: () => candidateDetailLoading.value,
+    candidateDetailError: () => candidateDetailError.value,
     candidateDetail: () =>
       candidateDetail.value
         ? {
@@ -4127,6 +4183,8 @@ onBeforeUnmount(() => {
   sectionConflictSignature.value = null
   releaseModalComposition()
   sectionModalSeq += 1
+  candidateDetailLoading.value = false
+  candidateDetailError.value = ''
   photoCache.dispose()
   historyPhotoCache.dispose()
   delete (window as unknown as { __d1ObservationEditor?: object }).__d1ObservationEditor
@@ -4144,16 +4202,17 @@ onBeforeUnmount(() => {
     @compositionend="composing = false"
   >
     <div class="toolbar">
-      <div>
-        <h2>游戏观察 · {{ recordLabel }}</h2>
+      <div class="record-headline">
+        <p class="kicker">游戏观察</p>
+        <h2>{{ observationSubjectList(form.subjects).join('、') || '观察记录' }}</h2>
         <p class="muted">
-          {{ form.observation_date || '（无日期）' }} · {{ termLabel }} ·
+          {{ recordLabel }} · {{ form.observation_date || '（无日期）' }} · {{ termLabel }} ·
           草稿 v{{ current?.revision ?? '—' }}
         </p>
       </div>
       <div class="actions">
         <el-button size="small" :disabled="props.frozen" data-d1="obs-open-history" @click="openHistory">
-          历史记录
+          历史恢复
         </el-button>
         <el-button size="small" :disabled="props.frozen" data-d1="obs-go-settings" @click="goSettings">
           设置
@@ -4325,379 +4384,340 @@ onBeforeUnmount(() => {
         </el-button>
       </el-alert>
 
-      <div class="obs-workspace">
-        <nav class="section-nav" data-d1="obs-sections" aria-label="观察栏目">
-          <button
-            v-for="section in observationSectionNav"
-            :key="section.key"
-            type="button"
-            class="section-button"
-            :class="{ selected: activeObservationSection === section.key }"
-            :aria-current="activeObservationSection === section.key ? 'true' : undefined"
-            :data-d1="`obs-section-${section.key}`"
-            :disabled="props.frozen || sectionDialogOpen"
-            @click="selectObservationSection(section.key)"
-          >
-            <span class="section-label">{{ section.label }}</span>
-            <span class="section-hint">{{ section.hint }}</span>
-            <span class="section-badge">{{ section.badge }}</span>
-          </button>
-        </nav>
-        <article
-          class="section-pane"
-          data-d1="obs-section-pane"
-          :aria-label="activeObsSectionInfo.label"
-          tabindex="-1"
-        >
-          <header class="pane-head">
-            <div>
-              <h3>{{ activeObsSectionInfo.label }}</h3>
-              <p class="muted">{{ activeObsSectionInfo.hint }}</p>
-            </div>
-            <el-button
-              v-if="activeObsSectionEditable"
-              type="primary"
-              plain
-              size="small"
-              data-d1="obs-section-edit"
-              :disabled="props.frozen || editDisabled"
-              @click="openSectionEditor(activeObservationSection, $event)"
-            >
-              编辑本栏
-            </el-button>
+      <div class="obs-detail">
+        <section class="read-sheet" data-d1="obs-read-table" role="table" aria-label="观察记录阅读表">
+          <header class="sheet-title">
+            <h2 data-d1="obs-read-title">{{ observationSubjectList(form.subjects).join('、') || '观察记录' }}</h2>
+            <p class="muted">{{ recordLabel }} · {{ form.observation_date || '未填日期' }} · {{ termLabel }}</p>
           </header>
 
-          <div v-if="activeObservationSection === 'basic'" class="pane-body" data-d1="obs-basic">
-            <dl class="read-grid">
-              <div><dt>观察日期</dt><dd>{{ observationDisplay(form.observation_date) }}</dd></div>
-              <div><dt>起始时间 / 结束时间</dt><dd>{{ form.start_time || '—' }} – {{ form.end_time || '—' }}</dd></div>
-              <div><dt>记录类型</dt><dd>{{ RECORD_TYPE_LABELS[recordType] }}</dd></div>
-              <div><dt>园所</dt><dd>{{ observationDisplay(form.school_name) }}</dd></div>
-              <div><dt>班级</dt><dd>{{ observationDisplay(form.class_name) }}</dd></div>
-              <div><dt>观察者</dt><dd>{{ observationDisplay(form.observer_name) }}</dd></div>
-              <div><dt>成人数目</dt><dd>{{ observationDisplay(form.adult_count) }}</dd></div>
-              <div><dt>儿童数目（参与总人数）</dt><dd>{{ observationDisplay(form.child_count) }}</dd></div>
-              <div><dt>统一观察年龄</dt><dd>{{ observationDisplay(form.age_years) }}</dd></div>
-            </dl>
+          <div class="sheet-row" data-d1="obs-section-basic" role="row">
+            <div class="sheet-label" role="rowheader">观察资料</div>
+            <div class="sheet-body" role="cell" data-d1="obs-basic">
+              <div class="read-lines">
+                <div class="read-line"><span class="read-label">日期</span><span>{{ observationDisplay(form.observation_date) }}</span></div>
+                <div class="read-line"><span class="read-label">时间</span><span>{{ form.start_time || '—' }} – {{ form.end_time || '—' }}</span></div>
+                <div class="read-line"><span class="read-label">记录类型</span><span>{{ RECORD_TYPE_LABELS[recordType] }}</span></div>
+                <div class="read-line"><span class="read-label">园所</span><span>{{ observationDisplay(form.school_name) }}</span></div>
+                <div class="read-line"><span class="read-label">班级</span><span>{{ observationDisplay(form.class_name) }}</span></div>
+                <div class="read-line"><span class="read-label">观察者</span><span>{{ observationDisplay(form.observer_name) }}</span></div>
+                <div class="read-line"><span class="read-label">成人数目</span><span>{{ observationDisplay(form.adult_count) }}</span></div>
+                <div class="read-line"><span class="read-label">儿童数目（参与总人数）</span><span>{{ observationDisplay(form.child_count) }}</span></div>
+                <div class="read-line"><span class="read-label">统一观察年龄</span><span>{{ observationDisplay(form.age_years) }}</span></div>
+                <div class="read-line term-row">
+                  <span class="read-label">学期归属</span>
+                  <span>
+                    {{ termLabel }}
+                    <el-button size="small" :disabled="editDisabled" data-d1="obs-term-adjust" @click="openTermDialogManual">
+                      调整学期归属
+                    </el-button>
+                  </span>
+                </div>
+              </div>
+              <el-alert
+                v-if="basicMissing.length"
+                type="info"
+                :closable="false"
+                title="资料未完整（不阻止保存或手写）"
+                class="block"
+                data-d1="obs-basic-missing"
+              >
+                {{ basicMissing.map(field => BASIC_FIELD_LABELS[field]).join('、') }}
+              </el-alert>
+              <el-alert
+                v-for="warning in contradictions"
+                :key="warning"
+                type="warning"
+                :closable="false"
+                :title="warning"
+                class="block"
+                data-d1="obs-contradiction"
+              />
+            </div>
+            <div class="sheet-edit">
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-basic" @click="openSectionEditor('basic', $event)">编辑</el-button>
+            </div>
+          </div>
+
+          <div class="sheet-row" data-d1="obs-section-subjects" role="row">
+            <div class="sheet-label" role="rowheader">对象与环境</div>
+            <div class="sheet-body" role="cell" data-d1="obs-subjects">
+              <div class="read-lines">
+                <div class="read-line"><span class="read-label">重点观察幼儿</span><span>{{ observationSubjectList(form.subjects).join('、') || '（未填写）' }}</span></div>
+                <div class="read-line"><span class="read-label">观察环境</span><span class="read-text">{{ observationDisplay(form.environment) }}</span></div>
+              </div>
+            </div>
+            <div class="sheet-edit">
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-subjects" @click="openSectionEditor('subjects', $event)">编辑</el-button>
+            </div>
+          </div>
+
+          <div class="sheet-row" data-d1="obs-section-body" role="row">
+            <div class="sheet-label" role="rowheader">观察正文</div>
+            <div class="sheet-body" role="cell" data-d1="obs-body">
+              <div class="read-lines">
+                <div class="read-line"><span class="read-label">观察目标</span><p class="read-text" data-d1="obs-goal-read">{{ observationDisplay(form.observation_goal) }}</p></div>
+                <div class="read-line"><span class="read-label">观察记录</span><p class="read-text" data-d1="obs-process-read">{{ observationDisplay(form.observation_process) }}</p></div>
+              </div>
+            </div>
+            <div class="sheet-edit">
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-body" @click="openSectionEditor('body', $event)">编辑</el-button>
+            </div>
+          </div>
+
+          <div class="sheet-row" data-d1="obs-section-support" role="row">
+            <div class="sheet-label" role="rowheader">支持策略</div>
+            <div class="sheet-body" role="cell" data-d1="obs-support-read">
+              <p class="read-text">{{ observationDisplay(form.support_strategy) }}</p>
+            </div>
+            <div class="sheet-edit">
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-support" @click="openSectionEditor('support', $event)">编辑</el-button>
+            </div>
+          </div>
+
+          <div class="sheet-row" data-d1="obs-section-evaluation" role="row">
+            <div class="sheet-label" role="rowheader">评价分析 · 五领域</div>
+            <div class="sheet-body" role="cell" data-d1="obs-evaluation">
+              <div class="read-lines">
+                <div v-for="row in observationEvaluationRows(form)" :key="row.key" class="read-line" :data-d1="`obs-eval-read-${row.key}`">
+                  <span class="read-label">{{ row.label }}</span>
+                  <p class="read-text">{{ observationDisplay(row.value) }}</p>
+                </div>
+              </div>
+            </div>
+            <div class="sheet-edit">
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-evaluation" @click="openSectionEditor('evaluation', $event)">编辑</el-button>
+            </div>
+          </div>
+
+          <div class="sheet-row photo-row" data-d1="obs-section-photos" role="row">
+            <div class="sheet-label" role="rowheader">有序照片</div>
+            <div class="sheet-body" role="cell">
+              <div
+                ref="photoSection"
+                class="photo-panel"
+                data-d1="obs-photos"
+                tabindex="-1"
+                @dragenter="onPhotoDragEnter"
+                @dragover="onPhotoDragOver"
+                @dragleave="onPhotoDragLeave"
+                @drop="onPhotoDrop"
+              >
+                <div v-if="photoDragActive" class="photo-drop-hint" data-d1="obs-photo-drop-hint">
+                  松开以添加图片（仅支持 JPG/PNG/WebP/GIF/BMP）
+                </div>
+                <div class="photo-actions">
+                  <input
+                    ref="fileInput"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
+                    multiple
+                    hidden
+                    data-d1="obs-file"
+                    @change="onFilesPicked"
+                  />
+                  <el-button size="small" :loading="uploadBusy" :disabled="editDisabled" data-d1="obs-add-photo" @click="fileInput?.click()">
+                    添加照片
+                  </el-button>
+                  <span class="muted">共 {{ photos.length }} 张；当前显示第 {{ photoChunk + 1 }}/{{ Math.max(photoChunks.length, 1) }} 组</span>
+                  <span class="muted">也可将图片文件拖到本栏</span>
+                  <el-button size="small" :disabled="photoChunk <= 0" @click="changePhotoChunk(-1)">上一组</el-button>
+                  <el-button size="small" :disabled="photoChunk + 1 >= photoChunks.length" @click="changePhotoChunk(1)">下一组</el-button>
+                </div>
+                <p class="muted" data-d1="obs-photo-order">
+                  照片顺序：{{ photos.length ? photos.map((_, index) => `照片 ${index + 1}`).join(' → ') : '尚无照片' }}。
+                  说明和前后顺序会立即保存到当前草稿。
+                </p>
+                <el-empty v-if="!photos.length" description="还没有照片；无图也可以手写保存" />
+                <div v-else class="photo-grid">
+                  <div v-for="(photo, index) in visiblePhotos" :key="photo.asset_id" class="photo-item">
+                    <span class="photo-index">照片 {{ photoChunk * 8 + index + 1 }}</span>
+                    <img
+                      v-if="photoUrls[photo.asset_id]"
+                      :src="photoUrls[photo.asset_id]"
+                      :alt="photo.caption || '观察照片'"
+                      class="photo-img"
+                      @error="onPhotoError(photo.asset_id)"
+                    />
+                    <div v-else-if="photoFailures[photo.asset_id]" class="photo-placeholder">
+                      {{ photoFailures[photo.asset_id] }}
+                      <el-button size="small" text @click="retryPhoto(photo.asset_id)">重试</el-button>
+                    </div>
+                    <div v-else class="photo-placeholder">加载中…</div>
+                    <el-input
+                      v-model="photo.caption"
+                      size="small"
+                      placeholder="简短说明（可选，默认不印入 Word）"
+                      :disabled="editDisabled"
+                      @input="onUserInput"
+                      @change="saveCaption(photo)"
+                    />
+                    <div class="photo-tools">
+                      <el-button size="small" text :disabled="editDisabled || photoChunk * 8 + index === 0" @click="movePhoto(index, -1)">前移</el-button>
+                      <el-button size="small" text :disabled="editDisabled || photoChunk * 8 + index === photos.length - 1" @click="movePhoto(index, 1)">后移</el-button>
+                      <el-button size="small" text type="danger" :disabled="editDisabled" @click="removePhoto(photo)">移除</el-button>
+                    </div>
+                  </div>
+                </div>
+                <p v-if="photoLoadError" class="muted">{{ photoLoadError }}</p>
+              </div>
+            </div>
+            <div class="sheet-edit">
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-photos" @click="focusPhotoSection">管理照片</el-button>
+            </div>
+          </div>
+        </section>
+
+        <aside class="ops-rail" data-d1="obs-rail" aria-label="生成与操作">
+          <section class="rail-card" data-d1="obs-ai">
+            <header class="rail-head">
+              <h3>生成与操作</h3>
+              <p class="muted">生成只产生候选；采用仍走核对和保存。</p>
+            </header>
             <el-alert
-              v-if="basicMissing.length"
+              v-if="aiMinimumMissing.length"
               type="info"
               :closable="false"
-              title="资料未完整（不阻止保存或手写）"
-              class="block"
-              data-d1="obs-basic-missing"
+              title="AI 生成前还需补充（不影响保存和手写）"
+              class="block rail-alert"
+              data-d1="obs-ai-minimum"
             >
-              {{ basicMissing.map(field => BASIC_FIELD_LABELS[field]).join('、') }}
+              {{ aiMinimumMissing.join('、') }}
             </el-alert>
+            <div class="rail-actions">
+              <el-button
+                type="primary"
+                class="rail-action"
+                :loading="aiBusy"
+                :disabled="editDisabled || !aiMinimumReady"
+                data-d1="obs-generate"
+                @click="createAiTask('game_observation_generate')"
+              >
+                生成四栏
+              </el-button>
+              <el-button
+                v-for="target in OBSERVATION_TARGETS"
+                :key="target"
+                type="primary"
+                plain
+                class="rail-action"
+                :disabled="editDisabled || !aiMinimumReady"
+                :data-d1="`obs-rewrite-${target}`"
+                @click="createAiTask('game_observation_rewrite', target)"
+              >
+                重写{{ TARGET_LABELS[target] }}
+              </el-button>
+            </div>
+            <p v-if="aiTaskStatus" class="muted" data-d1="obs-task-status">
+              任务状态：{{ aiTaskStatusLabel }}<template v-if="aiTaskPhase"> · {{ aiTaskPhase }}</template>
+              <template v-if="aiTaskElapsedMs"> · 已等待 {{ Math.round(aiTaskElapsedMs / 1000) }} 秒</template>
+            </p>
+            <p v-if="aiTaskStatus && ['failed','outcome_unknown','paused'].includes(aiTaskStatus)" class="muted" data-d1="obs-task-reason">
+              {{ aiTaskStatus === 'paused' ? '暂停原因' : '失败原因' }}：{{ aiTaskReasonLabel }}
+            </p>
+            <div v-if="aiTaskStatus" class="ai-thinking" data-d1="obs-thinking">
+              <el-button size="small" text data-d1="obs-thinking-toggle" @click="aiThinkingOpen = !aiThinkingOpen">
+                {{ aiThinkingOpen ? '收起思考' : '展开思考' }}
+              </el-button>
+              <pre v-if="aiThinkingOpen">{{ aiThinking || '尚未收到思考文字；无文字不表示失败，请勿重复提交。' }}</pre>
+            </div>
             <el-alert
-              v-for="warning in contradictions"
-              :key="warning"
+              v-if="aiRetryNotice"
               type="warning"
               :closable="false"
-              :title="warning"
-              class="block"
-              data-d1="obs-contradiction"
+              class="block rail-alert"
+              data-d1="obs-ai-retry-notice"
+              :title="aiRetryNotice"
             />
-            <div class="term-row">
-              <span class="muted">学期归属：{{ termLabel }}</span>
+            <el-alert
+              v-if="aiRetryUnknown"
+              type="warning"
+              :closable="false"
+              class="block rail-alert"
+              data-d1="obs-ai-retry-unknown"
+              title="AI 重试提交结果待核对"
+            >
+              <p class="muted">该重试可能已提交；再次提交同一请求只会查回执／幂等重交，不会创建新的收费执行。</p>
+              <el-button size="small" type="primary" data-d1="obs-ai-retry-resubmit" :loading="aiRetryBusy" @click="resubmitAiRetry">再次提交同一重试请求</el-button>
+            </el-alert>
+            <el-alert
+              v-if="aiRetryState"
+              :type="aiRetryAlertType"
+              :closable="false"
+              class="block rail-alert"
+              data-d1="obs-ai-retry-state"
+              :title="aiRetryTitle"
+            >
+              <p class="muted">原因：{{ aiRetryReasonLabel }}</p>
+              <p v-if="aiRetryState.requiresAck" class="muted">供应商可能已经处理了上一次请求，重试可能重复处理或计费；应用不会自动重发，也不会保证重试成功。</p>
+              <p v-else-if="aiRetryState.status === 'paused'" class="muted">任务已暂停，通常尚未发送或等待配置处理；请查看原因后再决定是否重试。</p>
+              <p v-else class="muted">重试会发起新的 AI 请求，可能产生费用；原正文、照片和历史会保留。</p>
+              <p v-if="aiRetryBlockedBySource" class="muted">输入资料已经变化，不能沿用旧输入重试；请用当前资料重新生成。</p>
+              <el-checkbox v-if="aiRetryState.requiresAck" v-model="aiRetryAck" data-d1="obs-ai-retry-ack">我理解结果可能已处理，并接受可能重复计费</el-checkbox>
               <el-button
+                v-if="!aiRetryBlockedBySource"
+                type="primary"
                 size="small"
-                :disabled="editDisabled"
-                data-d1="obs-term-adjust"
-                @click="openTermDialogManual"
+                :loading="aiRetryBusy"
+                :disabled="editDisabled || aiRetryUnknown !== null || (aiRetryState.requiresAck && !aiRetryAck)"
+                data-d1="obs-ai-retry"
+                @click="retryAiTask"
               >
-                调整学期归属
+                {{ aiRetryActionLabel }}
               </el-button>
+            </el-alert>
+            <div v-if="candidates.length" class="rail-candidates">
+              <p class="rail-subtitle">最近候选</p>
+              <el-select
+                :model-value="candidateId"
+                placeholder="选择候选"
+                size="small"
+                data-d1="obs-candidate-select"
+                @change="(value: string) => openCandidate(value)"
+              >
+                <el-option
+                  v-for="candidate in candidates"
+                  :key="candidate.id"
+                  :label="candidateLabel(candidate)"
+                  :value="candidate.id"
+                />
+              </el-select>
+              <el-button v-if="candidateCursor" size="small" data-d1="obs-candidate-more" @click="loadMoreCandidates">加载更多候选</el-button>
+              <p class="muted">选择候选后核对并采用；未采用的候选可以保留，不影响离开。</p>
             </div>
-          </div>
-
-          <div v-else-if="activeObservationSection === 'subjects'" class="pane-body" data-d1="obs-subjects">
-            <h4>重点观察幼儿（按顺序）</h4>
-            <ol v-if="observationSubjectList(form.subjects).length" class="subject-read-list">
-              <li v-for="(name, index) in observationSubjectList(form.subjects)" :key="`${index}-${name}`">{{ name }}</li>
-            </ol>
-            <p v-else class="muted">（未填写）</p>
-            <dl class="read-grid">
-              <div><dt>观察环境</dt><dd class="read-text">{{ observationDisplay(form.environment) }}</dd></div>
-            </dl>
-          </div>
-
-          <div v-else-if="activeObservationSection === 'body'" class="pane-body" data-d1="obs-body">
-            <div class="read-block">
-              <h4>观察目标</h4>
-              <p class="read-text" data-d1="obs-goal-read">{{ observationDisplay(form.observation_goal) }}</p>
-            </div>
-            <div class="read-block">
-              <h4>观察记录</h4>
-              <p class="read-text" data-d1="obs-process-read">{{ observationDisplay(form.observation_process) }}</p>
-            </div>
-          </div>
-
-          <div v-else-if="activeObservationSection === 'evaluation'" class="pane-body" data-d1="obs-evaluation">
-            <dl class="read-grid read-grid-wide">
-              <div v-for="row in observationEvaluationRows(form)" :key="row.key" :data-d1="`obs-eval-read-${row.key}`">
-                <dt>{{ row.label }}</dt>
-                <dd class="read-text">{{ observationDisplay(row.value) }}</dd>
+            <div
+              v-if="candidateOpen && !candidateDetail"
+              class="rail-candidates rail-candidate-failure"
+              data-d1="obs-candidate-failure"
+            >
+              <p class="muted" data-d1="obs-candidate-failure-message">
+                {{ candidateDetailLoading ? '正在读取候选正文…' : (candidateDetailError || '候选读取失败') }}
+              </p>
+              <div class="candidate-failure-actions">
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="candidateDetailLoading"
+                  :disabled="candidateDetailLoading || adoptionFlowBusy || adoptBusy || adoptUnknown !== null || adoptCommitted !== null"
+                  data-d1="obs-candidate-retry"
+                  @click="retryCandidateDetail"
+                >
+                  重试读取
+                </el-button>
+                <el-button
+                  size="small"
+                  :disabled="adoptionFlowBusy || adoptBusy || adoptUnknown !== null || adoptCommitted !== null"
+                  data-d1="obs-candidate-close"
+                  @click="cancelCandidateEdit"
+                >
+                  关闭候选
+                </el-button>
               </div>
-            </dl>
-          </div>
-
-          <div v-else-if="activeObservationSection === 'support'" class="pane-body" data-d1="obs-support-read">
-            <p class="read-text">{{ observationDisplay(form.support_strategy) }}</p>
-          </div>
-
-      <el-card
-        v-else-if="activeObservationSection === 'photos'"
-        shadow="never"
-        class="block"
-        :class="{ 'photo-drop-active': photoDragActive }"
-        data-d1="obs-photos"
-        @dragenter="onPhotoDragEnter"
-        @dragover="onPhotoDragOver"
-        @dragleave="onPhotoDragLeave"
-        @drop="onPhotoDrop"
-      >
-        <template #header>
-          <span>照片（按顺序，最多每行两张）</span>
-        </template>
-        <div v-if="photoDragActive" class="photo-drop-hint" data-d1="obs-photo-drop-hint">
-          松开以添加图片（仅支持 JPG/PNG/WebP/GIF/BMP）
-        </div>
-        <div class="photo-actions">
-          <input
-            ref="fileInput"
-            type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
-            multiple
-            hidden
-            data-d1="obs-file"
-            @change="onFilesPicked"
-          />
-          <el-button
-            size="small"
-            :loading="uploadBusy"
-            :disabled="editDisabled"
-            data-d1="obs-add-photo"
-            @click="fileInput?.click()"
-          >
-            添加照片
-          </el-button>
-          <span class="muted">
-            共 {{ photos.length }} 张；当前显示第 {{ photoChunk + 1 }}/{{ Math.max(photoChunks.length, 1) }} 组
-          </span>
-          <span class="muted">也可将图片文件拖到本卡片</span>
-          <el-button size="small" :disabled="photoChunk <= 0" @click="changePhotoChunk(-1)">
-            上一组
-          </el-button>
-          <el-button
-            size="small"
-            :disabled="photoChunk + 1 >= photoChunks.length"
-            @click="changePhotoChunk(1)"
-          >
-            下一组
-          </el-button>
-        </div>
-        <el-empty v-if="!photos.length" description="还没有照片；无图也可以手写保存" />
-        <div v-else class="photo-grid">
-          <div v-for="(photo, index) in visiblePhotos" :key="photo.asset_id" class="photo-item">
-            <img
-              v-if="photoUrls[photo.asset_id]"
-              :src="photoUrls[photo.asset_id]"
-              :alt="photo.caption || '观察照片'"
-              class="photo-img"
-              @error="onPhotoError(photo.asset_id)"
-            />
-            <div v-else-if="photoFailures[photo.asset_id]" class="photo-placeholder">
-              {{ photoFailures[photo.asset_id] }}
-              <el-button size="small" text @click="retryPhoto(photo.asset_id)">重试</el-button>
+              <p class="muted">只重试读取候选正文，不会重复采用或生成 AI 任务。</p>
             </div>
-            <div v-else class="photo-placeholder">加载中…</div>
-            <el-input
-              v-model="photo.caption"
-              size="small"
-              placeholder="简短说明（可选，默认不印入 Word）"
-              :disabled="editDisabled"
-              @input="onUserInput"
-              @change="saveCaption(photo)"
-            />
-            <div class="photo-tools">
-              <el-button
-                size="small"
-                text
-                :disabled="editDisabled || photoChunk * 8 + index === 0"
-                @click="movePhoto(index, -1)"
-              >
-                前移
-              </el-button>
-              <el-button
-                size="small"
-                text
-                :disabled="editDisabled || photoChunk * 8 + index === photos.length - 1"
-                @click="movePhoto(index, 1)"
-              >
-                后移
-              </el-button>
-              <el-button size="small" text type="danger" :disabled="editDisabled" @click="removePhoto(photo)">
-                移除
-              </el-button>
-            </div>
-          </div>
-        </div>
-        <p v-if="photoLoadError" class="muted">{{ photoLoadError }}</p>
-      </el-card>
-
-      <el-card v-else shadow="never" class="block" data-d1="obs-ai">
-        <template #header>
-          <span>AI 生成与候选审核</span>
-        </template>
-        <p class="muted">
-          先保存当前正文，再生成四栏或对单栏重写；未采用的候选可以保留，不影响离开。
-        </p>
-        <el-alert
-          v-if="aiMinimumMissing.length"
-          type="info"
-          :closable="false"
-          title="AI 生成前还需补充（不影响保存和手写）"
-          class="block"
-          data-d1="obs-ai-minimum"
-        >
-          {{ aiMinimumMissing.join('、') }}
-        </el-alert>
-        <div class="ai-actions">
-          <el-button
-            type="primary"
-            size="small"
-            :loading="aiBusy"
-            :disabled="editDisabled || !aiMinimumReady"
-            data-d1="obs-generate"
-            @click="createAiTask('game_observation_generate')"
-          >
-            生成四栏
-          </el-button>
-          <el-button
-            v-for="target in OBSERVATION_TARGETS"
-            :key="target"
-            type="primary"
-            plain
-            size="small"
-            :disabled="editDisabled || !aiMinimumReady"
-            :data-d1="`obs-rewrite-${target}`"
-            @click="createAiTask('game_observation_rewrite', target)"
-          >
-            重写{{ TARGET_LABELS[target] }}
-          </el-button>
-        </div>
-        <p v-if="aiTaskStatus" class="muted" data-d1="obs-task-status">
-          任务状态：{{ aiTaskStatusLabel }}<template v-if="aiTaskPhase"> · {{ aiTaskPhase }}</template>
-          <template v-if="aiTaskElapsedMs"> · 已等待 {{ Math.round(aiTaskElapsedMs / 1000) }} 秒</template>
-        </p>
-        <p v-if="aiTaskStatus && ['failed','outcome_unknown','paused'].includes(aiTaskStatus)" class="muted" data-d1="obs-task-reason">
-          {{ aiTaskStatus === 'paused' ? '暂停原因' : '失败原因' }}：{{ aiTaskReasonLabel }}
-        </p>
-        <div v-if="aiTaskStatus" class="ai-thinking" data-d1="obs-thinking">
-          <el-button size="small" text data-d1="obs-thinking-toggle" @click="aiThinkingOpen = !aiThinkingOpen">
-            {{ aiThinkingOpen ? '收起思考' : '展开思考' }}
-          </el-button>
-          <pre v-if="aiThinkingOpen">{{ aiThinking || '尚未收到思考文字；无文字不表示失败，请勿重复提交。' }}</pre>
-        </div>
-        <el-alert
-          v-if="aiRetryNotice"
-          type="warning"
-          :closable="false"
-          class="block"
-          data-d1="obs-ai-retry-notice"
-          :title="aiRetryNotice"
-        />
-        <el-alert
-          v-if="aiRetryUnknown"
-          type="warning"
-          :closable="false"
-          class="block"
-          data-d1="obs-ai-retry-unknown"
-          title="AI 重试提交结果待核对"
-        >
-          <p class="muted">
-            该重试可能已提交；再次提交同一请求只会查回执／幂等重交，不会创建新的收费执行。
-          </p>
-          <el-button size="small" type="primary" data-d1="obs-ai-retry-resubmit" :loading="aiRetryBusy" @click="resubmitAiRetry">
-            再次提交同一重试请求
-          </el-button>
-        </el-alert>
-        <el-alert
-          v-if="aiRetryState"
-          :type="aiRetryAlertType"
-          :closable="false"
-          class="block"
-          data-d1="obs-ai-retry-state"
-          :title="aiRetryTitle"
-        >
-          <p class="muted">原因：{{ aiRetryReasonLabel }}</p>
-          <p v-if="aiRetryState.requiresAck" class="muted">
-            供应商可能已经处理了上一次请求，重试可能重复处理或计费；应用不会自动重发，也不会保证重试成功。
-          </p>
-          <p v-else-if="aiRetryState.status === 'paused'" class="muted">
-            任务已暂停，通常尚未发送或等待配置处理；请查看原因后再决定是否重试。
-          </p>
-          <p v-else class="muted">
-            重试会发起新的 AI 请求，可能产生费用；原正文、照片和历史会保留。
-          </p>
-          <p v-if="aiRetryBlockedBySource" class="muted">
-            输入资料已经变化，不能沿用旧输入重试；请用当前资料重新生成。
-          </p>
-          <el-checkbox
-            v-if="aiRetryState.requiresAck"
-            v-model="aiRetryAck"
-            data-d1="obs-ai-retry-ack"
-          >
-            我理解结果可能已处理，并接受可能重复计费
-          </el-checkbox>
-          <el-button
-            v-if="!aiRetryBlockedBySource"
-            type="primary"
-            size="small"
-            :loading="aiRetryBusy"
-            :disabled="
-              editDisabled ||
-              aiRetryUnknown !== null ||
-              (aiRetryState.requiresAck && !aiRetryAck)
-            "
-            data-d1="obs-ai-retry"
-            @click="retryAiTask"
-          >
-            {{ aiRetryActionLabel }}
-          </el-button>
-        </el-alert>
-        <el-alert
-          v-if="candidates.length"
-          type="info"
-          :closable="false"
-          title="最近候选"
-          class="block"
-        >
-          <el-select
-            :model-value="candidateId"
-            placeholder="选择候选"
-            size="small"
-            data-d1="obs-candidate-select"
-            @change="(value: string) => openCandidate(value)"
-          >
-            <el-option
-              v-for="candidate in candidates"
-              :key="candidate.id"
-              :label="candidateLabel(candidate)"
-              :value="candidate.id"
-            />
-          </el-select>
-          <el-button
-            v-if="candidateCursor"
-            size="small"
-            data-d1="obs-candidate-more"
-            @click="loadMoreCandidates"
-          >
-            加载更多候选
-          </el-button>
-        </el-alert>
-        <div v-if="candidateOpen && candidateDetail" class="candidate" data-d1="obs-candidate">
+          </section>
+        </aside>
+        <div v-if="candidateOpen && candidateDetail" ref="candidateAudit" class="candidate candidate-audit" data-d1="obs-candidate">
           <p class="muted">
             候选 {{ candidateDetail.id }} · {{ adoptionStateLabel(candidateDetail.adoption_state) }}
           </p>
@@ -4810,15 +4830,16 @@ onBeforeUnmount(() => {
               type="warning"
               :closable="false"
               title="来源已变化：请核对当前差异后确认采用"
-            >
-              <el-checkbox
-                :model-value="reviewChecked"
+            />
+            <label class="review-confirm">
+              <input
+                type="checkbox"
+                :checked="reviewChecked"
                 data-d1="obs-review-checked"
-                @change="(value: boolean) => (reviewChecked = value)"
-              >
-                已核对差异，确认按当前编辑采用
-              </el-checkbox>
-            </el-alert>
+                @change="reviewChecked = ($event.target as HTMLInputElement).checked"
+              />
+              已核对差异，确认按当前编辑采用
+            </label>
             <el-button
               size="small"
               type="primary"
@@ -4876,8 +4897,6 @@ onBeforeUnmount(() => {
             </el-button>
           </el-alert>
         </div>
-      </el-card>
-        </article>
       </div>
     </template>
 
@@ -5321,80 +5340,54 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.obs-workspace {
+.obs-editor { padding: 1.25rem; color: var(--kgm-text); }
+.obs-detail {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 20px;
   align-items: start;
   margin-top: 16px;
 }
-.section-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  position: sticky;
-  top: 8px;
-  max-height: calc(100vh - 32px);
-  overflow: auto;
-}
-.section-button {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--kgm-border);
-  border-radius: 6px;
-  background: var(--kgm-surface);
-  color: var(--kgm-text);
-  text-align: left;
-  cursor: pointer;
-  font: inherit;
-}
-.section-button:hover { border-color: var(--kgm-accent); }
-.section-button:focus-visible { outline: 2px solid var(--kgm-focus); outline-offset: 2px; }
-.section-button.selected {
-  border-color: var(--kgm-accent);
-  background: color-mix(in srgb, var(--kgm-accent) 12%, var(--kgm-surface));
-  box-shadow: inset 3px 0 0 var(--kgm-accent);
-}
-.section-button:disabled { cursor: default; opacity: 0.75; }
-.section-label { font-weight: 600; }
-.section-hint { font-size: 0.72rem; color: var(--kgm-muted); line-height: 1.35; }
-.section-badge { font-size: 0.72rem; color: var(--kgm-muted); }
-.section-button.selected .section-badge { color: var(--kgm-text); }
-.section-pane {
+.read-sheet {
   min-width: 0;
-  padding: 12px 14px;
   border: 1px solid var(--kgm-border);
-  border-radius: 6px;
+  border-radius: 12px;
   background: var(--kgm-surface);
+  overflow: hidden;
 }
-.section-pane:focus-visible { outline: 2px solid var(--kgm-focus); outline-offset: 2px; }
-.pane-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+.sheet-title {
+  padding: 1rem 1.2rem;
+  text-align: center;
   border-bottom: 1px solid var(--kgm-border);
-  padding-bottom: 8px;
-  margin-bottom: 10px;
 }
-.pane-head h3 { margin: 4px 0; }
-.pane-body { min-width: 0; }
-.read-grid {
+.sheet-title h2 { margin: 0.1rem 0; overflow-wrap: anywhere; }
+.sheet-row {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 10px 16px;
-  margin: 8px 0;
+  grid-template-columns: 150px minmax(0, 1fr) 4.5rem;
+  gap: 14px;
+  align-items: start;
+  padding: 0.85rem 1rem;
+  border-top: 1px solid var(--kgm-border);
 }
-.read-grid-wide { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
-.read-grid dt { font-size: 0.78rem; color: var(--kgm-muted); margin-bottom: 2px; }
-.read-grid dd { margin: 0; }
-.read-block { margin: 12px 0; }
-.read-block h4 { margin: 4px 0; }
+.sheet-row:first-of-type { border-top: 0; }
+.sheet-label {
+  color: var(--kgm-muted);
+  font-weight: 600;
+  font-size: 0.9rem;
+  padding-top: 0.1rem;
+  overflow-wrap: anywhere;
+}
+.sheet-body { min-width: 0; }
+.sheet-edit { display: flex; justify-content: flex-end; }
+.sheet-edit .el-button { min-height: 36px; }
+.read-lines { display: flex; flex-direction: column; gap: 0.35rem; }
+.read-line {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.read-label { color: var(--kgm-muted); font-size: 0.85rem; }
 .read-text {
   margin: 0;
   white-space: pre-wrap;
@@ -5402,19 +5395,65 @@ onBeforeUnmount(() => {
   word-break: break-word;
   line-height: 1.55;
 }
-.subject-read-list { margin: 6px 0 10px; padding-left: 20px; }
-.subject-read-list li { line-height: 1.5; }
-@media (max-width: 900px) {
-  .obs-workspace { grid-template-columns: minmax(0, 1fr); }
-  .section-nav {
-    position: static;
-    flex-direction: row;
-    max-height: none;
-    overflow-x: auto;
-    padding-bottom: 4px;
-  }
-  .section-button { min-width: 10.5rem; width: auto; flex: 0 0 auto; }
-  .section-hint { display: none; }
+.term-row { align-items: center; }
+.photo-row { align-items: start; }
+.photo-panel {
+  min-width: 0;
+  border: 1px dashed transparent;
+  border-radius: 8px;
+  padding: 2px;
+}
+.photo-panel:focus-visible { outline: 2px solid var(--kgm-focus); outline-offset: 2px; }
+.photo-index { color: var(--kgm-muted); font-size: 0.78rem; }
+.ops-rail {
+  position: sticky;
+  top: 1rem;
+  min-width: 0;
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+}
+.rail-card {
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+  background: var(--kgm-surface);
+  padding: 1rem;
+}
+.rail-head h3 { margin: 0.1rem 0; }
+.rail-head p { margin: 0.2rem 0 0.8rem; }
+.rail-actions { display: flex; flex-direction: column; gap: 10px; }
+.rail-action { width: 100%; min-height: 42px; justify-content: center; }
+.rail-alert { margin-top: 12px; }
+.rail-candidates { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.rail-subtitle { margin: 0; font-weight: 600; }
+.rail-candidates :deep(.el-select) { width: 100%; }
+.rail-candidate-failure { padding-top: 8px; border-top: 1px solid var(--kgm-border); }
+.candidate-failure-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.review-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  margin: 0.5rem 0 0.75rem;
+  cursor: pointer;
+}
+.review-confirm input { margin-top: 0.2rem; }
+.candidate-audit {
+  grid-column: 1 / -1;
+  margin-top: 20px;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+  background: var(--kgm-surface);
+}
+@media (max-width: 1050px) {
+  .obs-detail { grid-template-columns: minmax(0, 1fr); }
+  .ops-rail { position: static; max-height: none; }
+}
+@media (max-width: 720px) {
+  .sheet-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .sheet-edit { justify-content: flex-start; }
+  .read-line { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .read-label { font-weight: 600; }
+  .obs-editor { padding: 1rem; }
 }
 .toolbar {
   display: flex;
@@ -5423,6 +5462,9 @@ onBeforeUnmount(() => {
   gap: 12px;
   flex-wrap: wrap;
 }
+.kicker { margin: 0 0 0.15rem; color: var(--kgm-muted); font-size: 0.8rem; }
+.record-headline h2 { margin: 0.1rem 0; overflow-wrap: anywhere; }
+.record-headline p { margin: 0.2rem 0 0; }
 .actions {
   display: flex;
   gap: 8px;

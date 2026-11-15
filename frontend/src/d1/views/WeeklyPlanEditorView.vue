@@ -1590,7 +1590,7 @@ defineExpose({ resetForContext })
 </template>
 
 <style scoped>
-.weekly-editor { padding: 1rem; color: var(--kgm-text); }
+.weekly-editor { padding: 1.25rem; color: var(--kgm-text); }
 .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
 .title h2 { margin: 0.2rem 0; }
 .actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
@@ -1603,23 +1603,24 @@ defineExpose({ resetForContext })
   justify-content: space-between;
   gap: 0.75rem;
   flex-wrap: wrap;
-  margin: 0.75rem 0;
-  padding: 0.6rem 0.8rem;
+  margin: 0.9rem 0;
+  padding: 0.75rem 0.9rem;
   border: 1px solid var(--kgm-border);
-  border-radius: 6px;
+  border-radius: 12px;
   background: var(--kgm-surface);
 }
+.ai-command .el-button { min-height: 42px; }
 .ai-command-text { display: flex; flex-direction: column; gap: 0.15rem; min-width: 12rem; }
 .weekly-workspace {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 1rem;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 20px;
   align-items: start;
 }
 .section-nav {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 8px;
   position: sticky;
   top: 0.5rem;
   max-height: calc(100vh - 3rem);
@@ -1631,9 +1632,14 @@ defineExpose({ resetForContext })
   align-items: flex-start;
   gap: 0.15rem;
   width: 100%;
-  padding: 0.55rem 0.65rem;
+  min-height: 52px;
+  /* The scrolling directory is a column flex container. Without this, long
+     hints make each item shrink to min-height and their badge text spills
+     outside the border instead of the nav scrolling. */
+  flex: 0 0 auto;
+  padding: 0.7rem 0.8rem;
   border: 1px solid var(--kgm-border);
-  border-radius: 6px;
+  border-radius: 12px;
   background: var(--kgm-surface);
   color: var(--kgm-text);
   text-align: left;
@@ -1654,11 +1660,12 @@ defineExpose({ resetForContext })
 .section-button.selected .section-badge { color: var(--kgm-text); }
 .section-pane {
   min-width: 0;
-  padding: 0.85rem 1rem;
+  padding: 1.1rem 1.2rem;
   border: 1px solid var(--kgm-border);
-  border-radius: 6px;
+  border-radius: 12px;
   background: var(--kgm-surface);
 }
+.pane-head .el-button { min-height: 40px; }
 .section-pane:focus-visible { outline: 2px solid var(--kgm-focus); outline-offset: 2px; }
 .pane-head {
   display: flex;
@@ -1694,7 +1701,7 @@ defineExpose({ resetForContext })
 .read-pre {
   padding: 0.5rem 0.65rem;
   border: 1px solid var(--kgm-border);
-  border-radius: 4px;
+  border-radius: 8px;
   background: var(--kgm-bg);
   font-family: inherit;
   font-size: 0.88rem;

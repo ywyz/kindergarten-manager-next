@@ -1419,6 +1419,13 @@ defineExpose({
           返回列表
         </el-button>
         <el-button
+          data-d1="curriculum-open-original"
+          :disabled="!canMutate || !loaded"
+          @click="openCurriculumModal('lesson_original')"
+        >
+          原稿教案
+        </el-button>
+        <el-button
           data-d1="curriculum-save"
           :loading="savePromise !== null"
           :disabled="!canMutate"
@@ -1593,17 +1600,13 @@ defineExpose({
         </div>
       </el-card>
 
-      <div
-        class="preview-section"
-        data-d1="curriculum-lesson-original-card"
-      >
-        <div class="reading-head">
-          <div>
-            <h3>课程审议内容预览</h3>
-            <p class="muted">
-              业务内容按只读表格行展示，原稿、调整和二次稿全文均不截断；各栏通过行内编辑按钮打开独立副本。
-            </p>
-          </div>
+      <div class="curriculum-main-grid">
+        <div
+          class="preview-section curriculum-sheet curriculum-sheet-top"
+          data-d1="curriculum-lesson-original-card"
+        >
+        <div class="curriculum-sheet-title">
+          {{ form.activity_name || '课程审议' }} · 课程审议
         </div>
         <div class="table-scroll">
           <table class="read-table curriculum-preview-table">
@@ -1812,10 +1815,15 @@ defineExpose({
 
       <el-card
         shadow="never"
-        class="block"
+        class="block curriculum-rail"
         data-d1="curriculum-ai-review"
       >
-        <template #header>拆分、核对与审议建议</template>
+        <template #header>
+          <div class="rail-head">
+            <strong>生成与操作</strong>
+            <span class="muted">拆分、核对、审议建议与局部修改</span>
+          </div>
+        </template>
         <p class="muted">
           按需拆分、核对原稿后生成审议建议或局部修改。候选只作预览，明确采用后才进入保存；未知受理不会自动重发。
         </p>
@@ -1846,7 +1854,7 @@ defineExpose({
         <div class="ai-selection-row">
           <el-select
             v-model="wholeField"
-            style="width: 240px"
+            class="rail-field-select"
             data-d1="curriculum-ai-whole-field"
           >
             <el-option
@@ -1867,28 +1875,12 @@ defineExpose({
         </div>
       </el-card>
 
-      <div
-        class="preview-section"
-        data-d1="curriculum-lesson-revised-card"
-      >
-        <div class="reading-head">
-          <div>
-            <h3>二次稿</h3>
-            <p class="muted">
-              二次稿全文以表格行展示；采用仍走原有确认，不自动覆盖原稿。
-            </p>
-          </div>
-        </div>
+        <div
+          class="preview-section curriculum-sheet curriculum-sheet-bottom"
+          data-d1="curriculum-lesson-revised-card"
+        >
         <div class="table-scroll">
           <table class="read-table curriculum-preview-table">
-            <thead>
-              <tr>
-                <th>栏目</th>
-                <th>原稿 / 当前内容</th>
-                <th>调整 / 结果</th>
-                <th>操作</th>
-              </tr>
-            </thead>
             <tbody>
               <tr data-d1="curriculum-lesson-revised-row">
                 <th scope="row">二次稿</th>
@@ -1910,6 +1902,7 @@ defineExpose({
               </tr>
             </tbody>
           </table>
+        </div>
         </div>
       </div>
     </template>
@@ -2183,6 +2176,9 @@ defineExpose({
   gap: 8px;
   flex-wrap: wrap;
 }
+.actions :deep(.el-button) {
+  min-height: 42px;
+}
 .block {
   margin-top: 12px;
 }
@@ -2382,12 +2378,109 @@ defineExpose({
 .curriculum-preview-table .read-label {
   display: block;
 }
+.curriculum-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 280px);
+  column-gap: 18px;
+  row-gap: 0;
+  align-items: start;
+  margin-top: 12px;
+}
+.curriculum-main-grid .preview-section {
+  margin-top: 0;
+}
+.curriculum-sheet {
+  background: var(--kgm-surface);
+  border: 1px solid var(--kgm-border);
+  padding: 0 16px 12px;
+}
+.curriculum-sheet-top {
+  grid-column: 1;
+  grid-row: 1;
+  border-radius: 12px 12px 0 0;
+  border-bottom: none;
+}
+.curriculum-sheet-bottom {
+  grid-column: 1;
+  grid-row: 2;
+  border-radius: 0 0 12px 12px;
+  border-top: 1px solid var(--kgm-border);
+  padding-top: 0;
+}
+.curriculum-sheet-title {
+  text-align: center;
+  font-size: 1.15rem;
+  font-weight: 600;
+  padding: 16px 0 12px;
+  border-bottom: 1px solid var(--kgm-border);
+}
+.curriculum-sheet-intro {
+  padding-top: 12px;
+}
+.curriculum-sheet .table-scroll {
+  margin-top: 0;
+}
+.curriculum-preview-table {
+  min-width: 0;
+  table-layout: fixed;
+}
+.curriculum-preview-table th:first-child {
+  width: 112px;
+}
+.curriculum-preview-table .preview-action-cell {
+  width: 96px;
+}
+.curriculum-preview-table .read-text {
+  overflow-wrap: anywhere;
+}
+.curriculum-rail {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  position: sticky;
+  top: 16px;
+  margin-top: 0;
+  border-radius: 12px;
+}
+.rail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.curriculum-rail .ai-selection-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.curriculum-rail .rail-field-select {
+  width: 100%;
+}
+.curriculum-rail :deep(.el-button) {
+  width: 100%;
+  min-height: 42px;
+}
+.curriculum-rail :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+@media (max-width: 980px) {
+  .curriculum-main-grid {
+    grid-template-columns: 1fr;
+  }
+  .curriculum-sheet-bottom {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .curriculum-rail {
+    grid-column: 1;
+    grid-row: 3;
+    position: static;
+    margin-top: 16px;
+  }
+}
 @media (max-width: 900px) {
   .preview-grid {
     grid-template-columns: 1fr;
-  }
-  .read-table {
-    min-width: 760px;
   }
 }
 </style>

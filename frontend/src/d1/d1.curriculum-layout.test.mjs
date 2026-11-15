@@ -369,6 +369,12 @@ function bridgeOf(emitted) {
   assert.ok(editorSource.includes('var(--kgm-border)'))
   assert.ok(editorSource.includes('var(--kgm-muted)'))
   assert.ok(editorSource.includes('read-long'))
+  assert.ok(editorSource.includes('curriculum-main-grid'))
+  assert.ok(editorSource.includes('curriculum-sheet-top'))
+  assert.ok(editorSource.includes('curriculum-sheet-bottom'))
+  assert.ok(editorSource.includes('curriculum-rail'))
+  assert.ok(editorSource.includes('curriculum-sheet-title'))
+  assert.ok(editorSource.includes('data-d1="curriculum-open-original"'))
   ok('read sections, edit dialogs and original -> review -> revised order remain')
 }
 

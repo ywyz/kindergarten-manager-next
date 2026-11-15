@@ -54,6 +54,7 @@ function compileSfcTemplate(relativePath) {
     },
   })
   assert.deepEqual(template.errors, [], `${relativePath}: template errors`)
+  return template.code
 }
 function contextFixture() {
   return {
@@ -217,6 +218,49 @@ async function testSettingsModalTemplatesCompile() {
   compileSfcTemplate('views/SetupView.vue')
   ok('Settings and first-setup SFC templates parse and compile')
 }
+async function testSettingsPageButtonsAndRailStayWired() {
+  const { state } = mountSettings()
+  assert.equal(state.activeSettingsPage.value, 'identity')
+  state.setSettingsPage('terms')
+  assert.equal(state.activeSettingsPage.value, 'terms')
+  state.setSettingsPage('ai')
+  assert.equal(state.activeSettingsPage.value, 'ai')
+  state.setSettingsPage('games')
+  assert.equal(state.activeSettingsPage.value, 'games')
+  state.setSettingsPage('backup')
+  assert.equal(state.activeSettingsPage.value, 'backup')
+  state.setSettingsPage('about')
+  assert.equal(state.activeSettingsPage.value, 'about')
+
+  await state.focusTarget({ kind: 'profile' })
+  assert.equal(state.activeSettingsPage.value, 'identity', 'profile focus selects its page')
+  state.closeEditor()
+  await state.focusTarget({ kind: 'game-config' })
+  assert.equal(state.activeSettingsPage.value, 'games', 'game focus selects its page')
+  await state.focusTarget({ kind: 'ai-config' })
+  assert.equal(state.activeSettingsPage.value, 'ai', 'AI focus selects its page')
+
+  const settingsCode = compileSfcTemplate('views/SettingsView.vue')
+  for (const marker of [
+    'settings-page-nav', 'settings-page-identity', 'settings-page-terms',
+    'settings-page-ai', 'settings-page-games', 'settings-page-backup',
+    'settings-page-about', 'settings-page-rail', 'kgm-page-layout',
+    'kgm-page-main', 'kgm-primary-action', 'settings-backup-table',
+    'settings-update-table',
+  ]) {
+    assert.ok(settingsCode.includes(marker), `Settings template keeps ${marker}`)
+  }
+  assert.equal(settingsCode.includes('fake-save-all'), false)
+  const settingsSource = fs.readFileSync(path.join(d1Dir, 'views/SettingsView.vue'), 'utf8')
+  assert.match(settingsSource, /v-show="activeSettingsPage === 'ai'"/)
+  assert.match(settingsSource, /v-show="activeSettingsPage === 'games'"/)
+  const setupCode = compileSfcTemplate('views/SetupView.vue')
+  for (const marker of ['kgm-page-layout', 'kgm-page-rail', 'setup-summary', 'setup-edit-identity', 'setup-edit-term']) {
+    assert.ok(setupCode.includes(marker), `Setup template keeps ${marker}`)
+  }
+  ok('settings page buttons, main/rail geometry and real setup sheet remain wired')
+}
+
 async function testSettingsProfileModalCancelIsByteEquivalent() {
   const { harness, state, emitted } = mountSettings()
   state.openProfileEditor()
@@ -372,6 +416,7 @@ function mountSetup(postImpl) {
 
 const tests = [
   testSettingsModalTemplatesCompile,
+  testSettingsPageButtonsAndRailStayWired,
   testSettingsProfileModalCancelIsByteEquivalent,
   testSettingsProfileConfirmFillsDraftWithoutSave,
   testSettingsTermAndClassStaleBinding,

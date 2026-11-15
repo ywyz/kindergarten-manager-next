@@ -170,6 +170,14 @@ class Harness {
   }
 }
 
+async function waitUntil(condition, label = 'condition') {
+  for (let i = 0; i < 200; i += 1) {
+    if (condition()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`timed out waiting for ${label}`)
+}
+
 async function settle(times = 8) {
   for (let i = 0; i < times; i += 1) await Promise.resolve()
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -510,8 +518,8 @@ function loadLeaveCoordinator() {
   return mod.LeaveCoordinator
 }
 
-async function mountEditorDom({ current }) {
-  const harness = makeHarness({ current })
+async function mountEditorDom({ current, overrides = {} }) {
+  const harness = makeHarness({ current, overrides })
   const component = harness.loadSfc('views/ObservationEditorView.vue', { inlineTemplate: true })
   const { ops } = createMiniDom()
   const renderer = vue.createRenderer(ops)
@@ -935,32 +943,40 @@ async function main() {
     ok('observation pending modal input joins leave protection and is record-bound')
   }
 
-  // -- DOM: read pane, section buttons, modal copy, cancel and focus --------
+  // -- DOM: main reading table + right operations rail + modal copy ---------
   {
     const { app, mountEl, harness } = await mountEditorDom({ current: currentFixture() })
     const hook = harness.window.__d1ObservationEditor
-    assert.ok(byD1(mountEl, 'obs-sections'))
-    const navButtons = walkElements(mountEl).filter((node) => (
-      node.tag === 'button'
-      && String(node.props?.class ?? '').split(/\s+/).includes('section-button')
-    ))
-    assert.equal(navButtons.length, 7)
-    assert.equal(byD1(mountEl, 'obs-section-basic').props['aria-current'], 'true')
-    // Read mode: no text body textarea is mounted by default.
+    assert.ok(byD1(mountEl, 'obs-read-table'))
+    assert.ok(byD1(mountEl, 'obs-rail'))
+    assert.ok(byD1(mountEl, 'obs-ai'))
+    assert.equal(byD1(mountEl, 'obs-sections'), null)
+    for (const key of ['basic', 'subjects', 'body', 'support', 'evaluation', 'photos']) {
+      assert.ok(byD1(mountEl, `obs-section-${key}`), `${key} row missing`)
+    }
+    // Read mode: every section is in the main sheet, no text inputs by default.
     assert.equal(byD1(mountEl, 'obs-process'), null)
     const basicText = nodeText(byD1(mountEl, 'obs-basic'))
     assert.ok(basicText.includes('2026-09-15'))
     assert.ok(basicText.includes('中一班'))
-    // Switch to body and read the exact stored newlines.
-    byD1(mountEl, 'obs-section-body').props.onClick({ currentTarget: byD1(mountEl, 'obs-section-body') })
-    await settle()
-    assert.equal(byD1(mountEl, 'obs-section-body').props['aria-current'], 'true')
-    const processRead = byD1(mountEl, 'obs-process-read')
-    assert.ok(processRead)
-    assert.equal(processRead.props['data-d1'], 'obs-process-read')
-    assert.equal(nodeText(processRead), '第一行\n第二行')
-    // Explicit edit opens the modal with the committed copy.
-    const edit = byD1(mountEl, 'obs-section-edit')
+    assert.equal(nodeText(byD1(mountEl, 'obs-process-read')), '第一行\n第二行')
+    const evalText = nodeText(byD1(mountEl, 'obs-evaluation'))
+    for (const label of ['健康', '语言', '社会', '科学', '艺术']) {
+      assert.ok(evalText.includes(label), `${label} must be readable`)
+    }
+    // Right rail: one generation set with all five operations.
+    for (const id of [
+      'obs-generate',
+      'obs-rewrite-observation_goal',
+      'obs-rewrite-observation_process',
+      'obs-rewrite-analysis_evaluation',
+      'obs-rewrite-support_strategy',
+    ]) {
+      assert.ok(byD1(mountEl, id), `${id} missing from rail`)
+    }
+    assert.equal(walkElements(mountEl).filter((node) => node.props?.['data-d1'] === 'obs-ai').length, 1)
+    // Explicit row edit opens the independent modal copy.
+    const edit = byD1(mountEl, 'obs-section-edit-body')
     assert.ok(edit)
     let focused = false
     edit.focus = () => { focused = true }
@@ -978,32 +994,25 @@ async function main() {
     assert.equal(focused, true)
     assert.equal(hook.form().observation_process, '第一行\n第二行')
     // Reopen shows the original bytes, not the cancelled modal input.
-    byD1(mountEl, 'obs-section-edit').props.onClick({ currentTarget: byD1(mountEl, 'obs-section-edit') })
+    byD1(mountEl, 'obs-section-edit-body').props.onClick({ currentTarget: byD1(mountEl, 'obs-section-edit-body') })
     await settle()
     assert.equal(byD1(mountEl, 'obs-process').props.value, '第一行\n第二行')
     byD1(mountEl, 'obs-section-cancel').props.onClick()
     await settle()
-    // Photos and AI remain single existing panels with their entry points.
-    byD1(mountEl, 'obs-section-photos').props.onClick({ currentTarget: byD1(mountEl, 'obs-section-photos') })
-    await settle()
+    // Photos stay in the sheet; AI stays in the single rail.
     assert.ok(byD1(mountEl, 'obs-photos'))
     assert.ok(byD1(mountEl, 'obs-add-photo'))
-    byD1(mountEl, 'obs-section-ai').props.onClick({ currentTarget: byD1(mountEl, 'obs-section-ai') })
-    await settle()
-    assert.ok(byD1(mountEl, 'obs-ai'))
+    assert.match(nodeText(byD1(mountEl, 'obs-photo-order')), /照片 1.*照片 2/)
     assert.ok(byD1(mountEl, 'obs-generate'))
-    assert.ok(byD1(mountEl, 'obs-rewrite-observation_goal'))
     harness.unmount()
     app.unmount()
     await settle()
-    ok('observation DOM reads the body, edits an independent copy and keeps photo/AI panels')
+    ok('observation DOM reads the full table and edits one independent copy beside the operations rail')
   }
 
   // -- DOM: five-domain read pane keeps all five labels ----------------------
   {
     const { app, mountEl, harness } = await mountEditorDom({ current: currentFixture() })
-    byD1(mountEl, 'obs-section-evaluation').props.onClick({ currentTarget: byD1(mountEl, 'obs-section-evaluation') })
-    await settle()
     const text = nodeText(byD1(mountEl, 'obs-evaluation'))
     for (const label of ['健康', '语言', '社会', '科学', '艺术']) {
       assert.ok(text.includes(label), `${label} must be readable`)
@@ -1012,7 +1021,7 @@ async function main() {
     assert.ok(text.includes('社会表现'))
     assert.ok(text.includes('（未填写）'))
     // The modal owns five independent textareas.
-    byD1(mountEl, 'obs-section-edit').props.onClick({ currentTarget: byD1(mountEl, 'obs-section-edit') })
+    byD1(mountEl, 'obs-section-edit-evaluation').props.onClick({ currentTarget: byD1(mountEl, 'obs-section-edit-evaluation') })
     await settle()
     for (const key of ['health', 'language', 'social', 'science', 'arts']) {
       assert.ok(byD1(mountEl, `obs-eval-${key}`), `${key} textarea missing`)
@@ -1269,14 +1278,76 @@ async function main() {
     ok('observation unchanged modal composition blocks the real leave coordinator until settled')
   }
 
+  // -- DOM: the right rail generates/rewrites through the real panel wiring --
+  {
+    const posts = []
+    const current = currentFixture()
+    const base = clientModule({ current })
+    const client = {
+      ...base,
+      apiPost: async (url, body) => {
+        posts.push({ url, body })
+        return {
+          id: 't1',
+          task_type: body.task_type,
+          status: 'succeeded',
+          reason: null,
+          candidate_id: null,
+          execution: { id: 'e1' },
+        }
+      },
+      apiGet: async (url) => {
+        if (String(url).includes('/ai-tasks/t1')) {
+          return {
+            id: 't1',
+            task_type: posts.at(-1)?.body.task_type ?? 'game_observation_generate',
+            status: 'succeeded',
+            reason: null,
+            candidate_id: null,
+            execution: { id: 'e1' },
+          }
+        }
+        return base.apiGet(url)
+      },
+    }
+    const { app, mountEl, harness } = await mountEditorDom({
+      current,
+      overrides: { '../client': client },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    const generate = byD1(mountEl, 'obs-generate')
+    assert.ok(generate)
+    assert.equal(generate.props.disabled, false)
+    generate.props.onClick({ currentTarget: generate })
+    await waitUntil(() => posts.length >= 1, 'generate task post')
+    assert.equal(posts[0].body.task_type, 'game_observation_generate')
+    assert.equal(posts[0].body.target, null)
+    await waitUntil(() => hook.aiBusy() === false, 'generate task settle')
+    const rewrite = byD1(mountEl, 'obs-rewrite-observation_goal')
+    assert.ok(rewrite)
+    assert.equal(rewrite.props.disabled, false)
+    rewrite.props.onClick({ currentTarget: rewrite })
+    await waitUntil(() => posts.length >= 2, 'rewrite task post')
+    assert.equal(posts[1].body.task_type, 'game_observation_rewrite')
+    assert.equal(posts[1].body.target, 'observation_goal')
+    harness.unmount()
+    app.unmount()
+    await settle()
+    ok('observation rail generate and single-field rewrite wire to the one AI task pipeline')
+  }
+
   // -- static contract: one AI panel, history/export, token-only styles ------
   {
     const source = fs.readFileSync(editorFile, 'utf8')
-    assert.equal((source.match(/<el-card[^>]*data-d1="obs-ai"/g) || []).length, 1)
+    assert.equal((source.match(/class="rail-card" data-d1="obs-ai"/g) || []).length, 1)
     assert.equal((source.match(/data-d1="obs-generate"/g) || []).length, 1)
+    assert.match(source, /data-d1="obs-read-table"/)
+    assert.match(source, /data-d1="obs-rail"/)
     assert.match(source, /data-d1="obs-open-history"/)
     assert.match(source, /data-d1="obs-export"/)
-    assert.match(source, /data-d1="obs-section-edit"/)
+    assert.match(source, /data-d1="obs-section-edit-body"/)
+    assert.match(source, /data-d1="obs-section-edit-evaluation"/)
+    assert.match(source, /data-d1="obs-section-edit-photos"/)
     assert.match(source, /read-text/)
     assert.equal(source.includes('业务版本'), false)
     assert.equal(source.includes('空骨架'), false)
@@ -1284,7 +1355,10 @@ async function main() {
     const styles = (source.match(/<style[\s\S]*?<\/style>/g) || []).join('\n')
     assert.doesNotMatch(styles, /#[0-9a-fA-F]{3,8}/)
     assert.doesNotMatch(styles, /filter\s*:|invert\s*\(/i)
-    assert.match(styles, /@media \(max-width: 900px\)/)
+    assert.match(styles, /@media \(max-width: (1050|900|720)px\)/)
+    assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) 280px/)
+    assert.match(styles, /border-radius: 12px/)
+    assert.match(styles, /min-height: 42px/)
     assert.match(styles, /white-space: pre-wrap/)
     ok('observation editor keeps one AI panel, history/export entries and token-only responsive styles')
   }

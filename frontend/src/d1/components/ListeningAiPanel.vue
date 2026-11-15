@@ -141,14 +141,14 @@ const busy = computed(
 watch(busy, (value) => emit('busy', value), { immediate: true })
 watch(draft, (value) => emit('draft', value), { immediate: true })
 
-const groupId = computed(() =>
-  selectedGroup.value ||
-  props.groups.find((group) => group.position === 0)?.group_id ||
-  props.groups[0]?.group_id ||
-  '',
-)
 const photoGroups = computed(() =>
   props.groups.filter((group) => Boolean(group.asset_id)),
+)
+const groupId = computed(() =>
+  selectedGroup.value ||
+  photoGroups.value[0]?.group_id ||
+  props.groups[0]?.group_id ||
+  '',
 )
 const photoPositions = computed(() =>
   photoGroups.value
@@ -178,22 +178,16 @@ const goalHasMaterial = computed(() =>
       Boolean((group.listening_text ?? '').trim()),
   ),
 )
-const canRunSelected = computed(() => {
+function canRunField(field: 'goal' | 'note' | 'evaluation'): boolean {
   if (!canCreate.value) return false
-  if (selectedField.value === 'goal') return goalHasMaterial.value
-  if (selectedField.value === 'note') {
-    return photoGroups.value.length > 0 && Boolean(groupId.value)
+  if (field === 'goal') return goalHasMaterial.value
+  if (field === 'note') {
+    return photoGroups.value.some(
+      (group) => group.group_id === groupId.value,
+    )
   }
   return true
-})
-const actionLabel = computed(() => {
-  if (selectedField.value === 'goal') return '生成观察目标'
-  if (selectedField.value === 'note') {
-    return `整理本组倾听记录（${photoGroups.value.length} 张有效照片）`
-  }
-  return '生成本领域评价建议'
-})
-
+}
 function updateDraft(): void {
   draft.value =
     pendingCreate.value !== null ||
@@ -1390,7 +1384,19 @@ function startGoal(): void {
   void startTask('listening_goal_suggest')
 }
 
-defineExpose({ reset, markDraft, startGoal, startSelected })
+function startField(field: 'goal' | 'note' | 'evaluation'): void {
+  if (!canRunField(field)) return
+  selectedField.value = field
+  startSelected()
+}
+
+defineExpose({
+  reset,
+  markDraft,
+  startGoal,
+  startSelected,
+  startField,
+})
 </script>
 
 <template>
@@ -1409,43 +1415,53 @@ defineExpose({ reset, markDraft, startGoal, startSelected })
         <span class="muted">只使用已保存内容；候选不会自动写入 Word</span>
       </div>
     </template>
-    <div class="ai-actions">
-      <span class="muted">栏位</span>
-      <el-select
-        v-model="selectedField"
-        size="small"
-        data-d1="listening-ai-field"
-        :disabled="disabled || busy || hasLiveTask"
-      >
-        <el-option label="观察目标" value="goal" />
-        <el-option label="本组倾听正文" value="note" />
-        <el-option label="评价与支持" value="evaluation" />
-      </el-select>
-      <el-select
-        v-if="selectedField === 'note'"
-        v-model="selectedGroup"
-        size="small"
-        data-d1="listening-ai-group"
-        :disabled="disabled || busy || hasLiveTask"
-      >
-        <el-option
-          v-for="group in groups"
-          :key="group.group_id"
-          :label="`第 ${(group.position ?? 0) + 1} 组`"
-          :value="group.group_id"
-        />
-      </el-select>
-      <el-button
-        size="small"
-        type="primary"
-        data-d1="listening-ai-run"
-        :loading="creating"
-        :disabled="!canRunSelected"
-        @click="startSelected"
-      >
-        {{ actionLabel }}
-      </el-button>
-      <span v-if="selectedField === 'goal' && !goalHasMaterial" class="muted">
+    <div class="ai-actions" data-d1="listening-ai-field">
+      <div class="rail-generation-actions">
+        <el-button
+          type="primary"
+          data-d1="listening-ai-run"
+          :loading="creating && selectedField === 'goal'"
+          :disabled="!canRunField('goal')"
+          @click="startField('goal')"
+        >
+          生成观察目标
+        </el-button>
+        <div class="rail-note-choice">
+          <el-select
+            v-model="selectedGroup"
+            size="small"
+            data-d1="listening-ai-group"
+            placeholder="选择有照片的图组"
+            :disabled="disabled || busy || hasLiveTask || photoGroups.length === 0"
+          >
+            <el-option
+              v-for="group in photoGroups"
+              :key="group.group_id"
+              :label="`第 ${(group.position ?? 0) + 1} 组`"
+              :value="group.group_id"
+            />
+          </el-select>
+          <el-button
+            type="primary"
+            data-d1="listening-ai-run-note"
+            :loading="creating && selectedField === 'note'"
+            :disabled="!canRunField('note')"
+            @click="startField('note')"
+          >
+            整理本组倾听记录（{{ photoGroups.length }} 张有效照片）
+          </el-button>
+        </div>
+        <el-button
+          type="primary"
+          data-d1="listening-ai-run-evaluation"
+          :loading="creating && selectedField === 'evaluation'"
+          :disabled="!canRunField('evaluation')"
+          @click="startField('evaluation')"
+        >
+          生成本领域评价建议
+        </el-button>
+      </div>
+      <span v-if="!goalHasMaterial" class="muted">
         本领域暂无可发送的已存文字或照片材料
       </span>
     </div>
@@ -1778,15 +1794,34 @@ defineExpose({ reset, markDraft, startGoal, startSelected })
 }
 .ai-header {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 .ai-actions {
   display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+}
+.rail-generation-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rail-note-choice {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
+}
+.ai-actions :deep(.el-button) {
+  width: 100%;
+  min-height: 42px;
+}
+.ai-actions :deep(.el-select) {
+  width: 100%;
 }
 .block {
   margin-top: 8px;

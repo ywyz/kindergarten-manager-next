@@ -1369,12 +1369,15 @@ async function mountWorkbench({ frozen = false } = {}) {
 }
 
 async function testWorkbenchCollaborationEntryTargetsFocusedSettings() {
-  const { state, emitted } = await mountWorkbench({ frozen: false })
-  state.openCollaboration()
-  assert.deepEqual(emitted.at(-1), ['open-settings', 'collaboration'])
-  state.openSettings()
-  assert.deepEqual(emitted.at(-1), ['open-settings'])
-  ok('settings: workbench collaboration entry reuses the normal settings route')
+  const app = await mountApp({})
+  app.state.view.value = { name: 'workbench' }
+  await app.state.goModule('collaboration')
+  assert.equal(app.state.view.value.name, 'settings')
+  assert.equal(app.state.view.value.section, 'collaboration')
+  await app.state.goModule('settings')
+  assert.equal(app.state.view.value.name, 'settings')
+  assert.equal(app.state.view.value.section, undefined)
+  ok('settings: top-level collaboration entry reuses the normal settings route')
 }
 
 async function testDirectCollaborationSettingsUsesLeaveGuard() {
@@ -1441,8 +1444,6 @@ async function testCloseFreezeDisablesWorkbenchInteraction() {
     reason: '',
   }
   state.clickDay(day)
-  state.openSettings()
-  state.openCollaboration()
   state.openListItem({
     id: 'p1',
     plan_date: '2026-09-15',
@@ -1453,7 +1454,7 @@ async function testCloseFreezeDisablesWorkbenchInteraction() {
   await settle()
   assert.equal(emitted.length, 0)
   assert.equal(state.termFilter.value, null)
-  ok('close freeze: workbench day/list/settings/term interactions are disabled')
+  ok('close freeze: workbench day/list/term interactions are disabled')
 }
 
 async function testCloseFreezeDisablesSettingsCommit() {
@@ -1865,10 +1866,12 @@ async function mountSettings({
   postImpl,
   frozen = false,
   promotion = null,
+  document,
 } = {}) {
   const posts = []
   const collaborationCalls = []
   const harness = new Harness({
+    document,
     overrides: {
       '../client': {
         apiGet: async () => context,
@@ -2828,6 +2831,65 @@ async function testOlderLateReadNeverClearsGate() {
   assert.equal(previews.length, 1)
   ok('#3 an older late read never clears the committed-version gate or loses the queued draft')
 }
+async function testCollaborationStateSpecificFocusRoutes() {
+  const focused = []
+  const scrolled = []
+  const queried = []
+  const target = {
+    parentElement: null,
+    scrollIntoView: (options) => scrolled.push(options),
+    hasAttribute: () => true,
+    focus: () => focused.push('target'),
+  }
+  const root = { parentElement: null }
+  const documentStub = {
+    querySelector: (selector) => {
+      queried.push(selector)
+      if (selector === '[data-d1="collaboration"]') return root
+      if (selector === '[data-d1="collaboration-class-unknown"]') return null
+      return target
+    },
+  }
+  const { state } = await mountSettings({ document: documentStub })
+  const sections = []
+  let scenario = 'promotion'
+  state.collaborationPanelRef.value = {
+    pendingWrite: () => null,
+    pendingPromotion: () => null,
+    promotionStale: () => scenario === 'promotion',
+    currentStatus: () => ({
+      connected: true,
+      teacher: { teacher_id: 't1', school_id: 's1' },
+    }),
+    currentPreview: () => (scenario === 'preview' ? { source_teacher_name: '合成老师' } : null),
+    currentPublishPreview: () => (scenario === 'publish' ? { classLabel: '合成中班' } : null),
+    focusDirectory: (section) => sections.push(section),
+  }
+
+  await state.focusTarget({ kind: 'online-collaboration' })
+  assert.equal(state.activeSection.value, 'collaboration')
+  assert.equal(sections.at(-1), 'promotion')
+  assert.ok(queried.includes('[data-d1="collaboration-promotion-form"]'))
+  assert.equal(focused.length, 1)
+  assert.equal(scrolled.at(-1)?.block, 'center')
+
+  scenario = 'preview'
+  queried.length = 0
+  focused.length = 0
+  await state.focusTarget({ kind: 'online-collaboration' })
+  assert.equal(sections.at(-1), 'game-config')
+  assert.ok(queried.includes('[data-d1="collaboration-preview"]'))
+
+  scenario = 'publish'
+  queried.length = 0
+  focused.length = 0
+  await state.focusTarget({ kind: 'online-collaboration' })
+  assert.equal(sections.at(-1), 'game-config')
+  assert.ok(queried.includes('[data-d1="collaboration-publish-preview"]'))
+  assert.equal(focused.length, 1)
+  ok('collaboration focus selects promotion/config pages and targets stale/import/publish content')
+}
+
 async function testAiDraftTargetsCoverBusyAndPendingWrites() {
   const harness = new Harness({
     overrides: {
@@ -4237,6 +4299,7 @@ const tests = [
   testSettingsTargetsPerTermAndNoWrite,
   testSettingsGroupsStartCollapsedAndFocusExpandsAncestors,
   testCollaborationPendingFocusSelectsRedeemOrReceipt,
+  testCollaborationStateSpecificFocusRoutes,
   testAiDraftTargetsCoverBusyAndPendingWrites,
   testSettingsLeaveOffersPerTargetNotice,
   testNoticeFollowsRemainingTargetsAfterPartialApply,

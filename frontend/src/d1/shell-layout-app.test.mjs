@@ -206,6 +206,7 @@ function contextFixture() {
   }
 }const NAV_MARKERS = [
   'module-nav-workbench',
+  'module-nav-todos',
   'module-nav-daily',
   'module-nav-weekly',
   'module-nav-observations',
@@ -268,9 +269,15 @@ function navButton(html, marker) {
   for (const marker of NAV_MARKERS) {
     assert.ok(navButton(workbench, marker), `${marker} is a visible button`)
   }
-  assert.match(navButton(workbench, 'module-nav-workbench'), /data-type="primary"/)
+  assert.match(navButton(workbench, 'module-nav-todos'), /data-type="primary"/)
+  assert.doesNotMatch(navButton(workbench, 'module-nav-workbench'), /data-type="primary"/)
   assert.doesNotMatch(navButton(workbench, 'module-nav-settings'), /data-type="primary"/)
-  assert.match(workbench, /工作台[\s\S]*日计划[\s\S]*周计划[\s\S]*游戏观察[\s\S]*一对一倾听[\s\S]*课程审议[\s\S]*在线协作[\s\S]*设置/)
+  assert.equal(
+    (workbench.match(/data-type="primary"/g) ?? []).length,
+    1,
+    'exactly one module entry is selected',
+  )
+  assert.match(workbench, /工作台[\s\S]*个人待办[\s\S]*日计划[\s\S]*周计划[\s\S]*游戏观察[\s\S]*一对一倾听[\s\S]*课程审议[\s\S]*在线协作[\s\S]*设置/)
 
   state.view.value = { name: 'settings', section: 'collaboration' }
   const collaboration = await renderApp(state)
@@ -296,11 +303,13 @@ function navButton(html, marker) {
   state.settingsDraftActive.value = false
   await state.goModule('workbench')
   assert.equal(state.view.value.name, 'workbench')
+  assert.equal(state.view.value.panel, 'todos', 'the workbench home is personal todos')
 
-  let dailyCalls = 0
-  state.workbenchRef.value = { showDailyPlan: () => { dailyCalls += 1 } }
   await state.goModule('daily')
-  assert.equal(dailyCalls, 1, 'daily module selects the workbench daily pane')
+  assert.equal(state.view.value.name, 'workbench')
+  assert.equal(state.view.value.panel, 'daily', 'daily module opens the calendar/history pane')
+  await state.goModule('todos')
+  assert.equal(state.view.value.panel, 'todos', 'personal todo entry shares the workbench target')
 
   state.closeLocked.value = true
   const before = state.view.value.name
@@ -397,12 +406,17 @@ async function testRealWorkbenchTodoModalBinding() {
   todo.state.openCreateEditor()
   todo.state.editorTitle.value = '待办私密草稿'
   assert.match(app.state.currentBlockingDraft().message, /个人待办编辑/)
-  workbench.state.showTodos()
   assert.equal(workbench.state.activePanel.value, 'todos')
   await app.state.goModule('daily')
-  assert.equal(workbench.state.activePanel.value, 'daily', 'top daily navigation reaches the real workbench pane')
+  assert.equal(app.state.view.value.panel, undefined, 'the open todo modal blocks the pane switch')
+  assert.ok(harness.messages.some((message) => String(message).includes('个人待办编辑')))
   todo.state.cancelEditor()
   assert.equal(app.state.currentBlockingDraft(), null)
+  await app.state.goModule('daily')
+  assert.equal(app.state.view.value.panel, 'daily', 'top daily navigation selects the calendar pane')
+  workbench.props.panel = 'daily'
+  await vue.nextTick()
+  assert.equal(workbench.state.activePanel.value, 'daily')
 
   todo.state.openCreateEditor()
   todo.state.editorComposing.value = true
@@ -436,6 +450,55 @@ async function testRealWorkbenchTodoModalBinding() {
   assert.equal(store.state.draftTitle, 'EXTERNAL')
   todo.state.cancelEditor()
   ok('real App/Workbench/Todo interaction keeps refs, pane navigation and profile-bound modal drafts')
+}
+
+async function testCalendarLeaveRestoresDailyAndKeepsOrdinaryHome() {
+  const harness = new Harness()
+  const { state } = harness.setupApp()
+  state.bootState.value = 'ready'
+  state.context.value = contextFixture()
+
+  let dirty = true
+  let saves = 0
+  state.view.value = { name: 'editor', planDate: '2026-09-15', mode: 'open', planId: 'p1' }
+  state.registerEditor({
+    isDirty: () => dirty,
+    identity: () => 'p1:1',
+    saveCurrent: async () => {
+      saves += 1
+      dirty = false
+      return 'saved'
+    },
+  })
+  const outcome = await state.leaveForAction('calendar', () => 'left')
+  assert.equal(outcome, 'left')
+  assert.equal(saves, 1, 'calendar leave still saves the dirty editor first')
+  assert.equal(state.view.value.name, 'workbench')
+  assert.equal(state.view.value.panel, 'daily', 'editor 返回月历 restores the daily calendar panel')
+  assert.equal(state.activeModule.value, 'daily', 'daily is the single selected top module')
+  const dailyHtml = await renderApp(state)
+  assert.match(navButton(dailyHtml, 'module-nav-daily'), /data-type="primary"/)
+  assert.doesNotMatch(navButton(dailyHtml, 'module-nav-todos'), /data-type="primary"/)
+  assert.doesNotMatch(navButton(dailyHtml, 'module-nav-workbench'), /data-type="primary"/)
+  assert.equal((dailyHtml.match(/data-type="primary"/g) ?? []).length, 1)
+
+  state.view.value = { name: 'settings' }
+  await state.leaveForAction('calendar', () => 'left')
+  assert.equal(state.view.value.name, 'workbench')
+  assert.equal(state.view.value.panel, 'todos', 'ordinary 返回工作台 still lands on personal todos')
+  const homeHtml = await renderApp(state)
+  assert.match(navButton(homeHtml, 'module-nav-todos'), /data-type="primary"/)
+
+  state.view.value = { name: 'editor', planDate: '2026-09-15', mode: 'open', planId: 'p2' }
+  state.registerEditor({
+    isDirty: () => true,
+    identity: () => 'p2:1',
+    saveCurrent: async () => 'conflict',
+  })
+  await state.leaveForAction('calendar', () => 'left')
+  assert.equal(state.view.value.name, 'editor', 'a failed save still keeps the editor')
+  assert.equal(state.activeModule.value, 'daily')
+  ok('actual calendar leave returns editor to daily, ordinary home to todos, and keeps save/conflict guards')
 }
 
 async function testModuleNavigationSavesDirtyEditor() {
@@ -475,6 +538,7 @@ const tests = [
   testNavigationKeepsLeaveAndCloseGuards,
   testWorkbenchModalDraftJoinsBlockingDraft,
   testRealWorkbenchTodoModalBinding,
+  testCalendarLeaveRestoresDailyAndKeepsOrdinaryHome,
   testModuleNavigationSavesDirtyEditor,
 ]
 for (const test of tests) {

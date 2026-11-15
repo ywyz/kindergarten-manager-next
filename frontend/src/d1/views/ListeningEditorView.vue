@@ -166,6 +166,26 @@ const directionalBusy = ref(false)
 const directionalRequest = ref<DirectionalOpenRequest | null>(null)
 const directionalSelections = ref<Record<string, DirectionalSelection>>({})
 const directionalSelectionTokens = ref<Record<string, string>>({})
+type RailDirectionalField =
+  | 'goal'
+  | 'listening_text'
+  | 'overall_evaluation'
+  | 'support_strategy'
+
+interface RailSelectionBinding {
+  recordId: string
+  domain: ListeningDomain
+  revision: number
+  profileEpoch: number
+  sessionEpoch: number
+  field: RailDirectionalField
+  groupId: string
+  selection: DirectionalSelection
+}
+
+const railDirectionalField = ref<RailDirectionalField>('goal')
+const railDirectionalGroup = ref('')
+const railSelectionBinding = ref<RailSelectionBinding | null>(null)
 const directionalNotice = ref('')
 const actionBusy = computed(
   () => actionCount.value > 0 || state.busy || state.savePromise !== null,
@@ -457,6 +477,7 @@ function openListeningModal(
   }
   const modal = createListeningModal(kind, groupId)
   if (!modal) return
+  clearRailDirectionalSelection()
   listeningModalReturnFocus =
     typeof document !== 'undefined' &&
     typeof HTMLElement !== 'undefined' &&
@@ -647,7 +668,7 @@ async function confirmListeningModal(): Promise<void> {
     return
   }
   applyListeningModalDraft(modal)
-  closeListeningModal()
+  closeListeningModal(true)
   ElMessage.info('已填入草稿，尚未保存')
 }
 
@@ -700,8 +721,9 @@ function applyListeningModalDraft(modal: ListeningModalDraft): void {
   }
 }
 
-function closeListeningModal(): void {
+function closeListeningModal(keepRailSelection = false): void {
   listeningModal.value = null
+  if (!keepRailSelection) clearRailDirectionalSelection()
   const target = listeningModalReturnFocus
   listeningModalReturnFocus = null
   if (target) {
@@ -1187,6 +1209,8 @@ async function selectDomain(domain: ListeningDomain): Promise<void> {
   if (outcome === undefined) return
   if (outcome === 'saved' || outcome === 'unchanged') {
     clearDirectionalNoticeAfterSave(outcome)
+    railDirectionalGroup.value = ''
+    clearDirectionalSelections()
     syncPhotoUrls()
   } else {
     ElMessage.warning(outcomeMessage(outcome))
@@ -1255,6 +1279,17 @@ const savedDirectionalGroups = computed(() =>
   })),
 )
 
+function isRailDirectionalField(
+  field: string,
+): field is RailDirectionalField {
+  return (
+    field === 'goal' ||
+    field === 'listening_text' ||
+    field === 'overall_evaluation' ||
+    field === 'support_strategy'
+  )
+}
+
 function rememberDirectionalSelection(event: Event): void {
   const captured = captureDirectionalSelection(event)
   if (!captured) return
@@ -1267,6 +1302,25 @@ function rememberDirectionalSelection(event: Event): void {
       ...directionalSelectionTokens.value,
       [captured.key]: listeningModal.value.token,
     }
+    if (
+      !captured.candidateId &&
+      isRailDirectionalField(captured.field)
+    ) {
+      railSelectionBinding.value = {
+        recordId: props.recordId,
+        domain: state.domain,
+        revision: state.revision,
+        profileEpoch: props.profileEpoch ?? 0,
+        sessionEpoch: getSessionEpoch(),
+        field: captured.field,
+        groupId: captured.groupId,
+        selection: captured.selection,
+      }
+      railDirectionalField.value = captured.field
+      if (captured.field === 'listening_text') {
+        railDirectionalGroup.value = captured.groupId
+      }
+    }
   }
 }
 
@@ -1274,10 +1328,21 @@ function openDirectionalSaved(
   field: string,
   groupId: string,
   whole: boolean,
+  providedSelection?: DirectionalSelection,
 ): void {
   if (!canMutate.value) return
   if (state.unknown) {
     ElMessage.warning('保存结果待核对：请先处理原保存，再发起定向修改')
+    return
+  }
+  const scopedGroupId = field === 'listening_text' ? groupId : ''
+  const group = scopedGroupId
+    ? form.value?.groups.find((item) => item.group_id === scopedGroupId)
+    : undefined
+  if (field === 'listening_text' && !group) {
+    ElMessage.warning(
+      '目标图组已不在当前领域：请重新选择当前领域的图组后再修改',
+    )
     return
   }
   const scope: DirectionalScope = {
@@ -1285,14 +1350,14 @@ function openDirectionalSaved(
     record_id: props.recordId,
     version: state.revision,
     domain: state.domain,
-    ...(groupId ? { group_id: groupId } : {}),
+    ...(scopedGroupId ? { group_id: scopedGroupId } : {}),
     field,
   }
   const text = currentListeningFieldText(scope)
-  const key = directionalSelectionKey(field, groupId)
+  const key = directionalSelectionKey(field, scopedGroupId)
   const selection = whole
     ? wholeDirectionalSelection(text)
-    : directionalSelections.value[key]
+    : providedSelection ?? directionalSelections.value[key]
   if (!selection) {
     ElMessage.warning('请先在正文中选择文字，或使用「整栏修改」')
     return
@@ -1306,7 +1371,6 @@ function openDirectionalSaved(
     ElMessage.warning(selectionError)
     return
   }
-  const group = form.value?.groups.find((item) => item.group_id === groupId)
   const position =
     group && form.value ? form.value.groups.indexOf(group) + 1 : 0
   const label =
@@ -1334,6 +1398,73 @@ function openDirectionalSaved(
     sourceStale: false,
   }
   directionalOpen.value = true
+}
+
+const railDirectionalGroupId = computed(() => {
+  if (railDirectionalField.value !== 'listening_text') return ''
+  if (railDirectionalGroup.value) return railDirectionalGroup.value
+  return session.form()?.groups[0]?.group_id ?? ''
+})
+
+function railSelectionBindingCurrent(
+  binding: RailSelectionBinding,
+): boolean {
+  if (binding.recordId !== props.recordId) return false
+  if (binding.domain !== state.domain) return false
+  if (binding.revision !== state.revision) return false
+  if (binding.profileEpoch !== (props.profileEpoch ?? 0)) return false
+  if (binding.sessionEpoch !== getSessionEpoch()) return false
+  if (binding.field !== railDirectionalField.value) return false
+  if (binding.field !== 'listening_text') return true
+  if (binding.groupId !== railDirectionalGroupId.value) return false
+  return Boolean(
+    session
+      .form()
+      ?.groups.some((group) => group.group_id === binding.groupId),
+  )
+}
+
+const railDirectionalSelection = computed(() => {
+  const binding = railSelectionBinding.value
+  if (!binding || !railSelectionBindingCurrent(binding)) return null
+  return binding.selection
+})
+
+const railDirectionalSummary = computed(() => {
+  const selection = railDirectionalSelection.value
+  if (!selection) return '尚未选择文字；可在该栏编辑弹窗中选中'
+  const text = selection.text || '（空栏）'
+  return `已选：${
+    text.length > 24 ? `${text.slice(0, 24)}…` : text
+  }`
+})
+
+function clearRailDirectionalSelection(): void {
+  railSelectionBinding.value = null
+}
+
+function clearDirectionalSelections(): void {
+  directionalSelections.value = {}
+  directionalSelectionTokens.value = {}
+  railSelectionBinding.value = null
+}
+
+function openRailDirectional(whole = false): void {
+  if (!whole) {
+    const binding = railSelectionBinding.value
+    if (!binding || !railSelectionBindingCurrent(binding)) {
+      ElMessage.warning(
+        '当前选中文字属于旧记录、领域、版本或本地会话：请重新选择',
+      )
+      return
+    }
+  }
+  openDirectionalSaved(
+    railDirectionalField.value,
+    railDirectionalGroupId.value,
+    whole,
+    whole ? undefined : railSelectionBinding.value?.selection,
+  )
 }
 
 function applyDirectionalAdoption(
@@ -1687,6 +1818,8 @@ function resetForContext(): void {
   directionalRequest.value = null
   directionalSelections.value = {}
   directionalSelectionTokens.value = {}
+  railSelectionBinding.value = null
+  railDirectionalGroup.value = ''
   directionalNotice.value = ''
   releaseComposition()
   invalidatePhotos()
@@ -1699,6 +1832,15 @@ function resetForContext(): void {
   }
   void load()
 }
+
+watch(
+  () => state.revision,
+  () => clearDirectionalSelections(),
+)
+
+watch(railDirectionalField, (field) => {
+  if (field !== 'listening_text') railDirectionalGroup.value = ''
+})
 
 watch(
   () => props.profileEpoch ?? 0,
@@ -1721,6 +1863,8 @@ onBeforeUnmount(() => {
   directionalOpen.value = false
   directionalBusy.value = false
   directionalRequest.value = null
+  railSelectionBinding.value = null
+  railDirectionalGroup.value = ''
   photoGeneration += 1
   releaseComposition()
   unregister()
@@ -1853,67 +1997,6 @@ defineExpose({
       class="block"
     />
 
-    <el-card
-      shadow="never"
-      class="block reading-card"
-      data-d1="listening-record-summary"
-    >
-      <div class="reading-head">
-        <div>
-          <h3>记录信息</h3>
-          <p class="muted">
-            五领域共用一条记录与一个姓名；正文以只读表格展示，编辑需打开对应弹窗。
-          </p>
-        </div>
-        <el-button
-          size="small"
-          data-d1="listening-edit-name"
-          :disabled="!canMutate"
-          @click="openListeningModal('name')"
-        >
-          编辑姓名
-        </el-button>
-      </div>
-      <div class="read-grid">
-        <div class="read-item">
-          <span class="read-label">幼儿姓名</span>
-          <span class="read-value" data-d1="listening-read-name">
-            {{ state.name || '（尚未填写）' }}
-          </span>
-        </div>
-        <div class="read-item">
-          <span class="read-label">班级</span>
-          <span class="read-value">
-            {{ props.context.class?.name || '—' }}
-          </span>
-        </div>
-        <div class="read-item">
-          <span class="read-label">记录年级</span>
-          <span class="read-value">{{ gradeLabel || '—' }}</span>
-        </div>
-        <div class="read-item">
-          <span class="read-label">学期</span>
-          <span class="read-value">{{ termName || '—' }}</span>
-        </div>
-        <div class="read-item">
-          <span class="read-label">创建时间</span>
-          <span class="read-value">
-            {{ formatRecordTime(record?.created_at || '') || '—' }}
-          </span>
-        </div>
-        <div class="read-item">
-          <span class="read-label">记录标识</span>
-          <span class="read-value">{{ state.recordId.slice(0, 8) }}</span>
-        </div>
-      </div>
-      <p
-        v-if="state.loaded && state.name !== state.nameBaseline"
-        class="muted"
-      >
-        姓名修改尚未保存；保存后会同步到同一记录的五张领域表。
-      </p>
-    </el-card>
-
     <div
       v-if="!state.loaded"
       v-loading="state.busy"
@@ -1935,12 +2018,164 @@ defineExpose({
         </el-button>
       </div>
 
-      <el-card
-        v-if="form && template"
-        shadow="never"
-        class="block reading-card"
-        data-d1="listening-read-header"
-      >
+      <div class="listening-workspace">
+        <aside class="listening-rail" data-d1="listening-operations-rail">
+          <ListeningAiPanel
+            v-if="state.loaded && form && template"
+            ref="aiPanel"
+            class="rail-ai-panel"
+            :record-id="props.recordId"
+            :domain="state.domain"
+            :groups="form.groups"
+            :saved-groups="savedDirectionalGroups"
+            :revision="state.revision"
+            :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+            :profile-epoch="props.profileEpoch ?? 0"
+            :ensure-saved="ensureAiSaved"
+            @busy="handleAiBusy"
+            @draft="handleAiDraft"
+            @adopted="handleAiAdopted"
+          />
+          <div
+            class="rail-card directional-rail"
+            data-d1="listening-directional-rail"
+          >
+            <div class="rail-head">
+              <strong>定向与整栏修改</strong>
+              <span class="muted">
+                先在编辑弹窗中选中文字并确定填入草稿；此处使用当前草稿。
+              </span>
+            </div>
+            <label class="rail-field">
+              <span>栏目</span>
+              <el-select
+                v-model="railDirectionalField"
+                size="small"
+                data-d1="listening-rail-directional-field"
+              >
+                <el-option label="观察目标" value="goal" />
+                <el-option
+                  label="本组倾听记录"
+                  value="listening_text"
+                />
+                <el-option
+                  label="综合评价"
+                  value="overall_evaluation"
+                />
+                <el-option
+                  label="支持策略"
+                  value="support_strategy"
+                />
+              </el-select>
+            </label>
+            <label
+              v-if="railDirectionalField === 'listening_text'"
+              class="rail-field"
+            >
+              <span>目标图组</span>
+              <el-select
+                v-model="railDirectionalGroup"
+                size="small"
+                data-d1="listening-rail-directional-group"
+              >
+                <el-option
+                  v-for="group in form?.groups ?? []"
+                  :key="group.group_id"
+                  :label="`第 ${(group.position ?? 0) + 1} 组`"
+                  :value="group.group_id"
+                />
+              </el-select>
+            </label>
+            <div class="rail-actions">
+              <el-button
+                data-d1="listening-rail-directional-selection"
+                :disabled="!canMutate"
+                @click="openRailDirectional(false)"
+              >
+                修改选段
+              </el-button>
+              <el-button
+                data-d1="listening-rail-directional-whole"
+                :disabled="!canMutate"
+                @click="openRailDirectional(true)"
+              >
+                整栏修改
+              </el-button>
+            </div>
+            <span class="muted" data-d1="listening-rail-selection">
+              {{ railDirectionalSummary }}
+            </span>
+          </div>
+        </aside>
+
+        <div class="listening-sheet">
+          <el-card
+            shadow="never"
+            class="sheet-section sheet-record"
+            data-d1="listening-record-summary"
+          >
+            <div class="reading-head">
+              <div>
+                <h3>记录信息</h3>
+                <p class="muted">
+                  五领域共用一条记录与一个姓名；正文以只读表格展示，编辑需打开对应弹窗。
+                </p>
+              </div>
+              <el-button
+                size="small"
+                data-d1="listening-edit-name"
+                :disabled="!canMutate"
+                @click="openListeningModal('name')"
+              >
+                编辑姓名
+              </el-button>
+            </div>
+            <div class="read-grid">
+              <div class="read-item">
+                <span class="read-label">幼儿姓名</span>
+                <span class="read-value" data-d1="listening-read-name">
+                  {{ state.name || '（尚未填写）' }}
+                </span>
+              </div>
+              <div class="read-item">
+                <span class="read-label">班级</span>
+                <span class="read-value">
+                  {{ props.context.class?.name || '—' }}
+                </span>
+              </div>
+              <div class="read-item">
+                <span class="read-label">记录年级</span>
+                <span class="read-value">{{ gradeLabel || '—' }}</span>
+              </div>
+              <div class="read-item">
+                <span class="read-label">学期</span>
+                <span class="read-value">{{ termName || '—' }}</span>
+              </div>
+              <div class="read-item">
+                <span class="read-label">创建时间</span>
+                <span class="read-value">
+                  {{ formatRecordTime(record?.created_at || '') || '—' }}
+                </span>
+              </div>
+              <div class="read-item">
+                <span class="read-label">记录标识</span>
+                <span class="read-value">{{ state.recordId.slice(0, 8) }}</span>
+              </div>
+            </div>
+            <p
+              v-if="state.loaded && state.name !== state.nameBaseline"
+              class="muted"
+            >
+              姓名修改尚未保存；保存后会同步到同一记录的五张领域表。
+            </p>
+          </el-card>
+
+          <el-card
+            v-if="form && template"
+            shadow="never"
+            class="sheet-section"
+            data-d1="listening-read-header"
+          >
         <div class="reading-head">
           <div>
             <h3>
@@ -2025,22 +2260,6 @@ defineExpose({
           </div>
         </div>
       </el-card>
-
-      <ListeningAiPanel
-        v-if="state.loaded && form && template"
-        ref="aiPanel"
-        :record-id="props.recordId"
-        :domain="state.domain"
-        :groups="form.groups"
-        :saved-groups="savedDirectionalGroups"
-        :revision="state.revision"
-        :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-        :profile-epoch="props.profileEpoch ?? 0"
-        :ensure-saved="ensureAiSaved"
-        @busy="handleAiBusy"
-        @draft="handleAiDraft"
-        @adopted="handleAiAdopted"
-      />
 
       <template v-if="form">
       <div class="groups">
@@ -2356,6 +2575,8 @@ defineExpose({
           "
         />
       </el-card>
+        </div>
+      </div>
     </template>
 
     <el-alert
@@ -3175,8 +3396,21 @@ defineExpose({
 }
 .read-table {
   width: 100%;
-  min-width: 820px;
+  min-width: 0;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+.groups .read-table th:nth-child(1) {
+  width: 76px;
+}
+.groups .read-table th:nth-child(2) {
+  width: 30%;
+}
+.groups .read-table th:nth-child(3) {
+  width: 120px;
+}
+.groups .read-table th:nth-child(5) {
+  width: 92px;
 }
 .read-table th,
 .read-table td {
@@ -3237,12 +3471,123 @@ defineExpose({
   flex-wrap: wrap;
   margin-top: 4px;
 }
+.listening-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 280px);
+  gap: 18px;
+  align-items: start;
+  margin-top: 14px;
+}
+.listening-sheet {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--kgm-surface);
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.listening-sheet > .el-card,
+.listening-sheet .reading-card {
+  margin-top: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.listening-sheet > .el-card + .el-card,
+.listening-sheet .groups + .el-card,
+.listening-sheet .el-card + .el-card {
+  border-top: 1px solid var(--kgm-border);
+}
+.listening-sheet :deep(.el-card__body) {
+  padding: 16px;
+}
+.listening-sheet .groups {
+  margin-top: 0;
+}
+.listening-rail {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.rail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--kgm-surface);
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+}
+.rail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rail-field :deep(.el-select) {
+  width: 100%;
+}
+.rail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rail-actions :deep(.el-button) {
+  width: 100%;
+  min-height: 42px;
+}
+.listening-rail :deep(.rail-ai-panel) {
+  margin-top: 0;
+  border-radius: 12px;
+}
+.listening-rail :deep(.rail-ai-panel .el-card__body) {
+  padding: 14px;
+}
+.domain-tabs {
+  margin-top: 16px;
+  gap: 10px;
+}
+.domain-tabs :deep(.el-button) {
+  min-width: 96px;
+  min-height: 42px;
+  border-radius: 8px;
+}
+.actions :deep(.el-button) {
+  min-height: 42px;
+}
+@media (max-width: 1100px) {
+  .listening-workspace {
+    grid-template-columns: 1fr;
+  }
+  .listening-sheet {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .listening-rail {
+    grid-column: 1;
+    grid-row: 2;
+    position: static;
+    max-height: none;
+  }
+}
 @media (max-width: 900px) {
   .read-grid {
     grid-template-columns: 1fr;
-  }
-  .read-table {
-    min-width: 720px;
   }
 }
 </style>

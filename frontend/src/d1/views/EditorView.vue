@@ -221,6 +221,8 @@ const processTarget = ref<HTMLElement | null>(null)
 const otherTarget = ref<HTMLElement | null>(null)
 const reflectionTarget = ref<HTMLElement | null>(null)
 const reflectionProgressTarget = ref<HTMLElement | null>(null)
+/** Left-directory generation entries receive the three existing panel triggers. */
+const generationActionTarget = ref<HTMLElement | null>(null)
 /**
  * 2026-11-15 left-directory layout: reading is the default; only an explicit
  * column button opens a dialog with an independent draft copy. The modal is
@@ -2341,6 +2343,7 @@ async function onCandidateAdopted(
             targetGrade: grade,
           }, isCurrent)
           if (accepted && editorAlive && plan.value?.id === targetPlan) {
+            if (!layoutEditing.value) layoutSection.value = 'group'
             ElMessage.success('拆分已保存，已自动发起过程适龄调整；完成后请比较并采用')
           }
         } else {
@@ -2398,6 +2401,54 @@ async function saveDraftForSplit(): Promise<void> {
     return
   }
   await aiTaskPanelRef.value?.trigger?.('daily_lesson_split')
+}
+
+// -- left-directory generation entries -----------------------------------------
+
+const AI_ACTION_SECTIONS: Partial<Record<TaskType, DailyLayoutSectionKey>> = {
+  daily_lesson_split: 'raw',
+  daily_process_adapt: 'group',
+  daily_other_activities: 'morning',
+  daily_reflection_generate: 'reflection',
+}
+
+/**
+ * The four entries stay visible in the left directory. Make the matching
+ * reading pane current before starting so guidance, prerequisites, live
+ * reasoning/progress and error/unknown receipts stay visible.
+ */
+function onAiActionStart(taskType: TaskType): void {
+  if (layoutEditing.value) return
+  const section = AI_ACTION_SECTIONS[taskType]
+  if (section) layoutSection.value = section
+}
+
+/**
+ * Explicit "go to this column" from an always-visible status/error. Async
+ * replies never call this; an open editing copy is never force-replaced.
+ */
+function onAiLocate(taskType: TaskType): void {
+  if (layoutEditing.value) {
+    ElMessage.info('栏目编辑弹窗未关闭：已保留输入，请先确定或取消后再查看本栏')
+    return
+  }
+  if (candidateDraftActive.value) {
+    ElMessage.info('候选预览有未采用的编辑：请先处理当前候选后再切换本栏')
+    return
+  }
+  onAiActionStart(taskType)
+}
+
+function startSplitFromActions(): void {
+  if (layoutEditing.value) return
+  layoutSection.value = 'raw'
+  void saveDraftForSplit()
+}
+
+function startReflectionFromActions(): void {
+  if (layoutEditing.value) return
+  layoutSection.value = 'reflection'
+  void createReflectionTask()
 }
 
 function onDateChange(value: string | null): void {
@@ -2868,6 +2919,86 @@ onBeforeUnmount(() => {
           >
             {{ section.label }}
           </el-button>
+          <div
+            class="daily-generation-actions"
+            data-d1="daily-generation-actions"
+            aria-label="日计划生成操作"
+          >
+            <span class="daily-actions-label">生成操作</span>
+            <div
+              ref="generationActionTarget"
+              class="daily-generation-slot"
+              data-d1="daily-generation-slot"
+            ></div>
+            <el-button
+              v-if="!plan"
+              size="default"
+              type="primary"
+              class="daily-generation-button"
+              data-d1="split-save-and-start"
+              :loading="phase === 'saving'"
+              :disabled="!rawLessonPlan.trim() || editDisabled"
+              @click="startSplitFromActions"
+            >
+              保存并拆分
+            </el-button>
+            <el-button
+              size="default"
+              type="primary"
+              class="daily-generation-button"
+              :loading="reflectionBusy"
+              :disabled="editDisabled || reflectionFillBusy || !!reflectionPending || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
+              data-d1="reflection-generate"
+              @click="startReflectionFromActions"
+            >
+              生成反思
+            </el-button>
+            <div
+              v-if="reflectionError"
+              class="daily-action-status"
+              data-d1="reflection-action-error"
+            >
+              <p class="daily-action-error">{{ reflectionError }}</p>
+              <el-button
+                v-if="!reflectionPending"
+                size="small"
+                text
+                data-d1="reflection-locate-error"
+                @click="onAiLocate(REFLECTION_TASK_TYPE)"
+              >
+                到本栏查看
+              </el-button>
+            </div>
+            <p v-if="!plan" class="muted daily-action-note">
+              保存日计划后可发起过程适龄调整与其他活动。
+            </p>
+            <div v-if="reflectionPending" class="muted daily-action-note">
+              反思提交待核对：请到“一日反思”查看并查询原回执。
+              <el-button
+                size="small"
+                text
+                data-d1="reflection-locate-pending"
+                @click="onAiLocate(REFLECTION_TASK_TYPE)"
+              >
+                到本栏查看
+              </el-button>
+            </div>
+            <div
+              v-else-if="reflectionTask"
+              class="muted daily-action-note"
+              data-d1="daily-reflection-status"
+            >
+              {{ reflectionStatusText() }}
+              <el-button
+                size="small"
+                text
+                data-d1="reflection-locate-status"
+                @click="onAiLocate(REFLECTION_TASK_TYPE)"
+              >
+                到本栏查看
+              </el-button>
+            </div>
+          </div>
         </nav>
         <div class="daily-panes">
           <section
@@ -2904,21 +3035,11 @@ onBeforeUnmount(() => {
                 class="split-placeholder"
                 data-d1="split-needs-save"
               >
-                <el-button
-                  size="default"
-                  type="primary"
-                  data-d1="split-save-and-start"
-                  :loading="phase === 'saving'"
-                  :disabled="!rawLessonPlan.trim() || editDisabled"
-                  @click="saveDraftForSplit"
-                >
-                  保存并拆分
-                </el-button>
                 <span class="muted">
                   {{
                     rawLessonPlan.trim()
-                      ? '先保存日计划，保存成功后会在同页发起拆分；不会覆盖现有内容'
-                      : '请先点击“编辑本栏”粘贴原教案'
+                      ? '请使用左侧“生成操作”中的“保存并拆分”；保存成功后不会覆盖现有内容'
+                      : '请先点击“编辑本栏”粘贴原始教案，再使用左侧“生成操作”保存并拆分'
                   }}
                 </span>
               </div>
@@ -3227,7 +3348,7 @@ onBeforeUnmount(() => {
                 <p v-else class="muted">（未填写实施材料；没有材料时不会发起生成）</p>
               </div>
               <p class="muted reflection-hint">
-                已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。
+                已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。生成入口在左侧“生成操作”中。
                 <el-button
                   size="small"
                   text
@@ -3258,17 +3379,6 @@ onBeforeUnmount(() => {
                     重试原提交（同一请求）
                   </el-button>
                 </template>
-                <el-button
-                  v-else
-                  size="default"
-                  type="primary"
-                  :loading="reflectionBusy"
-                  :disabled="editDisabled || reflectionFillBusy || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
-                  data-d1="reflection-generate"
-                  @click="createReflectionTask"
-                >
-                  生成反思
-                </el-button>
                 <el-button
                   v-if="reflectionTask"
                   size="small"
@@ -3327,11 +3437,14 @@ onBeforeUnmount(() => {
         :process-target="processTarget"
         :other-target="otherTarget"
         :reflection-progress-target="reflectionProgressTarget"
+        :generation-target="generationActionTarget"
         @draft-active="aiTaskDraftActive = $event"
         @open-candidate="(id: string, taskType: TaskType) => openCandidate(id, taskType)"
         @open-guidance="openGuidance"
         @other-generated="onOtherGenerated"
         @reflection-updated="onReflectionUpdated"
+        @action-start="onAiActionStart"
+        @locate-task="onAiLocate"
       />
 
       <div class="row footer">
@@ -3837,10 +3950,10 @@ onBeforeUnmount(() => {
 /* Left directory: labeled section buttons with an obvious selected state. */
 .daily-book {
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
+  grid-template-columns: 220px minmax(0, 1fr);
   margin-top: 16px;
   border: 1px solid var(--kgm-border);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--kgm-surface);
   overflow: clip;
 }
@@ -3848,7 +3961,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px 8px;
+  padding: 14px 10px;
   background: var(--kgm-bg);
   border-right: 1px solid var(--kgm-border);
   min-width: 0;
@@ -3860,7 +3973,7 @@ onBeforeUnmount(() => {
 }
 .daily-nav-button {
   width: 100%;
-  min-height: 38px;
+  min-height: 42px;
   height: auto;
   margin-left: 0;
   justify-content: flex-start;
@@ -3870,6 +3983,69 @@ onBeforeUnmount(() => {
 .daily-nav-selected {
   font-weight: 600;
   box-shadow: inset 3px 0 0 var(--kgm-accent);
+}
+.daily-generation-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--kgm-border);
+  min-width: 0;
+}
+.daily-actions-label {
+  padding: 0 10px 2px;
+  color: var(--kgm-muted);
+  font-size: 0.78rem;
+}
+.daily-generation-slot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+.daily-generation-button {
+  width: 100%;
+  min-height: 42px;
+  height: auto;
+  margin-left: 0;
+  white-space: normal;
+  line-height: 1.35;
+}
+.daily-generation-actions :deep(.generation-buttons) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.daily-generation-actions :deep(.generation-button) {
+  width: 100%;
+  min-height: 42px;
+  height: auto;
+  margin-left: 0;
+  white-space: normal;
+  line-height: 1.35;
+}
+.daily-action-note {
+  margin: 2px 4px 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.daily-action-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.daily-action-error {
+  margin: 0;
+  color: var(--kgm-danger);
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .daily-panes {
   min-width: 0;
@@ -3975,6 +4151,18 @@ onBeforeUnmount(() => {
   .daily-nav-button {
     width: auto;
     flex: 1 1 auto;
+  }
+  .daily-generation-actions {
+    width: 100%;
+    flex: 1 0 100%;
+    margin-top: 4px;
+  }
+  .daily-actions-label {
+    width: 100%;
+    padding: 0 4px;
+  }
+  .daily-generation-button {
+    width: 100%;
   }
   .daily-nav-selected {
     box-shadow: inset 0 -3px 0 var(--kgm-accent);

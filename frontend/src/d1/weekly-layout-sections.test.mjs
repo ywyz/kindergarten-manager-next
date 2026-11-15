@@ -1027,6 +1027,10 @@ async function main() {
       && String(node.props?.class ?? '').split(/\s+/).includes('section-button')
     ))
     assert.equal(navButtons.length, 9)
+    const overviewNavText = nodeText(navButtons[0])
+    assert.ok(overviewNavText.includes('主题与每日活动'))
+    assert.ok(overviewNavText.includes('主题由教师决定'))
+    assert.ok(overviewNavText.includes('已存 v3'))
     const overviewButton = byD1(mountEl, 'weekly-section-overview')
     assert.equal(overviewButton.props['aria-current'], 'true')
     byD1(mountEl, 'weekly-section-collective_1').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-collective_1') })
@@ -1146,8 +1150,20 @@ async function main() {
           createWeeklyApi: () => ({
             list: async () => ({
               items: [
-                { ...detailFixture().plan, id: 'p1' },
-                { ...detailFixture().plan, id: 'p2', week_anchor_date: '2026-11-09', week_number_snapshot: 11 },
+                {
+                  ...detailFixture().plan,
+                  id: 'p1',
+                  current_draft_version: 5,
+                  current_confirmed_version: 1,
+                },
+                {
+                  ...detailFixture().plan,
+                  id: 'p2',
+                  week_anchor_date: '2026-11-09',
+                  week_number_snapshot: 11,
+                  current_draft_version: 3,
+                  current_confirmed_version: null,
+                },
               ],
               next_cursor: null,
             }),
@@ -1156,10 +1172,22 @@ async function main() {
         '../client': { apiGet: async () => ({ term: null, terms: [] }) },
       },
     })
+    const listModel = harness.setup('views/WeeklyPlansView.vue', { disabled: false }).state
+    assert.equal(listModel.planStatusLabel({
+      current_draft_version: 5,
+      current_confirmed_version: 1,
+    }), '已确认')
+    assert.equal(listModel.planStatusLabel({
+      current_draft_version: 5,
+      current_confirmed_version: null,
+    }), '草稿')
     const component = harness.loadSfc('views/WeeklyPlansView.vue', { inlineTemplate: true })
     const { ops } = createMiniDom()
     const renderer = vue.createRenderer(ops)
-    const app = renderer.createApp({ render: () => vue.h(component, { disabled: false }) })
+    const opened = []
+    const app = renderer.createApp({
+      render: () => vue.h(component, { disabled: false, onOpen: (id) => opened.push(id) }),
+    })
     app.component('el-dialog', DomDialogStub)
     app.component('el-card', DomGenericStub)
     app.component('el-button', DomButtonStub)
@@ -1176,11 +1204,30 @@ async function main() {
     harness.runMounted()
     await settle()
     const text = nodeText(mountEl)
-    assert.ok(text.includes('本周计划') || text.includes('周计划'))
-    assert.ok(text.includes('第 10 周'))
-    assert.ok(text.includes('第 11 周'))
-    assert.ok(text.includes('已存 v3'))
-    assert.equal(byClass(mountEl, 'week-card') !== null, true)
+    assert.ok(text.includes('周计划列表'))
+    assert.ok(byD1(mountEl, 'weekly-create'))
+    assert.ok(byD1(mountEl, 'weekly-term-filter'))
+    assert.ok(byD1(mountEl, 'weekly-week-filter'))
+    const cards = walkElements(mountEl).filter((node) => node.props?.['data-d1'] === 'weekly-plan-card')
+    assert.equal(cards.length, 2)
+    assert.ok(nodeText(cards[0]).includes('第 10 周'))
+    assert.ok(nodeText(cards[1]).includes('第 11 周'))
+    assert.ok(nodeText(cards[0]).includes('周一日期'))
+    assert.ok(nodeText(cards[0]).includes('班级'))
+    assert.ok(nodeText(cards[0]).includes('状态'))
+    // Draft v5 with first confirmation v1 must not be labelled newer/stale:
+    // the two version sequences are independent.
+    assert.ok(nodeText(cards[0]).includes('已确认'))
+    assert.equal(nodeText(cards[0]).includes('有更新草稿'), false)
+    assert.ok(nodeText(cards[0]).includes('已存 v5'))
+    assert.ok(nodeText(cards[0]).includes('已确认 v1'))
+    assert.ok(nodeText(cards[1]).includes('草稿'))
+    assert.ok(nodeText(cards[0]).includes('打开'))
+    const openButtons = walkElements(mountEl).filter((node) => node.props?.['data-d1'] === 'weekly-plan-open')
+    assert.equal(openButtons.length, 2)
+    openButtons[0].props.onClick({ currentTarget: openButtons[0], stopPropagation: () => {} })
+    await settle()
+    assert.deepEqual(opened, ['p1'])
     harness.unmount()
     app.unmount()
     await settle()
@@ -1429,6 +1476,19 @@ async function main() {
     assert.doesNotMatch(styles, /#[0-9a-fA-F]{3,8}/)
     assert.doesNotMatch(styles, /filter\s*:|invert\s*\(/i)
     assert.match(styles, /@media \(max-width: 900px\)/)
+    // The scrolling left directory must keep each button at its content height.
+    // A shrinkable column flex item stops at min-height and lets its hint/badge
+    // text spill outside the border at 1166x813.
+    const navRule = styles.match(/\.section-nav\s*\{[^}]*\}/)?.[0] ?? ''
+    const navButtonRule = styles.match(/\.section-button\s*\{[^}]*\}/)?.[0] ?? ''
+    assert.match(navRule, /max-height:/)
+    assert.match(navRule, /overflow:\s*auto/)
+    assert.match(navButtonRule, /min-height:/)
+    assert.match(navButtonRule, /flex:\s*0 0 auto/)
+    assert.doesNotMatch(navButtonRule, /overflow\s*:\s*hidden/)
+    const plansStyles = (fs.readFileSync(path.join(d1Dir, 'views', 'WeeklyPlansView.vue'), 'utf8').match(/<style[\s\S]*?<\/style>/g) || []).join('\n')
+    assert.match(plansStyles, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
+    assert.match(plansStyles, /border-radius: 12px/)
     ok('weekly editor mounts one AI panel, three AI actions and token-only responsive styles')
   }
 

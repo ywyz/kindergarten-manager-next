@@ -823,7 +823,7 @@ function onDialogValue(value: boolean): void {
   <el-dialog
     :model-value="props.open"
     :title="title"
-    width="560px"
+    width="900px"
     :close-on-click-modal="false"
     :close-on-press-escape="false"
     :show-close="canClose"
@@ -831,292 +831,331 @@ function onDialogValue(value: boolean): void {
     @update:model-value="onDialogValue"
   >
     <div class="backup-panel">
-      <div class="kgm-preview-wrap">
-        <table class="kgm-preview-table" data-d1="backup-status-table">
-          <thead>
-            <tr><th>操作</th><th>当前状态</th><th>进度</th></tr>
-          </thead>
-          <tbody>
-            <tr data-d1="backup-operation-status">
-              <td>{{ kind === 'backup' ? '完整备份' : '从本地备份恢复' }}</td>
-              <td>{{ title }}</td>
-              <td>{{ progressText || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="kgm-page-layout">
+        <div class="kgm-page-main">
+          <div class="kgm-sheet">
+            <div class="kgm-sheet-header">{{ kind === 'backup' ? '创建完整备份' : '从本地备份恢复' }}</div>
+            <div class="kgm-preview-wrap">
+              <table class="kgm-preview-table" data-d1="backup-status-table">
+                <thead>
+                  <tr><th>操作</th><th>当前状态</th><th>进度</th></tr>
+                </thead>
+                <tbody>
+                  <tr data-d1="backup-operation-status">
+                    <td>{{ kind === 'backup' ? '完整备份' : '从本地备份恢复' }}</td>
+                    <td>{{ title }}</td>
+                    <td>{{ progressText || '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <el-alert
+            v-if="phase === 'recovery_required'"
+            type="error"
+            :closable="false"
+            data-d1="backup-recovery-required"
+            title="上次恢复状态未确认，已停止写入"
+            :description="startupDetail || '请重启应用，并按提示处理上次恢复；不会自动猜测成功。'"
+          />
+
+          <div v-if="phase === 'idle'" class="kgm-sheet">
+            <div class="kgm-sheet-header">{{ kind === 'backup' ? '备份设置' : '恢复说明' }}</div>
+            <p class="muted sheet-note">
+              {{
+                props.mode === 'setup'
+                  ? '当前还没有教师档案。可从本地备份恢复；恢复前会先校验、预览并保留当前空档案的保护副本。'
+                  : '备份包含全部受管业务、设置、历史与照片；恢复会替换当前档案并保留恢复前完整保护副本。'
+              }}
+            </p>
+            <div class="kgm-preview-wrap">
+              <table class="kgm-preview-table" data-d1="backup-operations-table">
+                <thead>
+                  <tr><th>操作</th><th>说明</th><th>当前阶段</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-if="props.mode === 'settings'" data-d1="backup-operation-backup">
+                    <td>完整备份</td>
+                    <td>选择本地保存位置后，再明确选择密码加密或明文。</td>
+                    <td>可在右侧创建</td>
+                  </tr>
+                  <tr data-d1="backup-operation-restore">
+                    <td>从本地备份恢复</td>
+                    <td>校验后先显示预览，再确认替换并保留保护副本。</td>
+                    <td>可在右侧校验</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-else-if="phase === 'selecting'" class="kgm-sheet">
+            <div class="kgm-sheet-header">选择本地位置</div>
+            <p class="sheet-note">{{ progressText }}</p>
+          </div>
+
+          <div v-else-if="phase === 'password'" class="kgm-sheet">
+            <div class="kgm-sheet-header">{{ kind === 'backup' ? '备份密码' : '输入备份密码' }}</div>
+            <p v-if="kind === 'backup'" class="muted sheet-note">
+              请选择本次备份是否使用密码。密码丢失后无法找回；不加密文件包含可读业务和照片。
+            </p>
+            <p v-else class="muted sheet-note">该备份使用密码加密，请输入密码。</p>
+            <p v-if="kind === 'backup' && passwordChoice === null" class="muted sheet-note" data-d1="backup-password-choose">
+              请选择是否使用密码加密。
+            </p>
+          </div>
+
+          <div
+            v-else-if="phase === 'creating' || phase === 'verifying' || phase === 'waiting' || phase === 'protection' || phase === 'switching' || phase === 'reopening'"
+            class="kgm-sheet"
+          >
+            <div class="kgm-sheet-header">{{ title }}</div>
+            <p class="sheet-note">{{ progressText }}</p>
+            <el-progress
+              v-if="progressPercentValue !== null"
+              :percentage="progressPercentValue"
+              :stroke-width="10"
+            />
+            <p v-if="pendingRequestId" class="muted sheet-note" data-d1="backup-pending-start">
+              结果待核对；将按同一请求查询，不会重复发起操作。
+            </p>
+            <p v-if="startUnconfirmed" class="muted sheet-note">尚未确认开始结果，请继续查询。</p>
+            <el-alert
+              v-if="protection"
+              type="info"
+              :closable="false"
+              data-d1="backup-protection-location"
+              :title="kind === 'restore' ? '恢复前保护副本' : '备份文件'"
+              :description="protection.displayText"
+            />
+            <p v-if="cancelRequested" class="muted sheet-note" data-d1="backup-cancel-requested">
+              已请求取消；若已进入完成阶段，将等待真实终态，不报假取消。
+            </p>
+          </div>
+
+          <div v-else-if="phase === 'preview' && preview" class="kgm-sheet">
+            <div class="kgm-sheet-header">恢复预览（尚未替换）</div>
+            <div class="preview" data-d1="backup-preview">
+              <p><strong>{{ preview.displayName }}</strong></p>
+              <p class="muted">
+                创建时间 {{ preview.createdAt }} · 应用 {{ preview.appVersion }} ·
+                格式 {{ preview.formatVersion }} · 数据库 {{ preview.dbRevision }}
+              </p>
+              <p v-if="preview.profileLabel">档案：{{ preview.profileLabel }}</p>
+              <p v-if="preview.classLabel">班级：{{ preview.classLabel }}</p>
+              <p v-if="preview.termLabel">学期：{{ preview.termLabel }}</p>
+              <p>
+                日计划 {{ preview.counts.plans }} · 观察 {{ preview.counts.observations }} ·
+                照片 {{ preview.counts.photos }}<span v-if="preview.counts.others"> · 其他 {{ preview.counts.others }}</span>
+              </p>
+              <p class="muted">{{ credentialLabel }}</p>
+            </div>
+            <el-checkbox v-model="confirmChecked" :disabled="props.frozen" data-d1="backup-confirm-check">
+              我了解将替换当前档案；恢复前完整保护副本会保留，且不自动删除。
+            </el-checkbox>
+          </div>
+
+          <div v-else-if="phase === 'completed'" class="kgm-sheet">
+            <el-result
+              icon="success"
+              :title="kind === 'restore' ? '恢复完成' : '备份完成'"
+              :sub-title="kind === 'restore' ? '资料已恢复并重新打开。' : '备份已完成并校验。'"
+            />
+            <el-alert
+              v-if="protection"
+              type="info"
+              :closable="false"
+              data-d1="backup-protection-location-complete"
+              :title="kind === 'restore' ? '恢复前保护副本' : '备份文件'"
+              :description="protection.displayText"
+            />
+          </div>
+
+          <div v-else-if="phase === 'cancelled'" class="kgm-sheet">
+            <el-alert
+              type="info"
+              :closable="false"
+              data-d1="backup-cancelled"
+              title="已取消，当前档案未更改"
+            />
+            <el-alert
+              v-if="protection"
+              type="info"
+              :closable="false"
+              data-d1="backup-protection-location-cancelled"
+              :title="kind === 'restore' ? '恢复前保护副本' : '备份文件'"
+              :description="protection.displayText"
+            />
+          </div>
+
+          <div v-else-if="phase === 'error'" class="kgm-sheet">
+            <el-alert
+              type="error"
+              :closable="false"
+              data-d1="backup-error"
+              :title="errorTextValue"
+              :description="error?.committed ? '当前档案已被替换；请按提示重启或联系维护者。' : '当前档案未更改。'"
+            />
+            <el-alert
+              v-if="protection"
+              type="info"
+              :closable="false"
+              data-d1="backup-protection-location-error"
+              :title="kind === 'restore' ? '恢复前保护副本' : '备份文件'"
+              :description="protection.displayText"
+            />
+          </div>
+
+          <el-alert
+            v-if="error && phase !== 'error' && phase !== 'password'"
+            type="error"
+            :closable="false"
+            data-d1="backup-inline-error"
+            :title="errorTextValue"
+          />
+          <el-alert
+            v-if="error && phase === 'password'"
+            type="error"
+            :closable="false"
+            data-d1="backup-password-error"
+            :title="errorTextValue"
+          />
+        </div>
+
+        <aside class="kgm-page-rail" aria-label="备份与恢复操作">
+          <div class="kgm-rail-panel">
+            <h3 class="kgm-rail-title">操作</h3>
+            <template v-if="phase === 'idle'">
+              <el-button
+                v-if="props.mode === 'settings'"
+                type="primary"
+                class="kgm-primary-action"
+                :disabled="!canStartBackup"
+                data-d1="backup-create"
+                @click="chooseBackupTarget"
+              >
+                创建完整备份
+              </el-button>
+              <el-button
+                :type="props.mode === 'setup' ? 'primary' : 'default'"
+                :class="{ 'kgm-primary-action': props.mode === 'setup' }"
+                :disabled="!canStartRestore"
+                data-d1="backup-restore"
+                @click="chooseRestoreSource"
+              >
+                从本地备份恢复
+              </el-button>
+            </template>
+
+            <template v-else-if="phase === 'selecting'">
+              <el-button :disabled="props.frozen" data-d1="backup-selecting-cancel" @click="cancel">
+                取消
+              </el-button>
+            </template>
+
+            <template v-else-if="phase === 'password'">
+              <div v-if="kind === 'backup'" class="rail-field">
+                <span class="muted">密码方式</span>
+                <el-radio-group
+                  :model-value="passwordChoice"
+                  :disabled="props.frozen"
+                  data-d1="backup-password-mode"
+                  @update:model-value="onPasswordMode"
+                >
+                  <el-radio value="password">使用密码加密</el-radio>
+                  <el-radio value="plaintext">不加密（文件含可读业务与照片）</el-radio>
+                </el-radio-group>
+              </div>
+              <el-input
+                v-if="passwordRequired"
+                v-model="password"
+                type="password"
+                autocomplete="new-password"
+                :disabled="props.frozen"
+                data-d1="backup-password"
+                placeholder="请输入密码"
+              />
+              <el-checkbox
+                v-if="kind === 'backup' && passwordChoice === 'plaintext'"
+                v-model="plaintextAcknowledged"
+                :disabled="props.frozen"
+                data-d1="backup-plaintext-ack"
+              >
+                我了解明文备份包含可读业务和照片
+              </el-checkbox>
+              <el-button
+                type="primary"
+                class="kgm-primary-action"
+                :disabled="props.frozen || !canSubmitCredentials"
+                data-d1="backup-password-submit"
+                @click="submitCredentials"
+              >
+                {{ kind === 'backup' ? '开始创建' : '校验备份' }}
+              </el-button>
+              <el-button :disabled="props.frozen" data-d1="backup-password-cancel" @click="cancel">
+                取消
+              </el-button>
+            </template>
+
+            <template v-else-if="phase === 'creating' || phase === 'verifying' || phase === 'waiting' || phase === 'protection' || phase === 'switching' || phase === 'reopening'">
+              <el-button
+                v-if="pendingRequestId || startUnconfirmed"
+                :disabled="props.frozen"
+                data-d1="backup-recheck"
+                @click="recheck"
+              >
+                查询结果
+              </el-button>
+              <el-button
+                :disabled="props.frozen || !canCancel"
+                data-d1="backup-cancel"
+                @click="cancel"
+              >
+                取消
+              </el-button>
+            </template>
+
+            <template v-else-if="phase === 'preview' && preview">
+              <el-button
+                type="primary"
+                class="kgm-primary-action"
+                :disabled="!canConfirmPreview"
+                data-d1="backup-confirm-restore"
+                @click="confirmRestoreAction"
+              >
+                确认替换当前档案
+              </el-button>
+              <el-button :disabled="props.frozen" data-d1="backup-preview-cancel" @click="cancel">
+                取消
+              </el-button>
+            </template>
+
+            <template v-else-if="phase === 'completed'">
+              <el-button type="primary" class="kgm-primary-action" data-d1="backup-close" @click="close">
+                关闭
+              </el-button>
+            </template>
+
+            <template v-else-if="phase === 'cancelled'">
+              <el-button data-d1="backup-cancelled-close" @click="close">关闭</el-button>
+            </template>
+
+            <template v-else-if="phase === 'error'">
+              <el-button v-if="pendingRequestId || startUnconfirmed" :disabled="props.frozen" @click="recheck">
+                查询结果
+              </el-button>
+              <el-button data-d1="backup-error-close" @click="close">关闭</el-button>
+            </template>
+
+            <p class="muted">备份位置、密码、恢复预览和替换确认均按原流程；本面板不会自动猜测未确认结果。</p>
+          </div>
+        </aside>
       </div>
-
-      <el-alert
-        v-if="phase === 'recovery_required'"
-        type="error"
-        :closable="false"
-        data-d1="backup-recovery-required"
-        title="上次恢复状态未确认，已停止写入"
-        :description="startupDetail || '请重启应用，并按提示处理上次恢复；不会自动猜测成功。'"
-      />
-
-
-      <template v-else-if="phase === 'idle'">
-        <p class="muted">
-          {{
-            props.mode === 'setup'
-              ? '当前还没有教师档案。可从本地备份恢复；恢复前会先校验、预览并保留当前空档案的保护副本。'
-              : '备份包含全部受管业务、设置、历史与照片；恢复会替换当前档案并保留恢复前完整保护副本。'
-          }}
-        </p>
-        <div class="kgm-preview-wrap">
-          <table class="kgm-preview-table" data-d1="backup-operations-table">
-            <thead>
-              <tr><th>操作</th><th>说明</th><th>入口</th></tr>
-            </thead>
-            <tbody>
-              <tr v-if="props.mode === 'settings'" data-d1="backup-operation-backup">
-                <td>完整备份</td>
-                <td>选择本地保存位置后，再明确选择密码加密或明文。</td>
-                <td>
-                  <el-button
-                    type="primary"
-                    :disabled="!canStartBackup"
-                    data-d1="backup-create"
-                    @click="chooseBackupTarget"
-                  >
-                    创建完整备份
-                  </el-button>
-                </td>
-              </tr>
-              <tr data-d1="backup-operation-restore">
-                <td>从本地备份恢复</td>
-                <td>校验后先显示预览，再确认替换并保留保护副本。</td>
-                <td>
-                  <el-button
-                    :type="props.mode === 'setup' ? 'primary' : 'default'"
-                    :disabled="!canStartRestore"
-                    data-d1="backup-restore"
-                    @click="chooseRestoreSource"
-                  >
-                    从本地备份恢复
-                  </el-button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </template>
-
-      <template v-else-if="phase === 'selecting'">
-        <p>{{ progressText }}</p>
-        <div class="actions">
-          <el-button :disabled="props.frozen" data-d1="backup-selecting-cancel" @click="cancel">
-            取消
-          </el-button>
-        </div>
-      </template>
-
-      <template v-else-if="phase === 'password'">
-        <p v-if="kind === 'backup'" class="muted">
-          请选择本次备份是否使用密码。密码丢失后无法找回；不加密文件包含可读业务和照片。
-        </p>
-        <p v-else class="muted">该备份使用密码加密，请输入密码。</p>
-        <p v-if="kind === 'backup' && passwordChoice === null" class="muted" data-d1="backup-password-choose">
-          请选择是否使用密码加密。
-        </p>
-        <el-radio-group
-          v-if="kind === 'backup'"
-          :model-value="passwordChoice"
-          :disabled="props.frozen"
-          data-d1="backup-password-mode"
-          @update:model-value="onPasswordMode"
-        >
-          <el-radio value="password">使用密码加密</el-radio>
-          <el-radio value="plaintext">不加密（文件含可读业务与照片）</el-radio>
-        </el-radio-group>
-        <el-input
-          v-if="passwordRequired"
-          v-model="password"
-          type="password"
-          autocomplete="new-password"
-          :disabled="props.frozen"
-          data-d1="backup-password"
-          placeholder="请输入密码"
-        />
-        <el-checkbox
-          v-if="kind === 'backup' && passwordChoice === 'plaintext'"
-          v-model="plaintextAcknowledged"
-          :disabled="props.frozen"
-          data-d1="backup-plaintext-ack"
-        >
-          我了解明文备份包含可读业务和照片
-        </el-checkbox>
-        <div class="actions">
-          <el-button
-            type="primary"
-            :disabled="props.frozen || !canSubmitCredentials"
-            data-d1="backup-password-submit"
-            @click="submitCredentials"
-          >
-            {{ kind === 'backup' ? '开始创建' : '校验备份' }}
-          </el-button>
-          <el-button :disabled="props.frozen" data-d1="backup-password-cancel" @click="cancel">
-            取消
-          </el-button>
-        </div>
-      </template>
-
-      <template v-else-if="phase === 'creating' || phase === 'verifying' || phase === 'waiting' || phase === 'protection' || phase === 'switching' || phase === 'reopening'">
-        <p>{{ progressText }}</p>
-        <el-progress
-          v-if="progressPercentValue !== null"
-          :percentage="progressPercentValue"
-          :stroke-width="10"
-        />
-        <p v-if="pendingRequestId" class="muted" data-d1="backup-pending-start">
-          结果待核对；将按同一请求查询，不会重复发起操作。
-        </p>
-        <p v-if="startUnconfirmed" class="muted">尚未确认开始结果，请继续查询。</p>
-        <el-alert
-          v-if="protection"
-          type="info"
-          :closable="false"
-          data-d1="backup-protection-location"
-          :title="kind === 'restore' ? '恢复前保护副本' : '备份文件'"
-          :description="protection.displayText"
-        />
-        <div class="actions">
-          <el-button
-            v-if="pendingRequestId || startUnconfirmed"
-            :disabled="props.frozen"
-            data-d1="backup-recheck"
-            @click="recheck"
-          >
-            查询结果
-          </el-button>
-          <el-button
-            :disabled="props.frozen || !canCancel"
-            data-d1="backup-cancel"
-            @click="cancel"
-          >
-            取消
-          </el-button>
-        </div>
-        <p v-if="cancelRequested" class="muted" data-d1="backup-cancel-requested">
-          已请求取消；若已进入完成阶段，将等待真实终态，不报假取消。
-        </p>
-      </template>
-
-      <template v-else-if="phase === 'preview' && preview">
-        <div class="preview" data-d1="backup-preview">
-          <p><strong>{{ preview.displayName }}</strong></p>
-          <p class="muted">
-            创建时间 {{ preview.createdAt }} · 应用 {{ preview.appVersion }} ·
-            格式 {{ preview.formatVersion }} · 数据库 {{ preview.dbRevision }}
-          </p>
-          <p v-if="preview.profileLabel">档案：{{ preview.profileLabel }}</p>
-          <p v-if="preview.classLabel">班级：{{ preview.classLabel }}</p>
-          <p v-if="preview.termLabel">学期：{{ preview.termLabel }}</p>
-          <p>
-            日计划 {{ preview.counts.plans }} · 观察 {{ preview.counts.observations }} ·
-            照片 {{ preview.counts.photos }}<span v-if="preview.counts.others"> · 其他 {{ preview.counts.others }}</span>
-          </p>
-          <p class="muted">{{ credentialLabel }}</p>
-        </div>
-        <el-checkbox v-model="confirmChecked" :disabled="props.frozen" data-d1="backup-confirm-check">
-          我了解将替换当前档案；恢复前完整保护副本会保留，且不自动删除。
-        </el-checkbox>
-        <div class="actions">
-          <el-button
-            type="primary"
-            :disabled="!canConfirmPreview"
-            data-d1="backup-confirm-restore"
-            @click="confirmRestoreAction"
-          >
-            确认替换当前档案
-          </el-button>
-          <el-button :disabled="props.frozen" data-d1="backup-preview-cancel" @click="cancel">
-            取消
-          </el-button>
-        </div>
-      </template>
-
-      <template v-else-if="phase === 'completed'">
-        <el-result
-          icon="success"
-          :title="kind === 'restore' ? '恢复完成' : '备份完成'"
-          :sub-title="kind === 'restore' ? '资料已恢复并重新打开。' : '备份已完成并校验。'"
-        />
-        <el-alert
-          v-if="protection"
-          type="info"
-          :closable="false"
-          data-d1="backup-protection-location-complete"
-          :title="kind === 'restore' ? '恢复前保护副本' : '备份文件'"
-          :description="protection.displayText"
-        />
-        <div class="actions">
-          <el-button type="primary" data-d1="backup-close" @click="close">关闭</el-button>
-        </div>
-      </template>
-
-      <template v-else-if="phase === 'cancelled'">
-        <el-alert
-          type="info"
-          :closable="false"
-          data-d1="backup-cancelled"
-          title="已取消，当前档案未更改"
-        />
-        <el-alert
-          v-if="protection"
-          type="info"
-          :closable="false"
-          data-d1="backup-protection-location-cancelled"
-          :title="kind === 'restore' ? '恢复前保护副本' : '备份文件'"
-          :description="protection.displayText"
-        />
-        <div class="actions">
-          <el-button data-d1="backup-cancelled-close" @click="close">关闭</el-button>
-        </div>
-      </template>
-
-      <template v-else-if="phase === 'error'">
-        <el-alert
-          type="error"
-          :closable="false"
-          data-d1="backup-error"
-          :title="errorTextValue"
-          :description="error?.committed ? '当前档案已被替换；请按提示重启或联系维护者。' : '当前档案未更改。'"
-        />
-        <el-alert
-          v-if="protection"
-          type="info"
-          :closable="false"
-          data-d1="backup-protection-location-error"
-          :title="kind === 'restore' ? '恢复前保护副本' : '备份文件'"
-          :description="protection.displayText"
-        />
-        <div class="actions">
-          <el-button v-if="pendingRequestId || startUnconfirmed" :disabled="props.frozen" @click="recheck">
-            查询结果
-          </el-button>
-          <el-button data-d1="backup-error-close" @click="close">关闭</el-button>
-        </div>
-      </template>
-
-      <el-alert
-        v-if="error && phase !== 'error' && phase !== 'password'"
-        type="error"
-        :closable="false"
-        data-d1="backup-inline-error"
-        :title="errorTextValue"
-      />
-      <el-alert
-        v-if="error && phase === 'password'"
-        type="error"
-        :closable="false"
-        data-d1="backup-password-error"
-        :title="errorTextValue"
-      />
     </div>
   </el-dialog>
 </template>
+
 
 <style scoped>
 .backup-panel {
@@ -1124,13 +1163,28 @@ function onDialogValue(value: boolean): void {
   flex-direction: column;
   gap: 12px;
 }
+.sheet-note {
+  margin: 0;
+  padding: 0 18px 16px;
+}
+.rail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rail-field :deep(.el-radio-group) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
 .actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
 }
 .muted {
-  color: var(--kgm-text);
+  color: var(--kgm-muted);
   font-size: 0.9rem;
   white-space: pre-wrap;
 }

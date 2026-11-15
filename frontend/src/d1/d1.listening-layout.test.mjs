@@ -246,6 +246,7 @@ class Harness {
     this.messages = []
     this.mounted = []
     this.unmounts = []
+    this.sessionEpoch = 1
     this.message = (value) => this.messages.push(value)
     this.message.success = this.message
     this.message.warning = this.message
@@ -287,7 +288,7 @@ class Harness {
         if (spec === '../client') {
           return {
             ApiError,
-            getSessionEpoch: () => 1,
+            getSessionEpoch: () => harness.sessionEpoch,
             apiGet: () => Promise.reject(new Error('unexpected apiGet')),
             apiPost: () => Promise.reject(new Error('unexpected apiPost')),
             apiPatch: () => Promise.reject(new Error('unexpected apiPatch')),
@@ -483,6 +484,22 @@ function bridgeOf(emitted) {
   assert.ok(editorSource.includes('white-space: pre-wrap'))
   assert.ok(editorSource.includes('var(--kgm-border)'))
   assert.ok(editorSource.includes('var(--kgm-muted)'))
+  assert.match(
+    editorSource,
+    /\.listening-workspace\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(240px,\s*280px\)/,
+  )
+  assert.match(
+    editorSource,
+    /\.listening-sheet\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*1;/,
+  )
+  assert.match(
+    editorSource,
+    /\.listening-rail\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*1;/,
+  )
+  assert.match(
+    editorSource,
+    /@media \(max-width: 1100px\)[\s\S]*?\.listening-sheet\s*\{[\s\S]*?grid-row:\s*1;[\s\S]*?\.listening-rail\s*\{[\s\S]*?grid-row:\s*2;/,
+  )
   assert.ok(
     editorSource.includes('data-d1="listening-modal-directional-note-selection"'),
   )
@@ -699,6 +716,260 @@ function bridgeOf(emitted) {
   assert.equal(JSON.stringify(state.session.form()), before)
   assert.equal(h.client.patchCalls.length, 0)
   ok('invalid modal selection leaves listening modal and draft unchanged')
+}
+
+// The listening list is a real overview-card SFC, not a table.
+{
+  const listFile = path.join(d1Dir, 'views', 'ListeningRecordsView.vue')
+  const listSource = fs.readFileSync(listFile, 'utf8')
+  const listParsed = parse(listSource, { filename: listFile })
+  assert.deepEqual(listParsed.errors, [])
+  const listScript = compileScript(listParsed.descriptor, {
+    id: 'listening-list-feedback',
+  })
+  const listTemplate = compileTemplate({
+    source: listParsed.descriptor.template.content,
+    filename: listFile,
+    id: 'listening-list-feedback',
+    compilerOptions: {
+      mode: 'function',
+      bindingMetadata: listScript.bindings,
+    },
+  })
+  assert.deepEqual(listTemplate.errors, [])
+  assert.match(listSource, /data-d1="listening-records-cards"/)
+  assert.match(listSource, /class="record-grid"/)
+  assert.match(listSource, /data-d1="listening-album-scope"/)
+  assert.match(listSource, /data-d1="listening-create"/)
+  assert.doesNotMatch(listSource, /<el-table\b/)
+  assert.match(
+    listSource,
+    /\.list-shell > :deep\(\.el-card__body\)\s*\{[\s\S]*?padding:\s*0;/,
+  )
+  assert.match(
+    listSource,
+    /\.record-card :deep\(\.el-card__body\)\s*\{[\s\S]*?padding:\s*16px 18px;/,
+  )
+  assert.doesNotMatch(
+    listSource,
+    /\.list-shell :deep\(\.el-card__body\)/,
+  )
+
+  const { client } = makeClient()
+  client.apiGet = async (url) => {
+    if (url.startsWith('/api/listening/records?')) {
+      return {
+        items: [
+          {
+            record_id: 'record-card-1',
+            child_name: '卡片幼儿',
+            grade: 'middle',
+            class_id: 'class-1',
+            term_id: 'term-1',
+            revision: 3,
+            created_at: '2026-11-17T09:30:00',
+            updated_at: '2026-11-17T09:30:00',
+          },
+        ],
+        total: 1,
+        offset: 0,
+        limit: 20,
+      }
+    }
+    throw new Error(`unexpected list GET ${url}`)
+  }
+  const listening = loadCore(client)
+  const harness = new Harness({ listening, client })
+  const built = harness.load('views/ListeningRecordsView.vue', {
+    context: {
+      terms: [{ id: 'term-1', name: '第一学期' }],
+      class: { name: '中一班', grade: 'middle' },
+      profile: { display_name: '王老师' },
+      term: { id: 'term-1' },
+    },
+    initialTermId: 'term-1',
+    frozen: false,
+    disabled: false,
+    profileEpoch: 1,
+  })
+  for (const fn of built.mounted) fn()
+  await tick()
+  await tick()
+  await wait(20)
+  assert.equal(built.state.records.value.length, 1)
+  assert.equal(built.state.termId.value, 'term-1')
+  assert.equal(built.state.termLabel(built.state.records.value[0]), '第一学期')
+  built.state.openRecord(built.state.records.value[0])
+  assert.ok(
+    built.emitted.some(
+      (args) => args[0] === 'open-record' && args[1] === 'record-card-1',
+    ),
+  )
+  built.state.openDomainExport()
+  assert.equal(built.state.exportOpen.value, true)
+  ok('list overview cards load real records and keep open/album wiring')
+}
+
+// The editor rail uses the same directional path with a real current draft.
+{
+  const h = await mountEditor()
+  const state = h.state
+  assert.ok(editorSource.includes('data-d1="listening-operations-rail"'))
+  assert.ok(editorSource.includes('data-d1="listening-directional-rail"'))
+  assert.ok(editorSource.includes('data-d1="listening-rail-directional-field"'))
+  assert.ok(
+    editorSource.includes('data-d1="listening-rail-directional-selection"'),
+  )
+  assert.ok(editorSource.includes('data-d1="listening-rail-directional-whole"'))
+  const goal = state.session.form().goal
+  state.openListeningModal('header')
+  state.rememberDirectionalSelection({
+    target: {
+      value: goal,
+      selectionStart: 0,
+      selectionEnd: 6,
+      closest: () => ({
+        dataset: { directionalField: 'goal' },
+      }),
+    },
+  })
+  await state.confirmListeningModal()
+  const patches = h.client.patchCalls.length
+  state.railDirectionalField.value = 'goal'
+  state.openRailDirectional(false)
+  assert.equal(state.directionalOpen.value, true)
+  assert.equal(state.directionalRequest.value.fieldText, goal)
+  assert.equal(state.directionalRequest.value.selection.start, 0)
+  assert.equal(state.directionalRequest.value.selection.end, 6)
+  assert.equal(h.client.patchCalls.length, patches)
+
+  state.directionalOpen.value = false
+  state.directionalRequest.value = null
+  state.railDirectionalField.value = 'listening_text'
+  state.railDirectionalGroup.value = 'g-health-1'
+  const group = state.session.form().groups.find(
+    (item) => item.group_id === 'g-health-1',
+  )
+  state.openRailDirectional(true)
+  assert.equal(state.directionalOpen.value, true)
+  assert.equal(state.directionalRequest.value.fieldText, group.listening_text)
+  assert.equal(h.client.patchCalls.length, patches)
+  ok('right rail opens directional/whole edits from the current draft')
+}
+
+// A Health observation-goal selection must not survive a Language switch.
+{
+  const h = await mountEditor()
+  const state = h.state
+  const goal = state.session.form().goal
+  state.openListeningModal('header')
+  state.rememberDirectionalSelection({
+    target: {
+      value: goal,
+      selectionStart: 0,
+      selectionEnd: 3,
+      closest: () => ({
+        dataset: {
+          directionalField: 'goal',
+        },
+      }),
+    },
+  })
+  await state.confirmListeningModal()
+  assert.equal(state.railDirectionalField.value, 'goal')
+  assert.equal(state.railDirectionalGroup.value, '')
+  assert.equal(state.railDirectionalSelection.value?.text, '原目标')
+  state.openRailDirectional(false)
+  assert.equal(state.directionalOpen.value, true)
+  assert.equal(state.directionalRequest.value.scope.domain, 'health')
+  assert.equal(state.directionalRequest.value.scope.group_id, undefined)
+  assert.equal(state.directionalRequest.value.fieldText, goal)
+  state.directionalOpen.value = false
+  state.directionalRequest.value = null
+
+  await state.selectDomain('language')
+  assert.equal(state.state.domain, 'language')
+  assert.equal(state.railDirectionalGroup.value, '')
+  assert.equal(state.railDirectionalSelection.value, null)
+  state.openRailDirectional(false)
+  assert.equal(state.directionalOpen.value, false)
+  assert.equal(state.directionalRequest.value, null)
+  assert.ok(
+    h.harness.messages.some((message) =>
+      String(message).includes('旧记录、领域、版本或本地会话'),
+    ),
+  )
+  ok('domain switch clears goal selection and never reuses Health text')
+}
+
+// A stale Health group id is rejected; a current Language group still works.
+{
+  const h = await mountEditor()
+  const state = h.state
+  await state.selectDomain('language')
+  assert.equal(state.state.domain, 'language')
+  state.railDirectionalField.value = 'listening_text'
+  state.railDirectionalGroup.value = 'g-health-0'
+  state.openRailDirectional(true)
+  assert.equal(state.directionalOpen.value, false)
+  assert.equal(state.directionalRequest.value, null)
+  assert.ok(
+    h.harness.messages.some((message) =>
+      String(message).includes('目标图组已不在当前领域'),
+    ),
+  )
+
+  state.railDirectionalGroup.value = 'g-language-0'
+  state.openRailDirectional(true)
+  assert.equal(state.directionalOpen.value, true)
+  const request = state.directionalRequest.value
+  assert.equal(request.scope.domain, 'language')
+  assert.equal(request.scope.group_id, 'g-language-0')
+  assert.equal(request.fieldText, '原倾听记录-language-0')
+  assert.equal(request.selection.start, 0)
+  assert.equal(request.selection.end, request.fieldText.length)
+  assert.ok(request.sourceLabel.includes('第 1 组'))
+  ok('stale group is rejected and current-domain group whole edit works')
+}
+
+// Revision and local-session changes invalidate a captured rail selection.
+{
+  const h = await mountEditor()
+  const state = h.state
+  const selectHealthGroup = async () => {
+    state.openListeningModal('group', 'g-health-0')
+    state.setListeningModalField('listening_text', '版本会话正文')
+    state.rememberDirectionalSelection({
+      target: {
+        value: '版本会话正文',
+        selectionStart: 0,
+        selectionEnd: 2,
+        closest: () => ({
+          dataset: {
+            directionalField: 'listening_text',
+            directionalGroupId: 'g-health-0',
+          },
+        }),
+      },
+    })
+    await state.confirmListeningModal()
+  }
+
+  await selectHealthGroup()
+  assert.ok(state.railDirectionalSelection.value)
+  state.state.revision += 1
+  await tick()
+  state.openRailDirectional(false)
+  assert.equal(state.directionalOpen.value, false)
+  assert.equal(state.directionalRequest.value, null)
+
+  await selectHealthGroup()
+  assert.ok(state.railDirectionalSelection.value)
+  h.harness.sessionEpoch = 2
+  state.openRailDirectional(false)
+  assert.equal(state.directionalOpen.value, false)
+  assert.equal(state.directionalRequest.value, null)
+  ok('revision and session changes invalidate captured rail selections')
 }
 
 console.log(`listening-layout: ${passed} checks passed`)

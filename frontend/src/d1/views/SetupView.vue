@@ -248,43 +248,58 @@ async function submit(): Promise<void> {
         资料仅保存在本机。填写后将直接进入工作台；园所名称可留空后补。
         也可先从本地备份恢复，无需先填写临时档案。
       </p>
-            <div class="kgm-summary-grid" data-d1="setup-summary">
-        <div class="kgm-summary-card">
-          <div class="kgm-summary-card-title">姓名与班级</div>
-          <p class="kgm-summary-value" data-d1="setup-identity-summary">
-            {{ form.display_name || '（未填写姓名）' }} ·
-            {{ derivedClassName || '（未选择班级）' }} ·
-            园所：{{ form.school_name || '（可留空）' }}
-          </p>
-          <el-button size="small" data-d1="setup-edit-identity" @click="openIdentityEditor">
-            编辑
-          </el-button>
-        </div>
-        <div class="kgm-summary-card">
-          <div class="kgm-summary-card-title">学期</div>
-          <p class="kgm-summary-value" data-d1="setup-term-summary">
-            {{ form.term_name || '（未填写学期名称）' }} ·
-            {{ form.range.length === 2 ? `${form.range[0]} ~ ${form.range[1]}` : '（未选择起止日期）' }}
-          </p>
-          <el-button size="small" data-d1="setup-edit-term" @click="openTermEditor">
-            编辑
-          </el-button>
-        </div>
-        <div class="kgm-summary-card">
-          <div class="kgm-summary-card-title">准备情况</div>
-          <p class="kgm-summary-value">
-            姓名、年级、班号和学期为必填；园所可留空。所有资料只保存在本机。
-          </p>
-        </div>
-      </div>
       <el-alert v-if="errorText" type="error" :closable="false" :title="errorText" data-d1="setup-error" />
-      <div class="actions">
-        <el-button type="primary" :loading="submitting" data-d1="initialize" @click="submit">
-          完成设置并进入工作台
-        </el-button>
-        <el-button data-d1="setup-restore" :disabled="editorDirty" @click="emit('open-maintenance')">
-          从本地备份恢复
-        </el-button>
+      <div class="kgm-page-layout">
+        <div class="kgm-page-main">
+          <div class="kgm-sheet" data-d1="setup-summary">
+            <div class="kgm-sheet-header">首次设置</div>
+            <div class="kgm-sheet-row">
+              <div class="kgm-sheet-label">教师与班级</div>
+              <div class="kgm-sheet-value" data-d1="setup-identity-summary">
+                <div>姓名：{{ form.display_name || '（未填写）' }}</div>
+                <div>园所名称：{{ form.school_name || '（可留空）' }}</div>
+                <div>年级：{{ { small: '小班', middle: '中班', large: '大班' }[form.grade] }}</div>
+                <div>班级：{{ derivedClassName || '（未选择班号）' }}</div>
+              </div>
+              <div class="kgm-sheet-actions">
+                <el-button size="small" data-d1="setup-edit-identity" @click="openIdentityEditor">
+                  编辑
+                </el-button>
+              </div>
+            </div>
+            <div class="kgm-sheet-row">
+              <div class="kgm-sheet-label">学期</div>
+              <div class="kgm-sheet-value" data-d1="setup-term-summary">
+                <div>学期名称：{{ form.term_name || '（未填写）' }}</div>
+                <div>起始日期：{{ form.range[0] || '（未选择）' }}</div>
+                <div>结束日期：{{ form.range[1] || '（未选择）' }}</div>
+              </div>
+              <div class="kgm-sheet-actions">
+                <el-button size="small" data-d1="setup-edit-term" @click="openTermEditor">
+                  编辑
+                </el-button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <aside class="kgm-page-rail" aria-label="首次设置操作">
+          <div class="kgm-rail-panel">
+            <h3 class="kgm-rail-title">操作</h3>
+            <el-button
+              type="primary"
+              class="kgm-primary-action"
+              :loading="submitting"
+              data-d1="initialize"
+              @click="submit"
+            >
+              完成设置并进入工作台
+            </el-button>
+            <el-button data-d1="setup-restore" :disabled="editorDirty" @click="emit('open-maintenance')">
+              从本地备份恢复
+            </el-button>
+            <p class="muted">姓名、年级、班号和学期为必填；园所可留空。所有资料只保存在本机。</p>
+          </div>
+        </aside>
       </div>
     </el-card>
 
@@ -386,10 +401,13 @@ async function submit(): Promise<void> {
 
 <style scoped>
 .setup {
-  max-width: 640px;
-  margin: 40px auto 0;
+  max-width: none;
+  margin: 0;
 }
-.actions {
+.setup :deep(.el-card) {
+  border-radius: var(--kgm-radius);
+}
+.kgm-page-layout {
   margin-top: 16px;
 }
 .class-picker {

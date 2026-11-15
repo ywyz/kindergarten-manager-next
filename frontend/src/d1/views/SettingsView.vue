@@ -43,7 +43,14 @@ const emit = defineEmits<{
 
 type SettingsSection = 'main' | 'collaboration'
 type SettingsGroup = 'backup' | 'terms' | 'calendar' | 'games'
+type SettingsPage = 'identity' | 'terms' | 'ai' | 'games' | 'backup' | 'about'
 type SettingsEditor = 'profile' | 'class' | 'term' | 'new-term' | 'override'
+
+const activeSettingsPage = ref<SettingsPage>('identity')
+
+function setSettingsPage(page: SettingsPage): void {
+  activeSettingsPage.value = page
+}
 
 /**
  * Summary-card edit modals use independent copies. Only an explicit
@@ -362,6 +369,7 @@ watch(
   async (value) => {
     if (!value) return
     setSettingsSection('main')
+    setSettingsPage('ai')
     await nextTick()
     await aiPanelRef.value?.focusPromptTask?.(value)
   },
@@ -525,6 +533,14 @@ watch(
   () => emit('draft-targets', draftTargets()),
   { deep: true, immediate: true },
 )
+
+function focusAi(kind: 'ai-config' | 'ai-prompts'): void {
+  aiPanelRef.value?.focusDraftTarget?.(kind)
+}
+
+function focusGame(): void {
+  gamePanelRef.value?.focusDraftTarget?.()
+}
 
 function clearPreview(): void {
   previewData.value = null
@@ -1743,6 +1759,19 @@ async function focusTarget(target: SettingsDraftTarget): Promise<void> {
   }
 
   setSettingsSection('main')
+  if (target.kind === 'profile' || target.kind === 'class') {
+    setSettingsPage('identity')
+  } else if (
+    target.kind === 'term'
+    || target.kind === 'new-term'
+    || target.kind === 'override'
+  ) {
+    setSettingsPage('terms')
+  } else if (target.kind === 'ai-config' || target.kind === 'ai-prompts') {
+    setSettingsPage('ai')
+  } else if (target.kind === 'game-config') {
+    setSettingsPage('games')
+  }
   const opensEditor =
     target.kind === 'profile'
     || target.kind === 'class'
@@ -1862,439 +1891,506 @@ defineExpose({
     </div>
 
     <div :hidden="activeSection !== 'main'" class="settings-main">
-      <div class="toolbar">
-        <h2>设置</h2>
-        <div class="actions">
-          <el-button size="small" data-d1="back-workbench" :disabled="frozen" @click="backToWorkbench">
-            返回工作台
-          </el-button>
-        </div>
-      </div>
-
-      <el-alert v-if="errorText" type="error" :closable="false" class="section" data-d1="settings-error" :title="errorText" />
-      <el-alert v-if="applyResultText" type="success" :closable="false" class="section" data-d1="settings-applied" :title="applyResultText" />
-
-      <el-card class="section" shadow="never" data-d1="settings-data-boundary">
-        <template #header>本机与在线数据边界</template>
-        <p class="muted">
-          本机 SQLite：个人档案、学期与日历、日计划、观察、周计划和本地班级游戏配置只保存在本机。
-        </p>
-        <p class="muted">
-          在线 MySQL：只保存园所／教师、班级关系、同班在线游戏配置和在线共享周。
-        </p>
-        <p class="muted">
-          日计划共享与 AI 在线设置当前不同步；密钥和本机档案不会上传。
-        </p>
-      </el-card>
-
-      <el-card class="section" shadow="never" data-d1="settings-profile">
-        <template #header>姓名与园所</template>
-        <p class="summary-line" data-d1="settings-profile-summary">
-          <strong>{{ profileName || '（未填写姓名）' }}</strong>
-          <span class="muted"> · 园所：{{ schoolName || '（未填写，可留空）' }}</span>
-          <el-tag v-if="profileDraftDirty()" size="small" type="warning">草稿未确认</el-tag>
-        </p>
-        <div class="row">
-          <el-button data-d1="edit-profile" :disabled="frozen" @click="openProfileEditor">编辑本栏</el-button>
-          <el-button data-d1="preview-profile" data-d1-confirm="confirm-profile" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeProfile())">
-            确认修改
-          </el-button>
-        </div>
-        <p class="muted">修改只填入草稿；点“确认修改”仍按原有预览／确认流程保存。</p>
-      </el-card>
-
-      <el-card class="section" shadow="never" data-d1="settings-current-class">
-        <template #header>当前本地班级</template>
-        <p class="summary-line" data-d1="settings-class-summary">
-          当前：{{ className || '（未填写班级名称）' }} · {{ GRADE_LABELS[classGrade] }}
-          <span class="muted">
-            · 教师 {{ parsedHeaderTeacherNames(headerTeacherNamesText).join('、') || '（未填写）' }}
-            · 保育员 {{ caregiverName || '（未填写）' }}
-          </span>
-          <el-tag v-if="classDraftDirty()" size="small" type="warning">草稿未确认</el-tag>
-        </p>
-        <div class="row">
-          <el-button data-d1="edit-class" :disabled="frozen" @click="openClassEditor">编辑本栏</el-button>
-          <el-button data-d1="confirm-class" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeClass())">
-            确认修改
-          </el-button>
-        </div>
-        <p class="muted">班级名称、年级、教师名单和保育员先填回草稿，再由“确认修改”提交。</p>
-      </el-card>
-
-      <el-card class="section" shadow="never" data-d1="settings-current-term">
-        <template #header>当前学期</template>
-        <template v-if="activeLocalTerm">
-          <p>
-            <strong>{{ activeLocalTerm.name }}</strong>
-          </p>
-          <p class="muted">
-            {{ activeLocalTerm.start_date }} ~ {{ activeLocalTerm.end_date }}（本地当前学期）
-          </p>
-        </template>
-        <p v-else class="muted">
-          当前没有生效学期（休假或学期之间）。可在下方「其他学期与新建」中维护。
-        </p>
-      </el-card>
-
-      <el-card class="section" shadow="never" data-d1="settings-open-collaboration-card">
-        <template #header>在线协作</template>
-        <p class="muted">
-          在线发布、加入/恢复、选班和升班与本地设置相互独立，不会自动上传本机配置。
-        </p>
-        <el-button data-d1="settings-open-collaboration" :disabled="frozen" @click="openCollaborationSection">
-          打开在线协作
-        </el-button>
-      </el-card>
-
-      <el-card v-if="previewData" class="section" shadow="never" data-d1="settings-preview">
-        <template #header>
-          <div class="preview-head">
-            <span>影响预览（确认后才会应用）</span>
-            <el-tag size="small" :type="previewData.changed ? 'warning' : 'info'">
-              {{ previewData.changed ? '有实际修改' : '无实际修改' }}
-            </el-tag>
+      <div class="kgm-page">
+        <div class="kgm-page-head">
+          <div>
+            <h2>设置</h2>
+            <p class="kgm-page-kicker">本机档案、学期、AI、游戏配置与维护入口</p>
           </div>
-        </template>
-        <p v-for="(line, index) in beforeAfterText()" :key="index">{{ line }}</p>
-        <div v-if="previewData.calendar_diff.length" class="diff-block">
-          <h4>日期变化（前 {{ previewData.calendar_diff.length }} 项）</h4>
-          <el-table :data="previewData.calendar_diff.slice(0, 60)" size="small">
-            <el-table-column prop="date" label="日期" width="110" />
-            <el-table-column label="状态" width="180">
-              <template #default="{ row }">
-                {{ STATE_LABELS[row.before_state] || row.before_state }} →
-                {{ STATE_LABELS[row.after_state] || row.after_state }}
-              </template>
-            </el-table-column>
-            <el-table-column label="周次" width="120">
-              <template #default="{ row }">
-                {{ row.before_week ?? '—' }} → {{ row.after_week ?? '—' }}
-              </template>
-            </el-table-column>
-            <el-table-column label="例外">
-              <template #default="{ row }">
-                {{ row.override_before ? `${STATE_LABELS[row.override_before.state] || row.override_before.state}（${row.override_before.reason}）` : '—' }}
-                →
-                {{ row.override_after ? `${STATE_LABELS[row.override_after.state] || row.override_after.state}（${row.override_after.reason}）` : '—' }}
-              </template>
-            </el-table-column>
-          </el-table>
-          <p v-if="previewData.calendar_diff.length > 60" class="muted">
-            仅显示前 60 项，共 {{ previewData.calendar_diff.length }} 项。
-          </p>
-        </div>
-        <div class="impact-block">
-          <h4>
-            已有日计划影响：保留旧表头 {{ previewData.impact.retained_header_count }} 条；本次涉及变化
-            {{ previewData.impact.affected_plans.length }} 条
-          </h4>
-          <el-table
-            v-if="previewData.impact.affected_plans.length"
-            :data="previewData.impact.affected_plans"
-            size="small"
-            data-d1="impact-plans"
-          >
-            <el-table-column prop="plan_date" label="日期" width="110" />
-            <el-table-column prop="content_version" label="内容版本" width="90" />
-            <el-table-column label="存储周次 → 新解释" width="150">
-              <template #default="{ row }">
-                {{ row.stored_week_number ?? '—' }} → {{ row.proposed_week_number ?? '—' }}
-              </template>
-            </el-table-column>
-            <el-table-column label="原因">
-              <template #default="{ row }">
-                {{ impactReasonTextList(row.reasons, DAILY_IMPACT_REASON_LABELS) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="之后可否新建" width="110">
-              <template #default="{ row }">
-                {{ row.creation_eligible_after ? '可以' : '不可以' }}
-              </template>
-            </el-table-column>
-          </el-table>
-          <p v-else class="muted">本条修改不影响任何已保存日计划的日期解释。</p>
-          <h4 class="weekly-impact-head">
-            已有周计划影响：保留旧表头 {{ previewData.impact.weekly_retained_header_count }} 条；相关周
-            {{ previewData.impact.weekly_plans.length }} 条
-          </h4>
-          <el-table
-            v-if="previewData.impact.weekly_plans.length"
-            :data="previewData.impact.weekly_plans"
-            size="small"
-            data-d1="impact-weekly-plans"
-          >
-            <el-table-column prop="week_anchor_date" label="固定周锚点" width="120" />
-            <el-table-column prop="week_number_snapshot" label="创建周次" width="90" />
-            <el-table-column label="创建学期" width="220">
-              <template #default="{ row }">
-                {{ row.term_start_date }} ~ {{ row.term_end_date }}
-              </template>
-            </el-table-column>
-            <el-table-column label="版本" width="130">
-              <template #default="{ row }">
-                草稿 v{{ row.current_draft_version }} / 确认
-                {{ row.current_confirmed_version ?? '—' }}
-              </template>
-            </el-table-column>
-            <el-table-column label="之后可否新建该周" width="140">
-              <template #default="{ row }">
-                {{ row.creation_eligible_after ? '可以' : '不可以' }}
-              </template>
-            </el-table-column>
-            <el-table-column label="原因">
-              <template #default="{ row }">
-                {{ impactReasonTextList(row.reasons, WEEKLY_IMPACT_REASON_LABELS) }}
-              </template>
-            </el-table-column>
-          </el-table>
-          <p v-else class="muted">本条修改不涉及已保存的周计划。</p>
-          <p class="muted">
-            已保存计划仍可查看、编辑、确认与导出；日计划保留归属、周次、创建日历修订与表头，
-            周计划保留固定周锚点、创建学期／周次／日历与表头，不会按当前学期重排。
-          </p>
-        </div>
-        <div class="row">
-          <el-button data-d1="apply-preview" type="primary" :loading="applying" :disabled="frozen" @click="applyPreview">
-            确认应用
-          </el-button>
-          <el-button data-d1="cancel-preview" :disabled="applying || frozen" @click="clearPreview">
-            取消预览
-          </el-button>
-        </div>
-      </el-card>
-
-      <el-card v-if="awaitingContextVersion !== null || contextReloadFailed" class="section" shadow="never" data-d1="settings-context-pending">
-        <template #header>最新配置读取中</template>
-        <p class="muted">
-          <template v-if="contextReloadFailed">
-            最新配置读取失败：所有草稿仍保留，页面不会提交已知过期版本。
-          </template>
-          <template v-else>
-            上一项已提交，正在等待最新配置版本 {{ awaitingContextVersion }} 读取到位；期间不会提交新修改，草稿和输入保持不变。
-          </template>
-        </p>
-        <el-button data-d1="retry-context-read" :disabled="frozen" @click="retryContextRead">
-          重新读取配置
-        </el-button>
-      </el-card>
-
-      <el-card v-if="pendingConfirm" class="section" shadow="never" data-d1="settings-pending-confirm">
-        <template #header>提交结果未确认</template>
-        <p class="muted">
-          已提交的原始请求仍保持不变，页面不能离开、取消或改写它。请先核对回执；未找到回执时可明确用同一请求再次提交。
-        </p>
-        <div class="row">
-          <el-button data-d1="query-pending-confirm" :loading="applying" :disabled="applying" @click="queryPendingConfirm">
-            查询提交回执
-          </el-button>
-          <el-button data-d1="retry-pending-confirm" type="primary" :loading="applying" :disabled="applying || frozen" @click="retryPendingConfirm">
-            用同一请求再次提交
-          </el-button>
-        </div>
-      </el-card>
-
-      <details
-        class="settings-group"
-        data-d1="settings-group-terms"
-        :open="expandedGroups.terms"
-        @toggle="onGroupToggle('terms', $event)"
-      >
-        <summary>其他学期与新建 <span class="muted">学期名称、起止日期、新建</span></summary>
-        <el-card class="section group-card" shadow="never">
-          <template #header>学期维护</template>
-          <div class="row promotion-term-read">
-            <el-button
-              size="small"
-              data-d1="settings-read-promotion-terms"
-              :loading="readingPromotionTerms"
-              :disabled="frozen || readingPromotionTerms"
-              @click="readPromotionTerms"
-            >
-              读取园所学期名称
+          <div class="actions">
+            <el-button size="small" data-d1="back-workbench" :disabled="frozen" @click="backToWorkbench">
+              返回工作台
             </el-button>
-            <span class="muted">仅在已连接在线班级时读取；只填入起止日期唯一匹配的名称，不提交修改。</span>
           </div>
-          <el-alert
-            v-if="promotionTermNotice"
-            type="info"
-            :closable="false"
-            class="block"
-            data-d1="settings-promotion-term-notice"
-            :title="promotionTermNotice"
-          />
-          <div
-            v-for="form in termForms"
-            :key="form.id"
-            class="term-summary-row"
-            data-d1="term-summary"
-            :data-term-id="form.id"
-          >
-            <div class="term-summary-main">
-              <strong>{{ form.name || '（未命名学期）' }}</strong>
-              <span class="muted">{{ form.start_date }} ~ {{ form.end_date }}</span>
-              <el-tag v-if="termDraftDirty(form)" size="small" type="warning">草稿未确认</el-tag>
+        </div>
+
+        <el-alert v-if="errorText" type="error" :closable="false" class="section" data-d1="settings-error" :title="errorText" />
+        <el-alert v-if="applyResultText" type="success" :closable="false" class="section" data-d1="settings-applied" :title="applyResultText" />
+
+        <el-card v-if="previewData" class="section" shadow="never" data-d1="settings-preview">
+          <template #header>
+            <div class="preview-head">
+              <span>影响预览（确认后才会应用）</span>
+              <el-tag size="small" :type="previewData.changed ? 'warning' : 'info'">
+                {{ previewData.changed ? '有实际修改' : '无实际修改' }}
+              </el-tag>
             </div>
-            <div class="row-inline">
-              <el-button size="small" data-d1="edit-term" :disabled="frozen" @click="openTermEditor(form)">
-                编辑
-              </el-button>
-              <el-button size="small" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmTermChange(form)">
-                确认修改
-              </el-button>
-            </div>
+          </template>
+          <p v-for="(line, index) in beforeAfterText()" :key="index">{{ line }}</p>
+          <div v-if="previewData.calendar_diff.length" class="diff-block">
+            <h4>日期变化（前 {{ previewData.calendar_diff.length }} 项）</h4>
+            <el-table :data="previewData.calendar_diff.slice(0, 60)" size="small">
+              <el-table-column prop="date" label="日期" width="110" />
+              <el-table-column label="状态" width="180">
+                <template #default="{ row }">
+                  {{ STATE_LABELS[row.before_state] || row.before_state }} →
+                  {{ STATE_LABELS[row.after_state] || row.after_state }}
+                </template>
+              </el-table-column>
+              <el-table-column label="周次" width="120">
+                <template #default="{ row }">
+                  {{ row.before_week ?? '—' }} → {{ row.after_week ?? '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="例外">
+                <template #default="{ row }">
+                  {{ row.override_before ? `${STATE_LABELS[row.override_before.state] || row.override_before.state}（${row.override_before.reason}）` : '—' }}
+                  →
+                  {{ row.override_after ? `${STATE_LABELS[row.override_after.state] || row.override_after.state}（${row.override_after.reason}）` : '—' }}
+                </template>
+              </el-table-column>
+            </el-table>
+            <p v-if="previewData.calendar_diff.length > 60" class="muted">
+              仅显示前 60 项，共 {{ previewData.calendar_diff.length }} 项。
+            </p>
+          </div>
+          <div class="impact-block">
+            <h4>
+              已有日计划影响：保留旧表头 {{ previewData.impact.retained_header_count }} 条；本次涉及变化
+              {{ previewData.impact.affected_plans.length }} 条
+            </h4>
+            <el-table
+              v-if="previewData.impact.affected_plans.length"
+              :data="previewData.impact.affected_plans"
+              size="small"
+              data-d1="impact-plans"
+            >
+              <el-table-column prop="plan_date" label="日期" width="110" />
+              <el-table-column prop="content_version" label="内容版本" width="90" />
+              <el-table-column label="存储周次 → 新解释" width="150">
+                <template #default="{ row }">
+                  {{ row.stored_week_number ?? '—' }} → {{ row.proposed_week_number ?? '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="原因">
+                <template #default="{ row }">
+                  {{ impactReasonTextList(row.reasons, DAILY_IMPACT_REASON_LABELS) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="之后可否新建" width="110">
+                <template #default="{ row }">
+                  {{ row.creation_eligible_after ? '可以' : '不可以' }}
+                </template>
+              </el-table-column>
+            </el-table>
+            <p v-else class="muted">本条修改不影响任何已保存日计划的日期解释。</p>
+            <h4 class="weekly-impact-head">
+              已有周计划影响：保留旧表头 {{ previewData.impact.weekly_retained_header_count }} 条；相关周
+              {{ previewData.impact.weekly_plans.length }} 条
+            </h4>
+            <el-table
+              v-if="previewData.impact.weekly_plans.length"
+              :data="previewData.impact.weekly_plans"
+              size="small"
+              data-d1="impact-weekly-plans"
+            >
+              <el-table-column prop="week_anchor_date" label="固定周锚点" width="120" />
+              <el-table-column prop="week_number_snapshot" label="创建周次" width="90" />
+              <el-table-column label="创建学期" width="220">
+                <template #default="{ row }">{{ row.term_start_date }} ~ {{ row.term_end_date }}</template>
+              </el-table-column>
+              <el-table-column label="版本" width="130">
+                <template #default="{ row }">
+                  草稿 v{{ row.current_draft_version }} / 确认 {{ row.current_confirmed_version ?? '—' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="之后可否新建该周" width="140">
+                <template #default="{ row }">
+                  {{ row.creation_eligible_after ? '可以' : '不可以' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="原因">
+                <template #default="{ row }">
+                  {{ impactReasonTextList(row.reasons, WEEKLY_IMPACT_REASON_LABELS) }}
+                </template>
+              </el-table-column>
+            </el-table>
+            <p v-else class="muted">本条修改不涉及已保存的周计划。</p>
+            <p class="muted">
+              已保存计划仍可查看、编辑、确认与导出；日计划保留归属、周次、创建日历修订与表头，
+              周计划保留固定周锚点、创建学期／周次／日历与表头，不会按当前学期重排。
+            </p>
           </div>
           <div class="row">
-            <el-button size="small" data-d1="new-term-open" :disabled="frozen" @click="openNewTermEditor">
-              新增学期
+            <el-button data-d1="apply-preview" type="primary" :loading="applying" :disabled="frozen" @click="applyPreview">
+              确认应用
             </el-button>
-            <el-button
-              v-if="newTermDraftDirty()"
-              size="small"
-              data-d1="confirm-new-term"
-              type="primary"
-              :loading="previewing || applying"
-              :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null"
-              @click="confirmNewTerm"
-            >
-              确认新增
+            <el-button data-d1="cancel-preview" :disabled="applying || frozen" @click="clearPreview">
+              取消预览
             </el-button>
           </div>
-          <p v-if="newTermDraftDirty()" class="muted" data-d1="new-term-draft">
-            新草稿：{{ newTermName || '（未填写名称）' }} · {{ newTermRange.join(' ~ ') || '（未选择日期）' }}
-          </p>
-          <p class="muted">学期闭区间不得重叠或共端点；修改起止日期会生成新的日历修订，已保存计划保留原周次。</p>
-          <p class="muted" data-d1="settings-term-history-hint">修改学期名称不会更新旧记录；如需旧记录改用新学期名，请在游戏观察或本机周计划的历史记录中另存为当前学期名版本。</p>
         </el-card>
-      </details>
 
-      <details
-        class="settings-group"
-        data-d1="settings-group-calendar"
-        :open="expandedGroups.calendar"
-        @toggle="onGroupToggle('calendar', $event)"
-      >
-        <summary>日历例外 <span class="muted">逐日上课/停课、撤销例外</span></summary>
-        <el-card class="section group-card" shadow="never">
-          <template #header>日历例外（逐日配置）</template>
-                    <p class="summary-line" data-d1="settings-override-summary">
-            <template v-if="overrideDate">
-              例外草稿：{{ overrideTerm?.name || '（未选学期）' }} · {{ overrideDate }} ·
-              {{ overrideState === 'none' ? '撤销例外' : (STATE_LABELS[overrideState] || overrideState) }}
-              <span class="muted">{{ overrideReason || '（无原因）' }}</span>
+        <el-card v-if="awaitingContextVersion !== null || contextReloadFailed" class="section" shadow="never" data-d1="settings-context-pending">
+          <template #header>最新配置读取中</template>
+          <p class="muted">
+            <template v-if="contextReloadFailed">
+              最新配置读取失败：所有草稿仍保留，页面不会提交已知过期版本。
             </template>
-            <template v-else>尚未设置日历例外草稿。</template>
-            <el-tag v-if="overrideDraftDirty()" size="small" type="warning">草稿未确认</el-tag>
+            <template v-else>
+              上一项已提交，正在等待最新配置版本 {{ awaitingContextVersion }} 读取到位；期间不会提交新修改，草稿和输入保持不变。
+            </template>
           </p>
-          <div class="row">
-            <el-button data-d1="edit-override" :disabled="frozen" @click="openOverrideEditor">
-              编辑例外
-            </el-button>
-          </div>
-          <el-button data-d1="preview-override" :loading="previewing" :disabled="frozen" @click="previewOverride">
-            预览修改
+          <el-button data-d1="retry-context-read" :disabled="frozen" @click="retryContextRead">
+            重新读取配置
           </el-button>
-          <p v-if="overrideTerm" class="muted">
-            当前学期范围：{{ overrideTerm.start_date }} ~ {{ overrideTerm.end_date }}；日期必须在该范围内。
-          </p>
         </el-card>
-      </details>
 
-      <AiSettingsPanel ref="aiPanelRef" :frozen="frozen" @draft-active="(value: boolean) => (aiDraftActive = value)" />
-      <details
-        class="settings-group"
-        data-d1="settings-group-games"
-        :open="groupOpen('games')"
-        @toggle="onGroupToggle('games', $event)"
-      >
-        <summary>班级游戏配置 <span class="muted">本地配置、来源带入与预览确认</span></summary>
-        <GameConfigPanel
-          ref="gamePanelRef"
-          :frozen="frozen"
-          :committed-config-version="committedConfigVersion"
-          @draft-active="(value: boolean) => (gameDraftActive = value)"
-          @applied="() => requestReload()"
-        />
-      </details>
-
-
-      <details
-        class="settings-group"
-        data-d1="settings-group-backup"
-        :open="expandedGroups.backup"
-        @toggle="onGroupToggle('backup', $event)"
-      >
-        <summary>备份与恢复 <span class="muted">完整备份、校验、预览与恢复</span></summary>
-        <el-card class="section group-card" shadow="never" data-d1="backup-restore">
-          <template #header>备份与恢复</template>
-          <div class="kgm-preview-wrap">
-            <table class="kgm-preview-table" data-d1="settings-backup-table">
-              <thead>
-                <tr><th>操作</th><th>说明</th><th>状态</th></tr>
-              </thead>
-              <tbody>
-                <tr data-d1="settings-backup-create-row">
-                  <td>完整备份</td>
-                  <td>包含全部受管业务、设置、历史与照片；密码或明文由维护面板确认。</td>
-                  <td>在维护面板创建</td>
-                </tr>
-                <tr data-d1="settings-backup-restore-row">
-                  <td>从本地备份恢复</td>
-                  <td>先校验、预览并明确确认后才替换；恢复前保留完整保护副本。</td>
-                  <td>在维护面板校验</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+        <el-card v-if="pendingConfirm" class="section" shadow="never" data-d1="settings-pending-confirm">
+          <template #header>提交结果未确认</template>
+          <p class="muted">
+            已提交的原始请求仍保持不变，页面不能离开、取消或改写它。请先核对回执；未找到回执时可明确用同一请求再次提交。
+          </p>
           <div class="row">
-            <el-button data-d1="open-backup-restore" type="primary" :disabled="frozen" @click="emit('open-maintenance')">
-              打开备份与恢复
+            <el-button data-d1="query-pending-confirm" :loading="applying" :disabled="applying" @click="queryPendingConfirm">
+              查询提交回执
+            </el-button>
+            <el-button data-d1="retry-pending-confirm" type="primary" :loading="applying" :disabled="applying || frozen" @click="retryPendingConfirm">
+              用同一请求再次提交
             </el-button>
           </div>
         </el-card>
-      </details>
 
-      <el-card class="section" shadow="never" data-d1="settings-update">
-        <template #header>应用更新</template>
-        <div class="kgm-preview-wrap">
-          <table class="kgm-preview-table" data-d1="settings-update-table">
-            <thead>
-              <tr><th>项目</th><th>状态</th><th>入口</th></tr>
-            </thead>
-            <tbody>
-              <tr data-d1="settings-update-status-row">
-                <td>已安装版本</td>
-                <td>v{{ props.updateStatus?.current?.version ?? '—' }} · {{ updateStatusText }}</td>
-                <td>
-                  <el-button data-d1="settings-check-update" :disabled="frozen" @click="emit('check-update')">
-                    检查更新
-                  </el-button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="kgm-page-nav" data-d1="settings-page-nav" aria-label="设置页面">
+          <el-button
+            size="small"
+            data-d1="settings-page-identity"
+            :type="activeSettingsPage === 'identity' ? 'primary' : ''"
+            :class="{ 'kgm-page-nav-active': activeSettingsPage === 'identity' }"
+            :aria-current="activeSettingsPage === 'identity' ? 'page' : undefined"
+            @click="setSettingsPage('identity')"
+          >
+            姓名与班级
+          </el-button>
+          <el-button
+            size="small"
+            data-d1="settings-page-terms"
+            :type="activeSettingsPage === 'terms' ? 'primary' : ''"
+            :class="{ 'kgm-page-nav-active': activeSettingsPage === 'terms' }"
+            :aria-current="activeSettingsPage === 'terms' ? 'page' : undefined"
+            @click="setSettingsPage('terms')"
+          >
+            学期与日历
+          </el-button>
+          <el-button
+            size="small"
+            data-d1="settings-page-ai"
+            :type="activeSettingsPage === 'ai' ? 'primary' : ''"
+            :class="{ 'kgm-page-nav-active': activeSettingsPage === 'ai' }"
+            :aria-current="activeSettingsPage === 'ai' ? 'page' : undefined"
+            @click="setSettingsPage('ai')"
+          >
+            AI 设置
+          </el-button>
+          <el-button
+            size="small"
+            data-d1="settings-page-games"
+            :type="activeSettingsPage === 'games' ? 'primary' : ''"
+            :class="{ 'kgm-page-nav-active': activeSettingsPage === 'games' }"
+            :aria-current="activeSettingsPage === 'games' ? 'page' : undefined"
+            @click="setSettingsPage('games')"
+          >
+            班级游戏
+          </el-button>
+          <el-button
+            size="small"
+            data-d1="settings-page-backup"
+            :type="activeSettingsPage === 'backup' ? 'primary' : ''"
+            :class="{ 'kgm-page-nav-active': activeSettingsPage === 'backup' }"
+            :aria-current="activeSettingsPage === 'backup' ? 'page' : undefined"
+            @click="setSettingsPage('backup')"
+          >
+            备份与更新
+          </el-button>
+          <el-button
+            size="small"
+            data-d1="settings-page-about"
+            :type="activeSettingsPage === 'about' ? 'primary' : ''"
+            :class="{ 'kgm-page-nav-active': activeSettingsPage === 'about' }"
+            :aria-current="activeSettingsPage === 'about' ? 'page' : undefined"
+            @click="setSettingsPage('about')"
+          >
+            版本说明
+          </el-button>
         </div>
-        <p class="muted">下载、安装和重启仍在原更新面板中明确确认；只打开本页不会改变程序。</p>
-      </el-card>
 
-      <div class="section row">
-        <el-button data-d1="cancel-draft" :disabled="frozen" @click="cancelDraft">取消编辑（还原当前配置）</el-button>
+        <div class="kgm-page-layout" data-d1="settings-layout">
+          <div class="kgm-page-main" data-d1="settings-page-main">
+            <section v-show="activeSettingsPage === 'identity'" data-d1="settings-page-identity-content">
+              <div class="kgm-sheet" data-d1="settings-profile">
+                <div class="kgm-sheet-header">姓名、园所与本地班级</div>
+                <div class="kgm-sheet-row">
+                  <div class="kgm-sheet-label">姓名与园所</div>
+                  <div class="kgm-sheet-value" data-d1="settings-profile-summary">
+                    <div>姓名：{{ profileName || '（未填写姓名）' }}</div>
+                    <div>园所：{{ schoolName || '（未填写，可留空）' }}</div>
+                    <el-tag v-if="profileDraftDirty()" size="small" type="warning">草稿未确认</el-tag>
+                  </div>
+                </div>
+                <div class="kgm-sheet-row" data-d1="settings-current-class">
+                  <div class="kgm-sheet-label">当前本地班级</div>
+                  <div class="kgm-sheet-value" data-d1="settings-class-summary">
+                    <div>班级名称：{{ className || '（未填写班级名称）' }}</div>
+                    <div>年级：{{ GRADE_LABELS[classGrade] }}</div>
+                    <div>班级教师姓名：{{ parsedHeaderTeacherNames(headerTeacherNamesText).join('、') || '（未填写）' }}</div>
+                    <div>保育员：{{ caregiverName || '（未填写）' }}</div>
+                    <el-tag v-if="classDraftDirty()" size="small" type="warning">草稿未确认</el-tag>
+                  </div>
+                </div>
+                <div class="kgm-sheet-row" data-d1="settings-current-term">
+                  <div class="kgm-sheet-label">当前学期</div>
+                  <div class="kgm-sheet-value">
+                    <template v-if="activeLocalTerm">
+                      <div><strong>{{ activeLocalTerm.name }}</strong></div>
+                      <div class="muted">{{ activeLocalTerm.start_date }} ~ {{ activeLocalTerm.end_date }}（本地当前学期）</div>
+                    </template>
+                    <p v-else class="muted">当前没有生效学期（休假或学期之间）。可在「学期与日历」中维护。</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section v-show="activeSettingsPage === 'terms'" data-d1="settings-page-terms-content">
+              <div class="kgm-sheet" data-d1="settings-group-terms">
+                <div class="kgm-sheet-header">学期维护</div>
+                <div class="kgm-sheet-row">
+                  <div class="kgm-sheet-label">学期</div>
+                  <div class="kgm-sheet-value">
+                    <div
+                      v-for="form in termForms"
+                      :key="form.id"
+                      class="term-summary-row"
+                      data-d1="term-summary"
+                      :data-term-id="form.id"
+                    >
+                      <div class="term-summary-main">
+                        <strong>{{ form.name || '（未命名学期）' }}</strong>
+                        <span class="muted">{{ form.start_date }} ~ {{ form.end_date }}</span>
+                        <el-tag v-if="termDraftDirty(form)" size="small" type="warning">草稿未确认</el-tag>
+                      </div>
+                      <div class="row-inline">
+                        <el-button size="small" data-d1="edit-term" :disabled="frozen" @click="openTermEditor(form)">
+                          编辑
+                        </el-button>
+                        <el-button size="small" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmTermChange(form)">
+                          确认修改
+                        </el-button>
+                      </div>
+                    </div>
+                    <p v-if="newTermDraftDirty()" class="muted" data-d1="new-term-draft">
+                      新草稿：{{ newTermName || '（未填写名称）' }} · {{ newTermRange.join(' ~ ') || '（未选择日期）' }}
+                    </p>
+                    <p class="muted">学期闭区间不得重叠或共端点；修改起止日期会生成新的日历修订，已保存计划保留原周次。</p>
+                    <p class="muted" data-d1="settings-term-history-hint">修改学期名称不会更新旧记录；如需旧记录改用新学期名，请在游戏观察或本机周计划的历史记录中另存为当前学期名版本。</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="kgm-sheet" data-d1="settings-group-calendar">
+                <div class="kgm-sheet-header">日历例外（逐日配置）</div>
+                <div class="kgm-sheet-row">
+                  <div class="kgm-sheet-label">例外草稿</div>
+                  <div class="kgm-sheet-value" data-d1="settings-override-summary">
+                    <template v-if="overrideDate">
+                      <div>学期：{{ overrideTerm?.name || '（未选学期）' }}</div>
+                      <div>日期：{{ overrideDate }}</div>
+                      <div>状态：{{ overrideState === 'none' ? '撤销例外' : (STATE_LABELS[overrideState] || overrideState) }}</div>
+                      <div>原因：{{ overrideReason || '（无原因）' }}</div>
+                    </template>
+                    <template v-else>尚未设置日历例外草稿。</template>
+                    <el-tag v-if="overrideDraftDirty()" size="small" type="warning">草稿未确认</el-tag>
+                    <p v-if="overrideTerm" class="muted">
+                      当前学期范围：{{ overrideTerm.start_date }} ~ {{ overrideTerm.end_date }}；日期必须在该范围内。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section v-show="activeSettingsPage === 'ai'" data-d1="settings-page-ai-content">
+              <AiSettingsPanel ref="aiPanelRef" :frozen="frozen" @draft-active="(value: boolean) => (aiDraftActive = value)" />
+            </section>
+
+            <section v-show="activeSettingsPage === 'games'" data-d1="settings-page-games-content">
+              <details
+                class="settings-group"
+                data-d1="settings-group-games"
+                :open="groupOpen('games')"
+                @toggle="onGroupToggle('games', $event)"
+              >
+                <summary>班级游戏配置 <span class="muted">本地配置、来源带入与预览确认</span></summary>
+                <GameConfigPanel
+                  ref="gamePanelRef"
+                  :frozen="frozen"
+                  :committed-config-version="committedConfigVersion"
+                  @draft-active="(value: boolean) => (gameDraftActive = value)"
+                  @applied="() => requestReload()"
+                />
+              </details>
+            </section>
+
+            <section v-show="activeSettingsPage === 'backup'" data-d1="settings-page-backup-content">
+              <div class="kgm-sheet" data-d1="settings-group-backup">
+                <div class="kgm-sheet-header">备份与恢复</div>
+                <div class="kgm-preview-wrap">
+                  <table class="kgm-preview-table" data-d1="settings-backup-table">
+                    <thead>
+                      <tr><th>操作</th><th>说明</th><th>状态</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr data-d1="settings-backup-create-row">
+                        <td>完整备份</td>
+                        <td>包含全部受管业务、设置、历史与照片；密码或明文由维护面板确认。</td>
+                        <td>在维护面板创建</td>
+                      </tr>
+                      <tr data-d1="settings-backup-restore-row">
+                        <td>从本地备份恢复</td>
+                        <td>先校验、预览并明确确认后才替换；恢复前保留完整保护副本。</td>
+                        <td>在维护面板校验</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="kgm-sheet" data-d1="settings-update">
+                <div class="kgm-sheet-header">应用更新</div>
+                <div class="kgm-preview-wrap">
+                  <table class="kgm-preview-table" data-d1="settings-update-table">
+                    <thead>
+                      <tr><th>项目</th><th>状态</th><th>入口</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr data-d1="settings-update-status-row">
+                        <td>已安装版本</td>
+                        <td>v{{ props.updateStatus?.current?.version ?? '—' }} · {{ updateStatusText }}</td>
+                        <td>右侧检查更新</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="muted sheet-note">下载、安装和重启仍在原更新面板中明确确认；只打开本页不会改变程序。</p>
+              </div>
+            </section>
+
+            <section v-show="activeSettingsPage === 'about'" data-d1="settings-page-about-content">
+              <el-card class="section" shadow="never" data-d1="settings-data-boundary">
+                <template #header>本机与在线数据边界</template>
+                <p class="muted">本机 SQLite：个人档案、学期与日历、日计划、观察、周计划和本地班级游戏配置只保存在本机。</p>
+                <p class="muted">在线 MySQL：只保存园所／教师、班级关系、同班在线游戏配置和在线共享周。</p>
+                <p class="muted">日计划共享与 AI 在线设置当前不同步；密钥和本机档案不会上传。</p>
+              </el-card>
+              <el-card class="section" shadow="never" data-d1="settings-open-collaboration-card">
+                <template #header>在线协作</template>
+                <p class="muted">在线发布、加入/恢复、选班和升班与本地设置相互独立，不会自动上传本机配置。</p>
+                <el-button data-d1="settings-open-collaboration" :disabled="frozen" @click="openCollaborationSection">
+                  打开在线协作
+                </el-button>
+              </el-card>
+              <div class="kgm-sheet" data-d1="settings-group-about">
+                <div class="kgm-sheet-header">版本与说明</div>
+                <div class="kgm-sheet-row">
+                  <div class="kgm-sheet-label">配置版本</div>
+                  <div class="kgm-sheet-value">
+                    <el-tag size="small" type="info">配置版本 v{{ props.context.config_version }}</el-tag>
+                    <el-alert
+                      type="info"
+                      :closable="false"
+                      class="section"
+                      title="普通姓名、园所、班级和学期修改点一次「确认修改」即先预览后应用；日期例外与批量/游戏配置仍保留预览确认。已有计划保留原表头，不会被改写。"
+                    />
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="kgm-page-rail" data-d1="settings-page-rail" aria-label="设置操作">
+            <div v-if="activeSettingsPage === 'identity'" class="kgm-rail-panel">
+              <h3 class="kgm-rail-title">操作</h3>
+              <el-button data-d1="edit-profile" :disabled="frozen" @click="openProfileEditor">编辑姓名与园所</el-button>
+              <el-button data-d1="preview-profile" data-d1-confirm="confirm-profile" type="primary" class="kgm-primary-action" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeProfile())">
+                确认修改姓名与园所
+              </el-button>
+              <el-button data-d1="edit-class" :disabled="frozen" @click="openClassEditor">编辑当前班级</el-button>
+              <el-button data-d1="confirm-class" type="primary" class="kgm-primary-action" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeClass())">
+                确认修改班级
+              </el-button>
+              <p class="muted">修改只填入草稿；确认后仍按原有预览／确认流程保存。</p>
+            </div>
+
+            <div v-if="activeSettingsPage === 'terms'" class="kgm-rail-panel">
+              <h3 class="kgm-rail-title">操作</h3>
+              <el-button data-d1="settings-read-promotion-terms" :loading="readingPromotionTerms" :disabled="frozen || readingPromotionTerms" @click="readPromotionTerms">
+                读取园所学期名称
+              </el-button>
+              <el-alert
+                v-if="promotionTermNotice"
+                type="info"
+                :closable="false"
+                data-d1="settings-promotion-term-notice"
+                :title="promotionTermNotice"
+              />
+              <el-button data-d1="new-term-open" :disabled="frozen" @click="openNewTermEditor">新增学期</el-button>
+              <el-button
+                v-if="newTermDraftDirty()"
+                data-d1="confirm-new-term"
+                type="primary"
+                class="kgm-primary-action"
+                :loading="previewing || applying"
+                :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null"
+                @click="confirmNewTerm"
+              >
+                确认新增
+              </el-button>
+              <el-button data-d1="edit-override" :disabled="frozen" @click="openOverrideEditor">编辑例外</el-button>
+              <el-button data-d1="preview-override" type="primary" class="kgm-primary-action" :loading="previewing" :disabled="frozen" @click="previewOverride">
+                预览修改
+              </el-button>
+              <p class="muted">仅在已连接在线班级时读取园所学期名称；只填入起止日期唯一匹配的名称，不提交修改。</p>
+            </div>
+
+            <div v-if="activeSettingsPage === 'ai'" class="kgm-rail-panel">
+              <h3 class="kgm-rail-title">操作</h3>
+              <el-button data-d1="settings-focus-ai-config" :disabled="frozen" @click="focusAi('ai-config')">
+                编辑 AI 供应商配置
+              </el-button>
+              <el-button data-d1="settings-focus-ai-prompts" :disabled="frozen" @click="focusAi('ai-prompts')">
+                编辑个人指导
+              </el-button>
+              <p class="muted">密钥只在安全配置面板中输入和保存；普通正文与日志不显示密钥。</p>
+            </div>
+
+            <div v-if="activeSettingsPage === 'games'" class="kgm-rail-panel">
+              <h3 class="kgm-rail-title">操作</h3>
+              <el-button data-d1="settings-focus-game-config" :disabled="frozen" @click="focusGame">
+                编辑班级游戏配置
+              </el-button>
+              <p class="muted">本地配置、来源带入和发布仍保留各自的预览与确认流程。</p>
+            </div>
+
+            <div v-if="activeSettingsPage === 'backup'" class="kgm-rail-panel">
+              <h3 class="kgm-rail-title">操作</h3>
+              <el-button data-d1="open-backup-restore" type="primary" class="kgm-primary-action" :disabled="frozen" @click="emit('open-maintenance')">
+                打开备份与恢复
+              </el-button>
+              <el-button data-d1="settings-check-update" :disabled="frozen" @click="emit('check-update')">
+                检查更新
+              </el-button>
+              <p class="muted">备份、恢复和更新均使用原有独立面板与明确确认；不会因打开本页而联网或替换数据。</p>
+            </div>
+
+            <div class="kgm-rail-panel">
+              <h3 class="kgm-rail-title">草稿</h3>
+              <el-button data-d1="cancel-draft" :disabled="frozen" @click="cancelDraft">
+                取消编辑（还原当前配置）
+              </el-button>
+              <p class="muted">只还原尚未确认的草稿，不改已保存设置。</p>
+            </div>
+          </aside>
+        </div>
       </div>
-
-      <details class="settings-group settings-about" data-d1="settings-group-about">
-        <summary>版本与说明</summary>
-        <div class="section">
-          <el-tag size="small" type="info">配置版本 v{{ props.context.config_version }}</el-tag>
-          <el-alert
-            type="info"
-            :closable="false"
-            class="section"
-            title="普通姓名、园所、班级和学期修改点一次「确认修改」即先预览后应用；日期例外与批量/游戏配置仍保留预览确认。已有计划保留原表头，不会被改写。"
-          />
-        </div>
-      </details>
     </div>
-
     <div :hidden="activeSection !== 'collaboration'" class="settings-collaboration">
       <CollaborationPanel
         ref="collaborationPanelRef"
@@ -2546,6 +2642,23 @@ defineExpose({
 .settings-main[hidden],
 .settings-collaboration[hidden] {
   display: none !important;
+}
+.settings :deep(.el-card) {
+  border-radius: var(--kgm-radius);
+}
+.kgm-page-main > section {
+  min-width: 0;
+}
+.kgm-page-main .kgm-sheet + .kgm-sheet {
+  margin-top: 16px;
+}
+.sheet-note {
+  margin: 0;
+  padding: 0 18px 16px;
+}
+.settings-page-rail .el-button,
+.kgm-page-rail .el-button {
+  margin-left: 0;
 }
 .class-grade-select {
   width: 100%;

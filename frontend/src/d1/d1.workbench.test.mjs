@@ -19,22 +19,22 @@ const d1Dir = path.dirname(fileURLToPath(import.meta.url))
 const viewFile = process.env.KGM_WORKBENCH_VIEW || path.join(d1Dir, 'views', 'WorkbenchView.vue')
 const source = fs.readFileSync(viewFile, 'utf8')
 assert.match(source, /data-d1="daily-plan-module"/)
-assert.match(source, /data-d1="open-daily-plan"/)
-assert.match(source, /data-d1="workbench-sidebar"/)
-assert.match(source, /data-d1="workbench-nav-daily"/)
-assert.match(source, /data-d1="workbench-nav-todos"/)
 assert.match(source, /data-d1="workbench-daily-pane"/)
 assert.match(source, /data-d1="workbench-todos-pane"/)
-assert.match(source, /v-show="activePanel === 'daily'"/)
-assert.match(source, /v-show="activePanel === 'todos'"/)
+assert.match(source, /panel\?: 'todos' \| 'daily'/)
+assert.match(source, /v-if="activePanel === 'todos'"/)
+assert.match(source, /v-else class="workbench-daily"/)
+assert.doesNotMatch(source, /data-d1="workbench-sidebar"/)
+assert.doesNotMatch(source, /data-d1="workbench-nav-daily"/)
 assert.ok(
-  source.includes("const activePanel = ref<'daily' | 'todos'>('daily')"),
-  'daily plan is the default workbench pane',
+  source.includes("const activePanel = computed<'daily' | 'todos'>(") &&
+    source.includes("props.panel === 'daily' ? 'daily' : 'todos'"),
+  'workbench home defaults to personal todos; daily is an explicit page entry',
 )
 assert.ok(
-  source.indexOf('data-d1="open-daily-plan"') <
-    source.indexOf('<WorkbenchTodoPanel'),
-  'daily-plan top entry is separate from the personal todo panel',
+  source.indexOf('data-d1="workbench-todos-pane"') <
+    source.indexOf('data-d1="daily-plan-module"'),
+  'personal todo pane is the home content; daily calendar is the daily entry',
 )
 assert.ok(
   source.indexOf('data-d1="daily-plan-module"') <
@@ -248,7 +248,7 @@ function createWorkbench({
 } = {}) {
   const emitted = []
   const component = evaluateComponent({ items, now, apiGet })
-  const props = { context, frozen }
+  const props = vue.reactive({ context, frozen, panel: 'daily' })
   const previousWarn = console.warn
   let state
   try {
@@ -266,7 +266,7 @@ function createWorkbench({
 }
 async function renderWorkbench(state, props) {
   const wrapper = {
-    props: ['context', 'frozen'],
+    props: ['context', 'frozen', 'panel'],
     setup() { return state },
     render,
   }
@@ -615,7 +615,7 @@ function assertMonthGrid(section, month) {
   ok('calendar CSS keeps seven fixed columns with horizontal scrolling and a narrow-window breakpoint')
 }
 
-// Workbench side navigation shows one pane without refetching or losing state.
+// Workbench home/daily panes come from the top-level entry, not a second nav.
 {
   let calendarCalls = 0
   const apiGet = async (url) => {
@@ -635,23 +635,22 @@ function assertMonthGrid(section, month) {
   assert.equal(state.activePanel.value, 'daily')
   const callsAfterMount = calendarCalls
   const monthBefore = state.month.value
-  state.showTodos()
+  state.props.panel = 'todos'
+  await vue.nextTick()
   assert.equal(state.activePanel.value, 'todos')
   await settle()
   assert.equal(calendarCalls, callsAfterMount)
   assert.equal(state.month.value, monthBefore)
   const todosHtml = await renderWorkbench(state, state.props)
-  assert.match(todosHtml, /data-d1="workbench-daily-pane"[^>]*display:\s*none/)
   assert.match(todosHtml, /data-d1="workbench-todos-pane"/)
-  state.showDailyPlan()
+  assert.doesNotMatch(todosHtml, /data-d1="workbench-daily-pane"/)
+  state.props.panel = 'daily'
+  await vue.nextTick()
   assert.equal(state.activePanel.value, 'daily')
   const dailyHtml = await renderWorkbench(state, state.props)
-  assert.match(dailyHtml, /data-d1="workbench-todos-pane"[^>]*display:\s*none/)
+  assert.doesNotMatch(dailyHtml, /data-d1="workbench-todos-pane"/)
   assert.match(dailyHtml, /data-d1="workbench-daily-pane"/)
-  state.props.frozen = true
-  state.showTodos()
-  assert.equal(state.activePanel.value, 'daily')
-  ok('workbench sidebar switches one pane, keeps the month query and state, and respects freeze')
+  ok('top-level entry selects the todo home or daily calendar without a second workbench nav')
 }
 
 console.log(`workbench: ${passed} checks passed`)

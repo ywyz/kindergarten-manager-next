@@ -20,7 +20,6 @@ import ts from 'typescript'
 import * as vue from 'vue'
 
 const d1Dir = path.dirname(fileURLToPath(import.meta.url))
-const editorFile = path.join(d1Dir, 'views', 'EditorView.vue')
 
 let passed = 0
 function ok(name) {
@@ -140,6 +139,26 @@ function jsonResponse(status, body) {
 }
 function apiError(status, code, message) {
   return jsonResponse(status, { error: { code, message } })
+}
+
+function taskFixture(overrides = {}) {
+  return {
+    id: `task-${overrides.task_type ?? 'daily_lesson_split'}-${overrides.id ?? '1'}`,
+    plan_id: 'p1',
+    task_type: 'daily_lesson_split',
+    status: 'succeeded',
+    reason: null,
+    processing_certainty: 'not_sent',
+    user_stop_requested: false,
+    created_at: '2026-11-08T00:00:00Z',
+    updated_at: '2026-11-08T00:00:00Z',
+    input_summary: { content_version: 3, target_grade: 'middle', dependency_hash: 'd' },
+    execution: null,
+    candidate_id: null,
+    allowed_actions: [],
+    retry_requires_ack: false,
+    ...overrides,
+  }
 }
 
 function router(routes) {
@@ -297,14 +316,19 @@ class Harness {
     return module.exports
   }
 
-  loadComponent(inlineTemplate) {
-    const source = fs.readFileSync(editorFile, 'utf8')
-    const { descriptor } = parse(source, { filename: editorFile })
+  loadSfc(relativePath, inlineTemplate = true) {
+    const file = path.join(d1Dir, relativePath)
+    const source = fs.readFileSync(file, 'utf8')
+    const { descriptor } = parse(source, { filename: file })
     const compiled = compileScript(descriptor, {
-      id: inlineTemplate ? 'daily-layout-mounted' : 'daily-layout-setup',
+      id: `daily-layout-ui-${path.basename(relativePath)}`,
       inlineTemplate,
     }).content
-    return this._evaluate(compiled, editorFile).default
+    return this._evaluate(compiled, file).default
+  }
+
+  loadComponent(inlineTemplate) {
+    return this.loadSfc('views/EditorView.vue', inlineTemplate)
   }
 
   setupComponent(props = {}) {
@@ -337,6 +361,16 @@ async function settle(times = 8) {
   for (let i = 0; i < times; i += 1) await Promise.resolve()
   await new Promise((resolve) => setTimeout(resolve, 0))
   await vue.nextTick()
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
 }
 
 async function waitUntil(condition, what) {
@@ -540,9 +574,15 @@ function byD1Button(root, value) {
   ) ?? null
 }
 
-async function mountEditor(routes, propsOverrides = {}) {
+async function mountEditor(routes, propsOverrides = {}, options = {}) {
   const fetchImpl = router(routes)
   const harness = new Harness({ fetchImpl })
+  if (options.realPanel) {
+    harness.overrides['./AiTaskPanel.vue'] = {
+      __esModule: true,
+      default: harness.loadSfc('views/AiTaskPanel.vue'),
+    }
+  }
   const component = harness.loadComponent(true)
   const { root, ops } = createMiniDom()
   const appRoot = ops.createElement('div')
@@ -712,6 +752,187 @@ async function testMountedDirectoryAndReadPanes() {
   assert.equal(calls.filter((call) => call.method !== 'GET').length, 0)
   app.unmount()
   ok('mounted daily layout: seven labeled section buttons, selected read pane, one panel and stable anchors')
+}
+
+async function testMountedGenerationActions() {
+  let postSeq = 0
+  const routes = {
+    ...saveRoutes([]),
+    'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
+    'POST /api/daily-plans/p1/ai-tasks': ({ body }) => {
+      postSeq += 1
+      return jsonResponse(200, taskFixture({
+        task_type: body.task_type,
+        id: `${postSeq}`,
+        input_summary: {
+          content_version: body.expected_content_version,
+          target_grade: body.target_grade,
+          dependency_hash: 'dep',
+        },
+      }))
+    },
+  }
+  const { root, hook, app, calls } = await mountEditor(routes, {}, { realPanel: true })
+  await settle()
+  const actions = byD1(root, 'daily-generation-actions')
+  const navReflection = byD1Button(root, 'layout-nav-reflection')
+  assert.ok(actions && navReflection, 'left generation group and final directory item rendered')
+  const nodes = walkElements(root)
+  assert.ok(
+    nodes.indexOf(actions) > nodes.indexOf(navReflection),
+    'generation actions follow the final 一日反思 directory item',
+  )
+  const expected = [
+    'ai-trigger-daily_lesson_split',
+    'ai-trigger-daily_process_adapt',
+    'ai-trigger-daily_other_activities',
+    'reflection-generate',
+  ]
+  const buttons = expected.map((marker) => byD1Button(root, marker))
+  buttons.forEach((button, index) => {
+    assert.ok(button, `${expected[index]} is visible in the left group`)
+    assert.ok(nodes.indexOf(button) > nodes.indexOf(actions), `${expected[index]} is inside the left group`)
+  })
+  assert.deepEqual(
+    expected.slice(0, 3).map((marker) => byD1Button(root, marker).props.disabled),
+    [false, false, false],
+    'the three existing panel entries keep their real enabled states',
+  )
+  assert.equal(
+    walkElements(root).filter((node) => node.props['data-d1']?.startsWith('ai-trigger-')).length,
+    3,
+    'three panel triggers are moved once, not duplicated',
+  )
+  assert.equal(allByD1(root, 'reflection-generate').length, 1)
+  assert.ok(byD1(root, 'ai-generation-buttons'), 'single AiTaskPanel owns the three moved triggers')
+  assert.equal(allByD1(root, 'ai-tasks').length, 1, 'one AI task panel/state owner is mounted')
+  assert.ok(byD1(root, 'ai-target-grade'), 'target grade remains discoverable in the single task panel')
+
+  byD1Button(root, 'ai-trigger-daily_lesson_split').props.onClick({})
+  await settle()
+  assert.equal(hook.layoutSection(), 'raw')
+  byD1Button(root, 'ai-trigger-daily_process_adapt').props.onClick({})
+  await settle()
+  assert.equal(hook.layoutSection(), 'group')
+  byD1Button(root, 'ai-trigger-daily_other_activities').props.onClick({})
+  await settle()
+  assert.equal(hook.layoutSection(), 'morning')
+  assert.equal(calls.filter((call) => call.method === 'POST' && call.path.endsWith('/ai-tasks')).length, 3)
+
+  // Reflection entry is the moved EditorView control; missing material stays a
+  // visible prerequisite and the action still opens its own reading pane.
+  byD1Button(root, 'reflection-generate').props.onClick({})
+  await settle()
+  assert.equal(hook.layoutSection(), 'reflection')
+  assert.match(hook.reflectionError(), /实施材料/)
+  const reflectionError = byD1(root, 'reflection-action-error')
+  assert.ok(
+    reflectionError && walkElements(actions).includes(reflectionError),
+    'reflection prerequisite error is visible in the left action group',
+  )
+  assert.match(nodeText(reflectionError), /实施材料/)
+  assert.ok(byD1(reflectionError, 'reflection-locate-error'))
+  byD1Button(root, 'layout-nav-group').props.onClick({})
+  await settle()
+  assert.equal(byD1(root, 'reflection-action-error'), reflectionError, 'reflection error survives a section switch')
+  assert.equal(
+    calls.filter((call) => call.method === 'POST' && call.path.endsWith('/ai-tasks')).length,
+    3,
+    'reflection does not create a task without material',
+  )
+  for (const marker of expected) {
+    assert.ok(byD1Button(root, marker), `${marker} remains visible after switching sections`)
+  }
+  assert.equal(byD1(root, 'daily-generation-actions'), actions)
+  app.unmount()
+  ok('mounted left actions: four real generation entries follow reflection, move existing controls, and switch context')
+}
+
+async function testDeferredFailureStaysVisibleAfterSectionSwitch() {
+  const pendingPosts = []
+  const routes = {
+    ...saveRoutes([]),
+    'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
+    'POST /api/daily-plans/p1/ai-tasks': () => {
+      const gate = deferred()
+      pendingPosts.push(gate)
+      return gate.promise
+    },
+  }
+  const { root, hook, app } = await mountEditor(routes, {}, { realPanel: true })
+  await settle()
+  const actions = byD1(root, 'daily-generation-actions')
+  const splitButton = () => byD1Button(root, 'ai-trigger-daily_lesson_split')
+
+  // Start split, then leave the raw pane while the POST is still pending.
+  splitButton().props.onClick({})
+  await waitUntil(() => pendingPosts.length === 1, 'split POST')
+  assert.equal(hook.layoutSection(), 'raw')
+  byD1Button(root, 'layout-nav-group').props.onClick({})
+  await settle()
+  assert.equal(hook.layoutSection(), 'group')
+  assert.equal(byD1(root, 'raw-lesson').style.display, 'none')
+
+  pendingPosts[0].resolve(apiError(401, 'AI_NOT_CONFIGURED', 'AI 未配置'))
+  await waitUntil(
+    () => Boolean(byD1(root, 'ai-trigger-error-daily_lesson_split')),
+    'visible split failure',
+  )
+  await settle()
+  assert.equal(hook.layoutSection(), 'group', 'async failure does not force-switch over the chosen section')
+  const visibleError = byD1(root, 'ai-trigger-error-daily_lesson_split')
+  assert.ok(
+    walkElements(actions).includes(visibleError),
+    'split failure is inside the always-visible left action group',
+  )
+  assert.match(nodeText(visibleError), /尚未配置/)
+  assert.equal(
+    allByD1(root, 'ai-trigger-error-daily_lesson_split').length,
+    1,
+    'the hidden raw row does not duplicate the error',
+  )
+  assert.ok(byD1(visibleError, 'ai-locate-error-daily_lesson_split'), 'failure offers an explicit location action')
+  byD1Button(root, 'layout-edit-group').props.onClick({})
+  await settle()
+  hook.layoutDraft().form.group_activity.process = '编辑中的副本'
+  byD1Button(root, 'ai-locate-error-daily_lesson_split').props.onClick({})
+  await settle()
+  assert.equal(hook.layoutSection(), 'group', 'location never force-switches over an open editing copy')
+  assert.equal(hook.layoutEditingSection(), 'group')
+  assert.equal(hook.layoutDraft().form.group_activity.process, '编辑中的副本')
+  byD1Button(root, 'layout-edit-cancel').props.onClick({})
+  await settle()
+  byD1Button(root, 'ai-locate-error-daily_lesson_split').props.onClick({})
+  await settle()
+  assert.equal(hook.layoutSection(), 'raw', 'location action switches only on explicit click')
+  byD1Button(root, 'layout-nav-group').props.onClick({})
+  await settle()
+
+  // Unknown create: the same left group must show the retained receipt and
+  // same-request recovery controls while the raw pane is hidden.
+  splitButton().props.onClick({})
+  await waitUntil(() => pendingPosts.length === 2, 'second split POST')
+  assert.equal(hook.layoutSection(), 'raw')
+  byD1Button(root, 'layout-nav-group').props.onClick({})
+  await settle()
+  pendingPosts[1].reject(new Error('network down'))
+  await waitUntil(
+    () => Boolean(byD1(root, 'ai-trigger-pending-daily_lesson_split')),
+    'visible unknown receipt',
+  )
+  await settle()
+  assert.equal(hook.layoutSection(), 'group', 'unknown receipt does not force-switch')
+  assert.ok(walkElements(actions).includes(byD1(root, 'ai-trigger-pending-daily_lesson_split')))
+  assert.equal(allByD1(root, 'ai-query-create-daily_lesson_split').length, 1)
+  assert.equal(allByD1(root, 'ai-resubmit-create-daily_lesson_split').length, 1)
+  assert.ok(walkElements(actions).includes(byD1(root, 'ai-query-create-daily_lesson_split')))
+  assert.ok(walkElements(actions).includes(byD1(root, 'ai-resubmit-create-daily_lesson_split')))
+  assert.match(nodeText(byD1(root, 'ai-trigger-error-daily_lesson_split')), /提交结果未知|待核对/)
+  assert.ok(byD1(root, 'ai-locate-pending-daily_lesson_split'))
+  app.unmount()
+  ok('deferred create failure/unknown: left action group stays visible after switching sections; recovery is same-request')
 }
 
 async function testMountedEditDialogIndependentCopy() {
@@ -889,6 +1110,53 @@ async function testMountedCompositionAndFrozenConfirm() {
   assert.equal(hook.layoutEditingSection(), null)
   app.unmount()
   ok('mounted guards: modal IME joins leave protection; frozen confirm is disabled and never fills the form')
+}
+
+async function testAutoAdaptContinuationOpensItsContext() {
+  const saved = planFixture({ current_content_version: 4 })
+  saved.content = {
+    ...saved.content,
+    version: 4,
+    split_baseline: { group_activity_process: '拆分原过程' },
+  }
+  const harness = new Harness({
+    fetchImpl: router({
+      'GET /api/daily-plans/by-date': () => jsonResponse(200, planFixture()),
+      'GET /api/daily-plans/p1': () => jsonResponse(200, saved),
+    }),
+    captureHooks: true,
+  })
+  const { state } = harness.setupComponent()
+  harness.runMounted()
+  await waitUntil(() => state.phase.value === 'ready', 'setup editor load')
+  await settle()
+  state.candidateId.value = 'cand1'
+  state.layoutSection.value = 'raw'
+  state.aiTaskPanelRef.value = { continueAfterSplit: async () => true }
+  const epoch = state.editEpoch.value
+  await state.onCandidateAdopted(
+    {
+      changed: true,
+      plan_id: 'p1',
+      content_id: 'cc1',
+      content_version: 4,
+      candidate_id: 'cand1',
+      selected_targets: ['group_activity'],
+      request_id: 'adopt-1',
+    },
+    epoch,
+    {
+      planId: 'p1',
+      candidateId: 'cand1',
+      taskType: 'daily_lesson_split',
+      targetGrade: 'small',
+    },
+  )
+  await settle()
+  assert.equal(state.layoutSection.value, 'group', 'automatic adaptation opens the process context')
+  assert.equal(state.plan.value.current_content_version, 4)
+  harness.unmount()
+  ok('split adoption: the automatic one-time adaptation makes its group/process task context visible')
 }
 
 async function testStaleDialogCannotOverwriteNewVersion() {
@@ -1099,9 +1367,12 @@ async function testOpenDialogBlocksAutomaticAndLeaveWrites() {
 }
 
 await testMountedDirectoryAndReadPanes()
+await testMountedGenerationActions()
+await testDeferredFailureStaysVisibleAfterSectionSwitch()
 await testMountedEditDialogIndependentCopy()
 await testMountedReflectionAndRawDialog()
 await testMountedCompositionAndFrozenConfirm()
+await testAutoAdaptContinuationOpensItsContext()
 await testStaleDialogCannotOverwriteNewVersion()
 await testOpenDialogBlocksAutomaticAndLeaveWrites()
 

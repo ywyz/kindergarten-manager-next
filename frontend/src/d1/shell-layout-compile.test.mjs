@@ -53,18 +53,27 @@ for (const relative of files) {
 
 const required = {
   'App.vue': [
-    'module-nav-workbench', 'module-nav-daily', 'module-nav-settings',
+    'module-nav-workbench', 'module-nav-todos', 'module-nav-daily', 'module-nav-settings',
     'ref: "workbenchRef"',
   ],
-  'views/WorkbenchView.vue': ['workbench-sidebar', 'workbench-nav-daily', 'workbench-nav-todos', 'plan-list'],
+  'views/WorkbenchView.vue': [
+    'workbench-todos-pane', 'workbench-daily-pane', 'daily-plan-module',
+    'calendar', 'plan-list', 'ref: "todoPanelRef"',
+  ],
   'views/WorkbenchTodoPanel.vue': ['todo-table', 'todo-editor', 'todo-editor-apply', 'todo-editor-cancel'],
   'views/SettingsView.vue': [
+    'settings-page-nav', 'settings-page-identity', 'settings-page-terms',
+    'settings-page-ai', 'settings-page-games', 'settings-page-backup',
     'settings-override-summary', 'edit-override', 'preview-override',
     'settings-editor-profile', 'settings-editor-apply', 'settings-editor-cancel',
     'settings-backup-table', 'settings-update-table',
   ],
   'views/SetupView.vue': ['setup-summary', 'setup-edit-identity', 'setup-edit-term', 'setup-editor-apply'],
-  'views/CollaborationPanel.vue': ['collaboration-directory', 'collaboration-nav-promotion', 'collaboration-nav-game-config'],
+  'views/CollaborationPanel.vue': [
+    'collaboration-page-nav', 'collaboration-page-connection',
+    'collaboration-page-promotion', 'collaboration-page-config',
+    'collaboration-layout', 'collaboration-directory',
+  ],
   'views/AiSettingsPanel.vue': ['ai-config-editor', 'ai-config-editor-apply', 'ai-prompt-editor', 'ai-prompt-editor-apply'],
   'views/GameConfigPanel.vue': ['game-config-summary', 'game-config-editor', 'game-config-editor-apply', 'game-import-editor'],
   'views/BackupRestorePanel.vue': ['backup-status-table', 'backup-operations-table'],

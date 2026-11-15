@@ -2021,6 +2021,7 @@ function createMiniDom() {
     props: {},
     children: [],
     parent: null,
+    style: { display: '' },
     ...extra,
   })
   const root = make('root')
@@ -2056,7 +2057,11 @@ function createMiniDom() {
     },
     querySelector: () => null,
     setScopeId: () => {},
-    cloneNode: (node) => ({ ...node, props: { ...node.props } }),
+    cloneNode: (node) => ({
+      ...node,
+      props: { ...node.props },
+      style: { ...(node.style || {}) },
+    }),
     insertStaticContent: (content, parent, anchor) => {
       const node = make('element', { tag: 'static', text: content })
       ops.insert(node, parent, anchor)

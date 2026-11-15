@@ -382,42 +382,98 @@ function overviewMissingLabel(count: number | undefined): string {
 function overviewStaleLabel(count: number | undefined): string {
   return count && count > 0 ? '来源有变化' : ''
 }
+function planStatusLabel(plan: WeeklyPlanSummary): string {
+  // Confirmation versions and draft versions are independent sequences.
+  // Never infer which one is newer by comparing their numbers.
+  return plan.current_confirmed_version != null ? '已确认' : '草稿'
+}
 onMounted(async () => { await loadTerms(); await load(true) })
 </script>
 
 <template>
   <section class="weekly-plans" data-d1="weekly-plans">
-    <header class="topbar">
-      <h2>周计划</h2>
+    <header class="page-head">
+      <div>
+        <p class="kicker">周计划</p>
+        <h2>周计划列表</h2>
+        <p class="muted">按学期和周次查看、打开或新建周计划；概览只显示已保存的摘要。</p>
+      </div>
       <div class="actions">
-        <el-button :disabled="disabled" @click="openCreate">新建周计划</el-button>
         <el-button :disabled="disabled || loading" @click="load(true)">刷新</el-button>
       </div>
     </header>
-    <div class="filters">
-      <el-select v-model="termId" clearable placeholder="全部学期" @change="onTermChange">
-        <el-option v-for="term in terms" :key="term.id" :label="term.name" :value="term.id" />
-      </el-select>
-      <el-select v-model="weekNumber" clearable placeholder="全部周次" :disabled="!termId || !weekOptions.length" @change="onWeekChange">
-        <el-option label="全部周次" value="" />
-        <el-option v-for="week in weekOptions" :key="week" :label="`第 ${week} 周`" :value="week" />
-      </el-select>
+
+    <div class="action-bar">
+      <el-button type="primary" :disabled="disabled" data-d1="weekly-create" @click="openCreate">
+        新建周计划
+      </el-button>
+      <span class="muted">新建前会先预览班级表头、日期和来源候选，确认后再创建。</span>
     </div>
+
+    <div class="filters">
+      <label>
+        <span>学期</span>
+        <el-select v-model="termId" clearable placeholder="全部学期" data-d1="weekly-term-filter" @change="onTermChange">
+          <el-option v-for="term in terms" :key="term.id" :label="term.name" :value="term.id" />
+        </el-select>
+      </label>
+      <label>
+        <span>周次</span>
+        <el-select v-model="weekNumber" clearable placeholder="全部周次" data-d1="weekly-week-filter" :disabled="!termId || !weekOptions.length" @change="onWeekChange">
+          <el-option label="全部周次" value="" />
+          <el-option v-for="week in weekOptions" :key="week" :label="`第 ${week} 周`" :value="week" />
+        </el-select>
+      </label>
+    </div>
+
     <el-alert v-if="loadError" :title="loadError" type="error" :closable="false" />
+
     <div v-loading="loading" class="list">
-      <el-card v-for="plan in items" :key="plan.id" shadow="never" class="week-card">
+      <article
+        v-for="plan in items"
+        :key="plan.id"
+        class="week-card"
+        data-d1="weekly-plan-card"
+        role="button"
+        tabindex="0"
+        @click="openPlan(plan)"
+        @keydown.enter.self="openPlan(plan)"
+      >
         <div class="week-head">
-          <strong>{{ plan.header.class_name }} · 第 {{ plan.week_number_snapshot }} 周</strong>
-          <el-button :disabled="disabled" text @click="openPlan(plan)">打开</el-button>
+          <div>
+            <h3>第 {{ plan.week_number_snapshot }} 周</h3>
+            <p class="muted">{{ plan.header.class_name }} · {{ plan.header.school_name }}</p>
+          </div>
+          <el-button
+            type="primary"
+            text
+            :disabled="disabled || previewing || creating || createUnknown"
+            data-d1="weekly-plan-open"
+            @click.stop="openPlan(plan)"
+          >
+            打开
+          </el-button>
         </div>
-        <p>{{ plan.header.school_name }} · {{ plan.week_anchor_date }}</p>
-        <p>已存 v{{ plan.current_draft_version }} · 已确认 v{{ plan.current_confirmed_version ?? '—' }}</p>
-        <p v-if="overviewMissingLabel(plan.facts?.missing.length)">{{ overviewMissingLabel(plan.facts?.missing.length) }}</p>
-        <p v-if="overviewStaleLabel(plan.facts?.stale_sources.length)">{{ overviewStaleLabel(plan.facts?.stale_sources.length) }}</p>
-      </el-card>
+        <dl class="card-meta">
+          <div><dt>周一日期</dt><dd>{{ plan.week_anchor_date }}</dd></div>
+          <div><dt>班级</dt><dd>{{ plan.header.class_name }}</dd></div>
+          <div><dt>状态</dt><dd>{{ planStatusLabel(plan) }}</dd></div>
+          <div><dt>版本</dt><dd>已存 v{{ plan.current_draft_version }} · 已确认 v{{ plan.current_confirmed_version ?? '—' }}</dd></div>
+        </dl>
+        <div v-if="overviewMissingLabel(plan.facts?.missing.length) || overviewStaleLabel(plan.facts?.stale_sources.length)" class="card-flags">
+          <span v-if="overviewMissingLabel(plan.facts?.missing.length)" class="flag">
+            {{ overviewMissingLabel(plan.facts?.missing.length) }}
+          </span>
+          <span v-if="overviewStaleLabel(plan.facts?.stale_sources.length)" class="flag">
+            {{ overviewStaleLabel(plan.facts?.stale_sources.length) }}
+          </span>
+        </div>
+      </article>
       <el-empty v-if="!loading && !items.length" description="没有周计划" />
     </div>
-    <el-button v-if="cursor" :disabled="loading" @click="load(false)">加载更多</el-button>
+    <div v-if="cursor" class="load-more">
+      <el-button :disabled="loading" @click="load(false)">加载更多</el-button>
+    </div>
 
 
     <el-dialog v-model="createOpen" title="新建/打开周计划" width="760px" @close="onCreateDialogClose">
@@ -472,9 +528,70 @@ onMounted(async () => { await loadTerms(); await load(true) })
 </template>
 
 <style scoped>
-.weekly-plans { padding: 1rem; color: var(--kgm-text); }
-.topbar, .week-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
-.filters { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.75rem 0; }
-.list { display: grid; gap: 0.75rem; margin-top: 0.75rem; }
-.week-card { border-color: var(--kgm-border); background: var(--kgm-surface); }
+.weekly-plans { padding: 1.25rem; color: var(--kgm-text); }
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.kicker { margin: 0 0 0.15rem; color: var(--kgm-muted); font-size: 0.8rem; }
+.page-head h2 { margin: 0.1rem 0; }
+.actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.action-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0.9rem 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+  background: var(--kgm-surface);
+}
+.action-bar .el-button { min-height: 42px; }
+.filters {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0.9rem 0;
+}
+.filters label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--kgm-muted); }
+.filters :deep(.el-select) { min-width: 12rem; }
+.list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin-top: 0.9rem;
+}
+.week-card {
+  min-width: 0;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+  background: var(--kgm-surface);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.week-card:hover, .week-card:focus-visible {
+  border-color: var(--kgm-accent);
+  outline: 2px solid var(--kgm-focus);
+  outline-offset: 2px;
+}
+.week-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+.week-head h3 { margin: 0.1rem 0; }
+.week-head .el-button { min-height: 36px; }
+.card-meta { display: grid; gap: 0.5rem; margin: 0.9rem 0 0; }
+.card-meta div { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: 0.75rem; align-items: baseline; }
+.card-meta dt { color: var(--kgm-muted); font-size: 0.82rem; }
+.card-meta dd { margin: 0; overflow-wrap: anywhere; }
+.card-flags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.8rem; }
+.flag {
+  padding: 0.12rem 0.5rem;
+  border: 1px solid var(--kgm-border);
+  border-radius: 999px;
+  color: var(--kgm-muted);
+  font-size: 0.78rem;
+}
+.load-more { margin-top: 1rem; }
+.muted { color: var(--kgm-muted); }
+@media (max-width: 900px) {
+  .list { grid-template-columns: minmax(0, 1fr); }
+  .weekly-plans { padding: 1rem; }
+}
 </style>

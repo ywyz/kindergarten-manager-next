@@ -126,10 +126,12 @@ const errorText = ref('')
 const noticeText = ref('')
 
 type DirectorySection = 'account' | 'classes' | 'promotion' | 'game-config'
-const directorySection = ref<DirectorySection>('account')
+type DirectoryPage = 'account' | 'promotion' | 'game-config'
+const directorySection = ref<DirectoryPage>('account')
+const previewSourceTeacherId = ref('')
 
 function directoryAvailable(section: DirectorySection): boolean {
-  if (section === 'account') return true
+  if (section === 'account' || section === 'classes') return true
   return (
     status.value.connected
     || pendingWrite.value !== null
@@ -139,7 +141,38 @@ function directoryAvailable(section: DirectorySection): boolean {
 
 function selectDirectory(section: DirectorySection): void {
   if (!directoryAvailable(section)) return
-  directorySection.value = section
+  directorySection.value = section === 'classes' ? 'account' : section
+}
+
+const previewMate = computed(
+  () =>
+    classmates.value.find(
+      (mate) =>
+        mate.teacher_id === previewSourceTeacherId.value
+        && mate.config_version > 0,
+    ) ?? null,
+)
+
+watch(
+  classmates,
+  (items) => {
+    if (
+      !items.some(
+        (mate) =>
+          mate.teacher_id === previewSourceTeacherId.value
+          && mate.config_version > 0,
+      )
+    ) {
+      previewSourceTeacherId.value =
+        items.find((mate) => mate.config_version > 0)?.teacher_id ?? ''
+    }
+  },
+  { immediate: true, deep: true },
+)
+
+function previewSelectedSource(): void {
+  const mate = previewMate.value
+  if (mate) void previewSource(mate)
 }
 
 async function focusDirectory(section: DirectorySection): Promise<void> {
@@ -602,7 +635,7 @@ async function connect(): Promise<void> {
     recoveryNoClass.value = false
     await loadDirectory(epoch)
     if (current(epoch) && status.value.connected) {
-      directorySection.value = 'classes'
+      directorySection.value = 'account'
       noticeText.value = `已连接在线协作：${result.teacher?.display_name ?? '在线教师'}`
     }
   } catch (err) {
@@ -649,7 +682,7 @@ async function redeemWithCode(): Promise<void> {
     }
     await loadDirectory(epoch)
     if (!current(epoch)) return
-    directorySection.value = 'classes'
+    directorySection.value = 'account'
     const boundSchool = result.teacher?.school_name ?? '在线园所'
     if (result.purpose === 'recovery' && !membership.value) {
       recoveryNoClass.value = true
@@ -762,7 +795,7 @@ async function selectClass(classId: string): Promise<void> {
     recoveryNoClass.value = false
     redeemNotice.value = ''
     clearPromotionDisplay()
-    directorySection.value = 'classes'
+    directorySection.value = 'account'
     await loadClassData(epoch)
     if (current(epoch)) noticeText.value = `已选择在线班级：${result.class_name}`
   } catch (err) {
@@ -1625,103 +1658,78 @@ defineExpose({
       </div>
     </template>
 
-    <el-alert
-      title="在线协作与本地 SQLite 独立；兑换码和凭据只用于本次连接，不写入本地存储。"
-      type="info"
-      :closable="false"
-      show-icon
-    />
-    <el-alert
-      title="在线只保存园所／教师、班级关系、同班在线游戏配置和共享周；本机档案、计划、观察与密钥不会自动上传，日计划共享与 AI 在线设置当前不同步。"
-      type="info"
-      :closable="false"
-      show-icon
-      data-d1="collaboration-data-boundary"
-    />
-    <el-alert
-      v-if="statusLoaded && !status.configured"
-      :title="status.message ?? '未配置在线协作服务地址，请联系部署方'"
-      type="warning"
-      :closable="false"
-      show-icon
-    />
-    <el-button
-      v-if="statusLoaded && !status.configured"
-      size="small"
-      :disabled="frozen"
-      @click="refreshStatus"
-    >
-      重新读取本地配置
-    </el-button>
-    <el-alert
-      v-if="recoveryNoClass"
-      title="恢复码已确认教师身份，但服务端没有仍有效的原班级。请在本园班级目录中明确选择一个班级；不会自动选班。"
-      type="warning"
-      :closable="false"
-      show-icon
-      data-d1="collaboration-recovery-no-class"
-    />
-    <el-alert
-      v-if="classSelectionUnknown"
-      :title="classSelectionUnknownMessage || '班级变更结果未确认：已停止使用旧班配置，不能继续读取或发布班级游戏配置。请重新读取园所班级目录核对后再操作。'"
-      type="warning"
-      :closable="false"
-      show-icon
-      data-d1="collaboration-class-unknown"
-    />
-    <el-button
-      v-if="classSelectionUnknown"
-      size="small"
-      :loading="loadingDirectory"
-      :disabled="frozen || pendingWrite !== null || connecting || disconnecting"
-      @click="reloadOnline"
-    >
-      重新读取班级目录
-    </el-button>
-    <el-alert
-      v-if="pendingWrite"
-      :title="`有未确认的在线写入（request_id：${pendingWrite.requestId}）。待核对期间不能换班、换账号或丢弃预览；请只读查询或明确再次提交原请求。若连接已断开，可用原账号凭据重新连接后查询。`"
-      type="warning"
-      :closable="false"
-      show-icon
-      data-d1="collaboration-pending"
-    />
-    <el-alert v-if="errorText" :title="errorText" type="error" :closable="false" data-d1="collaboration-error" />
-    <el-alert v-if="noticeText" :title="noticeText" type="success" :closable="false" data-d1="collaboration-notice" />
-    <div v-if="pendingWrite" class="pending-actions" data-d1="collaboration-pending-actions">
-      <el-button size="small" :loading="querying" :disabled="frozen || recoveryBusy" @click="queryPending">只读查询原请求</el-button>
-      <el-button size="small" type="warning" :loading="resubmitting" :disabled="frozen || recoveryBusy" @click="resubmitPending">
-        明确再次提交原请求
-      </el-button>
-    </div>
+    <div class="kgm-page">
+      <el-alert
+        title="在线协作与本地 SQLite 独立；兑换码和凭据只用于本次连接，不写入本地存储。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
+        title="在线只保存园所／教师、班级关系、同班在线游戏配置和共享周；本机档案、计划、观察与密钥不会自动上传，日计划共享与 AI 在线设置当前不同步。"
+        type="info"
+        :closable="false"
+        show-icon
+        data-d1="collaboration-data-boundary"
+      />
+      <el-alert
+        v-if="statusLoaded && !status.configured"
+        :title="status.message ?? '未配置在线协作服务地址，请联系部署方'"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
+        v-if="recoveryNoClass"
+        title="恢复码已确认教师身份，但服务端没有仍有效的原班级。请在本园班级目录中明确选择一个班级；不会自动选班。"
+        type="warning"
+        :closable="false"
+        show-icon
+        data-d1="collaboration-recovery-no-class"
+      />
+      <el-alert
+        v-if="classSelectionUnknown"
+        :title="classSelectionUnknownMessage || '班级变更结果未确认：已停止使用旧班配置，不能继续读取或发布班级游戏配置。请重新读取园所班级目录核对后再操作。'"
+        type="warning"
+        :closable="false"
+        show-icon
+        data-d1="collaboration-class-unknown"
+      />
+      <el-alert
+        v-if="pendingWrite"
+        :title="`有未确认的在线写入（request_id：${pendingWrite.requestId}）。待核对期间不能换班、换账号或丢弃预览；请只读查询或明确再次提交原请求。若连接已断开，可用原账号凭据重新连接后查询。`"
+        type="warning"
+        :closable="false"
+        show-icon
+        data-d1="collaboration-pending"
+      />
+      <el-alert v-if="errorText" :title="errorText" type="error" :closable="false" data-d1="collaboration-error" />
+      <el-alert v-if="noticeText" :title="noticeText" type="success" :closable="false" data-d1="collaboration-notice" />
+      <div v-if="pendingWrite" class="pending-actions" data-d1="collaboration-pending-actions">
+        <el-button size="small" :loading="querying" :disabled="frozen || recoveryBusy" @click="queryPending">只读查询原请求</el-button>
+        <el-button size="small" type="warning" :loading="resubmitting" :disabled="frozen || recoveryBusy" @click="resubmitPending">
+          明确再次提交原请求
+        </el-button>
+      </div>
 
-    <div class="collaboration-layout">
-      <nav class="collaboration-directory" data-d1="collaboration-directory" aria-label="在线协作栏目">
+      <div class="kgm-page-nav" data-d1="collaboration-page-nav" aria-label="在线协作页面">
         <el-button
           size="small"
-          data-d1="collaboration-nav-account"
+          data-d1="collaboration-page-connection"
           :type="directorySection === 'account' ? 'primary' : ''"
+          :class="{ 'kgm-page-nav-active': directorySection === 'account' }"
           :aria-current="directorySection === 'account' ? 'page' : undefined"
           @click="selectDirectory('account')"
         >
-          连接与账号
+          连接与在线班级
         </el-button>
         <el-button
           size="small"
-          data-d1="collaboration-nav-classes"
-          :type="directorySection === 'classes' ? 'primary' : ''"
-          :aria-current="directorySection === 'classes' ? 'page' : undefined"
-          :disabled="!directoryAvailable('classes')"
-          @click="selectDirectory('classes')"
-        >
-          当前班级与目录
-        </el-button>
-        <el-button
-          size="small"
-          data-d1="collaboration-nav-promotion"
+          data-d1="collaboration-page-promotion"
           :type="directorySection === 'promotion' ? 'primary' : ''"
+          :class="{ 'kgm-page-nav-active': directorySection === 'promotion' }"
           :aria-current="directorySection === 'promotion' ? 'page' : undefined"
-          :disabled="!directoryAvailable('promotion')"
+          :disabled="!directoryAvailable('promotion') || !membership"
           @click="selectDirectory('promotion')"
         >
           在线升班
@@ -1729,296 +1737,410 @@ defineExpose({
         </el-button>
         <el-button
           size="small"
-          data-d1="collaboration-nav-game-config"
+          data-d1="collaboration-page-config"
           :type="directorySection === 'game-config' ? 'primary' : ''"
+          :class="{ 'kgm-page-nav-active': directorySection === 'game-config' }"
           :aria-current="directorySection === 'game-config' ? 'page' : undefined"
-          :disabled="!directoryAvailable('game-config')"
+          :disabled="!directoryAvailable('game-config') || !membership"
           @click="selectDirectory('game-config')"
         >
-          班级游戏配置
+          配置预览与同步
           <el-tag v-if="pendingWrite" size="small" type="danger">待核对</el-tag>
         </el-button>
-      </nav>
-      <div class="collaboration-content">
-    <section class="step" data-d1="collaboration-connect" v-show="directorySection === 'account'">
-      <template v-if="!status.connected">
-        <h3>连接在线协作</h3>
-        <div class="redeem-box" data-d1="collaboration-redeem">
-          <div class="connect-row">
-            <el-input
-              v-model="redeemCodeValue"
-              type="password"
-              autocomplete="off"
-              placeholder="管理员提供的加入码或恢复码"
-              :disabled="frozen || redeeming || connecting || !statusLoaded || !status.configured"
-              data-d1="collaboration-redeem-code"
-              @keyup.enter="redeemWithCode"
-            />
-            <el-button
-              type="primary"
-              :loading="redeeming"
-              :disabled="frozen || redeeming || connecting || !statusLoaded || !status.configured || !redeemCodeValue.trim()"
-              data-d1="collaboration-redeem-button"
-              @click="redeemWithCode"
-            >
-              兑换并连接
-            </el-button>
-          </div>
-          <p class="muted">兑换只确认教师和园所，不会按名称自动选择、创建或覆盖班级，也不改本机园所和班级；加入码随后自主选班，恢复码只读取原班。兑换码不自动重发。</p>
-        </div>
-        <details
-          class="low-frequency"
-          data-d1="collaboration-manual-credential"
-          :open="(pendingWrite !== null || pendingPromotion !== null) && !status.connected"
-        >
-          <summary>使用部署方手工凭据</summary>
-          <div class="connect-row">
-            <el-input
-              v-model="credential"
-              type="password"
-              autocomplete="off"
-              placeholder="部署方提供的登录凭据"
-              :disabled="frozen || connecting || redeeming || !statusLoaded || !status.configured"
-              data-d1="collaboration-credential"
-              @keyup.enter="connect"
-            />
-            <el-button
-              type="primary"
-              :loading="connecting"
-              :disabled="frozen || connecting || redeeming || !statusLoaded || !status.configured || !credential.trim()"
-              data-d1="collaboration-connect-button"
-              @click="connect"
-            >
-              手工凭据连接
-            </el-button>
-          </div>
-        </details>
-      </template>
-      <template v-else>
-        <div class="current-line">
-          <span>已连接：{{ status.teacher?.display_name ?? '在线教师' }}</span>
-          <span class="muted" data-d1="collaboration-bound-school">
-            已绑定园所：{{ status.teacher?.school_name ?? '在线园所' }}
-          </span>
-          <el-button
-            size="small"
-            text
-            :loading="disconnecting"
-            :disabled="!canDisconnect"
-            data-d1="collaboration-disconnect"
-            @click="disconnect"
-          >
-            断开
-          </el-button>
-        </div>
-        <el-alert
-          v-if="redeemNotice"
-          :title="redeemNotice"
-          type="success"
-          :closable="false"
-          data-d1="collaboration-redeem-notice"
-        />
-      </template>
-    </section>
+      </div>
 
-    <template v-if="status.connected || pendingWrite || pendingPromotion">
-      <section class="step" data-d1="collaboration-classes" v-show="directorySection === 'classes'">
-        <div v-if="membership" class="membership" data-d1="collaboration-membership">
-          <div class="current-line">
-            <h3>当前班级：{{ membership.class_name }}</h3>
-            <el-button
-              size="small"
-              :loading="loadingDirectory"
-              :disabled="frozen || pendingWrite !== null || promotionBusy || promotionStale || connecting || disconnecting"
-              data-d1="collaboration-refresh"
-              @click="reloadOnline"
-            >
-              刷新
-            </el-button>
-          </div>
-          <p class="muted" data-d1="collaboration-local-unchanged">
-            在线选班不改本机园所和班级。
-          </p>
-          <details class="technical">
-            <summary>稳定班级 ID</summary>
-            <code class="class-id">{{ membership.class_id }}</code>
-          </details>
-          <p class="muted">同班老师由服务端按当前班级自动配对。</p>
-          <el-table
-            v-if="classmates.length"
-            :data="classmates"
-            size="small"
-            data-d1="collaboration-classmates"
-          >
-            <el-table-column prop="display_name" label="同班老师" min-width="140" />
-            <el-table-column label="在线配置版本" width="120">
-              <template #default="{ row }">
-                <span v-if="row.config_version > 0">v{{ row.config_version }}</span>
-                <span v-else class="muted">尚无配置</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="130">
-              <template #default="{ row }">
-                <el-button
-                  size="small"
-                  :loading="previewingSourceId === row.teacher_id"
-                  :disabled="!canPreviewSource(row)"
-                  @click="previewSource(row)"
-                >
-                  预览带入
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <p v-else class="muted">当前班级暂无其他同班老师。</p>
-        </div>
-        <div v-else class="muted" data-d1="collaboration-no-class">
-          <p>已绑定园所：{{ status.teacher?.school_name ?? '在线园所' }}。尚未选择在线班级；请从下方班级目录自主选择，不会按名称自动匹配。</p>
-        </div>
+      <div class="kgm-page-layout" data-d1="collaboration-layout">
+        <div class="kgm-page-main" data-d1="collaboration-main">
+          <section v-show="directorySection === 'account'" data-d1="collaboration-connect">
+            <div class="kgm-sheet">
+              <div class="kgm-sheet-header">在线协作</div>
+              <div class="kgm-sheet-row">
+                <div class="kgm-sheet-label">连接</div>
+                <div class="kgm-sheet-value">
+                  <template v-if="status.connected">
+                    <div>已连接：{{ status.teacher?.display_name ?? '在线教师' }}</div>
+                    <div class="muted" data-d1="collaboration-bound-school">
+                      已绑定园所：{{ status.teacher?.school_name ?? '在线园所' }}
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div>未连接</div>
+                    <div class="muted">{{ status.message || '请使用园所提供的一次性码或部署方凭据连接。' }}</div>
+                  </template>
+                  <el-alert
+                    v-if="redeemNotice"
+                    :title="redeemNotice"
+                    type="success"
+                    :closable="false"
+                    data-d1="collaboration-redeem-notice"
+                  />
+                </div>
+                <div class="kgm-sheet-actions">
+                  <el-tag size="small" :type="status.connected ? 'success' : 'info'">
+                    {{ status.connected ? '已连接' : '未连接' }}
+                  </el-tag>
+                </div>
+              </div>
 
-        <details
-          class="fold"
-          data-d1="collaboration-directory"
-          :open="!membership || classSelectionUnknown"
-        >
-          <summary>{{ membership ? '换班或退出当前班级' : '本园班级目录' }}</summary>
-          <el-button
-            size="small"
-            :loading="loadingDirectory"
-            :disabled="frozen || pendingWrite !== null || connecting || disconnecting"
-            data-d1="collaboration-load-classes"
-            @click="reloadOnline"
-          >
-            读取 / 刷新班级目录
-          </el-button>
-          <div v-if="classes.length" class="class-list">
-            <div v-for="item in classes" :key="item.class_id" class="class-row" data-d1="collaboration-class">
-              <span>{{ item.display_name }}</span>
-              <code class="class-id" :title="item.class_id">{{ item.class_id }}</code>
-              <el-tag v-if="membership?.class_id === item.class_id" size="small" type="success">当前班级</el-tag>
-              <el-button
-                size="small"
-                :loading="selectingClassId === item.class_id"
-                :disabled="!canSelectClass || membership?.class_id === item.class_id"
-                @click="selectClass(item.class_id)"
-              >
-                选择此班
-              </el-button>
+              <div class="kgm-sheet-row">
+                <div class="kgm-sheet-label">当前在线班级</div>
+                <div class="kgm-sheet-value">
+                  <template v-if="membership">
+                    <div class="current-line">
+                      <strong>{{ membership.class_name }}</strong>
+                    </div>
+                    <p class="muted" data-d1="collaboration-local-unchanged">在线选班不改本机园所和班级。</p>
+                    <details class="technical">
+                      <summary>稳定班级 ID</summary>
+                      <code class="class-id">{{ membership.class_id }}</code>
+                    </details>
+                    <p class="muted">同班老师由服务端按当前班级自动配对。</p>
+                    <el-table
+                      v-if="classmates.length"
+                      :data="classmates"
+                      size="small"
+                      data-d1="collaboration-classmates"
+                    >
+                      <el-table-column prop="display_name" label="同班老师" min-width="140" />
+                      <el-table-column label="在线配置版本" width="120">
+                        <template #default="{ row }">
+                          <span v-if="row.config_version > 0">v{{ row.config_version }}</span>
+                          <span v-else class="muted">尚无配置</span>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                    <p v-else class="muted">当前班级暂无其他同班老师。</p>
+                  </template>
+                  <div v-else class="muted" data-d1="collaboration-no-class">
+                    已绑定园所：{{ status.teacher?.school_name ?? '在线园所' }}。尚未选择在线班级；请从下方班级目录自主选择，不会按名称自动匹配。
+                  </div>
+                </div>
+                <div class="kgm-sheet-actions">
+                  <el-button
+                    size="small"
+                    :loading="loadingDirectory"
+                    :disabled="frozen || pendingWrite !== null || promotionBusy || promotionStale || connecting || disconnecting"
+                    data-d1="collaboration-refresh"
+                    @click="reloadOnline"
+                  >
+                    刷新
+                  </el-button>
+                </div>
+              </div>
+
+              <div class="kgm-sheet-row" data-d1="collaboration-directory">
+                <div class="kgm-sheet-label">班级目录</div>
+                <div class="kgm-sheet-value">
+                  <div class="row-inline">
+                    <el-button
+                      size="small"
+                      :loading="loadingDirectory"
+                      :disabled="frozen || pendingWrite !== null || connecting || disconnecting"
+                      data-d1="collaboration-load-classes"
+                      @click="reloadOnline"
+                    >
+                      读取 / 刷新班级目录
+                    </el-button>
+                    <span class="muted">选班前核对园所与班级；不会自动选班。</span>
+                  </div>
+                  <div v-if="classes.length" class="class-list">
+                    <div v-for="item in classes" :key="item.class_id" class="class-row" data-d1="collaboration-class">
+                      <span>{{ item.display_name }}</span>
+                      <code class="class-id" :title="item.class_id">{{ item.class_id }}</code>
+                      <el-tag v-if="membership?.class_id === item.class_id" size="small" type="success">当前班级</el-tag>
+                      <el-button
+                        size="small"
+                        :loading="selectingClassId === item.class_id"
+                        :disabled="!canSelectClass || membership?.class_id === item.class_id"
+                        @click="selectClass(item.class_id)"
+                      >
+                        选择此班
+                      </el-button>
+                    </div>
+                  </div>
+                  <p v-else-if="directoryLoaded" class="muted" data-d1="collaboration-no-candidates">
+                    该园所暂无可选班级，请联系管理员。
+                  </p>
+                  <p v-else class="muted">尚未读取班级目录。</p>
+                  <el-button
+                    v-if="membership"
+                    size="small"
+                    :loading="leavingClass"
+                    :disabled="!canLeaveClass"
+                    @click="leaveClass"
+                  >
+                    退出当前在线班级
+                  </el-button>
+                </div>
+              </div>
             </div>
-          </div>
-          <p v-else-if="directoryLoaded" class="muted" data-d1="collaboration-no-candidates">
-            该园所暂无可选班级，请联系管理员。
-          </p>
-          <p v-else class="muted">尚未读取班级目录。</p>
-          <div v-if="membership" class="actions">
-            <el-button
-              size="small"
-              :loading="leavingClass"
-              :disabled="!canLeaveClass"
-              @click="leaveClass"
-            >
-              退出当前在线班级
-            </el-button>
-          </div>
-        </details>
-      </section>
+          </section>
 
-      <section v-if="membership" class="step" data-d1="collaboration-promotion" v-show="directorySection === 'promotion'">
-        <details
-          class="fold"
-          data-d1="collaboration-promotion-details"
-          :open="pendingPromotion !== null || promotionStale || promotionReceipt !== null"
-        >
-          <summary>在线升班：目标年级与生效学期</summary>
-          <p class="muted">升班只改变目标年级和生效学期，沿用稳定班级 ID；本地 SQLite 不变。</p>
-          <el-button
-            size="small"
-            :loading="loadingPromotion"
-            :disabled="frozen || pendingWrite !== null || promotionBusy || promotionStale || connecting || disconnecting || classTransition || publishing || confirming"
-            data-d1="collaboration-load-promotion"
-            @click="loadPromotion"
-          >
-            读取升班信息
-          </el-button>
-        <el-alert
-          v-if="pendingPromotion"
-          :title="`升班结果未确认（request_id：${pendingPromotion.requestId}）。原请求和编辑已保留；不能切换班级或断开，请只读查询原请求 ID。`"
-          type="warning"
-          :closable="false"
-          show-icon
-          data-d1="collaboration-promotion-pending"
-        />
-        <div v-if="pendingPromotion" class="actions">
-          <el-button
-            size="small"
-            :loading="promotionQuerying"
-            :disabled="frozen || promotionQuerying"
-            data-d1="collaboration-query-promotion"
-            @click="queryPendingPromotion"
-          >
-            只读查询原升班请求
-          </el-button>
+          <section v-show="directorySection === 'promotion'" data-d1="collaboration-promotion">
+            <div class="kgm-sheet" data-d1="collaboration-promotion-form">
+              <div class="kgm-sheet-header">在线班级升班</div>
+              <div class="kgm-sheet-row">
+                <div class="kgm-sheet-label">升班信息</div>
+                <div class="kgm-sheet-value">
+                  <template v-if="promotionOverview">
+                    <div>当前班级：{{ promotionOverview.class_name }} <span class="muted">（版本 v{{ promotionOverview.version }}）</span></div>
+                    <div class="snapshot-identity">
+                      稳定班级 ID：<code class="class-id">{{ promotionOverview.class_id }}</code>
+                    </div>
+                    <div>当前年级：{{ promotionOverviewGradeLabel }}</div>
+                    <div>目标年级：{{ PROMOTION_GRADES.find((item) => item.value === promotionTargetGrade)?.label ?? '—' }}</div>
+                    <div>生效学期：{{ promotionTermOptions.find((item) => item.term_id === promotionTermId)?.name ?? '未选择' }}</div>
+                    <el-alert
+                      v-if="promotionStale"
+                      title="在线班级版本或学期已变化：当前目标年级和学期选择已保留，请重新读取升班信息后再次确认。"
+                      type="warning"
+                      :closable="false"
+                      data-d1="collaboration-promotion-stale"
+                    />
+                    <el-alert
+                      v-if="promotionTermEnded"
+                      title="所选学期已结束，不能提交升班。当前选择已保留，请明确改选当前或将来学期。"
+                      type="warning"
+                      :closable="false"
+                      data-d1="collaboration-promotion-term-ended"
+                    />
+                    <el-alert
+                      v-if="promotionAuthorityUnread"
+                      title="升班回执已确认，但当前权威班级状态尚未读取成功。页面保留上一次可信显示；请重新读取升班信息核对，不会自动重发。"
+                      type="warning"
+                      :closable="false"
+                      data-d1="collaboration-promotion-authority-unread"
+                    />
+                    <div v-if="promotionReceipt" class="promotion-receipt" data-d1="collaboration-promotion-receipt">
+                      <p>写入回执（独立）：{{ promotionReceipt.result.class_name }} · 目标{{ promotionReceiptGradeLabel }} · 版本 v{{ promotionReceipt.result.version }}</p>
+                      <p>回执学期：{{ promotionReceipt.termName }}</p>
+                      <p class="muted">当前页面班级以服务端 GET 升班信息为准：{{ promotionOverview.class_name }}（{{ promotionOverviewGradeLabel }}，v{{ promotionOverview.version }}）</p>
+                    </div>
+                  </template>
+                  <p v-else class="muted">尚未读取升班信息。请在右侧读取后选择目标年级和生效学期。</p>
+                  <p class="muted">升班只改变目标年级和生效学期，沿用稳定班级 ID；本地 SQLite 不变。</p>
+                </div>
+                <div class="kgm-sheet-actions">
+                  <el-tag size="small" type="info">{{ promotionOverview ? `v${promotionOverview.version}` : '未读取' }}</el-tag>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section v-show="directorySection === 'game-config'" data-d1="collaboration-game-config">
+            <div class="kgm-sheet">
+              <div class="kgm-sheet-header">班级游戏配置差异</div>
+              <div class="kgm-sheet-row">
+                <div class="kgm-sheet-label">本地配置</div>
+                <div class="kgm-sheet-value">
+                  <template v-if="publishPreview">
+                    <div>本地班级：{{ publishPreview.localClassName }} · 本地修订 #{{ publishPreview.localRevisionNo }}</div>
+                    <div v-if="publishPreview.locations.length">地点：{{ publishPreview.locations.map(formatLocation).join('；') }}</div>
+                    <div v-else class="muted">本地没有地点。</div>
+                    <div>游戏范围：{{ formatText(publishPreview.gameScope) }}</div>
+                    <div>通用限制 / 指导：{{ formatText(publishPreview.guidance) }}</div>
+                  </template>
+                  <p v-else class="muted">尚未读取本地配置。请在右侧明确选择“预览发布”。</p>
+                </div>
+                <div class="kgm-sheet-actions">
+                  <el-tag size="small" type="info">{{ publishPreview ? '已读取' : '未读取' }}</el-tag>
+                </div>
+              </div>
+
+              <div class="kgm-sheet-row">
+                <div class="kgm-sheet-label">在线配置</div>
+                <div class="kgm-sheet-value" data-d1="collaboration-online-config">
+                  <template v-if="onlineConfig">
+                    <div>本人当前在线配置 v{{ onlineConfig.config_version }}</div>
+                    <div v-if="onlineConfig.payload.locations.length">地点：{{ onlineConfig.payload.locations.map(formatLocation).join('；') }}</div>
+                    <div v-else class="muted">本人尚未设置在线地点。</div>
+                    <div>游戏范围：{{ formatText(onlineConfig.payload.game_scope) }}</div>
+                    <div>通用限制 / 指导：{{ formatText(onlineConfig.payload.guidance) }}</div>
+                  </template>
+                  <p v-else class="muted">正在读取本人当前在线配置…</p>
+                </div>
+                <div class="kgm-sheet-actions">
+                  <el-tag size="small" type="info">{{ onlineConfig ? `v${onlineConfig.config_version}` : '读取中' }}</el-tag>
+                </div>
+              </div>
+
+              <div class="kgm-sheet-row">
+                <div class="kgm-sheet-label">同班老师</div>
+                <div class="kgm-sheet-value">
+                  <el-table v-if="classmates.length" :data="classmates" size="small">
+                    <el-table-column prop="display_name" label="同班老师" min-width="140" />
+                    <el-table-column label="在线配置版本" width="120">
+                      <template #default="{ row }">
+                        <span v-if="row.config_version > 0">v{{ row.config_version }}</span>
+                        <span v-else class="muted">尚无配置</span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                  <p v-else class="muted">当前班级暂无其他同班老师。</p>
+                </div>
+              </div>
+
+              <div class="kgm-sheet-row">
+                <div class="kgm-sheet-label">差异</div>
+                <div class="kgm-sheet-value">
+                  <div v-if="preview" data-d1="collaboration-preview">
+                    <div class="snapshot-identity">
+                      带入来源：{{ preview.source_teacher_name }} ·
+                      来源版本 v{{ preview.source_version }} → 本人基准 v{{ preview.target_version }}
+                    </div>
+                    <div class="diff-block">
+                      <h5>地点</h5>
+                      <el-table :data="locationDiffRows" size="small">
+                        <el-table-column label="对方" min-width="180">
+                          <template #default="{ row }">{{ formatLocation(row.source) }}</template>
+                        </el-table-column>
+                        <el-table-column label="本人" min-width="180">
+                          <template #default="{ row }">{{ formatLocation(row.target) }}</template>
+                        </el-table-column>
+                        <el-table-column label="差异" width="110">
+                          <template #default="{ row }">{{ row.state }}</template>
+                        </el-table-column>
+                      </el-table>
+                      <p v-if="!locationDiffRows.length" class="muted">双方都没有地点。</p>
+                    </div>
+                    <div class="diff-block">
+                      <h5>游戏范围 <el-tag size="small">{{ diffState(preview.diff.game_scope.changed) }}</el-tag></h5>
+                      <p>对方：{{ formatText(preview.diff.game_scope.source) }}</p>
+                      <p>本人：{{ formatText(preview.diff.game_scope.target) }}</p>
+                    </div>
+                    <div class="diff-block">
+                      <h5>通用限制 / 指导 <el-tag size="small">{{ diffState(preview.diff.guidance.changed) }}</el-tag></h5>
+                      <p>对方：{{ formatText(preview.diff.guidance.source) }}</p>
+                      <p>本人：{{ formatText(preview.diff.guidance.target) }}</p>
+                    </div>
+                    <el-alert
+                      v-if="previewStale"
+                      title="预览依据的版本或班级关系已变化。当前预览已保留，但不能再确认；请重新读取并预览，或取消预览。"
+                      type="warning"
+                      :closable="false"
+                      data-d1="collaboration-preview-stale"
+                    />
+                  </div>
+                  <div v-else-if="publishPreview" data-d1="collaboration-publish-preview">
+                    <div class="snapshot-identity">
+                      发布目标：{{ publishPreview.classLabel }} ·
+                      本地班级 {{ publishPreview.localClassName }} ·
+                      本地修订 #{{ publishPreview.localRevisionNo }}
+                    </div>
+                    <p>发布基准在线版本 v{{ publishPreview.expectedVersion }}。确认后将写入本人当前在线配置。</p>
+                    <el-alert
+                      v-if="publishVersionStale"
+                      title="在线配置或班级关系已变化。当前发布预览已保留，但不能再确认；请重新读取在线配置并预览，或取消预览。"
+                      type="warning"
+                      :closable="false"
+                      data-d1="collaboration-publish-stale"
+                    />
+                  </div>
+                  <p v-else class="muted">尚未预览带入或发布差异。请从右侧选择操作。</p>
+                </div>
+                <div class="kgm-sheet-actions">
+                  <el-tag v-if="preview" size="small" type="warning">带入预览</el-tag>
+                  <el-tag v-else-if="publishPreview" size="small" type="warning">发布预览</el-tag>
+                  <el-tag v-else size="small" type="info">未预览</el-tag>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
-        <div v-if="promotionOverview" class="promotion-form" data-d1="collaboration-promotion-form">
-          <p>
-            当前班级：{{ promotionOverview.class_name }}
-            <span class="muted">（稳定 ID：{{ promotionOverview.class_id }} · 版本 v{{ promotionOverview.version }}）</span>
-          </p>
-          <el-alert
-            v-if="promotionStale"
-            title="在线班级版本或学期已变化：当前目标年级和学期选择已保留，请重新读取升班信息后再次确认。"
-            type="warning"
-            :closable="false"
-            data-d1="collaboration-promotion-stale"
-          />
-          <el-alert
-            v-if="promotionTermEnded"
-            title="所选学期已结束，不能提交升班。当前选择已保留，请明确改选当前或将来学期。"
-            type="warning"
-            :closable="false"
-            data-d1="collaboration-promotion-term-ended"
-          />
-          <el-alert
-            v-if="promotionAuthorityUnread"
-            title="升班回执已确认，但当前权威班级状态尚未读取成功。页面保留上一次可信显示；请重新读取升班信息核对，不会自动重发。"
-            type="warning"
-            :closable="false"
-            data-d1="collaboration-promotion-authority-unread"
-          />
-          <div
-            v-if="promotionReceipt"
-            class="promotion-receipt"
-            data-d1="collaboration-promotion-receipt"
-          >
-            <p>
-              写入回执（独立）：{{ promotionReceipt.result.class_name }} ·
-              目标{{ promotionReceiptGradeLabel }}
-              · 版本 v{{ promotionReceipt.result.version }}
-            </p>
-            <p>回执学期：{{ promotionReceipt.termName }}</p>
-            <p class="muted">
-              当前页面班级以服务端 GET 升班信息为准：{{ promotionOverview.class_name }}
-              （{{ promotionOverviewGradeLabel }}，v{{ promotionOverview.version }}）
-            </p>
+
+        <aside class="kgm-page-rail" data-d1="collaboration-rail" aria-label="在线协作操作">
+          <div v-if="directorySection === 'account'" class="kgm-rail-panel">
+            <h3 class="kgm-rail-title">生成与操作</h3>
+            <template v-if="!status.connected">
+              <el-input
+                v-model="redeemCodeValue"
+                type="password"
+                autocomplete="off"
+                placeholder="管理员提供的加入码或恢复码"
+                :disabled="frozen || redeeming || connecting || !statusLoaded || !status.configured"
+                data-d1="collaboration-redeem-code"
+                @keyup.enter="redeemWithCode"
+              />
+              <el-button
+                type="primary"
+                class="kgm-primary-action"
+                :loading="redeeming"
+                :disabled="frozen || redeeming || connecting || !statusLoaded || !status.configured || !redeemCodeValue.trim()"
+                data-d1="collaboration-redeem-button"
+                @click="redeemWithCode"
+              >
+                兑换并连接
+              </el-button>
+              <details class="low-frequency" data-d1="collaboration-manual-credential">
+                <summary>使用部署方手工凭据</summary>
+                <el-input
+                  v-model="credential"
+                  type="password"
+                  autocomplete="off"
+                  placeholder="部署方提供的登录凭据"
+                  :disabled="frozen || connecting || redeeming || !statusLoaded || !status.configured"
+                  data-d1="collaboration-credential"
+                  @keyup.enter="connect"
+                />
+                <el-button
+                  :loading="connecting"
+                  :disabled="frozen || connecting || redeeming || !statusLoaded || !status.configured || !credential.trim()"
+                  data-d1="collaboration-connect-button"
+                  @click="connect"
+                >
+                  手工凭据连接
+                </el-button>
+              </details>
+              <el-button
+                v-if="statusLoaded && !status.configured"
+                :disabled="frozen"
+                @click="refreshStatus"
+              >
+                重新读取本地配置
+              </el-button>
+            </template>
+            <template v-else>
+              <p class="muted">当前账号：{{ status.teacher?.display_name ?? '在线教师' }} · {{ status.teacher?.school_name ?? '在线园所' }}</p>
+              <el-button
+                :loading="loadingDirectory"
+                :disabled="frozen || pendingWrite !== null || promotionBusy || promotionStale || connecting || disconnecting"
+                data-d1="collaboration-refresh-online"
+                @click="reloadOnline"
+              >
+                刷新在线班级与配置
+              </el-button>
+              <el-button
+                :loading="disconnecting"
+                :disabled="!canDisconnect"
+                data-d1="collaboration-disconnect"
+                @click="disconnect"
+              >
+                断开
+              </el-button>
+            </template>
+            <p class="muted">兑换只确认教师和园所，不会按名称自动选择、创建或覆盖班级。兑换码不自动重发。</p>
           </div>
-          <div class="promotion-row">
-            <div>
-              <label>目标年级</label>
+
+          <div v-if="directorySection === 'promotion'" class="kgm-rail-panel">
+            <h3 class="kgm-rail-title">生成与操作</h3>
+            <el-button
+              :loading="loadingPromotion"
+              :disabled="frozen || pendingWrite !== null || promotionBusy || promotionStale || connecting || disconnecting || classTransition || publishing || confirming"
+              data-d1="collaboration-load-promotion"
+              @click="loadPromotion"
+            >
+              读取升班信息
+            </el-button>
+            <template v-if="promotionOverview">
+              <label class="rail-label">目标年级</label>
               <el-select
                 v-model="promotionTargetGrade"
                 :disabled="frozen || promotionBusy || pendingWrite !== null || promotionStale"
                 data-d1="collaboration-promotion-grade"
               >
-                <el-option
-                  v-for="grade in PROMOTION_GRADES"
-                  :key="grade.value"
-                  :label="grade.label"
-                  :value="grade.value"
-                />
+                <el-option v-for="grade in PROMOTION_GRADES" :key="grade.value" :label="grade.label" :value="grade.value" />
               </el-select>
-            </div>
-            <div>
-              <label>生效学期</label>
+              <label class="rail-label">生效学期</label>
               <el-select
                 v-model="promotionTermId"
                 :disabled="frozen || promotionBusy || pendingWrite !== null || promotionStale || !promotionOverview.terms.length"
@@ -2032,271 +2154,244 @@ defineExpose({
                   :disabled="term.end_date < shanghaiToday()"
                 />
               </el-select>
-            </div>
-          </div>
-          <p v-if="!promotionOverview.terms.length" class="muted">
-            在线园所没有可选的有效学期，暂时不能确认升班。
-          </p>
-          <div class="actions">
+              <p v-if="!promotionOverview.terms.length" class="muted">在线园所没有可选的有效学期，暂时不能确认升班。</p>
+              <el-button
+                type="primary"
+                class="kgm-primary-action"
+                :loading="promotionConfirming"
+                :disabled="!canConfirmPromotion"
+                data-d1="collaboration-confirm-promotion"
+                @click="confirmPromotion"
+              >
+                确认升班（一次提交）
+              </el-button>
+              <el-button
+                :loading="loadingPromotion"
+                :disabled="frozen || promotionBusy || pendingWrite !== null"
+                data-d1="collaboration-reload-promotion"
+                @click="loadPromotion"
+              >
+                重新读取升班信息
+              </el-button>
+            </template>
+            <el-alert
+              v-if="pendingPromotion"
+              :title="`升班结果未确认（request_id：${pendingPromotion.requestId}）。原请求和编辑已保留；不能切换班级或断开，请只读查询原请求 ID。`"
+              type="warning"
+              :closable="false"
+              show-icon
+              data-d1="collaboration-promotion-pending"
+            />
             <el-button
-              size="small"
-              type="primary"
-              :loading="promotionConfirming"
-              :disabled="!canConfirmPromotion"
-              data-d1="collaboration-confirm-promotion"
-              @click="confirmPromotion"
+              v-if="pendingPromotion"
+              :loading="promotionQuerying"
+              :disabled="frozen || promotionQuerying"
+              data-d1="collaboration-query-promotion"
+              @click="queryPendingPromotion"
             >
-              确认升班（一次提交）
+              只读查询原升班请求
             </el-button>
-            <el-button
-              size="small"
-              :loading="loadingPromotion"
-              :disabled="frozen || promotionBusy || pendingWrite !== null"
-              data-d1="collaboration-reload-promotion"
-              @click="loadPromotion"
-            >
-              重新读取升班信息
-            </el-button>
+            <el-alert
+              v-if="promotionNotice"
+              :title="promotionNotice"
+              type="info"
+              :closable="false"
+              data-d1="collaboration-promotion-notice"
+            />
           </div>
-          <el-alert
-            v-if="promotionNotice"
-            :title="promotionNotice"
-            type="info"
-            :closable="false"
-            data-d1="collaboration-promotion-notice"
-          />
-        </div>
-          <p v-else class="muted">尚未读取升班信息。</p>
-        </details>
-      </section>
 
-      <section v-if="membership" class="step" data-d1="collaboration-game-config" v-show="directorySection === 'game-config'">
-        <details
-          class="fold"
-          data-d1="collaboration-game-config-details"
-          :open="pendingWrite !== null || preview !== null || publishPreview !== null || previewStale || publishing || confirming"
-        >
-          <summary>班级游戏配置与同班老师带入</summary>
-          <p class="muted">在线配置与本地 SQLite 分开；发布或带入只写在线配置。</p>
-        <div v-if="onlineConfig" class="online-current" data-d1="collaboration-online-config">
-          <p>本人当前在线配置 v{{ onlineConfig.config_version }}</p>
-          <p v-if="onlineConfig.payload.locations.length">
-            地点：{{ onlineConfig.payload.locations.map(formatLocation).join('；') }}
-          </p>
-          <p v-else class="muted">本人尚未设置在线地点。</p>
-          <p>游戏范围：{{ formatText(onlineConfig.payload.game_scope) }}</p>
-          <p>通用限制 / 指导：{{ formatText(onlineConfig.payload.guidance) }}</p>
-        </div>
-        <p v-else class="muted">正在读取本人当前在线配置…</p>
-        <div class="actions">
-          <el-button
-            size="small"
-            :disabled="frozen || pendingWrite !== null || publishing || confirming || previewingSourceId !== ''"
-            @click="reloadOnline"
-          >
-            重新读取在线配置
-          </el-button>
-          <el-button
-            size="small"
-            type="primary"
-            :loading="publishing"
-            :disabled="!canReadLocalPublish"
-            data-d1="collaboration-publish-local"
-            @click="previewLocalPublish"
-          >
-            读取本地配置并预览发布
-          </el-button>
-        </div>
-        <p class="muted">读取本地配置后先预览，教师再次确认才写入在线；只发送班级游戏字段。</p>
-        <div v-if="publishPreview" class="preview publish-preview" data-d1="collaboration-publish-preview">
-          <h4>本地配置发布预览（尚未写入）</h4>
-          <p>
-            本地班级：{{ publishPreview.localClassName }} · 本地修订
-            #{{ publishPreview.localRevisionNo }} → 在线班级：
-            {{ publishPreview.classLabel }} · 基准在线版本
-            v{{ publishPreview.expectedVersion }}
-          </p>
-          <el-alert
-            v-if="publishVersionStale"
-            title="在线配置或班级关系已变化。当前发布预览已保留，但不能再确认；请重新读取在线配置并预览，或取消预览。"
-            type="warning"
-            :closable="false"
-            data-d1="collaboration-publish-stale"
-          />
-          <div class="diff-block">
-            <h5>地点</h5>
-            <p v-if="publishPreview.locations.length">
-              {{ publishPreview.locations.map(formatLocation).join('；') }}
-            </p>
-            <p v-else class="muted">（无）</p>
-          </div>
-          <div class="diff-block">
-            <h5>游戏范围</h5>
-            <p>{{ formatText(publishPreview.gameScope) }}</p>
-          </div>
-          <div class="diff-block">
-            <h5>通用限制 / 指导</h5>
-            <p>{{ formatText(publishPreview.guidance) }}</p>
-          </div>
-          <div class="actions">
+          <div v-if="directorySection === 'game-config'" class="kgm-rail-panel">
+            <h3 class="kgm-rail-title">生成与操作</h3>
+            <label class="rail-label">同班老师（带入来源）</label>
+            <el-select
+              v-model="previewSourceTeacherId"
+              :disabled="frozen || pendingWrite !== null || publishing || confirming || previewingSourceId !== '' || preview !== null || publishPreview !== null"
+              data-d1="collaboration-preview-source-select"
+            >
+              <el-option
+                v-for="mate in classmates"
+                :key="mate.teacher_id"
+                :label="`${mate.display_name}（v${mate.config_version}）`"
+                :value="mate.teacher_id"
+                :disabled="mate.config_version <= 0"
+              />
+            </el-select>
             <el-button
-              size="small"
+              :loading="previewingSourceId !== ''"
+              :disabled="!previewMate || !canPreviewSource(previewMate) || preview !== null || publishPreview !== null"
+              data-d1="collaboration-preview-source"
+              @click="previewSelectedSource"
+            >
+              预览带入
+            </el-button>
+            <el-button
               type="primary"
+              class="kgm-primary-action"
               :loading="publishing"
-              :disabled="!canConfirmPublish"
-              data-d1="collaboration-confirm-publish"
-              @click="confirmLocalPublish"
+              :disabled="!canReadLocalPublish"
+              data-d1="collaboration-publish-local"
+              @click="previewLocalPublish"
             >
-              确认发布（一次写入本人当前在线配置）
+              读取本地配置并预览发布
             </el-button>
             <el-button
-              size="small"
-              :disabled="frozen || pendingWrite !== null || publishing"
-              @click="cancelLocalPublish"
+              :disabled="frozen || pendingWrite !== null || publishing || confirming || previewingSourceId !== '' || preview !== null || publishPreview !== null"
+              data-d1="collaboration-reload-online-config"
+              @click="reloadOnline"
             >
-              取消发布预览（零写）
+              重新读取在线配置
             </el-button>
-            <el-button
-              v-if="publishVersionStale"
-              size="small"
-              :disabled="frozen || pendingWrite !== null || publishing"
-              @click="rePreviewLocalPublish"
-            >
-              重新读取在线配置并预览本地
-            </el-button>
+            <template v-if="publishPreview">
+              <p class="muted">本地配置发布预览（尚未写入）</p>
+              <el-button
+                type="primary"
+                class="kgm-primary-action"
+                :loading="publishing"
+                :disabled="!canConfirmPublish"
+                data-d1="collaboration-confirm-publish"
+                @click="confirmLocalPublish"
+              >
+                确认发布（一次写入本人当前在线配置）
+              </el-button>
+              <el-button
+                :disabled="frozen || pendingWrite !== null || publishing"
+                data-d1="collaboration-cancel-publish"
+                @click="cancelLocalPublish"
+              >
+                取消发布预览（零写）
+              </el-button>
+              <el-button
+                v-if="publishVersionStale"
+                :disabled="frozen || pendingWrite !== null || publishing"
+                data-d1="collaboration-repreview-publish"
+                @click="rePreviewLocalPublish"
+              >
+                重新读取在线配置并预览本地
+              </el-button>
+            </template>
+            <template v-if="preview">
+              <p class="muted">带入预览（尚未写入）</p>
+              <el-button
+                type="primary"
+                class="kgm-primary-action"
+                :loading="confirming"
+                :disabled="!canConfirm"
+                data-d1="collaboration-confirm-import"
+                @click="confirmPreview"
+              >
+                确认带入（一次写入本人当前在线配置）
+              </el-button>
+              <el-button
+                :disabled="frozen || pendingWrite !== null || confirming || previewingSourceId !== ''"
+                data-d1="collaboration-cancel-import"
+                @click="cancelPreview"
+              >
+                取消预览（零写）
+              </el-button>
+              <el-button
+                v-if="previewStale"
+                :disabled="pendingWrite !== null || confirming || publishing"
+                data-d1="collaboration-repreview-import"
+                @click="rePreviewSameSource"
+              >
+                重新读取并预览
+              </el-button>
+            </template>
+            <p class="muted">读取本地配置后先预览，教师再次确认才写入在线；只发送班级游戏字段。</p>
           </div>
-        </div>
-
-        <div v-if="preview" class="preview" data-d1="collaboration-preview">
-          <h4>带入预览（尚未写入）</h4>
-          <p>
-            对方：{{ preview.source_teacher_name }} · 来源 v{{ preview.source_version }}
-            <span class="muted"> → 本人基准 v{{ preview.target_version }}</span>
-          </p>
-          <el-alert
-            v-if="previewStale"
-            title="预览依据的版本或班级关系已变化。当前预览已保留，但不能再确认；请重新读取并预览，或取消预览。"
-            type="warning"
-            :closable="false"
-            data-d1="collaboration-preview-stale"
-          />
-          <div class="diff-block">
-            <h5>地点</h5>
-            <el-table :data="locationDiffRows" size="small">
-              <el-table-column label="对方" min-width="180">
-                <template #default="{ row }">{{ formatLocation(row.source) }}</template>
-              </el-table-column>
-              <el-table-column label="本人" min-width="180">
-                <template #default="{ row }">{{ formatLocation(row.target) }}</template>
-              </el-table-column>
-              <el-table-column label="差异" width="110">
-                <template #default="{ row }">{{ row.state }}</template>
-              </el-table-column>
-            </el-table>
-            <p v-if="!locationDiffRows.length" class="muted">双方都没有地点。</p>
-          </div>
-          <div class="diff-block">
-            <h5>游戏范围 <el-tag size="small">{{ diffState(preview.diff.game_scope.changed) }}</el-tag></h5>
-            <p>对方：{{ formatText(preview.diff.game_scope.source) }}</p>
-            <p>本人：{{ formatText(preview.diff.game_scope.target) }}</p>
-          </div>
-          <div class="diff-block">
-            <h5>通用限制 / 指导 <el-tag size="small">{{ diffState(preview.diff.guidance.changed) }}</el-tag></h5>
-            <p>对方：{{ formatText(preview.diff.guidance.source) }}</p>
-            <p>本人：{{ formatText(preview.diff.guidance.target) }}</p>
-          </div>
-          <div class="actions">
-            <el-button
-              size="small"
-              type="primary"
-              :loading="confirming"
-              :disabled="!canConfirm"
-              data-d1="collaboration-confirm-import"
-              @click="confirmPreview"
-            >
-              确认带入（一次写入本人当前在线配置）
-            </el-button>
-            <el-button
-              size="small"
-              :disabled="frozen || pendingWrite !== null || confirming || previewingSourceId !== ''"
-              @click="cancelPreview"
-            >
-              取消预览（零写）
-            </el-button>
-            <el-button
-              v-if="previewStale"
-              size="small"
-              :disabled="pendingWrite !== null || confirming || publishing"
-              @click="rePreviewSameSource"
-            >
-              重新读取并预览
-            </el-button>
-          </div>
-        </div>
-        </details>
-      </section>
-    </template>
+        </aside>
       </div>
     </div>
   </el-card>
 </template>
 
+
 <style scoped>
-.collaboration { margin-bottom: 1rem; }
-.collaboration-layout {
+.collaboration {
+  margin-bottom: 1rem;
+}
+.collaboration :deep(.el-card) {
+  border-radius: var(--kgm-radius);
+}
+.head {
   display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  margin-top: 12px;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
-.collaboration-directory {
-  flex: 0 0 180px;
+.kgm-page {
+  gap: 12px;
+}
+.pending-actions {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  position: sticky;
-  top: 12px;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
-.collaboration-directory :deep(.el-button) {
-  margin-left: 0;
-  width: 100%;
-  justify-content: flex-start;
+.rail-label {
+  margin-top: 2px;
+  color: var(--kgm-muted);
+  font-size: 0.85rem;
 }
-.collaboration-content {
-  flex: 1;
-  min-width: 0;
+.rail-label + .el-select {
+  margin-top: -6px;
 }
-@media (max-width: 900px) {
-  .collaboration-layout {
-    flex-direction: column;
-  }
-  .collaboration-directory {
-    position: static;
-    flex-direction: row;
-    flex-wrap: wrap;
-    width: 100%;
-  }
-  .collaboration-directory :deep(.el-button) {
-    width: auto;
-  }
+.current-line {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  flex-wrap: wrap;
 }
-.head { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-.step { margin-top: 1rem; }
-.connect-row { display: flex; gap: 0.5rem; align-items: center; max-width: 620px; }
-.redeem-box { padding: 0.75rem; background: var(--el-fill-color-lighter); }
-.promotion-form { margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--el-border-color-lighter); }
-.promotion-receipt { margin-top: 0.75rem; padding: 0.6rem; background: var(--el-fill-color-lighter); }
-.promotion-row { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 0.75rem 0; }
-.promotion-row > div { min-width: 220px; flex: 1 1 240px; }
-.promotion-row label { display: block; margin-bottom: 0.35rem; color: var(--el-text-color-secondary); }
-.class-list { margin: 0.5rem 0; }
-.class-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; padding: 0.35rem 0; border-bottom: 1px solid var(--el-border-color-lighter); }
-.class-id { font-family: var(--el-font-family-mono, monospace); font-size: 0.75rem; color: var(--el-text-color-secondary); word-break: break-all; }
-.membership { margin-top: 0.5rem; padding: 0.5rem; background: var(--el-fill-color-lighter); }
-.online-current { margin: 0.5rem 0; padding: 0.5rem; background: var(--el-fill-color-lighter); }
-.actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0; }
-.preview { margin-top: 1rem; padding: 0.75rem; border: 1px solid var(--el-color-warning-light-5); }
-.diff-block { margin-top: 0.75rem; }
-.pending-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
-.muted { color: var(--el-text-color-secondary); }
+.class-list {
+  margin: 0.5rem 0;
+}
+.class-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--kgm-border);
+}
+.class-row:last-child {
+  border-bottom: 0;
+}
+.class-id {
+  font-family: var(--el-font-family-mono, monospace);
+  font-size: 0.75rem;
+  color: var(--kgm-muted);
+  word-break: break-all;
+}
+.promotion-receipt {
+  margin-top: 0.75rem;
+  padding: 0.6rem;
+  background: var(--kgm-bg);
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+}
+.snapshot-identity {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.6rem;
+  background: var(--kgm-bg);
+  border-left: 3px solid var(--kgm-accent);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+.row-inline {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0;
+}
+.diff-block {
+  margin-top: 0.75rem;
+}
+.diff-block h5 {
+  margin: 0 0 0.35rem;
+}
 </style>

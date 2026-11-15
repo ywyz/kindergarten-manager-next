@@ -73,20 +73,45 @@ assert.match(
 )
 assert.match(
   panel,
-  /data-d1="collaboration-promotion-details"/,
-  'promotion has a clear collapsed entry',
+  /data-d1="collaboration-page-promotion"/,
+  'promotion has a clear page button',
 )
 assert.match(
   panel,
-  /data-d1="collaboration-game-config-details"/,
-  'game config/import is folded but findable',
+  /data-d1="collaboration-page-config"/,
+  'game config/import has a clear page button',
 )
 assert.match(
   panel,
-  /:open="pendingPromotion !== null \|\| promotionStale \|\| promotionReceipt !== null"/,
-  'unresolved or confirmed promotion opens its disclosure',
+  /v-show="directorySection === 'promotion'"/,
+  'promotion page remains mounted for pending feedback',
 )
-ok('redeem, manual credential, promotion, pending, and simplified disclosures are present')
+assert.match(
+  panel,
+  /v-show="directorySection === 'game-config'"/,
+  'game config page remains mounted for pending feedback',
+)
+assert.match(
+  panel,
+  /data-d1="collaboration-promotion-form"/,
+  'promotion focus target remains visible',
+)
+assert.match(
+  panel,
+  /data-d1="collaboration-preview"/,
+  'import preview focus target remains visible',
+)
+assert.match(
+  panel,
+  /data-d1="collaboration-publish-preview"/,
+  'publish preview focus target remains visible',
+)
+assert.match(panel, /preview\.source_teacher_name/, 'frozen import source name remains visible')
+assert.match(panel, /preview\.source_version/, 'frozen import source version remains visible')
+assert.match(panel, /preview\.target_version/, 'frozen import target version remains visible')
+assert.match(panel, /publishPreview\.classLabel/, 'publish destination class remains visible')
+assert.match(panel, /promotionOverview\.class_id/, 'promotion stable class id remains visible')
+ok('redeem, manual credential, promotion, pending, page buttons, and frozen identities are present')
 
 // Execute the pure reconciliation helper from the real TypeScript module.
 const transpiled = ts.transpileModule(api, {

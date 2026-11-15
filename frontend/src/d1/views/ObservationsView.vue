@@ -213,6 +213,16 @@ const rangeLabel = computed(() => {
   if (!dateRange.value) return '全部日期'
   return `${dateRange.value[0]} ~ ${dateRange.value[1]}`
 })
+const termFilterLabel = computed(() => {
+  if (termFilter.value === '__all__') return '全部学期'
+  if (termFilter.value === '__unassigned__') return '未归属学期'
+  return props.context.terms.find((term) => term.id === termFilter.value)?.name ?? '学期'
+})
+const typeFilterLabel = computed(() => (
+  typeFilter.value === '__all__'
+    ? '全部类型'
+    : RECORD_TYPE_LABELS[typeFilter.value as ObservationRecordType] ?? typeFilter.value
+))
 
 watch(busy, (value) => emit('busy', value), { immediate: true })
 
@@ -1261,8 +1271,9 @@ defineExpose({ reload: load })
 
 <template>
   <div class="observations" data-d1="observations">
-    <div class="topbar">
+    <header class="page-head">
       <div>
+        <p class="kicker">游戏观察</p>
         <h2>游戏观察记录</h2>
         <p class="muted">
           按日期范围、学期、类型和幼儿姓名查阅；默认显示全部日期，未归属和旧学期记录不会被当前月隐藏。
@@ -1273,22 +1284,26 @@ defineExpose({ reload: load })
           返回工作台
         </el-button>
         <el-button
-          type="primary"
-          :disabled="frozen || busy"
-          data-d1="obs-create"
-          @click="openCreate"
-        >
-          新建观察记录
-        </el-button>
-        <el-button
           type="success"
           :disabled="frozen || busy || selectedCount === 0"
           data-d1="obs-export-open"
           @click="openExport"
         >
-          导出 Word（已选 {{ selectedCount }} 份）
+          批量导出 Word（已选 {{ selectedCount }} 份）
         </el-button>
       </div>
+    </header>
+
+    <div class="action-bar">
+      <el-button
+        type="primary"
+        :disabled="frozen || busy"
+        data-d1="obs-create"
+        @click="openCreate"
+      >
+        新建观察记录
+      </el-button>
+      <span class="muted">先选择记录再批量导出；记录卡片可打开当前草稿。</span>
     </div>
 
     <el-alert
@@ -1301,7 +1316,7 @@ defineExpose({ reload: load })
       <el-button size="small" @click="load">重试</el-button>
     </el-alert>
 
-    <el-card shadow="never" class="block">
+    <el-card shadow="never" class="filters-card">
       <div class="filters">
         <el-date-picker
           v-model="dateRange"
@@ -1357,154 +1372,160 @@ defineExpose({ reload: load })
           data-d1="obs-subject"
         />
       </div>
-      <p class="muted">当前范围：{{ rangeLabel }}</p>
+      <p class="muted">当前范围：{{ rangeLabel }} · {{ termFilterLabel }}</p>
+    </el-card>
 
-      <el-card
-        v-if="selectedCount"
-        shadow="never"
-        class="selected-panel"
-        data-d1="obs-selected"
-      >
-        <div class="selected-head">
-          <strong>已选 {{ selectedCount }} 份</strong>
-          <span class="muted">
-            筛选和翻页不会改变选集；{{ manualOrder ? '当前为手动顺序' : '默认按日期、开始时间、创建顺序' }}
-          </span>
-          <el-button size="small" :disabled="selectionLocked" @click="clearSelection">
-            清空选择
-          </el-button>
-        </div>
-        <div class="selected-list">
-          <div
-            v-for="(item, index) in selectedList"
-            :key="item.observation_id"
-            class="selected-row"
-            :data-d1="`obs-selected-${item.observation_id}`"
-          >
-            <span class="selected-index">{{ index + 1 }}</span>
-            <span class="selected-label">
-              {{ item.observation_date || '未填日期' }} · {{ recordTypeLabel(item.record_type) }} ·
-              {{ item.subjects.length ? item.subjects.join('、') : '未填姓名' }} ·
-              {{ item.start_time || '未填开始时间' }} · 创建 {{ item.created_at.slice(5, 16) }}
-            </span>
-            <el-button
-              size="small"
-              :disabled="selectionLocked || index === 0"
-              :data-d1="`obs-selected-up-${item.observation_id}`"
-              @click="moveSelection(item.observation_id, -1)"
-            >
-              上移
-            </el-button>
-            <el-button
-              size="small"
-              :disabled="selectionLocked || index === selectedList.length - 1"
-              :data-d1="`obs-selected-down-${item.observation_id}`"
-              @click="moveSelection(item.observation_id, 1)"
-            >
-              下移
-            </el-button>
-            <el-button
-              size="small"
-              :disabled="selectionLocked"
-              :data-d1="`obs-selected-remove-${item.observation_id}`"
-              @click="removeSelection(item.observation_id)"
-            >
-              移除
-            </el-button>
-          </div>
-        </div>
-      </el-card>
-
-      <div v-loading="loading" class="table-wrap">
-        <el-empty
-          v-if="!loading && items.length === 0"
-          description="当前筛选下没有观察记录"
-        />
-        <el-table
-          v-else
-          :data="items"
-          size="small"
-          data-d1="obs-list"
-          @row-click="openItem"
-        >
-          <el-table-column label="" width="48">
-            <template #default="{ row }">
-              <el-checkbox
-                :model-value="isSelected(row.observation_id)"
-                :disabled="selectionLocked"
-                :data-d1="`obs-select-${row.observation_id}`"
-                @click.stop
-                @change="toggleSelection(row)"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="日期" width="150">
-            <template #default="{ row }">
-              {{ row.observation_date || '（无日期）' }}
-              <span v-if="row.observation_date" class="muted">
-                {{ weekdayLabel(row.observation_date) }}
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="时间" width="110">
-            <template #default="{ row }">
-              {{ row.start_time || '—' }}<template v-if="row.end_time">–{{ row.end_time }}</template>
-            </template>
-          </el-table-column>
-          <el-table-column label="类型" width="100">
-            <template #default="{ row }">{{ recordTypeLabel(row.record_type) }}</template>
-          </el-table-column>
-          <el-table-column label="重点幼儿">
-            <template #default="{ row }">
-              {{ row.subjects.length ? row.subjects.join('、') : '（未填写）' }}
-            </template>
-          </el-table-column>
-          <el-table-column prop="environment" label="环境" width="140">
-            <template #default="{ row }">{{ row.environment || '—' }}</template>
-          </el-table-column>
-          <el-table-column label="学期" width="130">
-            <template #default="{ row }">{{ termLabel(row) }}</template>
-          </el-table-column>
-          <el-table-column label="创建时间" width="150">
-            <template #default="{ row }">
-              {{ row.created_at.replace('T', ' ').slice(5, 19) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="草稿版本" width="90">
-            <template #default="{ row }">v{{ row.current_draft_revision }}</template>
-          </el-table-column>
-          <el-table-column label="" width="90">
-            <template #default="{ row }">
-              <el-button size="small" data-d1="obs-open" @click.stop="openItem(row)">
-                打开
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+    <el-card
+      v-if="selectedCount"
+      shadow="never"
+      class="selected-panel"
+      data-d1="obs-selected"
+    >
+      <div class="selected-head">
+        <strong>已选 {{ selectedCount }} 份</strong>
+        <span class="muted">
+          筛选和翻页不会改变选集；{{ manualOrder ? '当前为手动顺序' : '默认按日期、开始时间、创建顺序' }}
+        </span>
+        <el-button size="small" :disabled="selectionLocked" @click="clearSelection">
+          清空选择
+        </el-button>
       </div>
-
-      <div class="pager">
-        <span class="muted">共 {{ total }} 份 · 第 {{ page }}/{{ pageCount }} 页</span>
-        <div>
+      <div class="selected-list">
+        <div
+          v-for="(item, index) in selectedList"
+          :key="item.observation_id"
+          class="selected-row"
+          :data-d1="`obs-selected-${item.observation_id}`"
+        >
+          <span class="selected-index">{{ index + 1 }}</span>
+          <span class="selected-label">
+            {{ item.observation_date || '未填日期' }} · {{ recordTypeLabel(item.record_type) }} ·
+            {{ item.subjects.length ? item.subjects.join('、') : '未填姓名' }} ·
+            {{ item.start_time || '未填开始时间' }} · 创建 {{ item.created_at.slice(5, 16) }}
+          </span>
           <el-button
             size="small"
-            :disabled="!hasPrev || frozen"
-            data-d1="obs-prev"
-            @click="changePage(-1)"
+            :disabled="selectionLocked || index === 0"
+            :data-d1="`obs-selected-up-${item.observation_id}`"
+            @click="moveSelection(item.observation_id, -1)"
           >
-            上一页
+            上移
           </el-button>
           <el-button
             size="small"
-            :disabled="!hasNext || frozen"
-            data-d1="obs-next"
-            @click="changePage(1)"
+            :disabled="selectionLocked || index === selectedList.length - 1"
+            :data-d1="`obs-selected-down-${item.observation_id}`"
+            @click="moveSelection(item.observation_id, 1)"
           >
-            下一页
+            下移
+          </el-button>
+          <el-button
+            size="small"
+            :disabled="selectionLocked"
+            :data-d1="`obs-selected-remove-${item.observation_id}`"
+            @click="removeSelection(item.observation_id)"
+          >
+            移除
           </el-button>
         </div>
       </div>
     </el-card>
+
+    <div class="list-head">
+      <h3>观察记录</h3>
+      <span class="muted">共 {{ total }} 份 · 第 {{ page }}/{{ pageCount }} 页</span>
+    </div>
+    <div v-loading="loading" class="card-grid" data-d1="obs-list">
+      <el-empty
+        v-if="!loading && items.length === 0"
+        description="当前筛选下没有观察记录"
+        class="empty-card"
+      />
+      <article
+        v-for="row in items"
+        :key="row.observation_id"
+        class="obs-card"
+        data-d1="obs-card"
+        role="button"
+        tabindex="0"
+        @click="openItem(row)"
+        @keydown.enter.self="openItem(row)"
+      >
+        <div class="card-head">
+          <div class="card-title">
+            <span class="select-box" @click.stop @keydown.stop>
+              <el-checkbox
+                :model-value="isSelected(row.observation_id)"
+                :disabled="selectionLocked"
+                :data-d1="`obs-select-${row.observation_id}`"
+                @change="toggleSelection(row)"
+              />
+            </span>
+            <div>
+              <h3>{{ row.observation_date || '未填日期' }} · {{ recordTypeLabel(row.record_type) }}</h3>
+              <p class="muted">
+                {{ row.observation_date ? weekdayLabel(row.observation_date) : '日期未填写' }} ·
+                {{ row.start_time || '未填开始时间' }}
+                <template v-if="row.end_time">–{{ row.end_time }}</template>
+              </p>
+            </div>
+          </div>
+          <el-button type="primary" text data-d1="obs-open" @click.stop="openItem(row)">
+            打开
+          </el-button>
+        </div>
+        <dl class="card-meta">
+          <div><dt>重点幼儿</dt><dd>{{ row.subjects.length ? row.subjects.join('、') : '（未填写）' }}</dd></div>
+          <div><dt>环境</dt><dd>{{ row.environment || '（未填写）' }}</dd></div>
+          <div><dt>学期</dt><dd>{{ termLabel(row) }}</dd></div>
+          <div><dt>草稿版本</dt><dd>v{{ row.current_draft_revision }}<template v-if="row.current_version != null"> · 已存 v{{ row.current_version }}</template></dd></div>
+          <div><dt>创建时间</dt><dd>{{ row.created_at.replace('T', ' ').slice(5, 19) }}</dd></div>
+        </dl>
+      </article>
+
+      <article class="obs-card filter-summary" data-d1="obs-filter-summary">
+        <div class="card-head">
+          <h3>筛选与导出</h3>
+          <el-button
+            type="primary"
+            text
+            :disabled="frozen || busy || selectedCount === 0"
+            data-d1="obs-filter-export"
+            @click="openExport"
+          >
+            导出 Word
+          </el-button>
+        </div>
+        <dl class="card-meta">
+          <div><dt>日期 / 学期</dt><dd>{{ rangeLabel }} · {{ termFilterLabel }}</dd></div>
+          <div><dt>观察类型</dt><dd>{{ typeFilterLabel }}<template v-if="subjectFilter.trim()"> · 幼儿 {{ subjectFilter.trim() }}</template></dd></div>
+          <div><dt>已选 / 顺序</dt><dd>{{ selectedCount }} 份 · {{ manualOrder ? '手动顺序' : '日期、开始时间、创建顺序' }}</dd></div>
+        </dl>
+        <p class="muted">筛选和翻页不会改变已选顺序；导出前会再核对当前稿。</p>
+      </article>
+    </div>
+
+    <div class="pager">
+      <span class="muted">共 {{ total }} 份 · 第 {{ page }}/{{ pageCount }} 页</span>
+      <div>
+        <el-button
+          size="small"
+          :disabled="!hasPrev || frozen"
+          data-d1="obs-prev"
+          @click="changePage(-1)"
+        >
+          上一页
+        </el-button>
+        <el-button
+          size="small"
+          :disabled="!hasNext || frozen"
+          data-d1="obs-next"
+          @click="changePage(1)"
+        >
+          下一页
+        </el-button>
+      </div>
+    </div>
 
     <el-dialog
       v-model="createOpen"
@@ -1783,14 +1804,30 @@ defineExpose({ reload: load })
 </template>
 
 <style scoped>
-.topbar {
+.observations { padding: 1.25rem; color: var(--kgm-text); }
+.page-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
 }
-.block {
-  margin-top: 16px;
+.kicker { margin: 0 0 0.15rem; color: var(--kgm-muted); font-size: 0.8rem; }
+.page-head h2 { margin: 0.1rem 0; }
+.actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.action-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0.9rem 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+  background: var(--kgm-surface);
 }
+.action-bar .el-button { min-height: 42px; }
+.filters-card { margin-top: 0.9rem; border-radius: 12px; border-color: var(--kgm-border); background: var(--kgm-surface); }
 .filters {
   display: flex;
   gap: 12px;
@@ -1805,9 +1842,52 @@ defineExpose({ reload: load })
 .subject-input {
   width: 200px;
 }
-.table-wrap {
+.list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 1rem 0 0.6rem;
+}
+.list-head h3 { margin: 0; }
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
   min-height: 80px;
 }
+.obs-card {
+  min-width: 0;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+  background: var(--kgm-surface);
+  cursor: pointer;
+}
+.obs-card:hover,
+.obs-card:focus-visible {
+  border-color: var(--kgm-accent);
+  outline: 2px solid var(--kgm-focus);
+  outline-offset: 2px;
+}
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.card-head h3 { margin: 0.1rem 0; overflow-wrap: anywhere; }
+.card-title { display: flex; align-items: flex-start; gap: 0.5rem; min-width: 0; }
+.select-box { display: inline-flex; padding-top: 0.15rem; }
+.card-meta { display: grid; gap: 0.5rem; margin: 0.9rem 0 0; }
+.card-meta div { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); gap: 0.75rem; align-items: baseline; }
+.card-meta dt { color: var(--kgm-muted); font-size: 0.82rem; }
+.card-meta dd { margin: 0; overflow-wrap: anywhere; }
+.filter-summary { cursor: default; border-style: dashed; }
+.filter-summary:hover { border-color: var(--kgm-border); outline: none; }
+.empty-card { grid-column: 1 / -1; }
+.block { margin-top: 16px; }
 .create-terms {
   display: flex;
   flex-direction: column;
@@ -1876,5 +1956,9 @@ defineExpose({ reload: load })
   border-radius: 4px;
   background: var(--kgm-bg);
   overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+  .card-grid { grid-template-columns: minmax(0, 1fr); }
+  .observations { padding: 1rem; }
 }
 </style>

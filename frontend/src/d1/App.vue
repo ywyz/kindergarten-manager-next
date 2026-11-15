@@ -62,7 +62,7 @@ import type { CurriculumContent } from './curriculum'
 
 type View =
   | { name: 'setup' }
-  | { name: 'workbench' }
+  | { name: 'workbench'; panel?: 'todos' | 'daily' }
   | {
       name: 'editor'
       planDate: string
@@ -97,9 +97,10 @@ const view = ref<View>({ name: 'workbench' })
 /** The mounted workbench; its local todo editor joins the leave/close guard. */
 const workbenchRef = ref<{
   reload?: () => Promise<void>
-  showDailyPlan?: () => void
   blockingDraft?: () => BlockingDraft | null
 } | null>(null)
+/** Home is one todo target; both Workbench and 个人待办 may share it. */
+const homeEntry = ref<'workbench' | 'todos'>('todos')
 /** Close-specific freeze: input stops before the allow leaves the page. */
 const closeLocked = ref(false)
 /** The finally allowed closing: never unlocked by late notifications. */
@@ -223,6 +224,7 @@ const pageBusy = computed(
 
 type ModuleKey =
   | 'workbench'
+  | 'todos'
   | 'daily'
   | 'weekly'
   | 'observations'
@@ -235,7 +237,7 @@ type ModuleKey =
 const activeModule = computed<ModuleKey>(() => {
   switch (view.value.name) {
     case 'workbench':
-      return 'workbench'
+      return view.value.panel === 'daily' ? 'daily' : homeEntry.value
     case 'editor':
       return 'daily'
     case 'weekly-plans':
@@ -948,14 +950,17 @@ async function requestLeave(
 
 // --- navigation actions -----------------------------------------------------
 
-async function goWorkbench(): Promise<'left' | 'stayed'> {
+async function goWorkbench(
+  panel: 'todos' | 'daily' = 'todos',
+): Promise<'left' | 'stayed'> {
   editorBridge = null
   editorBridgeOwner = null
   weeklyListBusy.value = false
   clearWeeklyState()
   clearListeningState()
   clearCurriculumState()
-  view.value = { name: 'workbench' }
+  if (panel === 'todos') homeEntry.value = 'todos'
+  view.value = { name: 'workbench', panel }
   return 'left'
 }
 
@@ -1008,28 +1013,20 @@ function moduleNavBlocked(): boolean {
 /** Top-level module buttons reuse the existing route/leave guards. */
 async function goModule(module: ModuleKey): Promise<void> {
   if (moduleNavBlocked()) return
-  if (module === activeModule.value) {
-    if (module === 'daily' && view.value.name === 'workbench') {
-      workbenchRef.value?.showDailyPlan?.()
+  if (module === 'workbench' || module === 'todos') {
+    homeEntry.value = module
+    if (view.value.name === 'workbench' && view.value.panel !== 'daily') {
+      return
     }
-    return
-  }
-  if (module === 'workbench') {
-    await leaveForAction('calendar', goWorkbench)
+    await leaveForAction('calendar', () => goWorkbench('todos'))
     return
   }
   if (module === 'daily') {
-    if (view.value.name === 'workbench') {
-      workbenchRef.value?.showDailyPlan?.()
-      return
-    }
-    const outcome = await leaveForAction('calendar', goWorkbench)
-    if (outcome === 'left') {
-      await nextTick()
-      workbenchRef.value?.showDailyPlan?.()
-    }
+    if (view.value.name === 'workbench' && view.value.panel === 'daily') return
+    await leaveForAction('calendar', () => goWorkbench('daily'))
     return
   }
+  if (module === activeModule.value) return
   if (module === 'weekly') {
     await openWeeklyPlansFromWorkbench()
     return
@@ -1334,6 +1331,9 @@ async function leaveForAction(
   }
   // The navigation itself only runs after the leave coordinator confirms the
   // save. ``date`` navigation is emitted by the editor's own run callback.
+  // The daily editor's 返回月历 shares the calendar kind with ordinary
+  // 返回工作台 actions; only the editor path restores the daily calendar.
+  const returnsToDailyCalendar = view.value.name === 'editor'
   const execute = async (): Promise<'left' | 'stayed'> => {
     if (kind === 'calendar') {
       editorBridge = null
@@ -1341,7 +1341,10 @@ async function leaveForAction(
       weeklyListBusy.value = false
       clearWeeklyState()
       clearListeningState()
-      view.value = { name: 'workbench' }
+      view.value = {
+        name: 'workbench',
+        panel: returnsToDailyCalendar ? 'daily' : 'todos',
+      }
     } else if (kind === 'observations') {
       editorBridge = null
       editorBridgeOwner = null
@@ -2232,6 +2235,17 @@ onMounted(() => {
         </el-button>
         <el-button
           size="small"
+          data-d1="module-nav-todos"
+          :type="activeModule === 'todos' ? 'primary' : ''"
+          :class="{ 'kgm-module-nav-active': activeModule === 'todos' }"
+          :aria-current="activeModule === 'todos' ? 'page' : undefined"
+          :disabled="closeLocked"
+          @click="goModule('todos')"
+        >
+          个人待办
+        </el-button>
+        <el-button
+          size="small"
           data-d1="module-nav-daily"
           :type="activeModule === 'daily' ? 'primary' : ''"
           :class="{ 'kgm-module-nav-active': activeModule === 'daily' }"
@@ -2312,6 +2326,7 @@ onMounted(() => {
         v-if="view.name === 'workbench'"
         ref="workbenchRef"
         :context="context!"
+        :panel="view.panel ?? 'todos'"
         :frozen="closeLocked"
         @open-editor="openEditorFromWorkbench"
         @open-weekly-plans="() => void openWeeklyPlansFromWorkbench()"

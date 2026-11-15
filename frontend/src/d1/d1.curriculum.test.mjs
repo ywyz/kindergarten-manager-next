@@ -1074,15 +1074,11 @@ const exportPreview = {
   assert.equal(d.state.generating.value, false)
   ok('closing before the Word read cannot open native save')
 }
-// Workbench entry and shell wiring stay present.
+// Module-nav entry and shell wiring stay present.
 {
-  const workbench = fs.readFileSync(
-    path.join(d1Dir, 'views/WorkbenchView.vue'),
-    'utf8',
-  )
-  assert.match(workbench, /data-d1="open-curriculum"/)
-  assert.match(workbench, /emit\('open-curriculum'\)/)
   const app = fs.readFileSync(path.join(d1Dir, 'App.vue'), 'utf8')
+  assert.match(app, /data-d1="module-nav-curriculum"/)
+  assert.match(app, /goModule\('curriculum'\)/)
   assert.match(app, /CurriculumPlansView/)
   assert.match(app, /CurriculumEditorView/)
   assert.match(app, /@open-curriculum="openCurriculumFromWorkbench"/)

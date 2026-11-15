@@ -345,6 +345,12 @@ async function testGameModalFocusFrozenAndContextBinding() {
   }
   await state.focusDirectory('promotion')
   assert.equal(state.directorySection.value, 'promotion')
+  state.selectDirectory('game-config')
+  assert.equal(state.directorySection.value, 'game-config')
+  await state.focusDirectory('classes')
+  assert.equal(state.directorySection.value, 'account', 'class directory lives on the connection page')
+  state.selectDirectory('account')
+  assert.equal(state.directorySection.value, 'account')
 
   state.status.value = { ...state.status.value, connected: false, teacher: null }
   state.pendingWrite.value = {
@@ -369,16 +375,27 @@ async function testGameModalFocusFrozenAndContextBinding() {
   assert.match(backup.source, /data-d1="backup-status-table"/)
   assert.match(backup.source, /data-d1="backup-operations-table"/)
   assert.match(backup.source, /data-d1="backup-operation-status"/)
+  assert.match(backup.code, /kgm-page-layout/)
+  assert.match(backup.code, /kgm-page-main/)
+  assert.match(backup.code, /kgm-page-rail/)
   const update = compileOnly('views/UpdatePanel.vue')
+  assert.match(update.code, /kgm-page-layout/)
+  assert.match(update.code, /kgm-page-rail/)
   assert.match(update.source, /data-d1="update-status-table"/)
   assert.match(update.source, /data-d1="update-status-operations"/)
   assert.match(update.code, /update-status-table/)
   const collaboration = compileOnly('views/CollaborationPanel.vue')
   assert.match(collaboration.source, /data-d1="collaboration-directory"/)
-  assert.match(collaboration.source, /data-d1="collaboration-nav-promotion"/)
-  assert.match(collaboration.source, /data-d1="collaboration-nav-game-config"/)
+  assert.match(collaboration.source, /data-d1="collaboration-page-promotion"/)
+  assert.match(collaboration.source, /data-d1="collaboration-page-config"/)
+  assert.match(collaboration.source, /data-d1="collaboration-layout"/)
   assert.match(collaboration.source, /v-show="directorySection === 'game-config'"/)
-  ok('backup/update expose readable operation tables and collaboration compiles with its directory')
+  assert.match(collaboration.code, /kgm-page-layout/)
+  assert.match(collaboration.code, /kgm-page-main/)
+  assert.match(collaboration.code, /kgm-page-rail/)
+  assert.match(collaboration.code, /collaboration-page-nav/)
+  assert.doesNotMatch(collaboration.source, /class="collaboration-directory"/)
+  ok('backup/update expose readable operation tables and collaboration compiles with page buttons')
 }
 
 const tests = [

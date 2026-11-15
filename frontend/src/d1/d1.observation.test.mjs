@@ -546,6 +546,7 @@ const DomCheckboxStub = {
   props: { modelValue: Boolean, disabled: Boolean },
   emits: ['update:modelValue', 'change'],
   setup(props, { slots, emit, attrs }) {
+    const inst = vue.getCurrentInstance()
     return () =>
       vue.h('label', {}, [
         vue.h('input', {
@@ -621,6 +622,9 @@ function closestMatch(node, selector) {
         if (current.props?.['data-d1'] === value) return current
       }
       if (part.startsWith('.') && String(current.props?.class ?? '').includes(part.slice(1))) {
+        return current
+      }
+      if (part.includes('input[type="checkbox"]') && current.tag === 'input' && current.props?.type === 'checkbox') {
         return current
       }
     }
@@ -1038,16 +1042,12 @@ async function main() {
       },
     })
     const hook = harness.window.__d1ObservationEditor
-    // The body is read mode by default: no body textarea is mounted, the
-    // section modal owns the independent copy.
+    // The body is read mode by default: the full reading table is mounted,
+    // no body textarea exists, and the section modal owns the independent copy.
     assert.equal(byD1(mountEl, 'obs-goal'), null)
-    assert.ok(byD1(mountEl, 'obs-section-pane'))
-    hook.selectSection('body')
-    await settle()
+    assert.ok(byD1(mountEl, 'obs-read-table'))
     assert.ok(byD1(mountEl, 'obs-goal-read'))
-    assert.equal(byD1(mountEl, 'obs-goal'), null)
-    hook.selectSection('basic')
-    await settle()
+    assert.ok(byD1(mountEl, 'obs-process-read'))
     hook.setSubject(0, 'Synthetic child ')
     hook.setField('environment', 'Synthetic area ')
     hook.cancelAutoSave()
@@ -2871,6 +2871,15 @@ async function main() {
     await settle()
     await hook.openCandidate('c1')
     await settle()
+    const candidateText = byD1(mountEl, 'obs-candidate-text-observation_goal')
+    assert.ok(candidateText, 'candidate edit field must render in the candidate panel')
+    const epochBefore = hook.editEpoch()
+    const dirtyBefore = hook.dirty()
+    dispatchDomEvent(candidateText, 'input', '手改候选目标')
+    await settle()
+    assert.equal(hook.dirty(), dirtyBefore, 'candidate editing must not dirty the body draft')
+    assert.equal(hook.editEpoch(), epochBefore, 'candidate editing must not advance the body epoch')
+    assert.equal(hook.candidateEditDirty(), true)
     hook.setTargets(['observation_goal'])
     await hook.previewAdoption()
     await settle()
@@ -2899,6 +2908,339 @@ async function main() {
     harness.unmount()
     await settle()
     ok('R04/R15 DOM checkbox change keeps the preview and submits the reviewed adopt')
+  }
+
+  // -- candidate detail load failure stays inline and does not trap edits ---
+  {
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source_change: null,
+      source: null,
+      raw_candidate: {
+        observation_goal: '候选目标',
+        observation_process: '候选记录',
+        analysis_evaluation: { health: '', language: '', social: '', science: '', arts: '' },
+        support_strategy: '候选策略',
+      },
+    }
+    let fail = true
+    let detailGets = 0
+    const preview = {
+      adoption_token: 'tok',
+      expires_at: '2026-09-15T10:10:00',
+      candidate_id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      draft_revision: 3,
+      draft_hash: 'a'.repeat(64),
+      selected_targets: ['observation_goal'],
+      before: { observation_goal: '观察合作' },
+      after: { observation_goal: '候选目标' },
+      changed: true,
+      source_state: 'source_changed',
+      requires_review_decision: true,
+      allowed_review_decisions: ['adopt_reviewed'],
+      diff: { observation_goal: '候选目标' },
+      warning: null,
+      fragments: [],
+    }
+    const { mountEl, harness } = await mountEditorDom({
+      routes: {
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks*': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () => jsonResponse(200, {
+          items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+        }),
+        'GET /api/observations/o1/ai-candidates/c1': () => {
+          detailGets += 1
+          return fail
+            ? apiError(500, 'OBS_AI_CANDIDATE_FAILED', '合成候选读取失败')
+            : jsonResponse(200, detail)
+        },
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': () => jsonResponse(200, preview),
+      },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    const calls = harness.fetchImpl.calls
+    // The one listed candidate is opened by the real page restoration path;
+    // fall back to the same action if a fixture does not auto-open it.
+    if (!hook.candidateOpen()) await hook.openCandidate('c1')
+    await settle()
+    const firstGets = detailGets
+    assert.ok(firstGets >= 1)
+    assert.equal(hook.candidateOpen(), true)
+    assert.equal(hook.candidateDetail(), null)
+    assert.equal(byD1(mountEl, 'obs-candidate'), null)
+    assert.equal(byD1(mountEl, 'obs-candidate-dialog'), null)
+    assert.ok(byD1(mountEl, 'obs-candidate-failure'))
+    assert.ok(byD1(mountEl, 'obs-candidate-retry'))
+    assert.ok(byD1(mountEl, 'obs-candidate-close'))
+    assert.ok(byD1(mountEl, 'obs-read-table'))
+    assert.equal(byD1(mountEl, 'obs-section-edit-body').props.disabled, false)
+    assert.equal(hook.dirty(), false)
+    assert.ok(harness.messages.some((message) => String(message).includes('候选读取失败')))
+    // The main table remains editable while the failed candidate has no panel.
+    hook.openSectionEditor('body')
+    assert.equal(hook.sectionOpen(), true)
+    hook.cancelSectionEditor()
+    // The explicit rendered retry control performs the read; it is not a hook call.
+    fail = false
+    const writesBeforeRetry = calls.filter((call) => call.method !== 'GET').length
+    const retry = byD1(mountEl, 'obs-candidate-retry')
+    assert.equal(retry.props.disabled, false)
+    retry.props.onClick({ currentTarget: retry })
+    await waitUntil(() => detailGets === firstGets + 1, 'candidate retry GET')
+    await settle()
+    assert.equal(calls.filter((call) => call.method !== 'GET').length, writesBeforeRetry)
+    assert.equal(byD1(mountEl, 'obs-candidate-failure'), null)
+    assert.ok(byD1(mountEl, 'obs-candidate'))
+    assert.equal(hook.candidateDetail().id, 'c1')
+    assert.equal(hook.candidateDetailLoading(), false)
+    assert.equal(hook.candidateDetailError(), '')
+    assert.equal(byD1(mountEl, 'obs-candidate-dialog'), null)
+    // Review is restored after retry.
+    hook.setTargets(['observation_goal'])
+    await hook.previewAdoption()
+    await settle()
+    assert.equal(hook.previewActive(), true)
+    assert.ok(byD1(mountEl, 'obs-review-checked'))
+    harness.unmount()
+    await settle()
+    ok('rendered retry control recovers one-candidate detail failure without a modal')
+  }
+
+  // -- candidate retry loading disables repeat and ignores a late response --
+  {
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source_change: null,
+      source: null,
+      raw_candidate: {
+        observation_goal: '候选目标',
+        observation_process: '候选记录',
+        analysis_evaluation: { health: '', language: '', social: '', science: '', arts: '' },
+        support_strategy: '候选策略',
+      },
+    }
+    let mode = 'fail'
+    let detailGets = 0
+    const pendingRetry = deferred()
+    const { mountEl, harness } = await mountEditorDom({
+      routes: {
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks*': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () => jsonResponse(200, {
+          items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+        }),
+        'GET /api/observations/o1/ai-candidates/c1': () => {
+          detailGets += 1
+          if (mode === 'fail') return apiError(500, 'OBS_AI_CANDIDATE_FAILED', '合成候选读取失败')
+          if (mode === 'pending') return pendingRetry.promise
+          return jsonResponse(200, detail)
+        },
+      },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    if (!hook.candidateOpen()) await hook.openCandidate('c1')
+    await settle()
+    assert.ok(byD1(mountEl, 'obs-candidate-failure'))
+    const firstGets = detailGets
+    mode = 'pending'
+    const retry = byD1(mountEl, 'obs-candidate-retry')
+    assert.equal(retry.props.disabled, false)
+    retry.props.onClick({ currentTarget: retry })
+    await settle()
+    assert.equal(hook.candidateDetailLoading(), true)
+    assert.equal(byD1(mountEl, 'obs-candidate-retry').props.disabled, true)
+    assert.match(nodeText(byD1(mountEl, 'obs-candidate-failure-message')), /正在读取候选正文/)
+    const close = byD1(mountEl, 'obs-candidate-close')
+    assert.equal(close.props.disabled, false)
+    close.props.onClick({ currentTarget: close })
+    await settle()
+    assert.equal(hook.candidateOpen(), false)
+    assert.equal(hook.candidateDetail(), null)
+    assert.equal(hook.candidateDetailLoading(), false)
+    pendingRetry.resolve(jsonResponse(200, detail))
+    await settle()
+    assert.equal(detailGets, firstGets + 1)
+    assert.equal(byD1(mountEl, 'obs-candidate'), null)
+    assert.equal(byD1(mountEl, 'obs-candidate-failure'), null)
+    assert.equal(hook.candidateDetail(), null)
+    harness.unmount()
+    await settle()
+    ok('candidate retry loading disables repeats and a late response cannot reopen a closed candidate')
+  }
+
+  // -- unknown adopt recovery is accessible in the inline candidate panel --
+  {
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source_change: null,
+      source: null,
+      raw_candidate: {
+        observation_goal: '候选目标',
+        observation_process: '候选记录',
+        analysis_evaluation: { health: '', language: '', social: '', science: '', arts: '' },
+        support_strategy: '候选策略',
+      },
+    }
+    const preview = {
+      adoption_token: 'tok',
+      expires_at: '2026-09-15T10:10:00',
+      candidate_id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      draft_revision: 3,
+      draft_hash: 'a'.repeat(64),
+      selected_targets: ['observation_goal'],
+      before: { observation_goal: '观察合作' },
+      after: { observation_goal: '候选目标' },
+      changed: true,
+      source_state: 'eligible',
+      requires_review_decision: false,
+      allowed_review_decisions: [],
+      diff: {},
+      warning: null,
+      fragments: [],
+    }
+    const { mountEl, harness } = await mountEditorDom({
+      routes: {
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks*': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () => jsonResponse(200, {
+          items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+        }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': () => jsonResponse(200, preview),
+        'POST /api/observations/o1/ai-candidates/c1/adopt': () => { throw new StubApiError(0, '网络中断') },
+      },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setTargets(['observation_goal'])
+    await hook.previewAdoption()
+    await settle()
+    await hook.adopt()
+    await settle()
+    assert.equal(hook.adoptUnknownActive(), true)
+    assert.ok(byD1(mountEl, 'obs-adopt-reconcile'))
+    assert.ok(byD1(mountEl, 'obs-adopt-retry'))
+    assert.ok(byD1(mountEl, 'obs-candidate'))
+    assert.equal(byD1(mountEl, 'obs-candidate-dialog'), null)
+    assert.equal(hook.previewActive(), true)
+    harness.unmount()
+    await settle()
+    ok('unknown adopt keeps query/retry recovery accessible without a modal backdrop')
+  }
+
+  // -- committed adopt body reload failure is recoverable inline ------------
+  {
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source_change: null,
+      source: null,
+      raw_candidate: {
+        observation_goal: '候选目标',
+        observation_process: '候选记录',
+        analysis_evaluation: { health: '', language: '', social: '', science: '', arts: '' },
+        support_strategy: '候选策略',
+      },
+    }
+    const preview = {
+      adoption_token: 'tok',
+      expires_at: '2026-09-15T10:10:00',
+      candidate_id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      draft_revision: 3,
+      draft_hash: 'a'.repeat(64),
+      selected_targets: ['observation_goal'],
+      before: { observation_goal: '观察合作' },
+      after: { observation_goal: '候选目标' },
+      changed: true,
+      source_state: 'eligible',
+      requires_review_decision: false,
+      allowed_review_decisions: [],
+      diff: {},
+      warning: null,
+      fragments: [],
+    }
+    let current = currentFixture()
+    let failRead = false
+    const { mountEl, harness } = await mountEditorDom({
+      routes: {
+        'GET /api/observations/o1': () => (
+          failRead ? apiError(503, 'LOCAL_STORAGE_ERROR', '合成读取失败') : jsonResponse(200, current)
+        ),
+        'GET /api/observations/o1/ai-tasks*': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () => jsonResponse(200, {
+          items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+        }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, detail),
+        'POST /api/observations/o1/ai-candidates/c1/preview-adoption': () => jsonResponse(200, preview),
+        'POST /api/observations/o1/ai-candidates/c1/adopt': () => {
+          failRead = true
+          current = currentFixture({
+            revision: 5,
+            payload: payload({ observation_goal: '候选目标' }),
+            payload_hash: 'd'.repeat(64),
+          })
+          return jsonResponse(200, {
+            candidate_id: 'c1',
+            changed: true,
+            revision: 5,
+            payload_hash: 'd'.repeat(64),
+            current_version: 2,
+            result_version: 2,
+            selected_targets: ['observation_goal'],
+          })
+        },
+      },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    hook.setTargets(['observation_goal'])
+    await hook.previewAdoption()
+    await settle()
+    await hook.adopt()
+    await settle()
+    assert.equal(hook.adoptCommittedActive(), true)
+    assert.ok(byD1(mountEl, 'obs-adopt-committed'))
+    assert.ok(byD1(mountEl, 'obs-adopt-read-retry'))
+    assert.ok(byD1(mountEl, 'obs-candidate'))
+    assert.equal(byD1(mountEl, 'obs-candidate-dialog'), null)
+    failRead = false
+    await hook.retryAdoptRead()
+    await settle()
+    assert.equal(hook.adoptCommittedActive(), false)
+    assert.equal(hook.form().observation_goal, '候选目标')
+    assert.equal(byD1(mountEl, 'obs-adopt-committed'), null)
+    harness.unmount()
+    await settle()
+    ok('committed adopt body reload failure keeps its recovery controls inline')
   }
 
 

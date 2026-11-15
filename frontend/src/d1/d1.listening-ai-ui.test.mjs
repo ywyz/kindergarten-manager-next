@@ -486,4 +486,53 @@ await tick()
 assert.equal(state2.taskLoading.value, false)
 assert.equal(state2.busy.value, false)
 assert.equal(calls.list.at(-1)[1], 'science')
-console.log('listening-ai-ui: 34 checks passed')
+
+// The rail exposes the three existing generation choices as direct actions.
+{
+  calls.create.length = 0
+  ensureSavedResult = 5
+  const emitted3 = []
+  const props3 = vue.reactive({
+    recordId: 'record-1',
+    domain: 'health',
+    groups: [
+      {
+        group_id: 'group-0',
+        position: 0,
+        asset_id: 'asset-0',
+        listening_text: '已保存的倾听文字',
+      },
+    ],
+    revision: 5,
+    disabled: false,
+    profileEpoch: 1,
+    ensureSaved: async () => ensureSavedResult,
+  })
+  const state3 = component.setup(props3, {
+    expose: () => undefined,
+    emit: (...args) => emitted3.push(args),
+  })
+  await tick()
+  await tick()
+  state3.startField('goal')
+  await tick()
+  await tick()
+  state3.startField('note')
+  await tick()
+  await tick()
+  state3.startField('evaluation')
+  await tick()
+  await tick()
+  assert.deepEqual(
+    calls.create.map((payload) => payload.taskType),
+    [
+      'listening_goal_suggest',
+      'listening_group_notes',
+      'listening_domain_evaluate',
+    ],
+  )
+  assert.match(source, /data-d1="listening-ai-run-note"/)
+  assert.match(source, /data-d1="listening-ai-run-evaluation"/)
+}
+
+console.log('listening-ai-ui: 35 checks passed')

@@ -49,6 +49,13 @@ const props = defineProps<{
   processTarget?: HTMLElement | null
   otherTarget?: HTMLElement | null
   reflectionProgressTarget?: HTMLElement | null
+  /**
+   * 2026-11-15 teacher feedback: when the daily editor supplies this target,
+   * the three per-type trigger buttons are moved (not copied) into the left
+   * directory generation group. Per-type rows keep guidance, pending receipts
+   * and errors at their field anchors; task state stays in this single panel.
+   */
+  generationTarget?: HTMLElement | null
 }>()
 
 const emit = defineEmits<{
@@ -63,6 +70,10 @@ const emit = defineEmits<{
    */
   (e: 'other-generated', task: AiTask): void
   (e: 'reflection-updated', task: AiTask): void
+  /** A teacher-started task from the left generation group. */
+  (e: 'action-start', taskType: TaskType): void
+  /** Explicit "go to this column" action; never forced by an async reply. */
+  (e: 'locate-task', taskType: TaskType): void
 }>()
 
 const GRADE_LABELS: Record<Grade, string> = { small: '小班', middle: '中班', large: '大班' }
@@ -711,6 +722,10 @@ async function submitCreate(
 }
 
 async function trigger(taskType: TaskType): Promise<void> {
+  // The teacher clicked a visible generation entry: expose its section/state
+  // before any await so a slow save, blocked reason or async error stays in
+  // context. This is a UI notification only; guards and callbacks are unchanged.
+  emit('action-start', taskType)
   if (creating.value[taskType]) return
   if (pendingCreates.value[taskType]) {
     createError.value = {
@@ -1074,11 +1089,98 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
   <el-card class="section" data-d1="ai-tasks">
     <template #header>
       <div class="head">
-        <span>AI 助手（三类任务分别触发）</span>
+        <span>{{ generationTarget ? 'AI 任务状态与历史' : 'AI 助手（三类任务分别触发）' }}</span>
         <el-tag v-if="liveCount" size="small" type="warning">{{ liveCount }} 个进行中</el-tag>
         <el-tag v-if="panelBusy" size="small" type="danger">有未决提交</el-tag>
       </div>
     </template>
+    <Teleport v-if="generationTarget" :to="generationTarget">
+      <div class="generation-buttons" data-d1="ai-generation-buttons">
+        <div
+          v-for="type in TASK_TYPES"
+          :key="type"
+          class="generation-entry"
+          :data-d1="`ai-generation-entry-${type}`"
+        >
+          <el-button
+            size="default"
+            type="primary"
+            class="generation-button"
+            :loading="!!creating[type]"
+            :disabled="frozen || !!blockedReason(type)"
+            :data-d1="`ai-trigger-${type}`"
+            :aria-label="`发起${TASK_TYPE_LABELS[type]}`"
+            @click="trigger(type)"
+          >
+            {{ TASK_TYPE_LABELS[type] }}
+          </el-button>
+          <div
+            v-if="createError[type]"
+            class="generation-status"
+            :data-d1="`ai-trigger-error-${type}`"
+          >
+            <p class="generation-error">{{ createError[type] }}</p>
+            <el-button
+              v-if="!pendingCreates[type]"
+              size="small"
+              text
+              :data-d1="`ai-locate-error-${type}`"
+              @click="emit('locate-task', type)"
+            >
+              到本栏查看
+            </el-button>
+          </div>
+          <div
+            v-if="pendingCreates[type]"
+            class="generation-recovery"
+            :data-d1="`ai-trigger-pending-${type}`"
+          >
+            <el-button
+              size="small"
+              type="warning"
+              :data-d1="`ai-query-create-${type}`"
+              @click="queryCreate(type)"
+            >
+              查询提交结果
+            </el-button>
+            <el-button
+              size="small"
+              type="danger"
+              :loading="!!creating[type]"
+              :data-d1="`ai-resubmit-create-${type}`"
+              @click="resubmitCreate(type)"
+            >
+              重试原提交（同一请求）
+            </el-button>
+            <el-button
+              size="small"
+              text
+              :data-d1="`ai-locate-pending-${type}`"
+              @click="emit('locate-task', type)"
+            >
+              到本栏查看
+            </el-button>
+          </div>
+          <div
+            v-if="latestByType[type] && ['failed', 'outcome_unknown'].includes(latestByType[type]!.status)"
+            class="generation-recovery"
+            :data-d1="`ai-trigger-task-status-${type}`"
+          >
+            <el-tag size="small" type="danger">
+              {{ taskStatusLabel(latestByType[type]!.status) }}
+            </el-tag>
+            <el-button
+              size="small"
+              text
+              :data-d1="`ai-locate-task-${type}`"
+              @click="emit('locate-task', type)"
+            >
+              到本栏查看
+            </el-button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
     <div class="trigger-row">
       <label class="grade-label">本次目标年级</label>
       <el-select v-model="targetGrade" size="small" :disabled="frozen" data-d1="ai-target-grade">
@@ -1108,6 +1210,7 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
         </div>
         <div class="trigger-row">
           <el-button
+            v-if="!generationTarget"
             size="default"
             type="primary"
             :loading="!!creating[type]"
@@ -1117,7 +1220,7 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
           >
             发起{{ TASK_TYPE_LABELS[type] }}
           </el-button>
-          <template v-if="pendingCreates[type]">
+          <template v-if="!generationTarget && pendingCreates[type]">
             <el-button size="small" type="warning" :data-d1="`ai-query-create-${type}`" @click="queryCreate(type)">
               查询提交结果
             </el-button>
@@ -1130,7 +1233,7 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
         <p v-if="type === 'daily_process_adapt' && hasSplitBaseline === false" class="muted" data-d1="adapt-baseline-hint">
           请先采用并保存教案拆分结果，再发起过程适龄调整。
         </p>
-        <el-alert v-if="createError[type]" type="warning" :closable="false" :title="createError[type]" />
+        <el-alert v-if="!generationTarget && createError[type]" type="warning" :closable="false" :title="createError[type]" />
       </Teleport>
     </div>
 
@@ -1278,6 +1381,42 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 8px;
+}
+.generation-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.generation-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.generation-status,
+.generation-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.generation-error {
+  margin: 0;
+  color: var(--kgm-danger);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.generation-button {
+  width: 100%;
+  min-height: 42px;
+  height: auto;
+  margin-left: 0;
+  white-space: normal;
+  line-height: 1.35;
 }
 .type-row {
   border-top: 1px dashed var(--kgm-border);

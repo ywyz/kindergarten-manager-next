@@ -51,6 +51,13 @@ function gradeText(grade: string): string {
   return { small: '小班', middle: '中班', large: '大班' }[grade] ?? grade
 }
 
+function termLabel(row: ListeningRecordSummary): string {
+  return (
+    terms.value.find((term) => term.id === row.term_id)?.name ??
+    row.term_id
+  )
+}
+
 function initialTerm(): string {
   const configured = props.context.terms.map((term) => term.id)
   if (props.initialTermId && configured.includes(props.initialTermId)) {
@@ -425,18 +432,10 @@ defineExpose({ reload: load, resetForContext })
         >
           按领域合册
         </el-button>
-        <el-button
-          type="primary"
-          data-d1="listening-create"
-          :disabled="!canNavigate"
-          @click="startCreate"
-        >
-          新建倾听记录
-        </el-button>
       </div>
     </div>
 
-    <el-card shadow="never" class="block">
+    <el-card shadow="never" class="block list-shell">
       <div class="filters">
         <span class="muted">学期</span>
         <el-select
@@ -465,49 +464,107 @@ defineExpose({ reload: load, resetForContext })
         <el-button size="small" @click="load">重试</el-button>
       </el-alert>
 
-      <el-table
-        v-loading="loading"
-        :data="records"
-        data-d1="listening-records-table"
-        empty-text="本学期还没有倾听记录"
-        class="block"
-      >
-        <el-table-column label="姓名" min-width="140">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openRecord(row)">
-              {{ row.child_name }}
-            </el-button>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" min-width="150">
-          <template #default="{ row }">{{ formatRecordTime(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="记录标识" min-width="120">
-          <template #default="{ row }">
-            <span :title="row.record_id">{{ shortRecordId(row.record_id) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="修订" min-width="80">
-          <template #default="{ row }">{{ row.revision }}</template>
-        </el-table-column>
-        <el-table-column label="年级" min-width="80">
-          <template #default="{ row }">
-            {{ gradeText(row.grade) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="120">
-          <template #default="{ row }">
-            <el-button
-              size="small"
-              data-d1="listening-open-record"
-              :disabled="!canNavigate"
-              @click="openRecord(row)"
-            >
-              打开记录
-            </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <div class="list-toolbar">
+        <el-button
+          type="primary"
+          data-d1="listening-create"
+          :disabled="!canNavigate"
+          @click="startCreate"
+        >
+          新建倾听记录
+        </el-button>
+      </div>
+
+      <div v-loading="loading" class="records-area">
+        <div
+          v-if="records.length"
+          class="record-grid"
+          data-d1="listening-records-cards"
+        >
+          <el-card
+            v-for="item in records"
+            :key="item.record_id"
+            shadow="never"
+            class="record-card"
+            :data-d1="`listening-record-card-${item.record_id}`"
+          >
+            <div class="record-card-head">
+              <div>
+                <h3>{{ item.child_name }}</h3>
+                <p class="muted">
+                  {{ termLabel(item) }} · {{ gradeText(item.grade) }}
+                </p>
+              </div>
+              <el-button
+                link
+                type="primary"
+                data-d1="listening-open-record"
+                :disabled="!canNavigate"
+                @click="openRecord(item)"
+              >
+                打开
+              </el-button>
+            </div>
+            <div class="record-meta">
+              <div>
+                <span class="meta-label">学期</span>
+                <span>{{ termLabel(item) }}</span>
+              </div>
+              <div>
+                <span class="meta-label">创建时间</span>
+                <span>{{ formatRecordTime(item.created_at) }}</span>
+              </div>
+              <div>
+                <span class="meta-label">记录标识</span>
+                <span :title="item.record_id">
+                  {{ shortRecordId(item.record_id) }}
+                </span>
+              </div>
+              <div>
+                <span class="meta-label">修订</span>
+                <span>{{ item.revision }}</span>
+              </div>
+              <div>
+                <span class="meta-label">年级</span>
+                <span>{{ gradeText(item.grade) }}</span>
+              </div>
+            </div>
+          </el-card>
+
+          <el-card
+            shadow="never"
+            class="record-card album-scope-card"
+            data-d1="listening-album-scope"
+          >
+            <div class="record-card-head">
+              <div>
+                <h3>合册范围</h3>
+                <p class="muted">按领域或按幼儿生成合册</p>
+              </div>
+              <el-button
+                link
+                type="primary"
+                data-d1="listening-album-open"
+                :disabled="!canNavigate || !termId"
+                @click="openDomainExport"
+              >
+                打开
+              </el-button>
+            </div>
+            <div class="record-meta">
+              <div>
+                <span class="meta-label">按领域</span>
+                <span>健康、语言、社会、科学、艺术</span>
+              </div>
+              <div>
+                <span class="meta-label">按幼儿</span>
+                <span>从该幼儿记录中汇集</span>
+              </div>
+            </div>
+          </el-card>
+        </div>
+        <div v-else class="empty-cards">本学期还没有倾听记录</div>
+      </div>
 
       <div class="pager">
         <span class="muted">共 {{ total }} 条 · 第 {{ currentPage }} / {{ Math.max(pageCount, 1) }} 页</span>
@@ -616,6 +673,10 @@ defineExpose({ reload: load, resetForContext })
 .actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+.actions :deep(.el-button) {
+  min-height: 42px;
 }
 .block {
   margin-top: 12px;
@@ -626,13 +687,98 @@ defineExpose({ reload: load, resetForContext })
   gap: 10px;
   flex-wrap: wrap;
 }
+.list-shell {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+.list-shell > :deep(.el-card__body) {
+  padding: 0;
+}
+.list-toolbar {
+  margin-top: 14px;
+  padding: 12px 16px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+  background: var(--kgm-surface);
+}
+.list-toolbar :deep(.el-button) {
+  min-height: 42px;
+}
+.records-area {
+  margin-top: 16px;
+}
+.record-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.record-card {
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--kgm-surface);
+}
+.record-card :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+}
+.record-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.record-card-head h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.record-card-head p {
+  margin: 4px 0 0;
+}
+.record-card-head :deep(.el-button) {
+  flex-shrink: 0;
+  min-height: 36px;
+}
+.record-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.record-meta > div {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.meta-label {
+  color: var(--kgm-muted);
+}
+.empty-cards {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--kgm-muted);
+  border: 1px dashed var(--kgm-border);
+  border-radius: 12px;
+}
 .pager {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 10px;
+  margin-top: 16px;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .muted {
-  color: #6b7280;
+  color: var(--kgm-muted);
+}
+@media (max-width: 980px) {
+  .record-grid {
+    grid-template-columns: 1fr;
+  }
+  .record-meta > div {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
 }
 </style>
