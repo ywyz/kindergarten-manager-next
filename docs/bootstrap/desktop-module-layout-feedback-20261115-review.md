@@ -95,6 +95,18 @@ D 第四轮在停止产品写入后执行 `npm run build:d1 -- --outDir ../build
 - final 辅助入口的默认 prepare 和 marker 仍验证原 `frontend` 身份，final 仅选择固定 `frontend-final`；`--prepare --final` 明确拒绝。旧 helper 副本保留，父子网络守卫、路径与 reparse、空 setup 根等保护经独立差异审核及分派探针通过。
 - 原生元数据终审：A 3／3、B 4／4、C 3／3、D 5／5 自然退出 0。A／B 本轮 387 条 assistant 模型记录与 C／D 432 次完成事件全部为指定 DeepSeek V4.1 Flash／max，hook 拒绝 0；9 次普通匹配／陈旧读取／路径工具错误单列保留。B4／C3 实际读取了问题截图。见 `native-model-audit-final.json`。
 
-提交前，原教师窗口已不存在；只读任务状态为 succeeded 8、failed 1、活动任务 0，没有自动恢复真实 AI 的在途任务。教师数据库已在本轮工作期间变化，后续资源更新将以新的保护快照比较，不回写开始时的旧库。按已授权顺序先普通提交推送，再更新原审核资源；此处尚未宣称后续交付完成。
+提交前，原教师窗口已不存在；只读任务状态为 succeeded 8、failed 1、活动任务 0，没有自动恢复真实 AI 的在途任务。教师数据库已在本轮工作期间变化，因此资源更新以新的保护快照比较，未回写开始时的旧库。
+
+## 提交推送与原环境留窗
+
+原 OpenCode A 按 Codex `commit-gate.json` 的 40 个明确文件、Git blob、父提交和 tree 门禁执行普通提交，未 add-all、amend、rebase 或 force：
+
+- 源码提交：`2f68af555ffcd52f4a82269648843d900ea9ec5c`，父为 `9d8d4669c025ed8896fb98fd402b5592b4e5e299`，tree 为 `c97750e9848498f911958eb9fedff4065207e86c`。
+- 普通 push 退出 0，Codex 独立读取 `origin/dev/0.1` 确认同一提交，工作区干净。此后才执行原审核资源更新，次序见 `commit-result.json`／`original-review-asset-update.json`。
+- 固定目标 `build/daily-split-20261115/frontend`：先复制并核验两个带哈希名的资源，最后替换 `d1.html`。旧资源保留，旧入口和 stdout／stderr 另存 ignored 证据；未递归删除任何目录。资源哈希与 D5 构建清单一致。
+- 更新前重新枚举确认无原教师窗口；保护快照包含 data／credentials 的全部文件及原两个 launcher。复制前后全部一致。使用原 `%LOCALAPPDATA%/KindergartenManagerSourceReview/open-review.ps1`、原 Python 3.14.10 环境和 `source_review.py` 启动，未初始化、未强杀窗口、未改 launcher。
+- 2026-11-15 19:24 已观察「幼儿园信息管理系统 · 源码隔离审核」新首页，仅个人待办、顶部单排模块按钮，保留原档案。窗口留给教师审核；原环境 stderr 0 字节。启动后主 DB SHA-256 仍为 `25be4f30aaa80645402cfc2a59bd5030cabc09ed610627952e6b2a2dbc2df0aa`，凭据哈希不变；AI 配置版本与凭据行各 1，任务仍为 succeeded 8／failed 1，无新增任务，未点击任何 AI 操作。只查询聚合元数据，不读取密钥或真实正文。详见 `original-review-handoff.json`。
+
+本节为交付后的文档补记，另作普通文档提交推送；不改变已验证的产品源码和构建。
 
 教师验收仍待后续实际使用反馈；本轮未执行真实应用 AI、Word 实际打开或安装包验收。已连接协作的真实网络联调、Win10／WPS／干净机和其它显示条件不以本次合成源码窗口代替。
