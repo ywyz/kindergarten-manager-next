@@ -2298,19 +2298,18 @@ defineExpose({
               <thead>
                 <tr>
                   <th>组</th>
-                  <th>照片与方向</th>
                   <th>作品日期</th>
-                  <th>倾听记录</th>
                   <th>操作</th>
                 </tr>
               </thead>
-              <tbody>
-                <tr
-                  v-for="(group, index) in form.groups"
-                  :key="group.group_id"
-                  :data-d1="`listening-read-group-${group.group_id}`"
-                >
-                  <td>
+              <tbody
+                v-for="(group, index) in form.groups"
+                :key="group.group_id"
+                :data-d1="`listening-read-group-${group.group_id}`"
+                class="group-block"
+              >
+                <tr class="group-meta-row">
+                  <th scope="row" class="group-id-cell">
                     <strong>第 {{ index + 1 }} 组</strong>
                     <div class="muted">
                       稳定标识 {{ group.group_id.slice(0, 8) }}
@@ -2333,85 +2332,9 @@ defineExpose({
                         下移
                       </el-button>
                     </div>
-                  </td>
-                  <td class="group-photo-cell">
-                    <div
-                      class="photo-preview compact"
-                      :data-rotation="photoRotation(group.asset_id)"
-                    >
-                      <img
-                        v-if="group.asset_id && photoUrls[group.asset_id]"
-                        :src="photoUrls[group.asset_id]"
-                        :style="photoRotationStyle(group.asset_id)"
-                        data-d1="listening-photo-image"
-                        alt="幼儿绘画照片"
-                      />
-                      <span
-                        v-else-if="group.asset_id && photoErrors[group.asset_id]"
-                        class="photo-error"
-                      >
-                        {{ photoErrors[group.asset_id] }}
-                        <el-button
-                          size="small"
-                          text
-                          :disabled="!canEdit || photoLoading[group.asset_id]"
-                          data-d1="listening-photo-retry"
-                          @click="retryPhoto(group.asset_id)"
-                        >
-                          重试读取
-                        </el-button>
-                      </span>
-                      <span v-else class="muted">
-                        {{ group.asset_id ? '图片读取中…' : '尚未选择照片' }}
-                      </span>
-                    </div>
-                    <label
-                      class="file-label"
-                      :class="{ disabled: !canMutate }"
-                    >
-                      {{ group.asset_id ? '替换照片' : '选择照片' }}
-                      <input
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
-                        :disabled="!canMutate"
-                        data-d1="listening-photo-input"
-                        @change="pickPhoto($event, group.group_id)"
-                      />
-                    </label>
-                    <div v-if="group.asset_id" class="photo-rotate-actions">
-                      <el-button
-                        size="small"
-                        :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-                        data-d1="listening-photo-rotate-left"
-                        @click="rotatePhoto(group.group_id, -1)"
-                      >
-                        左转 90°
-                      </el-button>
-                      <el-button
-                        size="small"
-                        :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-                        data-d1="listening-photo-rotate-right"
-                        @click="rotatePhoto(group.group_id, 1)"
-                      >
-                        右转 90°
-                      </el-button>
-                      <span class="muted">
-                        显示 {{ photoRotation(group.asset_id) * 90 }}°
-                      </span>
-                    </div>
-                    <el-button
-                      v-if="group.asset_id"
-                      size="small"
-                      type="danger"
-                      text
-                      :disabled="!canMutate"
-                      data-d1="listening-photo-remove"
-                      @click="removePhoto(group.group_id)"
-                    >
-                      移除图片
-                    </el-button>
-                  </td>
-                  <td>
+                  </th>
+                  <td class="group-date-cell">
+                    <div class="read-label">作品日期</div>
                     <span class="read-value">
                       {{ group.work_date || '尚未选择作品日期' }}
                     </span>
@@ -2431,28 +2354,8 @@ defineExpose({
                       :data-group-id="group.group_id"
                     />
                   </td>
-                  <td>
-                    <div
-                      class="read-text"
-                      data-d1="listening-read-group-text"
-                      :data-group-id="group.group_id"
-                    >
-                      {{ readText(group.listening_text) }}
-                    </div>
-                    <DirectionalRevisionTrigger
-                      test-id="listening-directional-group-text"
-                      :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-                      @request="
-                        (whole) =>
-                          openDirectionalSaved(
-                            'listening_text',
-                            group.group_id,
-                            whole,
-                          )
-                      "
-                    />
-                  </td>
                   <td class="read-action-cell">
+                    <div class="read-label">操作</div>
                     <el-button
                       size="small"
                       data-d1="listening-edit-group"
@@ -2462,6 +2365,115 @@ defineExpose({
                     >
                       编辑此组
                     </el-button>
+                  </td>
+                </tr>
+                <tr class="group-content-row">
+                  <td colspan="3" class="group-content-cell">
+                    <div class="group-reading-layout">
+                      <div class="group-photo-panel group-photo-cell">
+                        <div class="group-field-label">照片与方向</div>
+                        <div
+                          class="photo-preview compact"
+                          :data-rotation="photoRotation(group.asset_id)"
+                        >
+                          <img
+                            v-if="group.asset_id && photoUrls[group.asset_id]"
+                            :src="photoUrls[group.asset_id]"
+                            :style="photoRotationStyle(group.asset_id)"
+                            data-d1="listening-photo-image"
+                            alt="幼儿绘画照片"
+                          />
+                          <span
+                            v-else-if="group.asset_id && photoErrors[group.asset_id]"
+                            class="photo-error"
+                          >
+                            {{ photoErrors[group.asset_id] }}
+                            <el-button
+                              size="small"
+                              text
+                              :disabled="!canEdit || photoLoading[group.asset_id]"
+                              data-d1="listening-photo-retry"
+                              @click="retryPhoto(group.asset_id)"
+                            >
+                              重试读取
+                            </el-button>
+                          </span>
+                          <span v-else class="muted">
+                            {{ group.asset_id ? '图片读取中…' : '尚未选择照片' }}
+                          </span>
+                        </div>
+                        <label
+                          class="file-label"
+                          :class="{ disabled: !canMutate }"
+                        >
+                          {{ group.asset_id ? '替换照片' : '选择照片' }}
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
+                            :disabled="!canMutate"
+                            data-d1="listening-photo-input"
+                            @change="pickPhoto($event, group.group_id)"
+                          />
+                        </label>
+                        <div
+                          v-if="group.asset_id"
+                          class="photo-rotate-actions"
+                        >
+                          <el-button
+                            size="small"
+                            :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+                            data-d1="listening-photo-rotate-left"
+                            @click="rotatePhoto(group.group_id, -1)"
+                          >
+                            左转 90°
+                          </el-button>
+                          <el-button
+                            size="small"
+                            :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+                            data-d1="listening-photo-rotate-right"
+                            @click="rotatePhoto(group.group_id, 1)"
+                          >
+                            右转 90°
+                          </el-button>
+                          <span class="muted">
+                            显示 {{ photoRotation(group.asset_id) * 90 }}°
+                          </span>
+                        </div>
+                        <el-button
+                          v-if="group.asset_id"
+                          size="small"
+                          type="danger"
+                          text
+                          :disabled="!canMutate"
+                          data-d1="listening-photo-remove"
+                          @click="removePhoto(group.group_id)"
+                        >
+                          移除图片
+                        </el-button>
+                      </div>
+                      <div class="group-text-panel">
+                        <div class="group-field-label">倾听记录</div>
+                        <div
+                          class="read-text"
+                          data-d1="listening-read-group-text"
+                          :data-group-id="group.group_id"
+                        >
+                          {{ readText(group.listening_text) }}
+                        </div>
+                        <DirectionalRevisionTrigger
+                          test-id="listening-directional-group-text"
+                          :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+                          @request="
+                            (whole) =>
+                              openDirectionalSaved(
+                                'listening_text',
+                                group.group_id,
+                                whole,
+                              )
+                          "
+                        />
+                      </div>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -3436,6 +3448,7 @@ defineExpose({
 .read-text {
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.65;
   min-height: 1.5em;
 }
@@ -3451,16 +3464,16 @@ defineExpose({
   border-collapse: collapse;
 }
 .groups .read-table th:nth-child(1) {
-  width: 76px;
+  width: 104px;
 }
 .groups .read-table th:nth-child(2) {
-  width: 30%;
+  width: 136px;
 }
 .groups .read-table th:nth-child(3) {
-  width: 120px;
-}
-.groups .read-table th:nth-child(5) {
   width: 92px;
+}
+.groups .read-table thead th {
+  box-sizing: border-box;
 }
 .read-table th,
 .read-table td {
@@ -3477,15 +3490,79 @@ defineExpose({
 .read-table tr:last-child td {
   border-bottom: none;
 }
+.groups .read-table .group-meta-row > th,
+.groups .read-table .group-meta-row > td {
+  padding-top: 8px;
+  padding-bottom: 4px;
+  border-bottom: none;
+}
+.groups .read-table .group-content-row > td {
+  padding-top: 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--kgm-border);
+}
+.groups .read-table tbody:last-child .group-content-row > td {
+  border-bottom: none;
+}
+.groups .read-table .group-id-cell {
+  min-width: 0;
+  color: var(--kgm-text);
+  white-space: normal;
+}
+.group-id-cell .muted {
+  overflow-wrap: anywhere;
+}
+.group-id-cell .group-actions {
+  margin-top: 6px;
+  margin-left: 0;
+  flex-wrap: wrap;
+}
+.group-date-cell {
+  min-width: 0;
+}
+.group-date-cell .read-label {
+  margin-bottom: 2px;
+}
+.group-date-cell .read-value {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.read-action-cell {
+  white-space: normal;
+}
+.read-action-cell .read-label {
+  margin-bottom: 4px;
+}
+.groups .read-table .group-content-cell {
+  padding: 4px 8px 12px;
+}
+.group-reading-layout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px 16px;
+  width: 100%;
+}
+.group-photo-panel {
+  flex: 0 1 190px;
+  min-width: 160px;
+  max-width: 210px;
+}
+.group-text-panel {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+}
+.group-field-label {
+  margin-bottom: 6px;
+  color: var(--kgm-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
 .read-group-actions {
   margin-top: 8px;
 }
-.read-action-cell {
-  white-space: nowrap;
-}
-.group-photo-cell {
-  min-width: 190px;
-}
+
 .photo-preview.compact {
   min-height: 100px;
   max-height: 170px;

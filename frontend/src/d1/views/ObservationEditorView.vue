@@ -5401,6 +5401,7 @@ onBeforeUnmount(() => {
 }
 .read-sheet {
   min-width: 0;
+  container-type: inline-size;
   border: 1px solid var(--kgm-border);
   border-radius: 12px;
   background: var(--kgm-surface);
@@ -5488,22 +5489,41 @@ onBeforeUnmount(() => {
 }
 .review-confirm input { margin-top: 0.2rem; }
 .candidate-audit {
-  grid-column: 1 / -1;
+  grid-column: 1;
+  min-width: 0;
   margin-top: 20px;
   padding: 1rem 1.1rem;
   border: 1px solid var(--kgm-border);
   border-radius: 12px;
   background: var(--kgm-surface);
 }
+@container (max-width: 680px) {
+  .sheet-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "label edit"
+      "body body";
+    gap: 6px 10px;
+    padding: 0.75rem 0.9rem;
+  }
+  .sheet-label { grid-area: label; }
+  .sheet-edit {
+    grid-area: edit;
+    justify-content: flex-end;
+    align-self: start;
+  }
+  .sheet-body { grid-area: body; }
+  .read-line {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .read-label { font-weight: 600; }
+}
 @media (max-width: 1050px) {
   .obs-detail { grid-template-columns: minmax(0, 1fr); }
   .ops-rail { position: static; max-height: none; }
 }
 @media (max-width: 720px) {
-  .sheet-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .sheet-edit { justify-content: flex-start; }
-  .read-line { grid-template-columns: minmax(0, 1fr); gap: 2px; }
-  .read-label { font-weight: 600; }
   .obs-editor { padding: 1rem; }
 }
 .toolbar {

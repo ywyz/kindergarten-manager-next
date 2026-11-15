@@ -1360,7 +1360,133 @@ async function main() {
     assert.match(styles, /border-radius: 12px/)
     assert.match(styles, /min-height: 42px/)
     assert.match(styles, /white-space: pre-wrap/)
+    // The read sheet responds to its own available width (about 500/380 in
+    // the narrow two-column window, 900 when wide), not only the viewport.
+    assert.match(styles, /\.read-sheet\s*\{[^}]*container-type:\s*inline-size/)
+    assert.match(styles, /@container \(max-width: 680px\)/)
+    const containerMax = Number(
+      styles.match(/@container \(max-width: (\d+)px\)/)?.[1] ?? 0,
+    )
+    // 500/380 read-sheet widths use the stacked contract; 900 keeps wide.
+    assert.ok(containerMax >= 500 && containerMax >= 380)
+    assert.ok(containerMax < 900)
+    const containerRule = styles.match(
+      /@container \(max-width: 680px\) \{([\s\S]*?)\n\}/,
+    )?.[1] ?? ''
+    assert.match(containerRule, /grid-template-areas:\s*"label edit"\s*"body body"/)
+    assert.match(containerRule, /\.sheet-body\s*\{[^}]*grid-area:\s*body/)
+    assert.match(containerRule, /\.read-line\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/)
+    const mobileRule = styles.match(/@media \(max-width: 720px\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
+    assert.doesNotMatch(mobileRule, /\.sheet-row|\.read-line|\.sheet-edit/)
+    const candidateAuditRule = styles.match(/\.candidate-audit\s*\{[^}]*\}/)?.[0] ?? ''
+    assert.match(candidateAuditRule, /grid-column:\s*1;/)
+    assert.doesNotMatch(candidateAuditRule, /grid-column:\s*1\s*\/\s*-1/)
+    assert.match(candidateAuditRule, /min-width:\s*0;/)
     ok('observation editor keeps one AI panel, history/export entries and token-only responsive styles')
+  }
+
+  // -- DOM: candidate audit stays in the main column beside sticky rail ------
+  {
+    const longText = '候选原文与编辑内容包含较长中文，用于确认候选不会伸入右侧操作栏而被遮挡。'
+    const current = currentFixture()
+    const base = clientModule({ current })
+    const detail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_process'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: { dependencies: { observation_process: longText } },
+      raw_candidate: {
+        observation_process: longText,
+        analysis_evaluation: { health: '', language: '', social: '', science: '', arts: '' },
+      },
+    }
+    const client = {
+      ...base,
+      apiGet: async (url) => {
+        const text = String(url)
+        if (text === '/api/observations/o1/ai-candidates') {
+          return {
+            items: [{ id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' }],
+            next_cursor: null,
+          }
+        }
+        if (text === '/api/observations/o1/ai-candidates/c1') return detail
+        return base.apiGet(url)
+      },
+    }
+    const { app, mountEl, harness } = await mountEditorDom({
+      current,
+      overrides: { '../client': client },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    const candidate = byD1(mountEl, 'obs-candidate')
+    const rail = byD1(mountEl, 'obs-rail')
+    assert.ok(candidate)
+    assert.ok(rail)
+    assert.equal(candidate.parent, rail.parent)
+    assert.match(String(candidate.parent?.props?.class ?? ''), /obs-detail/)
+    assert.match(String(candidate.props?.class ?? ''), /candidate-audit/)
+    assert.match(String(rail.props?.class ?? ''), /ops-rail/)
+    assert.ok(nodeText(byD1(mountEl, 'obs-candidate-original-source')).includes(longText))
+    assert.equal(
+      byD1(mountEl, 'obs-candidate-text-observation_process').props.value,
+      longText,
+    )
+    harness.unmount()
+    app.unmount()
+    await settle()
+    ok('candidate audit is a main-column sibling of the sticky rail, not a full-width overlay')
+  }
+
+  // -- DOM: narrow read-sheet structure preserves long Chinese --------------
+  {
+    const longText = '幼儿在积木区反复尝试连接长木板并邀请同伴共同搭建一座可以通行的桥，教师记录完整中文内容。'
+    const current = currentFixture({
+      payload: payload({
+        environment: longText,
+        observation_goal: longText,
+        observation_process: `${longText}\n${longText}`,
+        support_strategy: longText,
+        analysis_evaluation: {
+          health: longText,
+          language: longText,
+          social: longText,
+          science: longText,
+          arts: longText,
+        },
+      }),
+    })
+    const { app, mountEl, harness } = await mountEditorDom({ current })
+    for (const section of ['obs-section-basic', 'obs-section-subjects', 'obs-section-body', 'obs-section-support', 'obs-section-evaluation']) {
+      const row = byD1(mountEl, section)
+      const classes = row.children
+        .filter((child) => child.type === 'element')
+        .map((child) => String(child.props?.class ?? ''))
+      assert.ok(classes.some((value) => value.includes('sheet-label')), `${section} label`)
+      assert.ok(classes.some((value) => value.includes('sheet-body')), `${section} body`)
+      assert.ok(classes.some((value) => value.includes('sheet-edit')), `${section} edit`)
+    }
+    const process = byD1(mountEl, 'obs-process-read')
+    assert.ok(nodeText(process).includes(longText))
+    const processLine = process.parent
+    const lineClasses = processLine.children
+      .filter((child) => child.type === 'element')
+      .map((child) => String(child.props?.class ?? ''))
+    assert.ok(lineClasses.some((value) => value.includes('read-label')))
+    assert.ok(lineClasses.some((value) => value.includes('read-text')))
+    assert.ok(nodeText(byD1(mountEl, 'obs-subjects')).includes(longText))
+    assert.ok(nodeText(byD1(mountEl, 'obs-eval-read-health')).includes(longText))
+    assert.ok(nodeText(byD1(mountEl, 'obs-support-read')).includes(longText))
+    harness.unmount()
+    app.unmount()
+    await settle()
+    ok('narrow read-sheet keeps label/body/edit structure and full long Chinese text')
   }
 
   console.log(`\n${passed} observation layout checks passed`)

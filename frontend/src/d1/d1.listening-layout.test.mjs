@@ -103,7 +103,7 @@ class FakePhotoCache {
 
 const DOMAINS = ['health', 'language', 'social', 'science', 'art']
 
-function domainState(domain) {
+function domainState(domain, listeningText) {
   return {
     domain,
     domain_label: domain,
@@ -120,7 +120,8 @@ function domainState(domain) {
       group_id: `g-${domain}-${index}`,
       position: index,
       work_date: `2026-09-1${index}`,
-      listening_text: `原倾听记录-${domain}-${index}`,
+      listening_text:
+        listeningText ?? `原倾听记录-${domain}-${index}`,
       asset_id: null,
     })),
     evaluation: [
@@ -130,7 +131,7 @@ function domainState(domain) {
   }
 }
 
-function recordFixture() {
+function recordFixture(listeningText) {
   return {
     record_id: 'record-1',
     child_name: '测试幼儿',
@@ -140,7 +141,7 @@ function recordFixture() {
     revision: 1,
     created_at: '2026-09-01T00:00:00',
     updated_at: '2026-09-01T00:00:00',
-    domains: DOMAINS.map(domainState),
+    domains: DOMAINS.map((domain) => domainState(domain, listeningText)),
   }
 }
 
@@ -176,14 +177,14 @@ function templates() {
   }
 }
 
-function makeClient() {
+function makeClient(listeningText) {
   const client = {
     revision: 1,
     patchCalls: [],
     ApiError,
     apiGet: async (url) => {
       if (url === '/api/listening/records/record-1') {
-        const value = recordFixture()
+        const value = recordFixture(listeningText)
         value.revision = client.revision
         return value
       }
@@ -1167,8 +1168,8 @@ const DomDialogStub = {
   },
 }
 
-async function mountListeningDom(navigationTarget) {
-  const { client } = makeClient()
+async function mountListeningDom(navigationTarget, listeningText) {
+  const { client } = makeClient(listeningText)
   const listening = loadCore(client)
   const file = path.join(d1Dir, 'views', 'ListeningEditorView.vue')
   const sourceText = fs.readFileSync(file, 'utf8')
@@ -1403,6 +1404,249 @@ async function mountListeningDom(navigationTarget) {
     '导航切换前未保存目标',
   )
   ok('domain navigation still saves the dirty draft through selectDomain')
+}
+
+// Group reading geometry: the old five-column fixed row left only a few pixels
+// for text.  The new meta row is above a full-width, two-panel content row.
+{
+  const cssRule = (selector) => {
+    const escaped = selector.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      '\\$&',
+    )
+    const match = editorSource.match(
+      new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, 's'),
+    )
+    assert.ok(match, `${selector} rule exists`)
+    return match[1]
+  }
+  const readingLayout = cssRule('.group-reading-layout')
+  assert.match(readingLayout, /display:\s*flex/)
+  assert.match(readingLayout, /flex-wrap:\s*wrap/)
+  assert.match(readingLayout, /gap:\s*14px 16px/)
+  const photoPanel = cssRule('.group-photo-panel')
+  assert.match(photoPanel, /flex:\s*0 1 190px/)
+  assert.match(photoPanel, /min-width:\s*160px/)
+  assert.match(photoPanel, /max-width:\s*210px/)
+  assert.match(
+    editorSource,
+    /class="group-photo-panel group-photo-cell"/,
+  )
+  assert.doesNotMatch(editorSource, /\.group-photo-cell\s*\{/)
+  const headerRule = cssRule('.groups .read-table thead th')
+  assert.match(headerRule, /box-sizing:\s*border-box/)
+  const textPanel = cssRule('.group-text-panel')
+  assert.match(textPanel, /flex:\s*1 1 240px/)
+  assert.match(textPanel, /min-width:\s*0/)
+  const readText = cssRule('.read-text')
+  assert.match(readText, /white-space:\s*pre-wrap/)
+  assert.match(readText, /overflow-wrap:\s*anywhere/)
+  const fieldLabel = cssRule('.group-field-label')
+  assert.match(fieldLabel, /color:\s*var\(--kgm-muted\)/)
+  const groupIdCell = cssRule(
+    '.groups .read-table .group-id-cell',
+  )
+  assert.match(groupIdCell, /white-space:\s*normal/)
+  assert.match(groupIdCell, /color:\s*var\(--kgm-text\)/)
+
+  assert.match(editorSource, /<td colspan="3" class="group-content-cell">/)
+  assert.match(
+    editorSource,
+    /class="group-field-label">照片与方向/,
+  )
+  assert.match(editorSource, /class="group-field-label">倾听记录/)
+  assert.match(editorSource, /class="read-label">作品日期/)
+  assert.match(editorSource, /class="read-label">操作/)
+  assert.doesNotMatch(
+    editorSource,
+    /\.groups \.read-table th:nth-child\(5\)/,
+  )
+
+  const cellRule = editorSource.match(
+    /\.read-table th,\s*\.read-table td\s*\{([\s\S]*?)\}/,
+  )
+  assert.ok(cellRule)
+  assert.match(cellRule[1], /padding:\s*10px 8px/)
+  assert.doesNotMatch(cellRule[1], /border-(?:left|right)/)
+  const headerWidths = [1, 2, 3].map((column) => {
+    const rule = cssRule(
+      `.groups .read-table th:nth-child(${column})`,
+    )
+    const width = rule.match(/width:\s*(\d+)px/)
+    assert.ok(width)
+    return Number(width[1])
+  })
+  assert.deepEqual(headerWidths, [104, 136, 92])
+  const tableWidthAt = (mainWidth) => mainWidth - 32
+  const headerInlinePadding =
+    8 * 2 * headerWidths.length
+  const headerInlineBorders = 0
+  const headerBorderBoxMin =
+    headerWidths.reduce((sum, width) => sum + width, 0) +
+    headerInlineBorders
+  const headerContentBoxMin =
+    headerBorderBoxMin + headerInlinePadding
+  for (const mainWidth of [380, 500, 900]) {
+    assert.ok(headerBorderBoxMin <= tableWidthAt(mainWidth))
+  }
+  assert.ok(headerContentBoxMin > tableWidthAt(380))
+
+  const cardAndContentPadding = 32 + 16
+  const photoWidth = 190
+  const gap = 16
+  const oldTextWidth = (mainWidth) => {
+    const tableWidth = mainWidth - 32
+    return (
+      tableWidth -
+      (76 + tableWidth * 0.3 + 120 + 92) -
+      16
+    )
+  }
+  const newLayout = (mainWidth) => {
+    const inner = mainWidth - cardAndContentPadding
+    const twoColumns = photoWidth + gap + 240 <= inner
+    return {
+      inner,
+      stacked: !twoColumns,
+      textWidth: twoColumns
+        ? inner - photoWidth - gap
+        : inner,
+    }
+  }
+  const defaultLayout = newLayout(500)
+  const narrowLayout = newLayout(380)
+  const wideLayout = newLayout(900)
+  assert.equal(defaultLayout.stacked, false)
+  assert.ok(defaultLayout.textWidth >= 240)
+  assert.ok(oldTextWidth(500) < 40)
+  assert.ok(defaultLayout.textWidth > oldTextWidth(500) * 5)
+  assert.equal(narrowLayout.stacked, true)
+  assert.ok(narrowLayout.textWidth >= 300)
+  assert.equal(wideLayout.stacked, false)
+  assert.ok(wideLayout.textWidth >= 600)
+  ok('group text gets a readable full-width row at 500/380/900px')
+}
+
+// Long synthetic group text still maps to the same group, date, photo input,
+// text and edit/order actions after the row restructure.
+{
+  const longText =
+    '合成长正文：幼儿连续讲述树屋、秋千和小兔子的位置与颜色，教师逐句记录并核对。'.repeat(
+      6,
+    )
+  const mounted = await mountListeningDom(undefined, longText)
+  const elements = walkElements(mounted.root)
+  const textOf = (node) => {
+    if (!node) return ''
+    if (node.type === 'text') return node.text
+    if (typeof node.text === 'string' && node.text !== '') {
+      return node.text
+    }
+    return (node.children ?? []).map(textOf).join('')
+  }
+  const groupBlocks = elements.filter((node) =>
+    classText(node.props.class).includes('group-block'),
+  )
+  assert.equal(groupBlocks.length, 2)
+  const textNodes = elements.filter(
+    (node) => node.props['data-d1'] === 'listening-read-group-text',
+  )
+  assert.equal(textNodes.length, 2)
+  const textPanels = elements.filter((node) =>
+    classText(node.props.class).includes('group-text-panel'),
+  )
+  const photoPanels = elements.filter((node) =>
+    classText(node.props.class).includes('group-photo-panel'),
+  )
+  assert.equal(textPanels.length, 2)
+  assert.equal(photoPanels.length, 2)
+  assert.equal(
+    elements.filter(
+      (node) => node.props['data-d1'] === 'listening-photo-input',
+    ).length,
+    2,
+  )
+  for (let index = 0; index < 2; index += 1) {
+    assert.ok(isDescendant(textNodes[index], groupBlocks[index]))
+    assert.ok(isDescendant(textPanels[index], groupBlocks[index]))
+    assert.ok(isDescendant(photoPanels[index], groupBlocks[index]))
+    assert.ok(
+      classText(photoPanels[index].props.class).includes(
+        'group-photo-cell',
+      ),
+    )
+    assert.equal(textOf(textNodes[index]).trim(), longText)
+    const blockText = textOf(groupBlocks[index])
+    assert.ok(blockText.includes(`第 ${index + 1} 组`))
+    assert.ok(blockText.includes(`2026-09-1${index}`))
+    assert.ok(blockText.includes(longText))
+    const layout = walkElements(groupBlocks[index]).find((node) =>
+      classText(node.props.class).includes('group-reading-layout'),
+    )
+    assert.ok(layout)
+    const panels = layout.children.filter(
+      (node) => node.type === 'element',
+    )
+    assert.ok(
+      classText(panels[0].props.class).includes('group-photo-panel'),
+    )
+    assert.ok(
+      classText(panels[1].props.class).includes('group-text-panel'),
+    )
+  }
+  const labels = elements
+    .filter((node) =>
+      classText(node.props.class).includes('group-field-label'),
+    )
+    .map(textOf)
+  assert.equal(
+    labels.filter((label) => label === '照片与方向').length,
+    2,
+  )
+  assert.equal(
+    labels.filter((label) => label === '倾听记录').length,
+    2,
+  )
+  const editButtons = elements.filter(
+    (node) => node.props['data-d1'] === 'listening-edit-group',
+  )
+  assert.deepEqual(
+    editButtons.map((node) => String(node.props['data-group-id'])),
+    ['g-health-0', 'g-health-1'],
+  )
+  const ups = elements.filter(
+    (node) => node.props['data-d1'] === 'listening-group-up',
+  )
+  const downs = elements.filter(
+    (node) => node.props['data-d1'] === 'listening-group-down',
+  )
+  assert.equal(ups.length, 2)
+  assert.equal(downs.length, 2)
+  assert.equal(ups[0].props.disabled, true)
+  assert.equal(ups[1].props.disabled, false)
+  assert.equal(downs[0].props.disabled, false)
+  assert.equal(downs[1].props.disabled, true)
+  assert.equal(
+    elements.filter(
+      (node) =>
+        node.tag === 'td' &&
+        String(node.props.colspan ?? '') === '3',
+    ).length,
+    2,
+  )
+  const header = elements.find((node) => node.tag === 'thead')
+  assert.ok(header)
+  const headerCells = walkElements(header).filter(
+    (node) => node.tag === 'th',
+  )
+  assert.equal(headerCells.length, 3)
+  const headerText = textOf(header)
+  assert.ok(headerText.includes('组'))
+  assert.ok(headerText.includes('作品日期'))
+  assert.ok(headerText.includes('操作'))
+  mounted.app.unmount()
+  await vue.nextTick()
+  ok('long synthetic group text keeps fields, photo input and actions mapped')
 }
 
 console.log(`listening-layout: ${passed} checks passed`)
