@@ -137,7 +137,15 @@ PACKAGE_ADAPT_DEFAULT_REVISION = 3
 PACKAGE_OTHER_DEFAULT_REVISION = 3
 # Observation r2 tightens the evidence/disclaimer wording; the schema is
 # unchanged from r1.
-PACKAGE_OBSERVATION_DEFAULT_REVISION = 2
+PACKAGE_OBSERVATION_R2_REVISION = 2
+# Observation r3 explicitly permits a small, teacher-reviewed child-quote
+# draft while keeping existing teacher quotes and all evidence limits.
+PACKAGE_OBSERVATION_R3_REVISION = 3
+PACKAGE_OBSERVATION_DEFAULT_REVISION = PACKAGE_OBSERVATION_R3_REVISION
+# Listening note/group r2 and directional r2 are manifest-layer guidance
+# revisions only; their frozen contract r1 literals stay untouched.
+PACKAGE_LISTENING_QUOTE_DEFAULT_REVISION = 2
+PACKAGE_DIRECTIONAL_QUOTE_DEFAULT_REVISION = 2
 # Reflection is local-only (not in PACKAGE_TASK_TYPES), so its r2 text can ship
 # independently without changing a remotely publishable identity.
 PACKAGE_REFLECTION_DEFAULT_REVISION = 2
@@ -871,6 +879,84 @@ _OBSERVATION_REWRITE_GUIDANCE_R2 = {
     "text": "重写文本须与观察证据一致；可保留或补写贴合证据的匿名情境对话和动作衔接，但不归到具体姓名、不声称从静态照片听到原话、不编造完整新事件、精确分钟/时长、心理活动或因果关系；教师明确给出的原话、时间和人物对应优先。不得把“照片未呈现”“仅凭静态照片无法确认”“信息不足”“无法判断”等模型局限、证据缺口或免责说明写进目标正文。",
     "analysis_evaluation": "评价分析目标返回健康、语言、社会、科学、艺术五领域完整对象；用有证据的教学判断说明可观察表现和支持依据，AI补写的匿名对话和动作衔接不作为已核实的评价依据，不写模型局限或证据缺口说明。",
 }
+_OBSERVATION_GUIDANCE_R3 = {
+    "observation_goal": _OBSERVATION_GUIDANCE_R2["observation_goal"],
+    "observation_process": (
+        "观察记录以照片和教师已填资料能够支持的动作、材料、场景、顺序和幼儿表现为事实基础。"
+        "可以依据教师已保存文字、照片可见互动和观察情境，拟写少量幼儿原话作为可编辑候选；"
+        "已有教师原话、人物对应和顺序必须保留。拟写话语是 AI 建议，不冒充录音、实际听到或已采集事实，"
+        "也不归到照片无法确认的具体姓名。不得编造完整新事件、参与者身份、精确分钟/时长、动作经过、"
+        "心理活动或发展评价。AI 拟写的幼儿话语只能作为情境候选，需教师核对后采用，"
+        "不能反用为已核实的评价或星级依据。不得把模型局限、证据缺口或免责说明写进正文。"
+    ),
+    "analysis_evaluation": (
+        "按健康、语言、社会、科学、艺术五个领域写有证据的教学判断：说明可观察到的表现、"
+        "对应的学习经验和后续支持依据，不写空泛套话；AI 拟写的幼儿话语只作情境候选，"
+        "不能反用为已核实的评价或星级依据，评价必须来自可核对的观察证据。"
+        "不得把模型局限、证据缺口或免责说明写进评价。"
+    ),
+    "support_strategy": (
+        "提出与观察证据对应的后续支持策略，写教师可执行的步骤；"
+        "不把 AI 拟写的幼儿话语或匿名情境当作已核实事实，不以拟写内容反推评价或星级，"
+        "不写模型局限或证据缺口说明。"
+    ),
+}
+_OBSERVATION_REWRITE_GUIDANCE_R3 = {
+    "target": "只重写目标栏，返回目标字段名；评价分析目标必须返回五领域完整对象。",
+    "text": (
+        "重写文本须与观察证据一致；重写观察记录文本时，可以依据已保存文字、观测情境和照片可见互动，"
+        "保留或拟写少量幼儿原话作为可编辑候选；已有教师原话、人物对应和顺序优先保留。"
+        "拟写话语是 AI 建议，不冒充录音、实际听到或已采集事实，不归到照片无法确认的具体姓名，"
+        "不编造完整新事件、参与者身份、精确分钟/时长、动作经过、心理活动或发展评价。"
+        "重写目标或支持策略时保持栏目属性，不把幼儿话语当作目标或策略事实。"
+        "不得把模型局限、证据缺口或免责说明写进目标正文。"
+    ),
+    "analysis_evaluation": (
+        "评价分析目标返回健康、语言、社会、科学、艺术五领域完整对象；"
+        "用有证据的教学判断说明可观察表现和支持依据，AI 拟写的幼儿话语只作情境候选，"
+        "不能反用为已核实的评价或星级依据；不写模型局限或证据缺口说明。"
+    ),
+}
+_LISTENING_NOTE_GUIDANCE_R2 = {
+    "text": (
+        "根据教师已保存的本组倾听记录和/或作品照片，起草可直接放回“一对一倾听记录”栏的正文。"
+        "可以依据教师已存文字、照片可见互动和倾听情境，拟写少量幼儿话语（幼儿原话）作为可编辑候选；"
+        "已有教师原话、人物对应和顺序必须保留。拟写话语是 AI 建议，不冒充录音、实际听到或已采集事实，"
+        "也不冒充幼儿已说过的原话；需要教师核对后才可回填。不得虚构完整新事件、未出现的经过、"
+        "参与者身份、精确时长、家庭情况或发展评价。"
+        "若只有照片，正文须明确以照片可见内容为限，并在 uncertainties 中用简短问题列出需要教师核实的线索；"
+        "不得把不确定内容写成已发生事实。保留教师原文中已有的字词与语气，不扩写无关背景。"
+    ),
+    "uncertainties": (
+        "列出需要教师向幼儿或现场核实的简短问题；没有则返回空数组。"
+        "不要输出材料中不存在的姓名、文件名、记录编号或图片编号。"
+    ),
+}
+_LISTENING_GROUP_GUIDANCE_R2 = {
+    "mode": "group_notes",
+    "groups": (
+        "按输入 groups 的实际 position 逐图位返回，不增加、遗漏、重复或重排图位。"
+        "每组只写照片中可见的画面事实和教师已保存的日期/文字；可以依据已存文字、照片可见互动和情境，"
+        "拟写少量幼儿话语（幼儿原话）作为可编辑候选，已有教师原话、人物对应和顺序必须保留。"
+        "拟写话语是 AI 建议，不冒充录音、实际听到或已采集事实，不归到照片无法确认的具体姓名；"
+        "不得虚构完整新事件、未出现的经过、参与者身份、精确时长或发展评价；"
+        "信息不足时写空字符串并在 uncertainties 中列出需要教师核实的简短问题。"
+        "空槽不会出现在输入中，也不得为未发送图位返回内容。"
+    ),
+}
+_DIRECTIONAL_FIDELITY_R2 = (
+    "只修改教师选中的文字，保留未选内容的含义、顺序、事实和语气。"
+    "仅当 source=listening 且 target=listening_text 时，可以依据选区和上下文拟写少量幼儿话语（幼儿原话），"
+    "作为可编辑候选；已有教师原话、人物对应和顺序优先保留。拟写话语不冒充录音、实际听到或已采集事实。"
+    "weekly 计划、评价、星级、目标、支持策略及其他字段仍不得补写未提供的幼儿原话、现场问答、"
+    "观察经过、家庭情况、评价结果、日期、姓名、园所、照片内容或内部标识；材料不足时返回 clarify 或 no_change。"
+)
+_DIRECTIONAL_LISTENING_EVIDENCE_R2 = (
+    "一对一倾听记录是教师已保存的证据。仅 listening_text 字段可以拟写少量幼儿话语（幼儿原话）作为可编辑候选；"
+    "已有教师原话和顺序必须保留，拟写话语不冒充录音或实际采集事实，需教师核对后才采用。"
+    "不得生成新事件、未出现的经过、参与者身份、精确时长、发展评价，"
+    "不得改写或新增评价条目星级；星级始终由现有逐条控件确认。"
+)
 
 
 def canonical_json(value: Any) -> str:
@@ -1006,14 +1092,28 @@ PROMPT_BUNDLE_MANIFEST: tuple[dict, ...] = (
         _OBSERVATION_INPUT_SCHEMA,
         _OBSERVATION_GENERATE_OUTPUT_SCHEMA,
         _OBSERVATION_GUIDANCE_R2,
-        default_revision=PACKAGE_OBSERVATION_DEFAULT_REVISION,
+        default_revision=PACKAGE_OBSERVATION_R2_REVISION,
     ),
     _bundle(
         "game_observation_rewrite",
         _OBSERVATION_INPUT_SCHEMA,
         _OBSERVATION_REWRITE_OUTPUT_SCHEMA,
         _OBSERVATION_REWRITE_GUIDANCE_R2,
-        default_revision=PACKAGE_OBSERVATION_DEFAULT_REVISION,
+        default_revision=PACKAGE_OBSERVATION_R2_REVISION,
+    ),
+    _bundle(
+        "game_observation_generate",
+        _OBSERVATION_INPUT_SCHEMA,
+        _OBSERVATION_GENERATE_OUTPUT_SCHEMA,
+        _OBSERVATION_GUIDANCE_R3,
+        default_revision=PACKAGE_OBSERVATION_R3_REVISION,
+    ),
+    _bundle(
+        "game_observation_rewrite",
+        _OBSERVATION_INPUT_SCHEMA,
+        _OBSERVATION_REWRITE_OUTPUT_SCHEMA,
+        _OBSERVATION_REWRITE_GUIDANCE_R3,
+        default_revision=PACKAGE_OBSERVATION_R3_REVISION,
     ),
     # Class game-config import is deliberately outside the daily three: its
     # prompt bundle exists so the formal task lifecycle can pin/validate it,
@@ -1054,15 +1154,43 @@ def _weekly_bundle_manifest() -> tuple[dict, ...]:
 def _listening_bundle_manifest() -> tuple[dict, ...]:
     from app.local import listening_ai_contracts
 
-    return tuple(
-        _bundle(
-            item["task_type"],
-            item["input_schema_json"],
-            item["output_schema_json"],
-            dict(item["guidance_defaults_json"]),
+    items: list[dict] = []
+    for item in listening_ai_contracts.bundle_definitions():
+        items.append(
+            _bundle(
+                item["task_type"],
+                item["input_schema_json"],
+                item["output_schema_json"],
+                dict(item["guidance_defaults_json"]),
+            )
         )
-        for item in listening_ai_contracts.bundle_definitions()
-    )
+        if item["task_type"] == listening_ai_contracts.TASK_NOTE:
+            guidance = dict(item["guidance_defaults_json"])
+            guidance["text"] = _LISTENING_NOTE_GUIDANCE_R2["text"]
+            guidance["uncertainties"] = _LISTENING_NOTE_GUIDANCE_R2["uncertainties"]
+            items.append(
+                _bundle(
+                    item["task_type"],
+                    item["input_schema_json"],
+                    item["output_schema_json"],
+                    guidance,
+                    default_revision=PACKAGE_LISTENING_QUOTE_DEFAULT_REVISION,
+                )
+            )
+        elif item["task_type"] == listening_ai_contracts.TASK_GROUP:
+            guidance = dict(item["guidance_defaults_json"])
+            guidance["mode"] = _LISTENING_GROUP_GUIDANCE_R2["mode"]
+            guidance["groups"] = _LISTENING_GROUP_GUIDANCE_R2["groups"]
+            items.append(
+                _bundle(
+                    item["task_type"],
+                    item["input_schema_json"],
+                    item["output_schema_json"],
+                    guidance,
+                    default_revision=PACKAGE_LISTENING_QUOTE_DEFAULT_REVISION,
+                )
+            )
+    return tuple(items)
 
 
 def _curriculum_bundle_manifest() -> tuple[dict, ...]:
@@ -1080,17 +1208,34 @@ def _curriculum_bundle_manifest() -> tuple[dict, ...]:
 
 
 def _directional_bundle_manifest() -> tuple[dict, ...]:
-    return tuple(
-        _bundle(
-            item["task_type"],
-            item["input_schema_json"],
-            item["output_schema_json"],
-            dict(item["guidance_defaults_json"]),
-            contract_version=item["contract_version"],
-            default_revision=item["default_revision"],
+    from app.local import directional_revision_contracts
+
+    items: list[dict] = []
+    for item in directional_revision_contracts.bundle_definitions():
+        items.append(
+            _bundle(
+                item["task_type"],
+                item["input_schema_json"],
+                item["output_schema_json"],
+                dict(item["guidance_defaults_json"]),
+                contract_version=item["contract_version"],
+                default_revision=item["default_revision"],
+            )
         )
-        for item in directional_revision_contracts.bundle_definitions()
-    )
+        guidance = dict(item["guidance_defaults_json"])
+        guidance["fidelity"] = _DIRECTIONAL_FIDELITY_R2
+        guidance["listening_evidence"] = _DIRECTIONAL_LISTENING_EVIDENCE_R2
+        items.append(
+            _bundle(
+                item["task_type"],
+                item["input_schema_json"],
+                item["output_schema_json"],
+                guidance,
+                contract_version=item["contract_version"],
+                default_revision=PACKAGE_DIRECTIONAL_QUOTE_DEFAULT_REVISION,
+            )
+        )
+    return tuple(items)
 
 
 PROMPT_BUNDLE_MANIFEST = (

@@ -311,8 +311,16 @@ class PromptReadTests(PromptCase):
         self.assertEqual(seed["daily_process_adapt"]["default_revision"], 3)
         self.assertEqual(seed["daily_other_activities"]["default_revision"], 3)
         self.assertEqual(seed["daily_reflection_generate"]["default_revision"], 2)
-        self.assertEqual(seed["game_observation_generate"]["default_revision"], 2)
-        self.assertEqual(seed["game_observation_rewrite"]["default_revision"], 2)
+        self.assertEqual(seed["game_observation_generate"]["default_revision"], 3)
+        self.assertEqual(seed["game_observation_rewrite"]["default_revision"], 3)
+        self.assertIn(
+            "可编辑候选",
+            seed["game_observation_generate"]["guidance"]["observation_process"],
+        )
+        self.assertIn(
+            "不冒充录音",
+            seed["game_observation_generate"]["guidance"]["observation_process"],
+        )
         reflection = seed["daily_reflection_generate"]["guidance"]["reflection"]
         self.assertIn("100～200", reflection)
         self.assertIn("实施材料", reflection)

@@ -3361,9 +3361,18 @@ defineExpose({
 }
 .batch-target select {
   padding: 6px 8px;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--kgm-border);
   border-radius: 4px;
-  background: #fff;
+  background: var(--kgm-surface);
+  color: var(--kgm-text);
+}
+.batch-target select:disabled {
+  background: var(--kgm-bg);
+  color: var(--kgm-disabled);
+}
+.batch-target select option {
+  background: var(--kgm-surface);
+  color: var(--kgm-text);
 }
 .batch-actions {
   display: flex;

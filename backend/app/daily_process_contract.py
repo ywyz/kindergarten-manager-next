@@ -239,6 +239,171 @@ def _identity(step: ProcessStep) -> str:
     return step.body.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
+# Conservative adapt dependency check: a one-step rewrite must not cancel an
+# action that an unchanged step still requires for the whole group.
+_NEGATED_ACTION_RE = re.compile(
+    r"(?:不用|不要求|不要|不需要|无需|不必|不再|不能|不可以|不得|禁止|取消|省略|跳过|"
+    r"去掉|删除|停止|不做|不进行|不完成|不练习|不参与|不采用|不使用|"
+    r"免做|免去)"
+    r"(?:再|继续|重复|进行|完成|练习|做|去|要|需要)?"
+)
+_ACTION_CLAUSE_END_RE = re.compile(
+    r"[，,、。；;：:！!?？\n]|(?:改做|改用|改为|换成|替换为|而|并且|然后)"
+)
+_CONDITIONAL_ACTION_PREFIX_RE = re.compile(
+    r"(?:个别|部分|有的|少数|若干|能力较弱|动作不稳|不敢|害怕|胆小|不愿|不想|"
+    r"暂时|稍弱|发展较慢|需要帮助|需要支持|可选择|可以选择|自愿|如果|若|"
+    r"对于|针对|当|可以|也可|或|可)(?:[^。；;\n]{0,20})$"
+)
+_CONDITIONAL_ACTION_CONTEXT_RE = re.compile(
+    r"(?:个别|部分|有的|少数|若干|能力较弱|动作不稳|不敢|害怕|胆小|不愿|不想|"
+    r"暂时|稍弱|发展较慢|需要帮助|需要支持|可选择|可以选择|自愿|如果|若|"
+    r"对于|针对|当|可以|也可|或|可)(?:[^。；;\n]{0,20})$"
+)
+_NESTED_NEGATION_PREFIX_RE = re.compile(
+    r"(?:不用|不要求|不要|不需要|无需|不必|不再|不能|不可以|不得|不可|禁止|"
+    r"不许|不准|别|勿)(?:再|继续|重复|进行|完成|练习|做|去|要|需要|可以|可)?$"
+)
+_NON_EXECUTION_ACTION_CONTEXT_RE = re.compile(
+    r"(?:观察|观看|欣赏|倾听|讨论|交流|评价|比较|回忆|说出|指出|介绍|"
+    r"注意|小心|保护|照顾|不|没|未|别|勿)"
+    r"(?:[^，,。；;！!？?\n]{0,12})$"
+)
+_ACTION_MEASURE_RE = re.compile(r"一个")
+_ACTION_LEADING_FILLERS_RE = re.compile(
+    r"^(?:再|继续|重复|进行|完成|练习|做|去|要|需要|把|将|对|给|让|请|要求|组织|安排)+"
+)
+# Only a small set of generic, single-character action verbs may be removed as
+# a verb prefix (for compound action names such as "翻" + "前滚翻").  This is
+# deliberately not an arbitrary first-character strip.
+_ACTION_VERB_PREFIXES = (
+    "翻", "跳", "跑", "爬", "走", "拍", "抛", "投", "接", "踢", "滚", "转",
+    "蹲", "站", "坐", "举", "推", "拉", "搬", "搭", "剪", "贴", "画", "唱",
+    "说", "听", "看", "读", "写", "数", "比", "找", "拿", "放", "收", "钻",
+    "跨", "攀",
+)
+_GENERIC_ACTION_PHRASES = {
+    "动作", "活动", "游戏", "练习", "任务", "内容", "步骤", "环节", "过程",
+    "材料", "方式", "方法", "规则", "要求", "玩法", "动作要领",
+}
+_SUPPORT_ACTION_PREFIXES = (
+    "催促", "提醒", "提示", "帮助", "协助", "辅助", "鼓励", "表扬", "批评",
+    "安抚", "纠正", "要求", "组织", "安排", "关注", "等待", "看护", "保护",
+    "照顾", "着急", "担心", "害怕", "紧张", "勉强", "强求", "刻意", "反复",
+)
+
+
+def _action_phrase_variants(clause: str) -> list[str]:
+    """Small, literal action phrases only; never invent semantic synonyms."""
+    normalized = clause.strip().strip(" 　，,。；;：:")
+    if not normalized:
+        return []
+    normalized = _ACTION_LEADING_FILLERS_RE.sub("", normalized).strip()
+    normalized = normalized.strip(" 　，,。；;：:的地")
+    variants: list[str] = []
+    if normalized:
+        variants.append(normalized)
+        # A finite verb-prefix construction can describe the same action name
+        # ("翻前滚翻" vs "前滚翻"); never strip arbitrary first characters.
+        if normalized[0] in _ACTION_VERB_PREFIXES:
+            tail = normalized[1:].strip()
+            if len(_content(tail)) >= 3:
+                variants.append(tail)
+        for suffix in ("动作", "活动", "游戏", "练习", "任务", "环节"):
+            if normalized.endswith(suffix) and len(normalized) > len(suffix) + 1:
+                variants.append(normalized[: -len(suffix)].strip())
+    result: list[str] = []
+    for variant in variants:
+        content = _content(variant)
+        if len(content) < 2 or content in _GENERIC_ACTION_PHRASES:
+            continue
+        if any(content.startswith(prefix) for prefix in _SUPPORT_ACTION_PREFIXES):
+            continue
+        if variant not in result:
+            result.append(variant)
+    return result
+
+
+def _action_content(text: str) -> str:
+    """Compare actions without the single optional “一个” measure construction."""
+    return _ACTION_MEASURE_RE.sub("", _content(text))
+
+
+def _negated_action_phrases(text: str) -> list[str]:
+    phrases: list[str] = []
+    for match in _NEGATED_ACTION_RE.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        prefix = text[line_start : match.start()]
+        if prefix and prefix[-1] in "不没未别勿":
+            continue
+        if _NESTED_NEGATION_PREFIX_RE.search(prefix):
+            continue
+        if _CONDITIONAL_ACTION_PREFIX_RE.search(prefix):
+            continue
+        tail = text[match.end() :]
+        stop = _ACTION_CLAUSE_END_RE.search(tail)
+        clause = tail[: stop.start()] if stop else tail
+        for phrase in _action_phrase_variants(clause):
+            if phrase not in phrases:
+                phrases.append(phrase)
+    return phrases
+
+
+def _phrase_is_core_in_step(step_text: str, phrase: str) -> bool:
+    needle = _action_content(phrase)
+    if not needle:
+        return False
+    for clause in re.split(r"[。；;！!？?\n，,]", step_text):
+        haystack = _action_content(clause)
+        position = haystack.find(needle)
+        while position >= 0:
+            before = haystack[max(0, position - 24) : position]
+            if (
+                not _CONDITIONAL_ACTION_CONTEXT_RE.search(before)
+                and not _NON_EXECUTION_ACTION_CONTEXT_RE.search(before)
+            ):
+                return True
+            position = haystack.find(needle, position + 1)
+    return False
+
+
+def validate_adapt_dependencies(
+    saved: list[ProcessStep],
+    final: list[ProcessStep],
+) -> None:
+    """Reject one-step edits that negate another unchanged required action.
+
+    Conditional support ("个别幼儿暂不…") and teacher support wording are
+    deliberately exempt; only explicit, whole-group action cancellation that
+    remains contradicted by an unchanged step is rejected.
+    """
+    matcher = difflib.SequenceMatcher(
+        None,
+        [_identity(step) for step in saved],
+        [_identity(step) for step in final],
+        autojunk=False,
+    )
+    changed_steps: list[ProcessStep] = []
+    unchanged_steps: list[ProcessStep] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            unchanged_steps.extend(final[j1:j2])
+        elif tag == "replace":
+            changed_steps.extend(final[j1:j2])
+        elif tag == "insert":
+            changed_steps.extend(final[j1:j2])
+    for changed_step in changed_steps:
+        for phrase in _negated_action_phrases(changed_step.body):
+            if any(
+                _phrase_is_core_in_step(step.body, phrase)
+                for step in unchanged_steps
+            ):
+                raise DailyProcessContractError(
+                    "适龄调整与新步骤取消的动作和未变步骤仍要求不一致："
+                    "请改为局部支持、步骤或表达调整，或返回 no_change"
+                )
+
+
 def _content(text: str) -> str:
     return _CLEANUP_DROP.sub("", _normalize_structural_numbers(text))
 
@@ -801,3 +966,4 @@ def validate_adapt_change(
         raise DailyProcessContractError("适龄调整不得删除或重排活动环节")
     if modified + added > 1:
         raise DailyProcessContractError("适龄调整仅可修改或新增一个环节")
+    validate_adapt_dependencies(saved, final)

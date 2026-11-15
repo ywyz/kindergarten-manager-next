@@ -182,12 +182,17 @@ function canRunField(field: 'goal' | 'note' | 'evaluation'): boolean {
   if (!canCreate.value) return false
   if (field === 'goal') return goalHasMaterial.value
   if (field === 'note') {
-    return photoGroups.value.some(
-      (group) => group.group_id === groupId.value,
-    )
+    return photoGroups.value.length > 0
   }
   return true
 }
+function noteCurrentText(value: unknown): string {
+  const text = String(value ?? '').trim()
+  return text
+    ? `已有原文（非 AI 新增）：${text}`
+    : '当前无已存原文'
+}
+
 function updateDraft(): void {
   draft.value =
     pendingCreate.value !== null ||
@@ -869,7 +874,9 @@ function openDirectionalCandidate(
     ...(field === 'listening_text'
       ? [
           ...(preview.value.proposed.photo_only
-            ? ['仅据照片起草，待教师核实；不会把画面推断写成幼儿原话']
+            ? [
+                '仅据照片拟写少量幼儿表达，待教师核对；不等同于现场采集的原话',
+              ]
             : []),
           ...uncertainties,
         ]
@@ -1426,31 +1433,15 @@ defineExpose({
         >
           生成观察目标
         </el-button>
-        <div class="rail-note-choice">
-          <el-select
-            v-model="selectedGroup"
-            size="small"
-            data-d1="listening-ai-group"
-            placeholder="选择有照片的图组"
-            :disabled="disabled || busy || hasLiveTask || photoGroups.length === 0"
-          >
-            <el-option
-              v-for="group in photoGroups"
-              :key="group.group_id"
-              :label="`第 ${(group.position ?? 0) + 1} 组`"
-              :value="group.group_id"
-            />
-          </el-select>
-          <el-button
-            type="primary"
-            data-d1="listening-ai-run-note"
-            :loading="creating && selectedField === 'note'"
-            :disabled="!canRunField('note')"
-            @click="startField('note')"
-          >
-            整理本组倾听记录（{{ photoGroups.length }} 张有效照片）
-          </el-button>
-        </div>
+        <el-button
+          type="primary"
+          data-d1="listening-ai-run-note"
+          :loading="creating && selectedField === 'note'"
+          :disabled="!canRunField('note')"
+          @click="startField('note')"
+        >
+          整理本领域倾听记录（{{ photoGroups.length }} 张有效照片）
+        </el-button>
         <el-button
           type="primary"
           data-d1="listening-ai-run-evaluation"
@@ -1461,6 +1452,9 @@ defineExpose({
           生成本领域评价建议
         </el-button>
       </div>
+      <p class="muted rail-note-hint" data-d1="listening-ai-note-hint">
+        整理本领域倾听记录可辅助补写幼儿原话；仅作候选，请核对后采用。已有原文不会被自动替换。
+      </p>
       <span v-if="!goalHasMaterial" class="muted">
         本领域暂无可发送的已存文字或照片材料
       </span>
@@ -1524,12 +1518,23 @@ defineExpose({
 
     <template v-if="preview && candidate">
       <el-alert
+        v-if="
+          preview.task_type === 'listening_note_draft' ||
+          preview.task_type === 'listening_group_notes'
+        "
+        type="info"
+        :closable="false"
+        class="block"
+        data-d1="listening-ai-note-ai-notice"
+        title="AI 可依据图文补写少量幼儿原话，仅作候选；请教师核对，不能当作现场实际听到的记录。"
+      />
+      <el-alert
         v-if="preview.task_type === 'listening_note_draft' && preview.proposed.photo_only"
         type="info"
         :closable="false"
         class="block"
         data-d1="listening-ai-photo-only"
-        title="仅据照片起草，待教师核实；不会把画面推断写成幼儿原话。"
+        title="本候选未收到已保存文字，仅据照片拟写少量幼儿表达；请核对后再决定是否采用。"
       />
       <div
         v-if="preview.task_type === 'listening_group_notes'"
@@ -1576,7 +1581,12 @@ defineExpose({
                 )
             "
           />
-          <div class="muted">当前：{{ note.current || '未填写' }}</div>
+          <div
+            class="muted"
+            data-d1="listening-ai-group-note-current"
+          >
+            {{ noteCurrentText(note.current) }}
+          </div>
           <div v-if="note.uncertainties.length" class="muted">
             待核实：{{ note.uncertainties.join('；') }}
           </div>
@@ -1619,6 +1629,12 @@ defineExpose({
               )
           "
         />
+        <div
+          class="muted"
+          data-d1="listening-ai-note-current"
+        >
+          {{ noteCurrentText(preview.proposed.current) }}
+        </div>
         <div v-if="(preview.proposed.uncertainties as string[]).length" class="muted">
           待核实：{{ (preview.proposed.uncertainties as string[]).join('；') }}
         </div>
@@ -1811,10 +1827,10 @@ defineExpose({
   flex-direction: column;
   gap: 10px;
 }
-.rail-note-choice {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.rail-note-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
 }
 .ai-actions :deep(.el-button) {
   width: 100%;
@@ -1839,9 +1855,25 @@ defineExpose({
 }
 .ai-footer {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
   margin-top: 10px;
+}
+.ai-footer :deep(.el-button) {
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 34px;
+  margin: 0;
+  padding: 8px 12px;
+  white-space: normal;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
+}
+.ai-footer :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 .muted {
   color: var(--el-text-color-secondary);

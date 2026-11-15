@@ -296,6 +296,153 @@ class AdaptOneStepTests(unittest.TestCase):
         with self.assertRaises(DailyProcessContractError):
             validate_adapt_change(BASE, "只有一个环节", "只改一个环节")
 
+
+class AdaptDependencyConsistencyTests(unittest.TestCase):
+    """Repository-synthetic process text only; no teacher material."""
+
+    SAVED = (
+        "1. 导入\n师：说说颜色。\n"
+        "2. 探索\n师：请幼儿完成跨跳动作。\n"
+        "3. 回顾\n师：再练习跨跳动作。"
+    )
+
+    def test_canceling_a_core_action_still_required_by_unchanged_step_is_rejected(self):
+        final = (
+            "1. 导入\n师：说说颜色。\n"
+            "2. 探索\n师：不用做跨跳动作，改做平衡走。\n"
+            "3. 回顾\n师：再练习跨跳动作。"
+        )
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(self.SAVED, self.SAVED, final)
+
+    def test_added_step_canceling_a_core_action_is_rejected(self):
+        final = (
+            "1. 导入\n师：说说颜色。\n"
+            "2. 新增提示\n师：不用做跨跳动作，改做平衡走。\n"
+            "3. 探索\n师：请幼儿完成跨跳动作。\n"
+            "4. 回顾\n师：再练习跨跳动作。"
+        )
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(self.SAVED, self.SAVED, final)
+
+    def test_individual_conditional_support_is_not_treated_as_cancellation(self):
+        final = (
+            "1. 导入\n师：说说颜色。\n"
+            "2. 探索\n师：能力较弱的幼儿暂不做跨跳动作，可改走平衡线。\n"
+            "3. 回顾\n师：再练习跨跳动作。"
+        )
+        validate_adapt_change(self.SAVED, self.SAVED, final)
+
+    def test_optional_alternative_support_is_not_treated_as_cancellation(self):
+        final = (
+            "1. 导入\n师：说说颜色。\n"
+            "2. 探索\n师：个别幼儿暂不做跨跳动作，可选择平衡走替代。\n"
+            "3. 回顾\n师：再练习跨跳动作。"
+        )
+        validate_adapt_change(self.SAVED, self.SAVED, final)
+
+    def test_local_support_wording_is_not_treated_as_cancellation(self):
+        final = (
+            "1. 导入\n师：说说颜色。\n"
+            "2. 探索\n师：鼓励幼儿尝试，不用催促完成跨跳动作。\n"
+            "3. 回顾\n师：再练习跨跳动作。"
+        )
+        validate_adapt_change(self.SAVED, self.SAVED, final)
+
+    def test_emotional_support_wording_is_not_treated_as_cancellation(self):
+        saved = (
+            "1. 导入\n师：提醒幼儿不要着急。\n"
+            "2. 探索\n师：请幼儿尝试跨跳动作。\n"
+            "3. 回顾\n师：分享发现。"
+        )
+        final = changed(1, "2. 探索\n师：不用着急，请幼儿尝试跨跳动作。", saved)
+        validate_adapt_change(saved, saved, final)
+
+    def test_conditional_only_unchanged_clause_does_not_create_false_conflict(self):
+        saved = (
+            "1. 准备\n师：能力较弱的幼儿可改走平衡线。\n"
+            "2. 回顾\n师：分享发现。"
+        )
+        final = changed(1, "2. 回顾\n师：不用走平衡线，改走直线。", saved)
+        validate_adapt_change(saved, saved, final)
+
+    def test_no_change_still_passes(self):
+        validate_adapt_change(self.SAVED, self.SAVED, self.SAVED)
+
+    def test_quantified_action_phrase_matches_unchanged_step(self):
+        saved = (
+            "1. 探索\n师：请翻一个前滚翻。\n"
+            "2. 连贯练习\n师：翻一个前滚翻后站稳。"
+        )
+        final = changed(0, "1. 探索\n师：不用翻前滚翻，改爬过垫道。", saved)
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(saved, saved, final)
+
+    def test_safety_do_not_push_is_not_a_positive_requirement(self):
+        saved = (
+            "1. 探索\n师：大家依次排队。\n"
+            "2. 连贯练习\n师：排队时不推挤。"
+        )
+        final = changed(0, "1. 探索\n师：大家不要推挤，依次排队。", saved)
+        validate_adapt_change(saved, saved, final)
+
+    def test_do_not_skip_and_cannot_cancel_are_safety_reminders(self):
+        saved = (
+            "1. 探索\n师：请完成跨跳动作。\n"
+            "2. 连贯练习\n师：请完成跨跳动作。"
+        )
+        for text in ("不要跳过跨跳动作。", "不能取消跨跳动作。"):
+            with self.subTest(text=text):
+                final = changed(0, f"1. 探索\n师：{text}", saved)
+                validate_adapt_change(saved, saved, final)
+
+    def test_unsteady_and_fearful_child_conditions_are_support(self):
+        saved = (
+            "1. 探索\n师：请完成跨跳动作。\n"
+            "2. 连贯练习\n师：请完成跨跳动作。"
+        )
+        for text in (
+            "动作不稳的幼儿不用做跨跳动作，可改走平衡线。",
+            "对不敢尝试的幼儿，不用做跨跳动作，可改走平衡线。",
+        ):
+            with self.subTest(text=text):
+                final = changed(0, f"1. 探索\n师：{text}", saved)
+                validate_adapt_change(saved, saved, final)
+
+    def test_exclamation_does_not_hide_cancellation(self):
+        saved = (
+            "1. 探索\n师：请完成跨跳动作。\n"
+            "2. 连贯练习\n师：请完成跨跳动作。"
+        )
+        final = changed(0, "1. 探索\n师：取消跨跳动作！改走平衡线。", saved)
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(saved, saved, final)
+
+    def test_teacher_reminder_requiring_action_remains_core(self):
+        saved = (
+            "1. 探索\n师：请完成跨跳动作。\n"
+            "2. 连贯练习\n师：教师提醒全体幼儿完成跨跳动作。"
+        )
+        final = changed(0, "1. 探索\n师：不用做跨跳动作，改走平衡线。", saved)
+        with self.assertRaises(DailyProcessContractError):
+            validate_adapt_change(saved, saved, final)
+
+    def test_single_foot_support_does_not_become_a_cancellation(self):
+        saved = (
+            "1. 探索\n师：请双脚跳跃。\n"
+            "2. 连贯练习\n师：请双脚跳跃。"
+        )
+        final = changed(0, "1. 探索\n师：不要单脚跳跃，双脚同时起落。", saved)
+        validate_adapt_change(saved, saved, final)
+
+    def test_frequency_support_does_not_become_a_cancellation(self):
+        saved = (
+            "1. 探索\n师：请拍手一次。\n"
+            "2. 连贯练习\n师：请拍手一次。"
+        )
+        final = changed(0, "1. 探索\n师：不用拍手三次，拍一次即可。", saved)
+        validate_adapt_change(saved, saved, final)
+
 class ProductionGateTests(unittest.TestCase):
     def test_gate_rejects_two_changes_and_accepts_one(self):
         from app.local.ai_task_service import validate_daily_candidate_contract
@@ -316,6 +463,28 @@ class ProductionGateTests(unittest.TestCase):
             payload,
             {},
         )
+
+    def test_gate_rejects_one_step_that_contradicts_an_unchanged_action(self):
+        from app.local.ai_task_service import validate_daily_candidate_contract
+        from app.local.prompt_bundles import CandidateInvalid
+
+        saved = (
+            "1. 导入\n师：说说颜色。\n"
+            "2. 探索\n师：请幼儿完成跨跳动作。\n"
+            "3. 回顾\n师：再练习跨跳动作。"
+        )
+        candidate = changed(
+            1,
+            "2. 探索\n师：不用做跨跳动作，改做平衡走。",
+            saved,
+        )
+        with self.assertRaises(CandidateInvalid):
+            validate_daily_candidate_contract(
+                "daily_process_adapt",
+                {"process": candidate},
+                {"process_source": saved, "split_baseline_process": saved},
+                {},
+            )
 
 
 class AdaptPatchTests(unittest.TestCase):
@@ -519,6 +688,9 @@ class AdaptWireTests(unittest.TestCase):
         self.assertIn("adapt_steps", instructions)
         self.assertIn("只写一个实际步骤", instructions)
         self.assertIn("个人指导只决定当前这一个环节", instructions)
+        self.assertIn("前后依赖", instructions)
+        self.assertIn("未变步骤仍要求幼儿完成的核心动作", instructions)
+        self.assertIn("返回 no_change", instructions)
 
 
 class NewlineAndSingleStepTests(unittest.TestCase):

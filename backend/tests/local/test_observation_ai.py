@@ -826,6 +826,66 @@ class ObservationAiReviewTests(ObservationAiCase):
         )
         self.assertEqual(detail["review_fragments"], [])
 
+    def test_candidate_detail_freezes_original_text_for_source_comparison(self):
+        observation_id, _asset_id = self._ready_observation()
+        generated_id, _task, executor = self._run_generate(observation_id)
+        detail = observation_ai_service.get_candidate(
+            self.session,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            candidate_id=generated_id,
+        )
+        dependencies = detail["source"]["dependencies"]
+        self.assertEqual(dependencies["observation_process"], "幼儿在积木区搭建。")
+
+        rewrite_task = self._create_task(
+            observation_id,
+            task_type="game_observation_rewrite",
+            target="observation_process",
+        )
+        executor.notify()
+        self.assertEqual(self._wait_status(rewrite_task["id"]), "succeeded")
+        rewrite_id = self._candidate_id(rewrite_task["id"])
+        rewrite_detail = observation_ai_service.get_candidate(
+            self.session,
+            profile_id=self.profile.id,
+            observation_id=observation_id,
+            candidate_id=rewrite_id,
+        )
+        rewrite_dependencies = rewrite_detail["source"]["dependencies"]
+        self.assertEqual(
+            rewrite_dependencies["rewrite_source"], "幼儿在积木区搭建。"
+        )
+        self.assertEqual(rewrite_dependencies["target"], "observation_process")
+
+    def test_review_fragments_include_all_quoted_text_without_origin_claim(self):
+        raw = {
+            "observation_goal": "",
+            "observation_process": "教师记录：“我们一起搭桥。” 候选补充“桥要倒了”。",
+            "analysis_evaluation": {
+                "health": "",
+                "language": "",
+                "social": "",
+                "science": "",
+                "arts": "",
+            },
+            "support_strategy": "",
+        }
+        fragments, truncated = observation_ai_service._extract_fragments(
+            raw, "game_observation_generate"
+        )
+        self.assertFalse(truncated)
+        self.assertEqual(
+            [item["text"] for item in fragments],
+            ["我们一起搭桥。", "桥要倒了"],
+        )
+        for item in fragments:
+            self.assertNotIn("origin", item)
+            self.assertEqual(
+                set(item),
+                {"target", "domain", "start", "end", "text", "hash"},
+            )
+
 
 class ObservationAiPinnedConfigTests(ObservationAiCase):
     def _pick(self, task):

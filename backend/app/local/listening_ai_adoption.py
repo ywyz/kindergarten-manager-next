@@ -157,17 +157,37 @@ def _current_projection(
     return projection
 
 
-def _current_targets(session: Session, profile_id: str, inp: LocalAIInput) -> tuple[dict[str, Any], dict[str, Any]]:
-    dto = listening_service.read_record_no_tx(
-        session, profile_id=profile_id, record_id=inp.listening_record_id
-    )
+def _current_domain(
+    dto: Mapping[str, Any], domain_name: str
+) -> Mapping[str, Any]:
     domain = next(
-        (item for item in dto["domains"] if item["domain"] == inp.listening_domain),
+        (
+            item
+            for item in dto.get("domains") or []
+            if item.get("domain") == domain_name
+        ),
         None,
     )
     if domain is None:
         raise LocalStorageError("倾听领域缺失")
-    groups = sorted(domain["groups"], key=lambda item: item["position"])
+    return domain
+
+
+def _current_groups(
+    dto: Mapping[str, Any], domain_name: str
+) -> list[Mapping[str, Any]]:
+    return sorted(
+        _current_domain(dto, domain_name).get("groups") or [],
+        key=lambda item: int(item["position"]),
+    )
+
+
+def _current_targets(session: Session, profile_id: str, inp: LocalAIInput) -> tuple[dict[str, Any], dict[str, Any]]:
+    dto = listening_service.read_record_no_tx(
+        session, profile_id=profile_id, record_id=inp.listening_record_id
+    )
+    domain = _current_domain(dto, inp.listening_domain)
+    groups = _current_groups(dto, inp.listening_domain)
     if inp.task_type == listening_ai_contracts.TASK_GOAL:
         return dto, {"goal": (domain.get("goal") or "").strip()}
     if inp.task_type == listening_ai_contracts.TASK_GROUP:
@@ -628,7 +648,7 @@ def adopt(
         updates = group_note_updates(
             domain=inp.listening_domain,
             input_positions=input_positions,
-            groups=dto["groups"],
+            groups=_current_groups(dto, inp.listening_domain),
             selected=selected,
         )
         patch_groups: list[dict[str, Any]] = []
@@ -695,7 +715,8 @@ def adopt(
             )
         if task_type == listening_ai_contracts.TASK_GROUP:
             by_position_now = {
-                int(group["position"]): group for group in dto_now["groups"]
+                int(group["position"]): group
+                for group in _current_groups(dto_now, inp.listening_domain)
             }
             for item in adopted:
                 group_now = by_position_now.get(int(item["position"]))

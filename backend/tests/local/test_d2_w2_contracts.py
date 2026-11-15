@@ -416,22 +416,30 @@ class BundleSeedTests(LocalTestCase):
             ("game_observation_generate", 1, 1),
             ("game_observation_rewrite", 1, 1),
         }
-        observation_new_keys = {
+        observation_r2_keys = {
             ("game_observation_generate", 1, 2),
             ("game_observation_rewrite", 1, 2),
         }
-        self.assertEqual(len(observation_rows), 4)
+        observation_r3_keys = {
+            ("game_observation_generate", 1, 3),
+            ("game_observation_rewrite", 1, 3),
+        }
+        self.assertEqual(len(observation_rows), 6)
         observation_by_key = {
             (row["task_type"], row["contract_version"], row["default_revision"]): row[
                 "bundle_hash"
             ]
             for row in observation_rows
         }
+        # The migration-seeded R1/R2 rows must still match their historical
+        # manifest bytes; R3 is the new default and cannot rename them.
         self.assertEqual(
             set(observation_by_key),
-            observation_baseline_keys | observation_new_keys,
+            observation_baseline_keys | observation_r2_keys | observation_r3_keys,
         )
-        for key in observation_baseline_keys | observation_new_keys:
+        for key in (
+            observation_baseline_keys | observation_r2_keys | observation_r3_keys
+        ):
             self.assertEqual(observation_by_key[key], manifest[key])
         observation_latest = {}
         for task_type, contract_version, default_revision in observation_by_key:
@@ -441,8 +449,8 @@ class BundleSeedTests(LocalTestCase):
         self.assertEqual(
             observation_latest,
             {
-                "game_observation_generate": (1, 2),
-                "game_observation_rewrite": (1, 2),
+                "game_observation_generate": (1, 3),
+                "game_observation_rewrite": (1, 3),
             },
         )
 

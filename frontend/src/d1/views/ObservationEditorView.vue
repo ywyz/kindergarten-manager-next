@@ -206,6 +206,14 @@ interface CandidateDetail {
   source_change?: Record<string, unknown> | null
   source?: {
     source_revision?: number
+    dependency_hash?: string
+    target?: string | null
+    dependencies?: {
+      observation_process?: string | null
+      rewrite_source?: string | null
+      target?: string | null
+      [key: string]: unknown
+    }
     internal_context?: {
       missing_fields?: string[]
       warnings?: { code?: string; message?: string }[]
@@ -349,6 +357,27 @@ const candidateCursor = ref<string | null>(null)
 const candidateId = ref('')
 const candidateDetail = ref<CandidateDetail | null>(null)
 const candidateOpen = ref(false)
+const candidateOriginalSource = computed<string | null>(() => {
+  const detail = candidateDetail.value
+  const dependencies = detail?.source?.dependencies
+  if (!detail || !dependencies) return null
+  if (detail.task_type === 'game_observation_generate') {
+    return typeof dependencies.observation_process === 'string'
+      ? dependencies.observation_process
+      : ''
+  }
+  if (detail.task_type === 'game_observation_rewrite') {
+    return typeof dependencies.rewrite_source === 'string'
+      ? dependencies.rewrite_source
+      : null
+  }
+  return null
+})
+const candidateOriginalLabel = computed(() =>
+  candidateDetail.value?.task_type === 'game_observation_rewrite'
+    ? '生成前已保存原文（只读，单栏重写来源）'
+    : '生成前已保存原文（只读）',
+)
 const candidateDetailLoading = ref(false)
 const candidateDetailError = ref('')
 const candidateTargets = ref<ObservationTarget[]>([])
@@ -4608,6 +4637,9 @@ onBeforeUnmount(() => {
                 重写{{ TARGET_LABELS[target] }}
               </el-button>
             </div>
+            <p class="muted" data-d1="obs-child-quote-note">
+              可依据照片、观察情境和已存文字拟写少量幼儿原话；先作为可编辑候选供核对，采用后才保存，不冒充录音或已采集事实。
+            </p>
             <p v-if="aiTaskStatus" class="muted" data-d1="obs-task-status">
               任务状态：{{ aiTaskStatusLabel }}<template v-if="aiTaskPhase"> · {{ aiTaskPhase }}</template>
               <template v-if="aiTaskElapsedMs"> · 已等待 {{ Math.round(aiTaskElapsedMs / 1000) }} 秒</template>
@@ -4744,6 +4776,22 @@ onBeforeUnmount(() => {
             :closable="false"
             :title="warning.message || warning.code || '候选输入提示'"
           />
+          <div
+            v-if="candidateOriginalSource !== null"
+            class="candidate-block"
+            data-d1="obs-candidate-original-source"
+          >
+            <p class="muted" data-d1="obs-candidate-original-label">
+              {{ candidateOriginalLabel }}
+            </p>
+            <pre>{{ candidateOriginalSource || '（生成前该栏为空）' }}</pre>
+            <p class="muted">
+              这里可能包含教师已保存的原话；候选中的引号请结合原话核对，不能统称为 AI 新造。
+            </p>
+          </div>
+          <p class="muted" data-d1="obs-candidate-editable">
+            AI 候选（可编辑；核对后采用，未采用不写入正文）。
+          </p>
           <div class="targets">
             <el-checkbox
               v-for="target in candidateDetail.available_targets"
@@ -4809,8 +4857,11 @@ onBeforeUnmount(() => {
               取消本次候选编辑
             </el-button>
           </div>
-          <div v-if="candidateDetail.review_fragments.length" class="fragments">
-            <p class="muted">审核提示（不会进入正文或 Word）：</p>
+          <div v-if="candidateDetail.review_fragments.length" class="fragments" data-d1="obs-candidate-fragments">
+            <p class="muted">需核对的对话片段（不会进入正文或 Word）：</p>
+            <p class="muted">
+              只列出候选中的引号片段，不判断哪些来自教师已存原话、哪些由 AI 拟写。
+            </p>
             <ul>
               <li v-for="(fragment, index) in candidateDetail.review_fragments" :key="index">
                 {{ targetLabel(fragment.target) }}：{{ fragment.text }}

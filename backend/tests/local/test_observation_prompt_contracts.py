@@ -273,17 +273,131 @@ class ObservationBundleContractTests(unittest.TestCase):
         for task_type in prompt_bundles.OBSERVATION_TASK_TYPES:
             guidance = seed[task_type]["guidance"]
             joined = "\n".join(guidance.values())
-            self.assertIn("照片未呈现", joined)
-            self.assertIn("无法确认", joined)
-            self.assertIn("匿名", joined)
+            self.assertIn("少量幼儿原话", joined)
+            self.assertIn("可编辑候选", joined)
+            self.assertIn("已有教师原话", joined)
+            self.assertIn("人物对应和顺序", joined)
+            self.assertIn("不冒充录音", joined)
+            self.assertIn("不能反用为已核实的评价或星级依据", joined)
+            self.assertIn("完整新事件", joined)
             self.assertIn("证据缺口", joined)
-            self.assertEqual(seed[task_type]["default_revision"], 2)
+            self.assertEqual(seed[task_type]["default_revision"], 3)
             if task_type == "game_observation_generate":
                 self.assertIn("能够支持", joined)
-                self.assertIn("不作为已核实的评价依据", joined)
             else:
                 self.assertIn("观察证据一致", joined)
-                self.assertIn("不作为已核实", joined)
+                self.assertIn("不能反用为已核实的评价或星级依据", joined)
+
+    def test_published_observation_r1_r2_payload_hashes_are_unchanged(self):
+        expected = {
+            ("game_observation_generate", 1): "ad7736c073b48aff69f4b11be2847843abe74258e78058c606c3dc8b41ad94af",
+            ("game_observation_generate", 2): "9c8809d2b7c6e93261b1fee0e16324a769db79cd1ffb632d6176db321600772c",
+            ("game_observation_rewrite", 1): "00ce1c4125d24c6c15660de9f5c4e7174b91dd64a18960545dd283d142ace470",
+            ("game_observation_rewrite", 2): "a0d8ec0b587e1e4e1a9d625192b3ac4532a2157e76c412457d1a737fd12e8bce",
+        }
+        for key, digest in expected.items():
+            task_type, revision = key
+            row = next(
+                bundle
+                for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST
+                if bundle["task_type"] == task_type
+                and bundle["contract_version"] == 1
+                and bundle["default_revision"] == revision
+            )
+            self.assertEqual(row["bundle_hash"], digest)
+            self.assertEqual(row["default_revision"], revision)
+        self.assertEqual(
+            prompt_bundles.initial_prompt_seed()["game_observation_generate"][
+                "default_revision"
+            ],
+            3,
+        )
+        self.assertEqual(
+            prompt_bundles.initial_prompt_seed()["game_observation_rewrite"][
+                "default_revision"
+            ],
+            3,
+        )
+
+    def test_listening_quote_default_is_manifest_r2_and_old_r1_remains(self):
+        from app.local import listening_ai_contracts
+
+        seed = prompt_bundles.initial_prompt_seed()
+        note = seed["listening_note_draft"]
+        group = seed["listening_group_notes"]
+        self.assertEqual(note["default_revision"], 2)
+        self.assertEqual(group["default_revision"], 2)
+        self.assertIn("少量幼儿话语", note["guidance"]["text"])
+        self.assertIn("可编辑候选", note["guidance"]["text"])
+        self.assertIn("已有教师原话", note["guidance"]["text"])
+        self.assertIn("不冒充录音", note["guidance"]["text"])
+        self.assertIn("少量幼儿话语", group["guidance"]["groups"])
+        self.assertIn("已有教师原话", group["guidance"]["groups"])
+        self.assertIn("不冒充录音", group["guidance"]["groups"])
+        old_note = next(
+            bundle
+            for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST
+            if bundle["task_type"] == "listening_note_draft"
+            and bundle["default_revision"] == 1
+        )
+        old_group = next(
+            bundle
+            for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST
+            if bundle["task_type"] == "listening_group_notes"
+            and bundle["default_revision"] == 1
+        )
+        self.assertEqual(
+            old_note["bundle_hash"],
+            "542f480f7725b52fa199b393b31da8b6fc63536d3645f8fa9eba4ed6e4330941",
+        )
+        self.assertEqual(
+            old_group["bundle_hash"],
+            "7d6a4a8cd5cc13a633c8e9a44d925eb55d21cb2a0122e3023f0d67c341b24bab",
+        )
+        self.assertIn("不得虚构幼儿引语", old_note["guidance_defaults_json"]["text"])
+        self.assertIn("不得推断幼儿原话", old_group["guidance_defaults_json"]["groups"])
+        self.assertEqual(
+            listening_ai_contracts.bundle_definitions()[0]["task_type"],
+            "listening_note_draft",
+        )
+
+    def test_directional_quote_default_is_manifest_r2_and_old_r1_remains(self):
+        from app.local import directional_revision_contracts
+
+        seed = prompt_bundles.initial_prompt_seed()
+        current = seed["directional_revision"]
+        self.assertEqual(current["default_revision"], 2)
+        fidelity = current["guidance"]["fidelity"]
+        evidence = current["guidance"]["listening_evidence"]
+        self.assertIn("source=listening", fidelity)
+        self.assertIn("target=listening_text", fidelity)
+        self.assertIn("少量幼儿话语", fidelity)
+        self.assertIn("weekly 计划", fidelity)
+        self.assertIn("listening_text", evidence)
+        self.assertIn("已有教师原话", evidence)
+        self.assertIn("不得改写或新增评价条目星级", evidence)
+        self.assertNotEqual(
+            fidelity,
+            directional_revision_contracts._GUIDANCE["fidelity"],
+        )
+        self.assertIn(
+            "不得补写未提供的幼儿原话",
+            directional_revision_contracts._GUIDANCE["fidelity"],
+        )
+        old = next(
+            bundle
+            for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST
+            if bundle["task_type"] == "directional_revision"
+            and bundle["default_revision"] == 1
+        )
+        self.assertEqual(
+            old["bundle_hash"],
+            "6540ce21570f1c89b1238994ac0b609d9b91cd6e924155f62fca397bb4957438",
+        )
+        self.assertEqual(
+            old["guidance_defaults_json"],
+            directional_revision_contracts._GUIDANCE,
+        )
 
 
 if __name__ == "__main__":

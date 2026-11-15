@@ -2910,6 +2910,100 @@ async function main() {
     ok('R04/R15 DOM checkbox change keeps the preview and submits the reviewed adopt')
   }
 
+  // -- candidate source comparison: frozen teacher text vs editable AI draft --
+  {
+    const generatedDetail = {
+      id: 'c1',
+      candidate_hash: 'c'.repeat(64),
+      task_type: 'game_observation_generate',
+      available_targets: ['observation_goal', 'observation_process', 'analysis_evaluation', 'support_strategy'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [
+        { target: 'observation_process', text: '我们一起搭桥。', start: 0, end: 7 },
+        { target: 'observation_process', text: '桥要倒了。', start: 20, end: 25 },
+      ],
+      source: {
+        source_revision: 3,
+        dependencies: {
+          observation_process: '教师已保存原话：“我们一起搭桥。”',
+        },
+      },
+      raw_candidate: {
+        observation_goal: '候选目标',
+        observation_process: '候选补充：“桥要倒了。”',
+        analysis_evaluation: { health: '', language: '', social: '', science: '', arts: '' },
+        support_strategy: '候选策略',
+      },
+    }
+    const rewriteDetail = {
+      id: 'c2',
+      candidate_hash: 'd'.repeat(64),
+      task_type: 'game_observation_rewrite',
+      available_targets: ['observation_process'],
+      adoption_state: 'eligible',
+      review_warning: null,
+      review_fragments: [],
+      source: {
+        source_revision: 3,
+        dependencies: {
+          target: 'observation_process',
+          rewrite_source: '教师已保存原文：“我们一起搭桥。”',
+        },
+      },
+      raw_candidate: {
+        target: 'observation_process',
+        text: 'AI 拟写候选：“桥要倒了。”',
+      },
+    }
+    const { mountEl, harness } = await mountEditorDom({
+      routes: {
+        'GET /api/observations/o1': () => jsonResponse(200, currentFixture()),
+        'GET /api/observations/o1/ai-tasks*': () => jsonResponse(200, { items: [] }),
+        'GET /api/observations/o1/ai-candidates': () => jsonResponse(200, {
+          items: [
+            { id: 'c1', task_type: 'game_observation_generate', created_at: '2026-09-15T10:00:00' },
+            { id: 'c2', task_type: 'game_observation_rewrite', created_at: '2026-09-15T10:01:00' },
+          ],
+        }),
+        'GET /api/observations/o1/ai-candidates/c1': () => jsonResponse(200, generatedDetail),
+        'GET /api/observations/o1/ai-candidates/c2': () => jsonResponse(200, rewriteDetail),
+      },
+    })
+    const hook = harness.window.__d1ObservationEditor
+    await hook.openCandidate('c1')
+    await settle()
+    assert.ok(byD1(mountEl, 'obs-candidate'))
+    assert.equal(byD1(mountEl, 'obs-candidate-dialog'), null)
+    assert.match(nodeText(byD1(mountEl, 'obs-child-quote-note')), /可依据照片/)
+    assert.match(nodeText(byD1(mountEl, 'obs-child-quote-note')), /可编辑候选/)
+    assert.match(nodeText(byD1(mountEl, 'obs-candidate-original-label')), /生成前已保存原文/)
+    assert.match(nodeText(byD1(mountEl, 'obs-candidate-original-source')), /教师已保存原话/)
+    assert.match(nodeText(byD1(mountEl, 'obs-candidate-original-source')), /我们一起搭桥/)
+    assert.match(nodeText(byD1(mountEl, 'obs-candidate-editable')), /AI 候选/)
+    assert.match(nodeText(byD1(mountEl, 'obs-candidate-editable')), /可编辑/)
+    const fragmentText = nodeText(byD1(mountEl, 'obs-candidate-fragments'))
+    assert.match(fragmentText, /需核对的对话片段/)
+    assert.match(fragmentText, /不判断哪些来自教师已存原话/)
+    assert.match(fragmentText, /我们一起搭桥/)
+    assert.match(fragmentText, /桥要倒了/)
+    assert.equal(byD1(mountEl, 'obs-candidate-text-observation_process').props.value, '候选补充：“桥要倒了。”')
+
+    await hook.openCandidate('c2')
+    await settle()
+    assert.match(nodeText(byD1(mountEl, 'obs-candidate-original-label')), /单栏重写来源/)
+    assert.match(nodeText(byD1(mountEl, 'obs-candidate-original-source')), /教师已保存原文/)
+    assert.equal(byD1(mountEl, 'obs-candidate-text-observation_process').props.value, 'AI 拟写候选：“桥要倒了。”')
+    const beforeCancel = hook.form().observation_process
+    hook.setCandidateText('observation_process', '取消后不应写入')
+    hook.cancelCandidateEdit()
+    await settle()
+    assert.equal(hook.form().observation_process, beforeCancel)
+    harness.unmount()
+    await settle()
+    ok('candidate source comparison freezes teacher text and keeps the AI draft editable')
+  }
+
   // -- candidate detail load failure stays inline and does not trap edits ---
   {
     const detail = {

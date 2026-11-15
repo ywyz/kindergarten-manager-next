@@ -92,14 +92,26 @@ function loadRealListeningAi() {
 
 const file = path.join(d1Dir, 'components/ListeningAiPanel.vue')
 const source = fs.readFileSync(file, 'utf8')
-assert.match(source, /整理本组倾听记录/)
+assert.match(
+  source,
+  /整理本领域倾听记录（\{\{ photoGroups\.length \}\} 张有效照片）/,
+)
+assert.doesNotMatch(source, /data-d1="listening-ai-group"/)
 assert.match(source, /生成本领域评价建议/)
 assert.match(source, /AI 协助填写/)
 assert.match(source, /data-d1="listening-ai-field"/)
 assert.doesNotMatch(source, /旧版单张建议/)
 assert.match(source, /只使用已保存内容/)
 assert.match(source, /候选不会自动写入 Word/)
-assert.match(source, /仅据照片起草，待教师核实/)
+assert.match(source, /仅据照片拟写少量幼儿表达/)
+assert.match(source, /AI 可依据图文补写少量幼儿原话/)
+assert.match(source, /仅作候选；请教师核对/)
+assert.match(source, /不能当作现场实际听到的记录/)
+assert.match(source, /已有原文（非 AI 新增）/)
+assert.match(source, /当前无已存原文/)
+assert.match(source, /data-d1="listening-ai-note-ai-notice"/)
+assert.match(source, /data-d1="listening-ai-note-hint"/)
+assert.doesNotMatch(source, /不会把画面推断写成幼儿原话/)
 assert.match(source, /data-d1="listening-ai-adopt"/)
 assert.doesNotMatch(source, /v-html/)
 const { descriptor } = parse(source, { filename: file })
@@ -531,8 +543,347 @@ assert.equal(calls.list.at(-1)[1], 'science')
       'listening_domain_evaluate',
     ],
   )
+  assert.equal(
+    calls.create.find(
+      (payload) => payload.taskType === 'listening_group_notes',
+    ).groupId,
+    null,
+  )
   assert.match(source, /data-d1="listening-ai-run-note"/)
   assert.match(source, /data-d1="listening-ai-run-evaluation"/)
 }
 
-console.log('listening-ai-ui: 35 checks passed')
+async function mountNotePanel(groups) {
+  const emitted = []
+  const props = vue.reactive({
+    recordId: 'record-1',
+    domain: 'health',
+    groups,
+    revision: 5,
+    disabled: false,
+    profileEpoch: 1,
+    ensureSaved: async () => ensureSavedResult,
+  })
+  const state = component.setup(props, {
+    expose: () => undefined,
+    emit: (...args) => emitted.push(args),
+  })
+  await tick()
+  await tick()
+  return { state, props }
+}
+
+// No valid photos means the note action is unavailable and does not submit.
+{
+  calls.create.length = 0
+  ensureSavedResult = 5
+  const { state } = await mountNotePanel([
+    { group_id: 'group-0', position: 0, asset_id: null, listening_text: '' },
+  ])
+  assert.equal(state.photoGroups.value.length, 0)
+  assert.equal(state.canRunField('note'), false)
+  state.startField('note')
+  await tick()
+  await tick()
+  assert.equal(calls.create.length, 0)
+}
+
+// A photo in a non-first group is still sendable across the whole domain.
+{
+  calls.create.length = 0
+  ensureSavedResult = 5
+  const { state } = await mountNotePanel([
+    { group_id: 'group-0', position: 0, asset_id: null, listening_text: '' },
+    { group_id: 'group-1', position: 1, asset_id: 'asset-1', listening_text: '' },
+  ])
+  assert.equal(state.photoGroups.value.length, 1)
+  assert.equal(state.canRunField('note'), true)
+  state.startField('note')
+  await tick()
+  await tick()
+  const payload = calls.create.at(-1)
+  assert.equal(payload.taskType, 'listening_group_notes')
+  assert.equal(payload.groupId, null)
+  assert.equal(payload.expectedRevision, 5)
+}
+
+// Removing the last photo disables the note action and blocks submission.
+{
+  calls.create.length = 0
+  ensureSavedResult = 5
+  const { state, props } = await mountNotePanel([
+    { group_id: 'group-0', position: 0, asset_id: 'asset-0', listening_text: '' },
+  ])
+  assert.equal(state.canRunField('note'), true)
+  props.groups[0].asset_id = null
+  await vue.nextTick()
+  await tick()
+  assert.equal(state.photoGroups.value.length, 0)
+  assert.equal(state.canRunField('note'), false)
+  const before = calls.create.length
+  state.startField('note')
+  await tick()
+  await tick()
+  assert.equal(calls.create.length, before)
+}
+
+// Two valid photos are sent as one whole-domain note task with no group id.
+{
+  calls.create.length = 0
+  ensureSavedResult = 5
+  const { state } = await mountNotePanel([
+    { group_id: 'group-0', position: 0, asset_id: 'asset-0', listening_text: '' },
+    { group_id: 'group-1', position: 1, asset_id: 'asset-1', listening_text: '' },
+  ])
+  assert.equal(state.photoGroups.value.length, 2)
+  state.startField('note')
+  await tick()
+  await tick()
+  const payload = calls.create.at(-1)
+  assert.equal(payload.taskType, 'listening_group_notes')
+  assert.equal(payload.groupId, null)
+  assert.equal(payload.expectedRevision, 5)
+}
+
+async function mountCandidatePanel(groups) {
+  const emitted = []
+  const props = vue.reactive({
+    recordId: 'record-1',
+    domain: 'health',
+    groups,
+    revision: 5,
+    disabled: false,
+    profileEpoch: 1,
+    ensureSaved: async () => 5,
+  })
+  const state = component.setup(props, {
+    expose: () => undefined,
+    emit: (...args) => emitted.push(args),
+  })
+  await tick()
+  await tick()
+  return { state, props }
+}
+
+// Note-draft candidate: AI may draft quotes, existing text is separate, and
+// cancel/edit never writes the record.
+{
+  const savedText = '已有真实原话'
+  const noteTask = {
+    ...task,
+    task_type: 'listening_note_draft',
+    listening_group_id: 'group-0',
+  }
+  ai.getListeningAICandidate = async () => ({
+    task: noteTask,
+    candidate_id: 'note-cand',
+    candidate: {},
+    candidate_hash: 'a'.repeat(64),
+    input_id: 'input-note',
+  })
+  ai.previewListeningAICandidate = async () => ({
+    preview_token: 'note-token',
+    expires_at: '2026-11-07T00:10:00',
+    record_id: 'record-1',
+    domain: 'health',
+    group_id: 'group-0',
+    task_type: 'listening_note_draft',
+    candidate_id: 'note-cand',
+    candidate_hash: 'a'.repeat(64),
+    targets: ['listening_text'],
+    target_states: { listening_text: 'eligible' },
+    proposed: {
+      listening_text: 'AI 补写候选原话',
+      uncertainties: ['需核实'],
+      photo_only: true,
+      current: savedText,
+    },
+    revision: 5,
+  })
+  const { state, props } = await mountCandidatePanel([
+    {
+      group_id: 'group-0',
+      position: 0,
+      asset_id: 'asset-0',
+      listening_text: savedText,
+    },
+  ])
+  state.activeTaskId.value = 'task-1'
+  await state.pollTask()
+  await tick()
+  assert.equal(state.preview.value.task_type, 'listening_note_draft')
+  assert.equal(state.noteText.value, 'AI 补写候选原话')
+  assert.equal(state.preview.value.proposed.current, savedText)
+  assert.equal(state.draft.value, false, 'viewing a note candidate is not an edit')
+  assert.equal(props.groups[0].listening_text, savedText)
+  const adopts = calls.adopt.length
+  state.noteText.value = '教师核对后的补写'
+  state.markDraft()
+  assert.equal(state.draft.value, true)
+  assert.equal(props.groups[0].listening_text, savedText)
+  state.clearTransient()
+  assert.equal(state.preview.value, null)
+  assert.equal(state.draft.value, false)
+  assert.equal(props.groups[0].listening_text, savedText)
+  assert.equal(calls.adopt.length, adopts)
+}
+
+// Whole-domain group-note candidate: same notice path, existing original
+// remains separate, edits stay in the candidate and cancel performs no write.
+{
+  const savedText = '已有小组原话'
+  const groupTask = {
+    ...task,
+    task_type: 'listening_group_notes',
+    listening_group_id: null,
+  }
+  ai.getListeningAICandidate = async () => ({
+    task: groupTask,
+    candidate_id: 'group-cand',
+    candidate: {
+      mode: 'group_notes',
+      groups: [
+        {
+          position: 0,
+          text: 'AI 补写小组原话',
+          uncertainties: ['需核实'],
+        },
+      ],
+    },
+    candidate_hash: 'a'.repeat(64),
+    input_id: 'input-group',
+  })
+  ai.previewListeningAICandidate = async () => ({
+    preview_token: 'group-token',
+    expires_at: '2026-11-07T00:10:00',
+    record_id: 'record-1',
+    domain: 'health',
+    group_id: null,
+    task_type: 'listening_group_notes',
+    candidate_id: 'group-cand',
+    candidate_hash: 'a'.repeat(64),
+    targets: ['health_0'],
+    target_states: { health_0: 'eligible' },
+    proposed: {
+      groups: [
+        {
+          target: 'health_0',
+          position: 0,
+          text: 'AI 补写小组原话',
+          uncertainties: ['需核实'],
+          current: savedText,
+        },
+      ],
+    },
+    revision: 5,
+  })
+  const { state, props } = await mountCandidatePanel([
+    {
+      group_id: 'group-0',
+      position: 0,
+      asset_id: 'asset-0',
+      listening_text: savedText,
+    },
+  ])
+  state.activeTaskId.value = 'task-1'
+  await state.pollTask()
+  await tick()
+  assert.equal(state.preview.value.task_type, 'listening_group_notes')
+  assert.equal(state.groupNotes.value[0].current, savedText)
+  assert.equal(state.groupNoteValue('health_0'), 'AI 补写小组原话')
+  assert.equal(state.draft.value, false, 'viewing a group candidate is not an edit')
+  assert.equal(props.groups[0].listening_text, savedText)
+  const adopts = calls.adopt.length
+  state.setGroupNoteText('health_0', '教师核对后的补写')
+  state.markDraft()
+  assert.equal(state.draft.value, true)
+  assert.equal(props.groups[0].listening_text, savedText)
+  state.clearTransient()
+  assert.equal(state.preview.value, null)
+  assert.equal(state.draft.value, false)
+  assert.equal(props.groups[0].listening_text, savedText)
+  assert.equal(calls.adopt.length, adopts)
+}
+
+// Narrow right-rail footer: actual CSS stack and label-width calculation.
+{
+  const cssRule = (selector) => {
+    const escaped = selector.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      '\\$&',
+    )
+    const match = source.match(
+      new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, 's'),
+    )
+    assert.ok(match, `${selector} rule exists`)
+    return match[1]
+  }
+  const footer = cssRule('.ai-footer')
+  assert.match(footer, /flex-direction:\s*column/)
+  assert.match(footer, /align-items:\s*stretch/)
+  assert.match(footer, /gap:\s*8px/)
+  const button = cssRule('.ai-footer :deep(.el-button)')
+  assert.match(button, /width:\s*100%/)
+  assert.match(button, /min-width:\s*0/)
+  assert.match(button, /height:\s*auto/)
+  assert.match(button, /margin:\s*0/)
+  assert.match(button, /white-space:\s*normal/)
+  assert.match(button, /overflow-wrap:\s*anywhere/)
+  assert.match(button, /box-sizing:\s*border-box/)
+  const minHeight = Number(
+    (button.match(/min-height:\s*(\d+)px/) || [])[1],
+  )
+  assert.ok(minHeight >= 34)
+  const adjacent = cssRule(
+    '.ai-footer :deep(.el-button + .el-button)',
+  )
+  assert.match(adjacent, /margin-left:\s*0/)
+  assert.doesNotMatch(footer, /(?:color|background)\s*:/)
+  assert.doesNotMatch(button, /(?:color|background)\s*:/)
+
+  const footerMarkup = source.match(
+    /<div class="ai-footer">([\s\S]*?)<\/div>/,
+  )[1]
+  for (const label of [
+    '取消候选',
+    '重新预览',
+    '采用所选项（一次保存；未选保持原样）',
+  ]) {
+    assert.ok(footerMarkup.includes(label))
+  }
+  assert.ok(
+    footerMarkup.indexOf('取消候选') <
+      footerMarkup.indexOf('重新预览'),
+  )
+  assert.ok(
+    footerMarkup.indexOf('重新预览') <
+      footerMarkup.indexOf('采用所选项'),
+  )
+
+  const labels = [
+    '取消候选',
+    '重新预览',
+    '采用所选项（一次保存；未选保持原样）',
+  ]
+  const glyphWidth = 14
+  const horizontalPadding = 24
+  const gap = 8
+  const rowMinWidth =
+    labels.reduce(
+      (sum, label) => sum + label.length * glyphWidth + horizontalPadding,
+      0,
+    ) +
+    gap * (labels.length - 1)
+  const availableWidths = [240 - 28, 280 - 28]
+  assert.ok(rowMinWidth > availableWidths[1], 'old single row overflows')
+  assert.ok(
+    labels[2].length * glyphWidth > availableWidths[0],
+    'long primary label needs wrapping at 240px rail',
+  )
+  for (const available of availableWidths) {
+    assert.ok(available > 0)
+    assert.match(button, /width:\s*100%/)
+  }
+}
+
+console.log('listening-ai-ui: 42 checks passed')

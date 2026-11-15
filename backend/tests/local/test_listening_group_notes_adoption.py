@@ -207,6 +207,50 @@ class AdoptionCommitBoundaryTests(unittest.TestCase):
 
     def setUp(self) -> None:
         adoption.reset_tokens()
+        self.dto = {
+            "record_id": "record-1",
+            "revision": 5,
+            "domains": [
+                {
+                    "domain": "health",
+                    "goal": "",
+                    "overall_evaluation": "",
+                    "support_strategy": "",
+                    "groups": [
+                        {
+                            "group_id": "g0",
+                            "position": 0,
+                            "listening_text": "old0",
+                        },
+                        {
+                            "group_id": "g1",
+                            "position": 1,
+                            "listening_text": "old1",
+                        },
+                    ],
+                    "evaluation": [{"item_id": "health_1", "stars": None}],
+                },
+                {
+                    "domain": "language",
+                    "goal": "",
+                    "overall_evaluation": "",
+                    "support_strategy": "",
+                    "groups": [
+                        {
+                            "group_id": "lg0",
+                            "position": 0,
+                            "listening_text": "lang0",
+                        },
+                        {
+                            "group_id": "lg1",
+                            "position": 1,
+                            "listening_text": "lang1",
+                        },
+                    ],
+                    "evaluation": [],
+                },
+            ],
+        }
         self.candidate = SimpleNamespace(
             id="cand-1",
             candidate_hash="a" * 64,
@@ -232,6 +276,12 @@ class AdoptionCommitBoundaryTests(unittest.TestCase):
             "support_strategy": "",
             "health_1": None,
         }
+        self.selections = [
+            {"target": "overall_evaluation", "value": "新综合"}
+        ]
+        self._issue_token(contracts.TASK_DOMAIN, self.target_hashes)
+
+    def _issue_token(self, task_type: str, target_hashes: dict) -> None:
         self.token, _expires = adoption._TOKENS.issue(
             {
                 "v": 1,
@@ -242,15 +292,26 @@ class AdoptionCommitBoundaryTests(unittest.TestCase):
                 "candidate_id": "cand-1",
                 "candidate_hash": "a" * 64,
                 "input_id": "input-1",
-                "task_type": contracts.TASK_DOMAIN,
+                "task_type": task_type,
                 "dependency_hash": "d" * 64,
-                "target_hashes": self.target_hashes,
+                "target_hashes": target_hashes,
                 "source_revision": 5,
                 "launch_id": "launch-1",
                 "session_scope_hash": "scope-1",
             },
             time.time(),
         )
+
+    def _prepare_group(self) -> None:
+        self.candidate.task_type = contracts.TASK_GROUP
+        self.inp.task_type = contracts.TASK_GROUP
+        self.inp.payload_json = {"groups": [{"position": 1}]}
+        self.target_hashes = {
+            "health_1": contracts.value_hash("old1"),
+        }
+        self.current = {"health_1": "old1"}
+        self.selections = [{"target": "health_1", "value": "new1"}]
+        self._issue_token(contracts.TASK_GROUP, self.target_hashes)
 
     def tearDown(self) -> None:
         adoption.reset_tokens()
@@ -284,15 +345,12 @@ class AdoptionCommitBoundaryTests(unittest.TestCase):
             patch.object(
                 adoption,
                 "_current_targets",
-                return_value=(
-                    {"revision": 5, "groups": []},
-                    self.current,
-                ),
+                return_value=(self.dto, self.current),
             ),
             patch.object(
                 adoption.listening_service,
                 "read_record_no_tx",
-                return_value={"revision": 5, "groups": []},
+                return_value=self.dto,
             ),
             patch.object(
                 adoption.listening_ai_inputs,
@@ -322,9 +380,7 @@ class AdoptionCommitBoundaryTests(unittest.TestCase):
                 request_id=str(uuid.uuid4()),
                 expected_revision=5,
                 preview_token=self.token,
-                selections=[
-                    {"target": "overall_evaluation", "value": "新综合"}
-                ],
+                selections=self.selections,
                 candidate_id="cand-1",
                 launch_id="launch-1",
                 session_scope_hash="scope-1",
@@ -404,6 +460,46 @@ class AdoptionCommitBoundaryTests(unittest.TestCase):
         self.assertEqual(session.commits, 1)
         self.assertEqual(session.rollbacks, 0)
         self.assertEqual(kernel.call_count, 1)
+
+    def test_group_adoption_reads_current_domain_groups_from_production_dto(
+        self,
+    ) -> None:
+        self._prepare_group()
+        session = _FakeSession()
+        result, kernel = self._call(session)
+        patch = kernel.call_args.kwargs["patch"]
+        self.assertEqual(
+            patch,
+            {"groups": [{"group_id": "g1", "listening_text": "new1"}]},
+        )
+        self.assertEqual(
+            result["adopted"],
+            [
+                {
+                    "target": "health_1",
+                    "position": 1,
+                    "group_id": "g1",
+                    "value": "new1",
+                }
+            ],
+        )
+        self.assertEqual(result["group_updates"], result["adopted"])
+        self.assertNotIn("lg1", str(patch))
+        self.assertEqual(result["revision_after"], 6)
+        self.assertEqual(session.commits, 1)
+        self.assertEqual(session.rollbacks, 0)
+
+    def test_group_commit_failure_rolls_back(self) -> None:
+        self._prepare_group()
+        cause = RuntimeError("synthetic group commit lost")
+        session = _FakeSession(commit_error=cause)
+        with self.assertRaises(
+            adoption.ListeningAIAdoptionCommitUncertain
+        ) as raised:
+            self._call(session)
+        self.assertIs(raised.exception.__cause__, cause)
+        self.assertEqual(session.commits, 1)
+        self.assertEqual(session.rollbacks, 1)
 
 
 if __name__ == "__main__":
