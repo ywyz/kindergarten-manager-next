@@ -157,13 +157,16 @@ class Harness {
     return this._evaluate(compiled, file).default
   }
 
-  setup(relativePath, props = {}) {
+  setup(relativePath, props = {}, onEmit) {
     const component = this.loadSfc(relativePath)
     const emitted = []
     const reactiveProps = vue.reactive(props)
     const state = component.setup(reactiveProps, {
       expose() {},
-      emit: (...args) => emitted.push(args),
+      emit: (...args) => {
+        emitted.push(args)
+        onEmit?.(...args)
+      },
     })
     return { state, emitted, props: reactiveProps }
   }
@@ -673,7 +676,7 @@ function tasksRouter(pages, extras = {}) {
   }
 }
 
-async function mountTaskPanel({ routes, saveCurrent, props = {} }) {
+async function mountTaskPanel({ routes, saveCurrent, props = {}, onEmit }) {
   const fetchImpl = router(routes)
   const harness = new Harness({ fetchImpl })
   const built = harness.setup('views/AiTaskPanel.vue', {
@@ -687,7 +690,7 @@ async function mountTaskPanel({ routes, saveCurrent, props = {} }) {
     pollVisibleMs: 5,
     pollHiddenMs: 5,
     ...props,
-  })
+  }, onEmit)
   harness.runMounted()
   return { harness, ...built, calls: fetchImpl.calls }
 }
@@ -883,6 +886,51 @@ async function testTaskProgressVisibleCollapsibleAndKeptAfterTerminal() {
     'reading progress never creates a new task/provider request',
   )
   ok('tasks streaming: progress is immediate, collapsible, plain text and kept on terminal')
+}
+
+async function testExternalReflectionUsesSharedProgressWithoutAnotherSubmit() {
+  let accepted = false
+  let done = false
+  const updates = []
+  const reflectionSlot = createMiniDom().root
+  const reflection = () => liveTask({
+    task_type: 'daily_reflection_generate',
+    status: done ? 'succeeded' : 'dispatching',
+    candidate_id: done ? 'reflection-candidate' : null,
+  })
+  const { root, harness, calls } = await mountTaskPanelDom({
+    props: {
+      reflectionProgressTarget: reflectionSlot,
+      onReflectionUpdated: (task) => updates.push(task),
+    },
+    routes: {
+      'GET /api/local/ai/tasks': () => jsonResponse(200, { items: accepted ? [reflection()] : [], next_cursor: null }),
+      'GET /api/local/ai/tasks/task1/progress': () => jsonResponse(200, progressFixture({ reasoning: '反思思考内容' })),
+      'GET /api/local/ai/prompts': () => jsonResponse(200, promptsFixture()),
+    },
+  })
+  assert.equal(harness.window.__d1AiTasks.liveCount(), 0)
+  assert.equal(harness.window.__d1AiTasks.observeReflectionTask({ ...reflection(), plan_id: 'other-plan' }), false)
+  accepted = true
+  assert.equal(harness.window.__d1AiTasks.observeReflectionTask({ ...reflection(), status: 'pending', execution: null }), true)
+  await settle()
+  assert.ok(byD1(reflectionSlot, 'ai-progress-task1'), 'accepted task is immediately shown at the reflection section')
+  assert.equal(byD1(root, 'ai-progress-task1'), null, 'one progress owner, no duplicated history rendering')
+  await waitUntil(() => byD1(reflectionSlot, 'ai-progress-text-task1') !== null, 'reflection reasoning')
+  assert.match(nodeText(byD1(reflectionSlot, 'ai-progress-text-task1')), /反思思考内容/)
+  clickNode(byD1Button(reflectionSlot, 'ai-progress-toggle-task1'))
+  await settle()
+  assert.equal(byD1(reflectionSlot, 'ai-progress-text-task1'), null)
+  clickNode(byD1Button(reflectionSlot, 'ai-progress-toggle-task1'))
+  await settle()
+  done = true
+  await waitUntil(() => updates.some((task) => task.status === 'succeeded'), 'reflection completion update')
+  assert.equal(updates.at(-1).candidate_id, 'reflection-candidate')
+  assert.equal(byD1Button(reflectionSlot, 'ai-view-task1'), null, 'normal reflection completion does not require candidate review')
+  assert.match(nodeText(byD1(reflectionSlot, 'ai-progress-task1')), /已收到结果/)
+  assert.match(nodeText(byD1(reflectionSlot, 'ai-progress-text-task1')), /反思思考内容/)
+  assert.equal(calls.filter((call) => call.method === 'POST').length, 0, 'progress observation issues no AI/create writes')
+  ok('external reflection starts the shared poller from idle, teleports live reasoning and emits completion without another submit')
 }
 
 async function testTaskProgressReadFailureKeepsShownText() {
@@ -1883,6 +1931,24 @@ async function testTaskGuidanceStatusAndOpen() {
   ok('tasks: the AI entry marks default/custom guidance and offers view/edit')
 }
 
+async function testAdaptRequiresSavedSplitBaselineAndExplainsRedline() {
+  let saves = 0
+  const { state, calls } = await mountTaskPanel({
+    routes: tasksRouter([[]]),
+    props: { hasSplitBaseline: false },
+    saveCurrent: async () => { saves += 1; return 'unchanged' },
+  })
+  await settle()
+  await state.trigger('daily_process_adapt')
+  assert.equal(saves, 0)
+  assert.equal(callsTo(calls, 'POST', '/api/daily-plans/p1/ai-tasks').length, 0)
+  assert.match(state.createError.value.daily_process_adapt, /采用并保存教案拆分/)
+  const ai = await loadAiHelpers()
+  assert.match(ai.TASK_TYPE_HINTS.daily_lesson_split, /采用并保存后.*自动.*目标年级/)
+  assert.match(ai.TASK_TYPE_HINTS.daily_process_adapt, /结果需比较并采用.*Word.*标红/)
+  ok('tasks: adaptation requires a saved split baseline and explains when redline appears')
+}
+
 async function testTaskCalendarWarningRenderedAsText() {
   const routes = tasksRouter([
     [
@@ -2157,7 +2223,7 @@ async function mountCandidateDom({ routes, props = {} }) {
         saveBody: async () => 'unchanged',
         captureEpoch: () => 7,
         'onUpdate:open': (value) => emitted.push(['update:open', value]),
-        onAdopted: (result, epoch) => emitted.push(['adopted', result, epoch]),
+        onAdopted: (result, epoch, origin) => emitted.push(['adopted', result, epoch, origin]),
         onDraftActive: (active) => emitted.push(['draft-active', active]),
         ...props,
       }),
@@ -2580,18 +2646,20 @@ async function testCandidateLoadLateResponseIgnored() {
 
 async function testCandidateLostAdoptKeepsOriginalEpoch() {
   let epoch = 3
+  let adoptRequestId = null
   const routes = {
     ...splitDetail,
     'POST /api/daily-plans/p1/ai-candidates/cand1/preview-adoption': ({ body }) =>
       previewResponse(body),
-    'POST /api/daily-plans/p1/ai-candidates/cand1/adopt': () => {
+    'POST /api/daily-plans/p1/ai-candidates/cand1/adopt': ({ body }) => {
+      adoptRequestId = body.request_id
       // The body moves on after the adopt POST was sent.
       epoch = 9
       throw new TypeError('network reset')
     },
     'GET /api/local/ai/operations/*': () =>
       jsonResponse(200, {
-        request_id: 'r',
+        request_id: adoptRequestId,
         operation_kind: 'ai_adopt',
         result: {
           changed: true,
@@ -2600,7 +2668,7 @@ async function testCandidateLostAdoptKeepsOriginalEpoch() {
           content_version: 4,
           candidate_id: 'cand1',
           selected_targets: ['group_activity'],
-          request_id: 'r',
+          request_id: adoptRequestId,
         },
         committed_at: 'x',
       }),
@@ -2617,6 +2685,9 @@ async function testCandidateLostAdoptKeepsOriginalEpoch() {
   const adopted = emitted.find((event) => event[0] === 'adopted')
   assert.ok(adopted)
   assert.equal(adopted[2], 3, 'the original epoch is preserved on recovery (R07)')
+  assert.deepEqual(plain(adopted[3]), {
+    planId: 'p1', candidateId: 'cand1', taskType: 'daily_lesson_split', targetGrade: 'middle',
+  }, 'receipt recovery preserves the original split origin')
   ok('candidate R07: a lost adopt merges the original epoch, never a re-captured one')
 }
 
@@ -4500,6 +4571,303 @@ async function testEditorAdoptKeepsNewInputWhenEpochChanged() {
   ok('editor R11: a mismatched adopt reply keeps input+baseline and surfaces the conflict')
 }
 
+function savedSplitPlan(overrides = {}) {
+  return planFixture({
+    current_content_version: 4,
+    content: {
+      id: 'cc2', version: 4, raw_lesson_plan: '合成原教案',
+      split_baseline: { group_activity_process: '拆分原过程' },
+      adopted_content: { group_activity: { process: '拆分原过程' } },
+      editor_id: 'u1', created_at: 'x',
+    },
+    ...overrides,
+  })
+}
+
+function splitAdoptionResult(overrides = {}) {
+  return {
+    changed: true, plan_id: 'p1', content_id: 'cc2', content_version: 4,
+    candidate_id: 'cand1', selected_targets: ['group_activity'], request_id: 'adopt-1',
+    ...overrides,
+  }
+}
+
+function splitAdoptionOrigin(overrides = {}) {
+  return { planId: 'p1', candidateId: 'cand1', taskType: 'daily_lesson_split', targetGrade: 'small', ...overrides }
+}
+
+/** Connect the real editor and task-panel methods with Vue's normal queued
+ * prop propagation. Every write still goes through the controlled fetch API. */
+async function mountSplitContinuation({ server = savedSplitPlan(), readServer, createTask, routes = {} } = {}) {
+  const editor = await mountEditor({ routes: {
+    'GET /api/daily-plans/by-date': () => jsonResponse(200, planFixture()),
+    'GET /api/daily-plans/p1': readServer ?? (() => jsonResponse(200, server)),
+  } })
+  await settle()
+  let saves = 0
+  const panel = await mountTaskPanel({
+    routes: tasksRouter([[]], {
+      'POST /api/daily-plans/p1/ai-tasks': createTask ?? (({ body }) => jsonResponse(200, taskFixture({
+        task_type: body.task_type,
+        input_summary: { content_version: body.expected_content_version, target_grade: body.target_grade, dependency_hash: 'dep' },
+      }))),
+      ...routes,
+    }),
+    props: { hasSplitBaseline: false, pollVisibleMs: 60_000, pollHiddenMs: 60_000 },
+    saveCurrent: async () => { saves += 1; return 'unchanged' },
+    onEmit: (event, value) => {
+      if (event === 'draft-active') editor.state.aiTaskDraftActive.value = value
+    },
+  })
+  const stopProps = vue.watchEffect(() => {
+    panel.props.planId = editor.state.plan.value?.id ?? ''
+    panel.props.planGrade = editor.state.planGrade.value
+    panel.props.contentVersion = editor.state.plan.value?.current_content_version ?? 0
+    panel.props.hasRaw = editor.state.hasRaw.value
+    panel.props.hasProcess = editor.state.hasProcess.value
+    panel.props.hasSplitBaseline = !!editor.state.plan.value?.content.split_baseline?.group_activity_process?.trim()
+    panel.props.frozen = editor.props.frozen
+  })
+  editor.harness.unmounts.push(stopProps)
+  editor.state.aiTaskPanelRef.value = { continueAfterSplit: panel.state.continueAfterSplit }
+  editor.state.candidateId.value = 'cand1'
+  // Deliberately differ from the source: continuation follows the accepted
+  // split's grade, not a later selector change in the AI panel.
+  panel.state.targetGrade.value = 'large'
+  await settle()
+  return { editor, panel, saves: () => saves, posts: () => callsTo(panel.calls, 'POST', '/api/daily-plans/p1/ai-tasks') }
+}
+
+async function testSplitAdoptionContinuesOnceWithSavedVersionAndSourceGrade() {
+  const { editor, panel, saves, posts } = await mountSplitContinuation()
+  const result = splitAdoptionResult()
+  const origin = splitAdoptionOrigin()
+  const epoch = editor.state.editEpoch.value
+  await Promise.all([
+    editor.state.onCandidateAdopted(result, epoch, origin),
+    editor.state.onCandidateAdopted(result, epoch, origin),
+  ])
+  await settle()
+  assert.equal(posts().length, 1, 'concurrent duplicate adoption events start one adaptation')
+  assert.deepEqual(plain(posts()[0].body), {
+    request_id: 'uuid-1', task_type: 'daily_process_adapt', expected_content_version: 4, target_grade: 'small',
+  })
+  assert.equal(saves(), 0, 'the accepted split is already saved; continuation never re-saves the editor')
+  assert.equal(editor.state.form.value.group_activity.process, '拆分原过程', 'creation never auto-adopts an adaptation result')
+  assert.equal(editor.state.plan.value.content.split_baseline.group_activity_process, '拆分原过程')
+  panel.state.tasks.value = [] // Completion/removal must not release the editor's adoption deduplication.
+  await editor.state.onCandidateAdopted(result, epoch, origin)
+  await settle()
+  assert.equal(posts().length, 1, 'a later duplicate receipt does not start a second task')
+  ok('split continuation: saved version + source grade, zero extra saves, one create across duplicate receipts')
+}
+
+async function testSplitContinuationRejectsUnrelatedAdoptionOrigins() {
+  const cases = [
+    ['unchanged adoption', splitAdoptionResult({ changed: false }), splitAdoptionOrigin()],
+    ['other activities', splitAdoptionResult(), splitAdoptionOrigin({ taskType: 'daily_other_activities' })],
+    ['adaptation adoption', splitAdoptionResult(), splitAdoptionOrigin({ taskType: 'daily_process_adapt' })],
+    ['missing origin', splitAdoptionResult(), undefined],
+    ['origin plan mismatch', splitAdoptionResult(), splitAdoptionOrigin({ planId: 'pOther' })],
+    ['origin candidate mismatch', splitAdoptionResult(), splitAdoptionOrigin({ candidateId: 'candOther' })],
+    ['different current candidate', splitAdoptionResult({ candidate_id: 'candOther' }), splitAdoptionOrigin({ candidateId: 'candOther' })],
+    ['missing source grade', splitAdoptionResult(), splitAdoptionOrigin({ targetGrade: null })],
+    ['unknown source grade', splitAdoptionResult(), splitAdoptionOrigin({ targetGrade: 'unknown' })],
+  ]
+  for (const [name, result, origin] of cases) {
+    const { editor, posts } = await mountSplitContinuation()
+    await editor.state.onCandidateAdopted(result, editor.state.editEpoch.value, origin)
+    await settle()
+    assert.equal(posts().length, 0, name)
+  }
+  ok('split continuation: only a changed adoption of the current split with a valid source grade can continue')
+}
+
+async function testSplitContinuationRejectsWrongReturnedVersionOrBaseline() {
+  const cases = [
+    ['newer server version', savedSplitPlan({ current_content_version: 5 })],
+    ['older server version', savedSplitPlan({ current_content_version: 3 })],
+    ['other server plan', savedSplitPlan({ id: 'pOther' })],
+    ['missing split baseline', savedSplitPlan({ content: { ...savedSplitPlan().content, split_baseline: null } })],
+    ['empty split baseline', savedSplitPlan({ content: { ...savedSplitPlan().content, split_baseline: { group_activity_process: '  ' } } })],
+  ]
+  for (const [name, server] of cases) {
+    const { editor, posts } = await mountSplitContinuation({ server })
+    await editor.state.onCandidateAdopted(splitAdoptionResult(), editor.state.editEpoch.value, splitAdoptionOrigin())
+    await settle()
+    assert.equal(posts().length, 0, name)
+  }
+  ok('split continuation: exact saved version, plan identity and nonempty split baseline are required')
+}
+
+async function testSplitContinuationRejectsChangesDuringServerRead() {
+  for (const change of ['plan', 'epoch', 'frozen', 'candidate-id', 'history-busy', 'history-settling', 'composing', 'unmount']) {
+    const gate = deferred()
+    const { editor, posts } = await mountSplitContinuation({ readServer: () => gate.promise })
+    const epoch = editor.state.editEpoch.value
+    const adoption = editor.state.onCandidateAdopted(splitAdoptionResult(), epoch, splitAdoptionOrigin())
+    await settle()
+    if (change === 'plan') editor.state.plan.value = planFixture({ id: 'pOther' })
+    if (change === 'epoch') {
+      editor.state.form.value.reflection = '等待期间的新输入'
+      editor.state.touchEpoch()
+    }
+    if (change === 'frozen') editor.props.frozen = true
+    if (change === 'candidate-id') editor.state.candidateId.value = 'candOther'
+    if (change === 'history-busy') editor.state.historyBusy.value = true
+    if (change === 'history-settling') editor.state.historySettling.value = true
+    if (change === 'composing') editor.state.composing.value = true
+    if (change === 'unmount') editor.harness.unmount()
+    gate.resolve(jsonResponse(200, savedSplitPlan()))
+    await adoption
+    await settle()
+    assert.equal(posts().length, 0, `${change} changed while reading the adopted version`)
+    if (change === 'epoch') {
+      assert.equal(editor.state.form.value.reflection, '等待期间的新输入')
+      assert.equal(editor.state.phase.value, 'conflict')
+    }
+  }
+  ok('split continuation: plan/candidate changes, newer input, history restore, composition, closing and unmount invalidate pending work')
+}
+
+async function testSplitContinuationRechecksAfterVuePropPropagation() {
+  for (const change of ['dirty', 'epoch', 'frozen', 'version', 'candidate', 'candidate-id', 'history-busy', 'history-settling', 'composing']) {
+    const { editor, posts } = await mountSplitContinuation()
+    const stop = vue.watch(() => editor.state.plan.value?.current_content_version, (version) => {
+      if (version !== 4) return
+      if (change === 'dirty') editor.state.form.value.reflection = '同一轮更新中的新草稿'
+      if (change === 'epoch') editor.state.touchEpoch()
+      if (change === 'frozen') editor.props.frozen = true
+      if (change === 'version') editor.state.plan.value.current_content_version = 5
+      if (change === 'candidate') editor.state.candidateOpen.value = true
+      if (change === 'candidate-id') editor.state.candidateId.value = 'candOther'
+      if (change === 'history-busy') editor.state.historyBusy.value = true
+      if (change === 'history-settling') editor.state.historySettling.value = true
+      if (change === 'composing') editor.state.composing.value = true
+    }, { flush: 'post' })
+    await editor.state.onCandidateAdopted(splitAdoptionResult(), editor.state.editEpoch.value, splitAdoptionOrigin())
+    await settle()
+    stop()
+    assert.equal(posts().length, 0, `${change} after applyPlan but before continuation`)
+  }
+  ok('split continuation: Vue update boundary rechecks input, identity, history restore and composing barriers')
+}
+
+async function testSplitContinuationPanelEnforcesIdentityAndTaskGuards() {
+  const input = { planId: 'p1', contentVersion: 4, targetGrade: 'small' }
+  for (const guard of ['not-current', 'plan', 'version', 'frozen', 'baseline', 'process', 'live', 'creating', 'pending']) {
+    let saves = 0
+    const { state, props, calls } = await mountTaskPanel({
+      routes: tasksRouter([[]]),
+      props: { contentVersion: 4, hasSplitBaseline: true, pollVisibleMs: 60_000 },
+      saveCurrent: async () => { saves += 1; return 'unchanged' },
+    })
+    await settle()
+    if (guard === 'plan') props.planId = 'pOther'
+    if (guard === 'version') props.contentVersion = 5
+    if (guard === 'frozen') props.frozen = true
+    if (guard === 'baseline') props.hasSplitBaseline = false
+    if (guard === 'process') props.hasProcess = false
+    if (guard === 'live') state.tasks.value = [liveTask({ task_type: 'daily_process_adapt' })]
+    if (guard === 'creating') state.creating.value = { daily_process_adapt: true }
+    if (guard === 'pending') state.pendingCreates.value = { daily_process_adapt: { requestId: 'original', body: { task_type: 'daily_process_adapt' } } }
+    assert.equal(await state.continueAfterSplit(input, () => guard !== 'not-current'), false, guard)
+    assert.equal(callsTo(calls, 'POST', '/api/daily-plans/').length, 0, guard)
+    assert.equal(saves, 0, `${guard} does not invoke body saving`)
+  }
+  ok('split continuation panel: exact identity/version and existing live/creating/pending/frozen guards apply')
+}
+
+function continuationLeaveProbe(editor) {
+  const bridge = editor.emitted.find((event) => event[0] === 'register-editor')?.[1]
+  assert.ok(bridge, 'use the real bridge registered by EditorView')
+  const { LeaveCoordinator } = editor.harness._require('../leave', path.join(d1Dir, 'views', 'X.vue'))
+  const blocked = []
+  let navigations = 0
+  const coordinator = new LeaveCoordinator(bridge, { onBlocked: (draft) => blocked.push(draft) })
+  return {
+    bridge, blocked, navigations: () => navigations,
+    changeDate: () => coordinator.requestLeave({ kind: 'date', run: () => { navigations += 1; return 'left' } }),
+  }
+}
+
+async function testSplitContinuationInFlightBlocksLeaveUntilTaskAccepted() {
+  const gate = deferred()
+  const { editor, panel, posts, saves } = await mountSplitContinuation({ createTask: () => gate.promise })
+  const leave = continuationLeaveProbe(editor)
+  const adoption = editor.state.onCandidateAdopted(splitAdoptionResult(), editor.state.editEpoch.value, splitAdoptionOrigin())
+  await waitUntil(() => posts().length === 1, 'automatic create is in flight')
+  await settle()
+  assert.equal(panel.state.panelBusy.value, true)
+  assert.equal(editor.state.aiTaskDraftActive.value, true, 'the real panel draft-active event reaches the editor')
+  assert.match(leave.bridge.blockingDraft().message, /AI 任务.*提交/)
+  assert.equal(await leave.changeDate(), 'stayed', 'in-flight creation must not lose its request on navigation')
+  assert.equal(leave.navigations(), 0)
+  assert.equal(leave.blocked.at(-1).kind, 'history')
+  gate.resolve(jsonResponse(200, taskFixture({ id: 'adaptAccepted', task_type: 'daily_process_adapt' })))
+  await adoption
+  await settle()
+  assert.equal(panel.state.liveCount.value, 1, 'the accepted task is still running')
+  assert.equal(panel.state.panelBusy.value, false)
+  assert.equal(editor.state.aiTaskDraftActive.value, false)
+  assert.equal(leave.bridge.blockingDraft(), null, 'a running accepted task is not an unresolved submission')
+  assert.equal(await leave.changeDate(), 'left')
+  assert.equal(leave.navigations(), 1)
+  assert.equal(posts().length, 1)
+  assert.equal(saves(), 0)
+  ok('split continuation leave: in-flight create blocks navigation; accepted running task releases the barrier')
+}
+
+async function testSplitContinuationUnknownCreateStaysPendingWithoutResend() {
+  let receiptFound = false
+  const queriedKeys = []
+  const { editor, panel, posts, saves } = await mountSplitContinuation({
+    createTask: () => { throw new TypeError('synthetic lost create reply') },
+    routes: { 'GET /api/local/ai/operations/*': ({ path: receiptPath }) => {
+      const requestId = decodeURIComponent(receiptPath.split('/').at(-1))
+      queriedKeys.push(requestId)
+      return receiptFound
+        ? jsonResponse(200, {
+          request_id: requestId, operation_kind: 'ai_task_create', committed_at: 'x',
+          result: taskFixture({ id: 'adaptRecovered', task_type: 'daily_process_adapt' }),
+        })
+        : apiError(404, 'AI_OPERATION_NOT_FOUND', 'not committed yet')
+    } },
+  })
+  const leave = continuationLeaveProbe(editor)
+  const epoch = editor.state.editEpoch.value
+  await editor.state.onCandidateAdopted(splitAdoptionResult(), epoch, splitAdoptionOrigin())
+  await settle()
+  assert.equal(posts().length, 1)
+  const pending = plain(panel.state.pendingCreates.value.daily_process_adapt)
+  assert.equal(pending.body.expected_content_version, 4)
+  assert.equal(pending.body.target_grade, 'small')
+  assert.equal(editor.state.aiTaskDraftActive.value, true)
+  assert.equal(await leave.changeDate(), 'stayed', 'unknown creation retains its pending request on the page')
+  assert.equal(leave.navigations(), 0)
+  assert.match(leave.blocked.at(-1).message, /AI 任务.*结果待核对/)
+  await editor.state.onCandidateAdopted(splitAdoptionResult(), epoch, splitAdoptionOrigin())
+  await panel.state.continueAfterSplit({ planId: 'p1', contentVersion: 4, targetGrade: 'small' }, () => true)
+  await panel.state.queryCreate('daily_process_adapt')
+  await settle()
+  assert.equal(posts().length, 1, 'duplicates and a missing receipt never silently re-send a paid request')
+  assert.deepEqual(plain(panel.state.pendingCreates.value.daily_process_adapt), pending, 'original request id and body remain pending')
+  assert.equal(await leave.changeDate(), 'stayed', 'a missing receipt keeps the leave barrier')
+  receiptFound = true
+  await panel.state.queryCreate('daily_process_adapt')
+  await settle()
+  assert.deepEqual(queriedKeys, [pending.requestId, pending.requestId], 'both queries use the original create key')
+  assert.equal(panel.state.pendingCreates.value.daily_process_adapt, undefined)
+  assert.equal(panel.state.liveCount.value, 1)
+  assert.equal(editor.state.aiTaskDraftActive.value, false)
+  assert.equal(leave.bridge.blockingDraft(), null)
+  assert.equal(await leave.changeDate(), 'left', 'same-key receipt recovery releases the leave barrier')
+  assert.equal(leave.navigations(), 1)
+  assert.equal(posts().length, 1, 'recovery only reads the original receipt')
+  assert.equal(saves(), 0)
+  ok('split continuation: unknown create blocks leaving without resend; same-key receipt recovery releases the page')
+}
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -4516,6 +4884,7 @@ const tests = [
   testComparePreviewAndLabels,
   testTaskTriggerSavesBodyFirstThenRegisters,
   testTaskProgressVisibleCollapsibleAndKeptAfterTerminal,
+  testExternalReflectionUsesSharedProgressWithoutAnotherSubmit,
   testTaskProgressReadFailureKeepsShownText,
   testTaskProgressWaitingAndGeneratingPhases,
   testTaskProgressExecutionChangeReplacesOldText,
@@ -4542,6 +4911,7 @@ const tests = [
   testTaskActionLostResponseQueriesOnly,
   testTaskActionFrozenAndAllowedGuard,
   testTaskGuidanceStatusAndOpen,
+  testAdaptRequiresSavedSplitBaselineAndExplainsRedline,
   testTaskCalendarWarningRenderedAsText,
   testCandidatePreviewSavesFirstThenAdoptUsesViewedToken,
   testCandidateDomDirtyKeepsCompareAndCancelEnabled,
@@ -4610,6 +4980,14 @@ const tests = [
   testEditorAdoptIgnoresExternalPlanResponse,
   testEditorAdoptAppliesWhenEpochMatches,
   testEditorAdoptKeepsNewInputWhenEpochChanged,
+  testSplitAdoptionContinuesOnceWithSavedVersionAndSourceGrade,
+  testSplitContinuationRejectsUnrelatedAdoptionOrigins,
+  testSplitContinuationRejectsWrongReturnedVersionOrBaseline,
+  testSplitContinuationRejectsChangesDuringServerRead,
+  testSplitContinuationRechecksAfterVuePropPropagation,
+  testSplitContinuationPanelEnforcesIdentityAndTaskGuards,
+  testSplitContinuationInFlightBlocksLeaveUntilTaskAccepted,
+  testSplitContinuationUnknownCreateStaysPendingWithoutResend,
 ]
 
 for (const test of tests) {

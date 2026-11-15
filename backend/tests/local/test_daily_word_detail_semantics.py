@@ -9,6 +9,8 @@ keeps its own area/game/guidance values.
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import io
 import unittest
 import zipfile
@@ -17,6 +19,7 @@ from types import SimpleNamespace
 from xml.etree import ElementTree as ET
 
 from app.services.word_export_docx import generate_daily_export_docx
+from app.services.word_export_docx import DAILY_TEMPLATE, DAILY_TEMPLATE_SHA256
 from app.services.word_export_mapping import map_daily_plan
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -102,7 +105,7 @@ def _block_text(rows, label: str, count: int) -> str:
 
 
 class DailyWordDetailSemanticsTests(unittest.TestCase):
-    def test_morning_collective_and_free_choice_values_stay_separate(self):
+    def test_morning_only_selected_group_objectives_and_guidance_are_displayed(self):
         content = {
             "morning_games": [
                 {
@@ -128,11 +131,15 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
         # The second row carries the shared detail fields.
         detail = _cell_paragraphs(rows, "")
         text = "\n".join(paragraphs + detail)
-        self.assertIn("重点指导：", detail)
-        self.assertIn("集体游戏：集体重点甲", detail)
-        self.assertIn("自主游戏：自选重点乙", detail)
-        self.assertIn("活动目标：", detail)
-        self.assertIn("指导要点：", detail)
+        self.assertIn("重点指导：集体游戏甲", detail)
+        self.assertNotIn("集体游戏：集体重点甲", detail)
+        self.assertNotIn("自主游戏：自选重点乙", detail)
+        self.assertIn("活动目标：集体目标甲", detail)
+        self.assertIn("指导要点：集体要点甲", detail)
+        self.assertNotIn("自选目标乙", text)
+        self.assertNotIn("自选要点乙", text)
+        self.assertIn("集体游戏：集体游戏甲", paragraphs)
+        self.assertIn("自主游戏：自选游戏乙", paragraphs)
         # No merged ambiguous value and no cross-group text.
         self.assertNotIn("集体重点甲；自选重点乙", text)
         self.assertNotIn("自选重点乙；集体重点甲", text)
@@ -161,24 +168,14 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
         }
         detail = _morning_detail_paragraphs(_rows(_payload(content)))
         expected = [
-            "重点指导：",
-            "集体游戏：1. 集体重点一",
-            "2. 集体重点二",
-            "自主游戏：1. 自选重点一",
-            "2. 自选重点二",
-            "活动目标：",
-            "集体游戏：1. 集体目标一",
+            "重点指导：集体游戏甲",
+            "活动目标：1. 集体目标一",
             "2. 集体目标二",
-            "自主游戏：1. 自选目标一",
-            "2. 自选目标二",
-            "指导要点：",
-            "集体游戏：1. 集体要点一",
+            "指导要点：1. 集体要点一",
             "2. 集体要点二",
-            "自主游戏：1. 自选要点一",
-            "2. 自选要点二",
         ]
-        # Both groups number their own entries 1./2.; each numbered line must
-        # be its own paragraph, never merged into one w:t or duplicated.
+        # Only the selected group's numbered text is exported, with real
+        # paragraphs and without an additional group-name prefix.
         self.assertEqual(detail, expected)
         for paragraph in detail:
             self.assertNotIn("\n", paragraph)
@@ -258,22 +255,20 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
         }
         rows = _rows(_payload(content))
         area_text = _block_text(rows, "室内区域游戏：", 3)
-        room_text = _block_text(rows, "专用室游戏：", 3)
         afternoon_rows = _block_rows(rows, "下午：", 3)
         afternoon_text = _block_text(rows, "下午：", 3)
 
         self.assertIn("游戏区域：合成建构区", area_text)
-        self.assertIn("游戏：合成区域游戏甲", area_text)
+        self.assertNotIn("游戏：合成区域游戏甲", area_text)
+        self.assertIn("重点指导：合成建构区", area_text)
+        self.assertNotIn("区域重点甲", area_text)
         self.assertNotIn("合成专用室", area_text)
-        self.assertIn("游戏区域：合成美工室", room_text)
-        self.assertIn("游戏：合成专用室游戏乙", room_text)
-        self.assertNotIn("合成建构区", room_text)
+        self.assertNotIn("专用室游戏：", "\n".join(_all_paragraphs(rows)))
         self.assertEqual(afternoon_rows[0][1], ["游戏区域：合成操场"])
         self.assertEqual(
             afternoon_rows[1][1],
             [
-                "重点观察：合成户外游戏丙",
-                "观察要点：合成户外观察丙",
+                "重点观察：合成操场",
                 "活动目标：合成户外目标丙",
                 "指导要点：合成户外指导丙",
             ],
@@ -296,9 +291,7 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                 },
                 ["游戏区域：合成操场"],
                 [
-                    "重点观察：合成户外游戏丙",
-                    "观察要点：1. 合成观察甲",
-                    "2. 合成观察乙",
+                    "重点观察：合成操场",
                     "活动目标：合成户外目标丙",
                     "指导要点：合成户外指导丙",
                 ],
@@ -309,7 +302,7 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                 {"area": "只有区域的操场"},
                 ["游戏区域：只有区域的操场"],
                 [
-                    "重点观察：",
+                    "重点观察：只有区域的操场",
                     "活动目标：",
                     "指导要点：",
                 ],
@@ -323,8 +316,7 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                 },
                 ["游戏区域：有要点的操场"],
                 [
-                    "重点观察：",
-                    "观察要点：独立观察要点",
+                    "重点观察：有要点的操场",
                     "活动目标：",
                     "指导要点：",
                 ],
@@ -341,7 +333,7 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                 },
                 ["游戏区域：多游戏操场"],
                 [
-                    "重点观察：合成游戏乙、合成游戏甲",
+                    "重点观察：多游戏操场",
                     "活动目标：",
                     "指导要点：",
                 ],
@@ -355,7 +347,7 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                 },
                 ["游戏区域：有游戏的操场"],
                 [
-                    "重点观察：合成户外游戏丁",
+                    "重点观察：有游戏的操场",
                     "活动目标：",
                     "指导要点：",
                 ],
@@ -369,8 +361,8 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                     "下午：",
                     3,
                 )
-                # ``重点观察`` only carries selected game names; no selected
-                # name stays empty instead of falling back to the area.
+                # Only one stored area name is shown as the focus. Legacy
+                # prose and game names remain stored but are not this field.
                 self.assertEqual(rows[0][1], area_lines)
                 self.assertEqual(rows[1][1], detail_lines)
                 self.assertEqual(rows[2][1], support_lines)
@@ -378,11 +370,114 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
                     self.assertFalse(paragraph.startswith("游戏："))
                     self.assertNotIn("\n", paragraph)
                     self.assertNotIn("\r", paragraph)
-                # ``观察要点`` appears only when stored observation text exists.
-                self.assertEqual(
-                    any(line.startswith("观察要点：") for line in rows[1][1]),
-                    bool(afternoon.get("observation_focus")),
-                )
+                self.assertFalse(any(line.startswith("观察要点：") for line in rows[1][1]))
+
+    def test_morning_selects_one_actual_game_name_with_legacy_fallback(self):
+        groups = [
+            {"group_kind": "collective", "games": [{"name": "集体甲"}, {"name": "集体乙"}], "shared_objectives": "集体目标", "guidance_points": "集体要点"},
+            {"group_kind": "free_choice", "games": [{"name": "自选甲"}, {"name": "自选乙"}], "shared_objectives": "自选目标", "guidance_points": "自选要点"},
+        ]
+        for focus, expected in (("自选乙", "自选乙"), ("1. 教师旧指导\n2. 继续观察", "自选甲"), ("", "集体甲")):
+            with self.subTest(focus=focus):
+                content = {"morning_games": copy.deepcopy(groups)}
+                content["morning_games"][1]["focus_guidance"] = focus
+                before = copy.deepcopy(content)
+                detail = _morning_detail_paragraphs(_rows(_payload(content)))
+                self.assertEqual([line for line in detail if line.startswith("重点指导：")], ["重点指导：" + expected])
+                selected = "自选" if focus else "集体"
+                other = "集体" if focus else "自选"
+                self.assertIn(f"活动目标：{selected}目标", detail)
+                self.assertIn(f"指导要点：{selected}要点", detail)
+                self.assertNotIn(f"{other}目标", "\n".join(detail))
+                self.assertNotIn(f"{other}要点", "\n".join(detail))
+                self.assertEqual(content, before)
+                self.assertNotIn("教师旧指导", "\n".join(detail))
+
+    def test_same_game_name_in_two_groups_keeps_selected_group_identity(self):
+        content = {"morning_games": [
+            {"group_kind": "collective", "games": [{"name": "滚球"}], "shared_objectives": "集体目标", "guidance_points": "集体要点"},
+            {"group_kind": "free_choice", "games": [{"name": "滚球"}], "focus_guidance": "滚球", "shared_objectives": "自选目标", "guidance_points": "自选要点"},
+        ]}
+        before = copy.deepcopy(content)
+        detail = _morning_detail_paragraphs(_rows(_payload(content)))
+        self.assertEqual(detail, ["重点指导：滚球", "活动目标：自选目标", "指导要点：自选要点"])
+        self.assertEqual(content, before)
+        # The legacy/web path still exports both sets of stored detail text.
+        web = _morning_detail_paragraphs(_rows(generate_daily_export_docx([map_daily_plan(_record(content))])))
+        self.assertIn("集体游戏：集体目标", web)
+        self.assertIn("自主游戏：自选目标", web)
+
+    def test_two_areas_choose_one_name_and_keep_objectives_guidance_support(self):
+        content = {
+            "post_group_games": [{
+                "context_kind": "area", "area": "美工区、建构区",
+                "games": [{"name": "会动的小鸟"}], "focus_guidance": "建构区",
+                "objectives": "1. 室内目标甲\n2. 室内目标乙", "guidance": "室内指导", "support_strategy": "室内支持",
+            }],
+            "afternoon_outdoor": {
+                "area": "沙水区、攀爬区", "games": [{"name": "户外游戏"}],
+                "observation_focus": "攀爬区", "objectives": "户外目标", "guidance": "户外指导", "support_strategy": "户外支持",
+            },
+        }
+        before = copy.deepcopy(content)
+        rows = _rows(_payload(content))
+        indoor = _block_text(rows, "室内区域游戏：", 3)
+        outdoor = _block_text(rows, "下午：", 3)
+        self.assertIn("游戏区域：美工区、建构区", indoor)
+        self.assertIn("重点指导：建构区", indoor)
+        self.assertNotIn("会动的小鸟", indoor)
+        self.assertIn("游戏区域：沙水区、攀爬区", outdoor)
+        self.assertIn("重点观察：攀爬区", outdoor)
+        for value in ("1. 室内目标甲", "2. 室内目标乙", "室内指导", "室内支持"):
+            self.assertIn(value, indoor)
+        for value in ("户外目标", "户外指导", "户外支持"):
+            self.assertIn(value, outdoor)
+        self.assertEqual(content, before)
+        for separator in ("、", "，", ",", "；", ";", "\n", "\r\n"):
+            for explicit_selection in (True, False):
+                with self.subTest(separator=separator, explicit_selection=explicit_selection):
+                    manual = copy.deepcopy(content)
+                    post = manual["post_group_games"][0]
+                    afternoon = manual["afternoon_outdoor"]
+                    post["area"] = "美工区" + separator + "建构区"
+                    afternoon["area"] = "沙水区" + separator + "攀爬区"
+                    if not explicit_selection:
+                        post["focus_guidance"] = "1. 教师旧重点\n2. 继续指导"
+                        afternoon["observation_focus"] = "1. 教师旧观察\n2. 继续观察"
+                    original = copy.deepcopy(manual)
+                    view = map_daily_plan(_record(manual), single_afternoon_outdoor=True)
+                    self.assertEqual(view["post_group_games"][0]["area"], post["area"])
+                    self.assertEqual(view["afternoon_outdoor"]["area"], afternoon["area"])
+                    actual = _rows(generate_daily_export_docx([view]))
+                    indoor_detail = _block_rows(actual, "室内区域游戏：", 3)[1][1]
+                    outdoor_detail = _block_rows(actual, "下午：", 3)[1][1]
+                    self.assertEqual(
+                        [line for line in indoor_detail if line.startswith("重点指导：")],
+                        ["重点指导：" + ("建构区" if explicit_selection else "美工区")],
+                    )
+                    self.assertEqual(
+                        [line for line in outdoor_detail if line.startswith("重点观察：")],
+                        ["重点观察：" + ("攀爬区" if explicit_selection else "沙水区")],
+                    )
+                    self.assertNotIn("建构区", indoor_detail)
+                    self.assertNotIn("攀爬区", outdoor_detail)
+                    self.assertEqual(manual, original)
+
+    def test_legacy_focus_prose_is_hidden_locally_but_default_web_is_unchanged(self):
+        content = {
+            "post_group_games": [{"context_kind": "area", "area": "美工区、建构区", "games": [{"name": "旧游戏"}], "focus_guidance": "1. 旧重点甲\n2. 旧重点乙"}],
+            "afternoon_outdoor": {"area": "沙水区、攀爬区", "games": [{"name": "旧户外游戏"}], "observation_focus": "1. 旧观察甲\n2. 旧观察乙"},
+        }
+        before = copy.deepcopy(content)
+        local = "\n".join(_all_paragraphs(_rows(_payload(content))))
+        self.assertIn("重点指导：美工区", local)
+        self.assertIn("重点观察：沙水区", local)
+        for value in ("旧重点甲", "旧重点乙", "旧观察甲", "旧观察乙", "游戏：旧游戏"):
+            self.assertNotIn(value, local)
+        web = "\n".join(_all_paragraphs(_rows(generate_daily_export_docx([map_daily_plan(_record(content))]))))
+        for value in ("旧重点甲", "旧重点乙", "旧观察甲", "旧观察乙", "游戏：旧游戏"):
+            self.assertIn(value, web)
+        self.assertEqual(content, before)
 
     def test_manual_and_historical_text_is_not_rewritten(self):
         content = {
@@ -413,6 +508,113 @@ class DailyWordDetailSemanticsTests(unittest.TestCase):
         ):
             self.assertIn(value, text)
         self.assertEqual(text.count("教师手工反思原文。"), 1)
+
+    def test_missing_facts_only_require_fields_used_in_local_word(self):
+        from app.local.export_service import collect_daily_missing_facts
+
+        content = {
+            "morning_games": [
+                {"group_kind": kind, "games": [{"name": kind}], "shared_objectives": "目标", "guidance_points": "指导"}
+                for kind in ("collective", "free_choice")
+            ],
+            "post_group_games": [
+                {"context_kind": "special_room", "games": []},
+                {"context_kind": "outdoor", "games": []},
+                {"context_kind": "area", "area": "美工区、建构区", "games": [], "objectives": "目标", "guidance": "指导", "support_strategy": "支持"},
+            ],
+            "afternoon_outdoor": {"area": "沙水区、攀爬区", "games": [], "objectives": "目标", "guidance": "指导", "support_strategy": "支持"},
+        }
+        before = copy.deepcopy(content)
+        relevant = [fact for fact in collect_daily_missing_facts(content)
+                    if fact["section"] in ("morning_games", "post_group_games", "afternoon_outdoor")]
+        self.assertEqual(relevant, [])
+        content["post_group_games"][2]["guidance"] = ""
+        facts = collect_daily_missing_facts(content)
+        fact = next(f for f in facts if f["field"] == "post_group_games[2].guidance")
+        self.assertEqual(fact["group_index"], 2)
+        content["post_group_games"][2]["guidance"] = "指导"
+        self.assertEqual(content, before)
+
+    def test_morning_missing_details_are_only_checked_for_selected_group(self):
+        from app.local.export_service import collect_daily_missing_facts
+
+        content = {"morning_games": [
+            {"group_id": "collective-id", "group_kind": "collective", "games": [{"name": "集体游戏"}]},
+            {"group_id": "selected-id", "group_kind": "free_choice", "games": [{"name": "自选游戏"}], "focus_guidance": "旧重点正文", "shared_objectives": "自选目标", "guidance_points": "自选要点"},
+        ]}
+        original = copy.deepcopy(content)
+        facts = collect_daily_missing_facts(content)
+        self.assertFalse(any(f["section"] == "morning_games" for f in facts))
+        self.assertEqual(content, original)
+        del content["morning_games"][1]["guidance_points"]
+        facts = [f for f in collect_daily_missing_facts(content) if f["section"] == "morning_games"]
+        self.assertEqual(facts, [{"kind": "empty_field", "field": "morning_games[1].guidance_points", "section": "morning_games", "group_kind": "free_choice", "group_index": 1, "group_id": "selected-id"}])
+
+    def test_legacy_afternoon_missing_facts_point_to_original_group(self):
+        from app.local.export_service import collect_daily_missing_facts
+
+        content = {"post_group_games": [
+            {"context_kind": "area", "area": "美工区", "objectives": "目标", "guidance": "指导", "support_strategy": "支持"},
+            {"group_id": "old-outdoor", "context_kind": "outdoor", "area": "沙水区", "guidance": "指导", "support_strategy": "支持"},
+        ]}
+        facts = collect_daily_missing_facts(content)
+        self.assertFalse(any(f["field"].startswith("afternoon_outdoor") for f in facts))
+        relevant = [f for f in facts if f["section"] == "post_group_games"]
+        self.assertEqual(relevant, [{"kind": "empty_field", "field": "post_group_games[1].objectives", "section": "post_group_games", "group_index": 1, "group_id": "old-outdoor"}])
+
+    def test_local_reflection_matches_support_paragraph_and_character_format(self):
+        prose = "观察幼儿协商材料的方法，提供适当支持。ABC 123，保持原有文字。"
+        content = {
+            "afternoon_outdoor": {"area": "沙水区", "support_strategy": prose},
+            "reflection": prose + "\n" + prose,
+        }
+        payload = _payload(content)
+        root = _root(payload)
+        rows = root.findall(".//w:tbl/w:tr", NS)
+        support = rows[-2].findall("w:tc", NS)[1]
+        reflection = rows[-1].findall("w:tc", NS)[1]
+        support_p = support.find("w:p", NS)
+        reference_ppr = ET.tostring(support_p.find("w:pPr", NS))
+        reference_rpr = ET.tostring(support_p.find("w:r/w:rPr", NS))
+        paragraphs = reflection.findall("w:p", NS)
+        self.assertEqual(len(paragraphs), 2)
+        for paragraph in paragraphs:
+            self.assertEqual(ET.tostring(paragraph.find("w:pPr", NS)), reference_ppr)
+            self.assertIsNone(paragraph.find("w:pPr/w:spacing", NS))
+            for run in paragraph.findall("w:r", NS):
+                self.assertEqual(ET.tostring(run.find("w:rPr", NS)), reference_rpr)
+                self.assertEqual(run.find("w:rPr/w:sz", NS).get(f"{{{W}}}val"), "24")
+                self.assertEqual(run.find("w:rPr/w:rFonts", NS).get(f"{{{W}}}eastAsia"), "仿宋")
+        self.assertEqual(ET.tostring(support.find("w:tcPr", NS)), ET.tostring(reflection.find("w:tcPr", NS)))
+        self.assertEqual(rows[-1].find("w:trPr/w:trHeight", NS).get(f"{{{W}}}val"), "3084")
+        self.assertEqual(root.find(".//w:sectPr/w:docGrid", NS).get(f"{{{W}}}linePitch"), "312")
+        template = DAILY_TEMPLATE.read_bytes()
+        self.assertEqual(hashlib.sha256(template).hexdigest(), DAILY_TEMPLATE_SHA256)
+        with zipfile.ZipFile(io.BytesIO(template)) as original, zipfile.ZipFile(io.BytesIO(payload)) as rendered:
+            for member in original.namelist():
+                if member != "word/document.xml":
+                    self.assertEqual(rendered.read(member), original.read(member), member)
+
+    def test_web_reflection_keeps_original_exact_spacing(self):
+        content = {"reflection": "原有网页导出正文。"}
+        root = _root(generate_daily_export_docx([map_daily_plan(_record(content))]))
+        rows = root.findall(".//w:tbl/w:tr", NS)
+        reflection = rows[-1].findall("w:tc", NS)[1]
+        spacing = reflection.find("w:p/w:pPr/w:spacing", NS)
+        self.assertEqual(spacing.get(f"{{{W}}}line"), "400")
+        self.assertEqual(spacing.get(f"{{{W}}}lineRule"), "exact")
+
+    def test_legacy_empty_support_still_provides_body_format_for_reflection(self):
+        content = {
+            "post_group_games": [{"context_kind": "outdoor", "area": "旧操场"}],
+            "reflection": "保留反思文字，不从空支持策略继承默认字体。",
+        }
+        rows = _root(_payload(content)).findall(".//w:tbl/w:tr", NS)
+        reflection = rows[-1].findall("w:tc", NS)[1]
+        paragraph = reflection.find("w:p", NS)
+        self.assertIsNone(paragraph.find("w:pPr/w:spacing", NS))
+        self.assertEqual(paragraph.find("w:r/w:rPr/w:rFonts", NS).get(f"{{{W}}}eastAsia"), "仿宋")
+        self.assertEqual(paragraph.find("w:r/w:rPr/w:sz", NS).get(f"{{{W}}}val"), "24")
 
 
 if __name__ == "__main__":

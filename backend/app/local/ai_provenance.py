@@ -1,7 +1,7 @@
 """D2 W4 shared candidate-chain and split-baseline validation.
 
 The split baseline is server-owned. In D2 it is exactly
-``{"group_activity_process": <string>}`` whose value is the **model** split
+``{"group_activity_process": <string>}`` whose value is the **generated** split
 process of the referenced ``daily_lesson_split`` candidate — never a value
 edited by the teacher in the adoption preview (product spec §9.3.7,
 engineering spec §2.2).
@@ -19,7 +19,7 @@ chain is intact:
 
 A persisted non-null baseline additionally needs a matching provenance row for
 the exact content triple, a same-plan ``daily_lesson_split`` candidate with a
-valid chain, and a baseline value equal to that candidate's raw model process
+valid chain, and a baseline value equal to that candidate's persisted process
 (an empty string is a legal value, distinct from a ``null`` "no baseline").
 
 Anything else — missing provenance, a failure-injected execution, a tampered or
@@ -110,7 +110,7 @@ def load_candidate_for_plan(
 
 
 def baseline_from_model_process(process: object) -> dict[str, str]:
-    """Build the fixed baseline shape from a raw model process value.
+    """Build the fixed baseline shape from a generated candidate process value.
 
     A non-string process is corrupt input and is refused, never silently
     coerced to an empty string; a genuine empty string is preserved.

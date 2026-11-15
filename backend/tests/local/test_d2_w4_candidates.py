@@ -73,7 +73,7 @@ OTHER_CANDIDATE = {
             "group_kind": "collective",
             "games": [{"name": "阳光体育"}],
             "shared_objectives": "共同目标",
-            "focus_guidance": "重点指导",
+            "focus_guidance": "阳光体育",
         },
         {
             "group_kind": "free_choice",
@@ -88,7 +88,7 @@ OTHER_CANDIDATE = {
     "afternoon_outdoor": {
         "games": [{"name": "户外追逐"}],
         "area": "操场",
-        "observation_focus": "观察重点",
+        "observation_focus": "操场",
     },
 }
 
@@ -234,6 +234,211 @@ class W4Case(LocalTestCase):
 # ---------------------------------------------------------------------------
 # Candidate read
 # ---------------------------------------------------------------------------
+
+
+class SplitHeadingRegressionTests(W4Case):
+    def setUp(self):
+        super().setUp()
+        self.configure_ai()
+        self.candidate = {
+            "group_activity": {
+                "theme": "比较纸杯",
+                "objectives": "1. 探索并记录实验现象，愿意与同伴交流自己的发现。\n2. 尝试比较两种不同的材料。",
+                "preparation": "1. 经验准备：幼儿认识纸杯，尝试过搭建活动。\n2. 物质准备：3张卡纸和50cm绳子。",
+                "key_points": "比较材料。",
+                "difficult_points": "记录发现。",
+                "process": "一、导入\n师：看看材料并说一说。\n二、探索\n师：拿3张卡纸，比较两种搭法。",
+            }
+        }
+        self.raw = "\n".join(
+            heading + "：" + value
+            for heading, value in zip(
+                ("活动主题", "活动目标", "活动准备", "活动重点", "活动难点", "活动过程"),
+                self.candidate["group_activity"].values(),
+            )
+        )
+        self.plan = self.make_plan(raw=self.raw)
+
+    def test_verbatim_split_can_be_previewed_and_adopted(self):
+        candidate_id = self.generate(self.plan["id"], "daily_lesson_split", self.candidate)
+        preview = self.preview(self.plan["id"], candidate_id, ["group_activity"], self.candidate)
+        self.adopt(self.plan["id"], candidate_id, preview["preview_token"])
+        content = self.plan_content(self.plan["id"])
+        self.assertEqual(content["raw_lesson_plan"], self.raw)
+        self.assertEqual(content["adopted_content"]["group_activity"], self.candidate["group_activity"])
+        self.assertEqual(content["split_baseline"][BASELINE_KEY], self.candidate["group_activity"]["process"])
+
+    def test_invalid_response_reasons_keep_metadata_without_retry_or_candidate(self):
+        from app.local import ai_transport
+
+        # A nonempty preface makes the six-section extraction ambiguous. The
+        # original source-fidelity failure must remain classified and visible.
+        self.raw = "教案摘录（合成前言）\n" + self.raw
+        self.plan = self.make_plan(plan_date=date(2026, 9, 3), raw=self.raw)
+        mismatch = json.loads(json.dumps(self.candidate))
+        mismatch["group_activity"]["preparation"] = mismatch["group_activity"]["preparation"].replace("3张", "4张")
+        cases = [
+            ("split_source_mismatch", {"kind": "success", "candidate_text": json.dumps(mismatch)}),
+            ("candidate_contract_invalid", {"kind": "success", "candidate_text": '{"group_activity":{}}'}),
+            ("reasoning_only", {"kind": "output_invalid", "detail": ai_transport.DETAIL["reasoning_only"]}),
+            ("output_length", {"kind": "output_invalid", "detail": ai_transport.DETAIL["output_length"]}),
+        ]
+        for expected, result in cases:
+            with self.subTest(reason=expected):
+                task, _ = ai_task_service.create_task(
+                    self.session, plan_id=self.plan["id"], task_type="daily_lesson_split",
+                    expected_content_version=1, target_grade="middle", request_id=str(uuid.uuid4()),
+                )
+                claim = ai_task_service.claim_next(self.runtime, now=utc_now(), started_ticks=1)
+                self.assertIsNotNone(claim)
+                self.assertTrue(ai_task_service.commit_dispatch_mark(self.session, claim, utc_now()))
+                outcome = dict(result, sent=True, http_status=200, returned_model="synthetic-model", usage={"completion_tokens": 123})
+                finalize = ai_task_service.finalize_success if result["kind"] == "success" else ai_task_service.finalize_failure
+                self.assertTrue(finalize(self.session, claim, outcome, utc_now()))
+                row = query_rows(self.db, "SELECT status, reason FROM local_ai_tasks WHERE id=?", (task["id"],))[0]
+                self.assertEqual(row, {"status": "failed", "reason": expected})
+                attempts = query_rows(self.db, "SELECT evidence_code, returned_model, usage_json FROM local_ai_attempts WHERE execution_id=?", (claim.execution_id,))
+                self.assertEqual(len(attempts), 1)
+                self.assertEqual(attempts[0]["evidence_code"], expected)
+                self.assertEqual(attempts[0]["returned_model"], "synthetic-model")
+                self.assertEqual(json.loads(attempts[0]["usage_json"]), {"completion_tokens": 123})
+                self.assertEqual(query_scalar(self.db, "SELECT count(*) FROM local_ai_candidates WHERE task_id=?", (task["id"],)), 0)
+                self.assertIsNone(ai_task_service.claim_next(self.runtime, now=utc_now(), started_ticks=1))
+        self.assertEqual(self.plan_content(self.plan["id"])["raw_lesson_plan"], self.raw)
+
+
+class LabeledSplitCorrectionTests(W4Case):
+    def setUp(self):
+        super().setUp()
+        self.configure_ai()
+        self.steps = [
+            "一、导入\n师：说说颜色。",
+            "二、探索\n师：拿3张卡纸和50cm绳子，不要越过边线。",
+            "三、回顾\n幼：分享观察到的发现。",
+        ]
+        self.source_fields = {
+            "theme": "比较树叶",
+            "objectives": "1. 观察树叶颜色。\n2. 比较两片叶子的形状。",
+            "preparation": "1. 经验准备：观察过树叶。\n2. 物质准备：3张卡纸和50cm绳子。",
+            "key_points": "观察并比较。",
+            "difficult_points": "表达发现。",
+            "process": "\n".join(self.steps),
+        }
+        self.expected = {"group_activity": self.source_fields}
+        self.raw = "\n".join(
+            heading + "：" + value
+            for heading, value in zip(
+                ("活动主题", "活动目标", "活动准备", "活动重点", "活动难点", "活动过程"),
+                self.source_fields.values(),
+            )
+        )
+        self.plan = self.make_plan(raw=self.raw)
+
+    def candidate_with_process(self, process):
+        return {"group_activity": dict(self.source_fields, process=process)}
+
+    def detail(self, candidate_id):
+        self.session.expire_all()
+        return ai_candidates.get_candidate(
+            self.session, plan_id=self.plan["id"], candidate_id=candidate_id,
+        )
+
+    def test_numbering_fact_rewrites_and_omitted_steps_persist_as_exact_source(self):
+        process = self.source_fields["process"]
+        numbered = process.replace("一、", "1. ").replace("二、", "2. ").replace("三、", "3. ")
+        rewritten = process.replace("3张", "4张").replace("50cm", "50米").replace("不要", "可以")
+        cases = {"numbering": numbered, "facts": rewritten}
+        for index, name in enumerate(("omit_first", "omit_middle", "omit_last")):
+            cases[name] = "\n".join(step for i, step in enumerate(self.steps) if i != index)
+        for name, model_process in cases.items():
+            with self.subTest(name=name):
+                model_candidate = self.candidate_with_process(model_process)
+                if name == "facts":
+                    model_candidate["group_activity"]["preparation"] = "4张卡纸和50米绳子。"
+                candidate_id = self.generate(self.plan["id"], "daily_lesson_split", model_candidate)
+                detail = self.detail(candidate_id)
+                self.assertEqual(detail["raw_candidate"], self.expected)
+                row = query_rows(
+                    self.db, "SELECT raw_candidate_json, candidate_hash FROM local_ai_candidates WHERE id=?",
+                    (candidate_id,),
+                )[0]
+                self.assertEqual(json.loads(row["raw_candidate_json"]), self.expected)
+                self.assertEqual(
+                    row["candidate_hash"],
+                    hashlib.sha256(canonical_json(self.expected).encode("utf-8")).hexdigest(),
+                )
+        self.assertEqual(self.plan_content(self.plan["id"])["raw_lesson_plan"], self.raw)
+        self.assertEqual(self.plan_content(self.plan["id"])["adopted_content"], DEFAULT_ADOPTED)
+
+    def test_corrected_candidate_baseline_and_teacher_edits_stay_separate(self):
+        candidate_id = self.generate(
+            self.plan["id"], "daily_lesson_split",
+            self.candidate_with_process("1. 完全不同的模型活动。"),
+        )
+        edited = self.candidate_with_process(
+            self.source_fields["process"].replace("说说颜色。", "请找出红色的叶子。")
+        )
+        preview = self.preview(self.plan["id"], candidate_id, ["group_activity"], edited)
+        self.adopt(self.plan["id"], candidate_id, preview["preview_token"])
+        content = self.plan_content(self.plan["id"])
+        self.assertEqual(content["adopted_content"]["group_activity"], edited["group_activity"])
+        self.assertEqual(content["split_baseline"][BASELINE_KEY], self.source_fields["process"])
+        self.assertEqual(self.detail(candidate_id)["raw_candidate"], self.expected)
+        manual = json.loads(json.dumps(content["adopted_content"]))
+        manual["group_activity"]["process"] += "\n教师手工补充记录。"
+        self.save_content(self.plan["id"], self.content_version(self.plan["id"]), manual, raw=self.raw)
+        content = self.plan_content(self.plan["id"])
+        self.assertEqual(content["adopted_content"], manual)
+        self.assertEqual(content["split_baseline"][BASELINE_KEY], self.source_fields["process"])
+        self.assertEqual(content["raw_lesson_plan"], self.raw)
+
+    def test_existing_candidate_reads_and_adoption_do_not_reextract_source(self):
+        old_process = self.source_fields["process"].replace("一、", "1. ").replace("二、", "2. ").replace("三、", "3. ")
+        old_candidate = self.candidate_with_process(old_process)
+        # Reconstruct a historical result with the previous equivalent-number
+        # validation, bypassing only the new generation-time extraction.
+        with mock.patch.object(ai_task_service, "extract_labeled_split_fields", return_value=None):
+            candidate_id = self.generate(self.plan["id"], "daily_lesson_split", old_candidate)
+        with mock.patch.object(
+            ai_task_service, "extract_labeled_split_fields",
+            side_effect=AssertionError("historical reads/adoption must not extract again"),
+        ):
+            self.assertEqual(self.detail(candidate_id)["raw_candidate"], old_candidate)
+            preview = self.preview(self.plan["id"], candidate_id, ["group_activity"], old_candidate)
+            self.adopt(self.plan["id"], candidate_id, preview["preview_token"])
+            content = self.plan_content(self.plan["id"])
+        self.assertEqual(content["split_baseline"][BASELINE_KEY], old_process)
+        self.assertEqual(content["adopted_content"]["group_activity"], old_candidate["group_activity"])
+
+    def test_completion_uses_frozen_input_even_after_raw_lesson_is_saved_again(self):
+        task, _ = ai_task_service.create_task(
+            self.session, plan_id=self.plan["id"], task_type="daily_lesson_split",
+            expected_content_version=1, target_grade="middle", request_id=str(uuid.uuid4()),
+        )
+        claim = ai_task_service.claim_next(self.runtime, now=utc_now(), started_ticks=1)
+        self.assertIsNotNone(claim)
+        self.assertTrue(ai_task_service.commit_dispatch_mark(self.session, claim, utc_now()))
+        latest_raw = self.raw.replace("比较树叶", "认识花朵").replace("3张", "8张")
+        self.save_content(self.plan["id"], 1, DEFAULT_ADOPTED, raw=latest_raw)
+        self.assertTrue(ai_task_service.finalize_success(
+            self.session, claim,
+            {"kind": "success", "candidate_text": json.dumps(self.candidate_with_process("1. 模型改写内容。"))},
+            utc_now(),
+        ))
+        candidate_id = query_scalar(
+            self.db, "SELECT id FROM local_ai_candidates WHERE task_id=?", (task["id"],),
+        )
+        self.assertIsNotNone(candidate_id)
+        detail = self.detail(candidate_id)
+        self.assertEqual(detail["raw_candidate"], self.expected)
+        self.assertEqual(detail["adoption_state"], "source_changed")
+        frozen = json.loads(query_scalar(
+            self.db, "SELECT payload_json FROM local_ai_inputs WHERE id=?", (claim.input_id,),
+        ))
+        self.assertEqual(frozen["raw_lesson_plan"], self.raw)
+        self.assertEqual(self.plan_content(self.plan["id"])["raw_lesson_plan"], latest_raw)
+        with self.assertRaises(LocalAiSourceChanged):
+            self.preview(self.plan["id"], candidate_id, ["group_activity"], self.expected)
 
 
 class CandidateReadTests(W4Case):

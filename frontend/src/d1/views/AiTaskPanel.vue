@@ -16,7 +16,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiGet, apiPost, ApiError, pathSegment } from '../client'
 import { isIndeterminate, queryAiReceipt, receiptMessage } from '../operations'
 import type { SaveOutcome } from '../leave'
-import type { AiTask, AiTaskList, AiTaskProgress, Grade, PromptList, TaskType } from '../types'
+import type { AiTask, AiTaskList, AiTaskProgress, Grade, PromptList, SplitAdaptContinuation, TaskType } from '../types'
 import {
   TASK_TYPES,
   TASK_TYPE_HINTS,
@@ -34,6 +34,7 @@ const props = defineProps<{
   contentVersion: number
   hasRaw: boolean
   hasProcess: boolean
+  hasSplitBaseline?: boolean
   frozen?: boolean
   saveCurrent: () => Promise<SaveOutcome>
   pollVisibleMs?: number
@@ -47,6 +48,7 @@ const props = defineProps<{
   splitTarget?: HTMLElement | null
   processTarget?: HTMLElement | null
   otherTarget?: HTMLElement | null
+  reflectionProgressTarget?: HTMLElement | null
 }>()
 
 const emit = defineEmits<{
@@ -60,6 +62,7 @@ const emit = defineEmits<{
    * (background page reopen) is never announced.
    */
   (e: 'other-generated', task: AiTask): void
+  (e: 'reflection-updated', task: AiTask): void
 }>()
 
 const GRADE_LABELS: Record<Grade, string> = { small: '小班', middle: '中班', large: '大班' }
@@ -74,6 +77,7 @@ const rowTargets = computed<Record<TaskType, HTMLElement | null>>(() => ({
 
 const targetGrade = ref<Grade>(props.planGrade)
 const tasks = ref<AiTask[]>([])
+const observedReflectionTaskId = ref<string | null>(null)
 const errorText = ref('')
 const createError = ref<Record<string, string>>({})
 const actionError = ref<Record<string, string>>({})
@@ -459,6 +463,28 @@ function putTask(task: AiTask): void {
   }
 }
 
+/** The editor owns reflection creation; this panel owns its existing read-only polling. */
+function observeReflectionTask(task: AiTask): boolean {
+  if (!active || task.plan_id !== props.planId || task.task_type !== 'daily_reflection_generate' || !task.id) {
+    return false
+  }
+  // An older list request must not erase a task just accepted by the editor.
+  refreshSeq += 1
+  observedReflectionTaskId.value = task.id
+  putTask(task)
+  const key = progressKey(task)
+  if (task.status === 'pending' && pendingSince.value[key] === undefined) {
+    pendingSince.value = { ...pendingSince.value, [key]: Date.now() }
+  }
+  if (isLiveTask(task) && progressWaitSince.value[key] === undefined) {
+    progressWaitSince.value = { ...progressWaitSince.value, [key]: Date.now() }
+  }
+  emit('reflection-updated', task)
+  void fetchProgress()
+  schedulePoll()
+  return true
+}
+
 /** Announce one succeeded other-activities task, exactly once. */
 function announceOtherTask(task: AiTask): void {
   if (
@@ -510,6 +536,9 @@ async function refresh(): Promise<void> {
     } while (cursor)
     if (seq !== refreshSeq) return
     tasks.value = collected
+    const reflection = collected.find((task) => task.id === observedReflectionTaskId.value
+      && task.plan_id === props.planId && task.task_type === 'daily_reflection_generate')
+    if (reflection) emit('reflection-updated', reflection)
     // Direct-fill only for a task this panel actually watched transition from
     // live to succeeded. A page reopened after completion has no live
     // observation and must not overwrite the freshly loaded draft.
@@ -641,6 +670,9 @@ function blockedReason(taskType: TaskType): string | null {
   if (taskType === 'daily_process_adapt' && !props.hasProcess) {
     return '集体活动过程为空：请先填写过程再调整'
   }
+  if (taskType === 'daily_process_adapt' && props.hasSplitBaseline === false) {
+    return '请先采用并保存教案拆分结果，再发起过程适龄调整'
+  }
   const existing = tasks.value.find(
     (task) => task.task_type === taskType && isLiveTask(task),
   )
@@ -725,6 +757,36 @@ async function trigger(taskType: TaskType): Promise<void> {
       target_grade: targetGrade.value,
     }
     await submitCreate(taskType, rid, body)
+  } finally {
+    creating.value = { ...creating.value, [taskType]: false }
+  }
+}
+
+/** Continue from the exact saved split; never save newer edits or retry here. */
+async function continueAfterSplit(
+  input: SplitAdaptContinuation,
+  isCurrent: () => boolean,
+): Promise<boolean> {
+  const taskType = 'daily_process_adapt'
+  if (
+    !active || creating.value[taskType] || !isCurrent()
+    || props.planId !== input.planId || props.contentVersion !== input.contentVersion
+  ) return false
+  const blocked = blockedReason(taskType)
+  if (blocked) {
+    createError.value = { ...createError.value, [taskType]: blocked }
+    return false
+  }
+  creating.value = { ...creating.value, [taskType]: true }
+  createError.value = { ...createError.value, [taskType]: '' }
+  try {
+    const rid = requestId()
+    return await submitCreate(taskType, rid, {
+      request_id: rid,
+      task_type: taskType,
+      expected_content_version: input.contentVersion,
+      target_grade: input.targetGrade,
+    })
   } finally {
     creating.value = { ...creating.value, [taskType]: false }
   }
@@ -981,6 +1043,7 @@ onMounted(() => {
     progressTick: () => {
       progressNow.value = Date.now()
     },
+    observeReflectionTask,
   }
   void refresh().then(() => {
     void fetchProgress()
@@ -1004,7 +1067,7 @@ onBeforeUnmount(() => {
   emit('draft-active', false)
   delete (window as unknown as { __d1AiTasks?: object }).__d1AiTasks
 })
-defineExpose({ trigger })
+defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
 </script>
 
 <template>
@@ -1064,6 +1127,9 @@ defineExpose({ trigger })
           </template>
           <span class="muted hint">{{ TASK_TYPE_HINTS[type] }}</span>
         </div>
+        <p v-if="type === 'daily_process_adapt' && hasSplitBaseline === false" class="muted" data-d1="adapt-baseline-hint">
+          请先采用并保存教案拆分结果，再发起过程适龄调整。
+        </p>
         <el-alert v-if="createError[type]" type="warning" :closable="false" :title="createError[type]" />
       </Teleport>
     </div>
@@ -1071,9 +1137,12 @@ defineExpose({ trigger })
     <el-alert v-if="errorText" type="warning" :closable="false" class="section" data-d1="ai-task-error" :title="errorText" />
 
     <h4 class="history-head">任务历史（新到旧）</h4>
+    <template v-for="task in orderedTasks" :key="task.id">
+    <Teleport
+      :to="reflectionProgressTarget || 'body'"
+      :disabled="task.id !== observedReflectionTaskId || !reflectionProgressTarget"
+    >
     <el-card
-      v-for="task in orderedTasks"
-      :key="task.id"
       shadow="never"
       class="task-card"
       data-d1="ai-task"
@@ -1177,7 +1246,7 @@ defineExpose({ trigger })
           </el-button>
         </template>
         <el-button
-          v-if="task.candidate_id"
+          v-if="task.candidate_id && task.id !== observedReflectionTaskId"
           size="small"
           type="primary"
           :disabled="frozen"
@@ -1188,6 +1257,8 @@ defineExpose({ trigger })
         </el-button>
       </div>
     </el-card>
+    </Teleport>
+    </template>
     <p v-if="!orderedTasks.length" class="muted">暂无任务记录。</p>
   </el-card>
 </template>

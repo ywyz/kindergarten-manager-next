@@ -20,12 +20,14 @@ import time
 
 VALID_SPLIT = {
     "group_activity": {
-        "theme": "秋天的树叶",
-        "objectives": "观察树叶",
-        "preparation": "树叶若干",
-        "key_points": "观察",
-        "difficult_points": "比较",
-        "process": "一、导入；二、观察；三、比较",
+        # Match ExecutorCase's saved raw lesson. A handshake-success fixture
+        # must also satisfy the source-fidelity gate before becoming a candidate.
+        "theme": "主题",
+        "objectives": "目标",
+        "preparation": "准备",
+        "key_points": "重点",
+        "difficult_points": "难点",
+        "process": "过程",
     }
 }
 INVALID_SPLIT = {"unexpected": "x"}

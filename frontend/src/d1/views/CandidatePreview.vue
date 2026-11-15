@@ -22,6 +22,7 @@ import type { SaveOutcome } from '../leave'
 import type {
   AdoptionPreview,
   AdoptionResult,
+  CandidateAdoptionOrigin,
   CandidateDetail,
   TaskType,
 } from '../types'
@@ -70,7 +71,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
-  (e: 'adopted', result: AdoptionResult, epochAtAdopt: number): void
+  (e: 'adopted', result: AdoptionResult, epochAtAdopt: number, origin: CandidateAdoptionOrigin): void
   (e: 'draft-active', active: boolean): void
   (e: 'open-candidate', candidateId: string): void
   (e: 'open-regenerated', candidateId: string, taskType: TaskType): void
@@ -110,6 +111,7 @@ interface PendingAdopt {
   candidateId: string
   epochAtAdopt: number
   editSignature: string
+  origin: CandidateAdoptionOrigin
 }
 const pendingAdopt = ref<PendingAdopt | null>(null)
 /** #20: an adapt regeneration whose reply has not been resolved yet. */
@@ -508,6 +510,8 @@ function handlePreviewError(err: unknown): void {
 async function adopt(): Promise<void> {
   if (adopting.value || previewing.value || pendingAdopt.value) return
   if (!editable.value) return
+  const adoptedCandidate = candidate.value
+  if (!adoptedCandidate) return
   const context = previewContext.value
   const viewed = preview.value
   if (!context || !viewed) {
@@ -543,6 +547,12 @@ async function adopt(): Promise<void> {
     candidateId,
     epochAtAdopt: context.epochAtPreview,
     editSignature: context.signature,
+    origin: {
+      planId,
+      candidateId,
+      taskType: adoptedCandidate.task_type,
+      targetGrade: adoptedCandidate.source.target_grade,
+    },
   }
   pendingAdopt.value = pending
   try {
@@ -598,13 +608,21 @@ async function resubmitPendingAdopt(): Promise<void> {
 }
 
 function applyAdoptResult(result: AdoptionResult, context: PendingAdopt): void {
+  if (pendingAdopt.value?.requestId !== context.requestId) return
+  if (
+    result.request_id !== context.requestId || result.plan_id !== context.planId
+    || result.candidate_id !== context.candidateId
+  ) {
+    errorText.value = '采用回执与当前请求不一致：请查询原提交结果'
+    return
+  }
   pendingAdopt.value = null
   preview.value = null
   previewContext.value = null
   resultText.value = result.changed
     ? `已采用并保存（内容版本 v${result.content_version}）`
     : '内容与候选一致：未产生新内容版本'
-  emit('adopted', result, context.epochAtAdopt)
+  emit('adopted', result, context.epochAtAdopt, context.origin)
 }
 
 /** Read-only receipt query for a lost adopt response (R07). */
@@ -1191,7 +1209,7 @@ onBeforeUnmount(() => {
               <el-tag size="small">{{ group.group_kind === 'collective' ? '集体游戏组' : '自主游戏组' }}</el-tag>
               <el-input v-model="group.games[0].name" placeholder="游戏名称" :disabled="!editable" class="game-input" />
               <div class="field-grid">
-                <div class="field"><label>重点指导</label><el-input v-model="group.focus_guidance" :disabled="!editable" /></div>
+                <div class="field"><label>重点指导（游戏名称）</label><el-input v-model="group.focus_guidance" placeholder="填写本组游戏名称；晨间仅选一组填写" :disabled="!editable" /></div>
                 <div class="field"><label>共用目标</label><el-input v-model="group.shared_objectives" :disabled="!editable" /></div>
                 <div class="field"><label>指导要点</label><el-input v-model="group.guidance_points" :disabled="!editable" /></div>
               </div>
@@ -1223,7 +1241,7 @@ onBeforeUnmount(() => {
                   <el-option label="户外" value="outdoor" />
                   <el-option label="专用室" value="special_room" />
                 </el-select>
-                <el-input v-if="group.context_kind === 'area'" v-model="group.area" size="small" placeholder="区域名称" :disabled="!editable" class="area-input" />
+                <el-input v-if="group.context_kind === 'area'" v-model="group.area" size="small" placeholder="两个区域，用顿号分隔，如美工区、建构区" :disabled="!editable" class="area-input" />
               </div>
               <div v-for="(game, ggi) in group.games" :key="`pg-${gi}-${ggi}`" class="row">
                 <el-input v-model="game.name" placeholder="游戏名称" :disabled="!editable" />
@@ -1231,7 +1249,7 @@ onBeforeUnmount(() => {
               </div>
               <el-button size="small" :disabled="!editable" @click="addPostGame(group)">添加游戏</el-button>
               <div class="field-grid">
-                <div class="field"><label>重点指导</label><el-input v-model="group.focus_guidance" :disabled="!editable" /></div>
+                <div class="field"><label>重点指导（区域名称）</label><el-input v-model="group.focus_guidance" placeholder="填写上述区域中的一个名称" :disabled="!editable" /></div>
                 <div class="field"><label>目标</label><el-input v-model="group.objectives" :disabled="!editable" /></div>
                 <div class="field"><label>指导</label><el-input v-model="group.guidance" :disabled="!editable" /></div>
                 <div class="field"><label>支持策略</label><el-input v-model="group.support_strategy" :disabled="!editable" /></div>
@@ -1246,14 +1264,14 @@ onBeforeUnmount(() => {
             <el-tag v-if="!otherForm.afternoon_outdoor" size="small" type="info">未生成</el-tag>
           </div>
           <template v-if="otherForm.afternoon_outdoor">
-            <div class="field"><label>区域名称</label><el-input v-model="otherForm.afternoon_outdoor.area" :disabled="!editable" /></div>
+            <div class="field"><label>区域名称</label><el-input v-model="otherForm.afternoon_outdoor.area" placeholder="两个户外区域，用顿号分隔，如骑行、沙水池" :disabled="!editable" /></div>
             <div v-for="(game, ggi) in otherForm.afternoon_outdoor.games" :key="`a-${ggi}`" class="row">
               <el-input v-model="game.name" placeholder="游戏名称" :disabled="!editable" />
               <el-button size="small" text type="danger" :disabled="!editable || otherForm.afternoon_outdoor.games.length <= 1" @click="otherForm.afternoon_outdoor.games.splice(ggi, 1)">删除</el-button>
             </div>
             <el-button size="small" :disabled="!editable" @click="addAfternoonGame">添加游戏</el-button>
             <div class="field-grid">
-              <div class="field"><label>重点观察</label><el-input v-model="otherForm.afternoon_outdoor.observation_focus" :disabled="!editable" /></div>
+              <div class="field"><label>重点观察（区域名称）</label><el-input v-model="otherForm.afternoon_outdoor.observation_focus" placeholder="填写上述户外区域中的一个名称" :disabled="!editable" /></div>
               <div class="field"><label>目标</label><el-input v-model="otherForm.afternoon_outdoor.objectives" :disabled="!editable" /></div>
               <div class="field"><label>指导</label><el-input v-model="otherForm.afternoon_outdoor.guidance" :disabled="!editable" /></div>
               <div class="field"><label>支持策略</label><el-input v-model="otherForm.afternoon_outdoor.support_strategy" :disabled="!editable" /></div>
@@ -1262,6 +1280,9 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
+      <p v-if="candidate.task_type === 'daily_lesson_split'" class="muted" data-d1="split-adapt-continuation-hint">
+        采用并保存后，将按本次拆分的目标年级自动发起一次过程适龄调整；适龄结果仍需比较并采用。
+      </p>
       <el-alert v-if="errorText" type="warning" :closable="false" class="section" data-d1="candidate-error" :title="errorText" />
       <el-alert v-if="resultText" type="success" :closable="false" class="section" data-d1="candidate-adopted" :title="resultText" />
 

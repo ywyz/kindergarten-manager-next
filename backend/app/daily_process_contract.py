@@ -33,6 +33,30 @@ _LINE_NUMBER_RE = re.compile(
     rf"^[ \t\u3000]*{_CN_OR_AR_NUMBER}(?:[、)）]|[.．](?!\d))",
     re.MULTILINE,
 )
+# Pasting a lesson often leaves the first numbered item on its heading line.
+# Treat only these explicit section labels as boundaries during split checks;
+# numbers after arbitrary colons (dialogue, measurements, times) stay factual.
+_SPLIT_HEADING_RE = re.compile(
+    r"^([ \t\u3000]*活动(?:目标|准备|重点|难点|过程)[ \t\u3000]*[:：])[ \t\u3000]*",
+    re.MULTILINE,
+)
+_LABELED_SPLIT_FIELDS = {
+    "活动主题": "theme",
+    "活动目标": "objectives",
+    "活动准备": "preparation",
+    "活动重点": "key_points",
+    "活动难点": "difficult_points",
+    "活动过程": "process",
+}
+_LABELED_SPLIT_RE = re.compile(
+    r"^[ \t\u3000]*(活动主题|活动目标|活动准备|活动重点|活动难点|活动过程)[ \t\u3000]*[:：][ \t\u3000]*",
+    re.MULTILINE,
+)
+_EXTRA_SPLIT_SECTION_RE = re.compile(
+    r"^[ \t\u3000]*(?:(?:活动|教学|课后|课外)?(?:反思|延伸|评价|小结|总结)|"
+    r"延伸活动|设计意图|效果分析|注意事项|附录|附件)[ \t\u3000\r]*$",
+    re.MULTILINE,
+)
 # Numeric/unit/letter characters are fact-bearing.  A typo-only cleanup may
 # change other characters, but these must stay in the same order and count.
 _SENSITIVE_RE = re.compile(
@@ -613,6 +637,49 @@ def expand_adapt_patch(
     return {"process": final}
 
 
+def extract_labeled_split_fields(raw_lesson: str) -> dict[str, str] | None:
+    """Extract an unambiguous six-section lesson without rewriting its body.
+
+    Only new split generation uses this; historical candidates and teacher
+    edits never pass through it. Missing/repeated/nested/unknown headings fall
+    back to the existing model extraction and fidelity checks.
+    """
+    if not isinstance(raw_lesson, str):
+        return None
+    matches = list(_LABELED_SPLIT_RE.finditer(raw_lesson))
+    if len(matches) != 6 or {m[1] for m in matches} != set(_LABELED_SPLIT_FIELDS):
+        return None
+    if raw_lesson[:matches[0].start()].strip() or _EXTRA_SPLIT_SECTION_RE.search(raw_lesson):
+        return None
+    for line in raw_lesson.splitlines():
+        if _LABELED_SPLIT_RE.match(line):
+            continue
+        # A nested lesson heading makes the top-level boundary ambiguous.
+        unnumbered = _NUMBER_RE.sub("", line)
+        if _LABELED_SPLIT_RE.match(unnumbered):
+            return None
+        if unnumbered.lstrip().startswith(("#", "```", "**", "__")):
+            return None
+        section_label = re.match(r"([^:：]+)[:：]", unnumbered.strip())
+        section_title = (section_label[1] if section_label else unnumbered).strip().strip("【】[]*_'\"“”‘’《》（）()")
+        if _EXTRA_SPLIT_SECTION_RE.fullmatch(section_title):
+            return None
+        if _NUMBER_RE.match(line):
+            continue
+        label = re.match(r"^[ \t\u3000]*([^:：\n]{1,24})[:：]", line)
+        if label and label[1].strip() not in ("师", "幼", "教师", "幼儿", "师幼"):
+            return None
+    fields = {
+        _LABELED_SPLIT_FIELDS[match[1]]: raw_lesson[
+            match.end():matches[index + 1].start() if index + 1 < len(matches) else len(raw_lesson)
+        ].strip()
+        for index, match in enumerate(matches)
+    }
+    if len(fields["theme"].encode("utf-8")) > 256:
+        return None
+    return fields
+
+
 def validate_split_cleanup(raw_lesson: str, fields: list[str]) -> None:
     """Field-by-field split extraction check (order-independent).
 
@@ -623,8 +690,13 @@ def validate_split_cleanup(raw_lesson: str, fields: list[str]) -> None:
     """
     if not isinstance(raw_lesson, str) or not raw_lesson.strip():
         raise DailyProcessContractError("原始教案为空，无法校验拆分清理")
-    raw_norm = _content(raw_lesson)
-    raw_for_runs = _normalize_structural_numbers(raw_lesson)
+    # Compare the same structural boundary on both sides: “活动目标：1. …”
+    # in the source and “1. …” at the start of an extracted field.  This is a
+    # comparison view only; neither the teacher's source nor candidate changes.
+    raw_for_runs = _normalize_structural_numbers(
+        _SPLIT_HEADING_RE.sub(r"\1\n", raw_lesson)
+    )
+    raw_norm = _CLEANUP_DROP.sub("", raw_for_runs)
     for value in fields:
         if not isinstance(value, str) or not value.strip():
             continue

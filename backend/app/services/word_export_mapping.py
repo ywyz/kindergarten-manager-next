@@ -395,6 +395,39 @@ def _raw_game_names(group: Any) -> list[str]:
     return names
 
 
+def daily_morning_focus_group(groups: Any) -> dict | None:
+    """Locate the group selected by current or legacy focus text, read-only."""
+    available = [
+        group for group in groups or []
+        if isinstance(group, dict)
+        and group.get("group_kind") in ("collective", "free_choice")
+    ]
+    for group in available:
+        focus = _text(group.get("focus_guidance")).strip()
+        if focus and _raw_game_names(group):
+            return group
+    return next((group for group in available if _raw_game_names(group)), None)
+
+
+def daily_morning_focus_name(groups: Any) -> str:
+    """Select one stored game name; legacy guidance only identifies its group."""
+    group = daily_morning_focus_group(groups)
+    names = _raw_game_names(group)
+    focus = _text((group or {}).get("focus_guidance")).strip()
+    return focus if focus in names else (names[0] if names else "")
+
+
+def daily_area_focus_name(area: Any, focus: Any, *, context_kind: Any = None) -> str:
+    """Select one stored area, without inventing a missing second location."""
+    area = _display_area(area, context_kind, True)
+    names = [
+        part.strip() for part in re.split(r"[、,，;；\r\n]+", _text(area))
+        if part.strip()
+    ]
+    selected = _text(focus).strip()
+    return selected if selected in names else (names[0] if names else "")
+
+
 def _post_group_has_content(group: Any) -> bool:
     if not isinstance(group, dict):
         return False
@@ -557,7 +590,7 @@ def map_daily_plan(
                 if isinstance(g, dict)
                 and (
                     not single_afternoon_outdoor
-                    or g.get("context_kind") != "outdoor"
+                    or g.get("context_kind") not in ("outdoor", "special_room")
                 )
             )
             if mapped is not None
@@ -591,7 +624,24 @@ def map_daily_plan(
         },
         "warnings": list(getattr(record, "warnings", ()) or ()),
     }
-    if not single_afternoon_outdoor:
+    if single_afternoon_outdoor:
+        # Display-only selection names. Original games/guidance remain in the
+        # snapshot and in their mapped fields for historical/source consumers.
+        view["local_daily_selection_names"] = True
+        view["morning_games"]["focus_name"] = daily_morning_focus_name(groups)
+        view["morning_games"]["focus_group"] = _map_morning_group(
+            daily_morning_focus_group(groups)
+        )
+        for group in view["post_group_games"] + view["afternoon_outdoor_legacy"]:
+            group["focus_name"] = daily_area_focus_name(
+                group["area"], group["focus_guidance"]
+            )
+        if view["afternoon_outdoor"] is not None:
+            afternoon = view["afternoon_outdoor"]
+            afternoon["focus_name"] = daily_area_focus_name(
+                afternoon["area"], afternoon["observation_focus"]
+            )
+    else:
         # Preserve the old web/legacy view contract exactly: no new key and
         # no filtering when the caller did not opt into the local-only mode.
         view.pop("afternoon_outdoor_legacy", None)

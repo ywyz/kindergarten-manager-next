@@ -109,7 +109,7 @@ class DailyOutdoorExportContractTests(unittest.TestCase):
         view, payload = _generate(content)
         self.assertEqual(
             [group["context_kind"] for group in view["post_group_games"]],
-            ["area", "special_room"],
+            ["area"],
         )
         self.assertEqual(view["afternoon_outdoor_legacy"], [])
         self.assertEqual(view["afternoon_outdoor"]["area"], "合成下午操场")
@@ -120,8 +120,9 @@ class DailyOutdoorExportContractTests(unittest.TestCase):
         self.assertEqual(len(_labels(rows, "户外游戏：")), 0)
         self.assertEqual(len(_labels(rows, "下午：户外游戏")), 1)
         self.assertEqual(len(_labels(rows, "室内区域游戏：")), 1)
-        self.assertEqual(len(_labels(rows, "专用室游戏：")), 1)
-        self.assertIn("合成下午户外游戏", text)
+        self.assertEqual(len(_labels(rows, "专用室游戏：")), 0)
+        self.assertNotIn("合成下午户外游戏", text)
+        self.assertIn("重点观察：合成下午操场", text)
         self.assertNotIn("旧上方户外游戏", text)
         self.assertNotIn("旧上方操场", text)
 
@@ -160,13 +161,15 @@ class DailyOutdoorExportContractTests(unittest.TestCase):
         self.assertIn("来源：旧版日计划上方「户外游戏」栏", text)
         for value in (
             "旧上方操场",
-            "旧上方户外游戏",
-            "旧上方重点",
             "旧上方目标",
             "旧上方指导",
             "旧上方支持",
         ):
             self.assertIn(value, text)
+        self.assertNotIn("旧上方户外游戏", text)
+        self.assertNotIn("旧上方重点", text)
+        self.assertIn("重点观察：旧上方操场", text)
+        self.assertEqual(view["afternoon_outdoor_legacy"][0]["games"][0]["name"], "旧上方户外游戏")
 
     def test_multiple_old_outdoor_groups_keep_their_order(self):
         content = {
@@ -198,9 +201,9 @@ class DailyOutdoorExportContractTests(unittest.TestCase):
         _view, payload = _generate(content)
         text = _text(_rows(payload))
         self.assertIn("下午：户外游戏", text)
-        self.assertIn("旧组一游戏", text)
-        self.assertIn("旧组二游戏", text)
-        self.assertLess(text.index("旧组一游戏"), text.index("旧组二游戏"))
+        self.assertNotIn("旧组一游戏", text)
+        self.assertNotIn("旧组二游戏", text)
+        self.assertLess(text.index("重点观察：旧操场一"), text.index("重点观察：旧操场二"))
         self.assertLess(text.index("旧组一目标"), text.index("旧组二目标"))
         self.assertLess(text.index("旧组一支持"), text.index("旧组二支持"))
 
@@ -250,14 +253,14 @@ class DailyOutdoorExportContractTests(unittest.TestCase):
         }
         view, payload = _generate(content)
         self.assertEqual(view["post_group_games"][0]["area"], "")
-        self.assertEqual(view["post_group_games"][1]["area"], "合成专用室")
+        self.assertEqual(len(view["post_group_games"]), 1)
         self.assertEqual(view["afternoon_outdoor"]["area"], "")
         text = _text(_rows(payload))
         self.assertNotIn("室内区域（一般建议）", text)
         self.assertNotIn("户外场地（一般建议）", text)
-        self.assertIn("室内游戏", text)
-        self.assertIn("专用室游戏", text)
-        self.assertIn("下午游戏", text)
+        self.assertNotIn("游戏：室内游戏", text)
+        self.assertNotIn("专用室游戏", text)
+        self.assertNotIn("下午游戏", text)
         self.assertEqual(len(_labels(_rows(payload), "室内区域游戏：")), 1)
         self.assertEqual(len(_labels(_rows(payload), "下午：户外游戏")), 1)
 
@@ -293,13 +296,12 @@ class DailyOutdoorExportContractTests(unittest.TestCase):
         view, payload = _generate(content)
         self.assertEqual(view["post_group_games"][0]["area"], "小操场（一般建议）")
         self.assertEqual(view["post_group_games"][1]["area"], "户外场地（一般建议）")
-        self.assertEqual(view["post_group_games"][2]["area"], "室内区域（一般建议）")
+        self.assertEqual(len(view["post_group_games"]), 2)
         self.assertEqual(view["afternoon_outdoor"]["area"], "小操场（一般建议）")
         text = _text(_rows(payload))
         for value in (
             "小操场（一般建议）",
             "户外场地（一般建议）",
-            "室内区域（一般建议）",
             "教师补充：一般建议注意安全",
             "下午教师补充：一般建议保留",
         ):
@@ -321,8 +323,8 @@ class DailyOutdoorExportContractTests(unittest.TestCase):
         self.assertEqual(view["afternoon_outdoor_legacy"][0]["area"], "")
         text = _text(_rows(payload))
         self.assertNotIn("户外场地（一般建议）", text)
-        self.assertIn("旧户外游戏", text)
-        self.assertIn("旧重点", text)
+        self.assertNotIn("旧户外游戏", text)
+        self.assertNotIn("旧重点", text)
         self.assertIn("来源：旧版日计划上方「户外游戏」栏", text)
         self.assertIsNotNone(legacy_outdoor_warning(content, date(2026, 11, 6)))
 
@@ -390,7 +392,7 @@ class DailyOutdoorExportContractTests(unittest.TestCase):
         self.assertIn("旧上方户外游戏", _text(rows))
         self.assertIn("下午游戏", _text(rows))
 
-    def test_ordinary_area_and_special_room_blocks_keep_their_layout(self):
+    def test_local_area_remains_and_special_room_is_not_displayed(self):
         content = {
             "post_group_games": [
                 {
@@ -414,15 +416,17 @@ class DailyOutdoorExportContractTests(unittest.TestCase):
         view, payload = _generate(content)
         self.assertEqual(
             [group["context_kind"] for group in view["post_group_games"]],
-            ["area", "special_room"],
+            ["area"],
         )
         rows = _rows(payload)
         self.assertEqual(len(_labels(rows, "室内区域游戏：")), 1)
-        self.assertEqual(len(_labels(rows, "专用室游戏：")), 1)
+        self.assertEqual(len(_labels(rows, "专用室游戏：")), 0)
         self.assertEqual(len(_labels(rows, "户外游戏：")), 0)
-        self.assertIn("室内游戏", _text(rows))
-        self.assertIn("专用室游戏", _text(rows))
-        self.assertIn("下午游戏", _text(rows))
+        self.assertNotIn("游戏：室内游戏", _text(rows))
+        self.assertNotIn("专用室游戏", _text(rows))
+        self.assertNotIn("下午游戏", _text(rows))
+        self.assertIn("重点指导：合成室内区域", _text(rows))
+        self.assertIn("重点观察：下午操场", _text(rows))
 
 
 if __name__ == "__main__":  # pragma: no cover

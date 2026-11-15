@@ -8,6 +8,7 @@ from app.daily_process_contract import (
     ADAPT_PATCH_SCHEMA,
     DailyProcessContractError,
     expand_adapt_patch,
+    extract_labeled_split_fields,
     validate_adapt_change,
     validate_split_cleanup,
 )
@@ -29,6 +30,39 @@ def changed(index: int, text: str, process: str = BASE) -> str:
 
 
 class SplitCleanupTests(unittest.TestCase):
+    def test_numbered_fields_on_heading_line_are_verbatim_extractions(self):
+        fields = [
+            "1. 探索并记录实验现象，愿意与同伴交流自己的发现。\n2. 尝试比较两种不同的材料。",
+            "1. 经验准备：幼儿认识纸杯，尝试过搭建活动。\n2. 物质准备：3张卡纸和50cm绳子。",
+            "1. 比较材料。",
+            "1. 记录发现。",
+            "一、导入\n师：看看材料并说一说。\n二、探索\n师：拿3张卡纸，比较两种搭法。",
+        ]
+        headings = ("活动目标", "活动准备", "活动重点", "活动难点", "活动过程")
+        for colon in ("：", ":"):
+            for newline in ("\n", "\r\n"):
+                raw = newline.join(
+                    title + colon + field.replace("\n", newline)
+                    for title, field in zip(headings, fields)
+                )
+                with self.subTest(colon=colon, newline=newline):
+                    validate_split_cleanup(raw, fields)
+                    for changed in (
+                        fields[1].replace("3张", "4张"),
+                        fields[1].replace("50cm", "50米"),
+                        fields[0].replace("两种", "三种"),
+                        "\n".join(reversed(fields[0].splitlines())),
+                    ):
+                        with self.assertRaises(DailyProcessContractError):
+                            validate_split_cleanup(raw, [changed])
+
+    def test_colons_inside_body_do_not_create_structural_numbering(self):
+        raw = "活动过程：师：1.5米长的绳子用于比较。\n记录：3.观察幼儿动作，教师逐一记录发现。"
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(raw, ["师：2.5米长的绳子用于比较。"])
+        with self.assertRaises(DailyProcessContractError):
+            validate_split_cleanup(raw, ["记录：4.观察幼儿动作，教师逐一记录发现。"])
+
     def test_equivalent_line_numbering_is_allowed_but_body_numbers_are_not(self):
         raw = (
             "一、开始部分\n1. 导入\n师：拿3张卡纸。\n"
@@ -140,6 +174,80 @@ class SplitCleanupTests(unittest.TestCase):
         validate_split_cleanup(raw, ["认识 ABC 卡", "3 张卡纸。"])
         with self.assertRaises(DailyProcessContractError):
             validate_split_cleanup(raw, ["认识 XYZ 卡"])
+
+
+class LabeledSplitExtractionTests(unittest.TestCase):
+    fields = {
+        "theme": "比较树叶",
+        "objectives": "1. 观察树叶颜色。\n2. 比较两片叶子的形状。",
+        "preparation": "1. 经验准备：观察过树叶。\n2. 物质准备：3张卡纸和50cm绳子。",
+        "key_points": "观察并比较。",
+        "difficult_points": "表达发现。",
+        "process": "一、导入\n师：说说颜色。\n\n二、比较\n（1）拿两片叶子。\n幼：说出发现。\n三、回顾\n教师：不要越过边线。",
+    }
+    headings = {
+        "theme": "活动主题", "objectives": "活动目标", "preparation": "活动准备",
+        "key_points": "活动重点", "difficult_points": "活动难点", "process": "活动过程",
+    }
+
+    def raw(self, fields=None, *, order=None, newline="\n", colon="："):
+        fields = self.fields if fields is None else fields
+        return newline.join(
+            self.headings[key] + colon + fields[key].replace("\n", newline)
+            for key in (order or self.fields)
+        )
+
+    def test_inline_first_numbers_newlines_and_reordered_fields_are_exact(self):
+        for newline in ("\n", "\r\n"):
+            for colon in ("：", ":"):
+                for order in (list(self.fields), list(reversed(self.fields))):
+                    with self.subTest(newline=newline, colon=colon, order=order):
+                        raw = self.raw(order=order, newline=newline, colon=colon)
+                        expected = {key: value.replace("\n", newline) for key, value in self.fields.items()}
+                        result = extract_labeled_split_fields(raw)
+                        self.assertEqual(result, expected)
+                        validate_split_cleanup(raw, list(result.values()))
+
+    def test_ambiguous_missing_repeated_nested_and_extra_sections_abstain(self):
+        raw = self.raw()
+        cases = {
+            "missing": self.raw(order=[key for key in self.fields if key != "preparation"]),
+            "repeated": raw + "\n活动目标：补充目标。",
+            "prefix": "教案说明\n" + raw,
+            "unknown_tail": raw + "\n延伸安排：另做活动。",
+            "extra_bare_tail": raw + "\n活动反思\n教师记录。",
+            "numbered_extra_tail": raw + "\n七、活动反思：教师记录。",
+            "numbered_bare_tail": raw + "\n七、活动反思\n教师记录。",
+            "bracketed_extra_tail": raw + "\n【活动反思】\n教师记录。",
+            "numbered_bracketed_tail": raw + "\n七、【活动反思】：教师记录。",
+            "markdown_heading": raw + "\n# 其他安排\n教师记录。",
+            "markdown_fence": raw + "\n```\n教师记录。\n```",
+            "markdown_bold": raw + "\n**其他安排**：教师记录。",
+            "markdown_underline": raw + "\n__其他安排__：教师记录。",
+            "numbered_bold_extra": raw + "\n七、**活动反思**：教师记录。",
+            "unknown_inner": raw.replace("活动准备：", "安全提示：教师检查材料。\n活动准备："),
+            "numbered_nested": raw + "\n1. 活动目标：另一篇教案。",
+            "parenthesized_nested": raw + "\n（一）活动过程：另一篇教案。",
+        }
+        for name, source in cases.items():
+            with self.subTest(name=name):
+                self.assertIsNone(extract_labeled_split_fields(source))
+        for invalid in (None, "", 3):
+            with self.subTest(invalid=invalid):
+                self.assertIsNone(extract_labeled_split_fields(invalid))
+
+    def test_theme_utf8_bound_abstains_without_truncation(self):
+        fields = dict(self.fields, theme="汉" * 85)
+        self.assertEqual(extract_labeled_split_fields(self.raw(fields)), fields)
+        fields["theme"] += "汉"
+        self.assertIsNone(extract_labeled_split_fields(self.raw(fields)))
+
+    def test_extraction_preserves_typos_body_facts_and_unnumbered_items(self):
+        fields = dict(self.fields)
+        fields["objectives"] = "观察树叶眼色。\n比较树叶形状。"
+        fields["preparation"] = "3张卡纸、50cm绳子、ABC卡片。"
+        fields["process"] = "观察树叶。\n师：不要跨线，比较1.5米和2米的绳子。\n分享发现。"
+        self.assertEqual(extract_labeled_split_fields(self.raw(fields)), fields)
 
 
 class AdaptOneStepTests(unittest.TestCase):

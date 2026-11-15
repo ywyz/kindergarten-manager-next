@@ -492,6 +492,21 @@ export interface AdoptionResult {
   request_id: string
 }
 
+/** The candidate identity captured when the teacher submitted adoption. */
+export interface CandidateAdoptionOrigin {
+  planId: string
+  candidateId: string
+  taskType: TaskType
+  targetGrade: string | null
+}
+
+/** A split version that was just adopted, before any further local editing. */
+export interface SplitAdaptContinuation {
+  planId: string
+  contentVersion: number
+  targetGrade: Grade
+}
+
 /** GET /api/local/ai/operations/{request_id} (receipt read-back). */
 export interface AiOperationReceipt {
   request_id: string

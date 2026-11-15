@@ -18,6 +18,7 @@ const viewFile = path.join(d1Dir, 'views', 'EditorView.vue')
 const viewSource = fs.readFileSync(viewFile, 'utf8')
 assert.match(viewSource, /data-d1="split-needs-save"/)
 assert.match(viewSource, /data-d1="reflection-guidance"/)
+assert.match(viewSource, /:disabled="editDisabled \|\| !!reflectionFillBlockedReason"\s+data-d1="reflection-fill-result"/)
 assert.ok(
   viewSource.indexOf('data-d1="raw-lesson"') <
     viewSource.indexOf('data-d1="split-needs-save"'),
@@ -151,6 +152,7 @@ function apiHarness({ get, post, postWithStatus, patch }) {
   const calls = []
   const client = {
     ApiError,
+    getSessionEpoch: () => 1,
     pathSegment: (value) => encodeURIComponent(String(value)),
     apiGet: async (requestPath) => {
       calls.push({ method: 'GET', path: requestPath })
@@ -221,6 +223,7 @@ function evaluateView(client) {
       }
       if (spec === '../client') return client
       if (spec === '../editor') return editorHelpers
+      if (spec === '../daily-other-draft') return loadTs(path.join(d1Dir, 'daily-other-draft.ts'))
       if (spec === '../../daily-plan-content') return contentHelpers
       if (spec === '../types' || spec === '../../types') return {}
       if (spec.endsWith('.vue')) return { default: {} }
@@ -715,6 +718,252 @@ async function waitFor(condition, label) {
   assert.equal(outcome, 'left')
   assert.equal(ran, true)
   ok('a definite reflection failure does not block leaving')
+}
+
+function reflectionDetailFixture(task, materials = '幼儿分组合作操作材料并交流发现。') {
+  return {
+    id: task.candidate_id, plan_id: task.plan_id, task_id: task.id,
+    execution_id: task.execution.id, task_type: task.task_type,
+    contract_version: 1, schema_version: 1, adoption_state: 'eligible',
+    available_targets: ['reflection'], latest_content_version: 1,
+    raw_candidate: { reflection: '幼儿能合作操作材料。后续将增加分享时间。' },
+    source: {
+      content_version: 1, target_grade: 'middle', dependency_hash: task.input_summary.dependency_hash,
+      dependencies: {}, source_excerpt: { implementation_materials: materials },
+    },
+  }
+}
+
+async function reflectionFillSetup({ detailGate, unknown = false, failedReads = 0 } = {}) {
+  const accepted = reflectionTaskFixture('auto-reflection', null, { status: 'pending', execution: null })
+  const done = reflectionTaskFixture('auto-reflection', 'auto-candidate')
+  const detail = reflectionDetailFixture(done)
+  const saved = planFixture()
+  saved.content.adopted_content = { reflection: '原有反思', group_activity: { theme: '保留主题', process: '保留过程' } }
+  let sessionEpoch = 1
+  const api = apiHarness({
+    get: async (url) => {
+      if (url === '/api/daily-plans/p1') return clone(saved)
+      if (url.includes('/ai-candidates/')) {
+        if (failedReads > 0) { failedReads -= 1; throw new ApiError(503, 'read unavailable', 'READ_FAILED') }
+        return detailGate ? detailGate.promise : clone(detail)
+      }
+      if (url.startsWith('/api/local/ai/operations/')) return { result: clone(done) }
+      throw new Error(`unexpected GET ${url}`)
+    },
+    post: async () => {
+      if (unknown) throw new ApiError(0, 'unknown', 'NETWORK')
+      return clone(accepted)
+    },
+    patch: async () => { throw new Error('direct fill must not save') },
+  })
+  api.client.getSessionEpoch = () => sessionEpoch
+  const editor = createEditor({ initialMode: 'open', planId: 'p1', api })
+  await editor.state.load()
+  await waitEditorLoaded(editor.state)
+  const observed = []
+  editor.state.aiTaskPanelRef.value = { observeReflectionTask: (task) => { observed.push(clone(task)); return true } }
+  editor.state.reflectionMaterials.value = '幼儿分组合作操作材料并交流发现。'
+  await editor.state.createReflectionTask()
+  return { ...editor, api, accepted, done, detail, observed, changeSession: () => { sessionEpoch += 1 } }
+}
+
+{
+  const { state, api, done, detail, observed } = await reflectionFillSetup()
+  assert.equal(observed.length, 1, 'accepted pending task enters the shared progress panel immediately')
+  assert.equal(observed[0].status, 'pending')
+  await state.onReflectionUpdated(done)
+  assert.equal(state.form.value.reflection, detail.raw_candidate.reflection)
+  assert.equal(state.form.value.group_activity.theme, '保留主题')
+  assert.equal(state.form.value.group_activity.process, '保留过程')
+  assert.equal(state.plan.value.content.adopted_content.reflection, '原有反思')
+  assert.equal(state.dirty.value, true)
+  assert.equal(state.candidateOpen.value, false)
+  assert.equal(state.reflectionGenerated.value.state, 'applied')
+  state.form.value.reflection = '老师继续修改'
+  state.touchEpoch()
+  await state.onReflectionUpdated(clone(done))
+  assert.equal(state.form.value.reflection, '老师继续修改')
+  assert.equal(api.calls.filter((call) => call.path.includes('/ai-candidates/')).length, 1)
+  assert.equal(api.calls.filter((call) => call.method === 'POST').length, 1)
+  assert.equal(patches(api.calls).length, 0)
+  ok('reflection enters shared progress immediately and fills only its draft field once, without candidate review or save')
+}
+
+{
+  const changes = [
+    (x) => { x.state.form.value.reflection = '教师新输入'; x.state.touchEpoch() },
+    (x) => { x.state.touchEpoch() }, // Even a reverted edit invalidates the generation origin.
+    (x) => { x.state.plan.value.current_content_version = 2 },
+    (x) => { x.state.plan.value.id = 'another-plan' },
+    (x) => { x.props.planDate = '2026-09-16' },
+    (x) => { x.state.editorKey.value = 'another-editor' },
+    (x) => { x.changeSession() },
+    (x) => { x.props.context.profile.id = 'another-profile' },
+    (x) => { x.props.frozen = true },
+    (x) => { x.state.locked.value = true },
+    (x) => { x.state.composing.value = true },
+    (x) => { x.state.historyBusy.value = true },
+    (x) => { x.state.candidateOpen.value = true },
+    (x) => { x.state.editorAlive = false },
+  ]
+  for (const change of changes) {
+    const x = await reflectionFillSetup()
+    change(x)
+    const text = x.state.form.value.reflection
+    await x.state.onReflectionUpdated(x.done)
+    assert.equal(x.state.form.value.reflection, text)
+    assert.equal(patches(x.api.calls).length, 0)
+  }
+  ok('new input, even reverted input, identity/version changes, closing, composition and unmount prevent automatic overwrite')
+}
+
+{
+  for (const change of [
+    (x) => { x.state.form.value.reflection = '读取期间新输入'; x.state.touchEpoch() },
+    (x) => { x.props.frozen = true },
+    (x) => { x.state.plan.value.current_content_version = 2 },
+    (x) => { x.changeSession() },
+    (x) => { x.state.editorAlive = false },
+    (x) => { x.state.setReflectionTask(reflectionTaskFixture('replacement', 'new-candidate')) },
+  ]) {
+    const gate = deferred()
+    const x = await reflectionFillSetup({ detailGate: gate })
+    const filling = x.state.onReflectionUpdated(x.done)
+    await waitFor(() => x.api.calls.some((c) => c.path.includes('/ai-candidates/')), 'candidate read')
+    change(x)
+    const text = x.state.form.value.reflection
+    gate.resolve(x.detail)
+    await filling
+    assert.equal(x.state.form.value.reflection, text)
+  }
+  ok('all live write and identity guards are rechecked after the candidate read')
+}
+
+{
+  const corruptions = [
+    (d) => { d.id = 'wrong' }, (d) => { d.task_id = 'wrong' },
+    (d) => { d.plan_id = 'wrong' }, (d) => { d.task_type = 'daily_lesson_split' },
+    (d) => { d.execution_id = 'wrong' }, (d) => { d.adoption_state = 'source_changed' },
+    (d) => { d.source.content_version = 2 }, (d) => { d.latest_content_version = 2 },
+    (d) => { d.source.dependency_hash = 'wrong' }, (d) => { d.source.target_grade = 'large' },
+    (d) => { d.source.source_excerpt.implementation_materials = '其他材料' },
+    (d) => { d.available_targets = [] }, (d) => { d.raw_candidate.reflection = {} },
+    (d) => { d.raw_candidate.reflection = ' ' },
+  ]
+  for (const corrupt of corruptions) {
+    const x = await reflectionFillSetup()
+    corrupt(x.detail)
+    await x.state.onReflectionUpdated(x.done)
+    assert.equal(x.state.form.value.reflection, '原有反思')
+    assert.equal(x.state.reflectionGenerated.value.state, 'pending')
+    assert.match(x.state.reflectionFillBlockedReason.value, /重新生成/)
+    const reads = x.api.calls.filter((c) => c.path.includes('/ai-candidates/')).length
+    await x.state.fillPendingReflection()
+    assert.equal(x.api.calls.filter((c) => c.path.includes('/ai-candidates/')).length, reads)
+  }
+  ok('candidate, execution, source version/hash/grade/materials and reflection output must match the accepted request')
+}
+
+{
+  const x = await reflectionFillSetup({ unknown: true })
+  assert.ok(x.state.reflectionPending.value)
+  await x.state.onReflectionUpdated(x.done)
+  assert.equal(x.state.form.value.reflection, '原有反思')
+  await x.state.queryReflectionCreate()
+  await tick()
+  assert.equal(x.state.reflectionPending.value, null)
+  assert.equal(x.state.form.value.reflection, '原有反思', 'unknown create never silently fills after recovery')
+  assert.equal(x.state.reflectionGenerated.value.state, 'pending')
+  assert.equal(x.state.reflectionFillBlockedReason.value, '')
+  await x.state.fillPendingReflection()
+  assert.equal(x.state.form.value.reflection, x.detail.raw_candidate.reflection)
+  assert.equal(x.api.calls.filter((call) => call.method === 'POST').length, 1)
+  assert.equal(patches(x.api.calls).length, 0)
+  ok('unknown create keeps the original ticket and text, then permits explicit direct fill after read-only receipt recovery')
+}
+
+{
+  const x = await reflectionFillSetup()
+  await x.state.onReflectionUpdated({ ...x.accepted, status: 'failed' })
+  assert.equal(x.state.form.value.reflection, '原有反思')
+  assert.equal(x.api.calls.filter((call) => call.path.includes('/ai-candidates/')).length, 0)
+  await x.state.onReflectionUpdated({ ...x.done, id: 'foreign-task' })
+  await x.state.onReflectionUpdated({ ...x.done, input_summary: { ...x.done.input_summary, content_version: 2 } })
+  assert.equal(x.state.form.value.reflection, '原有反思')
+  assert.equal(x.state.reflectionTask.value.status, 'failed')
+  ok('failed generation and unrelated task updates preserve the existing reflection without extra writes')
+}
+
+{
+  const x = await reflectionFillSetup()
+  x.state.form.value.reflection = '教师新修改'
+  x.state.touchEpoch()
+  await x.state.onReflectionUpdated(x.done)
+  assert.match(x.state.reflectionFillBlockedReason.value, /未保存修改/)
+  assert.match(x.state.reflectionStatusText(), /撤销修改/)
+  await x.state.fillPendingReflection()
+  assert.equal(x.state.form.value.reflection, '教师新修改')
+  assert.equal(x.api.calls.filter((c) => c.path.includes('/ai-candidates/')).length, 0)
+  x.state.form.value.reflection = '原有反思'
+  x.state.touchEpoch()
+  assert.equal(x.state.dirty.value, false)
+  assert.equal(x.state.reflectionFillBlockedReason.value, '', 'reverting to the same saved version enables explicit recovery')
+  await x.state.fillPendingReflection()
+  assert.equal(x.state.form.value.reflection, x.detail.raw_candidate.reflection)
+  ok('recovery remains disabled with dirty input and becomes usable after reverting to the same saved version')
+}
+
+{
+  const x = await reflectionFillSetup()
+  x.state.plan.value.current_content_version = 2
+  await x.state.onReflectionUpdated(x.done)
+  assert.match(x.state.reflectionFillBlockedReason.value, /新版本.*重新生成/)
+  assert.match(x.state.reflectionStatusText(), /新版本.*重新生成/)
+  await x.state.fillPendingReflection()
+  assert.equal(x.api.calls.filter((c) => c.path.includes('/ai-candidates/')).length, 0)
+  assert.equal(x.state.form.value.reflection, '原有反思')
+  ok('a new saved version disables recovery and explicitly requires regeneration')
+}
+
+{
+  for (const whileReading of [false, true]) {
+    const gate = whileReading ? deferred() : null
+    const x = await reflectionFillSetup({ detailGate: gate })
+    let filling
+    if (whileReading) {
+      filling = x.state.onReflectionUpdated(x.done)
+      await waitFor(() => x.api.calls.some((c) => c.path.includes('/ai-candidates/')), 'material race read')
+    }
+    x.state.reflectionMaterials.value = '新的实施材料，不能使用旧材料结果'
+    // Deliberately omit a DOM input/editEpoch event: the material check stands alone.
+    if (whileReading) gate.resolve(x.detail)
+    else filling = x.state.onReflectionUpdated(x.done)
+    await filling
+    assert.equal(x.state.form.value.reflection, '原有反思')
+    assert.match(x.state.reflectionFillBlockedReason.value, /实施材料已修改/)
+    assert.match(x.state.reflectionStatusText(), /重新生成反思.*恢复/)
+    const reads = x.api.calls.filter((c) => c.path.includes('/ai-candidates/')).length
+    await x.state.fillPendingReflection()
+    assert.equal(x.api.calls.filter((c) => c.path.includes('/ai-candidates/')).length, reads)
+    x.state.reflectionMaterials.value = x.state.reflectionFillOrigin.value.materials
+    assert.equal(x.state.reflectionFillBlockedReason.value, '')
+    await x.state.fillPendingReflection()
+    assert.equal(x.state.form.value.reflection, x.detail.raw_candidate.reflection)
+  }
+  ok('changed implementation materials block both pre-read and post-read fill, independently of DOM editEpoch events')
+}
+
+{
+  const x = await reflectionFillSetup({ failedReads: 1 })
+  await x.state.onReflectionUpdated(x.done)
+  assert.match(x.state.reflectionStatusText(), /读取失败/)
+  assert.equal(x.state.reflectionFillBlockedReason.value, '')
+  await x.state.fillPendingReflection()
+  assert.equal(x.state.form.value.reflection, x.detail.raw_candidate.reflection)
+  assert.equal(x.api.calls.filter((c) => c.path.includes('/ai-candidates/')).length, 2)
+  assert.equal(x.api.calls.filter((c) => c.method === 'POST').length, 1)
+  ok('a temporary candidate read failure permits a usable read-only retry without another AI request')
 }
 
 console.log(`reflection27: ${passed} checks passed`)

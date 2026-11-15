@@ -36,6 +36,9 @@ from app.services.word_export_docx import (
     generate_daily_export_docx,
 )
 from app.services.word_export_mapping import (
+    daily_area_focus_name,
+    daily_morning_focus_group,
+    legacy_outdoor_groups,
     legacy_outdoor_warning,
     map_daily_plan,
 )
@@ -134,6 +137,7 @@ def collect_daily_missing_facts(adopted_content) -> list[dict]:
                     group_kind=kind,
                 )
             )
+    focus_group = daily_morning_focus_group(morning_groups)
     for index, group in enumerate(morning_groups):
         prefix = f"morning_games[{index}]"
         locators = {
@@ -149,7 +153,11 @@ def collect_daily_missing_facts(adopted_content) -> list[dict]:
                 locators=locators,
             )
         )
-        for field in ("focus_guidance", "shared_objectives", "guidance_points"):
+        # The single focus is derived from an existing game name. Empty old
+        # guidance text no longer creates an invisible required field.
+        if group is not focus_group:
+            continue
+        for field in ("shared_objectives", "guidance_points"):
             if not _present(group.get(field)):
                 facts.append(
                     _fact(f"{prefix}.{field}", section="morning_games", **locators)
@@ -176,14 +184,16 @@ def collect_daily_missing_facts(adopted_content) -> list[dict]:
 
     raw_post = content.get("post_group_games")
     post_groups = (
-        [g for g in raw_post if isinstance(g, dict)]
+        [(index, g) for index, g in enumerate(raw_post) if isinstance(g, dict)]
         if isinstance(raw_post, list)
         else []
     )
-    if not post_groups:
+    visible_post = [(index, group) for index, group in post_groups
+                    if group.get("context_kind") not in ("outdoor", "special_room")]
+    if not visible_post:
         facts.append(_fact("post_group_games", section="post_group_games"))
     else:
-        for index, group in enumerate(post_groups):
+        for index, group in visible_post:
             prefix = f"post_group_games[{index}]"
             locators = {
                 "group_index": index,
@@ -197,22 +207,15 @@ def collect_daily_missing_facts(adopted_content) -> list[dict]:
                         **locators,
                     )
                 )
-            facts.extend(
-                _missing_game_facts(
-                    group.get("games"),
-                    prefix=prefix,
-                    section="post_group_games",
-                    locators=locators,
-                )
-            )
             for field in (
                 "area",
-                "focus_guidance",
                 "objectives",
                 "guidance",
                 "support_strategy",
             ):
-                if not _present(group.get(field)):
+                value = (daily_area_focus_name(group.get("area"), "", context_kind=group.get("context_kind"))
+                         if field == "area" else group.get(field))
+                if not _present(value):
                     facts.append(
                         _fact(
                             f"{prefix}.{field}",
@@ -221,27 +224,36 @@ def collect_daily_missing_facts(adopted_content) -> list[dict]:
                         )
                     )
 
+    legacy = legacy_outdoor_groups(content)
     afternoon = content.get("afternoon_outdoor")
-    if not isinstance(afternoon, dict):
+    if legacy:
+        # The legacy groups occupy the afternoon block instead of the empty
+        # modern field. Keep locators pointing at their stored source groups.
+        legacy_ids = {id(group) for group in legacy}
+        for index, group in post_groups:
+            if id(group) not in legacy_ids:
+                continue
+            for field in ("area", "objectives", "guidance", "support_strategy"):
+                value = (daily_area_focus_name(group.get("area"), "", context_kind="outdoor")
+                         if field == "area" else group.get(field))
+                if not _present(value):
+                    facts.append(_fact(
+                        f"post_group_games[{index}].{field}", section="post_group_games",
+                        group_index=index, group_id=group.get("group_id"),
+                    ))
+    elif not isinstance(afternoon, dict):
         facts.append(_fact("afternoon_outdoor", section="afternoon_outdoor"))
     else:
         locators = {"group_id": afternoon.get("group_id")}
-        facts.extend(
-            _missing_game_facts(
-                afternoon.get("games"),
-                prefix="afternoon_outdoor",
-                section="afternoon_outdoor",
-                locators=locators,
-            )
-        )
         for field in (
             "area",
-            "observation_focus",
             "objectives",
             "guidance",
             "support_strategy",
         ):
-            if not _present(afternoon.get(field)):
+            value = (daily_area_focus_name(afternoon.get("area"), "", context_kind="outdoor")
+                     if field == "area" else afternoon.get(field))
+            if not _present(value):
                 facts.append(
                     _fact(
                         f"afternoon_outdoor.{field}",
