@@ -276,15 +276,18 @@ def _make_run(text: str, red: bool, rPr_template):
 class _CellWriter:
     """Clears a table cell and writes deterministic paragraphs into it.
 
-    Formatting (paragraph and run properties) is cloned from the cell's own
-    template so the fixed layout is preserved while all sample text is
-    replaced. Paragraph auto-numbering is stripped so business content slots
+    Paragraph/run formatting defaults to the cell's own template. A caller
+    may supply another captured body format without changing the target cell
+    geometry. Paragraph auto-numbering is stripped so business content slots
     never inherit the template's numbering (spec slice-2 item 7).
     """
 
-    def __init__(self, cell):
+    def __init__(self, cell, *, format_template=None):
         self.cell = cell
-        self.pPr, self.rPr = _capture_templates(cell)
+        self.pPr, self.rPr = (
+            _capture_templates(cell)
+            if format_template is None else deepcopy(format_template)
+        )
         _strip_numbering(self.pPr)
         tcPr = cell.find(_w("tcPr"))
         for child in list(cell):
@@ -534,14 +537,8 @@ def _fill_daily_morning(row_body, morning_games):
     writer.line("自主游戏：" + _game_names(free_choice))
 
 
-def _fill_daily_morning_shared(row_group, morning_games):
-    """Write each morning group's own value under one fixed field label.
-
-    The collective and free-choice groups are independent form sections; joining
-    them with a separator made the Word detail look like one shared value and
-    risked cross-group content.  The fixed label stays once so an empty export
-    keeps the template's labels, then each non-empty group is named explicitly.
-    """
+def _fill_daily_morning_shared(row_group, morning_games, *, selection_names=False):
+    """Local Word uses the focus group's details; default web keeps both groups."""
     collective = morning_games.get("collective")
     free_choice = morning_games.get("free_choice")
     writer = _CellWriter(_cells(row_group)[1])
@@ -556,9 +553,15 @@ def _fill_daily_morning_shared(row_group, morning_games):
                 # as a single line (teacher report 2026-11-14).
                 writer.field(f"{name}：", value)
 
-    group_values("重点指导：", "focus_guidance")
-    group_values("活动目标：", "shared_objectives")
-    group_values("指导要点：", "guidance_points")
+    if selection_names:
+        writer.field("重点指导：", morning_games.get("focus_name"))
+        selected = morning_games.get("focus_group")
+        writer.field("活动目标：", _morning_group_field(selected, "shared_objectives"))
+        writer.field("指导要点：", _morning_group_field(selected, "guidance_points"))
+    else:
+        group_values("重点指导：", "focus_guidance")
+        group_values("活动目标：", "shared_objectives")
+        group_values("指导要点：", "guidance_points")
 
 
 def _fill_daily_talk(rows, talk):
@@ -582,7 +585,7 @@ def _fill_daily_activity(rows, activity, process):
     writer.runs_lines(process.get("runs"))
 
 
-def _fill_daily_post_block(block_rows, group):
+def _fill_daily_post_block(block_rows, group, *, selection_names=False):
     label = _DailyPostLabels.get(
         (group or {}).get("context_kind"), _DailyPostLabels["area"]
     )
@@ -594,10 +597,12 @@ def _fill_daily_post_block(block_rows, group):
     # Area and game names are separate detail fields; keep them on their own
     # lines so a game name can never be mistaken for part of the area name.
     writer.field("游戏区域：", area)
-    writer.field("游戏：", games)
+    if not selection_names:
+        writer.field("游戏：", games)
 
     writer = _CellWriter(_cells(block_rows[1])[1])
-    writer.field("重点指导：", group.get("focus_guidance") if group else None)
+    focus_key = "focus_name" if selection_names else "focus_guidance"
+    writer.field("重点指导：", group.get(focus_key) if group else None)
     writer.field("活动目标：", group.get("objectives") if group else None)
     writer.field("指导要点：", group.get("guidance") if group else None)
 
@@ -609,7 +614,7 @@ def _nonempty_text(value) -> str:
     return value if isinstance(value, str) and value.strip() else ""
 
 
-def _fill_daily_legacy_afternoon(block_rows, groups):
+def _fill_daily_legacy_afternoon(block_rows, groups, *, selection_names=False):
     """Render old upper-only outdoor groups once under the afternoon label.
 
     The old upper block had ``post_group_games`` with context_kind=outdoor.
@@ -625,7 +630,7 @@ def _fill_daily_legacy_afternoon(block_rows, groups):
         games = _game_names(group)
         if area:
             area_writer.line(f"游戏区域：{area}")
-        if games:
+        if games and not selection_names:
             area_writer.line(f"游戏：{games}")
 
     field_writer = _CellWriter(_cells(block_rows[1])[1])
@@ -633,7 +638,7 @@ def _fill_daily_legacy_afternoon(block_rows, groups):
         if not isinstance(group, dict):
             continue
         for label, key in (
-            ("重点指导：", "focus_guidance"),
+            ("重点观察：" if selection_names else "重点指导：", "focus_name" if selection_names else "focus_guidance"),
             ("活动目标：", "objectives"),
             ("指导要点：", "guidance"),
         ):
@@ -650,27 +655,26 @@ def _fill_daily_legacy_afternoon(block_rows, groups):
             support_writer.field("支持策略：", value)
 
 
-def _fill_daily_afternoon(block_rows, afternoon, legacy_groups=None):
+def _fill_daily_afternoon(block_rows, afternoon, legacy_groups=None, *, selection_names=False):
     if legacy_groups:
-        _fill_daily_legacy_afternoon(block_rows, legacy_groups)
+        _fill_daily_legacy_afternoon(block_rows, legacy_groups, selection_names=selection_names)
         return
     area = afternoon.get("area") if isinstance(afternoon, dict) else None
     games = _game_names(afternoon)
     area_writer = _CellWriter(_cells(block_rows[0])[1])
     area_writer.field("游戏区域：", area)
-    # The afternoon focus is only the selected game names. An unselected or
-    # missing name stays empty and never falls back to the area. The former
-    # standalone ``游戏：`` line is intentionally omitted so the same name is
-    # not shown twice.
+    # Local daily Word shows one selected area; the default web contract
+    # keeps its selected game names and separate observation prose.
     writer = _CellWriter(_cells(block_rows[1])[1])
-    writer.field("重点观察：", games)
+    focus = (afternoon or {}).get("focus_name") if selection_names else games
+    writer.field("重点观察：", focus)
     observation = (
         _nonempty_text(afternoon.get("observation_focus"))
         if isinstance(afternoon, dict)
         else ""
     )
     # Optional separate field: absent/blank stored text keeps no extra label.
-    if observation:
+    if observation and not selection_names:
         writer.field("观察要点：", observation)
     writer.field("活动目标：", afternoon.get("objectives") if afternoon else None)
     writer.field("指导要点：", afternoon.get("guidance") if afternoon else None)
@@ -691,8 +695,9 @@ def _build_daily_table(canonical_table, view):
     _set_cell_text(_cells(rows[1])[0], _daily_date_line(view["plan_date"]))
 
     morning = view.get("morning_games") or {}
+    selection_names = view.get("local_daily_selection_names") is True
     _fill_daily_morning(rows[2], morning)
-    _fill_daily_morning_shared(rows[3], morning)
+    _fill_daily_morning_shared(rows[3], morning, selection_names=selection_names)
     _fill_daily_talk([rows[4], rows[5]], view.get("morning_talk") or {})
     _fill_daily_activity(
         [rows[6], rows[7], rows[8], rows[9], rows[10], rows[11]],
@@ -709,7 +714,7 @@ def _build_daily_table(canonical_table, view):
     for index in range(max(1, len(post_groups))):
         block = [deepcopy(row) for row in canonical_block]
         group = post_groups[index] if index < len(post_groups) else None
-        _fill_daily_post_block(block, group)
+        _fill_daily_post_block(block, group, selection_names=selection_names)
         new_blocks.extend(block)
     _replace_block(table, start, end, new_blocks)
 
@@ -718,15 +723,24 @@ def _build_daily_table(canonical_table, view):
     offset = len(new_blocks) - (end - start)
     afternoon_start = _DAILY_AFTERNOON_BLOCK[0] + offset
     afternoon_rows = rows[afternoon_start:afternoon_start + 3]
+    # Capture before filling: a legacy block may have no support text. The
+    # local reflection inherits the same body format as this adjacent cell,
+    # rather than the template reflection's separate exact-20pt spacing.
+    reflection_format = (
+        _capture_templates(_cells(afternoon_rows[2])[1]) if selection_names else None
+    )
     _fill_daily_afternoon(
         afternoon_rows,
         view.get("afternoon_outdoor"),
         view.get("afternoon_outdoor_legacy") or [],
+        selection_names=selection_names,
     )
     # The fixed label "一日活动反思：" already lives in the template's left
     # cell; the right cell only carries the reflection value (empty stays
     # empty, no label, no sample text backfilled).
-    _CellWriter(_cells(rows[afternoon_start + 3])[1]).field(
+    _CellWriter(
+        _cells(rows[afternoon_start + 3])[1], format_template=reflection_format
+    ).field(
         "", view.get("reflection")
     )
     return table

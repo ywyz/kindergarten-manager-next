@@ -849,7 +849,7 @@ class StreamingExecutorTests(ExecutorCase):
         plan = self.make_plan()
         task = self.submit(plan["id"], executor=executor)
         self.assertEqual(self.wait_status(task["id"], {"failed"}, timeout=40), "failed")
-        self.assertEqual(self.task_row(task["id"])["reason"], "output_invalid")
+        self.assertEqual(self.task_row(task["id"])["reason"], "reasoning_only")
         self.assertEqual(self.candidate_count(task["id"]), 0)
         self.assertEqual(len(server.requests), 1)
 
@@ -1265,11 +1265,11 @@ class ClassificationScopeTests(unittest.TestCase):
         )
         self.assertEqual(
             classify("daily_lesson_split", ai_transport.OUTPUT_INVALID, "reasoning_only"),
-            None,
+            "reasoning_only",
         )
         self.assertEqual(
             classify("daily_lesson_split", ai_transport.OUTPUT_INVALID, "output_length"),
-            None,
+            "output_length",
         )
         self.assertEqual(
             classify("game_observation_generate", ai_transport.OUTPUT_INVALID, "reasoning_only"),

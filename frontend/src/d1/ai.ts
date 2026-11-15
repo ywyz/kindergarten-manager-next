@@ -49,11 +49,11 @@ export const TASK_TYPE_LABELS: Record<string, string> = {
 
 export const TASK_TYPE_HINTS: Record<TaskType, string> = {
   daily_lesson_split:
-    '按已保存原文拆出集体活动六字段；采用后同时建立未编辑的原始拆分基准。',
+    '只按原文拆出集体活动六字段；采用并保存后，自动按本次拆分的目标年级接续一次过程适龄调整。',
   daily_process_adapt:
-    '仅按所选年级调整集体活动过程，不改其他字段与原始基准。',
+    '拆分采用后会自动接续，也可按需手动发起；仅调整过程中的一个环节。结果需比较并采用，保存后 Word 对照拆分基准标红实际修改。',
   daily_other_activities:
-    '生成晨间游戏、晨间谈话、集体活动后游戏与下午户外活动候选，按板块勾选采用。',
+    '使用本班已保存的场地配置；晨间重点填写一个游戏名，室内和下午户外各列两个区域、选一个重点区域。目标、指导和支持策略照常生成，填入草稿后核对保存。',
   daily_reflection_generate:
     '结合已保存的日计划与教师提供的实施材料生成反思正文，采用后保存。',
 }
@@ -102,6 +102,7 @@ const REASON_LABELS: Record<string, string> = {
   reasoning_only: '只收到推理内容，没有可用的最终正文：本次未生成候选，不会自动重发',
   output_length: '供应商输出达到长度上限，内容已被截断：本次未生成候选，不会自动重发',
   candidate_contract_invalid: '已收到完整响应，但候选结构校验未通过：本次未生成候选，不会自动重发',
+  split_source_mismatch: '已收到拆分结果，但与原始教案不一致，未生成候选；请核对原文和拆分指导后重试',
   user_stop: '已按你的要求停止等待（不表示供应商已停止处理）',
   restart: '应用重启后暂停：需手动继续',
   source_changed: '生成输入已变化：只能重新发起，不会暗中换输入',

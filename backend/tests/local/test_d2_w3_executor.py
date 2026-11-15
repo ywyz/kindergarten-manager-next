@@ -204,7 +204,7 @@ class ClassificationExecutorTests(ExecutorCase):
         executor = self.start_executor()
         task = self.submit(plan["id"], executor=executor)
         self.wait_status(task["id"], {"failed"})
-        self.assertEqual(self.task_row(task["id"])["reason"], "output_invalid")
+        self.assertEqual(self.task_row(task["id"])["reason"], "candidate_contract_invalid")
         self.assertEqual(self.candidate_count(task["id"]), 0)
 
     def test_success_persists_candidate(self):
@@ -717,7 +717,7 @@ class RealTlsExecutorTests(ExecutorCase):
         self.assertIn("guidance", system)
         instructions = "\n".join(system["instructions"])
         self.assertIn("真实换行", instructions)
-        self.assertIn("只整理这些已有条目", instructions)
+        self.assertIn("只整理已有条目的编号和换行", instructions)
         # Metadata persisted from the provider are whitelisted values.
         usage = query_scalar(
             self.db,

@@ -98,7 +98,9 @@ function between(source, startToken, endToken, needle, label) {
   // Exactly one state owner: no duplicated panel, no duplicated trigger set.
   assert.equal((editorSource.match(/<AiTaskPanel\b/g) ?? []).length, 1, 'one AiTaskPanel mount')
   assert.equal((panelSource.match(/ai-trigger-\$\{type\}/g) ?? []).length, 1, 'one trigger markup per type loop')
-  assert.match(editorSource, /v-if="plan"\s*\n\s*:plan-id="plan\.id"/)
+  const panelMount = editorSource.match(/<AiTaskPanel\b[\s\S]*?\/>/)?.[0] ?? ''
+  assert.match(panelMount, /v-if="plan"/)
+  assert.match(panelMount, /:plan-id="plan\.id"/)
   assert.match(editorSource, /:split-target="splitTarget"/)
   assert.match(editorSource, /:process-target="processTarget"/)
   assert.match(editorSource, /:other-target="otherTarget"/)
@@ -511,9 +513,11 @@ async function testStandalonePanelKeepsInlineRows() {
   }
   assert.equal(
     (panelSource.match(/<Teleport/g) ?? []).length,
-    1,
-    'one teleport wrapper, disabled when no target props are supplied',
+    2,
+    'one wrapper for action rows and one for the observed reflection, within a single panel',
   )
+  assert.match(panelSource, /:disabled="!rowTargets\[type\]"/)
+  assert.match(panelSource, /:disabled="task\.id !== observedReflectionTaskId \|\| !reflectionProgressTarget"/)
   app.unmount()
   harness.unmount()
   ok('panel standalone: all three type rows stay inline when no field targets are present')

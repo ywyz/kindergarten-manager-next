@@ -51,7 +51,7 @@ import {
   otherBoardsProvided,
   type OtherBoardName,
 } from '../daily-other-draft'
-import type { AiTask, CandidateDetail, DailyPlan, Grade, LocalContext, TaskType } from '../types'
+import type { AdoptionResult, AiTask, CandidateAdoptionOrigin, CandidateDetail, DailyPlan, Grade, LocalContext, SplitAdaptContinuation, TaskType } from '../types'
 import type { SaveOutcome, BlockingDraft } from '../leave'
 import ExportDialog from './ExportDialog.vue'
 import AiTaskPanel from './AiTaskPanel.vue'
@@ -157,6 +157,7 @@ const exportOpen = ref(false)
 const candidateOpen = ref(false)
 const candidateId = ref('')
 const candidateDraftActive = ref(false)
+const aiTaskDraftActive = ref(false)
 /** #16: ordinary daily candidates render beside their own editing region. */
 const candidateInline = ref(false)
 const candidateInlineTarget = ref<HTMLElement | null>(null)
@@ -165,11 +166,18 @@ const candidateInlineTarget = ref<HTMLElement | null>(null)
  * keeps task state/polling; its per-type rows are teleported beside the raw
  * lesson input, the collective-activity process and the other-activity area.
  */
-const aiTaskPanelRef = ref<{ trigger?: (taskType: TaskType) => Promise<void> } | null>(null)
+const aiTaskPanelRef = ref<{
+  trigger?: (taskType: TaskType) => Promise<void>
+  continueAfterSplit?: (input: SplitAdaptContinuation, isCurrent: () => boolean) => Promise<boolean>
+  observeReflectionTask?: (task: AiTask) => boolean
+} | null>(null)
+// Only the adoption event can start this chain; reloads and saved plans cannot.
+const splitAdaptContinuations = new Set<string>()
 const splitTarget = ref<HTMLElement | null>(null)
 const processTarget = ref<HTMLElement | null>(null)
 const otherTarget = ref<HTMLElement | null>(null)
 const reflectionTarget = ref<HTMLElement | null>(null)
+const reflectionProgressTarget = ref<HTMLElement | null>(null)
 /**
  * Direct-fill outcome for a successful other-activities task. `applied` means
  * the generated boards entered the current form draft; `pending` means the
@@ -966,9 +974,9 @@ const planGrade = computed<Grade>(() => (plan.value?.grade as Grade) ?? 'middle'
 const hasRaw = computed(() => rawLessonPlan.value.trim() !== '')
 const hasProcess = computed(() => form.value.group_activity.process.trim() !== '')
 
-// #27: the reflection task is independent from the three AiTaskPanel rows. The
-// teacher supplies the only evidence of what actually happened in class; the
-// saved plan remains a separate, read-only original arrangement.
+// #27: reflection owns its material/receipt workflow and shares AiTaskPanel's
+// read-only progress. The saved plan is the original arrangement; only the
+// teacher's implementation material describes what actually happened.
 const REFLECTION_TASK_TYPE: TaskType = 'daily_reflection_generate'
 const reflectionMaterials = ref('')
 const reflectionTask = ref<AiTask | null>(null)
@@ -976,6 +984,23 @@ const reflectionBusy = ref(false)
 const reflectionRequestActive = ref(false)
 const reflectionError = ref('')
 const reflectionQuerying = ref(false)
+const reflectionFillBusy = ref(false)
+const reflectionGenerated = ref<{ state: 'applied' | 'pending'; message: string; retryable?: boolean } | null>(null)
+const reflectionHandledCandidates = new Set<string>()
+interface ReflectionFillOrigin {
+  requestId: string
+  taskId: string | null
+  planId: string
+  planDate: string
+  editorKey: string
+  sessionEpoch: number
+  profileId: string | null
+  contentVersion: number
+  editEpoch: number
+  materials: string
+  automatic: boolean
+}
+const reflectionFillOrigin = ref<ReflectionFillOrigin | null>(null)
 const reflectionPending = ref<{
   requestId: string
   planId: string
@@ -985,6 +1010,36 @@ const reflectionPending = ref<{
 let editorAlive = true
 let reflectionTaskEpoch = 0
 let reflectionRefreshSeq = 0
+
+/** The recovery button and its explanation share the same current eligibility. */
+const reflectionFillBlockedReason = computed(() => {
+  const origin = reflectionFillOrigin.value
+  const task = reflectionTask.value
+  if (reflectionGenerated.value?.retryable === false) return reflectionGenerated.value.message
+  if (reflectionPending.value) return '提交结果尚未确认：请先查询原回执。'
+  if (!origin || !task?.candidate_id || task.status !== 'succeeded') return '当前没有可填入的反思结果。'
+  if (!plan.value || plan.value.id !== origin.planId || props.planDate !== origin.planDate
+    || editorKey.value !== origin.editorKey || task.id !== origin.taskId
+    || getSessionEpoch() !== origin.sessionEpoch
+    || (props.context.profile?.id ?? null) !== origin.profileId) {
+    return '当前页面与生成时不同：请返回原计划核对，或重新生成反思。'
+  }
+  if (plan.value.current_content_version !== origin.contentVersion) {
+    return '当前计划已保存为新版本：原反思已保留，请重新生成反思。'
+  }
+  if (reflectionMaterials.value.trim() !== origin.materials) {
+    return '活动实施材料已修改：请重新生成反思，或恢复本次生成时的材料后再填入。'
+  }
+  if (dirty.value) {
+    return '当前草稿有未保存修改：请先处理或撤销修改；保存为新版本后需重新生成反思。'
+  }
+  if (reflectionFillBusy.value) return '正在读取反思结果，请稍候。'
+  if (locked.value || props.frozen || composing.value || phase.value !== 'ready'
+    || candidateOpen.value || candidateDraftActive.value || historyRestoreBlocked.value) {
+    return '当前正在编辑或处理其他操作：请结束操作后再填入反思。'
+  }
+  return ''
+})
 
 function setReflectionTask(next: AiTask): void {
   const previous = reflectionTask.value
@@ -1000,6 +1055,107 @@ function setReflectionTask(next: AiTask): void {
   reflectionTask.value = next
   // A task replacement/refresh invalidates any older refresh still waiting.
   reflectionRefreshSeq += 1
+}
+
+function acceptReflectionTask(next: AiTask, requestId: string): void {
+  setReflectionTask(next)
+  const origin = reflectionFillOrigin.value
+  if (origin?.requestId === requestId) origin.taskId = next.id
+  // Seed the shared progress panel immediately, including an empty pending
+  // response. It owns all status/progress polling; no second poller is added.
+  aiTaskPanelRef.value?.observeReflectionTask?.(next)
+  void onReflectionUpdated(next)
+}
+
+async function onReflectionUpdated(next: AiTask): Promise<void> {
+  const current = reflectionTask.value
+  if (!editorAlive || !current || !plan.value
+    || next.id !== current.id || next.plan_id !== plan.value.id
+    || next.task_type !== REFLECTION_TASK_TYPE
+    || next.input_summary.content_version !== current.input_summary.content_version
+    || next.input_summary.dependency_hash !== current.input_summary.dependency_hash
+    || next.input_summary.target_grade !== current.input_summary.target_grade) return
+  setReflectionTask(next)
+  if (next.status === 'succeeded' && next.candidate_id) {
+    await fillReflectionResult(next, true)
+  }
+}
+
+/** Only a locally accepted, unchanged generation may fill the draft once. */
+async function fillReflectionResult(task: AiTask, automatic: boolean): Promise<void> {
+  const origin = reflectionFillOrigin.value
+  const current = reflectionTask.value
+  if (!editorAlive || !plan.value || !origin || !current || reflectionFillBusy.value
+    || reflectionPending.value || task.status !== 'succeeded' || !task.candidate_id
+    || origin.taskId !== task.id || current.id !== task.id
+    || current.candidate_id !== task.candidate_id || task.plan_id !== origin.planId
+    || task.task_type !== REFLECTION_TASK_TYPE) return
+  const candidateKey = `${task.id}:${task.candidate_id}`
+  if (automatic && reflectionHandledCandidates.has(candidateKey)) return
+  if (automatic) reflectionHandledCandidates.add(candidateKey)
+  const pending = (message: string, retryable = true) => { reflectionGenerated.value = { state: 'pending', message, retryable } }
+  const pageMatches = () => editorAlive && plan.value?.id === origin.planId
+    && props.planDate === origin.planDate && editorKey.value === origin.editorKey
+    && getSessionEpoch() === origin.sessionEpoch
+    && (props.context.profile?.id ?? null) === origin.profileId
+    && reflectionFillOrigin.value?.requestId === origin.requestId
+    && reflectionTask.value?.id === task.id
+    && reflectionTask.value?.candidate_id === task.candidate_id
+    && reflectionTask.value?.execution?.id === task.execution?.id
+  const writable = () => !dirty.value && !locked.value && !props.frozen
+    && !composing.value && phase.value === 'ready' && !candidateOpen.value
+    && !candidateDraftActive.value && !historyRestoreBlocked.value
+    && !reflectionPending.value
+    && reflectionMaterials.value.trim() === origin.materials
+  if (!pageMatches()) return
+  if (!writable() || plan.value.current_content_version !== origin.contentVersion
+    || automatic && (!origin.automatic || editEpoch.value !== origin.editEpoch)) {
+    pending('反思已生成，但期间有新输入、版本或操作状态变化：原内容已保留。可核对后填入，或重新生成。')
+    return
+  }
+  const epochAtRead = editEpoch.value
+  reflectionFillBusy.value = true
+  try {
+    const detail = await apiGet<CandidateDetail>(
+      `/api/daily-plans/${pathSegment(origin.planId)}/ai-candidates/${pathSegment(task.candidate_id)}`,
+    )
+    if (!pageMatches()) return
+    if (!writable() || editEpoch.value !== epochAtRead
+      || plan.value?.current_content_version !== origin.contentVersion) {
+      pending('读取反思期间输入或页面状态已变化：未覆盖当前草稿，请核对后再填入。')
+      return
+    }
+    if (detail.id !== task.candidate_id || detail.task_id !== task.id
+      || detail.plan_id !== origin.planId || detail.task_type !== REFLECTION_TASK_TYPE
+      || !task.execution?.id || detail.execution_id !== task.execution.id
+      || detail.adoption_state !== 'eligible'
+      || detail.source?.content_version !== origin.contentVersion
+      || task.input_summary.content_version !== origin.contentVersion
+      || detail.latest_content_version !== origin.contentVersion
+      || detail.source?.dependency_hash !== task.input_summary.dependency_hash
+      || detail.source?.target_grade !== task.input_summary.target_grade
+      || detail.source?.source_excerpt?.implementation_materials !== origin.materials
+      || !detail.available_targets?.includes('reflection')
+      || typeof detail.raw_candidate?.reflection !== 'string'
+      || !detail.raw_candidate.reflection.trim()) {
+      pending('反思结果与本次任务或保存版本不一致：未填入草稿，请重新生成。', false)
+      return
+    }
+    form.value.reflection = detail.raw_candidate.reflection
+    editEpoch.value += 1
+    reflectionGenerated.value = { state: 'applied', message: '反思已填入当前草稿，可直接修改并保存。' }
+    ElMessage.success('反思已填入草稿，请核对后保存')
+  } catch {
+    if (pageMatches()) pending('反思结果读取失败：当前内容已保留，可再次读取并填入。')
+  } finally {
+    reflectionFillBusy.value = false
+  }
+}
+
+async function fillPendingReflection(): Promise<void> {
+  if (reflectionGenerated.value?.state !== 'pending' || !reflectionTask.value
+    || reflectionFillBlockedReason.value) return
+  await fillReflectionResult(reflectionTask.value, false)
 }
 
 function reflectionTaskMatches(
@@ -1383,15 +1539,19 @@ function reflectionStatusText(): string {
   }
   const task = reflectionTask.value
   if (!task) return ''
+  if (reflectionGenerated.value?.state === 'pending') {
+    return reflectionFillBlockedReason.value || reflectionGenerated.value.message
+  }
+  if (reflectionGenerated.value) return reflectionGenerated.value.message
   if (task.status === 'succeeded' && task.candidate_id) {
-    return `反思候选已生成（任务 ${task.id.slice(0, 8)}…）：尚未采用，当前反思与已保存版本保持不变。`
+    return '反思已生成，正在读取结果。'
   }
   if (task.status === 'failed') return '反思生成失败：当前反思与已保存版本已保留，未自动重试。'
   if (task.status === 'cancelled') return '反思生成已取消：当前反思与已保存版本已保留。'
   if (task.status === 'outcome_unknown') {
     return '反思生成结果未知：当前反思与已保存版本已保留，未自动重发；可查询原任务。'
   }
-  return `反思任务已受理（${task.status}）：后台生成期间当前反思与已保存版本保持不变。`
+  return '正在生成反思，思考过程见下方；完成后直接填入草稿。'
 }
 
 async function submitReflectionBody(
@@ -1411,16 +1571,18 @@ async function submitReflectionBody(
       return
     }
     if (!reflectionTaskMatches(created, planId, body)) {
+      if (reflectionFillOrigin.value?.requestId === requestId) reflectionFillOrigin.value.automatic = false
       reflectionPending.value = { requestId, planId, body }
       reflectionError.value =
         '反思任务回执与当前计划、任务类型或保存版本不一致：已保留原请求，请查询原回执核对'
       return
     }
     reflectionPending.value = null
-    setReflectionTask(created)
+    acceptReflectionTask(created, requestId)
     reflectionError.value = ''
   } catch (err) {
     if (isIndeterminate(err)) {
+      if (reflectionFillOrigin.value?.requestId === requestId) reflectionFillOrigin.value.automatic = false
       reflectionPending.value = { requestId, planId, body }
       reflectionError.value = preservePending
         ? '原请求仍未确认：同键重试失败，已保留原票据；请查询原回执或再次重试'
@@ -1441,7 +1603,7 @@ async function submitReflectionBody(
 }
 
 async function createReflectionTask(): Promise<void> {
-  if (reflectionBusy.value || reflectionPending.value) return
+  if (reflectionBusy.value || reflectionFillBusy.value || reflectionPending.value) return
   if (locked.value || props.frozen) {
     reflectionError.value = '窗口正在关闭：未发起反思任务'
     return
@@ -1471,6 +1633,14 @@ async function createReflectionTask(): Promise<void> {
       return
     }
     const requestId = crypto.randomUUID()
+    reflectionGenerated.value = null
+    reflectionFillOrigin.value = {
+      requestId, taskId: null, planId: planAtStart, planDate: props.planDate,
+      editorKey: editorKey.value, sessionEpoch: getSessionEpoch(),
+      profileId: props.context.profile?.id ?? null,
+      contentVersion: plan.value.current_content_version, editEpoch: editEpoch.value,
+      materials, automatic: true,
+    }
     const body = {
       request_id: requestId,
       task_type: REFLECTION_TASK_TYPE,
@@ -1507,7 +1677,7 @@ async function refreshReflectionTask(): Promise<void> {
         '刷新回执与当前反思任务、计划、类型或保存版本不一致：未替换当前候选'
       return
     }
-    setReflectionTask(next)
+    await onReflectionUpdated(next)
   } catch (err) {
     if (seq !== reflectionRefreshSeq) return
     reflectionError.value =
@@ -1533,7 +1703,7 @@ async function queryReflectionCreate(): Promise<void> {
       const result = query.result as unknown as AiTask
       if (reflectionTaskMatches(result, pending.planId, pending.body)) {
         reflectionPending.value = null
-        setReflectionTask(result)
+        acceptReflectionTask(result, pending.requestId)
         reflectionError.value = ''
         return
       }
@@ -1734,9 +1904,20 @@ function openGuidance(taskType?: TaskType): void {
  * touches the current plan/form/baseline (R11).
  */
 async function onCandidateAdopted(
-  result: { plan_id: string; content_version: number },
+  result: AdoptionResult,
   epochAtAdopt: number,
+  origin?: CandidateAdoptionOrigin,
 ): Promise<void> {
+  const splitAdopted = result.changed === true
+    && origin?.taskType === 'daily_lesson_split'
+    && origin.planId === result.plan_id
+    && origin.candidateId === result.candidate_id
+    && candidateId.value === origin.candidateId
+  const continuationKey = `${result.plan_id}:${result.candidate_id}:${result.content_version}`
+  const continueSplit = splitAdopted && !splitAdaptContinuations.has(continuationKey)
+  // Reserve before the first await, including failed/unknown creation outcomes.
+  // A duplicate receipt must never silently start another paid request.
+  if (continueSplit) splitAdaptContinuations.add(continuationKey)
   candidateOpen.value = false
   candidateDraftActive.value = false
   const targetPlan = result.plan_id
@@ -1748,6 +1929,31 @@ async function onCandidateAdopted(
     if (editEpoch.value === epochAtAdopt) {
       applyPlan(server)
       ElMessage.success(`已采用并保存（内容版本 v${result.content_version}）`)
+      if (continueSplit) {
+        const grade = origin?.targetGrade
+        const isCurrent = (): boolean => editorAlive
+          && !props.frozen && !locked.value && !dirty.value
+          && !historyRestoreBlocked.value && !composing.value
+          && !candidateOpen.value && !candidateDraftActive.value
+          && candidateId.value === origin?.candidateId
+          && editEpoch.value === epochAtAdopt
+          && plan.value?.id === targetPlan
+          && plan.value.current_content_version === result.content_version
+          && !!plan.value.content.split_baseline
+        await nextTick()
+        if (isCurrent() && (grade === 'small' || grade === 'middle' || grade === 'large')) {
+          const accepted = await aiTaskPanelRef.value?.continueAfterSplit?.({
+            planId: targetPlan,
+            contentVersion: result.content_version,
+            targetGrade: grade,
+          }, isCurrent)
+          if (accepted && editorAlive && plan.value?.id === targetPlan) {
+            ElMessage.success('拆分已保存，已自动发起过程适龄调整；完成后请比较并采用')
+          }
+        } else {
+          ElMessage.warning('拆分已保存，当前内容或操作状态已变化：未自动接续，请按需手动发起过程适龄调整')
+        }
+      }
     } else {
       // R11: the body changed after the adopt was submitted. Never advance the
       // baseline/version or silently rebase; keep the original input and
@@ -1831,6 +2037,11 @@ const bridge: EditorBridge = {
           message:
             '候选预览有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开',
         }
+      : aiTaskDraftActive.value
+        ? {
+            kind: 'history',
+            message: 'AI 任务正在提交或结果待核对：请等待提交完成，或查询原提交结果后再离开',
+          }
       : reflectionPending.value
         ? {
             kind: 'history',
@@ -1944,6 +2155,7 @@ onMounted(() => {
     reflectionPending: () => reflectionPending.value,
     reflectionRequestActive: () => reflectionRequestActive.value,
     reflectionError: () => reflectionError.value,
+    reflectionGenerated: () => reflectionGenerated.value,
     createReflectionTask: () => createReflectionTask(),
     refreshReflectionTask: () => refreshReflectionTask(),
     queryReflectionCreate: () => queryReflectionCreate(),
@@ -1951,8 +2163,8 @@ onMounted(() => {
     openReflectionCandidate: () => openReflectionCandidate(),
     blockingDraft: () => bridge.blockingDraft?.() ?? null,
     openCandidate: (id: string) => openCandidate(id),
-    onCandidateAdopted: (result: { plan_id: string; content_version: number }, epoch: number) =>
-      onCandidateAdopted(result, epoch),
+    onCandidateAdopted: (result: AdoptionResult, epoch: number, origin?: CandidateAdoptionOrigin) =>
+      onCandidateAdopted(result, epoch, origin),
     onCandidateDraft: (active: boolean) => onCandidateDraft(active),
     openHistory: () => openHistory(),
     historyOpen: () => historyOpen.value,
@@ -2141,14 +2353,18 @@ onBeforeUnmount(() => {
         :content-version="plan.current_content_version"
         :has-raw="hasRaw"
         :has-process="hasProcess"
+        :has-split-baseline="typeof plan.content.split_baseline?.group_activity_process === 'string' && !!plan.content.split_baseline.group_activity_process.trim()"
         :frozen="props.frozen"
         :save-current="saveCurrent"
         :split-target="splitTarget"
         :process-target="processTarget"
         :other-target="otherTarget"
+        :reflection-progress-target="reflectionProgressTarget"
+        @draft-active="aiTaskDraftActive = $event"
         @open-candidate="(id: string, taskType: TaskType) => openCandidate(id, taskType)"
         @open-guidance="openGuidance"
         @other-generated="onOtherGenerated"
+        @reflection-updated="onReflectionUpdated"
       />
       <el-alert
         v-if="draftActive"
@@ -2300,7 +2516,7 @@ onBeforeUnmount(() => {
           </div>
           <el-button size="small" :disabled="editDisabled" @click="addMorningGame(gi)">添加游戏</el-button>
           <div class="field-grid">
-            <div class="field"><label>重点指导</label><el-input v-model="group.focus_guidance" type="textarea" :rows="2" :disabled="editDisabled" /></div>
+            <div class="field"><label>重点指导（游戏名称）</label><el-input v-model="group.focus_guidance" placeholder="填写本组游戏名称；晨间仅选一组填写" :disabled="editDisabled" /></div>
             <div class="field"><label>共用目标</label><el-input v-model="group.shared_objectives" type="textarea" :rows="2" :disabled="editDisabled" /></div>
             <div class="field"><label>指导要点</label><el-input v-model="group.guidance_points" type="textarea" :rows="2" :disabled="editDisabled" /></div>
           </div>
@@ -2356,7 +2572,7 @@ onBeforeUnmount(() => {
               <el-option label="户外" value="outdoor" />
               <el-option label="专用室" value="special_room" />
             </el-select>
-            <el-input v-if="group.context_kind === 'area'" v-model="group.area" size="small" class="area-input" placeholder="区域名称" :disabled="editDisabled" />
+            <el-input v-if="group.context_kind === 'area'" v-model="group.area" size="small" class="area-input" placeholder="两个区域，用顿号分隔，如美工区、建构区" :disabled="editDisabled" />
             <el-button size="small" text type="danger" :disabled="editDisabled" @click="removePostGroup(gi)">移除该组</el-button>
           </div>
           <div v-for="(game, ggi) in group.games" :key="game.game_id || (game as any)._tmp || `p-${gi}-${ggi}`" class="game-row">
@@ -2365,7 +2581,7 @@ onBeforeUnmount(() => {
           </div>
           <el-button size="small" :disabled="editDisabled" @click="addPostGame(gi)">添加游戏</el-button>
           <div class="field-grid">
-            <div class="field"><label>重点指导</label><el-input v-model="group.focus_guidance" type="textarea" :rows="2" :disabled="editDisabled" /></div>
+            <div class="field"><label>重点指导（区域名称）</label><el-input v-model="group.focus_guidance" placeholder="填写上述区域中的一个名称" :disabled="editDisabled" /></div>
             <div class="field"><label>目标</label><el-input v-model="group.objectives" type="textarea" :rows="2" :disabled="editDisabled" /></div>
             <div class="field"><label>指导</label><el-input v-model="group.guidance" type="textarea" :rows="2" :disabled="editDisabled" /></div>
             <div class="field"><label>支持策略</label><el-input v-model="group.support_strategy" type="textarea" :rows="2" :disabled="editDisabled" /></div>
@@ -2377,14 +2593,14 @@ onBeforeUnmount(() => {
 
       <el-card class="section">
         <template #header>下午户外</template>
-        <div class="field"><label>区域名称</label><el-input v-model="form.afternoon_outdoor.area" :disabled="editDisabled" /></div>
+        <div class="field"><label>区域名称</label><el-input v-model="form.afternoon_outdoor.area" placeholder="两个户外区域，用顿号分隔，如骑行、沙水池" :disabled="editDisabled" /></div>
         <div v-for="(game, ggi) in form.afternoon_outdoor.games" :key="game.game_id || (game as any)._tmp || `a-${ggi}`" class="game-row">
           <el-input v-model="game.name" placeholder="游戏名称" :disabled="editDisabled" />
           <el-button size="small" text type="danger" :disabled="editDisabled" data-d1="delete-afternoon-game" @click="removeAfternoonGame(ggi)">删除</el-button>
         </div>
         <el-button size="small" :disabled="editDisabled" @click="addAfternoonGame">添加游戏</el-button>
         <div class="field-grid">
-          <div class="field"><label>重点观察</label><el-input v-model="form.afternoon_outdoor.observation_focus" type="textarea" :rows="2" :disabled="editDisabled" /></div>
+          <div class="field"><label>重点观察（区域名称）</label><el-input v-model="form.afternoon_outdoor.observation_focus" placeholder="填写上述户外区域中的一个名称" :disabled="editDisabled" /></div>
           <div class="field"><label>目标</label><el-input v-model="form.afternoon_outdoor.objectives" type="textarea" :rows="2" :disabled="editDisabled" /></div>
           <div class="field"><label>指导</label><el-input v-model="form.afternoon_outdoor.guidance" type="textarea" :rows="2" :disabled="editDisabled" /></div>
           <div class="field"><label>支持策略</label><el-input v-model="form.afternoon_outdoor.support_strategy" type="textarea" :rows="2" :disabled="editDisabled" /></div>
@@ -2450,11 +2666,11 @@ onBeforeUnmount(() => {
               size="small"
               type="primary"
               :loading="reflectionBusy"
-              :disabled="editDisabled || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
+              :disabled="editDisabled || reflectionFillBusy || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
               data-d1="reflection-generate"
               @click="createReflectionTask"
             >
-              生成反思候选
+              生成反思
             </el-button>
             <el-button
               v-if="reflectionTask"
@@ -2466,13 +2682,15 @@ onBeforeUnmount(() => {
               刷新任务
             </el-button>
             <el-button
-              v-if="reflectionTask?.candidate_id"
+              v-if="reflectionGenerated?.state === 'pending'"
               size="small"
               type="success"
-              data-d1="reflection-open-candidate"
-              @click="openReflectionCandidate"
+              :loading="reflectionFillBusy"
+              :disabled="editDisabled || !!reflectionFillBlockedReason"
+              data-d1="reflection-fill-result"
+              @click="fillPendingReflection"
             >
-              打开反思候选
+              填入生成的反思
             </el-button>
           </div>
           <el-alert
@@ -2483,6 +2701,7 @@ onBeforeUnmount(() => {
             data-d1="reflection-task-status"
             :title="reflectionStatusText()"
           />
+          <div ref="reflectionProgressTarget" data-d1="reflection-progress-target" />
           <el-alert
             v-if="reflectionError"
             class="section"
@@ -2531,7 +2750,7 @@ onBeforeUnmount(() => {
       :inline="candidateInline"
       :inline-target="candidateInlineTarget"
       @update:open="onCandidateOpen"
-      @adopted="(result, epoch) => onCandidateAdopted(result, epoch)"
+      @adopted="onCandidateAdopted"
       @draft-active="onCandidateDraft"
       @open-candidate="(next) => openCandidate(next, 'daily_process_adapt')"
       @open-regenerated="(next, type) => openCandidate(next, type, true)"

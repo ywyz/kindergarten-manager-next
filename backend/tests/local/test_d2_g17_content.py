@@ -126,7 +126,7 @@ class G17ContentTests(LocalTestCase):
                 expected = {
                     "daily_lesson_split": 2,
                     "daily_process_adapt": 3,
-                    "daily_other_activities": 2,
+                    "daily_other_activities": 3,
                 }[task_type]
                 out = prompt_service.get_prompt(session, task_type=task_type)
                 self.assertEqual(out["based_default_revision"], expected)
@@ -145,7 +145,7 @@ class G17ContentTests(LocalTestCase):
         with mock.patch.object(prompt_bundles, "PROMPT_BUNDLE_MANIFEST", r1_only):
             runtime = self.make_runtime()
         self._initialize(runtime, sync_full=False)
-        # The package now publishes r2 alongside the frozen r1.
+        # Current defaults coexist with the frozen r1 and r2 revisions.
         session = runtime.session()
         try:
             prompt_bundles.sync_prompt_bundles(session)
@@ -154,7 +154,8 @@ class G17ContentTests(LocalTestCase):
                 self.assertEqual(before["based_default_revision"], 1)
                 self.assertEqual(
                     before["latest_default_revision"],
-                    3 if task_type == "daily_process_adapt" else 2,
+                    {"daily_lesson_split": 2, "daily_process_adapt": 3,
+                     "daily_other_activities": 3}[task_type],
                 )
                 self.assertEqual(
                     before["guidance"], _bundle(task_type, 1)["guidance_defaults_json"]
@@ -520,7 +521,7 @@ class G17AdaptR3UpgradeTests(LocalTestCase):
 
 
 class G17ClaimSnapshotTests(ExecutorCase):
-    def test_claim_system_text_uses_r2_rules_and_versions(self):
+    def test_claim_system_text_uses_seeded_rules_and_versions(self):
         self.configure_ai(model="g17-content-model")
         plan = self.make_plan()
         task = self.submit(plan["id"])
@@ -542,6 +543,9 @@ class G17ClaimSnapshotTests(ExecutorCase):
         instructions = "\n".join(payload["instructions"])
         self.assertIn("真实换行", instructions)
         self.assertIn("只整理已有条目的编号和换行", instructions)
+        self.assertIn("不给未编号段落新增编号", instructions)
+        self.assertNotIn("每项使用真实换行，并以", instructions)
+        self.assertNotIn("编号使用“1. ”或“（1）”", instructions)
 
         other_task = self.submit(plan["id"], task_type="daily_other_activities")
         other = ai_task_service.claim_next(
@@ -550,12 +554,12 @@ class G17ClaimSnapshotTests(ExecutorCase):
         self.assertIsNotNone(other)
         assert other is not None
         self.assertEqual(other.task_id, other_task["id"])
-        self.assertEqual(other.default_revision, 2)
+        self.assertEqual(other.default_revision, 3)
         self.assertEqual(other.personal_revision, 1)
         other_payload = json.loads(other.system_text)
         self.assertEqual(
             other_payload["guidance"],
-            _bundle("daily_other_activities", 2)["guidance_defaults_json"],
+            _bundle("daily_other_activities", 3)["guidance_defaults_json"],
         )
         other_instructions = "\n".join(other_payload["instructions"])
         self.assertIn("均为户外活动", other_instructions)

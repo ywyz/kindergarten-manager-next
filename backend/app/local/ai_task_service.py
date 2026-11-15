@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -40,6 +41,7 @@ from app.daily_process_contract import (
     DailyProcessContractError,
     adapt_step_index,
     expand_adapt_patch,
+    extract_labeled_split_fields,
     normalize_daily_candidate,
     validate_adapt_change,
     validate_split_cleanup,
@@ -2067,21 +2069,19 @@ def _render_system_text(
         "严格遵循 output_contract 的字段与类型，不要输出未列出的字段或 ID。",
         "多项内容、活动步骤、目标、准备、要点、问题或游戏建议：每项使用真实换行，并以“1. ”、“2. ”、“3. ”阿拉伯数字依次编号；数量按实际内容，不强行凑三条；名称、主题等短单值不编号。JSON 字符串中的换行必须使用转义换行，解码后是真实换行，不能向教师显示字面 \\n。",
     ]
+    if task_type in ("daily_lesson_split", "daily_process_adapt"):
+        common = [rule for rule in common if not rule.startswith("多项内容、活动步骤")]
     if task_type == "daily_process_adapt":
         # The patch protocol replaces the generic full-document numbering rule;
         # otherwise the model is told both "return one patch" and "renumber all
         # steps", and it falls back to copying/rewriting the whole process.
-        common = [
-            rule
-            for rule in common
-            if not rule.startswith("多项内容、活动步骤")
-        ]
         common.append(
             "本任务只返回一个局部补丁 JSON，不返回完整过程；patch 的 text 只写一个实际步骤的正文，不带标题、编号或 Markdown。text 内可用真实换行写“师：/幼：”话语。payload.adapt_steps 给出本机计算的稳定 index、level、title 和 has_children；只可选其中存在的 index，父标题后有子项时请选具体子项。"
         )
     per_task: dict[str, list[str]] = {
         "daily_lesson_split": [
             "只从教师提供的原始教案中摘取内容，不得补写或编造教案里没有的环节；原始教案本身保持原样。",
+            "拆分是原文摘录：原文有明确栏目标题时，完整摘取对应栏目，不省略首尾步骤、材料、数量或教师话语。保留原有编号和层级，不给未编号段落新增编号；个人旧指导中统一改成阿拉伯编号、给每项加编号的要求不适用于拆分。",
             "若输入含 revision_instruction，只能用于整理或清理原教案已有文字，不得据此补写原教案没有的环节或事实。",
             "base_candidate 是上一候选的只读文字参照，不是原始教案事实；不得把候选内容冒充原教案、跨计划/任务引用或据此补写未提供的内容。",
             "theme 优先使用原文明确的活动主题或活动名称；原文没有单列时，可从活动目标、准备或过程的首个明确活动名称推断一个短名称，不编号，不另造与原教案无关的活动；活动短名不超过 256 UTF-8 字节。",
@@ -2108,8 +2108,12 @@ def _render_system_text(
             "若输入含 revision_instruction，只能在现有候选板块/游戏组结构内调整，不得绕过结构、编造日计划事实或新增未提供的板块。",
             "base_candidate 是上一候选的只读文字参照，不是日计划事实；不得复制出未提供的板块、冒用其它计划/任务内容或把候选说成已保存记录。",
             "晨间游戏的一项集体与一项自选/自主均为户外活动，不含区域游戏、室内或专用室活动；优先使用 game_config 中 kind=outdoor 的场地及限制，没有户外配置时只给一般户外建议并明确未结合配置，不冒充已配置场地。",
-            "其他板块仍可使用各自适用的区域、专用室或户外配置。",
-            "post_group_games 必须承接 daily_plan_snapshot.group_activity 中真实提供的主题、目标、准备和过程：游戏目标、重点指导与支持策略要能看出与该集体活动的衔接。",
+            "晨间只需要一份重点指导：从集体游戏或自选/自主游戏中任选一个，focus_guidance 只填写该游戏的完整名称，必须等于本组 games[0].name，不写1、2、3条指导正文。仅重点指导所选游戏所在组填写活动目标 shared_objectives 和指导要点 guidance_points，内容对应这个游戏；另一组省略 focus_guidance、shared_objectives 和 guidance_points，不生成第二套活动目标、指导要点。两组 games 及游戏名称都保留。个人旧指导中两组都写重点指导、活动目标或指导要点，以及在重点指导写正文的要求不适用。",
+            "如果 game_config.locations 已提供 kind=outdoor 的场地，晨间游戏与下午户外必须结合实际提供的户外场地名称及限制，不得声称未收到户外配置，不得用“户外平整场地（一般建议）”等泛称代替已有配置。",
+            "post_group_games 只生成一组 context_kind=area 的室内区域活动，不生成专用室或额外户外组。area 选两个不同的 kind=area 已配置区域名称，用顿号连接；focus_guidance 只写其中一个区域名称，不写具体游戏名或条目正文。games 保留实际游戏建议供来源使用，不能把区域名称冒充游戏名称。",
+            "afternoon_outdoor 是唯一的下午户外栏：area 选两个不同的 kind=outdoor 已配置场地名称，用顿号连接；observation_focus 只写其中一个场地名称，不写游戏名或观察条目。具体教学文字仍分别写入 objectives、guidance、support_strategy；不得使用专用室。",
+            "室内或户外可用区域不足两个时，只使用实际提供的区域，不重复、不编造凑数；完全未提供该类区域时可以给一般建议，但不能冒充已有配置。区域和重点名称都是短单值，不加1、2、3编号；活动目标、指导要点和支持策略仍保留具体内容。上述名称字段规则优先于个人旧指导。",
+            "post_group_games 必须承接 daily_plan_snapshot.group_activity 中真实提供的主题、目标、准备和过程：活动目标、指导要点与支持策略要能看出与该集体活动的衔接，重点指导字段本身仍只写选中区域名称。",
             "不得在 post_group_games 的任何字段写“集体活动未提供”“以下是一般性建议”“信息不足”等说明；即使集体活动正文为空，也直接写教师可执行的游戏目标、指导和支持策略，不解释缺失、不冒充已结合不存在的内容，不编造未提供的活动事实。",
             "不伪造日计划引用或真实活动事实；不输出“一日活动反思”。",
             "节日信息仅供参考，不强制安排节日活动。",
@@ -2170,7 +2174,9 @@ def _render_system_text(
             "日计划 AI 文字的换行只转义一层：JSON 解码后，编号各项和“师：/幼：”等话语段落必须是真实换行；不得输出字面反斜杠+n、双层转义或把多段串成一行。"
         )
         common.append(
-            "日计划所有栏目均为纯文本，不使用 Markdown 标记（**、#、- 列表前缀、代码围栏等）；编号使用“1. ”或“（1）”。"
+            "日计划所有栏目均为纯文本，不新增 Markdown 标记（**、#、- 列表前缀、代码围栏等）；拆分保留原文编号形式和层级。"
+            if task_type == "daily_lesson_split"
+            else "日计划所有栏目均为纯文本，不使用 Markdown 标记（**、#、- 列表前缀、代码围栏等）；编号使用“1. ”或“（1）”。"
         )
     contract = (
         ADAPT_PATCH_SCHEMA
@@ -2885,6 +2891,90 @@ def _finish_attempt(attempt: LocalAIAttempt, state: str, result: dict[str, Any],
         attempt.duration_ms = duration_ms
 
 
+class _SplitSourceMismatch(CandidateInvalid):
+    """A structurally valid split candidate failed source fidelity checks."""
+
+
+def _normalize_generated_morning_focus(candidate: dict[str, Any]) -> None:
+    """Keep one game's focus and teaching detail, only for a new result."""
+    groups = candidate.get("morning_games") or []
+    eligible = [g for g in groups if any(game.get("name", "").strip() for game in g.get("games") or [])]
+    selected = next((g for g in eligible if (g.get("focus_guidance") or "").strip()), None)
+    if selected is None and eligible:
+        selected = eligible[0]
+    for group in groups:
+        previous = (group.pop("focus_guidance", None) or "").strip()
+        if group is selected:
+            names = [game["name"].strip() for game in group["games"] if game.get("name", "").strip()]
+            group["focus_guidance"] = previous if previous in names else names[0]
+        else:
+            group.pop("shared_objectives", None)
+            group.pop("guidance_points", None)
+
+
+def _generated_region_names(values: list[str], configured: list[str]) -> list[str]:
+    """Keep requested configured names, then fill up to two real locations."""
+    names: list[str] = []
+    for value in values:
+        parts = [value.strip()] if value.strip() in configured else re.split(r"[、,，;；\r\n]+", value)
+        for part in parts:
+            name = re.sub(r"^\s*\d+[.)、]\s*", "", part).strip()
+            if name and name not in names and (not configured or name in configured):
+                names.append(name)
+    for name in configured:
+        if name not in names:
+            names.append(name)
+    return names[:2]
+
+
+def _normalize_generated_activity_regions(candidate: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Names-only focus for new results; never modify historical/teacher text."""
+    config = payload.get("game_config") or {}
+    locations = config.get("locations") or []
+
+    def configured_names(kind: str) -> list[str]:
+        names: list[str] = []
+        for item in locations:
+            name = (item.get("name") or "").strip()
+            if item.get("kind") == kind and name and name not in names:
+                names.append(name)
+        return names
+
+    def set_region_names(group: dict[str, Any], values: list[str], kind: str, focus_key: str) -> None:
+        names = _generated_region_names(values, configured_names(kind))
+        previous = (group.get(focus_key) or "").strip()
+        if names:
+            group["area"] = "、".join(names)
+            group[focus_key] = previous if previous in names else names[0]
+        else:
+            group.pop(focus_key, None)
+
+    groups = candidate.get("post_group_games")
+    if groups:
+        indoor = [g for g in groups if g.get("context_kind") == "area"]
+        if not indoor:
+            raise CandidateInvalid("新生成的集体活动后游戏缺少室内区域组")
+        primary = indoor[0]
+        if len(indoor) > 1:
+            # Older guidance can still yield one group per area. Keep all
+            # teaching content and real games when presenting them together.
+            games: list[dict[str, Any]] = []
+            for group in indoor:
+                for game in group.get("games") or []:
+                    if game not in games:
+                        games.append(game)
+            primary["games"] = games
+            for field in ("objectives", "guidance", "support_strategy"):
+                parts = [g[field] for g in indoor if (g.get(field) or "").strip()]
+                if parts:
+                    primary[field] = "\n".join(parts)
+        set_region_names(primary, [g.get("area") or "" for g in indoor], "area", "focus_guidance")
+        candidate["post_group_games"] = [primary]
+    afternoon = candidate.get("afternoon_outdoor")
+    if afternoon:
+        set_region_names(afternoon, [afternoon.get("area") or ""], "outdoor", "observation_focus")
+
+
 def validate_daily_candidate_contract(
     task_type: str,
     candidate: dict[str, Any],
@@ -2929,6 +3019,8 @@ def validate_daily_candidate_contract(
                 str(candidate.get("process") or ""),
             )
     except DailyProcessContractError as exc:
+        if task_type == "daily_lesson_split":
+            raise _SplitSourceMismatch(str(exc)) from None
         raise CandidateInvalid(str(exc)) from None
 
 
@@ -3042,6 +3134,22 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
                 )
             validated = validate_candidate(claim.task_type, parsed)
             validated = normalize_daily_candidate(claim.task_type, validated)
+            if claim.task_type == "daily_lesson_split" and input_row is not None:
+                source_fields = extract_labeled_split_fields(
+                    dict(input_row.payload_json or {}).get("raw_lesson_plan")
+                )
+                if source_fields is not None:
+                    # Source-bound extraction happens before persistence/hash;
+                    # adoption and Word both use this same untouched candidate.
+                    validated = validate_candidate(
+                        claim.task_type, {"group_activity": source_fields}
+                    )
+            if claim.task_type == "daily_other_activities":
+                _normalize_generated_morning_focus(validated)
+                _normalize_generated_activity_regions(
+                    validated, dict(input_row.payload_json or {}) if input_row is not None else {}
+                )
+                validated = validate_candidate(claim.task_type, validated)
             if input_row is not None and claim.task_type in (
                 "daily_lesson_split",
                 "daily_process_adapt",
@@ -3052,14 +3160,15 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
                     dict(input_row.payload_json or {}),
                     dict(input_row.dependencies_json or {}),
                 )
-    except CandidateInvalid:
+    except CandidateInvalid as exc:
         invalid = dict(result)
         invalid["kind"] = "output_invalid"
-        invalid["reason"] = (
-            "candidate_contract_invalid"
-            if claim.task_type == _FOUR_COLUMN_TASK
-            else "output_invalid"
-        )
+        if isinstance(exc, _SplitSourceMismatch):
+            invalid["reason"] = "split_source_mismatch"
+        elif claim.task_type in _CLASSIFIED_FAILURE_TASKS:
+            invalid["reason"] = "candidate_contract_invalid"
+        else:
+            invalid["reason"] = "output_invalid"
         return finalize_failure(session, claim, invalid, now)
     except ValueError:
         invalid = dict(result)
@@ -3127,7 +3236,7 @@ def _classified_failure_reason(claim: Claim, result: dict[str, Any]) -> str | No
     detail = result.get("detail")
     if not isinstance(detail, str):
         return None
-    if kind == ai_transport.OUTPUT_INVALID and claim.task_type == _FOUR_COLUMN_TASK:
+    if kind == ai_transport.OUTPUT_INVALID:
         if detail == ai_transport.DETAIL["reasoning_only"]:
             return "reasoning_only"
         if detail == ai_transport.DETAIL["output_length"]:

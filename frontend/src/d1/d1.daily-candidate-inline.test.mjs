@@ -52,9 +52,14 @@ function ok(name) {
 
   assert.match(editorSource, /:inline="candidateInline"/, 'editor passes inline mode')
   assert.match(editorSource, /:inline-target="candidateInlineTarget"/, 'editor passes the real anchor')
+  assert.match(editorSource, /@adopted="onCandidateAdopted"/, 'editor receives every adoption argument, including the captured origin')
+  const panelTag = editorSource.match(/<AiTaskPanel\b[\s\S]*?\/>/)?.[0]
+  assert.ok(panelTag, 'the real editor task panel exists')
+  assert.match(panelTag, /@draft-active="aiTaskDraftActive = \$event"/, 'pending task submission participates in editor leave protection')
   assert.match(editorSource, /candidateInline\.value =[\s\S]{0,120}daily_lesson_split[\s\S]{0,80}daily_other_activities/, 'only split/other are inline')
   assert.match(panelSource, /'open-candidate', candidateId: string, taskType: TaskType/, 'task type reaches the editor')
   assert.match(panelSource, /emit\('open-candidate', task\.candidate_id, task\.task_type\)/, 'real task type is emitted')
+  assert.match(panelSource, /defineExpose\(\{[^}]*\bcontinueAfterSplit\b[^}]*\}\)/, 'the parent component ref can call the guarded continuation')
   ok('inline wiring: split/other use the field card, adapt keeps the dialog, cancel keeps its locator')
 }
 
@@ -249,6 +254,9 @@ async function testInlineSplitOneClickAdopt() {
   assert.equal(adopted.length, 1)
   assert.equal(adopted[0][1].content_version, 4)
   assert.equal(adopted[0][2], 7)
+  assert.deepEqual(JSON.parse(JSON.stringify(adopted[0][3])), {
+    planId: 'p1', candidateId: 'cand-split', taskType: 'daily_lesson_split', targetGrade: 'middle',
+  }, 'the saved split identifies its source candidate and original target grade')
   harness.unmount()
   ok('#16 inline split: one click saves once, previews and adopts the same plan/token/version')
 }
@@ -325,12 +333,69 @@ async function testInlineUnknownKeepsOriginalRequest() {
   assert.equal(state.pendingAdopt.value.expectedContentVersion, 3)
   assert.equal(state.splitForm.value.theme, '未返回的编辑', 'the teacher edit is preserved')
   assert.equal(saves, 1, 'the body saved exactly once')
+  assert.equal(emitted.filter((event) => event[0] === 'adopted').length, 0, 'unknown adoption cannot start continuation')
+  await state.queryPendingAdopt()
+  assert.equal(emitted.filter((event) => event[0] === 'adopted').length, 0, 'a missing receipt is not an adoption')
+  // Recovery must use the origin captured with the adopt request, even if
+  // newer candidate metadata is present by the time the receipt is queried.
+  state.candidate.value.source.target_grade = 'large'
   receiptState = 'found'
   await state.queryPendingAdopt()
   assert.equal(state.pendingAdopt.value, null)
-  assert.equal(emitted.filter((event) => event[0] === 'adopted').length, 1)
+  const adopted = emitted.filter((event) => event[0] === 'adopted')
+  assert.equal(adopted.length, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(adopted[0][3])), {
+    planId: 'p1', candidateId: 'cand-split', taskType: 'daily_lesson_split', targetGrade: 'middle',
+  }, 'receipt recovery preserves the original candidate source, not the current metadata')
+  await state.queryPendingAdopt()
+  assert.equal(emitted.filter((event) => event[0] === 'adopted').length, 1, 'a recovered receipt emits adoption once')
+  assert.equal(api.calls.filter((call) => call.path.endsWith('/adopt')).length, 1, 'receipt recovery never resends adoption')
   harness.unmount()
   ok('#16 unknown adopt keeps the original receipt and input; only the explicit query resolves it')
+}
+
+async function testMismatchedAdoptReceiptCannotContinueAndRecoveryEmitsOnce() {
+  for (const mismatch of ['request_id', 'plan_id', 'candidate_id']) {
+    let originalResult
+    let releaseReceipt
+    const receipt = new Promise((resolve) => { releaseReceipt = resolve })
+    const api = scriptedApi({
+      candidate: splitCandidate(),
+      receipt: () => receipt,
+      onPost: async (path, body) => {
+        if (path.endsWith('/preview-adoption')) {
+          return { preview_token: 'tok-mismatch', expires_at: '2026-11-08T15:00:00Z', content_version: 3,
+            candidate_id: 'cand-split', selected_targets: body.selected_targets, before: {}, after: {}, warnings: [] }
+        }
+        originalResult = { changed: true, plan_id: 'p1', content_id: 'c2', content_version: 4,
+          candidate_id: 'cand-split', selected_targets: ['group_activity'], request_id: body.request_id }
+        return { ...originalResult, [mismatch]: 'unrelated-receipt' }
+      },
+    })
+    const harness = new Harness({ '../client': api.client, '../operations': api.operations })
+    const { state, emitted } = harness.setup('views/CandidatePreview.vue', {
+      open: true, planId: 'p1', candidateId: 'cand-split', contentVersion: 3, inline: true,
+      saveBody: async () => 'unchanged', captureEpoch: () => 7,
+    })
+    for (let i = 0; i < 5 && state.phase.value !== 'ready'; i += 1) await new Promise((r) => setTimeout(r, 0))
+    await state.adoptDirect()
+    assert.ok(state.pendingAdopt.value, `${mismatch}: mismatched receipt stays pending`)
+    assert.match(state.errorText.value, /回执.*不一致/)
+    assert.equal(emitted.filter((event) => event[0] === 'adopted').length, 0, `${mismatch}: no continuation event`)
+    const firstQuery = state.queryPendingAdopt()
+    const secondQuery = state.queryPendingAdopt()
+    releaseReceipt({ state: 'found', result: originalResult })
+    await Promise.all([firstQuery, secondQuery])
+    assert.equal(state.pendingAdopt.value, null)
+    const adopted = emitted.filter((event) => event[0] === 'adopted')
+    assert.equal(adopted.length, 1, `${mismatch}: concurrent receipt replies emit only once`)
+    assert.deepEqual(JSON.parse(JSON.stringify(adopted[0][3])), {
+      planId: 'p1', candidateId: 'cand-split', taskType: 'daily_lesson_split', targetGrade: 'middle',
+    })
+    assert.equal(api.calls.filter((call) => call.path.endsWith('/adopt')).length, 1, 'only read-only recovery follows a mismatched reply')
+    harness.unmount()
+  }
+  ok('adoption origin: mismatched receipts cannot continue; concurrent valid recovery emits once')
 }
 
 const tests = [
@@ -338,6 +403,7 @@ const tests = [
   testInlineCancelWritesNothing,
   testAdaptKeepsExplicitPreview,
   testInlineUnknownKeepsOriginalRequest,
+  testMismatchedAdoptReceiptCannotContinueAndRecoveryEmitsOnce,
 ]
 for (const test of tests) await test()
 console.log(`daily-candidate-inline: ${passed} checks passed`)

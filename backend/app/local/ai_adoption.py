@@ -20,7 +20,8 @@ Flow:
   and COMMIT — all or nothing. The token is consumed only after a successful
   commit.
 
-The split baseline is taken from the **raw model** process, never from the
+The split baseline is taken from the **stored generated candidate** process
+(including source-bound extraction during generation), never from the
 teacher-edited preview value; adapt / other-activities / later manual saves
 inherit the existing baseline and its source identity.
 """
@@ -446,7 +447,7 @@ def _adopt_baseline(
     current_value: Any,
 ) -> tuple[str | None, Any]:
     if task_type == "daily_lesson_split":
-        # The baseline is the *raw model* process, never the teacher preview.
+        # Use the persisted generated process, never the teacher preview.
         return candidate.id, baseline_from_model_process(_raw_process(raw))
     return current_id, current_value
 
