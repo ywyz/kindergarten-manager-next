@@ -131,10 +131,10 @@ function domainState(domain, listeningText) {
   }
 }
 
-function recordFixture(listeningText) {
+function recordFixture(listeningText, childName = '测试幼儿') {
   return {
     record_id: 'record-1',
-    child_name: '测试幼儿',
+    child_name: childName,
     class_id: 'class-1',
     term_id: 'term-1',
     grade: 'middle',
@@ -177,14 +177,14 @@ function templates() {
   }
 }
 
-function makeClient(listeningText) {
+function makeClient(listeningText, childName) {
   const client = {
     revision: 1,
     patchCalls: [],
     ApiError,
     apiGet: async (url) => {
       if (url === '/api/listening/records/record-1') {
-        const value = recordFixture(listeningText)
+        const value = recordFixture(listeningText, childName)
         value.revision = client.revision
         return value
       }
@@ -1168,8 +1168,12 @@ const DomDialogStub = {
   },
 }
 
-async function mountListeningDom(navigationTarget, listeningText) {
-  const { client } = makeClient(listeningText)
+async function mountListeningDom(
+  navigationTarget,
+  listeningText,
+  childName,
+) {
+  const { client } = makeClient(listeningText, childName)
   const listening = loadCore(client)
   const file = path.join(d1Dir, 'views', 'ListeningEditorView.vue')
   const sourceText = fs.readFileSync(file, 'utf8')
@@ -1647,6 +1651,184 @@ async function mountListeningDom(navigationTarget, listeningText) {
   mounted.app.unmount()
   await vue.nextTick()
   ok('long synthetic group text keeps fields, photo input and actions mapped')
+}
+
+// Narrow header: title/metadata stay visible and back/settings/export/save
+// remain reachable.  Widths are computed from the declared flex bases and
+// button min-content widths, not a browser measurement.
+{
+  const cssRule = (selector) => {
+    const escaped = selector.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      '\\$&',
+    )
+    const match = editorSource.match(
+      new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, 's'),
+    )
+    assert.ok(match, `${selector} rule exists`)
+    return match[1]
+  }
+  const topbar = cssRule('.topbar')
+  assert.match(topbar, /flex-wrap:\s*wrap/)
+  assert.match(topbar, /justify-content:\s*space-between/)
+  assert.match(topbar, /gap:\s*16px/)
+  const identity = cssRule('.identity')
+  assert.match(identity, /flex:\s*1 1 420px/)
+  assert.match(identity, /flex-wrap:\s*wrap/)
+  assert.match(identity, /min-width:\s*0/)
+  const identityText = cssRule('.identity > div')
+  assert.match(identityText, /flex:\s*1 1 240px/)
+  assert.match(identityText, /min-width:\s*0/)
+  assert.match(
+    editorSource,
+    /\.identity h2,\s*\.identity p\s*\{\s*overflow-wrap:\s*anywhere;/,
+  )
+  const actions = cssRule('.actions')
+  assert.match(actions, /flex-wrap:\s*wrap/)
+  assert.match(actions, /min-width:\s*0/)
+  const actionButtons = cssRule('.actions :deep(.el-button)')
+  assert.match(actionButtons, /flex:\s*0 0 auto/)
+  assert.match(
+    editorSource,
+    /@media \(max-width: 900px\) \{\s*\.identity > div \{\s*flex-basis: 100%;/,
+  )
+  assert.doesNotMatch(topbar, /overflow(?:-x)?:\s*hidden/)
+  assert.doesNotMatch(identity, /font-size:/)
+  assert.doesNotMatch(actions, /(?:display:\s*none|visibility:\s*hidden)/)
+
+  const longestName =
+    'QA真实AI验证-游戏计划书-20261115-合成长姓名-最长记录'
+  const glyph = 14
+  const nameMinWidth = Math.round(longestName.length * 0.85 * glyph)
+  const buttonMinContent = {
+    back: 4 * glyph + 24,
+    settings: 8 * glyph + 24,
+    export: 5 * glyph + 24,
+    save: 2 * glyph + 24,
+  }
+  const actionRowMin =
+    buttonMinContent.export + buttonMinContent.save + 8
+  const identityRowMin =
+    buttonMinContent.back + buttonMinContent.settings + 12
+  const leftNav = 230
+  const editorPadding = 32
+  const mainWidthAt = (viewport) =>
+    viewport - leftNav - editorPadding
+  const identityBasis = 420
+  const headerFits = (mainWidth) => {
+    const sideBySide =
+      identityBasis + 16 + actionRowMin <= mainWidth
+    const wrappedIdentityWidth = mainWidth
+    const wrappedActionsWidth = mainWidth
+    const titleWidth = sideBySide
+      ? mainWidth - 16 - actionRowMin
+      : wrappedIdentityWidth
+    return {
+      mainWidth,
+      sideBySide,
+      identityFits: identityRowMin <= wrappedIdentityWidth,
+      actionsFit: actionRowMin <= wrappedActionsWidth,
+      titleWidth,
+      titleLines: Math.ceil(nameMinWidth / titleWidth),
+      wrappedRows: sideBySide ? 1 : 2,
+    }
+  }
+  const narrow = headerFits(mainWidthAt(746))
+  const main380 = headerFits(380)
+  const main450 = headerFits(450)
+  const main500 = headerFits(500)
+  const wide = headerFits(900)
+  assert.equal(mainWidthAt(746), 484)
+  assert.deepEqual(
+    [narrow.mainWidth, main380.mainWidth, main450.mainWidth,
+      main500.mainWidth, wide.mainWidth],
+    [484, 380, 450, 500, 900],
+  )
+  for (const layout of [narrow, main380, main450, main500]) {
+    assert.equal(layout.sideBySide, false)
+    assert.equal(layout.wrappedRows, 2)
+    assert.ok(layout.identityFits, `${layout.mainWidth}px identity row fits`)
+    assert.ok(layout.actionsFit, `${layout.mainWidth}px action row fits`)
+    assert.equal(layout.titleWidth, layout.mainWidth)
+    assert.ok(
+      layout.titleLines >= 1 && layout.titleLines <= 2,
+      `${layout.mainWidth}px name wraps at most twice`,
+    )
+    assert.ok(layout.titleWidth >= 380)
+  }
+  assert.equal(main380.titleLines, 2)
+  assert.equal(main450.titleLines, 1)
+  assert.equal(main500.titleLines, 1)
+  assert.equal(narrow.titleLines, 1)
+  assert.ok(wide.sideBySide, '900px header uses one row')
+  assert.ok(wide.identityFits)
+  assert.ok(wide.actionsFit)
+  assert.equal(wide.titleLines, 1)
+  assert.ok(wide.titleWidth >= identityBasis)
+  assert.ok(actionRowMin > 0)
+  assert.ok(buttonMinContent.save > 0)
+  ok('header wraps at 746/484, 380, 450, 500 main widths; 900 stays wide')
+
+  const mounted = await mountListeningDom(
+    undefined,
+    undefined,
+    longestName,
+  )
+  const elements = walkElements(mounted.root)
+  const textOf = (node) => {
+    if (!node) return ''
+    if (node.type === 'text') return node.text
+    if (typeof node.text === 'string' && node.text !== '') {
+      return node.text
+    }
+    return (node.children ?? []).map(textOf).join('')
+  }
+  const topbarNode = elements.find((node) =>
+    classText(node.props.class).includes('topbar'),
+  )
+  assert.ok(topbarNode)
+  const identityNode = elements.find((node) =>
+    classText(node.props.class).includes('identity'),
+  )
+  const actionsNode = elements.find((node) =>
+    classText(node.props.class).includes('actions'),
+  )
+  assert.ok(identityNode && actionsNode)
+  assert.ok(topbarNode.children.includes(identityNode))
+  assert.ok(topbarNode.children.includes(actionsNode))
+  assert.ok(topbarNode.children.indexOf(identityNode) <
+    topbarNode.children.indexOf(actionsNode))
+  const headerText = textOf(topbarNode)
+  assert.ok(headerText.includes(longestName))
+  assert.ok(headerText.includes('班级 中一班'))
+  assert.ok(headerText.includes('记录年级 中班'))
+  const headerButtons = {
+    'listening-editor-back': '返回列表',
+    'listening-editor-settings': '设置与配置维护',
+    'listening-editor-export': '按幼儿合册',
+    'listening-editor-save': '保存',
+  }
+  for (const [marker, label] of Object.entries(headerButtons)) {
+    const button = walkElements(topbarNode).find(
+      (node) => node.props['data-d1'] === marker,
+    )
+    assert.ok(button, `${marker} stays in the header`)
+    assert.equal(textOf(button).trim(), label)
+    assert.equal(button.tag, 'button')
+  }
+  assert.ok(
+    walkElements(identityNode).some(
+      (node) => node.props['data-d1'] === 'listening-editor-back',
+    ),
+  )
+  assert.ok(
+    walkElements(actionsNode).some(
+      (node) => node.props['data-d1'] === 'listening-editor-save',
+    ),
+  )
+  mounted.app.unmount()
+  await vue.nextTick()
+  ok('long record name keeps title, metadata, and all four header actions')
 }
 
 console.log(`listening-layout: ${passed} checks passed`)

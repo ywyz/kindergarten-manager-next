@@ -3128,18 +3128,40 @@ defineExpose({
 }
 .topbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 .identity {
   display: flex;
+  flex: 1 1 420px;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 12px;
+  min-width: 0;
+}
+.identity > div {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.identity h2,
+.identity p {
+  overflow-wrap: anywhere;
 }
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
+}
+.actions :deep(.el-button) {
+  flex: 0 0 auto;
+}
+@media (max-width: 900px) {
+  .identity > div {
+    flex-basis: 100%;
+  }
 }
 .block {
   margin-top: 12px;
