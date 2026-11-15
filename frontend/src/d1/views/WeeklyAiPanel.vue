@@ -1226,7 +1226,7 @@ defineExpose({
       <h3>AI 候选与任务</h3>
       <el-button size="small" :disabled="disabled || aiBusy" @click="refreshBatch">刷新候选与状态</el-button>
     </div>
-    <p class="muted">AI 由各表单标题右侧按项发起，只生成候选；普通保存、改选和采用均不会自动连发。</p>
+    <p class="muted">AI 由编辑页的“AI 生成（分别发起）”按钮按项发起，只生成候选；普通保存、改选和采用均不会自动连发。</p>
     <el-alert v-if="error" :title="error" type="warning" :closable="false" />
     <el-alert v-if="readError" :title="readError" type="warning" :closable="false" />
     <div v-if="readError" class="actions"><el-button :disabled="disabled || aiBusy" @click="refreshBatch">重新读取任务与候选</el-button></div>

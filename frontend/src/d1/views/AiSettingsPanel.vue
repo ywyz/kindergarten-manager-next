@@ -57,6 +57,53 @@ const config = ref<AiConfig | null>(null)
 const configLoaded = ref(false)
 const configForm = reactive({ base_url: '', model: '', secret: '' })
 const confirmedConfig = ref<{ base_url: string; model: string } | null>(null)
+const configEditorOpen = ref(false)
+const configEditBase = ref('')
+const configEditModel = ref('')
+const configEditSecret = ref('')
+const configEditorBaseline = ref('')
+const configEditorError = ref('')
+const configEditorComposing = ref(false)
+const configEditorDirty = computed(
+  () =>
+    configEditorOpen.value
+    && (
+      JSON.stringify({
+        base: configEditBase.value,
+        model: configEditModel.value,
+        secret: configEditSecret.value,
+      }) !== configEditorBaseline.value
+      || configEditorComposing.value
+    ),
+)
+const configEditorStale = computed(
+  () =>
+    configEditorOpen.value
+    && JSON.stringify({
+      base: configForm.base_url,
+      model: configForm.model,
+      secret: configForm.secret,
+    }) !== configEditorBaseline.value,
+)
+const promptEditorTask = ref('')
+const promptEditorGuides = ref<Record<string, string>>({})
+const promptEditorBaseline = ref('')
+const promptEditorError = ref('')
+const promptEditorComposing = ref(false)
+const promptEditorDirty = computed(
+  () =>
+    promptEditorTask.value !== ''
+    && (
+      JSON.stringify(promptEditorGuides.value) !== promptEditorBaseline.value
+      || promptEditorComposing.value
+    ),
+)
+const promptEditorStale = computed(
+  () =>
+    promptEditorTask.value !== ''
+    && JSON.stringify(promptGuideMap(promptEditorTask.value))
+      !== promptEditorBaseline.value,
+)
 const prompts = ref<Prompt[]>([])
 const promptsLoaded = ref(false)
 const promptGuides = ref<Record<string, Record<string, string>>>({})
@@ -267,6 +314,7 @@ function draftTargets(): string[] {
   const configBusy = busyKey === 'config' || busyKey === 'clear'
   if (
     configDirty.value ||
+    configEditorDirty.value ||
     configBusy ||
     pendingKeys.some((key) => key === 'config' || key === 'clear')
   ) {
@@ -274,6 +322,7 @@ function draftTargets(): string[] {
   }
   if (
     promptsDirty.value ||
+    promptEditorDirty.value ||
     promptBusy ||
     pendingKeys.some((key) =>
       ['prompt-', 'default-', 'accept-', 'reject-', 'adapt-'].some((prefix) =>
@@ -287,7 +336,13 @@ function draftTargets(): string[] {
 }
 
 const draftActive = computed(
-  () => configDirty.value || promptsDirty.value || busy.value !== '' || pendingWrites.value.length > 0,
+  () =>
+    configDirty.value
+    || promptsDirty.value
+    || configEditorDirty.value
+    || promptEditorDirty.value
+    || busy.value !== ''
+    || pendingWrites.value.length > 0,
 )
 watch(draftActive, (value) => emit('draft-active', value), { immediate: true })
 
@@ -513,6 +568,102 @@ function handleWriteError(err: unknown): void {
   errorText.value = `操作失败：${String(err)}`
 }
 
+function openConfigEditor(): void {
+  if (guard() || !configLoaded.value) return
+  configEditBase.value = configForm.base_url
+  configEditModel.value = configForm.model
+  configEditSecret.value = configForm.secret
+  configEditorBaseline.value = JSON.stringify({
+    base: configEditBase.value,
+    model: configEditModel.value,
+    secret: configEditSecret.value,
+  })
+  configEditorError.value = ''
+  configEditorOpen.value = true
+}
+
+function closeConfigEditor(): void {
+  configEditorOpen.value = false
+  configEditorComposing.value = false
+  configEditSecret.value = ''
+  configEditorBaseline.value = ''
+  configEditorError.value = ''
+}
+
+function onConfigEditorDialog(value: boolean): void {
+  if (!value) closeConfigEditor()
+}
+
+function confirmConfigEditor(): void {
+  if (!configEditorOpen.value) return
+  if (guard() || !configLoaded.value) {
+    configEditorError.value = '当前状态不允许填回配置：请等待加载完成或先处理页面锁定'
+    return
+  }
+  if (configEditorStale.value) {
+    configEditorError.value = '打开编辑后页面配置已变化：请取消并重新打开编辑'
+    return
+  }
+  configForm.base_url = configEditBase.value
+  configForm.model = configEditModel.value
+  configForm.secret = configEditSecret.value
+  closeConfigEditor()
+  ElMessage.info('已填回 AI 配置草稿；保存仍由“保存配置”明确提交')
+}
+
+function promptGuideMap(taskType: string): Record<string, string> {
+  const prompt = promptFor(taskType)
+  const live = promptGuides.value[taskType] ?? {}
+  const map: Record<string, string> = {}
+  for (const field of prompt?.fields ?? []) {
+    map[field.key] = live[field.key] ?? field.default_text
+  }
+  return map
+}
+
+function setPromptEditorField(key: string, value: string): void {
+  promptEditorGuides.value = { ...promptEditorGuides.value, [key]: value }
+}
+
+function openPromptEditor(taskType: string): void {
+  if (guard() || !promptsLoaded.value || !promptFor(taskType)) return
+  promptEditorTask.value = taskType
+  promptEditorGuides.value = { ...promptGuideMap(taskType) }
+  promptEditorBaseline.value = JSON.stringify(promptEditorGuides.value)
+  promptEditorError.value = ''
+}
+
+function closePromptEditor(): void {
+  promptEditorTask.value = ''
+  promptEditorComposing.value = false
+  promptEditorGuides.value = {}
+  promptEditorBaseline.value = ''
+  promptEditorError.value = ''
+}
+
+function onPromptEditorDialog(value: boolean): void {
+  if (!value) closePromptEditor()
+}
+
+function confirmPromptEditor(): void {
+  if (!promptEditorTask.value) return
+  if (guard() || !promptsLoaded.value) {
+    promptEditorError.value = '当前状态不允许填回指导：请等待加载完成或先处理页面锁定'
+    return
+  }
+  if (promptEditorStale.value) {
+    promptEditorError.value = '打开编辑后个人指导已变化：请取消并重新打开编辑'
+    return
+  }
+  const taskType = promptEditorTask.value
+  promptGuides.value = {
+    ...promptGuides.value,
+    [taskType]: { ...promptEditorGuides.value },
+  }
+  closePromptEditor()
+  ElMessage.info('已填回指导草稿；保存仍由“保存指导”明确提交')
+}
+
 // --- AI config ---------------------------------------------------------------
 
 async function saveConfig(): Promise<void> {
@@ -733,6 +884,8 @@ async function adaptPrompt(taskType: string): Promise<void> {
 
 function discardDrafts(): void {
   if (guard()) return
+  closeConfigEditor()
+  closePromptEditor()
   promptGuides.value = JSON.parse(JSON.stringify(confirmedGuides.value))
   if (config.value) {
     configForm.base_url = config.value.base_url ?? ''
@@ -825,6 +978,13 @@ async function openPart(kind: string): Promise<void> {
 /** Prefer the matching unresolved receipt, then the region/control itself. */
 async function focusDraftTarget(kind: string): Promise<void> {
   await openPart(kind)
+  if (kind === 'ai-config' && !configEditorOpen.value) {
+    if (promptEditorDirty.value) {
+      ElMessage.warning('个人指导编辑尚未完成：请先填回草稿或取消编辑')
+      return
+    }
+    openConfigEditor()
+  }
   const prefixes = kind === 'ai-prompts'
     ? ['prompt-', 'default-', 'accept-', 'reject-', 'adapt-']
     : ['config', 'clear']
@@ -837,7 +997,12 @@ async function focusDraftTarget(kind: string): Promise<void> {
     )
   })
   const selector =
-    kind === 'ai-prompts' ? '[data-d1="ai-prompts"]' : '[data-d1="ai-base-url"]'
+    kind === 'ai-prompts'
+      ? promptEditorTask.value !== ''
+        ? '[data-d1="ai-prompt-editor"] textarea'
+        : '[data-d1="ai-prompts"]'
+      : '[data-d1="ai-base-url"]'
+  await nextTick()
   const element =
     (receipt as HTMLElement | undefined) ??
     (document.querySelector(selector) as HTMLElement | null)
@@ -849,9 +1014,19 @@ async function focusDraftTarget(kind: string): Promise<void> {
 /** Open the prompt group and locate one registered task's guidance block. */
 async function focusPromptTask(taskType: string): Promise<void> {
   promptsOpen.value = true
+  if (
+    promptEditorTask.value !== ''
+    && promptEditorTask.value !== taskType
+    && promptEditorDirty.value
+  ) {
+    ElMessage.warning('另一个指导编辑尚未完成：请先填回草稿或取消编辑')
+    return
+  }
+  if (promptEditorTask.value !== taskType) openPromptEditor(taskType)
   await nextTick()
-  const element = document.querySelector(
-    `[data-d1="prompt-${taskType}"]`,
+  const element = (
+    document.querySelector('[data-d1="ai-prompt-editor"] textarea')
+    ?? document.querySelector(`[data-d1="prompt-${taskType}"]`)
   ) as HTMLElement | null
   if (!element) return
   element.scrollIntoView?.({ block: 'center' })
@@ -859,7 +1034,24 @@ async function focusPromptTask(taskType: string): Promise<void> {
   element.focus?.()
 }
 
-defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
+defineExpose({
+  draftTargets,
+  focusDraftTarget,
+  focusPromptTask,
+  openConfigEditor,
+  closeConfigEditor,
+  confirmConfigEditor,
+  openPromptEditor,
+  closePromptEditor,
+  confirmPromptEditor,
+  editorState: () => ({
+    configOpen: configEditorOpen.value,
+    configDirty: configEditorDirty.value,
+    promptTask: promptEditorTask.value,
+    promptDirty: promptEditorDirty.value,
+    promptStale: promptEditorStale.value,
+  }),
+})
 </script>
 
 <template>
@@ -876,19 +1068,18 @@ defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
       保存与读取只做本机校验，不会试调用供应商；密钥只在本机加密保存，不会上传到在线协作或提示词发布。
     </p>
     <el-alert v-if="config" type="info" :closable="false" class="section" :title="configStatusText" />
-    <div class="fields">
-      <div class="field wide">
-        <label>API 前缀（HTTPS，可含 /v1）</label>
-        <el-input v-model="configForm.base_url" placeholder="https://example.com/v1" maxlength="2048" :disabled="frozen || !configLoaded" data-d1="ai-base-url" />
-      </div>
-      <div class="field">
-        <label>模型标识</label>
-        <el-input v-model="configForm.model" placeholder="供应商模型标识" maxlength="200" :disabled="frozen || !configLoaded" data-d1="ai-model" />
-      </div>
-      <div class="field">
-        <label>API 密钥（留空表示保留现有）</label>
-        <el-input v-model="configForm.secret" type="password" show-password placeholder="仅在保存时使用" :disabled="frozen || !configLoaded" data-d1="ai-secret" />
-      </div>
+    <p class="kgm-summary-value" data-d1="ai-config-summary">
+      API 前缀：{{ configForm.base_url || '（未填写）' }}
+      <br />
+      模型：{{ configForm.model || '（未填写）' }}
+      <br />
+      密钥：{{ config?.has_secret ? '已保存（不回显）' : '未保存' }}
+      <span v-if="configForm.secret !== ''"> · 有未保存的新密钥输入</span>
+    </p>
+    <div class="row">
+      <el-button data-d1="ai-edit-config" :disabled="frozen || !configLoaded" @click="openConfigEditor">
+        编辑配置
+      </el-button>
     </div>
     <div class="row">
       <el-button type="primary" :loading="busy === 'config'" :disabled="frozen || !configLoaded || hasPending('config')" data-d1="ai-save-config" @click="saveConfig">保存配置</el-button>
@@ -994,14 +1185,19 @@ defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
           已拒绝默认修订 r{{ prompt.rejected_default_revision }}（个人文字未改动）
         </p>
         <div v-for="field in prompt.fields" :key="field.key" class="field">
-          <label>{{ promptFieldLabel(field) }}</label>
-          <el-input
-            type="textarea"
-            :rows="2"
-            :disabled="frozen || !promptsLoaded"
-            :model-value="(promptGuides[prompt.task_type] ?? {})[field.key] ?? field.default_text"
-            @update:model-value="(value: string) => setGuidanceField(prompt.task_type, field.key, value)"
-          />
+          <div class="prompt-field-head">
+            <label>{{ promptFieldLabel(field) }}</label>
+            <el-button
+              size="small"
+              text
+              :disabled="frozen || !promptsLoaded"
+              :data-d1="`prompt-edit-${prompt.task_type}`"
+              @click="openPromptEditor(prompt.task_type)"
+            >
+              编辑本栏
+            </el-button>
+          </div>
+          <pre class="block" :data-d1="`prompt-value-${prompt.task_type}-${field.key}`">{{ (promptGuides[prompt.task_type] ?? {})[field.key] ?? field.default_text }}</pre>
         </div>
         <div v-if="Object.keys(prompt.orphaned_guidance).length" class="orphan">
           <span class="muted">已移出当前契约、不再发送给模型的个人字段：</span>
@@ -1046,6 +1242,71 @@ defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
   </details>
   <el-alert v-if="errorText" type="error" :closable="false" class="section" data-d1="ai-settings-error" :title="errorText" />
   <el-alert v-if="messageText" type="success" :closable="false" class="section" data-d1="ai-settings-message" :title="messageText" />
+
+  <el-dialog
+    :model-value="configEditorOpen"
+    title="编辑 AI 供应商配置"
+    width="560px"
+    :close-on-click-modal="false"
+    data-d1="ai-config-editor"
+    @compositionstart="configEditorComposing = true"
+    @compositionend="configEditorComposing = false"
+    @update:model-value="onConfigEditorDialog"
+  >
+    <p class="muted">密钥输入只存在于本弹窗；填回草稿后再由“保存配置”提交，页面正文不回显密钥。</p>
+    <el-alert v-if="configEditorStale" type="warning" :closable="false" class="section" title="打开编辑后页面配置已变化：请取消并重新打开编辑。" data-d1="ai-config-editor-stale" />
+    <div class="fields">
+      <div class="field wide">
+        <label>API 前缀（HTTPS，可含 /v1）</label>
+        <el-input v-model="configEditBase" placeholder="https://example.com/v1" maxlength="2048" :disabled="frozen || !configLoaded" data-d1="ai-base-url" />
+      </div>
+      <div class="field">
+        <label>模型标识</label>
+        <el-input v-model="configEditModel" placeholder="供应商模型标识" maxlength="200" :disabled="frozen || !configLoaded" data-d1="ai-model" />
+      </div>
+      <div class="field">
+        <label>API 密钥（留空表示保留现有）</label>
+        <el-input v-model="configEditSecret" type="password" show-password placeholder="仅在保存时使用" :disabled="frozen || !configLoaded" data-d1="ai-secret" />
+      </div>
+    </div>
+    <el-alert v-if="configEditorError" type="error" :closable="false" class="section" :title="configEditorError" data-d1="ai-config-editor-error" />
+    <template #footer>
+      <div class="kgm-dialog-footer">
+        <el-button data-d1="ai-config-editor-cancel" @click="closeConfigEditor">取消</el-button>
+        <el-button type="primary" data-d1="ai-config-editor-apply" :disabled="frozen || !configLoaded || configEditorStale" @click="confirmConfigEditor">填回草稿</el-button>
+      </div>
+    </template>
+  </el-dialog>
+
+  <el-dialog
+    :model-value="promptEditorTask !== ''"
+    :title="`编辑${taskTypeLabel(promptEditorTask)}指导`"
+    width="720px"
+    :close-on-click-modal="false"
+    data-d1="ai-prompt-editor"
+    @compositionstart="promptEditorComposing = true"
+    @compositionend="promptEditorComposing = false"
+    @update:model-value="onPromptEditorDialog"
+  >
+    <p class="muted">这里先编辑个人指导；填回后仍由对应任务的“保存指导”明确提交。</p>
+    <div v-for="field in promptFor(promptEditorTask)?.fields ?? []" :key="field.key" class="field">
+      <label>{{ promptFieldLabel(field) }}</label>
+      <el-input
+        type="textarea"
+        :rows="3"
+        :disabled="frozen || !promptsLoaded"
+        :model-value="promptEditorGuides[field.key] ?? ''"
+        @update:model-value="(value: string) => setPromptEditorField(field.key, value)"
+      />
+    </div>
+    <el-alert v-if="promptEditorError" type="error" :closable="false" class="section" :title="promptEditorError" data-d1="ai-prompt-editor-error" />
+    <template #footer>
+      <div class="kgm-dialog-footer">
+        <el-button data-d1="ai-prompt-editor-cancel" @click="closePromptEditor">取消</el-button>
+        <el-button type="primary" data-d1="ai-prompt-editor-apply" :disabled="frozen || !promptsLoaded || promptEditorStale" @click="confirmPromptEditor">填回草稿</el-button>
+      </div>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -1124,6 +1385,13 @@ defineExpose({ draftTargets, focusDraftTarget, focusPromptTask })
   border-radius: 4px;
   padding: 10px;
   margin-top: 10px;
+}
+.prompt-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .pending-card {
   margin-top: 10px;

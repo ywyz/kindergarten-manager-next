@@ -1,11 +1,13 @@
 /**
- * #19 daily-plan AI placement regression.
+ * #19 daily-plan AI placement + 2026-11-15 left-directory layout regression.
  *
  * Executes the real AiTaskPanel SFC script + compiled template in a tiny
  * in-memory DOM with a controlled API. The EditorView structure is checked on
- * the actual SFC source so the raw-input position, the three field anchors and
- * the single-panel mount guard cannot drift. This is not a WebView2 run; the
- * real-page Edge probe stays separate.
+ * the actual SFC source so the read panes, their edit buttons, the three field
+ * anchors and the single-panel mount guard cannot drift. This is not a
+ * WebView2 run; the real-page Edge probe stays separate. The mounted
+ * EditorView behaviour (copy/cancel/confirm/save) lives in
+ * daily-layout-ui.test.mjs.
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -61,39 +63,61 @@ function between(source, startToken, endToken, needle, label) {
     assert.deepEqual(template.errors, [], `${label} template compiles`)
   }
 
-  // Raw lesson input leads the editable page, before every activity card and
-  // before the save footer, for both saved plans and unsaved drafts.
-  const metaEnd = editorSource.indexOf('data-d1="raw-lesson"')
-  const rawField = editorSource.indexOf('v-model="rawLessonPlan"')
-  const firstActivity = editorSource.indexOf('<template #header>晨间 · 体能大循环</template>')
-  const saveFooter = editorSource.indexOf('data-d1="manual-save"')
-  assert.ok(metaEnd > editorSource.indexOf('data-d1="editor"'), 'raw card is in the editor')
-  assert.ok(rawField > metaEnd, 'raw textarea is inside the leading raw card')
-  assert.ok(firstActivity > rawField, 'raw input precedes the activity cards')
-  assert.ok(saveFooter > firstActivity, 'raw input is not the bottom card')
+  // 2026-11-15 left-directory layout: the body is read mode; every column is
+  // a real section button on the left with one selected reading pane.
+  const bookStart = editorSource.indexOf('data-d1="daily-book"')
+  assert.ok(bookStart > 0, 'the daily book exists')
+  const navStart = editorSource.indexOf('class="daily-nav"', bookStart)
+  const nav = editorSource.slice(navStart, editorSource.indexOf('</nav>', navStart))
+  assert.match(nav, /v-for="section in LAYOUT_SECTIONS"/, 'section buttons come from the real section list')
+  assert.match(nav, /:aria-pressed="layoutSection === section\.key \? 'true' : 'false'"/, 'the selected button exposes its state')
+  assert.match(nav, /:type="layoutSection === section\.key \? 'primary' : 'default'"/, 'the selected button uses the primary style')
+  for (const key of ['raw', 'morning', 'talk', 'group', 'post', 'afternoon', 'reflection']) {
+    assert.ok(editorSource.includes(`layout-edit-${key}`), `the ${key} column has an explicit edit button`)
+  }
+  for (const pane of ['raw-lesson', 'layout-section-morning', 'layout-section-talk', 'layout-section-group', 'layout-section-post', 'layout-section-afternoon', 'layout-section-reflection']) {
+    const marker = editorSource.indexOf(`data-d1="${pane}"`)
+    assert.ok(marker > navStart, `${pane} reading pane exists after the directory`)
+    const paneStart = editorSource.lastIndexOf('<section', marker)
+    assert.match(editorSource.slice(paneStart, marker + 200), /v-show="layoutSection/, `${pane} uses v-show so anchors stay mounted`)
+  }
 
-  // The split row anchor is in the raw card; the process row anchor follows
-  // the collective-activity process textarea inside the same card.
-  between(editorSource, 'data-d1="raw-lesson"', '<AiTaskPanel', 'data-d1="ai-slot-daily_lesson_split"', 'split anchor')
-  between(
-    editorSource,
-    '<template #header>集体活动</template>',
-    '<template #header>集体活动后游戏</template>',
-    'v-model="form.group_activity.process"',
-    'process field',
-  )
-  const groupStart = editorSource.indexOf('<template #header>集体活动</template>')
-  const postStart = editorSource.indexOf('<template #header>集体活动后游戏</template>')
-  const processField = editorSource.indexOf('v-model="form.group_activity.process"')
+  // Raw lesson is readable in its pane; its textarea now lives only in the
+  // independent edit dialog (read mode by default).
+  const rawPane = editorSource.indexOf('data-d1="raw-lesson"')
+  const rawRead = editorSource.indexOf('data-d1="read-raw-lesson"')
+  const splitAnchor = editorSource.indexOf('data-d1="ai-slot-daily_lesson_split"')
+  const dialogStart = editorSource.indexOf('data-d1="layout-edit-dialog"')
+  const rawInput = editorSource.indexOf('data-d1="layout-input-raw"')
+  assert.ok(rawRead > rawPane && rawRead < splitAnchor, 'raw text is readable before its split action')
+  assert.ok(dialogStart > 0 && rawInput > dialogStart, 'the raw textarea is inside the edit dialog only')
+  assert.match(editorSource, /layoutDraft\.raw/, 'the dialog edits its own raw copy')
+
+  // The other/process/reflection anchors stay in their own reading panes.
+  between(editorSource, 'data-d1="layout-section-morning"', 'data-d1="layout-section-talk"', 'data-d1="ai-slot-daily_other_activities"', 'other anchor')
+  const groupPane = editorSource.indexOf('data-d1="layout-section-group"')
+  const postPane = editorSource.indexOf('data-d1="layout-section-post"')
+  const processRead = editorSource.indexOf('data-d1="read-group-process"')
   const processSlot = editorSource.indexOf('data-d1="ai-slot-daily_process_adapt"')
-  assert.ok(processSlot > processField && processSlot < postStart, 'process anchor follows the process field')
+  assert.ok(processRead > groupPane && processRead < processSlot && processSlot < postPane, 'process reading and anchor stay in the collective-activity pane')
+  between(editorSource, 'data-d1="layout-section-reflection"', '<AiTaskPanel', 'data-d1="ai-slot-daily_reflection_generate"', 'reflection anchor')
+  between(editorSource, 'data-d1="layout-section-reflection"', '<AiTaskPanel', 'data-d1="reflection-progress-target"', 'reflection progress anchor')
 
-  // The other-activities row sits at the head of the activity area, in a card
-  // distinct from the raw and collective-activity cards.
-  const activityStart = editorSource.indexOf('<template #header>晨间 · 体能大循环</template>')
-  const talkStart = editorSource.indexOf('<template #header>晨间谈话</template>')
-  const otherSlot = editorSource.indexOf('data-d1="ai-slot-daily_other_activities"')
-  assert.ok(otherSlot > activityStart && otherSlot < talkStart, 'other anchor is in the first activity card')
+  // All columns render their real stored fields, including reflection material.
+  for (const marker of [
+    'form.group_activity.objectives',
+    'form.group_activity.preparation',
+    'form.group_activity.key_points',
+    'form.group_activity.difficult_points',
+    'form.post_group_games',
+    'form.afternoon_outdoor.observation_focus',
+    'data-d1="read-reflection"',
+    'data-d1="read-reflection-materials"',
+  ]) {
+    assert.ok(editorSource.includes(marker), `read pane keeps ${marker}`)
+  }
+  assert.match(editorSource, /gi === morningFocusGroupIndex/, 'morning details follow the chosen focus group')
+  assert.match(editorSource, /dailyMorningGroupHasHiddenDetails\(group\)/, 'historical non-focus details are disclosed without replacing the chosen set')
 
   // Exactly one state owner: no duplicated panel, no duplicated trigger set.
   assert.equal((editorSource.match(/<AiTaskPanel\b/g) ?? []).length, 1, 'one AiTaskPanel mount')
@@ -104,10 +128,23 @@ function between(source, startToken, endToken, needle, label) {
   assert.match(editorSource, /:split-target="splitTarget"/)
   assert.match(editorSource, /:process-target="processTarget"/)
   assert.match(editorSource, /:other-target="otherTarget"/)
+  assert.match(editorSource, /:reflection-progress-target="reflectionProgressTarget"/)
   assert.match(editorSource, /:content-version="plan\.current_content_version"/)
   assert.match(editorSource, /:has-raw="hasRaw"/)
   assert.match(editorSource, /:has-process="hasProcess"/)
   assert.match(editorSource, /:save-current="saveCurrent"/)
+
+  // The edit dialog is bound to its opening plan/version/section/session and
+  // confirm only merges the draft column; cancel never touches the live form.
+  assert.match(editorSource, /layoutDraft\.value = cloneDailyLayoutDraft\(/, 'the dialog starts from an independent copy')
+  assert.match(editorSource, /layoutOrigin\.value = \{[\s\S]{0,400}version: plan\.value\?\.current_content_version/, 'the dialog pins the opening version')
+  assert.match(editorSource, /editEpoch\.value !== origin\.editEpoch/, 'late input invalidates the dialog')
+  assert.match(editorSource, /applyDailyLayoutSection\([\s\S]{0,120}form\.value/, 'confirm merges exactly one column into the live draft')
+  assert.match(editorSource, /data-d1="layout-edit-cancel"/, 'cancel is explicit and keeps its locator')
+  assert.match(editorSource, /data-d1="layout-edit-confirm"/, 'confirm is explicit and keeps its locator')
+  assert.match(editorSource, /data-d1="layout-edit-stale"/, 'a page change while open disables a stale confirm')
+  assert.match(editorSource, /layoutDraftDirty\.value[\s\S]{0,200}确定填回草稿/, 'a pending dialog joins leave protection')
+  assert.match(editorSource, /!layoutEditing\.value/, 'automatic AI writes are blocked while the dialog is open')
 
   // Existing diagnostics remain the single source for tasks and saving.
   for (const marker of [
@@ -122,7 +159,7 @@ function between(source, startToken, endToken, needle, label) {
     )
   }
 
-  ok('editor layout: raw input leads; split/process/other anchors are beside their fields; one panel remains')
+  ok('editor layout: left section directory + selected read pane; edit dialog is an independent, identity-bound copy; one panel remains')
 }
 
 // ---------------------------------------------------------------------------

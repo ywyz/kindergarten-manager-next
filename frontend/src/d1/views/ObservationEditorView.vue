@@ -71,6 +71,15 @@ import {
   type ObservationTarget,
 } from '../observation'
 import { PhotoUrlCache } from '../observation-photos'
+import {
+  OBSERVATION_SECTIONS,
+  observationDisplay,
+  observationEvaluationRows,
+  observationSectionInfo,
+  observationSectionSignature,
+  observationSubjectList,
+  type ObservationSectionKey,
+} from '../observation-layout-sections'
 
 const props = defineProps<{
   context: LocalContext
@@ -266,6 +275,7 @@ const retainPending = ref(false)
 const latestVersionHash = ref<string | null>(null)
 const termNotice = ref('')
 const autoTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+const autoSaveDeferred = ref(false)
 let inFlight: Promise<SaveResult> | null = null
 let inFlightReason: SaveReason | null = null
 let editorAlive = true
@@ -424,6 +434,271 @@ const historyPhotoCache = new PhotoUrlCache({
 
 const pendingMaterial = ref<PendingMaterial | null>(null)
 
+// -- left section directory + independent modal copy -------------------------
+interface ObservationSectionModal {
+  key: ObservationSectionKey
+  observationId: string
+  identity: string
+  epoch: number
+  generation: number
+  revision: number | null
+  baseline: string
+  focusTarget: HTMLElement | null
+  form: ObservationForm
+}
+
+const activeObservationSection = ref<ObservationSectionKey>('basic')
+const sectionDialogOpen = ref(false)
+const sectionModal = ref<ObservationSectionModal | null>(null)
+const sectionConflict = ref(false)
+/** Exact draft-section signature the teacher acknowledged at the last warning. */
+const sectionConflictSignature = ref<string | null>(null)
+const sectionNotice = ref('')
+const modalComposing = ref(false)
+const sectionApplying = ref(false)
+let sectionModalSeq = 0
+let modalCompositionWaiters: Array<() => void> = []
+
+function releaseModalComposition(): void {
+  modalComposing.value = false
+  const waiters = modalCompositionWaiters.splice(0)
+  for (const resolve of waiters) resolve()
+}
+function onSectionCompositionStart(): void { modalComposing.value = true }
+function onSectionCompositionEnd(): void {
+  modalComposing.value = false
+  void nextTick().then(() => {
+    const waiters = modalCompositionWaiters.splice(0)
+    for (const resolve of waiters) resolve()
+  })
+}
+async function settleModalComposition(): Promise<void> {
+  if (modalComposing.value) {
+    await new Promise<void>((resolve) => { modalCompositionWaiters.push(resolve) })
+  }
+  await nextTick()
+}
+
+const activeObsSectionInfo = computed(() => observationSectionInfo(activeObservationSection.value))
+const activeObsSectionEditable = computed(() => activeObsSectionInfo.value.editable)
+const sectionModalTitle = computed(() => (
+  sectionModal.value ? `编辑本栏 · ${observationSectionInfo(sectionModal.value.key).label}` : '编辑本栏'
+))
+
+function cloneObservationForm(source: ObservationForm): ObservationForm {
+  return {
+    observation_date: source.observation_date,
+    start_time: source.start_time,
+    end_time: source.end_time,
+    school_name: source.school_name,
+    class_name: source.class_name,
+    observer_name: source.observer_name,
+    adult_count: source.adult_count,
+    child_count: source.child_count,
+    age_years: source.age_years,
+    subjects: [...source.subjects],
+    environment: source.environment,
+    observation_goal: source.observation_goal,
+    observation_process: source.observation_process,
+    support_strategy: source.support_strategy,
+    analysis_evaluation: { ...source.analysis_evaluation },
+  }
+}
+
+/** Pending modal input is not part of the body draft yet; leave must not drop it. */
+const sectionModalDirty = computed(() => {
+  const modal = sectionModal.value
+  if (!modal) return false
+  return observationSectionSignature(modal.key, modal.form) !== modal.baseline
+})
+
+const observationSectionNav = computed(() => OBSERVATION_SECTIONS.map((section) => ({
+  ...section,
+  badge: observationSectionBadge(section.key),
+})))
+
+const sectionBasicMissing = computed(() => (
+  sectionModal.value ? observationBasicMissing(sectionModal.value.form) : []
+))
+const sectionContradictions = computed(() => (
+  sectionModal.value ? observationContradictions(sectionModal.value.form) : []
+))
+
+function observationSectionBadge(key: ObservationSectionKey): string {
+  if (key === 'basic') return form.value.observation_date || '无日期'
+  if (key === 'subjects') {
+    const names = observationSubjectList(form.value.subjects)
+    return names.length ? `${names.length} 位幼儿` : '未填写'
+  }
+  if (key === 'body') {
+    return form.value.observation_goal.trim() || form.value.observation_process.trim() ? '已填写' : '未填写'
+  }
+  if (key === 'evaluation') {
+    const filled = observationEvaluationRows(form.value).filter((row) => row.value.trim()).length
+    return `${filled}/5`
+  }
+  if (key === 'support') return form.value.support_strategy.trim() ? '已填写' : '未填写'
+  if (key === 'photos') return `${photos.value.length} 张`
+  return aiBusy.value ? '进行中' : '候选与任务'
+}
+
+function selectObservationSection(key: ObservationSectionKey): void {
+  if (sectionDialogOpen.value) return
+  activeObservationSection.value = key
+}
+
+function openSectionEditor(key: ObservationSectionKey, event?: MouseEvent): void {
+  const info = observationSectionInfo(key)
+  if (!info.editable || props.frozen || editDisabled.value || sectionDialogOpen.value) return
+  activeObservationSection.value = key
+  // Keep the opening version stable while the modal owns its independent copy:
+  // remember a pending body auto-save so it can resume after the modal closes
+  // and any temporary blocker (e.g. frozen) clears.
+  if (autoTimer.value !== null) {
+    clearTimeout(autoTimer.value)
+    autoTimer.value = null
+    if (needsSave.value) autoSaveDeferred.value = true
+  }
+  releaseModalComposition()
+  sectionModalSeq += 1
+  sectionConflict.value = false
+  sectionConflictSignature.value = null
+  sectionNotice.value = ''
+  sectionModal.value = {
+    key,
+    observationId: props.observationId,
+    identity: identity.value,
+    epoch: epoch.value,
+    generation: sectionModalSeq,
+    revision: current.value?.revision ?? null,
+    baseline: observationSectionSignature(key, form.value),
+    focusTarget: (event?.currentTarget as HTMLElement | null) ?? null,
+    form: cloneObservationForm(form.value),
+  }
+  sectionDialogOpen.value = true
+}
+
+function closeSectionEditor(): void {
+  const modal = sectionModal.value
+  sectionModal.value = null
+  sectionConflict.value = false
+  sectionConflictSignature.value = null
+  sectionNotice.value = ''
+  releaseModalComposition()
+  sectionModalSeq += 1
+  const target = modal?.focusTarget
+  if (target && typeof target.focus === 'function') {
+    void nextTick(() => {
+      try { target.focus() } catch { /* detached node */ }
+    })
+  }
+  // Resume the original deferred auto-save contract: scheduleAutoSave decides
+  // whether a temporary blocker (frozen/modal/locked/receipt) must defer it.
+  if (editorAlive) scheduleAutoSave()
+}
+
+function cancelSectionEditor(): void {
+  sectionDialogOpen.value = false
+}
+
+watch(sectionDialogOpen, (open) => {
+  if (!open) closeSectionEditor()
+}, { flush: 'sync' })
+
+function addSectionSubject(): void {
+  const modal = sectionModal.value
+  if (!modal) return
+  modal.form.subjects.push('')
+}
+
+function removeSectionSubject(index: number): void {
+  const modal = sectionModal.value
+  if (!modal) return
+  modal.form.subjects.splice(index, 1)
+}
+
+async function applySectionEditor(): Promise<void> {
+  if (sectionApplying.value) return
+  const initial = sectionModal.value
+  if (!initial) return
+  if (modalComposing.value) {
+    sectionApplying.value = true
+    const generation = initial.generation
+    try {
+      await settleModalComposition()
+    } finally {
+      sectionApplying.value = false
+    }
+    const current = sectionModal.value
+    if (!current || current.generation !== generation || !sectionDialogOpen.value) return
+  }
+  // Runs synchronously when no composition was pending; after an awaited
+  // composition it re-checks everything immediately before the merge.
+  commitSectionEditor()
+}
+
+function commitSectionEditor(): void {
+  const modal = sectionModal.value
+  if (!modal) return
+  if (modal.generation !== sectionModalSeq) return
+  if (props.frozen || editDisabled.value) {
+    sectionNotice.value = '当前还有保存或其他操作正在进行：请等待完成后再填回，弹窗内容已保留'
+    return
+  }
+  if (modal.observationId !== props.observationId || modal.key !== activeObservationSection.value) {
+    sectionNotice.value = '记录或栏目已变化：弹窗内容未填回，请取消后重新打开本栏'
+    return
+  }
+  if (modal.identity !== identity.value) {
+    sectionNotice.value = '本份记录的编辑状态已变化：弹窗内容未填回，请取消后重新打开本栏'
+    return
+  }
+  if ((current.value?.revision ?? null) !== modal.revision) {
+    sectionNotice.value = '观察记录版本已变化：弹窗内容未填回，请取消后重新打开本栏'
+    return
+  }
+  const currentSignature = observationSectionSignature(modal.key, form.value)
+  if (sectionConflict.value) {
+    if (sectionConflictSignature.value !== currentSignature) {
+      sectionConflictSignature.value = currentSignature
+      sectionNotice.value = '本栏内容又发生变化：请核对最新内容后再次点“仍然填回”'
+      return
+    }
+  } else if (currentSignature !== modal.baseline) {
+    sectionConflict.value = true
+    sectionConflictSignature.value = currentSignature
+    sectionNotice.value = '本栏内容在弹窗打开后已变化：请核对后再次点“仍然填回”'
+    return
+  }
+  if (!sectionModalDirty.value && !sectionConflict.value) {
+    sectionDialogOpen.value = false
+    return
+  }
+  if (modal.key === 'basic') {
+    form.value.observation_date = modal.form.observation_date
+    form.value.start_time = modal.form.start_time
+    form.value.end_time = modal.form.end_time
+    form.value.school_name = modal.form.school_name
+    form.value.class_name = modal.form.class_name
+    form.value.observer_name = modal.form.observer_name
+    form.value.adult_count = modal.form.adult_count
+    form.value.child_count = modal.form.child_count
+    form.value.age_years = modal.form.age_years
+  } else if (modal.key === 'subjects') {
+    form.value.subjects = [...modal.form.subjects]
+    form.value.environment = modal.form.environment
+  } else if (modal.key === 'body') {
+    form.value.observation_goal = modal.form.observation_goal
+    form.value.observation_process = modal.form.observation_process
+  } else if (modal.key === 'evaluation') {
+    form.value.analysis_evaluation = { ...modal.form.analysis_evaluation }
+  } else if (modal.key === 'support') {
+    form.value.support_strategy = modal.form.support_strategy
+  }
+  sectionDialogOpen.value = false
+  onUserInput()
+}
+
 const recordLabel = computed(
   () => RECORD_TYPE_LABELS[recordType.value] ?? recordType.value,
 )
@@ -476,6 +751,21 @@ const externalBusy = computed(
     phase.value === 'saving',
 )
 watch(externalBusy, (value) => emit('busy', value), { immediate: true })
+watch(
+  [
+    () => props.frozen,
+    sectionDialogOpen,
+    locked,
+    exportBusy,
+    phase,
+    conflict,
+    indeterminate,
+    adoptCommitted,
+    () => termDialog.value.visible,
+    writeBlocked,
+  ],
+  () => { resumeDeferredAutoSave() },
+)
 const editBlocked = computed(
   () =>
     props.frozen ||
@@ -613,25 +903,58 @@ function invalidateAdoptionPreview(): void {
   candidateEditSignatureAtPreview.value = ''
 }
 
-function scheduleAutoSave(): void {
-  if (autoTimer.value !== null) clearTimeout(autoTimer.value)
-  if (
+function autoSaveBlocked(): boolean {
+  return (
+    !editorAlive ||
+    sectionDialogOpen.value ||
     phase.value !== 'ready' ||
-    !needsSave.value ||
     locked.value ||
-    conflict.value ||
-    indeterminate.value ||
+    conflict.value !== null ||
+    indeterminate.value !== null ||
     adoptCommitted.value !== null ||
     termDialog.value.visible ||
     exportBusy.value ||
-    props.frozen
-  ) {
+    props.frozen ||
+    writeBlocked.value
+  )
+}
+
+function scheduleAutoSave(): void {
+  if (autoTimer.value !== null) clearTimeout(autoTimer.value)
+  autoTimer.value = null
+  if (!editorAlive) return
+  if (!needsSave.value) {
+    autoSaveDeferred.value = false
     return
   }
+  if (autoSaveBlocked()) {
+    // Remember the intent without setting a timer: the blocker's clear
+    // watcher resumes it, so nothing is scheduled while the modal or a
+    // write/receipt guard is active.
+    autoSaveDeferred.value = true
+    return
+  }
+  autoSaveDeferred.value = false
   autoTimer.value = setTimeout(() => {
     autoTimer.value = null
+    if (autoSaveBlocked()) {
+      if (needsSave.value) autoSaveDeferred.value = true
+      return
+    }
     void saveCurrent('auto')
   }, 1200)
+}
+
+function resumeDeferredAutoSave(): void {
+  if (!editorAlive || !autoSaveDeferred.value) return
+  if (autoSaveBlocked()) return
+  if (!needsSave.value) {
+    autoSaveDeferred.value = false
+    return
+  }
+  if (autoTimer.value !== null) return
+  autoSaveDeferred.value = false
+  scheduleAutoSave()
 }
 
 function sleep(ms: number): Promise<void> {
@@ -3473,6 +3796,18 @@ const bridge: EditorBridge = {
         message: '历史恢复正在提交：请等待结果后再离开',
       }
     }
+    if (sectionDialogOpen.value && modalComposing.value) {
+      return {
+        kind: 'material',
+        message: '栏目编辑弹窗正在输入（输入法组合中）：请完成输入后再离开',
+      }
+    }
+    if (sectionModalDirty.value) {
+      return {
+        kind: 'material',
+        message: '栏目编辑弹窗尚有未填回的内容：请先填回草稿或取消后再离开',
+      }
+    }
     return null
   },
 }
@@ -3535,6 +3870,7 @@ onMounted(() => {
     cancelTerm: () => cancelTerm(),
     termNotice: () => termNotice.value,
     editDisabled: () => editDisabled.value,
+    typingDisabled: () => typingDisabled.value,
     identity: () => identity.value,
     editEpoch: () => epoch.value,
     backToList: () => backToList(),
@@ -3738,6 +4074,44 @@ onMounted(() => {
     openTermDialogManual: () => openTermDialogManual(),
     historyBusy: () => writeBlocked.value,
     errorText: () => errorText.value,
+    sections: () => observationSectionNav.value.map((section) => ({
+      key: section.key,
+      label: section.label,
+      badge: section.badge,
+    })),
+    activeSection: () => activeObservationSection.value,
+    selectSection: (key: string) => selectObservationSection(key as ObservationSectionKey),
+    openSectionEditor: (key: string) => openSectionEditor(key as ObservationSectionKey),
+    cancelSectionEditor: () => cancelSectionEditor(),
+    applySectionEditor: () => applySectionEditor(),
+    sectionOpen: () => sectionDialogOpen.value,
+    sectionKey: () => sectionModal.value?.key ?? null,
+    sectionDirty: () => sectionModalDirty.value,
+    sectionConflict: () => sectionConflict.value,
+    sectionConflictSignature: () => sectionConflictSignature.value,
+    sectionComposing: () => modalComposing.value,
+    sectionApplying: () => sectionApplying.value,
+    sectionApplyBlocked: () => props.frozen || editDisabled.value || sectionApplying.value,
+    sectionNotice: () => sectionNotice.value,
+    sectionForm: () => (sectionModal.value ? cloneObservationForm(sectionModal.value.form) : null),
+    sectionObservationId: () => sectionModal.value?.observationId ?? null,
+    sectionRevision: () => sectionModal.value?.revision ?? null,
+    sectionEpoch: () => sectionModal.value?.epoch ?? null,
+    setSectionField: (field: keyof ObservationForm, value: string) => {
+      const modal = sectionModal.value
+      if (!modal) return
+      ;(modal.form as unknown as Record<string, unknown>)[field] = value
+    },
+    setSectionEvaluation: (key: EvaluationKey, value: string) => {
+      if (!sectionModal.value) return
+      sectionModal.value.form.analysis_evaluation[key] = value
+    },
+    setSectionSubject: (index: number, value: string) => {
+      if (!sectionModal.value) return
+      sectionModal.value.form.subjects[index] = value
+    },
+    addSectionSubject: () => addSectionSubject(),
+    removeSectionSubject: (index: number) => removeSectionSubject(index),
     blockingDraft: () => bridge.blockingDraft?.() ?? null,
   }
   emit('register-editor', bridge)
@@ -3747,6 +4121,12 @@ onMounted(() => {
 onBeforeUnmount(() => {
   editorAlive = false
   if (autoTimer.value !== null) clearTimeout(autoTimer.value)
+  sectionModal.value = null
+  sectionDialogOpen.value = false
+  sectionConflict.value = false
+  sectionConflictSignature.value = null
+  releaseModalComposition()
+  sectionModalSeq += 1
   photoCache.dispose()
   historyPhotoCache.dispose()
   delete (window as unknown as { __d1ObservationEditor?: object }).__d1ObservationEditor
@@ -3945,181 +4325,129 @@ onBeforeUnmount(() => {
         </el-button>
       </el-alert>
 
-      <el-card shadow="never" class="block" data-d1="obs-basic">
-        <template #header><span>本份资料</span></template>
-        <div class="grid">
-          <label>
-            观察日期
-            <el-date-picker
-              v-model="form.observation_date"
-              type="date"
-              value-format="YYYY-MM-DD"
-              :clearable="true"
-              :disabled="editDisabled"
-              data-d1="obs-date"
-              @change="onUserInput"
-            />
-          </label>
-          <label>
-            起始时间
-            <el-time-picker
-              v-model="form.start_time"
-              format="HH:mm"
-              value-format="HH:mm"
-              :clearable="true"
-              :disabled="editDisabled"
-              data-d1="obs-start"
-              @change="onUserInput"
-            />
-          </label>
-          <label>
-            结束时间
-            <el-time-picker
-              v-model="form.end_time"
-              format="HH:mm"
-              value-format="HH:mm"
-              :clearable="true"
-              :disabled="editDisabled"
-              data-d1="obs-end"
-              @change="onUserInput"
-            />
-          </label>
-          <label>
-            园所
-            <el-input v-model="form.school_name" :disabled="typingDisabled" data-d1="obs-school" />
-          </label>
-          <label>
-            班级
-            <el-input v-model="form.class_name" :disabled="typingDisabled" data-d1="obs-class" />
-          </label>
-          <label>
-            观察者
-            <el-input v-model="form.observer_name" :disabled="typingDisabled" data-d1="obs-observer" />
-          </label>
-          <label>
-            成人数目
-            <el-input v-model="form.adult_count" :disabled="typingDisabled" data-d1="obs-adults" />
-          </label>
-          <label>
-            儿童数目（参与总人数）
-            <el-input v-model="form.child_count" :disabled="typingDisabled" data-d1="obs-children" />
-          </label>
-          <label>
-            统一观察年龄
-            <el-input v-model="form.age_years" :disabled="typingDisabled" data-d1="obs-age" />
-          </label>
-        </div>
-        <el-alert
-          v-if="basicMissing.length"
-          type="info"
-          :closable="false"
-          title="资料未完整（不阻止保存或手写）"
-          class="block"
-          data-d1="obs-basic-missing"
-        >
-          {{ basicMissing.map(field => BASIC_FIELD_LABELS[field]).join('、') }}
-        </el-alert>
-        <el-alert
-          v-for="warning in contradictions"
-          :key="warning"
-          type="warning"
-          :closable="false"
-          :title="warning"
-          class="block"
-          data-d1="obs-contradiction"
-        />
-        <div class="term-row">
-          <span class="muted">学期归属：{{ termLabel }}</span>
-          <el-button
-            size="small"
-            :disabled="editDisabled"
-            data-d1="obs-term-adjust"
-            @click="openTermDialogManual"
+      <div class="obs-workspace">
+        <nav class="section-nav" data-d1="obs-sections" aria-label="观察栏目">
+          <button
+            v-for="section in observationSectionNav"
+            :key="section.key"
+            type="button"
+            class="section-button"
+            :class="{ selected: activeObservationSection === section.key }"
+            :aria-current="activeObservationSection === section.key ? 'true' : undefined"
+            :data-d1="`obs-section-${section.key}`"
+            :disabled="props.frozen || sectionDialogOpen"
+            @click="selectObservationSection(section.key)"
           >
-            调整学期归属
-          </el-button>
-        </div>
-        <div class="subjects">
-          <span class="label">重点观察幼儿（按顺序）</span>
-          <div class="subject-row">
-            <el-input
-              v-for="(name, index) in form.subjects"
-              :key="index"
-              v-model="form.subjects[index]"
-              class="subject-name"
-              :disabled="typingDisabled"
-              :data-d1="`obs-subject-${index}`"
-            />
-            <el-button size="small" :disabled="editDisabled" data-d1="obs-add-subject" @click="addSubject">
-              添加幼儿
-            </el-button>
-          </div>
-          <div v-if="form.subjects.length" class="subject-remove">
+            <span class="section-label">{{ section.label }}</span>
+            <span class="section-hint">{{ section.hint }}</span>
+            <span class="section-badge">{{ section.badge }}</span>
+          </button>
+        </nav>
+        <article
+          class="section-pane"
+          data-d1="obs-section-pane"
+          :aria-label="activeObsSectionInfo.label"
+          tabindex="-1"
+        >
+          <header class="pane-head">
+            <div>
+              <h3>{{ activeObsSectionInfo.label }}</h3>
+              <p class="muted">{{ activeObsSectionInfo.hint }}</p>
+            </div>
             <el-button
-              v-for="(name, index) in form.subjects"
-              :key="`remove-${index}`"
+              v-if="activeObsSectionEditable"
+              type="primary"
+              plain
               size="small"
-              text
-              :disabled="editDisabled"
-              @click="removeSubject(index)"
+              data-d1="obs-section-edit"
+              :disabled="props.frozen || editDisabled"
+              @click="openSectionEditor(activeObservationSection, $event)"
             >
-              移除第 {{ index + 1 }} 位
+              编辑本栏
             </el-button>
-          </div>
-        </div>
-        <label class="full">
-          观察环境
-          <el-input v-model="form.environment" :disabled="typingDisabled" data-d1="obs-environment" />
-        </label>
-      </el-card>
+          </header>
 
-      <el-card shadow="never" class="block" data-d1="obs-body">
-        <template #header><span>观察正文</span></template>
-        <label class="full">
-          观察目标
-          <el-input
-            v-model="form.observation_goal"
-            type="textarea"
-            :rows="2"
-            :disabled="typingDisabled"
-            data-d1="obs-goal"
-          />
-        </label>
-        <label class="full">
-          观察记录
-          <el-input
-            v-model="form.observation_process"
-            type="textarea"
-            :rows="5"
-            :disabled="typingDisabled"
-            data-d1="obs-process"
-          />
-        </label>
-        <div class="evaluation">
-          <label v-for="key in EVALUATION_KEYS" :key="key" class="full">
-            {{ EVALUATION_LABELS[key] }}
-            <el-input
-              v-model="form.analysis_evaluation[key]"
-              type="textarea"
-              :rows="2"
-              :disabled="typingDisabled"
-              :data-d1="`obs-eval-${key}`"
+          <div v-if="activeObservationSection === 'basic'" class="pane-body" data-d1="obs-basic">
+            <dl class="read-grid">
+              <div><dt>观察日期</dt><dd>{{ observationDisplay(form.observation_date) }}</dd></div>
+              <div><dt>起始时间 / 结束时间</dt><dd>{{ form.start_time || '—' }} – {{ form.end_time || '—' }}</dd></div>
+              <div><dt>记录类型</dt><dd>{{ RECORD_TYPE_LABELS[recordType] }}</dd></div>
+              <div><dt>园所</dt><dd>{{ observationDisplay(form.school_name) }}</dd></div>
+              <div><dt>班级</dt><dd>{{ observationDisplay(form.class_name) }}</dd></div>
+              <div><dt>观察者</dt><dd>{{ observationDisplay(form.observer_name) }}</dd></div>
+              <div><dt>成人数目</dt><dd>{{ observationDisplay(form.adult_count) }}</dd></div>
+              <div><dt>儿童数目（参与总人数）</dt><dd>{{ observationDisplay(form.child_count) }}</dd></div>
+              <div><dt>统一观察年龄</dt><dd>{{ observationDisplay(form.age_years) }}</dd></div>
+            </dl>
+            <el-alert
+              v-if="basicMissing.length"
+              type="info"
+              :closable="false"
+              title="资料未完整（不阻止保存或手写）"
+              class="block"
+              data-d1="obs-basic-missing"
+            >
+              {{ basicMissing.map(field => BASIC_FIELD_LABELS[field]).join('、') }}
+            </el-alert>
+            <el-alert
+              v-for="warning in contradictions"
+              :key="warning"
+              type="warning"
+              :closable="false"
+              :title="warning"
+              class="block"
+              data-d1="obs-contradiction"
             />
-          </label>
-        </div>
-        <label class="full">
-          支持策略
-          <el-input
-            v-model="form.support_strategy"
-            type="textarea"
-            :rows="3"
-            :disabled="typingDisabled"
-            data-d1="obs-support"
-          />
-        </label>
-      </el-card>
+            <div class="term-row">
+              <span class="muted">学期归属：{{ termLabel }}</span>
+              <el-button
+                size="small"
+                :disabled="editDisabled"
+                data-d1="obs-term-adjust"
+                @click="openTermDialogManual"
+              >
+                调整学期归属
+              </el-button>
+            </div>
+          </div>
+
+          <div v-else-if="activeObservationSection === 'subjects'" class="pane-body" data-d1="obs-subjects">
+            <h4>重点观察幼儿（按顺序）</h4>
+            <ol v-if="observationSubjectList(form.subjects).length" class="subject-read-list">
+              <li v-for="(name, index) in observationSubjectList(form.subjects)" :key="`${index}-${name}`">{{ name }}</li>
+            </ol>
+            <p v-else class="muted">（未填写）</p>
+            <dl class="read-grid">
+              <div><dt>观察环境</dt><dd class="read-text">{{ observationDisplay(form.environment) }}</dd></div>
+            </dl>
+          </div>
+
+          <div v-else-if="activeObservationSection === 'body'" class="pane-body" data-d1="obs-body">
+            <div class="read-block">
+              <h4>观察目标</h4>
+              <p class="read-text" data-d1="obs-goal-read">{{ observationDisplay(form.observation_goal) }}</p>
+            </div>
+            <div class="read-block">
+              <h4>观察记录</h4>
+              <p class="read-text" data-d1="obs-process-read">{{ observationDisplay(form.observation_process) }}</p>
+            </div>
+          </div>
+
+          <div v-else-if="activeObservationSection === 'evaluation'" class="pane-body" data-d1="obs-evaluation">
+            <dl class="read-grid read-grid-wide">
+              <div v-for="row in observationEvaluationRows(form)" :key="row.key" :data-d1="`obs-eval-read-${row.key}`">
+                <dt>{{ row.label }}</dt>
+                <dd class="read-text">{{ observationDisplay(row.value) }}</dd>
+              </div>
+            </dl>
+          </div>
+
+          <div v-else-if="activeObservationSection === 'support'" class="pane-body" data-d1="obs-support-read">
+            <p class="read-text">{{ observationDisplay(form.support_strategy) }}</p>
+          </div>
 
       <el-card
+        v-else-if="activeObservationSection === 'photos'"
         shadow="never"
         class="block"
         :class="{ 'photo-drop-active': photoDragActive }"
@@ -4218,7 +4546,7 @@ onBeforeUnmount(() => {
         <p v-if="photoLoadError" class="muted">{{ photoLoadError }}</p>
       </el-card>
 
-      <el-card shadow="never" class="block" data-d1="obs-ai">
+      <el-card v-else shadow="never" class="block" data-d1="obs-ai">
         <template #header>
           <span>AI 生成与候选审核</span>
         </template>
@@ -4249,6 +4577,8 @@ onBeforeUnmount(() => {
           <el-button
             v-for="target in OBSERVATION_TARGETS"
             :key="target"
+            type="primary"
+            plain
             size="small"
             :disabled="editDisabled || !aiMinimumReady"
             :data-d1="`obs-rewrite-${target}`"
@@ -4547,7 +4877,224 @@ onBeforeUnmount(() => {
           </el-alert>
         </div>
       </el-card>
+        </article>
+      </div>
     </template>
+
+    <el-dialog
+      :model-value="sectionDialogOpen"
+      :title="sectionModalTitle"
+      width="760px"
+      :close-on-click-modal="false"
+      data-d1="obs-section-dialog"
+      @update:model-value="(value: boolean) => { if (!value) cancelSectionEditor() }"
+    >
+      <div
+        data-d1="obs-section-compose"
+        @compositionstart.stop="onSectionCompositionStart"
+        @compositionend.stop="onSectionCompositionEnd"
+      >
+      <template v-if="sectionModal">
+        <p class="muted" data-d1="obs-section-identity">
+          正在编辑：{{ observationSectionInfo(sectionModal.key).label }} ·
+          草稿 v{{ sectionModal.revision ?? '—' }} ·
+          {{ sectionModal.observationId === props.observationId ? '当前记录' : '记录已变化，停止填回' }}
+        </p>
+        <p v-if="sectionModalDirty" class="muted" data-d1="obs-section-pending">
+          弹窗内容尚未填回草稿；离开前请先填回或取消。
+        </p>
+        <el-alert
+          v-if="sectionConflict"
+          type="warning"
+          :closable="false"
+          title="本栏内容在弹窗打开后有了新的 AI 结果或保存"
+          data-d1="obs-section-conflict"
+        >
+          再次点击“仍然填回”会用弹窗内容覆盖当前本栏；取消则保持当前草稿不变。
+        </el-alert>
+        <el-alert
+          v-if="sectionNotice"
+          type="warning"
+          :closable="false"
+          :title="sectionNotice"
+          data-d1="obs-section-notice"
+        />
+
+        <div v-if="sectionModal.key === 'basic'" class="grid" data-d1="obs-section-basic">
+          <label>
+            观察日期
+            <el-date-picker
+              v-model="sectionModal.form.observation_date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              :clearable="true"
+              :disabled="editDisabled"
+              data-d1="obs-date"
+            />
+          </label>
+          <label>
+            起始时间
+            <el-time-picker
+              v-model="sectionModal.form.start_time"
+              format="HH:mm"
+              value-format="HH:mm"
+              :clearable="true"
+              :disabled="editDisabled"
+              data-d1="obs-start"
+            />
+          </label>
+          <label>
+            结束时间
+            <el-time-picker
+              v-model="sectionModal.form.end_time"
+              format="HH:mm"
+              value-format="HH:mm"
+              :clearable="true"
+              :disabled="editDisabled"
+              data-d1="obs-end"
+            />
+          </label>
+          <label>
+            园所
+            <el-input v-model="sectionModal.form.school_name" :disabled="typingDisabled" data-d1="obs-school" />
+          </label>
+          <label>
+            班级
+            <el-input v-model="sectionModal.form.class_name" :disabled="typingDisabled" data-d1="obs-class" />
+          </label>
+          <label>
+            观察者
+            <el-input v-model="sectionModal.form.observer_name" :disabled="typingDisabled" data-d1="obs-observer" />
+          </label>
+          <label>
+            成人数目
+            <el-input v-model="sectionModal.form.adult_count" :disabled="typingDisabled" data-d1="obs-adults" />
+          </label>
+          <label>
+            儿童数目（参与总人数）
+            <el-input v-model="sectionModal.form.child_count" :disabled="typingDisabled" data-d1="obs-children" />
+          </label>
+          <label>
+            统一观察年龄
+            <el-input v-model="sectionModal.form.age_years" :disabled="typingDisabled" data-d1="obs-age" />
+          </label>
+          <el-alert
+            v-if="sectionBasicMissing.length"
+            type="info"
+            :closable="false"
+            title="资料未完整（不阻止保存或手写）"
+            data-d1="obs-section-basic-missing"
+          >
+            {{ sectionBasicMissing.map(field => BASIC_FIELD_LABELS[field]).join('、') }}
+          </el-alert>
+          <el-alert
+            v-for="warning in sectionContradictions"
+            :key="warning"
+            type="warning"
+            :closable="false"
+            :title="warning"
+            data-d1="obs-section-contradiction"
+          />
+        </div>
+
+        <div v-else-if="sectionModal.key === 'subjects'" data-d1="obs-section-subjects">
+          <span class="label">重点观察幼儿（按顺序）</span>
+          <div class="subject-row">
+            <el-input
+              v-for="(name, index) in sectionModal.form.subjects"
+              :key="index"
+              v-model="sectionModal.form.subjects[index]"
+              class="subject-name"
+              :disabled="typingDisabled"
+              :data-d1="`obs-subject-${index}`"
+            />
+            <el-button size="small" :disabled="editDisabled" data-d1="obs-add-subject" @click="addSectionSubject">
+              添加幼儿
+            </el-button>
+          </div>
+          <div v-if="sectionModal.form.subjects.length" class="subject-remove">
+            <el-button
+              v-for="(name, index) in sectionModal.form.subjects"
+              :key="`remove-${index}`"
+              size="small"
+              text
+              :disabled="editDisabled"
+              @click="removeSectionSubject(index)"
+            >
+              移除第 {{ index + 1 }} 位
+            </el-button>
+          </div>
+          <label class="full">
+            观察环境
+            <el-input v-model="sectionModal.form.environment" :disabled="typingDisabled" data-d1="obs-environment" />
+          </label>
+        </div>
+
+        <div v-else-if="sectionModal.key === 'body'" data-d1="obs-section-body">
+          <label class="full">
+            观察目标
+            <el-input
+              v-model="sectionModal.form.observation_goal"
+              type="textarea"
+              :rows="2"
+              :disabled="typingDisabled"
+              data-d1="obs-goal"
+            />
+          </label>
+          <label class="full">
+            观察记录
+            <el-input
+              v-model="sectionModal.form.observation_process"
+              type="textarea"
+              :rows="5"
+              :disabled="typingDisabled"
+              data-d1="obs-process"
+            />
+          </label>
+        </div>
+
+        <div v-else-if="sectionModal.key === 'evaluation'" class="evaluation" data-d1="obs-section-evaluation">
+          <label v-for="key in EVALUATION_KEYS" :key="key" class="full">
+            {{ EVALUATION_LABELS[key] }}
+            <el-input
+              v-model="sectionModal.form.analysis_evaluation[key]"
+              type="textarea"
+              :rows="2"
+              :disabled="typingDisabled"
+              :data-d1="`obs-eval-${key}`"
+            />
+          </label>
+        </div>
+
+        <div v-else-if="sectionModal.key === 'support'" data-d1="obs-section-support">
+          <label class="full">
+            支持策略
+            <el-input
+              v-model="sectionModal.form.support_strategy"
+              type="textarea"
+              :rows="3"
+              :disabled="typingDisabled"
+              data-d1="obs-support"
+            />
+          </label>
+        </div>
+
+        <p class="muted">填回只更新当前草稿；保存、候选采用和历史恢复仍按原来的操作。</p>
+      </template>
+      </div>
+      <template #footer>
+        <el-button data-d1="obs-section-cancel" @click="cancelSectionEditor">取消</el-button>
+        <el-button
+          type="primary"
+          data-d1="obs-section-apply"
+          :loading="sectionApplying"
+          :disabled="props.frozen || editDisabled || sectionApplying"
+          @click="applySectionEditor"
+        >
+          {{ sectionConflict ? '仍然填回' : '填回草稿' }}
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="termDialog.visible"
@@ -4774,10 +5321,107 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.obs-workspace {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  margin-top: 16px;
+}
+.section-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: sticky;
+  top: 8px;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
+.section-button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 6px;
+  background: var(--kgm-surface);
+  color: var(--kgm-text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.section-button:hover { border-color: var(--kgm-accent); }
+.section-button:focus-visible { outline: 2px solid var(--kgm-focus); outline-offset: 2px; }
+.section-button.selected {
+  border-color: var(--kgm-accent);
+  background: color-mix(in srgb, var(--kgm-accent) 12%, var(--kgm-surface));
+  box-shadow: inset 3px 0 0 var(--kgm-accent);
+}
+.section-button:disabled { cursor: default; opacity: 0.75; }
+.section-label { font-weight: 600; }
+.section-hint { font-size: 0.72rem; color: var(--kgm-muted); line-height: 1.35; }
+.section-badge { font-size: 0.72rem; color: var(--kgm-muted); }
+.section-button.selected .section-badge { color: var(--kgm-text); }
+.section-pane {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 6px;
+  background: var(--kgm-surface);
+}
+.section-pane:focus-visible { outline: 2px solid var(--kgm-focus); outline-offset: 2px; }
+.pane-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--kgm-border);
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+.pane-head h3 { margin: 4px 0; }
+.pane-body { min-width: 0; }
+.read-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px 16px;
+  margin: 8px 0;
+}
+.read-grid-wide { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.read-grid dt { font-size: 0.78rem; color: var(--kgm-muted); margin-bottom: 2px; }
+.read-grid dd { margin: 0; }
+.read-block { margin: 12px 0; }
+.read-block h4 { margin: 4px 0; }
+.read-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.55;
+}
+.subject-read-list { margin: 6px 0 10px; padding-left: 20px; }
+.subject-read-list li { line-height: 1.5; }
+@media (max-width: 900px) {
+  .obs-workspace { grid-template-columns: minmax(0, 1fr); }
+  .section-nav {
+    position: static;
+    flex-direction: row;
+    max-height: none;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .section-button { min-width: 10.5rem; width: auto; flex: 0 0 auto; }
+  .section-hint { display: none; }
+}
 .toolbar {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .actions {
   display: flex;

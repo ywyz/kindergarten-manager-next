@@ -1108,8 +1108,8 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
         </div>
         <div class="trigger-row">
           <el-button
-            size="small"
-            :type="type === 'daily_lesson_split' ? 'primary' : 'default'"
+            size="default"
+            type="primary"
             :loading="!!creating[type]"
             :disabled="frozen || !!blockedReason(type)"
             :data-d1="`ai-trigger-${type}`"

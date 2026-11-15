@@ -77,6 +77,20 @@ const latestCandidateId = ref('')
 const lateCandidate = ref<ConfigAICandidate | null>(null)
 const retainedTask = ref<ConfigAITask | null>(null)
 const latestTaskRecovered = ref(false)
+const manualOpen = ref(false)
+const manualLocations = ref<GameLocation[]>([])
+const manualGameScope = ref('')
+const manualGuidance = ref('')
+const manualBaseline = ref('')
+const manualContextId = ref('')
+const manualError = ref('')
+const manualComposing = ref(false)
+const aiOpen = ref(false)
+const aiImportText = ref('')
+const aiBaseline = ref('')
+const aiContextId = ref('')
+const aiError = ref('')
+const aiComposing = ref(false)
 let parseTimer: ReturnType<typeof setTimeout> | null = null
 let parseSeq = 0
 let candidateLoadSeq = 0
@@ -89,6 +103,49 @@ function snapshot(): GameSnapshot {
     guidance: guidance.value,
   }
 }
+
+function manualSnapshot(): GameSnapshot {
+  return {
+    locations: manualLocations.value.map((location) => ({ ...location })),
+    game_scope: manualGameScope.value,
+    guidance: manualGuidance.value,
+  }
+}
+
+function gameContextId(): string {
+  const value = current.value
+  return value ? `${value.class_id}:${value.game_revision_id}` : ''
+}
+
+const manualDirty = computed(
+  () =>
+    manualOpen.value
+    && (
+      JSON.stringify(manualSnapshot()) !== manualBaseline.value
+      || manualComposing.value
+    ),
+)
+const manualStale = computed(
+  () =>
+    manualOpen.value
+    && (
+      JSON.stringify(snapshot()) !== manualBaseline.value
+      || gameContextId() !== manualContextId.value
+    ),
+)
+const aiDirty = computed(
+  () =>
+    aiOpen.value
+    && (aiImportText.value !== aiBaseline.value || aiComposing.value),
+)
+const aiStale = computed(
+  () =>
+    aiOpen.value
+    && (
+      importText.value !== aiBaseline.value
+      || gameContextId() !== aiContextId.value
+    ),
+)
 
 /** Structured blocking target for the settings shell. */
 function draftTargets(): string[] {
@@ -166,7 +223,9 @@ const draftActive = computed(
     parseCreateUnknown.value ||
     parseTask.value?.status === 'outcome_unknown' ||
     parseCandidate.value !== null ||
-    lateCandidate.value !== null,
+    lateCandidate.value !== null ||
+    manualDirty.value ||
+    aiDirty.value,
 )
 // The watcher is the single source of truth for the parent's draft state (no
 // manual emit can leave a stale ``true`` after the pending apply clears).
@@ -306,6 +365,45 @@ function clearImportState(options: { keepRetained?: boolean } = {}): void {
   latestTaskRecovered.value = false
 }
 
+function openManualEditor(): void {
+  if (inputsBlocked()) return
+  if (aiDirty.value) {
+    errorText.value = 'AI 解析文本尚未填回草稿：请先填回或取消 AI 解析编辑'
+    return
+  }
+  invalidate()
+  manualLocations.value = locations.value.map((location) => ({ ...location }))
+  manualGameScope.value = gameScope.value
+  manualGuidance.value = guidance.value
+  manualBaseline.value = JSON.stringify(snapshot())
+  manualContextId.value = gameContextId()
+  manualError.value = ''
+  manualOpen.value = true
+  aiOpen.value = false
+}
+
+function closeManualEditor(): void {
+  manualOpen.value = false
+  manualComposing.value = false
+  manualError.value = ''
+  manualBaseline.value = ''
+}
+
+function onManualDialog(value: boolean): void {
+  if (!value) closeManualEditor()
+}
+
+function addManualLocation(): void {
+  if (inputsBlocked()) return
+  manualLocations.value.push({ kind: 'area', name: '', guidance: null })
+  manualError.value = ''
+}
+
+function removeManualLocation(index: number): void {
+  if (inputsBlocked()) return
+  manualLocations.value.splice(index, 1)
+}
+
 function applyImportCandidate(candidate: ConfigAICandidate): void {
   locations.value = candidate.raw_candidate.locations.map((location) => ({
     kind: location.kind,
@@ -317,6 +415,95 @@ function applyImportCandidate(candidate: ConfigAICandidate): void {
   preview.value = null
   inputSeq += 1
   errorText.value = ''
+  if (manualOpen.value && !manualDirty.value) {
+    manualLocations.value = locations.value.map((location) => ({ ...location }))
+    manualGameScope.value = gameScope.value
+    manualGuidance.value = guidance.value
+    manualBaseline.value = JSON.stringify(snapshot())
+    manualContextId.value = gameContextId()
+  }
+}
+
+function confirmManualEditor(): void {
+  if (!manualOpen.value) return
+  if (inputsBlocked()) {
+    manualError.value = '当前状态不允许填回配置：请等待或先处理未决结果'
+    return
+  }
+  if (manualStale.value) {
+    manualError.value = '打开编辑后页面草稿已变化：请取消并重新打开编辑'
+    return
+  }
+  const names = manualLocations.value.map((location) => location.name.trim())
+  if (names.some((name) => name === '')) {
+    manualError.value = '地点名称不能为空'
+    return
+  }
+  locations.value = manualLocations.value.map((location) => ({ ...location }))
+  gameScope.value = manualGameScope.value
+  guidance.value = manualGuidance.value
+  invalidate()
+  closeManualEditor()
+  messageText.value = '已填回游戏配置草稿；请核对后按“预览修改”“确认应用”提交'
+}
+
+function openAiEditor(): void {
+  if (inputsBlocked()) return
+  if (manualDirty.value) {
+    errorText.value = '游戏配置编辑尚未填回草稿：请先填回或取消配置编辑'
+    return
+  }
+  invalidate()
+  aiImportText.value = importText.value
+  aiBaseline.value = importText.value
+  aiContextId.value = gameContextId()
+  aiError.value = ''
+  aiOpen.value = true
+  manualOpen.value = false
+}
+
+function closeAiEditor(): void {
+  aiOpen.value = false
+  aiComposing.value = false
+  aiError.value = ''
+  aiBaseline.value = ''
+}
+
+function onAiDialog(value: boolean): void {
+  if (!value) closeAiEditor()
+}
+
+function confirmAiEditor(): void {
+  if (!aiOpen.value) return
+  if (inputsBlocked()) {
+    aiError.value = '当前状态不允许填回 AI 文本：请等待或先处理未决结果'
+    return
+  }
+  if (aiStale.value) {
+    aiError.value = '打开编辑后页面 AI 文本已变化：请取消并重新打开编辑'
+    return
+  }
+  importText.value = aiImportText.value
+  closeAiEditor()
+  parseNotice.value =
+    aiImportText.value.trim() !== ''
+      ? '已填回 AI 解析文本；请点击“AI 解析”明确发起。'
+      : ''
+}
+
+async function confirmAiEditorAndParse(): Promise<void> {
+  if (!aiOpen.value) return
+  if (inputsBlocked()) {
+    aiError.value = '当前状态不允许发起解析：请等待或先处理未决结果'
+    return
+  }
+  if (aiStale.value) {
+    aiError.value = '打开编辑后页面 AI 文本已变化：请取消并重新打开编辑'
+    return
+  }
+  importText.value = aiImportText.value
+  closeAiEditor()
+  await startParse()
 }
 
 interface ParseCandidateGuard {
@@ -510,6 +697,14 @@ async function startParse(): Promise<void> {
     return
   }
   if (!loaded.value || !current.value) return
+  if (manualDirty.value) {
+    parseError.value = '编辑弹窗中有未填回配置：请先填回或取消配置编辑'
+    return
+  }
+  if (aiOpen.value && aiDirty.value) {
+    parseError.value = 'AI 解析文本尚未填回：请先填回或取消 AI 解析编辑'
+    return
+  }
   if (!importText.value.trim()) {
     parseError.value = '请先粘贴区域／专用室／户外场地与限制'
     return
@@ -954,6 +1149,8 @@ function cancelDraft(): void {
     }
     return
   }
+  closeManualEditor()
+  closeAiEditor()
   // A terminal outcome_unknown task is retained for read-only reopening.  It
   // must not trap the teacher in the config editor or force a new paid request.
   const retained =
@@ -980,6 +1177,10 @@ const GAME_KIND_LABELS: Record<string, string> = {
   special_room: '专用室',
   outdoor: '户外场地',
 }
+function gameKindLabel(kind: GameLocation['kind']): string {
+  return GAME_KIND_LABELS[kind] ?? '地点'
+}
+
 const GAME_FIELD_LABELS: Record<string, string> = {
   locations: '地点',
   game_scope: '游戏范围',
@@ -1096,15 +1297,46 @@ onBeforeUnmount(() => {
 })
 /** Focus the first class-game control or the card itself. */
 function focusDraftTarget(): void {
-  const selector = '[data-d1="game-config"]'
-  const element = document.querySelector(selector) as HTMLElement | null
+  if (!inputsBlocked() && !manualOpen.value) {
+    if (aiDirty.value) {
+      errorText.value = 'AI 解析文本编辑尚未完成：请先填回草稿或取消编辑'
+    } else {
+      openManualEditor()
+    }
+  }
+  const selector = manualOpen.value
+    ? '[data-d1="game-config-editor"]'
+    : aiOpen.value
+      ? '[data-d1="game-import-editor"]'
+      : '[data-d1="game-config"]'
+  const element = (
+    document.querySelector(selector)
+    ?? document.querySelector('[data-d1="game-config"]')
+  ) as HTMLElement | null
   if (!element) return
   element.scrollIntoView?.({ block: 'center' })
   if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
   element.focus?.()
 }
 
-defineExpose({ draftTargets, focusDraftTarget })
+defineExpose({
+  draftTargets,
+  focusDraftTarget,
+  openManualEditor,
+  closeManualEditor,
+  confirmManualEditor,
+  openAiEditor,
+  closeAiEditor,
+  confirmAiEditor,
+  editorState: () => ({
+    manualOpen: manualOpen.value,
+    manualDirty: manualDirty.value,
+    manualStale: manualStale.value,
+    aiOpen: aiOpen.value,
+    aiDirty: aiDirty.value,
+    aiStale: aiStale.value,
+  }),
+})
 </script>
 
 <template>
@@ -1132,25 +1364,17 @@ defineExpose({ draftTargets, focusDraftTarget })
       <p class="muted">
         粘贴区域／专用室／户外场地与限制；AI 只生成结构化候选，确认前不会改写已保存配置。缺项留空，由教师核对修改。
       </p>
-      <el-input
-        v-model="importText"
-        type="textarea"
-        :rows="6"
-        maxlength="20000"
-        show-word-limit
-        :disabled="frozen || !loaded || parsePending || parseCandidateBusy || parseRecoveryBusy || parseCreateUnknown || parseBusy || pendingApply !== null || !!parseCandidate"
-        placeholder="例如：区域：建构区——限 4 人；专用室：图书室——安静阅读；户外：东操场——大型器械，注意间距……"
-        data-d1="game-import-text"
-      />
+      <p class="muted kgm-summary-value" data-d1="game-import-summary">
+        {{ importText.trim() ? `已填回 AI 解析文本：${importText.slice(0, 120)}${importText.length > 120 ? '…' : ''}` : '尚未填写 AI 解析文本。' }}
+      </p>
       <div class="row">
         <el-button
           type="primary"
-          data-d1="game-import-parse"
-          :loading="parseBusy"
-          :disabled="!canStartParse"
-          @click="startParse"
+          data-d1="game-ai-open"
+          :disabled="frozen || !loaded || parsePending || parseCandidateBusy || parseRecoveryBusy || parseCreateUnknown || parseBusy || pendingApply !== null || !!parseCandidate"
+          @click="openAiEditor"
         >
-          AI 解析
+          打开 AI 解析编辑
         </el-button>
         <el-button
           v-if="latestCandidateId && !parseCandidate"
@@ -1252,19 +1476,20 @@ defineExpose({ draftTargets, focusDraftTarget })
       />
     </div>
 
-    <div v-for="(location, index) in locations" :key="index" class="location-row" data-d1="game-location">
-      <el-select v-model="location.kind" size="small" class="kind-select" :disabled="inputsBlocked()" @change="invalidate">
-        <el-option label="区域" value="area" />
-        <el-option label="专用室" value="special_room" />
-        <el-option label="户外场地" value="outdoor" />
-      </el-select>
-      <el-input v-model="location.name" size="small" placeholder="地点名称（1–80 字）" maxlength="80" class="name-input" :disabled="inputsBlocked()" @input="invalidate" />
-      <el-input v-model="location.guidance" size="small" placeholder="该地点的简短限制/指导（可空）" maxlength="2000" class="guide-input" :disabled="inputsBlocked()" @input="invalidate" />
-      <el-button size="small" text type="danger" :disabled="inputsBlocked()" @click="removeLocation(index)">移除</el-button>
+    <div class="game-summary" data-d1="game-config-summary">
+      <div v-for="(location, index) in locations" :key="index" class="game-summary-item">
+        <strong>{{ gameKindLabel(location.kind) }}：{{ location.name || '（未命名）' }}</strong>
+        <span v-if="location.guidance" class="muted">{{ location.guidance }}</span>
+      </div>
+      <p v-if="!locations.length" class="muted">（尚未设置地点）</p>
+      <p class="kgm-summary-value"><strong>游戏范围：</strong>{{ gameScope || '（空）' }}</p>
+      <p class="kgm-summary-value"><strong>通用限制 / 指导：</strong>{{ guidance || '（空）' }}</p>
     </div>
-    <el-button size="small" data-d1="game-add-location" :disabled="inputsBlocked()" @click="addLocation">添加地点</el-button>
-    <div class="field"><label>游戏范围（可空）</label><el-input v-model="gameScope" type="textarea" :rows="2" maxlength="8000" :disabled="inputsBlocked()" @input="invalidate" /></div>
-    <div class="field"><label>通用限制 / 指导（可空）</label><el-input v-model="guidance" type="textarea" :rows="2" maxlength="8000" :disabled="inputsBlocked()" @input="invalidate" /></div>
+    <div class="row">
+      <el-button data-d1="game-edit" :disabled="inputsBlocked()" @click="openManualEditor">
+        编辑配置
+      </el-button>
+    </div>
     <p v-if="parseCandidate" class="muted" data-d1="game-candidate-inline">
       候选已内联到下方表单；确认应用后会先校验再写入，取消编辑不写入。
     </p>
@@ -1313,6 +1538,83 @@ defineExpose({ draftTargets, focusDraftTarget })
 
   <el-alert v-if="errorText" type="error" :closable="false" class="section" data-d1="game-error" :title="errorText" />
   <el-alert v-if="messageText" type="success" :closable="false" class="section" data-d1="game-message" :title="messageText" />
+
+  <el-dialog
+    :model-value="manualOpen"
+    title="编辑班级游戏配置"
+    width="760px"
+    :close-on-click-modal="false"
+    data-d1="game-config-editor"
+    @compositionstart="manualComposing = true"
+    @compositionend="manualComposing = false"
+    @update:model-value="onManualDialog"
+  >
+    <el-alert v-if="manualStale" type="warning" :closable="false" class="section" title="打开编辑后页面草稿已变化：请取消并重新打开编辑。" data-d1="game-config-editor-stale" />
+    <el-alert v-if="manualError" type="error" :closable="false" class="section" :title="manualError" data-d1="game-config-editor-error" />
+    <p class="muted">这里先编辑配置内容；填回草稿后仍由“预览修改”“确认应用”提交。</p>
+    <div v-for="(location, index) in manualLocations" :key="index" class="location-row" data-d1="game-location">
+      <el-select v-model="location.kind" size="small" class="kind-select" :disabled="inputsBlocked()">
+        <el-option label="区域" value="area" />
+        <el-option label="专用室" value="special_room" />
+        <el-option label="户外场地" value="outdoor" />
+      </el-select>
+      <el-input v-model="location.name" size="small" placeholder="地点名称（1–80 字）" maxlength="80" class="name-input" :disabled="inputsBlocked()" />
+      <el-input v-model="location.guidance" size="small" placeholder="该地点的简短限制/指导（可空）" maxlength="2000" class="guide-input" :disabled="inputsBlocked()" />
+      <el-button size="small" text type="danger" :disabled="inputsBlocked()" @click="removeManualLocation(index)">移除</el-button>
+    </div>
+    <el-button size="small" data-d1="game-add-location" :disabled="inputsBlocked()" @click="addManualLocation">添加地点</el-button>
+    <div class="field"><label>游戏范围（可空）</label><el-input v-model="manualGameScope" type="textarea" :rows="2" maxlength="8000" :disabled="inputsBlocked()" /></div>
+    <div class="field"><label>通用限制 / 指导（可空）</label><el-input v-model="manualGuidance" type="textarea" :rows="2" maxlength="8000" :disabled="inputsBlocked()" /></div>
+    <template #footer>
+      <div class="kgm-dialog-footer">
+        <el-button data-d1="game-config-editor-cancel" @click="closeManualEditor">取消</el-button>
+        <el-button type="primary" data-d1="game-config-editor-apply" :disabled="inputsBlocked() || manualStale" @click="confirmManualEditor">填回草稿</el-button>
+      </div>
+    </template>
+  </el-dialog>
+
+  <el-dialog
+    :model-value="aiOpen"
+    title="AI 解析游戏配置"
+    width="720px"
+    :close-on-click-modal="false"
+    data-d1="game-import-editor"
+    @compositionstart="aiComposing = true"
+    @compositionend="aiComposing = false"
+    @update:model-value="onAiDialog"
+  >
+    <el-alert v-if="aiStale" type="warning" :closable="false" class="section" title="打开编辑后页面 AI 文本已变化：请取消并重新打开编辑。" data-d1="game-import-editor-stale" />
+    <el-alert v-if="aiError" type="error" :closable="false" class="section" :title="aiError" data-d1="game-import-editor-error" />
+    <p class="muted">
+      粘贴区域／专用室／户外场地与限制；AI 只生成结构化候选，确认前不会改写已保存配置。
+      这里先编辑解析文本，填回后才由页面明确发起解析。
+    </p>
+    <el-input
+      v-model="aiImportText"
+      type="textarea"
+      :rows="8"
+      maxlength="20000"
+      show-word-limit
+      :disabled="frozen || !loaded || parsePending || parseCandidateBusy || parseRecoveryBusy || parseCreateUnknown || parseBusy || pendingApply !== null || !!parseCandidate"
+      placeholder="例如：区域：建构区——限 4 人；专用室：图书室——安静阅读；户外：东操场——大型器械，注意间距……"
+      data-d1="game-import-text"
+    />
+    <template #footer>
+      <div class="kgm-dialog-footer">
+        <el-button data-d1="game-import-editor-cancel" @click="closeAiEditor">取消</el-button>
+        <el-button data-d1="game-import-editor-apply" :disabled="inputsBlocked() || aiStale" @click="confirmAiEditor">填回文本</el-button>
+        <el-button
+          type="primary"
+          data-d1="game-import-parse"
+          :loading="parseBusy"
+          :disabled="aiStale || !aiImportText.trim() || frozen || !loaded || parsePending || parseCandidateBusy || parseRecoveryBusy || parseCreateUnknown || parseBusy || pendingApply !== null || !!parseCandidate"
+          @click="confirmAiEditorAndParse"
+        >
+          AI 解析
+        </el-button>
+      </div>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -1366,6 +1668,20 @@ defineExpose({ draftTargets, focusDraftTarget })
 }
 .preview-block {
   margin-top: 12px;
+}
+.game-summary {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 4px;
+  background: var(--kgm-bg);
+}
+.game-summary-item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding: 3px 0;
 }
 .import-block {
   border: 1px dashed var(--kgm-border);

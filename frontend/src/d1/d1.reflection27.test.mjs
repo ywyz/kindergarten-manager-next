@@ -224,6 +224,7 @@ function evaluateView(client) {
       if (spec === '../client') return client
       if (spec === '../editor') return editorHelpers
       if (spec === '../daily-other-draft') return loadTs(path.join(d1Dir, 'daily-other-draft.ts'))
+      if (spec === '../daily-layout-draft') return loadTs(path.join(d1Dir, 'daily-layout-draft.ts'))
       if (spec === '../../daily-plan-content') return contentHelpers
       if (spec === '../types' || spec === '../../types') return {}
       if (spec.endsWith('.vue')) return { default: {} }

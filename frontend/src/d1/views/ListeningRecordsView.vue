@@ -495,6 +495,18 @@ defineExpose({ reload: load, resetForContext })
             {{ gradeText(row.grade) }}
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="120">
+          <template #default="{ row }">
+            <el-button
+              size="small"
+              data-d1="listening-open-record"
+              :disabled="!canNavigate"
+              @click="openRecord(row)"
+            >
+              打开记录
+            </el-button>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div class="pager">

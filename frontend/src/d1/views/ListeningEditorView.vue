@@ -91,7 +91,69 @@ const session = new ListeningSession(listeningApi, state)
 const currentOwner = ref(
   `listening:${props.recordId}:${props.profileEpoch ?? 0}:${instanceId}`,
 )
-const canEdit = computed(() => !props.frozen && !props.disabled)
+
+type ListeningModalKind =
+  | 'name'
+  | 'header'
+  | 'group'
+  | 'evaluation'
+  | 'overall'
+  | 'support'
+
+type ListeningModalTextField =
+  | 'name'
+  | 'observation_date'
+  | 'adult_count'
+  | 'child_age'
+  | 'goal'
+  | 'work_date'
+  | 'listening_text'
+  | 'overall_evaluation'
+  | 'support_strategy'
+
+interface ListeningModalSnapshot {
+  name: string
+  observation_date: string
+  adult_count: string
+  child_age: string
+  goal: string
+  work_date: string
+  listening_text: string
+  overall_evaluation: string
+  support_strategy: string
+  stars: Record<string, number | null>
+}
+
+interface ListeningModalDraft extends ListeningModalSnapshot {
+  kind: ListeningModalKind
+  token: string
+  recordId: string
+  domain: ListeningDomain
+  revision: number
+  profileEpoch: number
+  sessionEpoch: number
+  groupId: string
+  label: string
+  snapshot: ListeningModalSnapshot
+}
+
+const canEditRecord = computed(() => !props.frozen && !props.disabled)
+const listeningModal = ref<ListeningModalDraft | null>(null)
+const listeningModalOpen = computed({
+  get: () => listeningModal.value !== null,
+  set: (value: boolean) => {
+    if (!value && listeningModal.value) closeListeningModal()
+  },
+})
+let listeningModalSeq = 0
+let listeningModalReturnFocus: HTMLElement | null = null
+const listeningModalDirty = computed(() => {
+  const modal = listeningModal.value
+  return modal ? listeningModalHasChanges(modal) : false
+})
+const canEdit = computed(
+  () => canEditRecord.value && listeningModal.value === null,
+)
 const composing = ref(false)
 let compositionWaiters: Array<() => void> = []
 let actionGeneration = 0
@@ -103,6 +165,7 @@ const directionalOpen = ref(false)
 const directionalBusy = ref(false)
 const directionalRequest = ref<DirectionalOpenRequest | null>(null)
 const directionalSelections = ref<Record<string, DirectionalSelection>>({})
+const directionalSelectionTokens = ref<Record<string, string>>({})
 const directionalNotice = ref('')
 const actionBusy = computed(
   () => actionCount.value > 0 || state.busy || state.savePromise !== null,
@@ -195,6 +258,483 @@ const observationDateChanged = computed(() => {
 const dateBlocking = computed(
   () => observationDateChanged.value && dateIssues.value.length > 0,
 )
+
+function modalText(value: string | null | undefined): string {
+  return value ?? ''
+}
+
+function cloneListeningStars(): Record<string, number | null> {
+  const stars: Record<string, number | null> = {}
+  for (const item of session.form()?.evaluation ?? []) {
+    stars[item.item_id] = item.stars ?? null
+  }
+  return stars
+}
+
+function listeningModalHasChanges(modal: ListeningModalDraft): boolean {
+  if (modal.kind === 'name') {
+    return modal.name !== modal.snapshot.name
+  }
+  if (modal.kind === 'header') {
+    return (
+      modal.observation_date !== modal.snapshot.observation_date ||
+      modal.adult_count !== modal.snapshot.adult_count ||
+      modal.child_age !== modal.snapshot.child_age ||
+      modal.goal !== modal.snapshot.goal
+    )
+  }
+  if (modal.kind === 'group') {
+    return (
+      modal.work_date !== modal.snapshot.work_date ||
+      modal.listening_text !== modal.snapshot.listening_text
+    )
+  }
+  if (modal.kind === 'evaluation') {
+    const itemIds = new Set([
+      ...Object.keys(modal.stars),
+      ...Object.keys(modal.snapshot.stars),
+    ])
+    for (const itemId of itemIds) {
+      if (
+        (modal.stars[itemId] ?? null) !==
+        (modal.snapshot.stars[itemId] ?? null)
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+  if (modal.kind === 'overall') {
+    return (
+      modal.overall_evaluation !== modal.snapshot.overall_evaluation
+    )
+  }
+  return modal.support_strategy !== modal.snapshot.support_strategy
+}
+
+function listeningModalStillCurrent(modal: ListeningModalDraft): boolean {
+  if (listeningModal.value?.token !== modal.token) return false
+  if (modal.recordId !== props.recordId) return false
+  if (modal.domain !== state.domain) return false
+  if (modal.revision !== state.revision) return false
+  if (modal.profileEpoch !== (props.profileEpoch ?? 0)) return false
+  if (modal.sessionEpoch !== getSessionEpoch()) return false
+  const formValue = session.form()
+  if (!formValue) return false
+  if (
+    modal.kind === 'group' &&
+    !formValue.groups.some((group) => group.group_id === modal.groupId)
+  ) {
+    return false
+  }
+  return true
+}
+
+function listeningModalSectionUnchanged(
+  modal: ListeningModalDraft,
+): boolean {
+  const formValue = session.form()
+  if (!formValue) return false
+  if (modal.kind === 'name') {
+    return state.name === modal.snapshot.name
+  }
+  if (modal.kind === 'header') {
+    return (
+      modalText(formValue.observation_date) ===
+        modal.snapshot.observation_date &&
+      modalText(formValue.adult_count) === modal.snapshot.adult_count &&
+      modalText(formValue.child_age) === modal.snapshot.child_age &&
+      modalText(formValue.goal) === modal.snapshot.goal
+    )
+  }
+  if (modal.kind === 'group') {
+    const group = formValue.groups.find(
+      (item) => item.group_id === modal.groupId,
+    )
+    return Boolean(
+      group &&
+        modalText(group.work_date) === modal.snapshot.work_date &&
+        modalText(group.listening_text) === modal.snapshot.listening_text,
+    )
+  }
+  if (modal.kind === 'evaluation') {
+    for (const [itemId, stars] of Object.entries(
+      modal.snapshot.stars,
+    )) {
+      const item = formValue.evaluation.find(
+        (entry) => entry.item_id === itemId,
+      )
+      if (!item || (item.stars ?? null) !== stars) return false
+    }
+    return true
+  }
+  if (modal.kind === 'overall') {
+    return (
+      modalText(formValue.overall_evaluation) ===
+      modal.snapshot.overall_evaluation
+    )
+  }
+  return (
+    modalText(formValue.support_strategy) ===
+    modal.snapshot.support_strategy
+  )
+}
+
+function createListeningModal(
+  kind: ListeningModalKind,
+  groupId = '',
+): ListeningModalDraft | null {
+  const formValue = session.form()
+  if (!formValue) return null
+  const group = groupId
+    ? formValue.groups.find((item) => item.group_id === groupId)
+    : undefined
+  if (kind === 'group' && !group) return null
+  const values = {
+    name: state.name,
+    observation_date: modalText(formValue.observation_date),
+    adult_count: modalText(formValue.adult_count),
+    child_age: modalText(formValue.child_age),
+    goal: modalText(formValue.goal),
+    work_date: modalText(group?.work_date),
+    listening_text: modalText(group?.listening_text),
+    overall_evaluation: modalText(formValue.overall_evaluation),
+    support_strategy: modalText(formValue.support_strategy),
+    stars: cloneListeningStars(),
+  }
+  const position = group ? formValue.groups.indexOf(group) + 1 : 0
+  const label =
+    kind === 'name'
+      ? '编辑幼儿姓名'
+      : kind === 'header'
+        ? `${DOMAIN_LABELS[state.domain]}领域基本信息`
+        : kind === 'group'
+          ? `第 ${position} 组照片与倾听记录`
+          : kind === 'evaluation'
+            ? `${DOMAIN_LABELS[state.domain]}领域评价`
+            : kind === 'overall'
+              ? '编辑综合评价'
+              : '编辑支持策略'
+  return {
+    kind,
+    token: `listening-modal-${props.recordId}-${++listeningModalSeq}`,
+    recordId: props.recordId,
+    domain: state.domain,
+    revision: state.revision,
+    profileEpoch: props.profileEpoch ?? 0,
+    sessionEpoch: getSessionEpoch(),
+    groupId,
+    label,
+    ...values,
+    snapshot: {
+      ...values,
+      stars: { ...values.stars },
+    },
+  }
+}
+
+function openListeningModal(
+  kind: ListeningModalKind,
+  groupId = '',
+): void {
+  if (!canEditRecord.value || listeningModal.value) return
+  if (state.unknown) {
+    ElMessage.warning('保存结果待核对：请先处理原请求再编辑')
+    return
+  }
+  if (aiDraft.value) {
+    ElMessage.warning('AI 候选尚未采用或取消：请先处理候选再编辑')
+    return
+  }
+  if (
+    actionBusy.value ||
+    aiBusy.value ||
+    directionalBusy.value ||
+    exportBusy.value
+  ) {
+    ElMessage.warning('保存、生成或导出进行中：请等待结果后再编辑')
+    return
+  }
+  const modal = createListeningModal(kind, groupId)
+  if (!modal) return
+  listeningModalReturnFocus =
+    typeof document !== 'undefined' &&
+    typeof HTMLElement !== 'undefined' &&
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+  listeningModal.value = modal
+}
+
+function openListeningModalDirectional(
+  field:
+    | 'goal'
+    | 'listening_text'
+    | 'overall_evaluation'
+    | 'support_strategy',
+  whole = false,
+): void {
+  const modal = listeningModal.value
+  if (!modal || !canEditRecord.value) return
+  if (
+    state.unknown ||
+    aiDraft.value ||
+    actionBusy.value ||
+    aiBusy.value ||
+    exportBusy.value ||
+    directionalBusy.value
+  ) {
+    ElMessage.warning('保存、生成或导出进行中：请等待结果后再修改')
+    return
+  }
+  if (!listeningModalStillCurrent(modal)) {
+    ElMessage.warning(
+      '记录、领域、版本或本地会话已变化：未填回，弹窗内容保留',
+    )
+    return
+  }
+  if (!listeningModalSectionUnchanged(modal)) {
+    ElMessage.warning('该栏正文已发生变化：未填回，弹窗内容保留')
+    return
+  }
+  const fieldText =
+    field === 'goal'
+      ? modal.goal
+      : field === 'listening_text'
+        ? modal.listening_text
+        : field === 'overall_evaluation'
+          ? modal.overall_evaluation
+          : modal.support_strategy
+  const key = directionalSelectionKey(field, modal.groupId)
+  const selection = whole
+    ? wholeDirectionalSelection(fieldText)
+    : directionalSelections.value[key] ?? null
+  if (!selection) {
+    ElMessage.warning(
+      '请先在当前弹窗正文中选择文字，或使用「整栏修改」',
+    )
+    return
+  }
+  if (!whole && selection.text === '') {
+    ElMessage.warning(
+      '请先在当前弹窗正文中选择文字，或使用「整栏修改」',
+    )
+    return
+  }
+  if (!whole && directionalSelectionTokens.value[key] !== modal.token) {
+    ElMessage.warning('请先在当前弹窗正文中重新选择文字')
+    return
+  }
+  const selectionError = validateDirectionalSelection(
+    fieldText,
+    selection,
+  )
+  if (selectionError) {
+    ElMessage.warning(selectionError)
+    return
+  }
+  applyListeningModalDraft(modal)
+  closeListeningModal()
+  openDirectionalSaved(field, modal.groupId, whole)
+}
+
+function setListeningModalField(
+  field: ListeningModalTextField,
+  value: unknown,
+): void {
+  const modal = listeningModal.value
+  if (!modal) return
+  ;(modal as unknown as Record<string, unknown>)[field] =
+    value == null ? '' : String(value)
+}
+
+function setListeningModalStar(
+  itemId: string,
+  stars: number | null,
+): void {
+  const modal = listeningModal.value
+  if (!modal) return
+  modal.stars = { ...modal.stars, [itemId]: stars }
+}
+
+const listeningModalObservationMonthValue = computed(() => {
+  const modal = listeningModal.value
+  if (!modal) return ''
+  return parseListeningMonth(modal.observation_date)
+    ? modal.observation_date
+    : ''
+})
+
+const listeningModalLegacyObservationDate = computed(() => {
+  const modal = listeningModal.value
+  return Boolean(
+    modal?.observation_date &&
+      !parseListeningMonth(modal.observation_date),
+  )
+})
+
+const listeningModalWorkDateValue = computed(() => {
+  const modal = listeningModal.value
+  return modal ? canonicalWorkDate(modal.work_date) : ''
+})
+
+const listeningModalLegacyWorkDate = computed(() => {
+  const modal = listeningModal.value
+  return Boolean(modal?.work_date && !parseListeningDate(modal.work_date))
+})
+
+const listeningModalDateWarning = computed(() => {
+  const modal = listeningModal.value
+  const formValue = session.form()
+  const term = recordTerm.value
+  if (!modal || !formValue || !term) return ''
+  if (modal.kind !== 'header' && modal.kind !== 'group') return ''
+  const groups =
+    modal.kind === 'group'
+      ? formValue.groups.map((group) =>
+          group.group_id === modal.groupId
+            ? { ...group, work_date: modal.work_date }
+            : group,
+        )
+      : formValue.groups
+  const observationDate =
+    modal.kind === 'header'
+      ? modal.observation_date
+      : modalText(formValue.observation_date)
+  const issues = listeningDateIssues(
+    observationDate,
+    groups,
+    term.start_date,
+    term.end_date,
+  )
+  if (modal.kind === 'group') {
+    return issues
+      .filter((issue) => issue.groupId === modal.groupId)
+      .map((issue) => issue.reason)
+      .join('；')
+  }
+  return issues
+    .map((issue) => {
+      const index = groups.findIndex(
+        (group) => group.group_id === issue.groupId,
+      )
+      return `${index >= 0 ? `第 ${index + 1} 组：` : ''}${issue.reason}`
+    })
+    .join('；')
+})
+
+async function confirmListeningModal(): Promise<void> {
+  const modal = listeningModal.value
+  if (!modal || !canEditRecord.value) return
+  await settleComposition()
+  if (listeningModal.value?.token !== modal.token) return
+  if (!canEditRecord.value) {
+    ElMessage.warning(
+      '页面已进入关闭或只读状态：弹窗内容保留，未填入草稿',
+    )
+    return
+  }
+  if (!listeningModalStillCurrent(modal)) {
+    ElMessage.warning(
+      '记录、领域、版本或本地会话已变化：弹窗内容保留，请取消后重新打开',
+    )
+    return
+  }
+  if (!listeningModalSectionUnchanged(modal)) {
+    ElMessage.warning(
+      '该栏正文已发生变化：弹窗内容保留，请取消后重新打开',
+    )
+    return
+  }
+  applyListeningModalDraft(modal)
+  closeListeningModal()
+  ElMessage.info('已填入草稿，尚未保存')
+}
+
+function applyListeningModalDraft(modal: ListeningModalDraft): void {
+  if (modal.kind === 'name') {
+    if (modal.name !== modal.snapshot.name) {
+      session.setName(modal.name)
+    }
+    return
+  }
+  if (modal.kind === 'header') {
+    const fields = [
+      'observation_date',
+      'adult_count',
+      'child_age',
+      'goal',
+    ] as const
+    for (const field of fields) {
+      if (modal[field] !== modal.snapshot[field]) {
+        session.setField(field, modal[field])
+      }
+    }
+    return
+  }
+  if (modal.kind === 'group') {
+    const fields = ['work_date', 'listening_text'] as const
+    for (const field of fields) {
+      if (modal[field] !== modal.snapshot[field]) {
+        session.setGroupField(modal.groupId, field, modal[field])
+      }
+    }
+    return
+  }
+  if (modal.kind === 'evaluation') {
+    for (const [itemId, stars] of Object.entries(modal.stars)) {
+      if ((modal.snapshot.stars[itemId] ?? null) !== (stars ?? null)) {
+        session.setStars(itemId, stars)
+      }
+    }
+    return
+  }
+  if (modal.kind === 'overall') {
+    if (modal.overall_evaluation !== modal.snapshot.overall_evaluation) {
+      session.setField('overall_evaluation', modal.overall_evaluation)
+    }
+    return
+  }
+  if (modal.support_strategy !== modal.snapshot.support_strategy) {
+    session.setField('support_strategy', modal.support_strategy)
+  }
+}
+
+function closeListeningModal(): void {
+  listeningModal.value = null
+  const target = listeningModalReturnFocus
+  listeningModalReturnFocus = null
+  if (target) {
+    void nextTick().then(() => {
+      try {
+        target.focus()
+      } catch {
+        // The trigger may have been unmounted by a page change.
+      }
+    })
+  }
+}
+
+function beforeListeningModalClose(done: () => void): void {
+  closeListeningModal()
+  done()
+}
+
+function readText(value: string | null | undefined): string {
+  const text = value ?? ''
+  return text.trim() === '' ? '（尚未填写）' : text
+}
+
+function starText(value: number | null | undefined): string {
+  return value ? '★'.repeat(value) : '未评'
+}
+
+function groupPosition(groupId: string): number {
+  const index = (session.form()?.groups ?? []).findIndex(
+    (group) => group.group_id === groupId,
+  )
+  return index + 1
+}
 
 function dateIssueFor(groupId: string) {
   return dateIssues.value.find((issue) => issue.groupId === groupId)
@@ -428,10 +968,20 @@ async function runMutating<T>(
 
 const bridge: LeaveEditor = {
   isDirty: () =>
-    session.isDirty() || aiDraft.value || directionalBusy.value,
-  identity: () => session.identity(),
+    session.isDirty() ||
+    aiDraft.value ||
+    directionalBusy.value ||
+    listeningModalDirty.value,
+  identity: () =>
+    `${session.identity()}:${listeningModal.value?.token ?? 'none'}`,
   settle: settleComposition,
   saveCurrent: async () => {
+    if (listeningModal.value) {
+      ElMessage.warning(
+        '编辑弹窗尚未确定或取消：请先处理弹窗后再保存或离开',
+      )
+      return 'failed'
+    }
     if (dateBlocking.value) {
       state.error = '观察月份变更后请先逐组处理作品日期，或取消日期调整'
       return 'failed'
@@ -441,7 +991,14 @@ const bridge: LeaveEditor = {
     return outcome
   },
   blockingDraft: () =>
-    directionalBusy.value
+    listeningModal.value
+      ? {
+          kind: 'listening',
+          message: listeningModalDirty.value
+            ? '编辑弹窗中有尚未确定的修改：请先确定并填入草稿，或取消弹窗'
+            : '编辑弹窗尚未关闭：请先确定或取消弹窗',
+        }
+      : directionalBusy.value
       ? {
           kind: 'listening',
           message: '定向修改正在生成或原受理结果待核对：请先处理后再离开',
@@ -525,6 +1082,11 @@ async function handleAiAdopted(payload: {
   patch: Record<string, unknown>
 }): Promise<void> {
   session.applyConfirmedAdoption(payload.domain, payload.revision, payload.patch)
+  if (listeningModal.value) {
+    ElMessage.info(
+      'AI 采用结果已写入草稿；当前弹窗输入仍保留，请核对后确定或取消',
+    )
+  }
   syncPhotoUrls()
   emitBusy()
 }
@@ -699,6 +1261,12 @@ function rememberDirectionalSelection(event: Event): void {
   directionalSelections.value = {
     ...directionalSelections.value,
     [captured.key]: captured.selection,
+  }
+  if (listeningModal.value) {
+    directionalSelectionTokens.value = {
+      ...directionalSelectionTokens.value,
+      [captured.key]: listeningModal.value.token,
+    }
   }
 }
 
@@ -1106,6 +1674,8 @@ async function checkReceipt(): Promise<void> {
 function resetForContext(): void {
   actionGeneration += 1
   actionCount.value = 0
+  listeningModal.value = null
+  listeningModalReturnFocus = null
   exportOpen.value = false
   exportBusy.value = false
   batchOpen.value = false
@@ -1116,6 +1686,7 @@ function resetForContext(): void {
   directionalBusy.value = false
   directionalRequest.value = null
   directionalSelections.value = {}
+  directionalSelectionTokens.value = {}
   directionalNotice.value = ''
   releaseComposition()
   invalidatePhotos()
@@ -1143,6 +1714,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   actionGeneration += 1
   actionCount.value = 0
+  listeningModal.value = null
+  listeningModalReturnFocus = null
   batchOpen.value = false
   resetBatchDraft()
   directionalOpen.value = false
@@ -1159,6 +1732,12 @@ onBeforeUnmount(() => {
 defineExpose({
   resetForContext,
   saveCurrent: async () => {
+    if (listeningModal.value) {
+      ElMessage.warning(
+        '编辑弹窗尚未确定或取消：请先处理弹窗后再保存或离开',
+      )
+      return 'failed'
+    }
     if (dateBlocking.value) {
       state.error = '观察月份变更后请先逐组处理作品日期，或取消日期调整'
       return 'failed'
@@ -1274,26 +1853,76 @@ defineExpose({
       class="block"
     />
 
-    <el-card shadow="never" class="block">
-      <div class="shared-name">
-        <span class="muted">幼儿姓名</span>
-        <el-input
-          :model-value="state.name"
-          maxlength="80"
-          show-word-limit
-          data-d1="listening-name"
-          :disabled="!canEdit"
-          @update:model-value="session.setName(String($event))"
-        />
-        <span class="muted">五表共用此姓名；改名仍是同一条记录。</span>
+    <el-card
+      shadow="never"
+      class="block reading-card"
+      data-d1="listening-record-summary"
+    >
+      <div class="reading-head">
+        <div>
+          <h3>记录信息</h3>
+          <p class="muted">
+            五领域共用一条记录与一个姓名；正文以只读表格展示，编辑需打开对应弹窗。
+          </p>
+        </div>
+        <el-button
+          size="small"
+          data-d1="listening-edit-name"
+          :disabled="!canMutate"
+          @click="openListeningModal('name')"
+        >
+          编辑姓名
+        </el-button>
       </div>
+      <div class="read-grid">
+        <div class="read-item">
+          <span class="read-label">幼儿姓名</span>
+          <span class="read-value" data-d1="listening-read-name">
+            {{ state.name || '（尚未填写）' }}
+          </span>
+        </div>
+        <div class="read-item">
+          <span class="read-label">班级</span>
+          <span class="read-value">
+            {{ props.context.class?.name || '—' }}
+          </span>
+        </div>
+        <div class="read-item">
+          <span class="read-label">记录年级</span>
+          <span class="read-value">{{ gradeLabel || '—' }}</span>
+        </div>
+        <div class="read-item">
+          <span class="read-label">学期</span>
+          <span class="read-value">{{ termName || '—' }}</span>
+        </div>
+        <div class="read-item">
+          <span class="read-label">创建时间</span>
+          <span class="read-value">
+            {{ formatRecordTime(record?.created_at || '') || '—' }}
+          </span>
+        </div>
+        <div class="read-item">
+          <span class="read-label">记录标识</span>
+          <span class="read-value">{{ state.recordId.slice(0, 8) }}</span>
+        </div>
+      </div>
+      <p
+        v-if="state.loaded && state.name !== state.nameBaseline"
+        class="muted"
+      >
+        姓名修改尚未保存；保存后会同步到同一记录的五张领域表。
+      </p>
     </el-card>
 
-    <div v-if="!state.loaded" v-loading="state.busy" class="block loading-block">
+    <div
+      v-if="!state.loaded"
+      v-loading="state.busy"
+      class="block loading-block"
+    >
       正在读取倾听记录...
     </div>
     <template v-else>
-      <div class="domain-tabs">
+      <div class="domain-tabs" data-d1="listening-domain-nav">
         <el-button
           v-for="domain in LISTENING_DOMAINS"
           :key="domain"
@@ -1306,9 +1935,32 @@ defineExpose({
         </el-button>
       </div>
 
-      <el-card v-if="form && template" shadow="never" class="block">
-        <h3>{{ template.domain_label }}领域 · {{ template.grade_label }} · {{ template.version }}</h3>
-        <p class="muted">模板散列 {{ template.sha256.slice(0, 12) }}… · 评价原文来自本记录绑定版本。</p>
+      <el-card
+        v-if="form && template"
+        shadow="never"
+        class="block reading-card"
+        data-d1="listening-read-header"
+      >
+        <div class="reading-head">
+          <div>
+            <h3>
+              {{ template.domain_label }}领域 · {{ template.grade_label }} ·
+              {{ template.version }}
+            </h3>
+            <p class="muted">
+              模板散列 {{ template.sha256.slice(0, 12) }}… ·
+              评价原文来自本记录绑定版本。
+            </p>
+          </div>
+          <el-button
+            size="small"
+            data-d1="listening-edit-header"
+            :disabled="!canMutate"
+            @click="openListeningModal('header')"
+          >
+            编辑基本信息
+          </el-button>
+        </div>
 
         <el-alert
           v-if="dateBlocking"
@@ -1327,371 +1979,384 @@ defineExpose({
           >
             取消日期调整
           </el-button>
-          <span class="muted">恢复已保存的观察月份与作品日期，不写入任何修改。</span>
+          <span class="muted">
+            恢复已保存的观察月份与作品日期，不写入任何修改。
+          </span>
         </div>
-        <div class="header-grid">
-          <label>
-            <span>观察月份（限记录所属学期）</span>
-            <el-date-picker
-              class="native-date"
-              type="month"
-              value-format="YYYY-MM"
-              :model-value="observationMonthValue"
-              :min="termRange?.min ?? ''"
-              :max="termRange?.max ?? ''"
-              :editable="false"
-              :disabled-date="disabledObservationDate"
-              :clearable="true"
-              :disabled="!canEdit || !termRange"
-              placeholder="选择观察月份"
-              data-d1="listening-observation-month"
-              @update:model-value="setObservationMonth"
-            />
+        <div class="read-grid">
+          <div class="read-item">
+            <span class="read-label">观察月份（限记录所属学期）</span>
+            <span class="read-value">
+              {{ form.observation_date || '（尚未选择）' }}
+            </span>
             <span
               v-if="legacyObservationDate"
               class="muted"
               data-d1="listening-observation-date-legacy"
             >
-              原记录：{{ form.observation_date }}
+              原记录格式：{{ form.observation_date }}
             </span>
-            <span v-else-if="!form.observation_date" class="muted">
-              尚未选择观察月份
+          </div>
+          <div class="read-item">
+            <span class="read-label">成人数目</span>
+            <span class="read-value">
+              {{ form.adult_count || '（尚未填写）' }}
             </span>
-            <el-button
-              v-if="form.observation_date"
-              size="small"
-              text
-              :disabled="!canEdit"
-              data-d1="listening-observation-date-clear"
-              @click="clearObservationMonth"
-            >
-              清空观察月份
-            </el-button>
-          </label>
-          <label>
-            <span>成人数目</span>
-            <el-input
-              :model-value="form.adult_count ?? ''"
-              data-d1="listening-adult-count"
-              :disabled="!canEdit"
-              @update:model-value="setField('adult_count', String($event))"
-            />
-          </label>
-          <label>
-            <span>幼儿年龄</span>
-            <el-input
-              :model-value="form.child_age ?? ''"
-              data-d1="listening-child-age"
-              :disabled="!canEdit"
-              @update:model-value="setField('child_age', String($event))"
-            />
-          </label>
-          <label class="wide">
-            <span>目标</span>
-            <el-input
-              :model-value="form.goal ?? ''"
-              type="textarea"
-              :rows="2"
-              data-d1="listening-goal"
-              data-directional-field="goal"
-              :disabled="!canEdit"
-              @update:model-value="setField('goal', String($event))"
-            />
-            <div class="goal-ai-row">
-              <DirectionalRevisionTrigger
-                test-id="listening-directional-goal"
-                :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-                @request="(whole) => openDirectionalSaved('goal', '', whole)"
-              />
-            </div>
-          </label>
-        </div>
-
-        <ListeningAiPanel
-          v-if="state.loaded && form && template"
-          ref="aiPanel"
-          :record-id="props.recordId"
-          :domain="state.domain"
-          :groups="form.groups"
-          :saved-groups="savedDirectionalGroups"
-          :revision="state.revision"
-          :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-          :profile-epoch="props.profileEpoch ?? 0"
-          :ensure-saved="ensureAiSaved"
-          @busy="handleAiBusy"
-          @draft="handleAiDraft"
-          @adopted="handleAiAdopted"
-        />
-        <div class="groups">
-          <el-card
-            v-for="(group, index) in form.groups"
-            :key="group.group_id"
-            shadow="never"
-            class="group-card"
-          >
-            <div class="group-head">
-              <strong>第 {{ index + 1 }} 组</strong>
-              <span class="muted">稳定标识 {{ group.group_id.slice(0, 8) }}</span>
-              <div class="group-actions">
-                <el-button
-                  size="small"
-                  :disabled="!canEdit || index === 0"
-                  data-d1="listening-group-up"
-                  @click="moveGroup(group.group_id, -1)"
-                >
-                  上移
-                </el-button>
-                <el-button
-                  size="small"
-                  :disabled="!canEdit || index === form.groups.length - 1"
-                  data-d1="listening-group-down"
-                  @click="moveGroup(group.group_id, 1)"
-                >
-                  下移
-                </el-button>
-              </div>
-            </div>
-            <div class="group-grid">
-              <div class="photo-cell">
-                <div
-                  class="photo-preview"
-                  :data-rotation="photoRotation(group.asset_id)"
-                >
-                  <img
-                    v-if="group.asset_id && photoUrls[group.asset_id]"
-                    :src="photoUrls[group.asset_id]"
-                    :style="photoRotationStyle(group.asset_id)"
-                    data-d1="listening-photo-image"
-                    alt="幼儿绘画照片"
-                  />
-                  <span
-                    v-else-if="group.asset_id && photoErrors[group.asset_id]"
-                    class="photo-error"
-                  >
-                    {{ photoErrors[group.asset_id] }}
-                    <el-button
-                      size="small"
-                      text
-                      :disabled="!canEdit || photoLoading[group.asset_id]"
-                      data-d1="listening-photo-retry"
-                      @click="retryPhoto(group.asset_id)"
-                    >
-                      重试读取
-                    </el-button>
-                  </span>
-                  <span v-else class="muted">
-                    {{ group.asset_id ? '图片读取中…' : '尚未选择照片' }}
-                  </span>
-                </div>
-                <label class="file-label" :class="{ disabled: !canMutate }">
-                  {{ group.asset_id ? '替换照片' : '选择照片' }}
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
-                    :disabled="!canMutate"
-                    data-d1="listening-photo-input"
-                    @change="pickPhoto($event, group.group_id)"
-                  />
-                </label>
-                <div v-if="group.asset_id" class="photo-rotate-actions">
-                  <el-button
-                    size="small"
-                    :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-                    data-d1="listening-photo-rotate-left"
-                    @click="rotatePhoto(group.group_id, -1)"
-                  >
-                    左转 90°
-                  </el-button>
-                  <el-button
-                    size="small"
-                    :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-                    data-d1="listening-photo-rotate-right"
-                    @click="rotatePhoto(group.group_id, 1)"
-                  >
-                    右转 90°
-                  </el-button>
-                  <span class="muted">
-                    显示 {{ photoRotation(group.asset_id) * 90 }}°
-                  </span>
-                </div>
-                <el-button
-                  v-if="group.asset_id"
-                  size="small"
-                  type="danger"
-                  text
-                  :disabled="!canMutate"
-                  data-d1="listening-photo-remove"
-                  @click="removePhoto(group.group_id)"
-                >
-                  移除图片
-                </el-button>
-              </div>
-              <div class="text-cell">
-                <label>
-                  <span>作品日期（观察月与学期交集）</span>
-                  <el-date-picker
-                    class="native-date"
-                    type="date"
-                    value-format="YYYY-MM-DD"
-                    :model-value="canonicalWorkDate(group.work_date)"
-                    :min="workRange?.min ?? ''"
-                    :max="workRange?.max ?? ''"
-                    :editable="false"
-                    :disabled-date="disabledWorkDate"
-                    :clearable="true"
-                    :disabled="!canEdit || !observationMonth || !workRange"
-                    placeholder="选择作品日期"
-                    data-d1="listening-work-date-picker"
-                    :data-group-id="group.group_id"
-                    @update:model-value="setWorkDate(group.group_id, $event)"
-                  />
-                  <span
-                    v-if="legacyWorkDate(group.work_date)"
-                    class="muted"
-                    data-d1="listening-work-date-legacy"
-                  >
-                    原记录：{{ group.work_date }}
-                  </span>
-                  <span v-else-if="!group.work_date" class="muted">
-                    {{ observationMonth ? '尚未选择作品日期' : '先选择观察月份' }}
-                  </span>
-                  <el-button
-                    v-if="group.work_date"
-                    size="small"
-                    text
-                    :disabled="!canEdit"
-                    data-d1="listening-work-date-clear"
-                    :data-group-id="group.group_id"
-                    @click="clearWorkDate(group.group_id)"
-                  >
-                    清空作品日期
-                  </el-button>
-                  <el-alert
-                    v-if="dateIssueFor(group.group_id)"
-                    type="warning"
-                    :closable="false"
-                    :title="dateIssueFor(group.group_id)?.reason"
-                    data-d1="listening-work-date-warning"
-                    :data-group-id="group.group_id"
-                  />
-                </label>
-                <label>
-                  <span>一对一倾听记录</span>
-                  <el-input
-                    :model-value="group.listening_text ?? ''"
-                    type="textarea"
-                    :rows="5"
-                    data-d1="listening-text"
-                    data-directional-field="listening_text"
-                    :data-directional-group-id="group.group_id"
-                    :disabled="!canEdit"
-                    @update:model-value="
-                      setGroupField(group.group_id, 'listening_text', String($event))
-                    "
-                  />
-                  <DirectionalRevisionTrigger
-                    test-id="listening-directional-group-text"
-                    :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-                    @request="
-                      (whole) =>
-                        openDirectionalSaved(
-                          'listening_text',
-                          group.group_id,
-                          whole,
-                        )
-                    "
-                  />
-                </label>
-              </div>
-            </div>
-          </el-card>
-        </div>
-
-        <h3>领域评价</h3>
-        <div
-          v-for="item in template.items"
-          :key="item.item_id"
-          class="evaluation-row"
-          :data-d1="`listening-item-${item.item_id}`"
-        >
-          <div class="evaluation-head">
-            <strong>{{ item.requirement }}</strong>
-            <span class="muted">{{ item.level1 }} / {{ item.level2 }}</span>
           </div>
-          <div class="standards">
-            <div><span class="star">★</span> {{ item.standards['1'] }}</div>
-            <div><span class="star">★★</span> {{ item.standards['2'] }}</div>
-            <div><span class="star">★★★</span> {{ item.standards['3'] }}</div>
-          </div>
-          <div class="star-actions">
-            <el-button
-              v-for="stars in [1, 2, 3]"
-              :key="stars"
-              size="small"
-              :type="starsFor(item.item_id) === stars ? 'primary' : 'default'"
-              :data-d1="`listening-star-${item.item_id}-${stars}`"
-              :disabled="!canEdit"
-              @click="setStars(item.item_id, stars)"
-            >
-              {{ '★'.repeat(stars) }}
-            </el-button>
-            <el-button
-              size="small"
-              text
-              data-d1="listening-star-clear"
-              :disabled="!canEdit || starsFor(item.item_id) === null"
-              @click="setStars(item.item_id, null)"
-            >
-              清空
-            </el-button>
+          <div class="read-item">
+            <span class="read-label">幼儿年龄</span>
+            <span class="read-value">
+              {{ form.child_age || '（尚未填写）' }}
+            </span>
           </div>
         </div>
 
-        <div class="header-grid">
-          <label class="wide">
-            <span>综合评价</span>
-            <el-input
-              :model-value="form.overall_evaluation ?? ''"
-              type="textarea"
-              :rows="3"
-              data-d1="listening-overall"
-              data-directional-field="overall_evaluation"
-              :disabled="!canEdit"
-              @update:model-value="setField('overall_evaluation', String($event))"
-            />
+        <div class="read-block">
+          <div class="read-block-head">
+            <span class="read-label">观察目标</span>
             <DirectionalRevisionTrigger
-              test-id="listening-directional-overall"
+              test-id="listening-directional-goal"
               :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-              @request="
-                (whole) =>
-                  openDirectionalSaved('overall_evaluation', '', whole)
-              "
+              @request="(whole) => openDirectionalSaved('goal', '', whole)"
             />
-          </label>
-          <label class="wide">
-            <span>支持策略</span>
-            <el-input
-              :model-value="form.support_strategy ?? ''"
-              type="textarea"
-              :rows="3"
-              data-d1="listening-support"
-              data-directional-field="support_strategy"
-              :disabled="!canEdit"
-              @update:model-value="setField('support_strategy', String($event))"
-            />
-            <DirectionalRevisionTrigger
-              test-id="listening-directional-support"
-              :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-              @request="
-                (whole) =>
-                  openDirectionalSaved('support_strategy', '', whole)
-              "
-            />
-          </label>
+          </div>
+          <div class="read-text" data-d1="listening-read-goal">
+            {{ readText(form.goal) }}
+          </div>
         </div>
       </el-card>
-    </template>
 
+      <ListeningAiPanel
+        v-if="state.loaded && form && template"
+        ref="aiPanel"
+        :record-id="props.recordId"
+        :domain="state.domain"
+        :groups="form.groups"
+        :saved-groups="savedDirectionalGroups"
+        :revision="state.revision"
+        :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+        :profile-epoch="props.profileEpoch ?? 0"
+        :ensure-saved="ensureAiSaved"
+        @busy="handleAiBusy"
+        @draft="handleAiDraft"
+        @adopted="handleAiAdopted"
+      />
+
+      <template v-if="form">
+      <div class="groups">
+        <el-card
+          shadow="never"
+          class="block reading-card"
+          data-d1="listening-read-groups"
+        >
+          <div class="reading-head">
+            <div>
+              <h3>照片与倾听记录</h3>
+              <p class="muted">
+                每组照片按当前顺序展示；照片选择、方向和日期、倾听正文均保留，文字与日期通过编辑按钮修改。
+              </p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="read-table">
+              <thead>
+                <tr>
+                  <th>组</th>
+                  <th>照片与方向</th>
+                  <th>作品日期</th>
+                  <th>倾听记录</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(group, index) in form.groups"
+                  :key="group.group_id"
+                  :data-d1="`listening-read-group-${group.group_id}`"
+                >
+                  <td>
+                    <strong>第 {{ index + 1 }} 组</strong>
+                    <div class="muted">
+                      稳定标识 {{ group.group_id.slice(0, 8) }}
+                    </div>
+                    <div class="group-actions read-group-actions">
+                      <el-button
+                        size="small"
+                        :disabled="!canEdit || index === 0"
+                        data-d1="listening-group-up"
+                        @click="moveGroup(group.group_id, -1)"
+                      >
+                        上移
+                      </el-button>
+                      <el-button
+                        size="small"
+                        :disabled="!canEdit || index === form.groups.length - 1"
+                        data-d1="listening-group-down"
+                        @click="moveGroup(group.group_id, 1)"
+                      >
+                        下移
+                      </el-button>
+                    </div>
+                  </td>
+                  <td class="group-photo-cell">
+                    <div
+                      class="photo-preview compact"
+                      :data-rotation="photoRotation(group.asset_id)"
+                    >
+                      <img
+                        v-if="group.asset_id && photoUrls[group.asset_id]"
+                        :src="photoUrls[group.asset_id]"
+                        :style="photoRotationStyle(group.asset_id)"
+                        data-d1="listening-photo-image"
+                        alt="幼儿绘画照片"
+                      />
+                      <span
+                        v-else-if="group.asset_id && photoErrors[group.asset_id]"
+                        class="photo-error"
+                      >
+                        {{ photoErrors[group.asset_id] }}
+                        <el-button
+                          size="small"
+                          text
+                          :disabled="!canEdit || photoLoading[group.asset_id]"
+                          data-d1="listening-photo-retry"
+                          @click="retryPhoto(group.asset_id)"
+                        >
+                          重试读取
+                        </el-button>
+                      </span>
+                      <span v-else class="muted">
+                        {{ group.asset_id ? '图片读取中…' : '尚未选择照片' }}
+                      </span>
+                    </div>
+                    <label
+                      class="file-label"
+                      :class="{ disabled: !canMutate }"
+                    >
+                      {{ group.asset_id ? '替换照片' : '选择照片' }}
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
+                        :disabled="!canMutate"
+                        data-d1="listening-photo-input"
+                        @change="pickPhoto($event, group.group_id)"
+                      />
+                    </label>
+                    <div v-if="group.asset_id" class="photo-rotate-actions">
+                      <el-button
+                        size="small"
+                        :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+                        data-d1="listening-photo-rotate-left"
+                        @click="rotatePhoto(group.group_id, -1)"
+                      >
+                        左转 90°
+                      </el-button>
+                      <el-button
+                        size="small"
+                        :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+                        data-d1="listening-photo-rotate-right"
+                        @click="rotatePhoto(group.group_id, 1)"
+                      >
+                        右转 90°
+                      </el-button>
+                      <span class="muted">
+                        显示 {{ photoRotation(group.asset_id) * 90 }}°
+                      </span>
+                    </div>
+                    <el-button
+                      v-if="group.asset_id"
+                      size="small"
+                      type="danger"
+                      text
+                      :disabled="!canMutate"
+                      data-d1="listening-photo-remove"
+                      @click="removePhoto(group.group_id)"
+                    >
+                      移除图片
+                    </el-button>
+                  </td>
+                  <td>
+                    <span class="read-value">
+                      {{ group.work_date || '尚未选择作品日期' }}
+                    </span>
+                    <span
+                      v-if="legacyWorkDate(group.work_date)"
+                      class="muted"
+                      data-d1="listening-work-date-legacy"
+                    >
+                      （原记录格式）
+                    </span>
+                    <el-alert
+                      v-if="dateIssueFor(group.group_id)"
+                      type="warning"
+                      :closable="false"
+                      :title="dateIssueFor(group.group_id)?.reason"
+                      data-d1="listening-work-date-warning"
+                      :data-group-id="group.group_id"
+                    />
+                  </td>
+                  <td>
+                    <div
+                      class="read-text"
+                      data-d1="listening-read-group-text"
+                      :data-group-id="group.group_id"
+                    >
+                      {{ readText(group.listening_text) }}
+                    </div>
+                    <DirectionalRevisionTrigger
+                      test-id="listening-directional-group-text"
+                      :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+                      @request="
+                        (whole) =>
+                          openDirectionalSaved(
+                            'listening_text',
+                            group.group_id,
+                            whole,
+                          )
+                      "
+                    />
+                  </td>
+                  <td class="read-action-cell">
+                    <el-button
+                      size="small"
+                      data-d1="listening-edit-group"
+                      :data-group-id="group.group_id"
+                      :disabled="!canMutate"
+                      @click="openListeningModal('group', group.group_id)"
+                    >
+                      编辑此组
+                    </el-button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </el-card>
+      </div>
+      </template>
+
+      <el-card
+        shadow="never"
+        v-if="form && template"
+        class="block reading-card"
+        data-d1="listening-read-evaluation"
+      >
+        <div class="reading-head">
+          <div>
+            <h3>领域评价</h3>
+            <p class="muted">
+              星级与绑定模板的评价原文一并保留；点击编辑按钮集中调整。
+            </p>
+          </div>
+          <el-button
+            size="small"
+            data-d1="listening-edit-evaluation"
+            :disabled="!canMutate"
+            @click="openListeningModal('evaluation')"
+          >
+            编辑星级
+          </el-button>
+        </div>
+        <div class="table-scroll">
+          <table class="read-table evaluation-table">
+            <thead>
+              <tr>
+                <th>要求</th>
+                <th>等级</th>
+                <th>评价标准</th>
+                <th>当前星级</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="item in template.items"
+                :key="item.item_id"
+                :data-d1="`listening-item-${item.item_id}`"
+              >
+                <td><strong>{{ item.requirement }}</strong></td>
+                <td>{{ item.level1 }} / {{ item.level2 }}</td>
+                <td>
+                  <div class="standards">
+                    <div><span class="star">★</span> {{ item.standards['1'] }}</div>
+                    <div><span class="star">★★</span> {{ item.standards['2'] }}</div>
+                    <div><span class="star">★★★</span> {{ item.standards['3'] }}</div>
+                  </div>
+                </td>
+                <td>
+                  <span class="star-current">
+                    {{ starText(starsFor(item.item_id)) }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </el-card>
+
+      <el-card
+        shadow="never"
+        v-if="form"
+        class="block reading-card"
+        data-d1="listening-read-overall"
+      >
+        <div class="reading-head">
+          <div>
+            <h3>综合评价</h3>
+            <p class="muted">正文只读；点击编辑按钮在独立副本中修改。</p>
+          </div>
+          <el-button
+            size="small"
+            data-d1="listening-edit-overall"
+            :disabled="!canMutate"
+            @click="openListeningModal('overall')"
+          >
+            编辑综合评价
+          </el-button>
+        </div>
+        <div class="read-text">
+          {{ readText(form.overall_evaluation) }}
+        </div>
+        <DirectionalRevisionTrigger
+          test-id="listening-directional-overall"
+          :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+          @request="
+            (whole) => openDirectionalSaved('overall_evaluation', '', whole)
+          "
+        />
+      </el-card>
+
+      <el-card
+        shadow="never"
+        v-if="form"
+        class="block reading-card"
+        data-d1="listening-read-support"
+      >
+        <div class="reading-head">
+          <div>
+            <h3>支持策略</h3>
+            <p class="muted">正文只读；点击编辑按钮在独立副本中修改。</p>
+          </div>
+          <el-button
+            size="small"
+            data-d1="listening-edit-support"
+            :disabled="!canMutate"
+            @click="openListeningModal('support')"
+          >
+            编辑支持策略
+          </el-button>
+        </div>
+        <div class="read-text">
+          {{ readText(form.support_strategy) }}
+        </div>
+        <DirectionalRevisionTrigger
+          test-id="listening-directional-support"
+          :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+          @request="
+            (whole) => openDirectionalSaved('support_strategy', '', whole)
+          "
+        />
+      </el-card>
+    </template>
 
     <el-alert
       v-if="directionalNotice"
@@ -1719,9 +2384,375 @@ defineExpose({
     />
 
     <el-dialog
+      v-if="listeningModal"
+      v-model="listeningModalOpen"
+      :title="listeningModal.label"
+      align-center
+      width="min(720px, calc(100vw - 32px))"
+      :close-on-click-modal="false"
+      :before-close="beforeListeningModalClose"
+      data-d1="listening-edit-dialog"
+    >
+      <div
+        class="listening-modal"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
+        @select.capture="rememberDirectionalSelection"
+        @mouseup.capture="rememberDirectionalSelection"
+        @keyup.capture="rememberDirectionalSelection"
+        @blur.capture="rememberDirectionalSelection"
+      >
+        <template v-if="listeningModal.kind === 'name'">
+          <label class="modal-field">
+            <span>幼儿姓名</span>
+            <el-input
+              :model-value="listeningModal.name"
+              maxlength="80"
+              show-word-limit
+              data-d1="listening-name"
+              :disabled="!canEditRecord"
+              @update:model-value="setListeningModalField('name', $event)"
+            />
+          </label>
+          <p class="muted">
+            五表共用此姓名；确定只填入草稿，保存仍由页面「保存」按钮执行。
+          </p>
+        </template>
+
+        <template v-else-if="listeningModal.kind === 'header'">
+          <el-alert
+            v-if="listeningModalDateWarning"
+            type="warning"
+            :closable="false"
+            :title="listeningModalDateWarning"
+            data-d1="listening-modal-date-warning"
+          />
+          <div class="header-grid">
+            <label>
+              <span>观察月份（限记录所属学期）</span>
+              <el-date-picker
+                class="native-date"
+                type="month"
+                value-format="YYYY-MM"
+                :model-value="listeningModalObservationMonthValue"
+                :min="termRange?.min ?? ''"
+                :max="termRange?.max ?? ''"
+                :editable="false"
+                :disabled-date="disabledObservationDate"
+                :clearable="true"
+                :disabled="!canEditRecord || !termRange"
+                placeholder="选择观察月份"
+                data-d1="listening-observation-month"
+                @update:model-value="
+                  setListeningModalField('observation_date', $event)
+                "
+              />
+              <span
+                v-if="listeningModalLegacyObservationDate"
+                class="muted"
+                data-d1="listening-observation-date-legacy"
+              >
+                原记录格式：{{ listeningModal.observation_date }}
+              </span>
+              <el-button
+                v-if="listeningModal.observation_date"
+                size="small"
+                text
+                :disabled="!canEditRecord"
+                data-d1="listening-observation-date-clear"
+                @click="setListeningModalField('observation_date', '')"
+              >
+                清空观察月份
+              </el-button>
+            </label>
+            <label>
+              <span>成人数目</span>
+              <el-input
+                :model-value="listeningModal.adult_count"
+                data-d1="listening-adult-count"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setListeningModalField('adult_count', $event)
+                "
+              />
+            </label>
+            <label>
+              <span>幼儿年龄</span>
+              <el-input
+                :model-value="listeningModal.child_age"
+                data-d1="listening-child-age"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setListeningModalField('child_age', $event)
+                "
+              />
+            </label>
+            <label class="wide">
+              <span>目标</span>
+              <el-input
+                :model-value="listeningModal.goal"
+                type="textarea"
+                :rows="3"
+                data-d1="listening-goal"
+                data-directional-field="goal"
+                :disabled="!canEditRecord"
+                @update:model-value="setListeningModalField('goal', $event)"
+              />
+              <div class="modal-ai-row">
+                <el-button
+                  size="small"
+                  data-d1="listening-modal-directional-goal-selection"
+                  :disabled="!canEditRecord"
+                  @click="openListeningModalDirectional('goal', false)"
+                >
+                  填回草稿并修改选段
+                </el-button>
+                <el-button
+                  size="small"
+                  data-d1="listening-modal-directional-goal-whole"
+                  :disabled="!canEditRecord"
+                  @click="openListeningModalDirectional('goal', true)"
+                >
+                  填回草稿并整栏修改
+                </el-button>
+              </div>
+            </label>
+          </div>
+        </template>
+
+        <template v-else-if="listeningModal.kind === 'group'">
+          <p class="muted">
+            第 {{ groupPosition(listeningModal.groupId) }} 组 ·
+            照片 {{ form?.groups.find((group) => group.group_id === listeningModal?.groupId)?.asset_id ? '已有' : '未选择' }}，
+            照片本身仍通过表格中的明确操作替换或移除。
+          </p>
+          <el-alert
+            v-if="listeningModalDateWarning"
+            type="warning"
+            :closable="false"
+            :title="listeningModalDateWarning"
+            data-d1="listening-modal-date-warning"
+          />
+          <div class="header-grid">
+            <label>
+              <span>作品日期（观察月与学期交集）</span>
+              <el-date-picker
+                class="native-date"
+                type="date"
+                value-format="YYYY-MM-DD"
+                :model-value="listeningModalWorkDateValue"
+                :min="workRange?.min ?? ''"
+                :max="workRange?.max ?? ''"
+                :editable="false"
+                :disabled-date="disabledWorkDate"
+                :clearable="true"
+                :disabled="!canEditRecord || !observationMonth || !workRange"
+                placeholder="选择作品日期"
+                data-d1="listening-work-date-picker"
+                @update:model-value="
+                  setListeningModalField('work_date', $event)
+                "
+              />
+              <span
+                v-if="listeningModalLegacyWorkDate"
+                class="muted"
+                data-d1="listening-work-date-legacy"
+              >
+                原记录格式：{{ listeningModal.work_date }}
+              </span>
+              <el-button
+                v-if="listeningModal.work_date"
+                size="small"
+                text
+                :disabled="!canEditRecord"
+                data-d1="listening-work-date-clear"
+                @click="setListeningModalField('work_date', '')"
+              >
+                清空作品日期
+              </el-button>
+            </label>
+            <label class="wide">
+              <span>一对一倾听记录</span>
+              <el-input
+                :model-value="listeningModal.listening_text"
+                type="textarea"
+                :rows="8"
+                data-d1="listening-text"
+                data-directional-field="listening_text"
+                :data-directional-group-id="listeningModal.groupId"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setListeningModalField('listening_text', $event)
+                "
+              />
+              <div class="modal-ai-row">
+                <el-button
+                  size="small"
+                  data-d1="listening-modal-directional-note-selection"
+                  :disabled="!canEditRecord"
+                  @click="
+                    openListeningModalDirectional('listening_text', false)
+                  "
+                >
+                  填回草稿并修改选段
+                </el-button>
+                <el-button
+                  size="small"
+                  data-d1="listening-modal-directional-note-whole"
+                  :disabled="!canEditRecord"
+                  @click="
+                    openListeningModalDirectional('listening_text', true)
+                  "
+                >
+                  填回草稿并整栏修改
+                </el-button>
+              </div>
+            </label>
+          </div>
+        </template>
+
+        <template v-else-if="listeningModal.kind === 'evaluation'">
+          <div
+            v-for="item in template?.items ?? []"
+            :key="item.item_id"
+            class="evaluation-row"
+          >
+            <div class="evaluation-head">
+              <strong>{{ item.requirement }}</strong>
+              <span class="muted">{{ item.level1 }} / {{ item.level2 }}</span>
+            </div>
+            <div class="standards">
+              <div><span class="star">★</span> {{ item.standards['1'] }}</div>
+              <div><span class="star">★★</span> {{ item.standards['2'] }}</div>
+              <div><span class="star">★★★</span> {{ item.standards['3'] }}</div>
+            </div>
+            <div class="star-actions">
+              <el-button
+                v-for="stars in [1, 2, 3]"
+                :key="stars"
+                size="small"
+                :type="(listeningModal.stars[item.item_id] ?? null) === stars ? 'primary' : 'default'"
+                :data-d1="`listening-star-${item.item_id}-${stars}`"
+                :disabled="!canEditRecord"
+                @click="setListeningModalStar(item.item_id, stars)"
+              >
+                {{ '★'.repeat(stars) }}
+              </el-button>
+              <el-button
+                size="small"
+                text
+                data-d1="listening-star-clear"
+                :disabled="!canEditRecord || (listeningModal.stars[item.item_id] ?? null) === null"
+                @click="setListeningModalStar(item.item_id, null)"
+              >
+                清空
+              </el-button>
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="listeningModal.kind === 'overall'">
+          <label class="modal-field">
+            <span>综合评价</span>
+            <el-input
+              :model-value="listeningModal.overall_evaluation"
+              type="textarea"
+              :rows="5"
+              data-d1="listening-overall"
+              data-directional-field="overall_evaluation"
+              :disabled="!canEditRecord"
+              @update:model-value="
+                setListeningModalField('overall_evaluation', $event)
+              "
+            />
+            <div class="modal-ai-row">
+              <el-button
+                size="small"
+                data-d1="listening-modal-directional-overall-selection"
+                :disabled="!canEditRecord"
+                @click="
+                  openListeningModalDirectional('overall_evaluation', false)
+                "
+              >
+                填回草稿并修改选段
+              </el-button>
+              <el-button
+                size="small"
+                data-d1="listening-modal-directional-overall-whole"
+                :disabled="!canEditRecord"
+                @click="
+                  openListeningModalDirectional('overall_evaluation', true)
+                "
+              >
+                填回草稿并整栏修改
+              </el-button>
+            </div>
+          </label>
+        </template>
+        <template v-else>
+          <label class="modal-field">
+            <span>支持策略</span>
+            <el-input
+              :model-value="listeningModal.support_strategy"
+              type="textarea"
+              :rows="5"
+              data-d1="listening-support"
+              data-directional-field="support_strategy"
+              :disabled="!canEditRecord"
+              @update:model-value="
+                setListeningModalField('support_strategy', $event)
+              "
+            />
+            <div class="modal-ai-row">
+              <el-button
+                size="small"
+                data-d1="listening-modal-directional-support-selection"
+                :disabled="!canEditRecord"
+                @click="
+                  openListeningModalDirectional('support_strategy', false)
+                "
+              >
+                填回草稿并修改选段
+              </el-button>
+              <el-button
+                size="small"
+                data-d1="listening-modal-directional-support-whole"
+                :disabled="!canEditRecord"
+                @click="
+                  openListeningModalDirectional('support_strategy', true)
+                "
+              >
+                填回草稿并整栏修改
+              </el-button>
+            </div>
+          </label>
+        </template>
+        <p class="muted">
+          取消保持打开前的草稿；确定只把本栏内容填入草稿，不保存业务版本。定向修改会先显式填回草稿，再打开候选。
+        </p>
+      </div>
+      <template #footer>
+        <el-button
+          data-d1="listening-edit-cancel"
+          @click="closeListeningModal"
+        >
+          取消（保留原草稿）
+        </el-button>
+        <el-button
+          type="primary"
+          data-d1="listening-edit-confirm"
+          :disabled="!canEditRecord"
+          @click="confirmListeningModal"
+        >
+          确定并填入草稿
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="batchOpen"
       title="批量选择倾听照片（1～15 张）"
-      width="860px"
+      width="min(860px, calc(100vw - 32px))"
       :close-on-click-modal="false"
       :before-close="beforeBatchClose"
       data-d1="listening-batch-dialog"
@@ -1944,7 +2975,7 @@ defineExpose({
 }
 .photo-preview {
   min-height: 140px;
-  border: 1px dashed #d1d5db;
+  border: 1px dashed var(--kgm-border);
   border-radius: 6px;
   display: flex;
   align-items: center;
@@ -1995,7 +3026,7 @@ defineExpose({
   gap: 10px;
 }
 .evaluation-row {
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--kgm-border);
   padding: 10px 0;
 }
 .evaluation-head {
@@ -2046,12 +3077,12 @@ defineExpose({
   width: 84px;
   height: 64px;
   object-fit: contain;
-  border: 1px dashed #d1d5db;
+  border: 1px dashed var(--kgm-border);
   border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #9ca3af;
+  color: var(--kgm-muted);
   font-size: 12px;
 }
 .batch-file {
@@ -2083,6 +3114,135 @@ defineExpose({
   }
   .group-grid {
     grid-template-columns: 1fr;
+  }
+}
+.reading-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.reading-head h3 {
+  margin: 0 0 4px;
+}
+.reading-head > .el-button {
+  flex-shrink: 0;
+}
+.read-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 12px 18px;
+  margin-top: 12px;
+}
+.read-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.read-label {
+  color: var(--kgm-muted);
+  font-size: 0.85rem;
+}
+.read-value {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.read-block {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.read-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.read-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.65;
+  min-height: 1.5em;
+}
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  margin-top: 10px;
+}
+.read-table {
+  width: 100%;
+  min-width: 820px;
+  border-collapse: collapse;
+}
+.read-table th,
+.read-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--kgm-border);
+  text-align: left;
+  vertical-align: top;
+}
+.read-table th {
+  color: var(--kgm-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.read-table tr:last-child td {
+  border-bottom: none;
+}
+.read-group-actions {
+  margin-top: 8px;
+}
+.read-action-cell {
+  white-space: nowrap;
+}
+.group-photo-cell {
+  min-width: 190px;
+}
+.photo-preview.compact {
+  min-height: 100px;
+  max-height: 170px;
+}
+.photo-preview.compact img {
+  max-height: 150px;
+}
+.evaluation-table .standards {
+  margin-top: 0;
+}
+.star-current {
+  color: #b45309;
+  font-size: 1.1rem;
+  white-space: nowrap;
+}
+.listening-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 65vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.modal-ai-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+@media (max-width: 900px) {
+  .read-grid {
+    grid-template-columns: 1fr;
+  }
+  .read-table {
+    min-width: 720px;
   }
 }
 </style>

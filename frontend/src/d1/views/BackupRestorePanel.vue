@@ -831,6 +831,21 @@ function onDialogValue(value: boolean): void {
     @update:model-value="onDialogValue"
   >
     <div class="backup-panel">
+      <div class="kgm-preview-wrap">
+        <table class="kgm-preview-table" data-d1="backup-status-table">
+          <thead>
+            <tr><th>操作</th><th>当前状态</th><th>进度</th></tr>
+          </thead>
+          <tbody>
+            <tr data-d1="backup-operation-status">
+              <td>{{ kind === 'backup' ? '完整备份' : '从本地备份恢复' }}</td>
+              <td>{{ title }}</td>
+              <td>{{ progressText || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <el-alert
         v-if="phase === 'recovery_required'"
         type="error"
@@ -840,6 +855,7 @@ function onDialogValue(value: boolean): void {
         :description="startupDetail || '请重启应用，并按提示处理上次恢复；不会自动猜测成功。'"
       />
 
+
       <template v-else-if="phase === 'idle'">
         <p class="muted">
           {{
@@ -848,24 +864,42 @@ function onDialogValue(value: boolean): void {
               : '备份包含全部受管业务、设置、历史与照片；恢复会替换当前档案并保留恢复前完整保护副本。'
           }}
         </p>
-        <div class="actions">
-          <el-button
-            v-if="props.mode === 'settings'"
-            type="primary"
-            :disabled="!canStartBackup"
-            data-d1="backup-create"
-            @click="chooseBackupTarget"
-          >
-            创建完整备份
-          </el-button>
-          <el-button
-            :type="props.mode === 'setup' ? 'primary' : 'default'"
-            :disabled="!canStartRestore"
-            data-d1="backup-restore"
-            @click="chooseRestoreSource"
-          >
-            从本地备份恢复
-          </el-button>
+        <div class="kgm-preview-wrap">
+          <table class="kgm-preview-table" data-d1="backup-operations-table">
+            <thead>
+              <tr><th>操作</th><th>说明</th><th>入口</th></tr>
+            </thead>
+            <tbody>
+              <tr v-if="props.mode === 'settings'" data-d1="backup-operation-backup">
+                <td>完整备份</td>
+                <td>选择本地保存位置后，再明确选择密码加密或明文。</td>
+                <td>
+                  <el-button
+                    type="primary"
+                    :disabled="!canStartBackup"
+                    data-d1="backup-create"
+                    @click="chooseBackupTarget"
+                  >
+                    创建完整备份
+                  </el-button>
+                </td>
+              </tr>
+              <tr data-d1="backup-operation-restore">
+                <td>从本地备份恢复</td>
+                <td>校验后先显示预览，再确认替换并保留保护副本。</td>
+                <td>
+                  <el-button
+                    :type="props.mode === 'setup' ? 'primary' : 'default'"
+                    :disabled="!canStartRestore"
+                    data-d1="backup-restore"
+                    @click="chooseRestoreSource"
+                  >
+                    从本地备份恢复
+                  </el-button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </template>
 

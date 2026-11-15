@@ -16,6 +16,7 @@ import type {
   ConfigPreview,
   LocalContext,
 } from '../types'
+import type { UpdateStatus } from '../update'
 import type { SettingsDraftTarget, SettingsDraftTargetKind } from '../leave'
 import AiSettingsPanel from './AiSettingsPanel.vue'
 import GameConfigPanel from './GameConfigPanel.vue'
@@ -29,6 +30,7 @@ const props = defineProps<{
   section?: 'collaboration' | null
   focusPrompt?: string
   reloadContext?: () => Promise<LocalContext>
+  updateStatus?: UpdateStatus | null
 }>()
 const emit = defineEmits<{
   (e: 'draft-targets', targets: SettingsDraftTarget[]): void
@@ -36,10 +38,38 @@ const emit = defineEmits<{
   (e: 'leave', run: () => Promise<'left' | 'stayed'> | 'left' | 'stayed'): void
   (e: 'open-maintenance'): void
   (e: 'section', section: 'collaboration' | null): void
+  (e: 'check-update'): void
 }>()
 
 type SettingsSection = 'main' | 'collaboration'
 type SettingsGroup = 'backup' | 'terms' | 'calendar' | 'games'
+type SettingsEditor = 'profile' | 'class' | 'term' | 'new-term' | 'override'
+
+/**
+ * Summary-card edit modals use independent copies. Only an explicit
+ * "填回草稿" writes the page draft; cancel leaves it byte-equivalent.
+ */
+const editorOpen = ref<SettingsEditor | null>(null)
+const editorTargetId = ref('')
+const editorBaseline = ref('')
+const editorContextIdentity = ref('')
+const editorError = ref('')
+const editorComposing = ref(false)
+const editProfileName = ref('')
+const editSchoolName = ref('')
+const editClassName = ref('')
+const editClassGrade = ref<'small' | 'middle' | 'large'>('middle')
+const editHeaderTeacherNames = ref('')
+const editCaregiverName = ref('')
+const editTermName = ref('')
+const editTermStart = ref('')
+const editTermEnd = ref('')
+const editNewTermName = ref('')
+const editNewTermRange = ref<string[]>([])
+const editOverrideTermId = ref('')
+const editOverrideDate = ref('')
+const editOverrideState = ref<'teaching' | 'non_teaching' | 'none'>('teaching')
+const editOverrideReason = ref('')
 
 const activeSection = ref<SettingsSection>(
   props.section === 'collaboration' ? 'collaboration' : 'main',
@@ -166,6 +196,154 @@ const overrideDate = ref('')
 const overrideState = ref<'teaching' | 'non_teaching' | 'none'>('teaching')
 const overrideReason = ref('')
 
+function profileDraftDirty(): boolean {
+  const confirmed = confirmedContext.value
+  return (
+    profileName.value !== (confirmed.profile?.display_name ?? '')
+    || schoolName.value !== (confirmed.school_name ?? '')
+  )
+}
+
+function classDraftDirty(): boolean {
+  const confirmed = confirmedContext.value
+  return (
+    className.value !== (confirmed.class?.name ?? '')
+    || classGrade.value !== (confirmed.class?.grade ?? 'middle')
+    || parsedHeaderTeacherNames(headerTeacherNamesText.value).join('\n')
+      !== (confirmed.class?.header_teacher_names ?? []).join('\n')
+    || (caregiverName.value.trim() || '')
+      !== (confirmed.class?.caregiver_name ?? '')
+  )
+}
+
+function termDraftDirty(form: TermForm): boolean {
+  const term = confirmedContext.value.terms.find((item) => item.id === form.id)
+  return (
+    !term
+    || form.name !== term.name
+    || form.start_date !== term.start_date
+    || form.end_date !== term.end_date
+  )
+}
+
+function newTermDraftDirty(): boolean {
+  return newTermName.value.trim() !== '' || newTermRange.value.length === 2
+}
+
+function overrideDraftDirty(): boolean {
+  return overrideDate.value !== '' || overrideReason.value !== ''
+}
+
+function editorTermForm(): TermForm | null {
+  return termForms.value.find((form) => form.id === editorTargetId.value) ?? null
+}
+
+function editorPageSnapshot(): string {
+  switch (editorOpen.value) {
+    case 'profile':
+      return JSON.stringify({
+        name: profileName.value,
+        school: schoolName.value,
+      })
+    case 'class':
+      return JSON.stringify({
+        name: className.value,
+        grade: classGrade.value,
+        teachers: headerTeacherNamesText.value,
+        caregiver: caregiverName.value,
+      })
+    case 'term': {
+      const form = editorTermForm()
+      return form
+        ? JSON.stringify({
+            id: form.id,
+            name: form.name,
+            start: form.start_date,
+            end: form.end_date,
+          })
+        : 'missing'
+    }
+    case 'new-term':
+      return JSON.stringify({
+        name: newTermName.value,
+        range: [...newTermRange.value],
+      })
+    case 'override':
+      return JSON.stringify({
+        term: overrideTermId.value,
+        date: overrideDate.value,
+        state: overrideState.value,
+        reason: overrideReason.value,
+      })
+    default:
+      return ''
+  }
+}
+
+function editorCopySnapshot(): string {
+  switch (editorOpen.value) {
+    case 'profile':
+      return JSON.stringify({
+        name: editProfileName.value,
+        school: editSchoolName.value,
+      })
+    case 'class':
+      return JSON.stringify({
+        name: editClassName.value,
+        grade: editClassGrade.value,
+        teachers: editHeaderTeacherNames.value,
+        caregiver: editCaregiverName.value,
+      })
+    case 'term':
+      return JSON.stringify({
+        id: editorTargetId.value,
+        name: editTermName.value,
+        start: editTermStart.value,
+        end: editTermEnd.value,
+      })
+    case 'new-term':
+      return JSON.stringify({
+        name: editNewTermName.value,
+        range: [...editNewTermRange.value],
+      })
+    case 'override':
+      return JSON.stringify({
+        term: editOverrideTermId.value,
+        date: editOverrideDate.value,
+        state: editOverrideState.value,
+        reason: editOverrideReason.value,
+      })
+    default:
+      return ''
+  }
+}
+
+const editorDirty = computed(
+  () =>
+    editorOpen.value !== null
+    && (editorCopySnapshot() !== editorBaseline.value || editorComposing.value),
+)
+const editorStale = computed(
+  () => editorOpen.value !== null && editorPageSnapshot() !== editorBaseline.value,
+)
+const editorTarget = computed<SettingsDraftTarget | null>(() => {
+  if (!editorDirty.value) return null
+  switch (editorOpen.value) {
+    case 'profile':
+      return { kind: 'profile' }
+    case 'class':
+      return { kind: 'class' }
+    case 'term':
+      return { kind: 'term', id: editorTargetId.value }
+    case 'new-term':
+      return { kind: 'new-term' }
+    case 'override':
+      return { kind: 'override' }
+    default:
+      return null
+  }
+})
+
 const previewData = ref<ConfigPreview | null>(null)
 const previewing = ref(false)
 const applying = ref(false)
@@ -200,6 +378,9 @@ const collaborationPanelRef = ref<{
   } | null
   currentPreview?: () => unknown
   currentPublishPreview?: () => unknown
+  focusDirectory?: (
+    section: 'account' | 'classes' | 'promotion' | 'game-config',
+  ) => void | Promise<void>
 } | null>(null)
 let pendingRequestId = ''
 let promotionReadGeneration = 0
@@ -251,6 +432,44 @@ let pendingAppliedMerge: PendingApplied | null = null
 
 const activeLocalTerm = computed(() => props.context.term)
 
+const updateStatusText = computed(() => {
+  const status = props.updateStatus
+  if (!status) return '尚未检查'
+  switch (status.state) {
+    case 'idle':
+      return '未检查'
+    case 'checking':
+      return '正在检查'
+    case 'available':
+      return '发现新版，等待下载'
+    case 'downloading':
+      return '正在下载'
+    case 'verifying':
+      return '正在校验下载包'
+    case 'ready':
+      return '已下载并通过校验，安装需明确确认'
+    case 'up_to_date':
+      return '已是最新版本'
+    case 'no_release':
+      return '该渠道暂无发布'
+    case 'failed':
+      return '检查或下载失败'
+    case 'cancelled':
+      return '下载已取消'
+    case 'incomplete':
+      return '检查不完整'
+    case 'switch_unknown':
+      return '渠道切换结果待核对'
+    case 'closed':
+      return '更新面板已关闭'
+    case 'unconfigured':
+    case 'disabled':
+      return '更新渠道未配置'
+    default:
+      return '未知状态'
+  }
+})
+
 function currentTerm(termId: string) {
   return props.context.terms.find((term) => term.id === termId) ?? null
 }
@@ -294,6 +513,7 @@ const draftActive = computed(() => {
   if (previewData.value || pendingConfirm.value || queuedConfirm.value) return true
   if (aiDraftActive.value || gameDraftActive.value) return true
   if (collaborationDraftActive.value) return true
+  if (editorDirty.value) return true
   return false
 })
 
@@ -301,7 +521,7 @@ watch(draftActive, (value) => emit('draft-active', value), { immediate: true })
 
 /** The shell uses this ordered list; it never writes to the page. */
 watch(
-  () => [draftActive.value, confirmedContext.value, termForms.value, profileName.value, schoolName.value, className.value, classGrade.value, caregiverName.value, newTermName.value, newTermRange.value, overrideDate.value, overrideReason.value, pendingConfirm.value, awaitingContextVersion.value, contextReloadFailed.value, previewData.value, aiPanelRef.value?.draftTargets?.(), gamePanelRef.value?.draftTargets?.(), collaborationPanelRef.value?.draftTargets?.()],
+  () => [draftActive.value, confirmedContext.value, termForms.value, profileName.value, schoolName.value, className.value, classGrade.value, caregiverName.value, newTermName.value, newTermRange.value, overrideDate.value, overrideReason.value, pendingConfirm.value, awaitingContextVersion.value, contextReloadFailed.value, previewData.value, editorDirty.value, editorTarget.value, aiPanelRef.value?.draftTargets?.(), gamePanelRef.value?.draftTargets?.(), collaborationPanelRef.value?.draftTargets?.()],
   () => emit('draft-targets', draftTargets()),
   { deep: true, immediate: true },
 )
@@ -332,7 +552,129 @@ function syncFormsFrom(context: LocalContext): void {
   newTermRange.value = []
   overrideDate.value = ''
   overrideReason.value = ''
+  closeEditor()
   clearPreview()
+}
+
+function settingsContextIdentity(context: LocalContext = props.context): string {
+  return JSON.stringify({
+    profile: context.profile?.id ?? '',
+    class: context.class?.id ?? '',
+    terms: context.terms.map((term) => term.id),
+  })
+}
+
+function openProfileEditor(): void {
+  if (props.frozen) return
+  editorOpen.value = 'profile'
+  editorTargetId.value = ''
+  editProfileName.value = profileName.value
+  editSchoolName.value = schoolName.value
+  editorBaseline.value = editorPageSnapshot()
+  editorContextIdentity.value = settingsContextIdentity()
+  editorError.value = ''
+}
+
+function openClassEditor(): void {
+  if (props.frozen) return
+  editorOpen.value = 'class'
+  editorTargetId.value = ''
+  editClassName.value = className.value
+  editClassGrade.value = classGrade.value
+  editHeaderTeacherNames.value = headerTeacherNamesText.value
+  editCaregiverName.value = caregiverName.value
+  editorBaseline.value = editorPageSnapshot()
+  editorContextIdentity.value = settingsContextIdentity()
+  editorError.value = ''
+}
+
+function openTermEditor(form: TermForm): void {
+  if (props.frozen) return
+  editorOpen.value = 'term'
+  editorTargetId.value = form.id
+  editTermName.value = form.name
+  editTermStart.value = form.start_date
+  editTermEnd.value = form.end_date
+  editorBaseline.value = editorPageSnapshot()
+  editorContextIdentity.value = settingsContextIdentity()
+  editorError.value = ''
+}
+
+function openNewTermEditor(): void {
+  if (props.frozen) return
+  editorOpen.value = 'new-term'
+  editorTargetId.value = ''
+  editNewTermName.value = newTermName.value
+  editNewTermRange.value = [...newTermRange.value]
+  editorBaseline.value = editorPageSnapshot()
+  editorContextIdentity.value = settingsContextIdentity()
+  editorError.value = ''
+}
+
+function openOverrideEditor(): void {
+  if (props.frozen) return
+  editorOpen.value = 'override'
+  editorTargetId.value = ''
+  editOverrideTermId.value = overrideTermId.value
+  editOverrideDate.value = overrideDate.value
+  editOverrideState.value = overrideState.value
+  editOverrideReason.value = overrideReason.value
+  editorBaseline.value = editorPageSnapshot()
+  editorContextIdentity.value = settingsContextIdentity()
+  editorError.value = ''
+}
+
+function closeEditor(): void {
+  editorOpen.value = null
+  editorTargetId.value = ''
+  editorBaseline.value = ''
+  editorContextIdentity.value = ''
+  editorComposing.value = false
+  editorError.value = ''
+}
+
+function confirmEditor(): void {
+  if (!editorOpen.value) return
+  if (props.frozen) {
+    editorError.value = '当前页面已锁定：请等待关闭或更新处理完成后再填回草稿'
+    return
+  }
+  if (editorStale.value) {
+    editorError.value = '打开编辑后对应草稿已变化：请取消并重新打开编辑'
+    return
+  }
+  if (editorOpen.value === 'profile') {
+    profileName.value = editProfileName.value
+    schoolName.value = editSchoolName.value
+  } else if (editorOpen.value === 'class') {
+    className.value = editClassName.value
+    classGrade.value = editClassGrade.value
+    headerTeacherNamesText.value = editHeaderTeacherNames.value
+    caregiverName.value = editCaregiverName.value
+  } else if (editorOpen.value === 'term') {
+    const form = editorTermForm()
+    if (!form) {
+      editorError.value = '对应学期已不存在：请取消后重新编辑'
+      return
+    }
+    form.name = editTermName.value
+    form.start_date = editTermStart.value
+    form.end_date = editTermEnd.value
+  } else if (editorOpen.value === 'new-term') {
+    newTermName.value = editNewTermName.value
+    newTermRange.value = [...editNewTermRange.value]
+  } else if (editorOpen.value === 'override') {
+    overrideTermId.value = editOverrideTermId.value
+    overrideDate.value = editOverrideDate.value
+    overrideState.value = editOverrideState.value
+    overrideReason.value = editOverrideReason.value
+  }
+  closeEditor()
+  ElMessage.info('已填回草稿；请核对后按原有预览或确认按钮保存')
+}
+
+function onEditorDialog(value: boolean): void {
+  if (!value) closeEditor()
 }
 
 /** Page-side normalization used to compare form values with submissions. */
@@ -400,6 +742,13 @@ function changeStillBound(normalizedChange: ConfigChange): boolean {
 watch(
   () => props.context,
   (fresh) => {
+    if (
+      editorOpen.value
+      && settingsContextIdentity(fresh) !== editorContextIdentity.value
+    ) {
+      closeEditor()
+      ElMessage.warning('本地档案、班级或学期已变化：未填回的设置编辑已取消')
+    }
     const expected = awaitingContextVersion.value
     if (expected !== null && (fresh.config_version ?? 0) < expected) return
     confirmedContext.value = fresh
@@ -1204,6 +1553,7 @@ function cancelDraft(): void {
     return
   }
   if (props.frozen) return
+  closeEditor()
   profileName.value = confirmedContext.value.profile?.display_name ?? ''
   schoolName.value = confirmedContext.value.school_name ?? ''
   className.value = confirmedContext.value.class?.name ?? ''
@@ -1270,6 +1620,15 @@ function draftTargets(): SettingsDraftTarget[] {
   ) {
     targets.push({ kind: 'online-collaboration' })
   }
+  const modalTarget = editorTarget.value
+  if (
+    modalTarget
+    && !targets.some(
+      (item) => item.kind === modalTarget.kind && item.id === modalTarget.id,
+    )
+  ) {
+    targets.push(modalTarget)
+  }
   return targets
 }
 
@@ -1316,7 +1675,7 @@ function openDetailsAncestors(element: Element | null): void {
   }
 }
 
-function focusCollaborationDraft(): void {
+async function focusCollaborationDraft(): Promise<void> {
   if (typeof document === 'undefined') return
   const pending = Boolean(collaborationPanelRef.value?.pendingWrite?.())
   const promotionPending = Boolean(
@@ -1328,6 +1687,28 @@ function focusCollaborationDraft(): void {
     promotionPending,
     connected,
   )
+  let section: 'account' | 'classes' | 'promotion' | 'game-config' =
+    connected ? 'classes' : 'account'
+  if (pendingSelector) {
+    section = !connected
+      ? 'account'
+      : promotionPending
+        ? 'promotion'
+        : 'game-config'
+  } else if (!connected) {
+    section = 'account'
+  } else if (document.querySelector('[data-d1="collaboration-class-unknown"]')) {
+    section = 'classes'
+  } else if (collaborationPanelRef.value?.promotionStale?.()) {
+    section = 'promotion'
+  } else if (
+    collaborationPanelRef.value?.currentPreview?.()
+    || collaborationPanelRef.value?.currentPublishPreview?.()
+  ) {
+    section = 'game-config'
+  }
+  await collaborationPanelRef.value?.focusDirectory?.(section)
+  await nextTick()
   let selector = pendingSelector ?? '[data-d1="collaboration"]'
   if (!pendingSelector && document.querySelector('[data-d1="collaboration-class-unknown"]')) {
     selector = '[data-d1="collaboration-class-unknown"]'
@@ -1356,12 +1737,48 @@ async function focusTarget(target: SettingsDraftTarget): Promise<void> {
         document.querySelector('[data-d1="collaboration"]'),
       )
       await nextTick()
-      focusCollaborationDraft()
+      await focusCollaborationDraft()
     }
     return
   }
 
   setSettingsSection('main')
+  const opensEditor =
+    target.kind === 'profile'
+    || target.kind === 'class'
+    || target.kind === 'term'
+    || target.kind === 'new-term'
+    || target.kind === 'override'
+  if (opensEditor) {
+    const same =
+      (target.kind === 'profile' && editorOpen.value === 'profile')
+      || (target.kind === 'class' && editorOpen.value === 'class')
+      || (target.kind === 'new-term' && editorOpen.value === 'new-term')
+      || (target.kind === 'override' && editorOpen.value === 'override')
+      || (target.kind === 'term'
+        && editorOpen.value === 'term'
+        && editorTargetId.value === (target.id ?? ''))
+    if (!same && editorOpen.value !== null && editorDirty.value) {
+      ElMessage.warning('另一个设置编辑弹窗尚未完成：请先填回草稿或取消编辑')
+      return
+    }
+    if (!same) {
+      if (target.kind === 'profile') openProfileEditor()
+      else if (target.kind === 'class') openClassEditor()
+      else if (target.kind === 'new-term') openNewTermEditor()
+      else if (target.kind === 'override') openOverrideEditor()
+      else {
+        const form = target.id
+          ? termForms.value.find((item) => item.id === target.id)
+          : null
+        if (!form) {
+          ElMessage.warning('对应学期已不存在：请重新读取设置')
+          return
+        }
+        openTermEditor(form)
+      }
+    }
+  }
   const group = TARGET_GROUPS[target.kind]
   if (group) expandedGroups[group] = true
   await nextTick()
@@ -1404,6 +1821,21 @@ defineExpose({
   openCollaborationSection,
   openMainSection,
   collaborationFocusSelector,
+  openProfileEditor,
+  openClassEditor,
+  openTermEditor,
+  openNewTermEditor,
+  openOverrideEditor,
+  confirmEditor,
+  closeEditor,
+  editorState: () => ({
+    open: editorOpen.value,
+    targetId: editorTargetId.value,
+    dirty: editorDirty.value,
+    stale: editorStale.value,
+    target: editorTarget.value,
+    error: editorError.value,
+  }),
 })
 </script>
 
@@ -1457,62 +1889,37 @@ defineExpose({
 
       <el-card class="section" shadow="never" data-d1="settings-profile">
         <template #header>姓名与园所</template>
-        <div class="fields">
-          <div class="field">
-            <label>姓名</label>
-            <el-input v-model="profileName" maxlength="80" :disabled="frozen" data-d1="settings-profile-name" />
-          </div>
-          <div class="field">
-            <label>园所名称（可清空）</label>
-            <el-input v-model="schoolName" maxlength="120" :disabled="frozen" data-d1="settings-school" />
-          </div>
+        <p class="summary-line" data-d1="settings-profile-summary">
+          <strong>{{ profileName || '（未填写姓名）' }}</strong>
+          <span class="muted"> · 园所：{{ schoolName || '（未填写，可留空）' }}</span>
+          <el-tag v-if="profileDraftDirty()" size="small" type="warning">草稿未确认</el-tag>
+        </p>
+        <div class="row">
+          <el-button data-d1="edit-profile" :disabled="frozen" @click="openProfileEditor">编辑本栏</el-button>
           <el-button data-d1="preview-profile" data-d1-confirm="confirm-profile" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeProfile())">
             确认修改
           </el-button>
         </div>
+        <p class="muted">修改只填入草稿；点“确认修改”仍按原有预览／确认流程保存。</p>
       </el-card>
 
       <el-card class="section" shadow="never" data-d1="settings-current-class">
         <template #header>当前本地班级</template>
-        <p class="muted" data-d1="settings-class-summary">
+        <p class="summary-line" data-d1="settings-class-summary">
           当前：{{ className || '（未填写班级名称）' }} · {{ GRADE_LABELS[classGrade] }}
+          <span class="muted">
+            · 教师 {{ parsedHeaderTeacherNames(headerTeacherNamesText).join('、') || '（未填写）' }}
+            · 保育员 {{ caregiverName || '（未填写）' }}
+          </span>
+          <el-tag v-if="classDraftDirty()" size="small" type="warning">草稿未确认</el-tag>
         </p>
-        <div class="fields">
-          <div class="field">
-            <label>班级名称</label>
-            <el-input v-model="className" maxlength="80" :disabled="frozen" data-d1="settings-class-name" />
-          </div>
-          <div class="field">
-            <label>年级</label>
-            <el-select v-model="classGrade" class="class-grade-select" :disabled="frozen" data-d1="settings-class-grade">
-              <el-option label="小班" value="small" />
-              <el-option label="中班" value="middle" />
-              <el-option label="大班" value="large" />
-            </el-select>
-          </div>
-          <div class="field field-wide">
-            <label>班级教师姓名（每行一个，可留空；顺序和同名保留）</label>
-            <el-input
-              v-model="headerTeacherNamesText"
-              type="textarea"
-              :rows="3"
-              :disabled="frozen"
-              data-d1="settings-class-teachers"
-            />
-          </div>
-          <div class="field">
-            <label>保育员姓名（可清空）</label>
-            <el-input
-              v-model="caregiverName"
-              maxlength="80"
-              :disabled="frozen"
-              data-d1="settings-class-caregiver"
-            />
-          </div>
+        <div class="row">
+          <el-button data-d1="edit-class" :disabled="frozen" @click="openClassEditor">编辑本栏</el-button>
           <el-button data-d1="confirm-class" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmChange(changeClass())">
             确认修改
           </el-button>
         </div>
+        <p class="muted">班级名称、年级、教师名单和保育员先填回草稿，再由“确认修改”提交。</p>
       </el-card>
 
       <el-card class="section" shadow="never" data-d1="settings-current-term">
@@ -1716,43 +2123,46 @@ defineExpose({
             data-d1="settings-promotion-term-notice"
             :title="promotionTermNotice"
           />
-          <div v-for="(form, index) in termForms" :key="form.id" class="term-row" data-d1="term-row" :data-term-id="form.id">
-            <el-input v-model="form.name" maxlength="80" class="term-name" :disabled="frozen" />
-            <el-date-picker
-              v-model="form.start_date"
-              type="date"
-              value-format="YYYY-MM-DD"
-              :clearable="false"
-              :disabled="frozen"
-              class="term-date"
-            />
-            <el-date-picker
-              v-model="form.end_date"
-              type="date"
-              value-format="YYYY-MM-DD"
-              :clearable="false"
-              :disabled="frozen"
-              class="term-date"
-            />
-            <el-button size="small" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmTermChange(form)">
-              确认修改
-            </el-button>
-
+          <div
+            v-for="form in termForms"
+            :key="form.id"
+            class="term-summary-row"
+            data-d1="term-summary"
+            :data-term-id="form.id"
+          >
+            <div class="term-summary-main">
+              <strong>{{ form.name || '（未命名学期）' }}</strong>
+              <span class="muted">{{ form.start_date }} ~ {{ form.end_date }}</span>
+              <el-tag v-if="termDraftDirty(form)" size="small" type="warning">草稿未确认</el-tag>
+            </div>
+            <div class="row-inline">
+              <el-button size="small" data-d1="edit-term" :disabled="frozen" @click="openTermEditor(form)">
+                编辑
+              </el-button>
+              <el-button size="small" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmTermChange(form)">
+                确认修改
+              </el-button>
+            </div>
           </div>
-          <div class="term-row new-term">
-            <el-input v-model="newTermName" maxlength="80" placeholder="新学期名称" class="term-name" :disabled="frozen" data-d1="new-term-name" />
-            <el-date-picker
-              v-model="newTermRange"
-              type="daterange"
-              value-format="YYYY-MM-DD"
-              start-placeholder="开始"
-              end-placeholder="结束"
-              :disabled="frozen"
-            />
-            <el-button size="small" data-d1="confirm-new-term" type="primary" :loading="previewing || applying" :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null" @click="confirmNewTerm">
+          <div class="row">
+            <el-button size="small" data-d1="new-term-open" :disabled="frozen" @click="openNewTermEditor">
+              新增学期
+            </el-button>
+            <el-button
+              v-if="newTermDraftDirty()"
+              size="small"
+              data-d1="confirm-new-term"
+              type="primary"
+              :loading="previewing || applying"
+              :disabled="frozen || !!pendingConfirm || awaitingContextVersion !== null"
+              @click="confirmNewTerm"
+            >
               确认新增
             </el-button>
           </div>
+          <p v-if="newTermDraftDirty()" class="muted" data-d1="new-term-draft">
+            新草稿：{{ newTermName || '（未填写名称）' }} · {{ newTermRange.join(' ~ ') || '（未选择日期）' }}
+          </p>
           <p class="muted">学期闭区间不得重叠或共端点；修改起止日期会生成新的日历修订，已保存计划保留原周次。</p>
           <p class="muted" data-d1="settings-term-history-hint">修改学期名称不会更新旧记录；如需旧记录改用新学期名，请在游戏观察或本机周计划的历史记录中另存为当前学期名版本。</p>
         </el-card>
@@ -1767,45 +2177,23 @@ defineExpose({
         <summary>日历例外 <span class="muted">逐日上课/停课、撤销例外</span></summary>
         <el-card class="section group-card" shadow="never">
           <template #header>日历例外（逐日配置）</template>
-          <div class="fields">
-            <div class="field">
-              <label>学期</label>
-              <el-select v-model="overrideTermId" :disabled="frozen" data-d1="override-term">
-                <el-option
-                  v-for="term in props.context.terms"
-                  :key="term.id"
-                  :label="`${term.name}（${term.start_date} ~ ${term.end_date}）`"
-                  :value="term.id"
-                />
-              </el-select>
-            </div>
-            <div class="field">
-              <label>日期</label>
-              <el-date-picker
-                v-model="overrideDate"
-                type="date"
-                value-format="YYYY-MM-DD"
-                :clearable="false"
-                :disabled="frozen"
-                data-d1="override-date"
-              />
-            </div>
-            <div class="field">
-              <label>设置</label>
-              <el-select v-model="overrideState" :disabled="frozen" data-d1="override-state">
-                <el-option label="例外上课" value="teaching" />
-                <el-option label="例外停课" value="non_teaching" />
-                <el-option label="撤销例外" value="none" />
-              </el-select>
-            </div>
-            <div v-if="overrideState !== 'none'" class="field">
-              <label>原因（1–200 字）</label>
-              <el-input v-model="overrideReason" maxlength="200" :disabled="frozen" data-d1="override-reason" />
-            </div>
-            <el-button data-d1="preview-override" :loading="previewing" :disabled="frozen" @click="previewOverride">
-              预览修改
+                    <p class="summary-line" data-d1="settings-override-summary">
+            <template v-if="overrideDate">
+              例外草稿：{{ overrideTerm?.name || '（未选学期）' }} · {{ overrideDate }} ·
+              {{ overrideState === 'none' ? '撤销例外' : (STATE_LABELS[overrideState] || overrideState) }}
+              <span class="muted">{{ overrideReason || '（无原因）' }}</span>
+            </template>
+            <template v-else>尚未设置日历例外草稿。</template>
+            <el-tag v-if="overrideDraftDirty()" size="small" type="warning">草稿未确认</el-tag>
+          </p>
+          <div class="row">
+            <el-button data-d1="edit-override" :disabled="frozen" @click="openOverrideEditor">
+              编辑例外
             </el-button>
           </div>
+          <el-button data-d1="preview-override" :loading="previewing" :disabled="frozen" @click="previewOverride">
+            预览修改
+          </el-button>
           <p v-if="overrideTerm" class="muted">
             当前学期范围：{{ overrideTerm.start_date }} ~ {{ overrideTerm.end_date }}；日期必须在该范围内。
           </p>
@@ -1839,14 +2227,55 @@ defineExpose({
         <summary>备份与恢复 <span class="muted">完整备份、校验、预览与恢复</span></summary>
         <el-card class="section group-card" shadow="never" data-d1="backup-restore">
           <template #header>备份与恢复</template>
-          <p class="muted">
-            创建完整本地备份，或从本地备份校验、预览并恢复。恢复前会自动保留完整保护副本。
-          </p>
-          <el-button data-d1="open-backup-restore" :disabled="frozen" @click="emit('open-maintenance')">
-            创建备份 / 从备份恢复
-          </el-button>
+          <div class="kgm-preview-wrap">
+            <table class="kgm-preview-table" data-d1="settings-backup-table">
+              <thead>
+                <tr><th>操作</th><th>说明</th><th>状态</th></tr>
+              </thead>
+              <tbody>
+                <tr data-d1="settings-backup-create-row">
+                  <td>完整备份</td>
+                  <td>包含全部受管业务、设置、历史与照片；密码或明文由维护面板确认。</td>
+                  <td>在维护面板创建</td>
+                </tr>
+                <tr data-d1="settings-backup-restore-row">
+                  <td>从本地备份恢复</td>
+                  <td>先校验、预览并明确确认后才替换；恢复前保留完整保护副本。</td>
+                  <td>在维护面板校验</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="row">
+            <el-button data-d1="open-backup-restore" type="primary" :disabled="frozen" @click="emit('open-maintenance')">
+              打开备份与恢复
+            </el-button>
+          </div>
         </el-card>
       </details>
+
+      <el-card class="section" shadow="never" data-d1="settings-update">
+        <template #header>应用更新</template>
+        <div class="kgm-preview-wrap">
+          <table class="kgm-preview-table" data-d1="settings-update-table">
+            <thead>
+              <tr><th>项目</th><th>状态</th><th>入口</th></tr>
+            </thead>
+            <tbody>
+              <tr data-d1="settings-update-status-row">
+                <td>已安装版本</td>
+                <td>v{{ props.updateStatus?.current?.version ?? '—' }} · {{ updateStatusText }}</td>
+                <td>
+                  <el-button data-d1="settings-check-update" :disabled="frozen" @click="emit('check-update')">
+                    检查更新
+                  </el-button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">下载、安装和重启仍在原更新面板中明确确认；只打开本页不会改变程序。</p>
+      </el-card>
 
       <div class="section row">
         <el-button data-d1="cancel-draft" :disabled="frozen" @click="cancelDraft">取消编辑（还原当前配置）</el-button>
@@ -1873,6 +2302,231 @@ defineExpose({
         @draft-active="(value: boolean) => (collaborationDraftActive = value)"
       />
     </div>
+
+    <el-dialog
+      :model-value="editorOpen === 'profile'"
+      title="编辑姓名与园所"
+      width="520px"
+      :close-on-click-modal="false"
+      data-d1="settings-editor-profile"
+      @compositionstart="editorComposing = true"
+      @compositionend="editorComposing = false"
+      @update:model-value="onEditorDialog"
+    >
+      <el-alert v-if="editorError" type="error" :closable="false" class="section" :title="editorError" data-d1="settings-editor-error" />
+      <el-alert v-if="editorStale" type="warning" :closable="false" class="section" title="打开编辑后对应草稿已变化：请取消并重新打开编辑。" data-d1="settings-editor-stale" />
+      <p class="muted">这里先编辑本栏内容；填回草稿后再由“确认修改”按原有预览／确认流程保存。</p>
+      <div class="fields">
+        <div class="field">
+          <label>姓名</label>
+          <el-input v-model="editProfileName" maxlength="80" :disabled="frozen" data-d1="settings-profile-name" />
+        </div>
+        <div class="field">
+          <label>园所名称（可清空）</label>
+          <el-input v-model="editSchoolName" maxlength="120" :disabled="frozen" data-d1="settings-school" />
+        </div>
+      </div>
+      <template #footer>
+        <div class="kgm-dialog-footer">
+          <el-button data-d1="settings-editor-cancel" @click="closeEditor">取消</el-button>
+          <el-button type="primary" data-d1="settings-editor-apply" :disabled="frozen || editorStale" @click="confirmEditor">填回草稿</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      :model-value="editorOpen === 'class'"
+      title="编辑当前本地班级"
+      width="620px"
+      :close-on-click-modal="false"
+      data-d1="settings-editor-class"
+      @compositionstart="editorComposing = true"
+      @compositionend="editorComposing = false"
+      @update:model-value="onEditorDialog"
+    >
+      <el-alert v-if="editorError" type="error" :closable="false" class="section" :title="editorError" data-d1="settings-editor-error" />
+      <el-alert v-if="editorStale" type="warning" :closable="false" class="section" title="打开编辑后对应草稿已变化：请取消并重新打开编辑。" data-d1="settings-editor-stale" />
+      <div class="fields">
+        <div class="field">
+          <label>班级名称</label>
+          <el-input v-model="editClassName" maxlength="80" :disabled="frozen" data-d1="settings-class-name" />
+        </div>
+        <div class="field">
+          <label>年级</label>
+          <el-select v-model="editClassGrade" class="class-grade-select" :disabled="frozen" data-d1="settings-class-grade">
+            <el-option label="小班" value="small" />
+            <el-option label="中班" value="middle" />
+            <el-option label="大班" value="large" />
+          </el-select>
+        </div>
+        <div class="field field-wide">
+          <label>班级教师姓名（每行一个，可留空；顺序和同名保留）</label>
+          <el-input
+            v-model="editHeaderTeacherNames"
+            type="textarea"
+            :rows="3"
+            :disabled="frozen"
+            data-d1="settings-class-teachers"
+          />
+        </div>
+        <div class="field">
+          <label>保育员姓名（可清空）</label>
+          <el-input v-model="editCaregiverName" maxlength="80" :disabled="frozen" data-d1="settings-class-caregiver" />
+        </div>
+      </div>
+      <template #footer>
+        <div class="kgm-dialog-footer">
+          <el-button data-d1="settings-editor-cancel" @click="closeEditor">取消</el-button>
+          <el-button type="primary" data-d1="settings-editor-apply" :disabled="frozen || editorStale" @click="confirmEditor">填回草稿</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      :model-value="editorOpen === 'term'"
+      title="编辑学期"
+      width="560px"
+      :close-on-click-modal="false"
+      data-d1="settings-editor-term"
+      @compositionstart="editorComposing = true"
+      @compositionend="editorComposing = false"
+      @update:model-value="onEditorDialog"
+    >
+      <el-alert v-if="editorError" type="error" :closable="false" class="section" :title="editorError" data-d1="settings-editor-error" />
+      <el-alert v-if="editorStale" type="warning" :closable="false" class="section" title="打开编辑后对应草稿已变化：请取消并重新打开编辑。" data-d1="settings-editor-stale" />
+      <div class="term-row" data-d1="term-row" :data-term-id="editorTargetId">
+        <div class="field field-wide">
+          <label>学期名称</label>
+          <el-input v-model="editTermName" maxlength="80" class="term-name" :disabled="frozen" />
+        </div>
+        <div class="field">
+          <label>开始日期</label>
+          <el-date-picker
+            v-model="editTermStart"
+            type="date"
+            value-format="YYYY-MM-DD"
+            :clearable="false"
+            :disabled="frozen"
+            class="term-date"
+            data-d1="term-start"
+          />
+        </div>
+        <div class="field">
+          <label>结束日期</label>
+          <el-date-picker
+            v-model="editTermEnd"
+            type="date"
+            value-format="YYYY-MM-DD"
+            :clearable="false"
+            :disabled="frozen"
+            class="term-date"
+            data-d1="term-end"
+          />
+        </div>
+      </div>
+      <p class="muted">学期修改仍须按卡片的“确认修改”先预览后应用；本弹窗只填回草稿。</p>
+      <template #footer>
+        <div class="kgm-dialog-footer">
+          <el-button data-d1="settings-editor-cancel" @click="closeEditor">取消</el-button>
+          <el-button type="primary" data-d1="settings-editor-apply" :disabled="frozen || editorStale" @click="confirmEditor">填回草稿</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      :model-value="editorOpen === 'new-term'"
+      title="新增学期"
+      width="560px"
+      :close-on-click-modal="false"
+      data-d1="settings-editor-new-term"
+      @compositionstart="editorComposing = true"
+      @compositionend="editorComposing = false"
+      @update:model-value="onEditorDialog"
+    >
+      <el-alert v-if="editorError" type="error" :closable="false" class="section" :title="editorError" data-d1="settings-editor-error" />
+      <el-alert v-if="editorStale" type="warning" :closable="false" class="section" title="打开编辑后对应草稿已变化：请取消并重新打开编辑。" data-d1="settings-editor-stale" />
+      <div class="fields">
+        <div class="field field-wide">
+          <label>新学期名称</label>
+          <el-input v-model="editNewTermName" maxlength="80" placeholder="新学期名称" :disabled="frozen" data-d1="new-term-name" />
+        </div>
+        <div class="field">
+          <label>学期日期</label>
+          <el-date-picker
+            v-model="editNewTermRange"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            start-placeholder="开始"
+            end-placeholder="结束"
+            :disabled="frozen"
+          />
+        </div>
+      </div>
+      <p class="muted">填回草稿后，卡片上的“确认新增”仍按原有预览／确认流程提交。</p>
+      <template #footer>
+        <div class="kgm-dialog-footer">
+          <el-button data-d1="settings-editor-cancel" @click="closeEditor">取消</el-button>
+          <el-button type="primary" data-d1="settings-editor-apply" :disabled="frozen || editorStale" @click="confirmEditor">填回草稿</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      :model-value="editorOpen === 'override'"
+      title="编辑日历例外"
+      width="560px"
+      :close-on-click-modal="false"
+      data-d1="settings-editor-override"
+      @compositionstart="editorComposing = true"
+      @compositionend="editorComposing = false"
+      @update:model-value="onEditorDialog"
+    >
+      <el-alert v-if="editorError" type="error" :closable="false" class="section" :title="editorError" data-d1="settings-editor-error" />
+      <el-alert v-if="editorStale" type="warning" :closable="false" class="section" title="打开编辑后对应草稿已变化：请取消并重新打开编辑。" data-d1="settings-editor-stale" />
+      <div class="fields">
+        <div class="field">
+          <label>学期</label>
+          <el-select v-model="editOverrideTermId" :disabled="frozen" data-d1="override-term">
+            <el-option
+              v-for="term in props.context.terms"
+              :key="term.id"
+              :label="`${term.name}（${term.start_date} ~ ${term.end_date}）`"
+              :value="term.id"
+            />
+          </el-select>
+        </div>
+        <div class="field">
+          <label>日期</label>
+          <el-date-picker
+            v-model="editOverrideDate"
+            type="date"
+            value-format="YYYY-MM-DD"
+            :clearable="false"
+            :disabled="frozen"
+            data-d1="override-date"
+          />
+        </div>
+        <div class="field">
+          <label>设置</label>
+          <el-select v-model="editOverrideState" :disabled="frozen" data-d1="override-state">
+            <el-option label="例外上课" value="teaching" />
+            <el-option label="例外停课" value="non_teaching" />
+            <el-option label="撤销例外" value="none" />
+          </el-select>
+        </div>
+        <div v-if="editOverrideState !== 'none'" class="field">
+          <label>原因（1–200 字）</label>
+          <el-input v-model="editOverrideReason" maxlength="200" :disabled="frozen" data-d1="override-reason" />
+        </div>
+      </div>
+      <p class="muted">填回草稿后，卡片的“预览修改”仍会显示日期变化与影响，再明确确认应用。</p>
+      <template #footer>
+        <div class="kgm-dialog-footer">
+          <el-button data-d1="settings-editor-cancel" @click="closeEditor">取消</el-button>
+          <el-button type="primary" data-d1="settings-editor-apply" :disabled="frozen || editorStale" @click="confirmEditor">填回草稿</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -1984,5 +2638,34 @@ defineExpose({
 .muted {
   color: var(--kgm-muted);
   font-size: 0.85rem;
+}
+.summary-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+}
+.term-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--kgm-border);
+}
+.term-summary-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.row-inline {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 </style>

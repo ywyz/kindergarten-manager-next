@@ -42,15 +42,15 @@ function resolveTsFile(spec, fromFile) {
   return null
 }
 const moduleCache = new Map()
-function loadTs(file, overrides = {}) {
-  if (moduleCache.has(file)) return moduleCache.get(file).exports
+function loadTs(file, overrides = {}, cache = true) {
+  if (cache && moduleCache.has(file)) return moduleCache.get(file).exports
   const source = fs.readFileSync(file, 'utf8')
   const js = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
     fileName: file,
   }).outputText
   const module = { exports: {} }
-  moduleCache.set(file, module)
+  if (cache) moduleCache.set(file, module)
   vm.runInNewContext(js, {
     module,
     exports: module.exports,
@@ -182,6 +182,15 @@ function evaluateView(client) {
       }
       if (spec === '../client') return client
       if (spec === '../editor') return editorHelpers
+      if (spec === '../operations') {
+        return loadTs(
+          path.join(d1Dir, 'operations.ts'),
+          { './client': client },
+          false,
+        )
+      }
+      if (spec === '../daily-other-draft') return loadTs(path.join(d1Dir, 'daily-other-draft.ts'))
+      if (spec === '../daily-layout-draft') return loadTs(path.join(d1Dir, 'daily-layout-draft.ts'))
       if (spec === '../../daily-plan-content') return contentHelpers
       if (spec === '../types' || spec === '../../types') return {}
       if (spec.endsWith('.vue')) return { default: {} }

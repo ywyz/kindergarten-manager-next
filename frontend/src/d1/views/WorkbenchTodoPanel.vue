@@ -5,13 +5,14 @@
  * component so a quick workbench switch cannot discard a draft or an
  * explicitly initiated unknown write.
  */
-import { computed, onMounted, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { computed, onMounted, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   todoStore,
   type LocalTodo,
   type TodoStore,
 } from '../todos'
+import type { BlockingDraft } from '../leave'
 
 const props = withDefaults(defineProps<{
   profileId: string
@@ -47,6 +48,42 @@ const viewLocked = computed(() =>
   || state.pending !== null,
 )
 
+/** Independent modal copy: typing here never touches the page draft. */
+const editorOpen = ref(false)
+const editorMode = ref<'create' | 'edit'>('create')
+const editorTargetId = ref('')
+const editorTargetVersion = ref(0)
+const editorTitle = ref('')
+const editorDue = ref('')
+const editorBaseline = ref({ title: '', due: '' })
+const editorError = ref('')
+const editorProfileId = ref('')
+const editorContextSignature = ref('')
+const editorComposing = ref(false)
+const editorDirty = computed(
+  () =>
+    editorOpen.value
+    && (editorTitle.value !== editorBaseline.value.title
+      || editorDue.value !== editorBaseline.value.due),
+)
+function editorContextSignatureNow(): string {
+  return JSON.stringify({
+    profile: state.profileId,
+    editingId: state.editingId,
+    draftTitle: state.draftTitle,
+    draftDue: state.draftDueDate,
+  })
+}
+
+const blockingDraft = computed<BlockingDraft | null>(() =>
+  editorDirty.value || editorComposing.value
+    ? {
+        kind: 'material',
+        message: '个人待办编辑尚未填回草稿：请先填回草稿或取消编辑',
+      }
+    : null,
+)
+
 watch(
   () => activeStore.busy.value,
   (value) => emit('busy', value),
@@ -55,6 +92,10 @@ watch(
 watch(
   () => props.profileId,
   (profileId) => {
+    if (editorOpen.value && profileId !== editorProfileId.value) {
+      cancelEditor()
+      ElMessage.warning('本地档案已切换：未填回的待办编辑已取消')
+    }
     activeStore.setProfile(profileId)
     if (profileId) void activeStore.load()
   },
@@ -63,6 +104,46 @@ onMounted(() => {
   activeStore.setProfile(props.profileId)
   if (props.profileId) void activeStore.load()
 })
+
+function openCreateEditor(): void {
+  if (writeDisabled.value) return
+  editorMode.value = 'create'
+  editorTargetId.value = ''
+  editorTargetVersion.value = 0
+  editorTitle.value = state.editingId ? '' : state.draftTitle
+  editorDue.value = state.editingId ? '' : state.draftDueDate
+  editorBaseline.value = { title: editorTitle.value, due: editorDue.value }
+  editorProfileId.value = props.profileId
+  editorContextSignature.value = editorContextSignatureNow()
+  editorError.value = ''
+  editorOpen.value = true
+}
+
+function openEditEditor(item: LocalTodo): void {
+  if (writeDisabled.value) return
+  editorMode.value = 'edit'
+  editorTargetId.value = item.todo_id
+  editorTargetVersion.value = item.version
+  const sameDraft = state.editingId === item.todo_id
+  editorTitle.value = sameDraft ? state.draftTitle : item.title
+  editorDue.value = sameDraft ? state.draftDueDate : (item.due_date ?? '')
+  editorBaseline.value = { title: editorTitle.value, due: editorDue.value }
+  editorProfileId.value = props.profileId
+  editorContextSignature.value = editorContextSignatureNow()
+  editorError.value = ''
+  editorOpen.value = true
+}
+
+function cancelEditor(): void {
+  editorOpen.value = false
+  editorComposing.value = false
+  editorError.value = ''
+  editorBaseline.value = { title: '', due: '' }
+}
+
+function onEditorDialog(value: boolean): void {
+  if (!value) cancelEditor()
+}
 
 function switchView(value: string | number | boolean): void {
   void activeStore.setArchivedView(value === 'archived')
@@ -106,16 +187,64 @@ async function deleteSelected(): Promise<void> {
   await activeStore.deleteBatch(items)
 }
 
-function beginEdit(item: LocalTodo): void {
-  activeStore.startEdit(item)
+function confirmEditor(): void {
+  if (!editorOpen.value) return
+  if (writeDisabled.value) {
+    editorError.value = '当前待办状态不允许填回草稿：请等待或先处理原请求'
+    return
+  }
+  if (
+    props.profileId !== editorProfileId.value
+    || state.profileId !== editorProfileId.value
+  ) {
+    editorError.value = '本地档案已变化：请取消并重新打开编辑'
+    return
+  }
+  if (editorContextSignatureNow() !== editorContextSignature.value) {
+    editorError.value = '待办草稿已被其他操作更新：请取消并重新打开编辑'
+    return
+  }
+  if (!editorTitle.value.trim()) {
+    editorError.value = '待办标题不能为空'
+    return
+  }
+  if (editorMode.value === 'edit') {
+    const item = state.items.find((row) => row.todo_id === editorTargetId.value)
+    if (!item || item.version !== editorTargetVersion.value) {
+      editorError.value = '该待办已在其他操作中更新：请取消后重新打开编辑'
+      return
+    }
+    activeStore.startEdit(item)
+    if (state.editingId !== item.todo_id) {
+      editorError.value = '当前待办状态不允许编辑：请稍后重试'
+      return
+    }
+  } else if (state.editingId) {
+    activeStore.cancelEdit()
+  }
+  state.draftTitle = editorTitle.value
+  state.draftDueDate = editorDue.value
+  cancelEditor()
 }
+
+function beginEdit(item: LocalTodo): void {
+  openEditEditor(item)
+}
+
+defineExpose({
+  blockingDraft: () => blockingDraft.value,
+  openCreateEditor,
+  openEditEditor,
+  confirmEditor,
+  cancelEditor,
+})
 </script>
 
 <template>
   <el-card shadow="never" class="block" data-d1="workbench-todos">
     <template #header>
       <div class="todo-header">
-        <span>个人待办</span>
+        <span>个人待办（表格预览）</span>
         <span class="muted">仅本人可见，不随班级或学期变化</span>
       </div>
       <el-radio-group
@@ -129,42 +258,14 @@ function beginEdit(item: LocalTodo): void {
       </el-radio-group>
     </template>
 
-    <div class="todo-form">
-      <el-input
-        v-model="state.draftTitle"
-        maxlength="200"
-        show-word-limit
-        clearable
-        placeholder="待办标题"
-        data-d1="todo-title"
-        :disabled="writeDisabled"
-        @keyup.enter="activeStore.save()"
-      />
-      <el-date-picker
-        v-model="state.draftDueDate"
-        type="date"
-        value-format="YYYY-MM-DD"
-        placeholder="截止日（可选）"
-        clearable
-        data-d1="todo-due"
-        :disabled="writeDisabled"
-      />
+    <div class="todo-toolbar">
       <el-button
         type="primary"
-        :loading="state.saving"
-        :disabled="writeDisabled || !state.draftTitle.trim()"
-        data-d1="todo-save"
-        @click="activeStore.save()"
+        data-d1="todo-new"
+        :disabled="writeDisabled"
+        @click="openCreateEditor"
       >
-        {{ saveLabel }}
-      </el-button>
-      <el-button
-        v-if="state.editingId"
-        :disabled="state.saving"
-        data-d1="todo-cancel"
-        @click="activeStore.cancelEdit()"
-      >
-        取消
+        新建待办
       </el-button>
       <el-button
         v-if="state.conflict || !!state.error"
@@ -174,8 +275,10 @@ function beginEdit(item: LocalTodo): void {
       >
         重新读取
       </el-button>
+      <span v-if="state.editingId" class="muted" data-d1="todo-editing">
+        草稿对应：{{ state.draftTitle || '（未填写）' }}
+      </span>
     </div>
-
     <el-alert
       v-if="state.error"
       type="error"
@@ -221,6 +324,32 @@ function beginEdit(item: LocalTodo): void {
         </el-button>
       </div>
     </el-alert>
+    <div v-if="state.draftTitle || state.editingId" class="todo-draft" data-d1="todo-draft">
+      <div class="todo-main">
+        <div class="todo-title">{{ state.draftTitle || '（未填写标题）' }}</div>
+        <div class="todo-meta">
+          <span>{{ state.draftDueDate ? `截止 ${state.draftDueDate}` : '无截止日' }}</span>
+          <span>{{ state.editingId ? '未保存修改' : '未保存新待办' }}</span>
+        </div>
+      </div>
+      <el-button
+        type="primary"
+        :loading="state.saving"
+        :disabled="writeDisabled || !state.draftTitle.trim()"
+        data-d1="todo-save"
+        @click="activeStore.save()"
+      >
+        {{ saveLabel }}
+      </el-button>
+      <el-button
+        v-if="state.editingId"
+        :disabled="state.saving"
+        data-d1="todo-cancel"
+        @click="activeStore.cancelEdit()"
+      >
+        取消
+      </el-button>
+    </div>
 
     <div class="todo-batchbar">
       <span class="muted" data-d1="todo-selected-count">
@@ -255,80 +384,152 @@ function beginEdit(item: LocalTodo): void {
         清空选择
       </el-button>
     </div>
-
     <div v-loading="state.loading" class="todo-list">
       <el-empty
         v-if="!state.items.length && !state.loading"
         :description="state.showArchived ? '暂无已归档待办' : '暂无待办'"
       />
-      <div
-        v-for="item in state.items"
-        :key="item.todo_id"
-        class="todo-row"
-        :class="{ completed: item.completed, selected: state.selectedIds.includes(item.todo_id) }"
-        :data-d1="`todo-row-${item.todo_id}`"
-      >
-        <el-checkbox
-          class="todo-select-box"
-          :model-value="state.selectedIds.includes(item.todo_id)"
-          :disabled="writeDisabled"
-          :aria-label="`选择待办 ${item.title}`"
-          :data-d1="`todo-select-${item.todo_id}`"
-          @change="toggleSelection(item, $event === true)"
-        />
-        <button
-          type="button"
-          class="todo-complete-toggle"
-          :class="{ completed: item.completed }"
-          :disabled="writeDisabled || !!item.archived_at"
-          :aria-label="item.completed ? `将待办标记为未完成：${item.title}` : `将待办标记为已完成：${item.title}`"
-          :aria-pressed="item.completed"
-          :data-d1="`todo-toggle-${item.todo_id}`"
-          @click="activeStore.toggle(item)"
-        >
-          <span class="todo-complete-mark" aria-hidden="true">✓</span>
-        </button>
-        <div class="todo-main">
-          <div class="todo-title">{{ item.title }}</div>
-          <div class="todo-meta">
-            <span v-if="item.due_date">截止 {{ item.due_date }}</span>
-            <span v-else>无截止日</span>
-            <span v-if="item.completed">已完成</span>
-            <span v-if="item.archived_at">已归档</span>
-          </div>
-        </div>
-        <el-button
-          size="small"
-          text
-          :disabled="writeDisabled"
-          :data-d1="`todo-edit-${item.todo_id}`"
-          @click="beginEdit(item)"
-        >
-          编辑
-        </el-button>
-        <el-button
-          v-if="state.showArchived"
-          size="small"
-          text
-          type="primary"
-          :disabled="writeDisabled"
-          :data-d1="`todo-unarchive-${item.todo_id}`"
-          @click="activeStore.unarchive(item)"
-        >
-          取消归档
-        </el-button>
-        <el-button
-          size="small"
-          text
-          type="danger"
-          :disabled="writeDisabled"
-          :data-d1="`todo-delete-${item.todo_id}`"
-          @click="activeStore.remove(item)"
-        >
-          删除
-        </el-button>
+      <div v-else class="todo-table-wrap">
+        <table class="todo-table" data-d1="todo-table">
+          <thead>
+            <tr>
+              <th class="col-select">选择</th>
+              <th class="col-complete">完成</th>
+              <th>待办</th>
+              <th class="col-due">截止日</th>
+              <th class="col-state">状态</th>
+              <th class="col-actions">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="item in state.items"
+              :key="item.todo_id"
+              class="todo-row"
+              :class="{ completed: item.completed, selected: state.selectedIds.includes(item.todo_id) }"
+              :data-d1="`todo-row-${item.todo_id}`"
+            >
+              <td class="col-select">
+                <el-checkbox
+                  class="todo-select-box"
+                  :model-value="state.selectedIds.includes(item.todo_id)"
+                  :disabled="writeDisabled"
+                  :aria-label="`选择待办 ${item.title}`"
+                  :data-d1="`todo-select-${item.todo_id}`"
+                  @change="toggleSelection(item, $event === true)"
+                />
+              </td>
+              <td class="col-complete">
+                <button
+                  type="button"
+                  class="todo-complete-toggle"
+                  :class="{ completed: item.completed }"
+                  :disabled="writeDisabled || !!item.archived_at"
+                  :aria-label="item.completed ? `将待办标记为未完成：${item.title}` : `将待办标记为已完成：${item.title}`"
+                  :aria-pressed="item.completed"
+                  :data-d1="`todo-toggle-${item.todo_id}`"
+                  @click="activeStore.toggle(item)"
+                >
+                  <span class="todo-complete-mark" aria-hidden="true">✓</span>
+                </button>
+              </td>
+              <td class="todo-main">
+                <div class="todo-title">{{ item.title }}</div>
+              </td>
+              <td class="col-due">{{ item.due_date || '—' }}</td>
+              <td class="col-state">
+                <el-tag v-if="item.archived_at" size="small" type="info">已归档</el-tag>
+                <el-tag v-else-if="item.completed" size="small" type="success">已完成</el-tag>
+                <el-tag v-else size="small">活动</el-tag>
+              </td>
+              <td class="col-actions">
+                <el-button
+                  size="small"
+                  text
+                  :disabled="writeDisabled"
+                  :data-d1="`todo-edit-${item.todo_id}`"
+                  @click="beginEdit(item)"
+                >
+                  编辑
+                </el-button>
+                <el-button
+                  v-if="state.showArchived"
+                  size="small"
+                  text
+                  type="primary"
+                  :disabled="writeDisabled"
+                  :data-d1="`todo-unarchive-${item.todo_id}`"
+                  @click="activeStore.unarchive(item)"
+                >
+                  取消归档
+                </el-button>
+                <el-button
+                  size="small"
+                  text
+                  type="danger"
+                  :disabled="writeDisabled"
+                  :data-d1="`todo-delete-${item.todo_id}`"
+                  @click="activeStore.remove(item)"
+                >
+                  删除
+                </el-button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
+    <el-dialog
+      :model-value="editorOpen"
+      :title="editorMode === 'edit' ? '编辑待办' : '新建待办'"
+      width="460px"
+      :close-on-click-modal="false"
+      data-d1="todo-editor"
+      @compositionstart="editorComposing = true"
+      @compositionend="editorComposing = false"
+      @update:model-value="onEditorDialog"
+    >
+      <p class="muted">这里先填写待办内容；填回草稿后再由待办表的保存按钮提交，关闭不会自动保存。</p>
+      <el-input
+        v-model="editorTitle"
+        maxlength="200"
+        show-word-limit
+        clearable
+        placeholder="待办标题"
+        data-d1="todo-title"
+        :disabled="writeDisabled"
+        @keyup.enter="confirmEditor"
+      />
+      <el-date-picker
+        v-model="editorDue"
+        type="date"
+        value-format="YYYY-MM-DD"
+        placeholder="截止日（可选）"
+        clearable
+        data-d1="todo-due"
+        :disabled="writeDisabled"
+        class="todo-editor-due"
+      />
+      <el-alert
+        v-if="editorError"
+        type="error"
+        :closable="false"
+        class="todo-notice"
+        :title="editorError"
+        data-d1="todo-editor-error"
+      />
+      <template #footer>
+        <el-button data-d1="todo-editor-cancel" @click="cancelEditor">取消</el-button>
+        <el-button
+          type="primary"
+          data-d1="todo-editor-apply"
+          :disabled="writeDisabled || !editorTitle.trim()"
+          @click="confirmEditor"
+        >
+          填回草稿
+        </el-button>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 
@@ -345,6 +546,16 @@ function beginEdit(item: LocalTodo): void {
 .todo-view-switch {
   margin-top: 8px;
 }
+.todo-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.todo-editor-due {
+  width: 100%;
+  margin-top: 10px;
+}
 .todo-batchbar {
   display: flex;
   gap: 8px;
@@ -355,11 +566,47 @@ function beginEdit(item: LocalTodo): void {
 .todo-row.selected {
   background: var(--el-fill-color-light);
 }
+.todo-table-wrap {
+  overflow-x: auto;
+}
+.todo-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.todo-table th,
+.todo-table td {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--kgm-border);
+  text-align: left;
+  vertical-align: middle;
+}
+.todo-table th {
+  color: var(--kgm-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.todo-table .col-select {
+  width: 52px;
+}
+.todo-table .col-complete {
+  width: 52px;
+}
+.todo-table .col-due {
+  width: 110px;
+  white-space: nowrap;
+}
+.todo-table .col-state {
+  width: 86px;
+}
+.todo-table .col-actions {
+  width: 200px;
+  white-space: nowrap;
+}
 .todo-select-box :deep(.el-checkbox__inner) {
   border-radius: 2px;
 }
 .todo-complete-toggle {
-  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -383,7 +630,7 @@ function beginEdit(item: LocalTodo): void {
 .todo-complete-toggle.completed {
   border-color: var(--kgm-success);
   background: var(--kgm-success);
-  color: #fff;
+  color: var(--kgm-surface);
 }
 .todo-complete-toggle:disabled {
   cursor: not-allowed;
@@ -393,15 +640,20 @@ function beginEdit(item: LocalTodo): void {
   font-size: 14px;
   font-weight: 700;
 }
-.todo-form {
+.todo-draft {
   display: flex;
-  gap: 10px;
   align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: var(--kgm-bg);
+  border: 1px dashed var(--kgm-border);
+  border-radius: 6px;
 }
-.todo-form :deep(.el-input) {
-  min-width: 240px;
-  flex: 1;
+.todo-draft .todo-main {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 .todo-notice {
   margin-top: 10px;
@@ -415,19 +667,8 @@ function beginEdit(item: LocalTodo): void {
 .todo-list {
   margin-top: 12px;
 }
-.todo-row {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--kgm-border);
-}
-.todo-row:last-child {
-  border-bottom: 0;
-}
 .todo-main {
-  flex: 1;
-  min-width: 0;
+  min-width: 160px;
 }
 .todo-title {
   white-space: pre-wrap;
@@ -445,19 +686,13 @@ function beginEdit(item: LocalTodo): void {
   margin-top: 2px;
   flex-wrap: wrap;
 }
-@media (max-width: 640px) {
-  .todo-form :deep(.el-input) {
-    min-width: 0;
-    width: 100%;
+@media (max-width: 760px) {
+  .todo-table .col-actions {
+    width: auto;
   }
-  .todo-form :deep(.el-date-editor) {
-    width: 100%;
-  }
-  .todo-row {
-    flex-wrap: wrap;
-  }
-  .todo-main {
-    flex-basis: calc(100% - 68px);
+  .todo-table th,
+  .todo-table td {
+    padding: 6px 4px;
   }
 }
 </style>

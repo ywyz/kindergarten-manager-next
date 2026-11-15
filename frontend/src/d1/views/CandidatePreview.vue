@@ -1041,7 +1041,7 @@ onBeforeUnmount(() => {
       : {
           modelValue: open,
           title: 'AI 候选预览与采用',
-          width: '820px',
+          width: 'min(820px, 94vw)',
           closeOnClickModal: false,
           beforeClose,
           'data-d1': 'candidate-preview',

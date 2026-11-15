@@ -86,7 +86,60 @@ class ApiError extends Error {
   }
 }
 
+function loadRealModule(relativePath, requireMap = {}) {
+  const moduleFile = path.join(d1Dir, relativePath)
+  const compiled = ts.transpileModule(fs.readFileSync(moduleFile, 'utf8'), {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+    fileName: moduleFile,
+  }).outputText
+  const module = { exports: {} }
+  vm.runInNewContext(compiled, {
+    module,
+    exports: module.exports,
+    require: (spec) => {
+      if (Object.prototype.hasOwnProperty.call(requireMap, spec)) {
+        return requireMap[spec]
+      }
+      throw new Error(`unexpected import ${spec} from ${relativePath}`)
+    },
+    console,
+    Date,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Array,
+    String,
+    Boolean,
+    Promise,
+    Map,
+    Set,
+    URLSearchParams,
+    crypto: { randomUUID: () => 'request-real' },
+    setTimeout,
+    clearTimeout,
+  })
+  return module.exports
+}
+
 const realAi = loadRealAi()
+const realProgress = loadRealModule('ai-progress.ts')
+const realDirectional = loadRealModule('directional-revision.ts', {
+  './client': {
+    ApiError,
+    apiGet: async () => {
+      throw new Error('unexpected real directional apiGet')
+    },
+    apiPost: async () => {
+      throw new Error('unexpected real directional apiPost')
+    },
+    pathSegment: (value) => encodeURIComponent(String(value)),
+  },
+})
 let uuid = 0
 const calls = { adopt: [], preview: [], list: [], operation: [] }
 const adoptedTargets = new Set()
@@ -307,10 +360,20 @@ vm.runInNewContext(js, {
   exports: module.exports,
   require: (spec) => {
     if (spec === 'vue') return vue
-    if (spec === '../client') return { ApiError }
+    if (spec === '../client') {
+      return { ApiError, getSessionEpoch: () => 1 }
+    }
     if (spec === '../listening-ai') return ai
     if (spec === '../listening') {
       return { newRequestId: () => `request-${++uuid}` }
+    }
+    if (spec === '../ai-progress') return realProgress
+    if (spec === '../directional-revision') return realDirectional
+    if (
+      spec === './DirectionalRevisionDialog.vue' ||
+      spec === './DirectionalRevisionTrigger.vue'
+    ) {
+      return { default: { render: () => null } }
     }
     throw new Error(`unexpected import ${spec}`)
   },

@@ -94,6 +94,12 @@ const bootError = ref('')
 const pageHost = ref<HostApi | null>(null)
 const context = ref<LocalContext | null>(null)
 const view = ref<View>({ name: 'workbench' })
+/** The mounted workbench; its local todo editor joins the leave/close guard. */
+const workbenchRef = ref<{
+  reload?: () => Promise<void>
+  showDailyPlan?: () => void
+  blockingDraft?: () => BlockingDraft | null
+} | null>(null)
 /** Close-specific freeze: input stops before the allow leaves the page. */
 const closeLocked = ref(false)
 /** The finally allowed closing: never unlocked by late notifications. */
@@ -214,6 +220,44 @@ const pageBusy = computed(
     curriculumEditorBusy.value ||
     exportBusy.value,
 )
+
+type ModuleKey =
+  | 'workbench'
+  | 'daily'
+  | 'weekly'
+  | 'observations'
+  | 'listening'
+  | 'curriculum'
+  | 'collaboration'
+  | 'settings'
+
+/** The highlighted module button for the mounted route. */
+const activeModule = computed<ModuleKey>(() => {
+  switch (view.value.name) {
+    case 'workbench':
+      return 'workbench'
+    case 'editor':
+      return 'daily'
+    case 'weekly-plans':
+    case 'weekly-editor':
+      return 'weekly'
+    case 'observations':
+    case 'observation-editor':
+      return 'observations'
+    case 'listening-records':
+    case 'listening-editor':
+      return 'listening'
+    case 'curriculum-plans':
+    case 'curriculum-editor':
+      return 'curriculum'
+    case 'settings':
+      return view.value.section === 'collaboration'
+        ? 'collaboration'
+        : 'settings'
+    default:
+      return 'workbench'
+  }
+})
 
 let pageBusySeq = 0
 let pageBusyRetry: ReturnType<typeof setTimeout> | null = null
@@ -414,6 +458,8 @@ function focusSettingsTarget(target: SettingsDraftTarget): void {
 }
 
 function currentBlockingDraft(): BlockingDraft | null {
+  const workbenchDraft = workbenchRef.value?.blockingDraft?.()
+  if (workbenchDraft) return workbenchDraft
   if (observationsBusy.value) {
     return {
       kind: 'material',
@@ -949,6 +995,89 @@ function onSettingsSection(section: 'collaboration' | null): void {
   view.value = section
     ? { name: 'settings', section }
     : { name: 'settings' }
+}
+
+function moduleNavBlocked(): boolean {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return true
+  }
+  return false
+}
+
+/** Top-level module buttons reuse the existing route/leave guards. */
+async function goModule(module: ModuleKey): Promise<void> {
+  if (moduleNavBlocked()) return
+  if (module === activeModule.value) {
+    if (module === 'daily' && view.value.name === 'workbench') {
+      workbenchRef.value?.showDailyPlan?.()
+    }
+    return
+  }
+  if (module === 'workbench') {
+    await leaveForAction('calendar', goWorkbench)
+    return
+  }
+  if (module === 'daily') {
+    if (view.value.name === 'workbench') {
+      workbenchRef.value?.showDailyPlan?.()
+      return
+    }
+    const outcome = await leaveForAction('calendar', goWorkbench)
+    if (outcome === 'left') {
+      await nextTick()
+      workbenchRef.value?.showDailyPlan?.()
+    }
+    return
+  }
+  if (module === 'weekly') {
+    await openWeeklyPlansFromWorkbench()
+    return
+  }
+  if (module === 'observations') {
+    await leaveForAction('observations', () => {
+      observationsBusy.value = false
+      weeklyListBusy.value = false
+      clearWeeklyState()
+      clearListeningState()
+      clearCurriculumState()
+      return 'left'
+    })
+    return
+  }
+  if (module === 'listening') {
+    await requestLeave(
+      { kind: 'listening', target_key: 'listening-list' },
+      async (): Promise<'left'> => {
+        listeningTermId.value = undefined
+        listeningListBusy.value = false
+        clearListeningState()
+        clearWeeklyState()
+        clearCurriculumState()
+        view.value = { name: 'listening-records' }
+        return 'left'
+      },
+    )
+    return
+  }
+  if (module === 'curriculum') {
+    await requestLeave(
+      { kind: 'calendar', target_key: 'curriculum-list' },
+      async (): Promise<'left'> => {
+        clearCurriculumState()
+        clearWeeklyState()
+        clearListeningState()
+        view.value = { name: 'curriculum-plans' }
+        return 'left'
+      },
+    )
+    return
+  }
+  if (view.value.name === 'settings') {
+    onSettingsSection(module === 'collaboration' ? 'collaboration' : null)
+    return
+  }
+  await openSettingsView(module === 'collaboration' ? 'collaboration' : undefined)
 }
 
 async function openEditor(
@@ -2084,8 +2213,104 @@ onMounted(() => {
       @open-maintenance="openMaintenance"
     />
     <template v-else>
+      <nav
+        v-if="bootState === 'ready'"
+        class="kgm-module-nav"
+        data-d1="module-nav"
+        aria-label="应用模块"
+      >
+        <el-button
+          size="small"
+          data-d1="module-nav-workbench"
+          :type="activeModule === 'workbench' ? 'primary' : ''"
+          :class="{ 'kgm-module-nav-active': activeModule === 'workbench' }"
+          :aria-current="activeModule === 'workbench' ? 'page' : undefined"
+          :disabled="closeLocked"
+          @click="goModule('workbench')"
+        >
+          工作台
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="module-nav-daily"
+          :type="activeModule === 'daily' ? 'primary' : ''"
+          :class="{ 'kgm-module-nav-active': activeModule === 'daily' }"
+          :aria-current="activeModule === 'daily' ? 'page' : undefined"
+          :disabled="closeLocked"
+          @click="goModule('daily')"
+        >
+          日计划
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="module-nav-weekly"
+          :type="activeModule === 'weekly' ? 'primary' : ''"
+          :class="{ 'kgm-module-nav-active': activeModule === 'weekly' }"
+          :aria-current="activeModule === 'weekly' ? 'page' : undefined"
+          :disabled="closeLocked"
+          @click="goModule('weekly')"
+        >
+          周计划
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="module-nav-observations"
+          :type="activeModule === 'observations' ? 'primary' : ''"
+          :class="{ 'kgm-module-nav-active': activeModule === 'observations' }"
+          :aria-current="activeModule === 'observations' ? 'page' : undefined"
+          :disabled="closeLocked"
+          @click="goModule('observations')"
+        >
+          游戏观察
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="module-nav-listening"
+          :type="activeModule === 'listening' ? 'primary' : ''"
+          :class="{ 'kgm-module-nav-active': activeModule === 'listening' }"
+          :aria-current="activeModule === 'listening' ? 'page' : undefined"
+          :disabled="closeLocked"
+          @click="goModule('listening')"
+        >
+          一对一倾听
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="module-nav-curriculum"
+          :type="activeModule === 'curriculum' ? 'primary' : ''"
+          :class="{ 'kgm-module-nav-active': activeModule === 'curriculum' }"
+          :aria-current="activeModule === 'curriculum' ? 'page' : undefined"
+          :disabled="closeLocked"
+          @click="goModule('curriculum')"
+        >
+          课程审议
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="module-nav-collaboration"
+          :type="activeModule === 'collaboration' ? 'primary' : ''"
+          :class="{ 'kgm-module-nav-active': activeModule === 'collaboration' }"
+          :aria-current="activeModule === 'collaboration' ? 'page' : undefined"
+          :disabled="closeLocked"
+          @click="goModule('collaboration')"
+        >
+          在线协作
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="module-nav-settings"
+          :type="activeModule === 'settings' ? 'primary' : ''"
+          :class="{ 'kgm-module-nav-active': activeModule === 'settings' }"
+          :aria-current="activeModule === 'settings' ? 'page' : undefined"
+          :disabled="closeLocked"
+          @click="goModule('settings')"
+        >
+          设置
+        </el-button>
+      </nav>
       <WorkbenchView
         v-if="view.name === 'workbench'"
+        ref="workbenchRef"
         :context="context!"
         :frozen="closeLocked"
         @open-editor="openEditorFromWorkbench"
@@ -2219,11 +2444,13 @@ onMounted(() => {
         :section="view.section ?? null"
         :focus-prompt="view.focusPrompt ?? ''"
         :reload-context="reloadContext"
+        :update-status="updateStatus"
         @draft-active="(active) => settingsDraftActive = active"
         @draft-targets="(targets) => settingsDraftTargets = targets"
         @section="onSettingsSection"
         @leave="onSettingsLeave"
         @open-maintenance="openMaintenance"
+        @check-update="openUpdateManual"
       />
     </template>
 

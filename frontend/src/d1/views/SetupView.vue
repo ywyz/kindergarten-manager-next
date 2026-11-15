@@ -41,6 +41,98 @@ const derivedClassName = computed(() => {
   }
   return `${GRADE_PREFIX[form.value.grade]}${CLASS_NUMBER_LABELS[number - 1]}班`
 })
+
+const editorOpen = ref<'identity' | 'term' | null>(null)
+const editorBaseline = ref('')
+const editorError = ref('')
+const editorComposing = ref(false)
+const editName = ref('')
+const editGrade = ref<Grade>('middle')
+const editClassNumber = ref<number | null>(null)
+const editSchool = ref('')
+const editTermName = ref('')
+const editTermRange = ref<string[]>([])
+
+function classNameFor(grade: Grade, number: number | null): string {
+  if (number === null || !Number.isInteger(number) || number < 1 || number > 6) {
+    return ''
+  }
+  return `${GRADE_PREFIX[grade]}${CLASS_NUMBER_LABELS[number - 1]}班`
+}
+
+const editDerivedClassName = computed(() =>
+  classNameFor(editGrade.value, editClassNumber.value),
+)
+
+function editorCopySnapshot(): string {
+  if (editorOpen.value === 'identity') {
+    return JSON.stringify({
+      name: editName.value,
+      grade: editGrade.value,
+      number: editClassNumber.value,
+      school: editSchool.value,
+    })
+  }
+  return JSON.stringify({
+    term: editTermName.value,
+    range: [...editTermRange.value],
+  })
+}
+
+const editorDirty = computed(
+  () =>
+    editorOpen.value !== null
+    && (editorCopySnapshot() !== editorBaseline.value || editorComposing.value),
+)
+function openIdentityEditor(): void {
+  editorOpen.value = 'identity'
+  editName.value = form.value.display_name
+  editGrade.value = form.value.grade
+  editClassNumber.value = form.value.class_number
+  editSchool.value = form.value.school_name
+  editorBaseline.value = editorCopySnapshot()
+  editorError.value = ''
+}
+
+function openTermEditor(): void {
+  editorOpen.value = 'term'
+  editTermName.value = form.value.term_name
+  editTermRange.value = [...form.value.range]
+  editorBaseline.value = editorCopySnapshot()
+  editorError.value = ''
+}
+
+function closeEditor(): void {
+  editorOpen.value = null
+  editorComposing.value = false
+  editorBaseline.value = ''
+  editorError.value = ''
+}
+
+function onEditorDialog(value: boolean): void {
+  if (!value) closeEditor()
+}
+
+function confirmEditor(): void {
+  if (!editorOpen.value) return
+  if (submitting.value) {
+    editorError.value = '正在提交首次设置：请等待结果后再填回草稿'
+    return
+  }
+  if (editorOpen.value === 'identity') {
+    form.value.display_name = editName.value
+    form.value.grade = editGrade.value
+    form.value.class_number = editClassNumber.value
+    form.value.school_name = editSchool.value
+  } else {
+    form.value.term_name = editTermName.value
+    form.value.range = [...editTermRange.value]
+  }
+  closeEditor()
+  errorText.value = ''
+  ElMessage.info('已填回设置草稿；请核对后完成设置')
+}
+
 // One request id per attempt sequence: kept across retries after unclear
 // results, so the server can return the original objects (never rebuilt).
 let requestId = crypto.randomUUID()
@@ -84,6 +176,7 @@ onMounted(() => {
         range: [fields.start_date, fields.end_date],
         school_name: fields.school_name ?? '',
       }
+      closeEditor()
     },
     submit: () => submit(),
   }
@@ -95,6 +188,11 @@ onBeforeUnmount(() => {
 
 async function submit(): Promise<void> {
   if (submitting.value) return
+  if (editorOpen.value && editorDirty.value) {
+    errorText.value = '编辑弹窗尚未填回草稿：请先填回或取消编辑'
+    return
+  }
+  if (editorOpen.value) closeEditor()
   const problem = validate()
   if (problem) {
     errorText.value = problem
@@ -150,12 +248,63 @@ async function submit(): Promise<void> {
         资料仅保存在本机。填写后将直接进入工作台；园所名称可留空后补。
         也可先从本地备份恢复，无需先填写临时档案。
       </p>
+            <div class="kgm-summary-grid" data-d1="setup-summary">
+        <div class="kgm-summary-card">
+          <div class="kgm-summary-card-title">姓名与班级</div>
+          <p class="kgm-summary-value" data-d1="setup-identity-summary">
+            {{ form.display_name || '（未填写姓名）' }} ·
+            {{ derivedClassName || '（未选择班级）' }} ·
+            园所：{{ form.school_name || '（可留空）' }}
+          </p>
+          <el-button size="small" data-d1="setup-edit-identity" @click="openIdentityEditor">
+            编辑
+          </el-button>
+        </div>
+        <div class="kgm-summary-card">
+          <div class="kgm-summary-card-title">学期</div>
+          <p class="kgm-summary-value" data-d1="setup-term-summary">
+            {{ form.term_name || '（未填写学期名称）' }} ·
+            {{ form.range.length === 2 ? `${form.range[0]} ~ ${form.range[1]}` : '（未选择起止日期）' }}
+          </p>
+          <el-button size="small" data-d1="setup-edit-term" @click="openTermEditor">
+            编辑
+          </el-button>
+        </div>
+        <div class="kgm-summary-card">
+          <div class="kgm-summary-card-title">准备情况</div>
+          <p class="kgm-summary-value">
+            姓名、年级、班号和学期为必填；园所可留空。所有资料只保存在本机。
+          </p>
+        </div>
+      </div>
+      <el-alert v-if="errorText" type="error" :closable="false" :title="errorText" data-d1="setup-error" />
+      <div class="actions">
+        <el-button type="primary" :loading="submitting" data-d1="initialize" @click="submit">
+          完成设置并进入工作台
+        </el-button>
+        <el-button data-d1="setup-restore" :disabled="editorDirty" @click="emit('open-maintenance')">
+          从本地备份恢复
+        </el-button>
+      </div>
+    </el-card>
+
+    <el-dialog
+      :model-value="editorOpen === 'identity'"
+      title="编辑姓名与班级"
+      width="540px"
+      :close-on-click-modal="false"
+      data-d1="setup-editor-identity"
+      @compositionstart="editorComposing = true"
+      @compositionend="editorComposing = false"
+      @update:model-value="onEditorDialog"
+    >
+      <p class="muted">这里先编辑这组设置；填回后仍由页面底部“完成设置”提交。</p>
       <el-form label-width="96px" @submit.prevent>
         <el-form-item label="姓名" required>
-          <el-input v-model="form.display_name" maxlength="80" data-d1="display-name" />
+          <el-input v-model="editName" maxlength="80" data-d1="display-name" />
         </el-form-item>
         <el-form-item label="年级" required>
-          <el-select v-model="form.grade" data-d1="grade">
+          <el-select v-model="editGrade" data-d1="grade">
             <el-option label="小班" value="small" />
             <el-option label="中班" value="middle" />
             <el-option label="大班" value="large" />
@@ -164,7 +313,7 @@ async function submit(): Promise<void> {
         <el-form-item label="班级" required>
           <div class="class-picker">
             <el-select
-              v-model="form.class_number"
+              v-model="editClassNumber"
               placeholder="选择班号"
               data-d1="class-number"
             >
@@ -176,16 +325,46 @@ async function submit(): Promise<void> {
               />
             </el-select>
             <span class="class-preview" aria-live="polite" data-d1="class-name-preview">
-              {{ derivedClassName || '请选择班号' }}
+              {{ editDerivedClassName || '请选择班号' }}
             </span>
           </div>
         </el-form-item>
+        <el-form-item label="园所名称">
+          <el-input
+            v-model="editSchool"
+            maxlength="120"
+            placeholder="可留空"
+            data-d1="school-name"
+          />
+        </el-form-item>
+      </el-form>
+      <el-alert v-if="editorError" type="error" :closable="false" :title="editorError" data-d1="setup-editor-error" />
+      <template #footer>
+        <div class="kgm-dialog-footer">
+          <el-button data-d1="setup-editor-cancel" @click="closeEditor">取消</el-button>
+          <el-button type="primary" data-d1="setup-editor-apply" :disabled="submitting" @click="confirmEditor">填回草稿</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      :model-value="editorOpen === 'term'"
+      title="编辑学期"
+      width="540px"
+      :close-on-click-modal="false"
+      data-d1="setup-editor-term"
+      @compositionstart="editorComposing = true"
+      @compositionend="editorComposing = false"
+      @update:model-value="onEditorDialog"
+    >
+      <p class="muted">学期名称和起止日期先填回草稿，再由页面底部“完成设置”提交。</p>
+      <el-form label-width="96px" @submit.prevent>
         <el-form-item label="学期名称" required>
-          <el-input v-model="form.term_name" maxlength="80" data-d1="term-name" />
+          <el-input v-model="editTermName" maxlength="80" data-d1="term-name" />
         </el-form-item>
         <el-form-item label="学期日期" required>
           <el-date-picker
-            v-model="form.range"
+            v-model="editTermRange"
             type="daterange"
             value-format="YYYY-MM-DD"
             start-placeholder="开始日期"
@@ -193,25 +372,15 @@ async function submit(): Promise<void> {
             data-d1="term-range"
           />
         </el-form-item>
-        <el-form-item label="园所名称">
-          <el-input
-            v-model="form.school_name"
-            maxlength="120"
-            placeholder="可留空"
-            data-d1="school-name"
-          />
-        </el-form-item>
       </el-form>
-      <el-alert v-if="errorText" type="error" :closable="false" :title="errorText" data-d1="setup-error" />
-      <div class="actions">
-        <el-button type="primary" :loading="submitting" data-d1="initialize" @click="submit">
-          完成设置并进入工作台
-        </el-button>
-        <el-button data-d1="setup-restore" @click="emit('open-maintenance')">
-          从本地备份恢复
-        </el-button>
-      </div>
-    </el-card>
+      <el-alert v-if="editorError" type="error" :closable="false" :title="editorError" data-d1="setup-editor-error" />
+      <template #footer>
+        <div class="kgm-dialog-footer">
+          <el-button data-d1="setup-editor-cancel" @click="closeEditor">取消</el-button>
+          <el-button type="primary" data-d1="setup-editor-apply" :disabled="submitting" @click="confirmEditor">填回草稿</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 

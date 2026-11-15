@@ -74,3 +74,120 @@ body {
 .kgm-diff-remove {
   background: var(--kgm-diff-remove);
 }
+
+/* Shared shell layout: labeled module buttons, summary cards, table previews. */
+.kgm-module-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 8px 10px;
+  background: var(--kgm-surface);
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+}
+
+.kgm-module-nav .el-button {
+  margin-left: 0;
+  min-height: 32px;
+}
+
+.kgm-module-nav-active {
+  box-shadow: inset 0 -2px 0 var(--kgm-accent);
+  font-weight: 600;
+}
+
+.kgm-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.kgm-summary-card {
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--kgm-surface);
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+}
+
+.kgm-summary-card-title {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.kgm-summary-value,
+.kgm-read-block {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--kgm-text);
+}
+
+.kgm-read-block {
+  margin: 0;
+}
+
+.kgm-preview-wrap {
+  overflow-x: auto;
+}
+
+.kgm-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.kgm-preview-table th,
+.kgm-preview-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--kgm-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.kgm-preview-table th {
+  color: var(--kgm-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.kgm-dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .kgm-module-nav .el-button {
+    flex: 1 1 120px;
+    margin-left: 0;
+  }
+}
+
+/* Shared dialog clamp: keep footer actions reachable in narrow windows. */
+.el-dialog {
+  max-width: calc(100vw - 32px);
+}
+
+.el-dialog__body {
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .el-dialog {
+    max-width: calc(100vw - 16px);
+    margin-top: 4vh;
+  }
+
+  .el-dialog__footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .el-dialog__footer .el-button {
+    margin-left: 0;
+  }
+}

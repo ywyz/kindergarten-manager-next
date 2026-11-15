@@ -22,6 +22,7 @@ import type {
   TermPlanListPayload,
   TermPlanListItem,
 } from '../types'
+import type { BlockingDraft } from '../leave'
 
 const props = defineProps<{ context: LocalContext; frozen?: boolean }>()
 const emit = defineEmits<{
@@ -54,6 +55,12 @@ function frozenNow(): boolean {
 
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
 const activePanel = ref<'daily' | 'todos'>('daily')
+const todoPanelRef = ref<{ blockingDraft?: () => BlockingDraft | null } | null>(null)
+
+/** A hidden todo edit modal joins the shell leave/close guard. */
+function blockingDraft(): BlockingDraft | null {
+  return todoPanelRef.value?.blockingDraft?.() ?? null
+}
 const termFilter = ref<string | null>(null)
 const month = ref<string>(currentMonth())
 const todayIso = ref(toIso(new Date()))
@@ -391,7 +398,7 @@ onBeforeUnmount(() => {
   delete (window as unknown as { __d1Workbench?: object }).__d1Workbench
 })
 
-defineExpose({ reload: load })
+defineExpose({ reload: load, showDailyPlan, showTodos, blockingDraft })
 </script>
 
 <template>
@@ -476,6 +483,7 @@ defineExpose({ reload: load })
           data-d1="workbench-todos-pane"
         >
           <WorkbenchTodoPanel
+            ref="todoPanelRef"
             :profile-id="props.context.profile?.id ?? ''"
             :disabled="frozen"
             @busy="onTodoBusy"
@@ -593,7 +601,7 @@ defineExpose({ reload: load })
               <el-table-column label="" width="100">
                 <template #default="{ row }">
                   <el-button size="small" data-d1="open-plan" @click="openListItem(row)">
-                    打开
+                    打开/编辑
                   </el-button>
                 </template>
               </el-table-column>

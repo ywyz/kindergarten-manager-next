@@ -268,7 +268,10 @@ FakeController.prototype.resetForContext = function () {}
   assert.equal(state.dailyCellStateLabel(cleared, 'morning_talk_topic'), '已明确清空')
   assert.equal(state.dailyCellValue(cleared, 'group_activity_theme'), '教师覆盖')
   assert.equal(state.dailyCellStateLabel(cleared, 'group_activity_theme'), '已明确覆盖')
-  assert.match(template, /updateColumn/)
+  // 2026-11-15 left-directory layout: columns are edited in the section modal
+  // copy and only filled back on confirm, so the template renders one modal
+  // textarea per column instead of inline textareas.
+  assert.match(template, /weekly-section-column-/)
   FakeController.last.unknown = true
   FakeController.last.emit()
   assert.equal(state.unknown.value, true)

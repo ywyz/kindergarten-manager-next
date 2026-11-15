@@ -182,6 +182,40 @@ function requestChannel(value: string | number | boolean | undefined): void {
       <el-tag size="small" type="info">{{ stateLabel }}</el-tag>
     </div>
 
+    <div class="kgm-preview-wrap">
+      <table class="kgm-preview-table update-status-table" data-d1="update-status-table">
+        <thead>
+          <tr><th>项目</th><th>状态</th></tr>
+        </thead>
+        <tbody>
+          <tr data-d1="update-status-installed">
+            <td>已安装版本</td>
+            <td>v{{ currentVersion }} · {{ installedChannel }}</td>
+          </tr>
+          <tr data-d1="update-status-channel">
+            <td>检查渠道</td>
+            <td>{{ updateChannelLabel(checkChannel) }}（检查偏好，不改变已安装版本）</td>
+          </tr>
+          <tr data-d1="update-status-state">
+            <td>当前状态</td>
+            <td>{{ stateLabel }}</td>
+          </tr>
+          <tr data-d1="update-status-progress">
+            <td>下载进度</td>
+            <td>{{ progressText || '未开始' }}</td>
+          </tr>
+          <tr data-d1="update-status-operations">
+            <td>可用操作</td>
+            <td>
+              {{ canCheckUpdate(props.status) ? '检查' : '—' }}
+              {{ canDownloadUpdate(props.status) ? ' · 下载' : '' }}
+              {{ installAvailable ? ' · 安装（需再次确认）' : '' }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
     <div class="channel-row" data-d1="update-channel">
       <span>检查渠道</span>
       <el-radio-group

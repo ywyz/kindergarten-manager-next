@@ -102,12 +102,50 @@ const aiKind = ref<'review' | 'edit'>('review')
 const aiSelection = ref<CurriculumAiSelection | null>(null)
 const aiBusy = ref(false)
 const lastSelections = ref<Record<string, CurriculumAiSelection>>({})
+const lastSelectionModalToken = ref<Record<string, string>>({})
 const lastSelectionField = ref('')
 const wholeField = ref('lesson_original')
 const composing = ref(false)
 let compositionWaiters: Array<() => void> = []
 
-const canEdit = computed(() => !props.frozen && !props.disabled)
+type CurriculumModalKind =
+  | 'basic'
+  | 'lesson_original'
+  | 'goals'
+  | 'preparation'
+  | 'process'
+  | 'reason'
+  | 'lesson_revised'
+
+interface CurriculumModalDraft {
+  kind: CurriculumModalKind
+  token: string
+  recordId: string
+  version: number
+  profileEpoch: number
+  label: string
+  fields: Array<keyof CurriculumContent>
+  copy: Record<string, string>
+  snapshot: Record<string, string>
+}
+
+const canEditRecord = computed(() => !props.frozen && !props.disabled)
+const curriculumModal = ref<CurriculumModalDraft | null>(null)
+const curriculumModalOpen = computed({
+  get: () => curriculumModal.value !== null,
+  set: (value: boolean) => {
+    if (!value && curriculumModal.value) closeCurriculumModal()
+  },
+})
+let curriculumModalSeq = 0
+let curriculumModalReturnFocus: HTMLElement | null = null
+const curriculumModalDirty = computed(() => {
+  const modal = curriculumModal.value
+  return modal ? curriculumModalHasChanges(modal) : false
+})
+const canEdit = computed(
+  () => canEditRecord.value && curriculumModal.value === null,
+)
 const isDirty = computed(
   () =>
     loaded.value &&
@@ -151,6 +189,331 @@ const latestDetailFields = computed(() => {
     { label: '二次修改', value: value.lesson_revised },
   ]
 })
+const CURRICULUM_MODAL_FIELDS: Record<
+  CurriculumModalKind,
+  Array<keyof CurriculumContent>
+> = {
+  basic: [
+    'activity_name',
+    'activity_date',
+    'activity_form',
+    'activity_form_other',
+    'institution',
+    'class_name',
+    'child_count',
+    'organizer',
+    'recorder',
+  ],
+  lesson_original: ['lesson_original'],
+  goals: ['goals_original', 'goals_status', 'goals_adjustment'],
+  preparation: [
+    'preparation_original',
+    'preparation_status',
+    'preparation_adjustment',
+  ],
+  process: ['process_original', 'process_adjustment'],
+  reason: ['reason'],
+  lesson_revised: ['lesson_revised'],
+}
+
+const CURRICULUM_MODAL_LABELS: Record<CurriculumModalKind, string> = {
+  basic: '编辑基本信息',
+  lesson_original: '编辑原稿教案',
+  goals: '编辑活动目标',
+  preparation: '编辑活动准备',
+  process: '编辑活动过程',
+  reason: '编辑调整理由',
+  lesson_revised: '编辑二次稿',
+}
+
+function curriculumModalHasChanges(
+  modal: CurriculumModalDraft,
+): boolean {
+  return modal.fields.some(
+    (field) => modal.copy[field] !== modal.snapshot[field],
+  )
+}
+
+function curriculumModalStillCurrent(
+  modal: CurriculumModalDraft,
+): boolean {
+  if (curriculumModal.value?.token !== modal.token) return false
+  if (modal.recordId !== props.recordId) return false
+  if (modal.version !== version.value) return false
+  if (modal.profileEpoch !== (props.profileEpoch ?? 0)) return false
+  if (pendingUnknown.value) return false
+  return true
+}
+
+function curriculumModalSectionUnchanged(
+  modal: CurriculumModalDraft,
+): boolean {
+  if (!loaded.value) return false
+  return modal.fields.every(
+    (field) =>
+      String(form.value[field] ?? '') === modal.snapshot[field],
+  )
+}
+
+function openCurriculumModal(kind: CurriculumModalKind): void {
+  if (!canEditRecord.value || curriculumModal.value) return
+  if (!loaded.value) return
+  if (pendingUnknown.value) {
+    ElMessage.warning('保存结果待核对：请先处理原保存再编辑')
+    return
+  }
+  if (aiOpen.value || aiBusy.value) {
+    ElMessage.warning(
+      'AI 任务正在生成或候选尚未处理：请先完成或关闭后再编辑',
+    )
+    return
+  }
+  if (
+    savePromise.value ||
+    exportBusy.value ||
+    previewPending.value
+  ) {
+    ElMessage.warning('保存、预览或导出进行中：请等待结果后再编辑')
+    return
+  }
+  const fields = CURRICULUM_MODAL_FIELDS[kind]
+  const copy: Record<string, string> = {}
+  for (const field of fields) {
+    copy[field] = String(form.value[field] ?? '')
+  }
+  curriculumModalReturnFocus =
+    typeof globalThis.document !== 'undefined' &&
+    typeof HTMLElement !== 'undefined' &&
+    globalThis.document.activeElement instanceof HTMLElement
+      ? globalThis.document.activeElement
+      : null
+  curriculumModal.value = {
+    kind,
+    token: `curriculum-modal-${props.recordId}-${++curriculumModalSeq}`,
+    recordId: props.recordId,
+    version: version.value,
+    profileEpoch: props.profileEpoch ?? 0,
+    label: CURRICULUM_MODAL_LABELS[kind],
+    fields,
+    copy,
+    snapshot: { ...copy },
+  }
+}
+
+function setCurriculumModalField(
+  field: keyof CurriculumContent,
+  value: unknown,
+): void {
+  const modal = curriculumModal.value
+  if (!modal) return
+  modal.copy = {
+    ...modal.copy,
+    [field]: value == null ? '' : String(value),
+  }
+}
+
+async function confirmCurriculumModal(): Promise<void> {
+  const modal = curriculumModal.value
+  if (!modal || !canEditRecord.value) return
+  await settleComposition()
+  if (curriculumModal.value?.token !== modal.token) return
+  if (!canEditRecord.value) {
+    ElMessage.warning(
+      '页面已进入关闭或只读状态：弹窗内容保留，未填入草稿',
+    )
+    return
+  }
+  if (!curriculumModalStillCurrent(modal)) {
+    ElMessage.warning(
+      '记录、版本或本地档案已变化：弹窗内容保留，请取消后重新打开',
+    )
+    return
+  }
+  if (!curriculumModalSectionUnchanged(modal)) {
+    ElMessage.warning(
+      '该栏正文已发生变化：弹窗内容保留，请取消后重新打开',
+    )
+    return
+  }
+  if (!applyCurriculumModalDraft(modal, false)) return
+  closeCurriculumModal()
+  ElMessage.info(`${modal.label}已填入草稿，尚未保存`)
+}
+
+function applyCurriculumModalDraft(
+  modal: CurriculumModalDraft,
+  notify = true,
+): boolean {
+  if (!canEditRecord.value) return false
+  if (curriculumModal.value?.token !== modal.token) return false
+  if (!curriculumModalStillCurrent(modal)) {
+    ElMessage.warning(
+      '记录、版本或本地档案已变化：未填入，请取消后重新打开',
+    )
+    return false
+  }
+  if (!curriculumModalSectionUnchanged(modal)) {
+    ElMessage.warning(
+      '该栏正文已发生变化：未填入，请取消后重新打开',
+    )
+    return false
+  }
+  for (const field of modal.fields) {
+    if (modal.copy[field] !== modal.snapshot[field]) {
+      setField(field, modal.copy[field])
+    }
+  }
+  closeCurriculumModal()
+  if (notify) {
+    ElMessage.info(`${modal.label}已填入草稿，尚未保存`)
+  }
+  return true
+}
+
+function closeCurriculumModal(): void {
+  curriculumModal.value = null
+  const target = curriculumModalReturnFocus
+  curriculumModalReturnFocus = null
+  if (target) {
+    void nextTick().then(() => {
+      try {
+        target.focus()
+      } catch {
+        // The trigger may have been unmounted by a page change.
+      }
+    })
+  }
+}
+
+function beforeCurriculumModalClose(done: () => void): void {
+  closeCurriculumModal()
+  done()
+}
+
+function isCurriculumAiField(field: string): boolean {
+  return CURRICULUM_AI_EDIT_FIELDS.some((item) => item.field === field)
+}
+
+function curriculumModalFieldRows(field: string): number {
+  if (
+    field === 'lesson_original' ||
+    field === 'lesson_revised' ||
+    field === 'process_original' ||
+    field === 'process_adjustment'
+  ) {
+    return 10
+  }
+  if (
+    field === 'goals_original' ||
+    field === 'goals_adjustment' ||
+    field === 'preparation_original' ||
+    field === 'preparation_adjustment'
+  ) {
+    return 7
+  }
+  return 4
+}
+
+function openCurriculumModalAi(
+  field: keyof CurriculumContent,
+  whole = false,
+): void {
+  const modal = curriculumModal.value
+  if (!modal) return
+  if (!canEditRecord.value) {
+    ElMessage.warning(
+      '页面已进入关闭或只读状态：未填回，弹窗内容保留',
+    )
+    return
+  }
+  if (!isCurriculumAiField(field) || !modal.fields.includes(field)) {
+    ElMessage.warning('当前栏不支持 AI 局部修改')
+    return
+  }
+  if (
+    pendingUnknown.value ||
+    savePromise.value ||
+    exportBusy.value ||
+    previewPending.value ||
+    aiBusy.value
+  ) {
+    ElMessage.warning('保存、AI 或导出进行中：请等待结果后再修改')
+    return
+  }
+  if (!curriculumModalStillCurrent(modal)) {
+    ElMessage.warning(
+      '记录、版本或本地档案已变化：未填回，请取消后重新打开',
+    )
+    return
+  }
+  if (!curriculumModalSectionUnchanged(modal)) {
+    ElMessage.warning(
+      '该栏正文已发生变化：未填回，请取消后重新打开',
+    )
+    return
+  }
+  const fieldText = modal.copy[field] ?? ''
+  let selection: CurriculumAiSelection | null = null
+  if (whole) {
+    selection = {
+      field,
+      start: 0,
+      end: fieldText.length,
+      text: fieldText,
+    }
+  } else {
+    if (lastSelectionModalToken.value[field] !== modal.token) {
+      ElMessage.warning('请先在当前弹窗的正文中选中要修改的文字')
+      return
+    }
+    const candidate = lastSelections.value[field] ?? null
+    if (!candidate) {
+      ElMessage.warning('请先在当前弹窗的正文中选中要修改的文字')
+      return
+    }
+    if (candidate.text === '') {
+      ElMessage.warning('请选择要修改的文字，或使用「整栏修改」')
+      return
+    }
+    const content = {
+      ...form.value,
+      [field]: fieldText,
+    } as CurriculumContent
+    const selectionError = validateCurriculumSelection(
+      content,
+      candidate,
+    )
+    if (selectionError) {
+      ElMessage.warning(selectionError)
+      return
+    }
+    selection = candidate
+  }
+  if (!applyCurriculumModalDraft(modal, false)) return
+  ElMessage.info('已填回草稿，尚未保存；AI 候选仍需明确采用')
+  aiKind.value = 'edit'
+  aiSelection.value = selection
+  aiOpen.value = true
+}
+
+function displayCurriculumText(value: string): string {
+  return value.trim() === '' ? '（尚未填写）' : value
+}
+
+function curriculumFormLabel(value: string): string {
+  return (
+    CURRICULUM_FORM_OPTIONS.find((item) => item.value === value)?.label ??
+    (value || '（未选择）')
+  )
+}
+
+function curriculumStatusLabel(value: string): string {
+  return (
+    CURRICULUM_STATUS_OPTIONS.find((item) => item.value === value)?.label ??
+    '未选择'
+  )
+}
+
 function releaseComposition(): void {
   composing.value = false
   const waiters = compositionWaiters.splice(0)
@@ -580,8 +943,20 @@ function setFieldSelection(
   start: number,
   end: number,
 ): string {
+  const modal = curriculumModal.value
+  const inModal = Boolean(
+    modal &&
+      modal.fields.includes(field as keyof CurriculumContent),
+  )
+  const source = inModal && modal
+    ? modal.copy[field] ?? ''
+    : String(form.value[field as keyof CurriculumContent] ?? '')
+  const content = {
+    ...form.value,
+    [field]: source,
+  } as CurriculumContent
   const captured = captureCurriculumSelection(
-    form.value,
+    content,
     field,
     start,
     end,
@@ -592,6 +967,20 @@ function setFieldSelection(
       [field]: captured.selection,
     }
     lastSelectionField.value = field
+    if (inModal && modal) {
+      lastSelectionModalToken.value = {
+        ...lastSelectionModalToken.value,
+        [field]: modal.token,
+      }
+    } else {
+      const next = { ...lastSelectionModalToken.value }
+      delete next[field]
+      lastSelectionModalToken.value = next
+    }
+  } else if (inModal && modal) {
+    const next = { ...lastSelectionModalToken.value }
+    delete next[field]
+    lastSelectionModalToken.value = next
   }
   return captured.error
 }
@@ -841,10 +1230,17 @@ const bridge: LeaveEditor = {
     isDirty.value ||
     pendingUnknown.value !== null ||
     exportBusy.value ||
-    aiBusy.value,
-  identity: () => `${props.recordId}:${editEpoch.value}`,
+    aiBusy.value ||
+    curriculumModalDirty.value,
+  identity: () =>
+    `${props.recordId}:${editEpoch.value}:${curriculumModal.value?.token ?? 'none'}`,
   settle: settleComposition,
   saveCurrent: async () => {
+    if (curriculumModal.value) {
+      actionError.value =
+        '编辑弹窗尚未确定或取消：请先处理弹窗后再保存或离开'
+      return 'failed'
+    }
     if (aiBusy.value) {
       actionError.value = 'AI 任务正在生成或结果待核对：请先处理后再保存或离开'
       return 'failed'
@@ -856,6 +1252,14 @@ const bridge: LeaveEditor = {
     return saveCurrent(false)
   },
   blockingDraft: () => {
+    if (curriculumModal.value) {
+      return {
+        kind: 'material',
+        message: curriculumModalDirty.value
+          ? '编辑弹窗中有尚未确定的修改：请先确定并填入草稿，或取消弹窗'
+          : '编辑弹窗尚未关闭：请先确定或取消弹窗',
+      }
+    }
     if (pendingUnknown.value) {
       return {
         kind: 'material',
@@ -933,10 +1337,13 @@ function resetForContext(): void {
   baseline.value = emptyCurriculumContent()
   document.value = null
   baselineDocument.value = null
+  curriculumModal.value = null
+  curriculumModalReturnFocus = null
   aiOpen.value = false
   aiBusy.value = false
   aiSelection.value = null
   lastSelections.value = {}
+  lastSelectionModalToken.value = {}
   lastSelectionField.value = ''
   wholeField.value = 'lesson_original'
   releaseComposition()
@@ -967,13 +1374,22 @@ onBeforeUnmount(() => {
   loadSeq.value += 1
   previewSeq.value += 1
   savePromise.value = null
+  curriculumModal.value = null
+  curriculumModalReturnFocus = null
   releaseComposition()
   unregister()
 })
 
 defineExpose({
   resetForContext,
-  saveCurrent: () => saveCurrent(false),
+  saveCurrent: async () => {
+    if (curriculumModal.value) {
+      actionError.value =
+        '编辑弹窗尚未确定或取消：请先处理弹窗后再保存或离开'
+      return 'failed'
+    }
+    return saveCurrent(false)
+  },
 })
 </script>
 <template>
@@ -1177,295 +1593,228 @@ defineExpose({
         </div>
       </el-card>
 
-      <el-card shadow="never" class="block" data-d1="curriculum-lesson-original-card">
-        <template #header>原稿教案（先粘贴原件）</template>
-        <p class="muted">
-          先粘贴原稿教案，再拆分并核对；保留段落、换行和编号文字。原件与二次稿分开显示。
-        </p>
-        <el-input
-          type="textarea"
-          :rows="10"
-          :model-value="form.lesson_original"
-          data-d1="curriculum-lesson-original"
-          data-curriculum-field="lesson_original"
-          :disabled="!canEdit"
-          @update:model-value="setField('lesson_original', $event)"
-        />
-      </el-card>
-
-      <el-card shadow="never" class="block">
-        <template #header>基本信息</template>
-        <div class="form-grid">
-          <label class="wide">
-            <span>活动名称</span>
-            <el-input
-              :model-value="form.activity_name"
-              maxlength="200"
-              data-d1="curriculum-activity-name"
-              :disabled="!canEdit"
-              @update:model-value="setField('activity_name', $event)"
-            />
-          </label>
-          <label>
-            <span>活动时间</span>
-            <el-date-picker
-              :model-value="form.activity_date"
-              type="date"
-              value-format="YYYY-MM-DD"
-              placeholder="选择日期"
-              style="width: 100%"
-              data-d1="curriculum-date"
-              :disabled="!canEdit"
-              @update:model-value="setField('activity_date', $event)"
-            />
-          </label>
-          <label>
-            <span>活动形式</span>
-            <el-select
-              :model-value="form.activity_form"
-              style="width: 100%"
-              data-d1="curriculum-form"
-              :disabled="!canEdit"
-              @update:model-value="setField('activity_form', $event)"
-            >
-              <el-option label="（未选择）" value="" />
-              <el-option
-                v-for="option in CURRICULUM_FORM_OPTIONS"
-                :key="option.value"
-                :label="option.label"
-                :value="option.value"
-              />
-            </el-select>
-          </label>
-          <label v-if="form.activity_form === 'other'">
-            <span>其他形式说明</span>
-            <el-input
-              :model-value="form.activity_form_other"
-              data-d1="curriculum-form-other"
-              :disabled="!canEdit"
-              @update:model-value="
-                setField('activity_form_other', $event)
-              "
-            />
-          </label>
-          <label>
-            <span>实施单位</span>
-            <el-input
-              :model-value="form.institution"
-              data-d1="curriculum-institution"
-              :disabled="!canEdit"
-              @update:model-value="setField('institution', $event)"
-            />
-          </label>
-          <label>
-            <span>班级（年龄段）</span>
-            <el-input
-              :model-value="form.class_name"
-              data-d1="curriculum-class"
-              :disabled="!canEdit"
-              @update:model-value="setField('class_name', $event)"
-            />
-          </label>
-          <label>
-            <span>幼儿人数</span>
-            <el-input
-              :model-value="form.child_count"
-              inputmode="numeric"
-              placeholder="非负整数"
-              data-d1="curriculum-child-count"
-              :disabled="!canEdit"
-              @update:model-value="setField('child_count', $event)"
-            />
-          </label>
-          <label>
-            <span>组织教师</span>
-            <el-input
-              :model-value="form.organizer"
-              data-d1="curriculum-organizer"
-              :disabled="!canEdit"
-              @update:model-value="setField('organizer', $event)"
-            />
-          </label>
-          <label>
-            <span>记录人</span>
-            <el-input
-              :model-value="form.recorder"
-              data-d1="curriculum-recorder"
-              :disabled="!canEdit"
-              @update:model-value="setField('recorder', $event)"
-            />
-          </label>
-        </div>
-      </el-card>
-      <el-card shadow="never" class="block">
-        <template #header>活动目标</template>
-        <div class="pair-grid">
-          <label>
-            <span>原稿</span>
-            <el-input
-              type="textarea"
-              :rows="7"
-              :model-value="form.goals_original"
-              data-d1="curriculum-goals-original"
-              data-curriculum-field="goals_original"
-              :disabled="!canEdit"
-              @update:model-value="
-                setField('goals_original', $event)
-              "
-            />
-          </label>
-          <div class="adjust-column">
-            <label>
-              <span>修订状态</span>
-              <el-radio-group
-                :model-value="form.goals_status"
-                data-d1="curriculum-goals-status"
-                :disabled="!canEdit"
-                @update:model-value="
-                  setField('goals_status', $event)
-                "
-              >
-                <el-radio
-                  v-for="option in CURRICULUM_STATUS_OPTIONS"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </el-radio>
-              </el-radio-group>
-            </label>
-            <label>
-              <span>调整内容</span>
-              <el-input
-                type="textarea"
-                :rows="7"
-                :model-value="form.goals_adjustment"
-                data-d1="curriculum-goals-adjustment"
-              data-curriculum-field="goals_adjustment"
-                :disabled="!canEdit"
-                @update:model-value="
-                  setField('goals_adjustment', $event)
-                "
-              />
-            </label>
-            <p
-              v-if="hasConflict('goals')"
-              class="conflict"
-              data-d1="curriculum-goals-conflict"
-            >
-              已填写调整内容但选择“保持原设计不变”；保存前会请你明确处理。
+      <div
+        class="preview-section"
+        data-d1="curriculum-lesson-original-card"
+      >
+        <div class="reading-head">
+          <div>
+            <h3>课程审议内容预览</h3>
+            <p class="muted">
+              业务内容按只读表格行展示，原稿、调整和二次稿全文均不截断；各栏通过行内编辑按钮打开独立副本。
             </p>
           </div>
         </div>
-      </el-card>
-      <el-card shadow="never" class="block">
-        <template #header>活动准备</template>
-        <div class="pair-grid">
-          <label>
-            <span>原稿</span>
-            <el-input
-              type="textarea"
-              :rows="7"
-              :model-value="form.preparation_original"
-              data-d1="curriculum-preparation-original"
-              data-curriculum-field="preparation_original"
-              :disabled="!canEdit"
-              @update:model-value="
-                setField('preparation_original', $event)
-              "
-            />
-          </label>
-          <div class="adjust-column">
-            <label>
-              <span>修订状态</span>
-              <el-radio-group
-                :model-value="form.preparation_status"
-                data-d1="curriculum-preparation-status"
-                :disabled="!canEdit"
-                @update:model-value="
-                  setField('preparation_status', $event)
-                "
-              >
-                <el-radio
-                  v-for="option in CURRICULUM_STATUS_OPTIONS"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </el-radio>
-              </el-radio-group>
-            </label>
-            <label>
-              <span>调整内容</span>
-              <el-input
-                type="textarea"
-                :rows="7"
-                :model-value="form.preparation_adjustment"
-                data-d1="curriculum-preparation-adjustment"
-              data-curriculum-field="preparation_adjustment"
-                :disabled="!canEdit"
-                @update:model-value="
-                  setField('preparation_adjustment', $event)
-                "
-              />
-            </label>
-            <p
-              v-if="hasConflict('preparation')"
-              class="conflict"
-              data-d1="curriculum-preparation-conflict"
-            >
-              已填写调整内容但选择“保持原设计不变”；保存前会请你明确处理。
-            </p>
-          </div>
-        </div>
-      </el-card>
-      <el-card shadow="never" class="block">
-        <template #header>活动过程记录</template>
-        <div class="pair-grid">
-          <label>
-            <span>原稿</span>
-            <el-input
-              type="textarea"
-              :rows="10"
-              :model-value="form.process_original"
-              data-d1="curriculum-process-original"
-              data-curriculum-field="process_original"
-              :disabled="!canEdit"
-              @update:model-value="
-                setField('process_original', $event)
-              "
-            />
-          </label>
-          <label>
-            <span>调整内容</span>
-            <el-input
-              type="textarea"
-              :rows="10"
-              :model-value="form.process_adjustment"
-              data-d1="curriculum-process-adjustment"
-              data-curriculum-field="process_adjustment"
-              :disabled="!canEdit"
-              @update:model-value="
-                setField('process_adjustment', $event)
-              "
-            />
-          </label>
-        </div>
-      </el-card>
+        <div class="table-scroll">
+          <table class="read-table curriculum-preview-table">
+            <thead>
+              <tr>
+                <th>栏目</th>
+                <th>原稿 / 当前内容</th>
+                <th>调整 / 结果</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr data-d1="curriculum-lesson-original-row">
+                <th scope="row">原稿教案</th>
+                <td colspan="2">
+                  <div
+                    class="read-text read-long"
+                    data-curriculum-field="lesson_original"
+                    data-d1="curriculum-read-lesson-original"
+                  >
+                    {{ displayCurriculumText(form.lesson_original) }}
+                  </div>
+                </td>
+                <td class="preview-action-cell">
+                  <el-button
+                    size="small"
+                    data-d1="curriculum-edit-original"
+                    :disabled="!canMutate"
+                    @click="openCurriculumModal('lesson_original')"
+                  >
+                    编辑原稿教案
+                  </el-button>
+                </td>
+              </tr>
+              <tr data-d1="curriculum-basic-card">
+                <th scope="row">基本信息</th>
+                <td colspan="2">
+                  <div class="read-grid preview-grid">
+                    <div class="read-item">
+                      <span class="read-label">活动名称</span>
+                      <span class="read-value">{{ displayCurriculumText(form.activity_name) }}</span>
+                    </div>
+                    <div class="read-item">
+                      <span class="read-label">活动时间</span>
+                      <span class="read-value">{{ form.activity_date || '（尚未填写）' }}</span>
+                    </div>
+                    <div class="read-item">
+                      <span class="read-label">活动形式</span>
+                      <span class="read-value">
+                        {{ curriculumFormLabel(form.activity_form) }}
+                        <template v-if="form.activity_form === 'other' && form.activity_form_other">
+                          ：{{ form.activity_form_other }}
+                        </template>
+                      </span>
+                    </div>
+                    <div class="read-item">
+                      <span class="read-label">实施单位</span>
+                      <span class="read-value">{{ displayCurriculumText(form.institution) }}</span>
+                    </div>
+                    <div class="read-item">
+                      <span class="read-label">班级（年龄段）</span>
+                      <span class="read-value">{{ displayCurriculumText(form.class_name) }}</span>
+                    </div>
+                    <div class="read-item">
+                      <span class="read-label">幼儿人数</span>
+                      <span class="read-value">{{ displayCurriculumText(form.child_count) }}</span>
+                    </div>
+                    <div class="read-item">
+                      <span class="read-label">组织教师</span>
+                      <span class="read-value">{{ displayCurriculumText(form.organizer) }}</span>
+                    </div>
+                    <div class="read-item">
+                      <span class="read-label">记录人</span>
+                      <span class="read-value">{{ displayCurriculumText(form.recorder) }}</span>
+                    </div>
+                  </div>
+                </td>
+                <td class="preview-action-cell">
+                  <el-button
+                    size="small"
+                    data-d1="curriculum-edit-basic"
+                    :disabled="!canMutate"
+                    @click="openCurriculumModal('basic')"
+                  >
+                    编辑基本信息
+                  </el-button>
+                </td>
+              </tr>
 
-      <el-card shadow="never" class="block">
-        <template #header>调整理由</template>
-        <el-input
-          type="textarea"
-          :rows="4"
-          :model-value="form.reason"
-          data-d1="curriculum-reason"
-              data-curriculum-field="reason"
-          :disabled="!canEdit"
-          @update:model-value="setField('reason', $event)"
-        />
-      </el-card>
-      <el-card shadow="never" class="block" data-d1="curriculum-ai-review">
+              <tr data-d1="curriculum-goals-card">
+                <th scope="row">活动目标</th>
+                <td data-d1="curriculum-goals-original">
+                  <span class="read-label">原稿</span>
+                  <div class="read-text">
+                    {{ displayCurriculumText(form.goals_original) }}
+                  </div>
+                </td>
+                <td>
+                  <span class="read-label">
+                    修订状态：{{ curriculumStatusLabel(form.goals_status) }}
+                  </span>
+                  <div class="read-text">
+                    {{ displayCurriculumText(form.goals_adjustment) }}
+                  </div>
+                  <p
+                    v-if="hasConflict('goals')"
+                    class="conflict"
+                    data-d1="curriculum-goals-conflict"
+                  >
+                    已填写调整内容但选择“保持原设计不变”；保存前会请你明确处理。
+                  </p>
+                </td>
+                <td class="preview-action-cell">
+                  <el-button
+                    size="small"
+                    data-d1="curriculum-edit-goals"
+                    :disabled="!canMutate"
+                    @click="openCurriculumModal('goals')"
+                  >
+                    编辑活动目标
+                  </el-button>
+                </td>
+              </tr>
+              <tr data-d1="curriculum-preparation-card">
+                <th scope="row">活动准备</th>
+                <td data-d1="curriculum-preparation-original">
+                  <span class="read-label">原稿</span>
+                  <div class="read-text">
+                    {{ displayCurriculumText(form.preparation_original) }}
+                  </div>
+                </td>
+                <td>
+                  <span class="read-label">
+                    修订状态：{{ curriculumStatusLabel(form.preparation_status) }}
+                  </span>
+                  <div class="read-text">
+                    {{ displayCurriculumText(form.preparation_adjustment) }}
+                  </div>
+                  <p
+                    v-if="hasConflict('preparation')"
+                    class="conflict"
+                    data-d1="curriculum-preparation-conflict"
+                  >
+                    已填写调整内容但选择“保持原设计不变”；保存前会请你明确处理。
+                  </p>
+                </td>
+                <td class="preview-action-cell">
+                  <el-button
+                    size="small"
+                    data-d1="curriculum-edit-preparation"
+                    :disabled="!canMutate"
+                    @click="openCurriculumModal('preparation')"
+                  >
+                    编辑活动准备
+                  </el-button>
+                </td>
+              </tr>
+              <tr data-d1="curriculum-process-card">
+                <th scope="row">活动过程</th>
+                <td>
+                  <span class="read-label">原稿</span>
+                  <div class="read-text">
+                    {{ displayCurriculumText(form.process_original) }}
+                  </div>
+                </td>
+                <td>
+                  <span class="read-label">调整内容</span>
+                  <div class="read-text">
+                    {{ displayCurriculumText(form.process_adjustment) }}
+                  </div>
+                </td>
+                <td class="preview-action-cell">
+                  <el-button
+                    size="small"
+                    data-d1="curriculum-edit-process"
+                    :disabled="!canMutate"
+                    @click="openCurriculumModal('process')"
+                  >
+                    编辑活动过程
+                  </el-button>
+                </td>
+              </tr>
+
+              <tr data-d1="curriculum-reason-card">
+                <th scope="row">调整理由</th>
+                <td colspan="2">
+                  <div class="read-text">
+                    {{ displayCurriculumText(form.reason) }}
+                  </div>
+                </td>
+                <td class="preview-action-cell">
+                  <el-button
+                    size="small"
+                    data-d1="curriculum-edit-reason"
+                    :disabled="!canMutate"
+                    @click="openCurriculumModal('reason')"
+                  >
+                    编辑调整理由
+                  </el-button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <el-card
+        shadow="never"
+        class="block"
+        data-d1="curriculum-ai-review"
+      >
         <template #header>拆分、核对与审议建议</template>
         <p class="muted">
           按需拆分、核对原稿后生成审议建议或局部修改。候选只作预览，明确采用后才进入保存；未知受理不会自动重发。
@@ -1479,7 +1828,7 @@ defineExpose({
           生成审议建议
         </el-button>
         <span v-if="!form.lesson_original.trim()" class="muted">
-          请先在「添加原稿教案」粘贴正文
+          请先在「原稿教案」粘贴正文
         </span>
         <div class="ai-selection-row">
           <el-button
@@ -1518,22 +1867,279 @@ defineExpose({
         </div>
       </el-card>
 
-      <el-card shadow="never" class="block" data-d1="curriculum-lesson-revised-card">
-        <template #header>二次稿</template>
-        <p class="muted">
-          经调整、拆分核对和审议建议后形成的二次稿；采用仍走原有确认，不自动覆盖原稿。
-        </p>
-        <el-input
-          type="textarea"
-          :rows="10"
-          :model-value="form.lesson_revised"
-          data-d1="curriculum-lesson-revised"
-          data-curriculum-field="lesson_revised"
-          :disabled="!canEdit"
-          @update:model-value="setField('lesson_revised', $event)"
-        />
-      </el-card>
+      <div
+        class="preview-section"
+        data-d1="curriculum-lesson-revised-card"
+      >
+        <div class="reading-head">
+          <div>
+            <h3>二次稿</h3>
+            <p class="muted">
+              二次稿全文以表格行展示；采用仍走原有确认，不自动覆盖原稿。
+            </p>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="read-table curriculum-preview-table">
+            <thead>
+              <tr>
+                <th>栏目</th>
+                <th>原稿 / 当前内容</th>
+                <th>调整 / 结果</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr data-d1="curriculum-lesson-revised-row">
+                <th scope="row">二次稿</th>
+                <td colspan="2">
+                  <div class="read-text read-long">
+                    {{ displayCurriculumText(form.lesson_revised) }}
+                  </div>
+                </td>
+                <td class="preview-action-cell">
+                  <el-button
+                    size="small"
+                    data-d1="curriculum-edit-revised"
+                    :disabled="!canMutate"
+                    @click="openCurriculumModal('lesson_revised')"
+                  >
+                    编辑二次稿
+                  </el-button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </template>
+
+    <el-dialog
+      v-if="curriculumModal"
+      v-model="curriculumModalOpen"
+      :title="curriculumModal.label"
+      align-center
+      width="min(820px, calc(100vw - 32px))"
+      :close-on-click-modal="false"
+      :before-close="beforeCurriculumModalClose"
+      data-d1="curriculum-edit-dialog"
+    >
+      <div
+        class="curriculum-modal"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
+        @select.capture="rememberSelectionEvent"
+        @mouseup.capture="rememberSelectionEvent"
+        @keyup.capture="rememberSelectionEvent"
+        @blur.capture="rememberSelectionEvent"
+      >
+        <template v-if="curriculumModal.kind === 'basic'">
+          <div class="form-grid">
+            <label class="wide">
+              <span>活动名称</span>
+              <el-input
+                :model-value="curriculumModal.copy.activity_name"
+                maxlength="200"
+                data-d1="curriculum-activity-name"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField('activity_name', $event)
+                "
+              />
+            </label>
+            <label>
+              <span>活动时间</span>
+              <el-date-picker
+                :model-value="curriculumModal.copy.activity_date"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="选择日期"
+                style="width: 100%"
+                data-d1="curriculum-date"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField('activity_date', $event)
+                "
+              />
+            </label>
+            <label>
+              <span>活动形式</span>
+              <el-select
+                :model-value="curriculumModal.copy.activity_form"
+                style="width: 100%"
+                data-d1="curriculum-form"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField('activity_form', $event)
+                "
+              >
+                <el-option label="（未选择）" value="" />
+                <el-option
+                  v-for="option in CURRICULUM_FORM_OPTIONS"
+                  :key="option.value"
+                  :label="option.label"
+                  :value="option.value"
+                />
+              </el-select>
+            </label>
+            <label v-if="curriculumModal.copy.activity_form === 'other'">
+              <span>其他形式说明</span>
+              <el-input
+                :model-value="curriculumModal.copy.activity_form_other"
+                data-d1="curriculum-form-other"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField('activity_form_other', $event)
+                "
+              />
+            </label>
+            <label>
+              <span>实施单位</span>
+              <el-input
+                :model-value="curriculumModal.copy.institution"
+                data-d1="curriculum-institution"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField('institution', $event)
+                "
+              />
+            </label>
+            <label>
+              <span>班级（年龄段）</span>
+              <el-input
+                :model-value="curriculumModal.copy.class_name"
+                data-d1="curriculum-class"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField('class_name', $event)
+                "
+              />
+            </label>
+            <label>
+              <span>幼儿人数</span>
+              <el-input
+                :model-value="curriculumModal.copy.child_count"
+                inputmode="numeric"
+                placeholder="非负整数"
+                data-d1="curriculum-child-count"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField('child_count', $event)
+                "
+              />
+            </label>
+            <label>
+              <span>组织教师</span>
+              <el-input
+                :model-value="curriculumModal.copy.organizer"
+                data-d1="curriculum-organizer"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField('organizer', $event)
+                "
+              />
+            </label>
+            <label>
+              <span>记录人</span>
+              <el-input
+                :model-value="curriculumModal.copy.recorder"
+                data-d1="curriculum-recorder"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField('recorder', $event)
+                "
+              />
+            </label>
+          </div>
+        </template>
+
+        <template v-else>
+          <template
+            v-for="field in curriculumModal.fields"
+            :key="field"
+          >
+            <label
+              v-if="
+                field === 'goals_status' ||
+                field === 'preparation_status'
+              "
+              class="modal-field"
+            >
+              <span>{{ curriculumFieldLabel(field) }}</span>
+              <el-radio-group
+                :model-value="curriculumModal.copy[field]"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField(field, $event)
+                "
+              >
+                <el-radio
+                  v-for="option in CURRICULUM_STATUS_OPTIONS"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </el-radio>
+              </el-radio-group>
+            </label>
+            <label v-else class="modal-field">
+              <span>{{ curriculumFieldLabel(field) }}</span>
+              <el-input
+                :model-value="curriculumModal.copy[field]"
+                type="textarea"
+                :rows="curriculumModalFieldRows(field)"
+                :data-curriculum-field="field"
+                :disabled="!canEditRecord"
+                @update:model-value="
+                  setCurriculumModalField(field, $event)
+                "
+              />
+              <div
+                v-if="isCurriculumAiField(field)"
+                class="modal-ai-row"
+              >
+                <el-button
+                  size="small"
+                  data-d1="curriculum-modal-ai-selection"
+                  :disabled="!canEditRecord"
+                  @click="openCurriculumModalAi(field)"
+                >
+                  填回草稿并修改选段
+                </el-button>
+                <el-button
+                  size="small"
+                  data-d1="curriculum-modal-ai-whole"
+                  :disabled="!canEditRecord"
+                  @click="openCurriculumModalAi(field, true)"
+                >
+                  填回草稿并整栏修改
+                </el-button>
+              </div>
+            </label>
+          </template>
+        </template>
+        <p class="muted">
+          取消保持打开前的草稿；确定只把本栏内容填入草稿，不保存业务版本。
+          AI 操作会先把本栏独立副本显式填回草稿，再打开候选；取消本弹窗不会填回。AI 候选仍需明确采用。
+        </p>
+      </div>
+      <template #footer>
+        <el-button
+          data-d1="curriculum-modal-cancel"
+          @click="closeCurriculumModal"
+        >
+          取消（保留原草稿）
+        </el-button>
+        <el-button
+          type="primary"
+          data-d1="curriculum-modal-confirm"
+          :disabled="!canEditRecord"
+          @click="confirmCurriculumModal"
+        >
+          确定并填入草稿
+        </el-button>
+      </template>
+    </el-dialog>
 
     <CurriculumAiDialog
       :open="aiOpen"
@@ -1649,6 +2255,139 @@ defineExpose({
   }
   .form-grid .wide {
     grid-column: auto;
+  }
+}
+.reading-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.reading-head h3 {
+  margin: 0 0 4px;
+}
+.reading-head > .el-button {
+  flex-shrink: 0;
+}
+.read-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 12px 18px;
+  margin-top: 12px;
+}
+.read-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.read-label {
+  color: var(--kgm-muted);
+  font-size: 0.85rem;
+}
+.read-value {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.read-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.read-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.65;
+  min-height: 1.5em;
+}
+.read-long {
+  margin-top: 10px;
+}
+.read-pair {
+  margin-top: 12px;
+}
+.curriculum-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 65vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.curriculum-modal .form-grid {
+  margin-top: 0;
+}
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.modal-ai-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@media (max-width: 900px) {
+  .read-grid {
+    grid-template-columns: 1fr;
+  }
+  .read-pair {
+    grid-template-columns: 1fr;
+  }
+}
+.preview-section {
+  margin-top: 12px;
+}
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+.read-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+}
+.read-table th,
+.read-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--kgm-border);
+  text-align: left;
+  vertical-align: top;
+}
+.read-table thead th {
+  color: var(--kgm-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.read-table tbody th[scope='row'] {
+  width: 130px;
+  color: var(--kgm-text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.read-table tr:last-child td,
+.read-table tr:last-child th {
+  border-bottom: none;
+}
+.preview-grid {
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  margin-top: 0;
+}
+.preview-action-cell {
+  white-space: nowrap;
+}
+.curriculum-preview-table .read-label {
+  display: block;
+}
+@media (max-width: 900px) {
+  .preview-grid {
+    grid-template-columns: 1fr;
+  }
+  .read-table {
+    min-width: 760px;
   }
 }
 </style>

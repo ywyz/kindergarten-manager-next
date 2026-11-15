@@ -7,7 +7,7 @@
  * class-game draft.  The local configuration is read only after the teacher
  * explicitly chooses to publish it.
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ApiError, apiGet } from '../client'
 import {
   collaborationErrorMessage,
@@ -124,6 +124,28 @@ const querying = ref(false)
 const resubmitting = ref(false)
 const errorText = ref('')
 const noticeText = ref('')
+
+type DirectorySection = 'account' | 'classes' | 'promotion' | 'game-config'
+const directorySection = ref<DirectorySection>('account')
+
+function directoryAvailable(section: DirectorySection): boolean {
+  if (section === 'account') return true
+  return (
+    status.value.connected
+    || pendingWrite.value !== null
+    || pendingPromotion.value !== null
+  )
+}
+
+function selectDirectory(section: DirectorySection): void {
+  if (!directoryAvailable(section)) return
+  directorySection.value = section
+}
+
+async function focusDirectory(section: DirectorySection): Promise<void> {
+  selectDirectory(section)
+  await nextTick()
+}
 
 interface PendingSaveWrite {
   kind: 'save'
@@ -423,6 +445,7 @@ function markDisconnected(): void {
     teacher: null,
     message: '在线协作连接已失效，请重新连接',
   }
+  directorySection.value = 'account'
 }
 function handleError(err: unknown, fallback: string): void {
   errorText.value = collaborationErrorMessage(err, fallback)
@@ -579,6 +602,7 @@ async function connect(): Promise<void> {
     recoveryNoClass.value = false
     await loadDirectory(epoch)
     if (current(epoch) && status.value.connected) {
+      directorySection.value = 'classes'
       noticeText.value = `已连接在线协作：${result.teacher?.display_name ?? '在线教师'}`
     }
   } catch (err) {
@@ -625,6 +649,7 @@ async function redeemWithCode(): Promise<void> {
     }
     await loadDirectory(epoch)
     if (!current(epoch)) return
+    directorySection.value = 'classes'
     const boundSchool = result.teacher?.school_name ?? '在线园所'
     if (result.purpose === 'recovery' && !membership.value) {
       recoveryNoClass.value = true
@@ -737,6 +762,7 @@ async function selectClass(classId: string): Promise<void> {
     recoveryNoClass.value = false
     redeemNotice.value = ''
     clearPromotionDisplay()
+    directorySection.value = 'classes'
     await loadClassData(epoch)
     if (current(epoch)) noticeText.value = `已选择在线班级：${result.class_name}`
   } catch (err) {
@@ -898,6 +924,7 @@ async function loadPromotion(): Promise<void> {
     return
   }
   const epoch = scopeEpoch
+  directorySection.value = 'promotion'
   loadingPromotion.value = true
   errorText.value = ''
   promotionNotice.value = ''
@@ -1122,6 +1149,7 @@ async function previewLocalPublish(): Promise<void> {
   ) {
     return
   }
+  directorySection.value = 'game-config'
   publishing.value = true
   errorText.value = ''
   noticeText.value = ''
@@ -1302,6 +1330,7 @@ async function previewSource(
   if (!canPreviewSource(mate)) return
   const epoch = epochArg ?? scopeEpoch
   if (!membership.value) return
+  directorySection.value = 'game-config'
   previewingSourceId.value = mate.teacher_id
   preview.value = null
   previewStale.value = false
@@ -1579,6 +1608,8 @@ defineExpose({
   queryPendingPromotion,
   cancelPreview,
   cancelLocalPublish,
+  focusDirectory,
+  currentDirectory: () => directorySection.value,
 })
 </script>
 
@@ -1664,7 +1695,52 @@ defineExpose({
       </el-button>
     </div>
 
-    <section class="step" data-d1="collaboration-connect">
+    <div class="collaboration-layout">
+      <nav class="collaboration-directory" data-d1="collaboration-directory" aria-label="在线协作栏目">
+        <el-button
+          size="small"
+          data-d1="collaboration-nav-account"
+          :type="directorySection === 'account' ? 'primary' : ''"
+          :aria-current="directorySection === 'account' ? 'page' : undefined"
+          @click="selectDirectory('account')"
+        >
+          连接与账号
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="collaboration-nav-classes"
+          :type="directorySection === 'classes' ? 'primary' : ''"
+          :aria-current="directorySection === 'classes' ? 'page' : undefined"
+          :disabled="!directoryAvailable('classes')"
+          @click="selectDirectory('classes')"
+        >
+          当前班级与目录
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="collaboration-nav-promotion"
+          :type="directorySection === 'promotion' ? 'primary' : ''"
+          :aria-current="directorySection === 'promotion' ? 'page' : undefined"
+          :disabled="!directoryAvailable('promotion')"
+          @click="selectDirectory('promotion')"
+        >
+          在线升班
+          <el-tag v-if="pendingPromotion" size="small" type="danger">待核对</el-tag>
+        </el-button>
+        <el-button
+          size="small"
+          data-d1="collaboration-nav-game-config"
+          :type="directorySection === 'game-config' ? 'primary' : ''"
+          :aria-current="directorySection === 'game-config' ? 'page' : undefined"
+          :disabled="!directoryAvailable('game-config')"
+          @click="selectDirectory('game-config')"
+        >
+          班级游戏配置
+          <el-tag v-if="pendingWrite" size="small" type="danger">待核对</el-tag>
+        </el-button>
+      </nav>
+      <div class="collaboration-content">
+    <section class="step" data-d1="collaboration-connect" v-show="directorySection === 'account'">
       <template v-if="!status.connected">
         <h3>连接在线协作</h3>
         <div class="redeem-box" data-d1="collaboration-redeem">
@@ -1746,7 +1822,7 @@ defineExpose({
     </section>
 
     <template v-if="status.connected || pendingWrite || pendingPromotion">
-      <section class="step" data-d1="collaboration-classes">
+      <section class="step" data-d1="collaboration-classes" v-show="directorySection === 'classes'">
         <div v-if="membership" class="membership" data-d1="collaboration-membership">
           <div class="current-line">
             <h3>当前班级：{{ membership.class_name }}</h3>
@@ -1847,7 +1923,7 @@ defineExpose({
         </details>
       </section>
 
-      <section v-if="membership" class="step" data-d1="collaboration-promotion">
+      <section v-if="membership" class="step" data-d1="collaboration-promotion" v-show="directorySection === 'promotion'">
         <details
           class="fold"
           data-d1="collaboration-promotion-details"
@@ -1994,7 +2070,7 @@ defineExpose({
         </details>
       </section>
 
-      <section v-if="membership" class="step" data-d1="collaboration-game-config">
+      <section v-if="membership" class="step" data-d1="collaboration-game-config" v-show="directorySection === 'game-config'">
         <details
           class="fold"
           data-d1="collaboration-game-config-details"
@@ -2160,11 +2236,50 @@ defineExpose({
         </details>
       </section>
     </template>
+      </div>
+    </div>
   </el-card>
 </template>
 
 <style scoped>
 .collaboration { margin-bottom: 1rem; }
+.collaboration-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 12px;
+}
+.collaboration-directory {
+  flex: 0 0 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: sticky;
+  top: 12px;
+}
+.collaboration-directory :deep(.el-button) {
+  margin-left: 0;
+  width: 100%;
+  justify-content: flex-start;
+}
+.collaboration-content {
+  flex: 1;
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .collaboration-layout {
+    flex-direction: column;
+  }
+  .collaboration-directory {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .collaboration-directory :deep(.el-button) {
+    width: auto;
+  }
+}
 .head { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .step { margin-top: 1rem; }
 .connect-row { display: flex; gap: 0.5rem; align-items: center; max-width: 620px; }

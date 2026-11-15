@@ -2,6 +2,12 @@
 /**
  * Real daily-plan editor (D1 spec §11.1/§11.2).
  *
+ * 2026-11-15 layout: the page body is a read-only left-directory view; an
+ * explicit column button opens a dialog with an independent copy. Confirm only
+ * fills the live draft (never saves a business version); cancel keeps the
+ * previous draft byte-equivalent. The dialog is pinned to its opening
+ * plan/version/section/session and joins leave/close and AI-write protection.
+ *
  * State: loading / ready / saving / conflict / save_failed plus the initial
  * create_confirmation. The dirty baseline is the server-normalized saveable
  * value; manual save and leave save share one saveCurrent with a single
@@ -51,6 +57,15 @@ import {
   otherBoardsProvided,
   type OtherBoardName,
 } from '../daily-other-draft'
+import {
+  applyDailyLayoutSection,
+  cloneDailyLayoutDraft,
+  dailyLayoutDraftSignature,
+  dailyMorningFocusGroupIndex,
+  dailyMorningGroupHasHiddenDetails,
+  type DailyLayoutDraft,
+  type DailyLayoutSectionKey,
+} from '../daily-layout-draft'
 import type { AdoptionResult, AiTask, CandidateAdoptionOrigin, CandidateDetail, DailyPlan, Grade, LocalContext, SplitAdaptContinuation, TaskType } from '../types'
 import type { SaveOutcome, BlockingDraft } from '../leave'
 import ExportDialog from './ExportDialog.vue'
@@ -134,6 +149,34 @@ type Phase =
 
 const WEEKDAY_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 const GRADE_LABELS: Record<string, string> = { small: '小班', middle: '中班', large: '大班' }
+const POST_CONTEXT_LABELS: Record<string, string> = {
+  area: '室内区域',
+  outdoor: '户外',
+  special_room: '专用室',
+}
+const LAYOUT_SECTIONS: Array<{
+  key: DailyLayoutSectionKey
+  label: string
+  title: string
+}> = [
+  { key: 'raw', label: '原始教案', title: '原始教案（可选）' },
+  { key: 'morning', label: '晨间活动', title: '晨间 · 体能大循环' },
+  { key: 'talk', label: '晨间谈话', title: '晨间谈话' },
+  { key: 'group', label: '集体活动', title: '集体活动' },
+  { key: 'post', label: '活动后游戏', title: '集体活动后游戏' },
+  { key: 'afternoon', label: '下午户外', title: '下午户外' },
+  { key: 'reflection', label: '一日反思', title: '反思' },
+]
+
+interface LayoutModalOrigin {
+  section: DailyLayoutSectionKey
+  planId: string | null
+  planDate: string
+  editorKey: string
+  version: number | null
+  sessionEpoch: number
+  editEpoch: number
+}
 
 const phase = ref<Phase>('loading')
 const plan = ref<DailyPlan | null>(null)
@@ -178,6 +221,22 @@ const processTarget = ref<HTMLElement | null>(null)
 const otherTarget = ref<HTMLElement | null>(null)
 const reflectionTarget = ref<HTMLElement | null>(null)
 const reflectionProgressTarget = ref<HTMLElement | null>(null)
+/**
+ * 2026-11-15 left-directory layout: reading is the default; only an explicit
+ * column button opens a dialog with an independent draft copy. The modal is
+ * pinned to the plan/version/section/session it was opened from.
+ */
+const layoutSection = ref<DailyLayoutSectionKey>('group')
+const layoutEditing = ref<DailyLayoutSectionKey | null>(null)
+const layoutModalOpen = ref(false)
+const layoutDraft = ref<DailyLayoutDraft>(
+  cloneDailyLayoutDraft(emptyContentForm(), '', ''),
+)
+const layoutBaselineSignature = ref('')
+const layoutOrigin = ref<LayoutModalOrigin | null>(null)
+const layoutStale = ref(false)
+const layoutComposing = ref(false)
+let layoutFocusReturn: HTMLElement | null = null
 /**
  * Direct-fill outcome for a successful other-activities task. `applied` means
  * the generated boards entered the current form draft; `pending` means the
@@ -237,6 +296,26 @@ const editDisabled = computed(
     historyRestoreBlocked.value,
 )
 
+const layoutDialogTitle = computed(() => {
+  const section = layoutEditing.value
+  if (!section) return '编辑本栏'
+  const meta = LAYOUT_SECTIONS.find((item) => item.key === section)
+  return `编辑「${meta?.title ?? '本栏'}」`
+})
+/** True only while the modal draft differs from what was opened. */
+const layoutDraftDirty = computed(
+  () =>
+    layoutEditing.value !== null
+    && layoutOrigin.value !== null
+    && (layoutComposing.value
+      || dailyLayoutDraftSignature(layoutDraft.value, layoutEditing.value)
+        !== layoutBaselineSignature.value),
+)
+/** Stale identity or any non-writable page state disables filling back. */
+const layoutConfirmDisabled = computed(
+  () => layoutStale.value || editDisabled.value,
+)
+
 const weekLabel = computed(() => {
   if (!plan.value) return ''
   const weekday = WEEKDAY_LABELS[plan.value.weekday - 1] || ''
@@ -254,7 +333,183 @@ function touchEpoch(): void {
   editEpoch.value += 1
 }
 
+// -- left-directory read/edit modal -------------------------------------------
+
+function selectLayoutSection(section: DailyLayoutSectionKey): void {
+  if (layoutEditing.value) return
+  layoutSection.value = section
+}
+
+function focusLayoutReturn(): void {
+  const target = layoutFocusReturn
+  layoutFocusReturn = null
+  if (!target || typeof target.focus !== 'function') return
+  if (target.isConnected === false) return
+  target.focus()
+}
+
+/**
+ * The page can change under an open modal (adoption read-back, save receipt,
+ * history restore). The modal keeps its copy, but its confirm is disabled so a
+ * stale dialog can never overwrite the newer page content.
+ */
+function markLayoutStale(): void {
+  if (layoutEditing.value) layoutStale.value = true
+}
+
+function layoutOriginCurrent(): boolean {
+  const origin = layoutOrigin.value
+  if (!origin || layoutEditing.value !== origin.section) return false
+  if (props.planDate !== origin.planDate) return false
+  if (editorKey.value !== origin.editorKey) return false
+  if (getSessionEpoch() !== origin.sessionEpoch) return false
+  if ((plan.value?.id ?? null) !== origin.planId) return false
+  if ((plan.value?.current_content_version ?? null) !== origin.version) return false
+  if (editEpoch.value !== origin.editEpoch) return false
+  return true
+}
+
+function openLayoutEditor(section: DailyLayoutSectionKey = layoutSection.value): void {
+  if (layoutEditing.value) return
+  if (editDisabled.value) {
+    ElMessage.warning('当前不可编辑：请先处理保存、冲突或窗口状态')
+    return
+  }
+  if (candidateOpen.value || candidateDraftActive.value) {
+    ElMessage.warning('候选预览有未采用的编辑：请先处理当前候选')
+    return
+  }
+  if (historyRestoreBlocked.value) {
+    ElMessage.warning('历史恢复正在提交或结果待核对：暂不能编辑本栏')
+    return
+  }
+  if (historyOpen.value) {
+    ElMessage.warning('历史记录窗口已打开：请先关闭历史后再编辑本栏')
+    return
+  }
+  layoutSection.value = section
+  layoutEditing.value = section
+  layoutOrigin.value = {
+    section,
+    planId: plan.value?.id ?? null,
+    planDate: props.planDate,
+    editorKey: editorKey.value,
+    version: plan.value?.current_content_version ?? null,
+    sessionEpoch: getSessionEpoch(),
+    editEpoch: editEpoch.value,
+  }
+  layoutDraft.value = cloneDailyLayoutDraft(
+    form.value,
+    rawLessonPlan.value,
+    reflectionMaterials.value,
+  )
+  layoutBaselineSignature.value = dailyLayoutDraftSignature(layoutDraft.value, section)
+  layoutStale.value = false
+  layoutComposing.value = false
+  layoutFocusReturn =
+    typeof document !== 'undefined'
+      ? (document.activeElement as HTMLElement | null)
+      : null
+  layoutModalOpen.value = true
+}
+
+/** Cancel always discards the modal copy; the live draft stays byte-equivalent. */
+function cancelLayoutEdit(): void {
+  layoutModalOpen.value = false
+  layoutEditing.value = null
+  layoutOrigin.value = null
+  layoutBaselineSignature.value = ''
+  layoutStale.value = false
+  layoutComposing.value = false
+  void nextTick().then(focusLayoutReturn)
+}
+
+function onLayoutDialogUpdate(value: boolean): void {
+  if (!value) cancelLayoutEdit()
+}
+
+/** Keep modal IME events out of the body epoch and track their lifecycle. */
+function beginLayoutComposition(event?: Event): void {
+  event?.stopPropagation?.()
+  layoutComposing.value = true
+}
+
+function endLayoutComposition(event?: Event): void {
+  event?.stopPropagation?.()
+  layoutComposing.value = false
+}
+
+/** Wait for the modal's IME composition to commit before merging the copy. */
+async function settleLayoutComposition(): Promise<void> {
+  while (layoutComposing.value) {
+    await sleep(30)
+  }
+  await nextTick()
+}
+
+/** A write-state change while the dialog is open keeps the entered copy. */
+function layoutConfirmBlockedReason(): string {
+  if (props.frozen) return '窗口正在关闭：未填回，弹窗内容仍保留'
+  if (locked.value || phase.value === 'saving') {
+    return '正在保存或处理写入：未填回，弹窗内容仍保留'
+  }
+  if (historyRestoreBlocked.value) {
+    return '历史恢复正在提交或结果待核对：未填回，弹窗内容仍保留'
+  }
+  if (!canEdit.value || editDisabled.value) {
+    return '当前页面状态不可编辑：未填回，弹窗内容仍保留'
+  }
+  return ''
+}
+
+/**
+ * Confirm only fills the live draft column. It never calls save/adopt/create,
+ * so the normal dirty state, save button, conflict and leave protections stay
+ * authoritative for the business version.
+ */
+async function confirmLayoutEdit(): Promise<void> {
+  const requestedOrigin = layoutOrigin.value
+  await settleLayoutComposition()
+  if (!requestedOrigin || layoutOrigin.value !== requestedOrigin) return
+  const origin = requestedOrigin
+  if (!layoutOriginCurrent()) {
+    layoutStale.value = true
+    ElMessage.warning(
+      '打开本栏编辑后页面或版本已变化：未填回，原内容与新内容均保留，请取消后重新编辑',
+    )
+    return
+  }
+  const blocked = layoutConfirmBlockedReason()
+  if (blocked) {
+    ElMessage.warning(blocked)
+    return
+  }
+  form.value = applyDailyLayoutSection(
+    layoutDraft.value,
+    form.value,
+    origin.section,
+  )
+  if (origin.section === 'raw') rawLessonPlan.value = layoutDraft.value.raw
+  if (origin.section === 'reflection') {
+    reflectionMaterials.value = layoutDraft.value.materials
+  }
+  touchEpoch()
+  layoutModalOpen.value = false
+  layoutEditing.value = null
+  layoutOrigin.value = null
+  layoutBaselineSignature.value = ''
+  layoutStale.value = false
+  layoutComposing.value = false
+  ElMessage.success('已填回当前草稿，尚未保存业务版本')
+  void nextTick().then(focusLayoutReturn)
+}
+
+function postContextLabel(kind: string): string {
+  return POST_CONTEXT_LABELS[kind] ?? kind
+}
+
 function applyPlan(next: DailyPlan, options: { preserveEditorKey?: boolean } = {}): void {
+  markLayoutStale()
   plan.value = next
   form.value = serverToForm(next.content.adopted_content)
   rawLessonPlan.value = next.content.raw_lesson_plan ?? ''
@@ -274,6 +529,7 @@ function applyPlan(next: DailyPlan, options: { preserveEditorKey?: boolean } = {
 }
 
 function startDraft(): void {
+  markLayoutStale()
   plan.value = null
   form.value = emptyContentForm()
   rawLessonPlan.value = ''
@@ -657,6 +913,10 @@ async function performSave(): Promise<SaveResult> {
 }
 
 async function manualSave(): Promise<void> {
+  if (layoutEditing.value) {
+    ElMessage.warning('请先确定或取消当前栏目的编辑，再保存日计划')
+    return
+  }
   const result = await saveCurrent()
   switch (result) {
     case 'saved':
@@ -889,11 +1149,12 @@ async function reconcileIndeterminate(): Promise<void> {
 }
 
 // -- structural edits ----------------------------------------------------------
+//
+// The live form wrappers stay for the selftest/real-page hooks, while the
+// left-directory modal edits its own copy through the target-based helpers.
 
-function addMorningGroup(kind: 'collective' | 'free_choice'): void {
-  if (editDisabled.value) return
-  touchEpoch()
-  form.value.morning_games.push(
+function addMorningGroupTo(target: PlanContentForm, kind: 'collective' | 'free_choice'): void {
+  target.morning_games.push(
     markTemp({
       group_kind: kind,
       games: [],
@@ -904,28 +1165,20 @@ function addMorningGroup(kind: 'collective' | 'free_choice'): void {
   )
 }
 
-function removeMorningGroup(index: number): void {
-  if (editDisabled.value) return
-  touchEpoch()
-  form.value.morning_games.splice(index, 1)
+function removeMorningGroupFrom(target: PlanContentForm, index: number): void {
+  target.morning_games.splice(index, 1)
 }
 
-function removeMorningGame(groupIndex: number, gameIndex: number): void {
-  if (editDisabled.value) return
-  touchEpoch()
-  form.value.morning_games[groupIndex]?.games.splice(gameIndex, 1)
+function removeMorningGameFrom(target: PlanContentForm, groupIndex: number, gameIndex: number): void {
+  target.morning_games[groupIndex]?.games.splice(gameIndex, 1)
 }
 
-function addMorningGame(groupIndex: number): void {
-  if (editDisabled.value) return
-  touchEpoch()
-  form.value.morning_games[groupIndex].games.push(markTemp({ name: '' }))
+function addMorningGameTo(target: PlanContentForm, groupIndex: number): void {
+  target.morning_games[groupIndex].games.push(markTemp({ name: '' }))
 }
 
-function addPostGroup(): void {
-  if (editDisabled.value) return
-  touchEpoch()
-  form.value.post_group_games.push(
+function addPostGroupTo(target: PlanContentForm): void {
+  target.post_group_games.push(
     markTemp({
       context_kind: 'area' as const,
       area: '',
@@ -938,34 +1191,140 @@ function addPostGroup(): void {
   )
 }
 
+function removePostGroupFrom(target: PlanContentForm, index: number): void {
+  target.post_group_games.splice(index, 1)
+}
+
+function removePostGameFrom(target: PlanContentForm, groupIndex: number, gameIndex: number): void {
+  target.post_group_games[groupIndex]?.games.splice(gameIndex, 1)
+}
+
+function addPostGameTo(target: PlanContentForm, groupIndex: number): void {
+  target.post_group_games[groupIndex].games.push(markTemp({ name: '' }))
+}
+
+function addAfternoonGameTo(target: PlanContentForm): void {
+  target.afternoon_outdoor.games.push(markTemp({ name: '' }))
+}
+
+function removeAfternoonGameFrom(target: PlanContentForm, gameIndex: number): void {
+  target.afternoon_outdoor.games.splice(gameIndex, 1)
+}
+
+function addMorningGroup(kind: 'collective' | 'free_choice'): void {
+  if (editDisabled.value) return
+  touchEpoch()
+  addMorningGroupTo(form.value, kind)
+}
+
+function removeMorningGroup(index: number): void {
+  if (editDisabled.value) return
+  touchEpoch()
+  removeMorningGroupFrom(form.value, index)
+}
+
+function removeMorningGame(groupIndex: number, gameIndex: number): void {
+  if (editDisabled.value) return
+  touchEpoch()
+  removeMorningGameFrom(form.value, groupIndex, gameIndex)
+}
+
+function addMorningGame(groupIndex: number): void {
+  if (editDisabled.value) return
+  touchEpoch()
+  addMorningGameTo(form.value, groupIndex)
+}
+
+function addPostGroup(): void {
+  if (editDisabled.value) return
+  touchEpoch()
+  addPostGroupTo(form.value)
+}
+
 function removePostGroup(index: number): void {
   if (editDisabled.value) return
   touchEpoch()
-  form.value.post_group_games.splice(index, 1)
+  removePostGroupFrom(form.value, index)
 }
 
 function removePostGame(groupIndex: number, gameIndex: number): void {
   if (editDisabled.value) return
   touchEpoch()
-  form.value.post_group_games[groupIndex]?.games.splice(gameIndex, 1)
+  removePostGameFrom(form.value, groupIndex, gameIndex)
 }
 
 function addPostGame(groupIndex: number): void {
   if (editDisabled.value) return
   touchEpoch()
-  form.value.post_group_games[groupIndex].games.push(markTemp({ name: '' }))
+  addPostGameTo(form.value, groupIndex)
 }
 
 function addAfternoonGame(): void {
   if (editDisabled.value) return
   touchEpoch()
-  form.value.afternoon_outdoor.games.push(markTemp({ name: '' }))
+  addAfternoonGameTo(form.value)
 }
 
 function removeAfternoonGame(gameIndex: number): void {
   if (editDisabled.value) return
   touchEpoch()
-  form.value.afternoon_outdoor.games.splice(gameIndex, 1)
+  removeAfternoonGameFrom(form.value, gameIndex)
+}
+
+// -- modal structural edits (independent copy only) ---------------------------
+
+function layoutEditingReady(): boolean {
+  return layoutEditing.value !== null && !editDisabled.value
+}
+
+function addLayoutMorningGroup(kind: 'collective' | 'free_choice'): void {
+  if (!layoutEditingReady()) return
+  addMorningGroupTo(layoutDraft.value.form, kind)
+}
+
+function removeLayoutMorningGroup(index: number): void {
+  if (!layoutEditingReady()) return
+  removeMorningGroupFrom(layoutDraft.value.form, index)
+}
+
+function removeLayoutMorningGame(groupIndex: number, gameIndex: number): void {
+  if (!layoutEditingReady()) return
+  removeMorningGameFrom(layoutDraft.value.form, groupIndex, gameIndex)
+}
+
+function addLayoutMorningGame(groupIndex: number): void {
+  if (!layoutEditingReady()) return
+  addMorningGameTo(layoutDraft.value.form, groupIndex)
+}
+
+function addLayoutPostGroup(): void {
+  if (!layoutEditingReady()) return
+  addPostGroupTo(layoutDraft.value.form)
+}
+
+function removeLayoutPostGroup(index: number): void {
+  if (!layoutEditingReady()) return
+  removePostGroupFrom(layoutDraft.value.form, index)
+}
+
+function removeLayoutPostGame(groupIndex: number, gameIndex: number): void {
+  if (!layoutEditingReady()) return
+  removePostGameFrom(layoutDraft.value.form, groupIndex, gameIndex)
+}
+
+function addLayoutPostGame(groupIndex: number): void {
+  if (!layoutEditingReady()) return
+  addPostGameTo(layoutDraft.value.form, groupIndex)
+}
+
+function addLayoutAfternoonGame(): void {
+  if (!layoutEditingReady()) return
+  addAfternoonGameTo(layoutDraft.value.form)
+}
+
+function removeLayoutAfternoonGame(gameIndex: number): void {
+  if (!layoutEditingReady()) return
+  removeAfternoonGameFrom(layoutDraft.value.form, gameIndex)
 }
 
 // -- AI integration (D2 W5) ----------------------------------------------------
@@ -973,6 +1332,16 @@ function removeAfternoonGame(gameIndex: number): void {
 const planGrade = computed<Grade>(() => (plan.value?.grade as Grade) ?? 'middle')
 const hasRaw = computed(() => rawLessonPlan.value.trim() !== '')
 const hasProcess = computed(() => form.value.group_activity.process.trim() !== '')
+
+/**
+ * Read-only morning selection, matching the existing Word/current rule. The
+ * teacher still sees both game names; only this group's objectives/guidance
+ * are the current detailed set. All stored groups/fields remain in the edit
+ * dialog.
+ */
+const morningFocusGroupIndex = computed(() =>
+  dailyMorningFocusGroupIndex(form.value.morning_games),
+)
 
 // #27: reflection owns its material/receipt workflow and shares AiTaskPanel's
 // read-only progress. The saved plan is the original arrangement; only the
@@ -1032,6 +1401,9 @@ const reflectionFillBlockedReason = computed(() => {
   }
   if (dirty.value) {
     return '当前草稿有未保存修改：请先处理或撤销修改；保存为新版本后需重新生成反思。'
+  }
+  if (layoutEditing.value) {
+    return '栏目编辑弹窗有未确定的修改：请先确定或取消，再填入反思。'
   }
   if (reflectionFillBusy.value) return '正在读取反思结果，请稍候。'
   if (locked.value || props.frozen || composing.value || phase.value !== 'ready'
@@ -1105,6 +1477,7 @@ async function fillReflectionResult(task: AiTask, automatic: boolean): Promise<v
   const writable = () => !dirty.value && !locked.value && !props.frozen
     && !composing.value && phase.value === 'ready' && !candidateOpen.value
     && !candidateDraftActive.value && !historyRestoreBlocked.value
+    && !layoutEditing.value
     && !reflectionPending.value
     && reflectionMaterials.value.trim() === origin.materials
   if (!pageMatches()) return
@@ -1219,6 +1592,10 @@ async function openCandidate(
     ElMessage.warning('候选预览有未采用的编辑：请先处理当前候选')
     return
   }
+  if (layoutEditing.value) {
+    ElMessage.warning('栏目编辑弹窗有未确定的内容：请先确定或取消后再打开候选')
+    return
+  }
   const planAtStart = plan.value?.id ?? ''
   const epochAtStart = reflectionTaskEpoch
   const pinStillCurrent = (): boolean => {
@@ -1267,6 +1644,14 @@ async function openCandidate(
       : taskType === REFLECTION_TASK_TYPE
         ? reflectionTarget.value
         : splitTarget.value
+  if (candidateInline.value) {
+    layoutSection.value =
+      taskType === 'daily_lesson_split'
+        ? 'raw'
+        : taskType === 'daily_other_activities'
+          ? 'morning'
+          : 'reflection'
+  }
   candidateOpen.value = true
 }
 
@@ -1408,7 +1793,8 @@ async function onOtherGenerated(task: AiTask): Promise<void> {
       !props.frozen &&
       !candidateOpen.value &&
       !candidateDraftActive.value &&
-      !historyRestoreBlocked.value
+      !historyRestoreBlocked.value &&
+      !layoutEditing.value
     if (!safe) {
       otherGenerated.value = {
         candidateId: detail.id,
@@ -1456,7 +1842,8 @@ async function fillPendingOtherGenerated(): Promise<void> {
     props.frozen ||
     candidateOpen.value ||
     candidateDraftActive.value ||
-    historyRestoreBlocked.value
+    historyRestoreBlocked.value ||
+    layoutEditing.value
   ) {
     ElMessage.warning('当前正在处理其它操作：暂不能填入生成结果')
     return
@@ -1495,7 +1882,8 @@ async function fillPendingOtherGenerated(): Promise<void> {
       props.frozen ||
       candidateOpen.value ||
       candidateDraftActive.value ||
-      historyRestoreBlocked.value
+      historyRestoreBlocked.value ||
+      layoutEditing.value
     ) {
       ElMessage.warning(
         '读取生成结果期间当前草稿或操作状态已变化：未填入草稿，原输入已保留',
@@ -1793,6 +2181,10 @@ async function openHistory(): Promise<void> {
     ElMessage.warning('候选预览有未采用的编辑：请先处理当前候选')
     return
   }
+  if (layoutEditing.value) {
+    ElMessage.warning('栏目编辑弹窗有未确定的内容：请先确定或取消后再打开历史')
+    return
+  }
   const planAtStart = plan.value?.id ?? ''
   const outcome = await saveCurrent()
   if (!editorAlive) return
@@ -1935,6 +2327,7 @@ async function onCandidateAdopted(
           && !props.frozen && !locked.value && !dirty.value
           && !historyRestoreBlocked.value && !composing.value
           && !candidateOpen.value && !candidateDraftActive.value
+          && !layoutEditing.value
           && candidateId.value === origin?.candidateId
           && editEpoch.value === epochAtAdopt
           && plan.value?.id === targetPlan
@@ -2037,6 +2430,12 @@ const bridge: EditorBridge = {
           message:
             '候选预览有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开',
         }
+      : layoutDraftDirty.value
+        ? {
+            kind: 'candidate',
+            message:
+              '栏目编辑弹窗有尚未确定的修改：请先点击“确定填回草稿”或取消本次编辑后再离开',
+          }
       : aiTaskDraftActive.value
         ? {
             kind: 'history',
@@ -2076,6 +2475,8 @@ onMounted(() => {
     settle: () => settleComposition(),
     version: () => plan.value?.current_content_version ?? null,
     raw: () => rawLessonPlan.value,
+    content: () => JSON.parse(JSON.stringify(form.value)),
+    editorKey: () => editorKey.value,
     planId: () => plan.value?.id ?? null,
     planDate: () => props.planDate,
     errorText: () => errorText.value,
@@ -2204,6 +2605,18 @@ onMounted(() => {
       form.value.group_activity.process = value
       touchEpoch()
     },
+    layoutSection: () => layoutSection.value,
+    selectLayoutSection: (section: DailyLayoutSectionKey) => selectLayoutSection(section),
+    openLayoutEditor: (section?: DailyLayoutSectionKey) => openLayoutEditor(section),
+    confirmLayoutEdit: () => confirmLayoutEdit(),
+    cancelLayoutEdit: () => cancelLayoutEdit(),
+    layoutEditingSection: () => layoutEditing.value,
+    layoutDraftDirty: () => layoutDraftDirty.value,
+    layoutComposing: () => layoutComposing.value,
+    layoutConfirmDisabled: () => layoutConfirmDisabled.value,
+    layoutStale: () => layoutStale.value,
+    layoutDraft: () => layoutDraft.value,
+    layoutOrigin: () => layoutOrigin.value,
   }
   emit('register-editor', bridge)
   void load()
@@ -2248,6 +2661,9 @@ onBeforeUnmount(() => {
           @click="openHistory"
         >
           历史记录
+        </el-button>
+        <el-button size="small" :disabled="props.frozen" data-d1="daily-ai-settings" @click="openGuidance()">
+          AI 设置
         </el-button>
         <el-button size="small" :disabled="props.frozen" data-d1="go-settings" @click="goSettings">设置</el-button>
         <el-button size="small" :disabled="props.frozen" data-d1="back-calendar" @click="backToCalendar">
@@ -2301,78 +2717,13 @@ onBeforeUnmount(() => {
           <el-tag v-if="props.frozen || locked" size="small" type="info">已锁定</el-tag>
         </div>
       </el-card>
-
-      <!-- #19: raw lesson input leads the editable daily plan, in both saved
-           and unsaved-draft states. Its adjacent anchor receives the split row
-           from the single AiTaskPanel below. -->
-      <el-card class="section" data-d1="raw-lesson">
-        <template #header>原始教案（可选）</template>
-        <el-input
-          v-model="rawLessonPlan"
-          type="textarea"
-          :rows="6"
-          :disabled="editDisabled"
-          placeholder="可粘贴原始教案全文；留空即为空"
-        />
-        <div
-          ref="splitTarget"
-          class="ai-action-anchor"
-          data-d1="ai-slot-daily_lesson_split"
-        >
-          <div
-            v-if="!plan"
-            class="split-placeholder"
-            data-d1="split-needs-save"
-          >
-            <el-button
-              size="small"
-              type="primary"
-              data-d1="split-save-and-start"
-              :loading="phase === 'saving'"
-              :disabled="!rawLessonPlan.trim() || editDisabled"
-              @click="saveDraftForSplit"
-            >
-              保存并拆分
-            </el-button>
-            <span class="muted">
-              {{
-                rawLessonPlan.trim()
-                  ? '先保存日计划，保存成功后会在同页发起拆分；不会覆盖现有内容'
-                  : '请先粘贴原教案'
-              }}
-            </span>
-          </div>
-        </div>
-      </el-card>
-
-      <AiTaskPanel
-        v-if="plan"
-        ref="aiTaskPanelRef"
-        :plan-id="plan.id"
-        :plan-grade="planGrade"
-        :content-version="plan.current_content_version"
-        :has-raw="hasRaw"
-        :has-process="hasProcess"
-        :has-split-baseline="typeof plan.content.split_baseline?.group_activity_process === 'string' && !!plan.content.split_baseline.group_activity_process.trim()"
-        :frozen="props.frozen"
-        :save-current="saveCurrent"
-        :split-target="splitTarget"
-        :process-target="processTarget"
-        :other-target="otherTarget"
-        :reflection-progress-target="reflectionProgressTarget"
-        @draft-active="aiTaskDraftActive = $event"
-        @open-candidate="(id: string, taskType: TaskType) => openCandidate(id, taskType)"
-        @open-guidance="openGuidance"
-        @other-generated="onOtherGenerated"
-        @reflection-updated="onReflectionUpdated"
-      />
       <el-alert
         v-if="draftActive"
         type="info"
         :closable="false"
         class="section"
         data-d1="draft-notice"
-        title="未保存草稿：此处可直接编辑；只有有改动时，保存、返回、切换日期或关窗才会创建当天计划；原样浏览不写库。"
+        title="未保存草稿：点击各栏「编辑本栏」修改；只有有改动时，保存、返回、切换日期或关窗才会创建当天计划；原样浏览不写库。"
       />
 
       <el-alert
@@ -2469,159 +2820,880 @@ onBeforeUnmount(() => {
         :title="`保存失败：${errorText}`"
       />
 
-      <!-- 晨间 · 体能大循环 -->
-      <el-card class="section">
-        <template #header>晨间 · 体能大循环</template>
-        <p class="fixed-label">固定栏目：<strong>{{ MORNING_EXERCISE_LABEL }}</strong></p>
-        <!-- The other-activities row generates the morning / talk / post-game
-             / afternoon boards, so it sits at the head of the activity area. -->
-        <div
-          ref="otherTarget"
-          class="ai-action-anchor"
-          data-d1="ai-slot-daily_other_activities"
-        ></div>
+      <el-alert
+        v-if="otherGenerated"
+        :type="otherGenerated.state === 'applied' ? 'success' : 'warning'"
+        :closable="false"
+        class="section"
+        data-d1="other-generated-notice"
+        :title="otherGenerated.message"
+      >
+        <el-button
+          v-if="otherGenerated.state === 'pending' && otherGenerated.boards.length"
+          size="small"
+          type="warning"
+          :loading="otherFillBusy"
+          data-d1="other-generated-apply"
+          @click="fillPendingOtherGenerated"
+        >
+          填入生成结果
+        </el-button>
+      </el-alert>
+
+      <el-alert
+        v-if="candidateDraftActive"
+        type="warning"
+        :closable="false"
+        class="section"
+        data-d1="candidate-hidden-draft"
+        title="候选编辑尚未处理：切换栏目不会丢失输入；请回到对应栏目完成采用并保存，或取消本次候选编辑。"
+      />
+
+      <!-- 2026-11-15 left-directory layout: read mode by default. Every column
+           stays mounted with v-show so the single AiTaskPanel's teleport anchors,
+           inline candidates and reflection progress keep their state while the
+           teacher switches columns. -->
+      <div class="daily-book" data-d1="daily-book">
+        <nav class="daily-nav" aria-label="日计划栏目">
+          <span class="daily-nav-label">当天安排</span>
+          <el-button
+            v-for="section in LAYOUT_SECTIONS"
+            :key="section.key"
+            class="daily-nav-button"
+            :class="{ 'daily-nav-selected': layoutSection === section.key }"
+            :type="layoutSection === section.key ? 'primary' : 'default'"
+            :data-d1="`layout-nav-${section.key}`"
+            :aria-pressed="layoutSection === section.key ? 'true' : 'false'"
+            @click="selectLayoutSection(section.key)"
+          >
+            {{ section.label }}
+          </el-button>
+        </nav>
+        <div class="daily-panes">
+          <section
+            v-show="layoutSection === 'raw'"
+            class="daily-pane"
+            data-d1="raw-lesson"
+            :aria-hidden="layoutSection !== 'raw'"
+          >
+            <div class="read-title">
+              <div>
+                <p class="read-kicker">原始教案</p>
+                <h3>原始教案（可选）</h3>
+              </div>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                data-d1="layout-edit-raw"
+                :disabled="editDisabled || !!layoutEditing"
+                @click="openLayoutEditor('raw')"
+              >
+                编辑本栏
+              </el-button>
+            </div>
+            <pre v-if="rawLessonPlan.trim()" class="read-pre" data-d1="read-raw-lesson">{{ rawLessonPlan }}</pre>
+            <p v-else class="muted">（未填写原始教案）</p>
+            <div
+              ref="splitTarget"
+              class="ai-action-anchor"
+              data-d1="ai-slot-daily_lesson_split"
+            >
+              <div
+                v-if="!plan"
+                class="split-placeholder"
+                data-d1="split-needs-save"
+              >
+                <el-button
+                  size="default"
+                  type="primary"
+                  data-d1="split-save-and-start"
+                  :loading="phase === 'saving'"
+                  :disabled="!rawLessonPlan.trim() || editDisabled"
+                  @click="saveDraftForSplit"
+                >
+                  保存并拆分
+                </el-button>
+                <span class="muted">
+                  {{
+                    rawLessonPlan.trim()
+                      ? '先保存日计划，保存成功后会在同页发起拆分；不会覆盖现有内容'
+                      : '请先点击“编辑本栏”粘贴原教案'
+                  }}
+                </span>
+              </div>
+            </div>
+          </section>
+
+          <section
+            v-show="layoutSection === 'morning'"
+            class="daily-pane"
+            data-d1="layout-section-morning"
+            :aria-hidden="layoutSection !== 'morning'"
+          >
+            <div class="read-title">
+              <div>
+                <p class="read-kicker">晨间活动</p>
+                <h3>晨间 · 体能大循环</h3>
+              </div>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                data-d1="layout-edit-morning"
+                :disabled="editDisabled || !!layoutEditing"
+                @click="openLayoutEditor('morning')"
+              >
+                编辑本栏
+              </el-button>
+            </div>
+            <p class="fixed-label">固定栏目：<strong>{{ MORNING_EXERCISE_LABEL }}</strong></p>
+            <div
+              ref="otherTarget"
+              class="ai-action-anchor"
+              data-d1="ai-slot-daily_other_activities"
+            ></div>
+            <div
+              v-for="(group, gi) in form.morning_games"
+              :key="group.group_id || (group as any)._tmp || `m-${gi}`"
+              class="read-group"
+              :data-d1="`read-morning-group-${gi}`"
+            >
+              <div class="read-group-head">
+                <el-tag size="small">
+                  {{ group.group_kind === 'collective' ? '集体游戏组' : '自主游戏组（自选）' }}
+                </el-tag>
+              </div>
+              <p class="read-sub">游戏名称</p>
+              <ul v-if="group.games.length" class="read-list">
+                <li v-for="(game, ggi) in group.games" :key="game.game_id || (game as any)._tmp || `m-${gi}-${ggi}`">
+                  {{ game.name || '（未填写游戏名称）' }}
+                </li>
+              </ul>
+              <p v-else class="muted">（未填写游戏名称）</p>
+              <template v-if="gi === morningFocusGroupIndex">
+                <div class="read-field">
+                  <span class="read-label">重点指导（游戏名称）</span>
+                  <p class="read-value">{{ group.focus_guidance || '（未填写）' }}</p>
+                </div>
+                <div class="read-field">
+                  <span class="read-label">共用目标</span>
+                  <p class="read-value">{{ group.shared_objectives || '（未填写）' }}</p>
+                </div>
+                <div class="read-field">
+                  <span class="read-label">指导要点</span>
+                  <p class="read-value">{{ group.guidance_points || '（未填写）' }}</p>
+                </div>
+              </template>
+              <p
+                v-else-if="dailyMorningGroupHasHiddenDetails(group)"
+                class="muted"
+                data-d1="morning-hidden-details"
+              >
+                本组历史目标/指导已保存；按重点组规则不在阅读区展开，可在“编辑本栏”查看。
+              </p>
+            </div>
+            <p v-if="!form.morning_games.length" class="muted">暂无晨间游戏组（最多一个集体组与一个自主组）</p>
+          </section>
+
+          <section
+            v-show="layoutSection === 'talk'"
+            class="daily-pane"
+            data-d1="layout-section-talk"
+            :aria-hidden="layoutSection !== 'talk'"
+          >
+            <div class="read-title">
+              <div>
+                <p class="read-kicker">晨间谈话</p>
+                <h3>晨间谈话</h3>
+              </div>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                data-d1="layout-edit-talk"
+                :disabled="editDisabled || !!layoutEditing"
+                @click="openLayoutEditor('talk')"
+              >
+                编辑本栏
+              </el-button>
+            </div>
+            <div class="read-field">
+              <span class="read-label">话题</span>
+              <p class="read-value">{{ form.morning_talk.topic || '（未填写）' }}</p>
+            </div>
+            <div class="read-field">
+              <span class="read-label">问题设计</span>
+              <p class="read-value">{{ form.morning_talk.questions || '（未填写）' }}</p>
+            </div>
+          </section>
+
+          <section
+            v-show="layoutSection === 'group'"
+            class="daily-pane"
+            data-d1="layout-section-group"
+            :aria-hidden="layoutSection !== 'group'"
+          >
+            <div class="read-title">
+              <div>
+                <p class="read-kicker">集体活动</p>
+                <h3>{{ form.group_activity.theme || '集体活动' }}</h3>
+              </div>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                data-d1="layout-edit-group"
+                :disabled="editDisabled || !!layoutEditing"
+                @click="openLayoutEditor('group')"
+              >
+                编辑本栏
+              </el-button>
+            </div>
+            <div class="read-field">
+              <span class="read-label">活动主题</span>
+              <p class="read-value">{{ form.group_activity.theme || '（未填写）' }}</p>
+            </div>
+            <div class="read-field">
+              <span class="read-label">目标</span>
+              <p class="read-value">{{ form.group_activity.objectives || '（未填写）' }}</p>
+            </div>
+            <div class="read-field">
+              <span class="read-label">准备</span>
+              <p class="read-value">{{ form.group_activity.preparation || '（未填写）' }}</p>
+            </div>
+            <div class="read-field">
+              <span class="read-label">重点</span>
+              <p class="read-value">{{ form.group_activity.key_points || '（未填写）' }}</p>
+            </div>
+            <div class="read-field">
+              <span class="read-label">难点</span>
+              <p class="read-value">{{ form.group_activity.difficult_points || '（未填写）' }}</p>
+            </div>
+            <div class="read-field">
+              <span class="read-label">过程</span>
+              <pre v-if="form.group_activity.process.trim()" class="read-pre" data-d1="read-group-process">{{ form.group_activity.process }}</pre>
+              <p v-else class="read-value">（未填写）</p>
+            </div>
+            <div
+              ref="processTarget"
+              class="ai-action-anchor"
+              data-d1="ai-slot-daily_process_adapt"
+            ></div>
+          </section>
+
+          <section
+            v-show="layoutSection === 'post'"
+            class="daily-pane"
+            data-d1="layout-section-post"
+            :aria-hidden="layoutSection !== 'post'"
+          >
+            <div class="read-title">
+              <div>
+                <p class="read-kicker">集体活动后游戏</p>
+                <h3>集体活动后游戏</h3>
+              </div>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                data-d1="layout-edit-post"
+                :disabled="editDisabled || !!layoutEditing"
+                @click="openLayoutEditor('post')"
+              >
+                编辑本栏
+              </el-button>
+            </div>
+            <div
+              v-for="(group, gi) in form.post_group_games"
+              :key="group.group_id || (group as any)._tmp || `p-${gi}`"
+              class="read-group"
+            >
+              <div class="read-group-head">
+                <el-tag size="small">{{ postContextLabel(group.context_kind) }}</el-tag>
+                <span class="muted">{{ group.area || '（未填写区域名称）' }}</span>
+              </div>
+              <p class="read-sub">游戏名称</p>
+              <ul v-if="group.games.length" class="read-list">
+                <li v-for="(game, ggi) in group.games" :key="game.game_id || (game as any)._tmp || `p-${gi}-${ggi}`">
+                  {{ game.name || '（未填写游戏名称）' }}
+                </li>
+              </ul>
+              <p v-else class="muted">（未填写游戏名称）</p>
+              <div class="read-field">
+                <span class="read-label">重点指导（区域名称）</span>
+                <p class="read-value">{{ group.focus_guidance || '（未填写）' }}</p>
+              </div>
+              <div class="read-field">
+                <span class="read-label">目标</span>
+                <p class="read-value">{{ group.objectives || '（未填写）' }}</p>
+              </div>
+              <div class="read-field">
+                <span class="read-label">指导</span>
+                <p class="read-value">{{ group.guidance || '（未填写）' }}</p>
+              </div>
+              <div class="read-field">
+                <span class="read-label">支持策略</span>
+                <p class="read-value">{{ group.support_strategy || '（未填写）' }}</p>
+              </div>
+            </div>
+            <p v-if="!form.post_group_games.length" class="muted">暂无集体活动后游戏组</p>
+          </section>
+
+          <section
+            v-show="layoutSection === 'afternoon'"
+            class="daily-pane"
+            data-d1="layout-section-afternoon"
+            :aria-hidden="layoutSection !== 'afternoon'"
+          >
+            <div class="read-title">
+              <div>
+                <p class="read-kicker">下午户外</p>
+                <h3>下午户外</h3>
+              </div>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                data-d1="layout-edit-afternoon"
+                :disabled="editDisabled || !!layoutEditing"
+                @click="openLayoutEditor('afternoon')"
+              >
+                编辑本栏
+              </el-button>
+            </div>
+            <div class="read-field">
+              <span class="read-label">区域名称</span>
+              <p class="read-value">{{ form.afternoon_outdoor.area || '（未填写区域名称）' }}</p>
+            </div>
+            <p class="read-sub">游戏名称</p>
+            <ul v-if="form.afternoon_outdoor.games.length" class="read-list">
+              <li v-for="(game, ggi) in form.afternoon_outdoor.games" :key="game.game_id || (game as any)._tmp || `a-${ggi}`">
+                {{ game.name || '（未填写游戏名称）' }}
+              </li>
+            </ul>
+            <p v-else class="muted">（未填写游戏名称）</p>
+            <div class="read-field">
+              <span class="read-label">重点观察（区域名称）</span>
+              <p class="read-value">{{ form.afternoon_outdoor.observation_focus || '（未填写）' }}</p>
+            </div>
+            <div class="read-field">
+              <span class="read-label">目标</span>
+              <p class="read-value">{{ form.afternoon_outdoor.objectives || '（未填写）' }}</p>
+            </div>
+            <div class="read-field">
+              <span class="read-label">指导</span>
+              <p class="read-value">{{ form.afternoon_outdoor.guidance || '（未填写）' }}</p>
+            </div>
+            <div class="read-field">
+              <span class="read-label">支持策略</span>
+              <p class="read-value">{{ form.afternoon_outdoor.support_strategy || '（未填写）' }}</p>
+            </div>
+          </section>
+
+          <section
+            v-show="layoutSection === 'reflection'"
+            class="daily-pane"
+            data-d1="layout-section-reflection"
+            :aria-hidden="layoutSection !== 'reflection'"
+          >
+            <div class="read-title">
+              <div>
+                <p class="read-kicker">一日反思</p>
+                <h3>反思</h3>
+              </div>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                data-d1="layout-edit-reflection"
+                :disabled="editDisabled || !!layoutEditing"
+                @click="openLayoutEditor('reflection')"
+              >
+                编辑反思与材料
+              </el-button>
+            </div>
+            <pre v-if="form.reflection.trim()" class="read-pre" data-d1="read-reflection">{{ form.reflection }}</pre>
+            <p v-else class="read-value">（未填写反思）</p>
+            <div
+              ref="reflectionTarget"
+              class="ai-action-anchor"
+              data-d1="ai-slot-daily_reflection_generate"
+            ></div>
+            <div class="reflection-ai" data-d1="reflection-ai">
+              <div class="read-field">
+                <span class="read-label">活动实施材料（实际发生的活动情况）</span>
+                <pre v-if="reflectionMaterials.trim()" class="read-pre" data-d1="read-reflection-materials">{{ reflectionMaterials }}</pre>
+                <p v-else class="muted">（未填写实施材料；没有材料时不会发起生成）</p>
+              </div>
+              <p class="muted reflection-hint">
+                已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。
+                <el-button
+                  size="small"
+                  text
+                  data-d1="reflection-guidance"
+                  @click="openGuidance(REFLECTION_TASK_TYPE)"
+                >
+                  查看反思提示词
+                </el-button>
+              </p>
+              <div class="row">
+                <template v-if="reflectionPending">
+                  <el-button
+                    size="small"
+                    type="warning"
+                    :loading="reflectionQuerying"
+                    data-d1="reflection-query"
+                    @click="queryReflectionCreate"
+                  >
+                    查询提交结果
+                  </el-button>
+                  <el-button
+                    size="small"
+                    type="danger"
+                    :loading="reflectionBusy"
+                    data-d1="reflection-resubmit"
+                    @click="resubmitReflectionCreate"
+                  >
+                    重试原提交（同一请求）
+                  </el-button>
+                </template>
+                <el-button
+                  v-else
+                  size="default"
+                  type="primary"
+                  :loading="reflectionBusy"
+                  :disabled="editDisabled || reflectionFillBusy || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
+                  data-d1="reflection-generate"
+                  @click="createReflectionTask"
+                >
+                  生成反思
+                </el-button>
+                <el-button
+                  v-if="reflectionTask"
+                  size="small"
+                  :loading="reflectionQuerying"
+                  data-d1="reflection-refresh"
+                  @click="refreshReflectionTask"
+                >
+                  刷新任务
+                </el-button>
+                <el-button
+                  v-if="reflectionGenerated?.state === 'pending'"
+                  size="small"
+                  type="success"
+                  :loading="reflectionFillBusy"
+                  :disabled="editDisabled || !!reflectionFillBlockedReason"
+                  data-d1="reflection-fill-result"
+                  @click="fillPendingReflection"
+                >
+                  填入生成的反思
+                </el-button>
+              </div>
+              <el-alert
+                v-if="reflectionTask"
+                class="section"
+                type="info"
+                :closable="false"
+                data-d1="reflection-task-status"
+                :title="reflectionStatusText()"
+              />
+              <div ref="reflectionProgressTarget" data-d1="reflection-progress-target" />
+              <el-alert
+                v-if="reflectionError"
+                class="section"
+                type="warning"
+                :closable="false"
+                data-d1="reflection-error"
+                :title="reflectionError"
+              />
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <AiTaskPanel
+        v-if="plan"
+        :plan-id="plan.id"
+        ref="aiTaskPanelRef"
+        :plan-grade="planGrade"
+        :content-version="plan.current_content_version"
+        :has-raw="hasRaw"
+        :has-process="hasProcess"
+        :has-split-baseline="typeof plan.content.split_baseline?.group_activity_process === 'string' && !!plan.content.split_baseline.group_activity_process.trim()"
+        :frozen="props.frozen"
+        :save-current="saveCurrent"
+        :split-target="splitTarget"
+        :process-target="processTarget"
+        :other-target="otherTarget"
+        :reflection-progress-target="reflectionProgressTarget"
+        @draft-active="aiTaskDraftActive = $event"
+        @open-candidate="(id: string, taskType: TaskType) => openCandidate(id, taskType)"
+        @open-guidance="openGuidance"
+        @other-generated="onOtherGenerated"
+        @reflection-updated="onReflectionUpdated"
+      />
+
+      <div class="row footer">
+        <el-button
+          type="primary"
+          :loading="phase === 'saving'"
+          :disabled="editDisabled || phase === 'conflict' || !!layoutEditing"
+          data-d1="manual-save"
+          @click="manualSave"
+        >
+          保存
+        </el-button>
+        <span v-if="phase === 'conflict'" class="muted">请先处理上方的版本冲突</span>
+        <span v-else class="muted">
+          正文为阅读模式；点击各栏“编辑本栏”修改，确定后只填回草稿，保存由上按钮执行。
+        </span>
+        <span v-if="plan" class="muted">内容版本 v{{ plan.current_content_version }}</span>
+        <span v-else class="muted">未保存草稿</span>
+      </div>
+    </template>
+
+    <el-dialog
+      :model-value="layoutModalOpen"
+      :title="layoutDialogTitle"
+      width="min(760px, 94vw)"
+      :close-on-click-modal="false"
+      append-to-body
+      data-d1="layout-edit-dialog"
+      @update:model-value="onLayoutDialogUpdate"
+    >
+      <div
+        class="layout-dialog"
+        data-d1="layout-dialog-body"
+        @input.stop
+        @change.stop
+        @compositionstart="beginLayoutComposition"
+        @compositionend="endLayoutComposition"
+      >
         <el-alert
-          v-if="otherGenerated"
-          :type="otherGenerated.state === 'applied' ? 'success' : 'warning'"
+          v-if="layoutStale"
+          type="warning"
           :closable="false"
           class="section"
-          data-d1="other-generated-notice"
-          :title="otherGenerated.message"
-        >
-          <el-button
-            v-if="otherGenerated.state === 'pending' && otherGenerated.boards.length"
-            size="small"
-            type="warning"
-            :loading="otherFillBusy"
-            data-d1="other-generated-apply"
-            @click="fillPendingOtherGenerated"
+          data-d1="layout-edit-stale"
+          title="打开本栏编辑后页面内容已变化：确定填回已停用，请取消后重新打开，避免覆盖新内容。"
+        />
+        <p class="muted">
+          这里编辑独立副本；点“确定填回草稿”只写入当前页面草稿，不会自动保存业务版本；取消保持打开前的内容。
+        </p>
+
+        <template v-if="layoutEditing === 'raw'">
+          <div class="field">
+            <label>原始教案</label>
+            <el-input
+              v-model="layoutDraft.raw"
+              type="textarea"
+              :rows="12"
+              :disabled="editDisabled"
+              data-d1="layout-input-raw"
+              placeholder="可粘贴原始教案全文；留空即为空"
+            />
+          </div>
+        </template>
+
+        <template v-else-if="layoutEditing === 'morning'">
+          <div
+            v-for="(group, gi) in layoutDraft.form.morning_games"
+            :key="group.group_id || (group as any)._tmp || `lm-${gi}`"
+            class="group-block"
           >
-            填入生成结果
-          </el-button>
-        </el-alert>
-        <div v-for="(group, gi) in form.morning_games" :key="group.group_id || (group as any)._tmp || `m-${gi}`" class="group-block">
-          <div class="group-head">
-            <el-tag size="small">
-              {{ group.group_kind === 'collective' ? '集体游戏组' : '自主游戏组（自选）' }}
-            </el-tag>
-            <el-button size="small" text type="danger" :disabled="editDisabled" @click="removeMorningGroup(gi)">
-              移除该组
+            <div class="group-head">
+              <el-tag size="small">
+                {{ group.group_kind === 'collective' ? '集体游戏组' : '自主游戏组（自选）' }}
+              </el-tag>
+              <el-button
+                size="small"
+                text
+                type="danger"
+                :disabled="editDisabled"
+                data-d1="layout-remove-morning-group"
+                @click="removeLayoutMorningGroup(gi)"
+              >
+                移除该组
+              </el-button>
+            </div>
+            <div
+              v-for="(game, ggi) in group.games"
+              :key="game.game_id || (game as any)._tmp || `lm-${gi}-${ggi}`"
+              class="game-row"
+            >
+              <el-input
+                v-model="game.name"
+                placeholder="游戏名称"
+                :disabled="editDisabled"
+                data-d1="layout-morning-game-name"
+              />
+              <el-button
+                size="small"
+                text
+                type="danger"
+                :disabled="editDisabled"
+                data-d1="delete-morning-game"
+                @click="removeLayoutMorningGame(gi, ggi)"
+              >
+                删除
+              </el-button>
+            </div>
+            <el-button size="small" :disabled="editDisabled" @click="addLayoutMorningGame(gi)">
+              添加游戏
+            </el-button>
+            <div class="field-grid">
+              <div class="field">
+                <label>重点指导（游戏名称）</label>
+                <el-input
+                  v-model="group.focus_guidance"
+                  placeholder="填写本组游戏名称；晨间仅选一组填写"
+                  :disabled="editDisabled"
+                />
+              </div>
+              <div class="field">
+                <label>共用目标</label>
+                <el-input v-model="group.shared_objectives" type="textarea" :rows="2" :disabled="editDisabled" />
+              </div>
+              <div class="field">
+                <label>指导要点</label>
+                <el-input v-model="group.guidance_points" type="textarea" :rows="2" :disabled="editDisabled" />
+              </div>
+            </div>
+          </div>
+          <p v-if="!layoutDraft.form.morning_games.length" class="muted">
+            暂无晨间游戏组（最多一个集体组与一个自主组）
+          </p>
+          <div class="row">
+            <el-button
+              size="small"
+              :disabled="editDisabled || layoutDraft.form.morning_games.some((g) => g.group_kind === 'collective')"
+              data-d1="layout-add-morning-collective"
+              @click="addLayoutMorningGroup('collective')"
+            >
+              添加集体游戏组
+            </el-button>
+            <el-button
+              size="small"
+              :disabled="editDisabled || layoutDraft.form.morning_games.some((g) => g.group_kind === 'free_choice')"
+              data-d1="layout-add-morning-free"
+              @click="addLayoutMorningGroup('free_choice')"
+            >
+              添加自主游戏组
             </el-button>
           </div>
-          <div v-for="(game, ggi) in group.games" :key="game.game_id || (game as any)._tmp || `m-${gi}-${ggi}`" class="game-row">
-            <el-input v-model="game.name" placeholder="游戏名称" :disabled="editDisabled" />
-            <el-button size="small" text type="danger" :disabled="editDisabled" data-d1="delete-morning-game" @click="removeMorningGame(gi, ggi)">
+        </template>
+
+        <template v-else-if="layoutEditing === 'talk'">
+          <div class="field">
+            <label>话题</label>
+            <el-input v-model="layoutDraft.form.morning_talk.topic" :disabled="editDisabled" data-d1="layout-input-talk-topic" />
+          </div>
+          <div class="field">
+            <label>问题设计</label>
+            <el-input
+              v-model="layoutDraft.form.morning_talk.questions"
+              type="textarea"
+              :rows="4"
+              :disabled="editDisabled"
+              data-d1="layout-input-talk-questions"
+            />
+          </div>
+        </template>
+
+        <template v-else-if="layoutEditing === 'group'">
+          <div class="field">
+            <label>活动主题</label>
+            <el-input v-model="layoutDraft.form.group_activity.theme" :disabled="editDisabled" data-d1="layout-input-group-theme" />
+          </div>
+          <div class="field">
+            <label>目标</label>
+            <el-input
+              v-model="layoutDraft.form.group_activity.objectives"
+              type="textarea"
+              :rows="2"
+              :disabled="editDisabled"
+              data-d1="layout-input-group-objectives"
+            />
+          </div>
+          <div class="field">
+            <label>准备</label>
+            <el-input
+              v-model="layoutDraft.form.group_activity.preparation"
+              type="textarea"
+              :rows="2"
+              :disabled="editDisabled"
+              data-d1="layout-input-group-preparation"
+            />
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label>重点</label>
+              <el-input v-model="layoutDraft.form.group_activity.key_points" type="textarea" :rows="2" :disabled="editDisabled" />
+            </div>
+            <div class="field">
+              <label>难点</label>
+              <el-input
+                v-model="layoutDraft.form.group_activity.difficult_points"
+                type="textarea"
+                :rows="2"
+                :disabled="editDisabled"
+              />
+            </div>
+          </div>
+          <div class="field">
+            <label>过程</label>
+            <el-input
+              v-model="layoutDraft.form.group_activity.process"
+              type="textarea"
+              :rows="6"
+              :disabled="editDisabled"
+              data-d1="layout-input-group-process"
+            />
+          </div>
+        </template>
+
+        <template v-else-if="layoutEditing === 'post'">
+          <div
+            v-for="(group, gi) in layoutDraft.form.post_group_games"
+            :key="group.group_id || (group as any)._tmp || `lp-${gi}`"
+            class="group-block"
+          >
+            <div class="group-head">
+              <el-select v-model="group.context_kind" size="small" class="context-select" :disabled="editDisabled">
+                <el-option label="室内区域" value="area" />
+                <el-option label="户外" value="outdoor" />
+                <el-option label="专用室" value="special_room" />
+              </el-select>
+              <el-input
+                v-if="group.context_kind === 'area'"
+                v-model="group.area"
+                size="small"
+                class="area-input"
+                placeholder="两个区域，用顿号分隔，如美工区、建构区"
+                :disabled="editDisabled"
+                data-d1="layout-input-post-area"
+              />
+              <el-button
+                size="small"
+                text
+                type="danger"
+                :disabled="editDisabled"
+                data-d1="layout-remove-post-group"
+                @click="removeLayoutPostGroup(gi)"
+              >
+                移除该组
+              </el-button>
+            </div>
+            <div
+              v-for="(game, ggi) in group.games"
+              :key="game.game_id || (game as any)._tmp || `lp-${gi}-${ggi}`"
+              class="game-row"
+            >
+              <el-input v-model="game.name" placeholder="游戏名称" :disabled="editDisabled" data-d1="layout-post-game-name" />
+              <el-button size="small" text type="danger" :disabled="editDisabled" data-d1="delete-post-game" @click="removeLayoutPostGame(gi, ggi)">
+                删除
+              </el-button>
+            </div>
+            <el-button size="small" :disabled="editDisabled" @click="addLayoutPostGame(gi)">添加游戏</el-button>
+            <div class="field-grid">
+              <div class="field">
+                <label>重点指导（区域名称）</label>
+                <el-input
+                  v-model="group.focus_guidance"
+                  placeholder="填写上述区域中的一个名称"
+                  :disabled="editDisabled"
+                />
+              </div>
+              <div class="field">
+                <label>目标</label>
+                <el-input v-model="group.objectives" type="textarea" :rows="2" :disabled="editDisabled" />
+              </div>
+              <div class="field">
+                <label>指导</label>
+                <el-input v-model="group.guidance" type="textarea" :rows="2" :disabled="editDisabled" />
+              </div>
+              <div class="field">
+                <label>支持策略</label>
+                <el-input v-model="group.support_strategy" type="textarea" :rows="2" :disabled="editDisabled" />
+              </div>
+            </div>
+          </div>
+          <p v-if="!layoutDraft.form.post_group_games.length" class="muted">暂无集体活动后游戏组</p>
+          <el-button size="small" :disabled="editDisabled" data-d1="layout-add-post-group" @click="addLayoutPostGroup">
+            添加游戏组
+          </el-button>
+        </template>
+
+        <template v-else-if="layoutEditing === 'afternoon'">
+          <div class="field">
+            <label>区域名称</label>
+            <el-input
+              v-model="layoutDraft.form.afternoon_outdoor.area"
+              placeholder="两个户外区域，用顿号分隔，如骑行、沙水池"
+              :disabled="editDisabled"
+              data-d1="layout-input-afternoon-area"
+            />
+          </div>
+          <div
+            v-for="(game, ggi) in layoutDraft.form.afternoon_outdoor.games"
+            :key="game.game_id || (game as any)._tmp || `la-${ggi}`"
+            class="game-row"
+          >
+            <el-input v-model="game.name" placeholder="游戏名称" :disabled="editDisabled" data-d1="layout-afternoon-game-name" />
+            <el-button size="small" text type="danger" :disabled="editDisabled" data-d1="delete-afternoon-game" @click="removeLayoutAfternoonGame(ggi)">
               删除
             </el-button>
           </div>
-          <el-button size="small" :disabled="editDisabled" @click="addMorningGame(gi)">添加游戏</el-button>
-          <div class="field-grid">
-            <div class="field"><label>重点指导（游戏名称）</label><el-input v-model="group.focus_guidance" placeholder="填写本组游戏名称；晨间仅选一组填写" :disabled="editDisabled" /></div>
-            <div class="field"><label>共用目标</label><el-input v-model="group.shared_objectives" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-            <div class="field"><label>指导要点</label><el-input v-model="group.guidance_points" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-          </div>
-        </div>
-        <p v-if="!form.morning_games.length" class="muted">暂无晨间游戏组（最多一个集体组与一个自主组）</p>
-        <div class="row">
-          <el-button
-            size="small"
-            :disabled="editDisabled || form.morning_games.some((g) => g.group_kind === 'collective')"
-            @click="addMorningGroup('collective')"
-          >
-            添加集体游戏组
+          <el-button size="small" :disabled="editDisabled" data-d1="layout-add-afternoon-game" @click="addLayoutAfternoonGame">
+            添加游戏
           </el-button>
-          <el-button
-            size="small"
-            :disabled="editDisabled || form.morning_games.some((g) => g.group_kind === 'free_choice')"
-            @click="addMorningGroup('free_choice')"
-          >
-            添加自主游戏组
-          </el-button>
-        </div>
-      </el-card>
-
-      <el-card class="section">
-        <template #header>晨间谈话</template>
-        <div class="field"><label>话题</label><el-input v-model="form.morning_talk.topic" :disabled="editDisabled" /></div>
-        <div class="field"><label>问题设计</label><el-input v-model="form.morning_talk.questions" type="textarea" :rows="3" :disabled="editDisabled" /></div>
-      </el-card>
-
-      <el-card class="section">
-        <template #header>集体活动</template>
-        <div class="field"><label>活动主题</label><el-input v-model="form.group_activity.theme" :disabled="editDisabled" /></div>
-        <div class="field"><label>目标</label><el-input v-model="form.group_activity.objectives" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-        <div class="field"><label>准备</label><el-input v-model="form.group_activity.preparation" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-        <div class="field-grid">
-          <div class="field"><label>重点</label><el-input v-model="form.group_activity.key_points" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-          <div class="field"><label>难点</label><el-input v-model="form.group_activity.difficult_points" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-        </div>
-        <div class="field"><label>过程</label><el-input v-model="form.group_activity.process" type="textarea" :rows="5" :disabled="editDisabled" /></div>
-        <div
-          ref="processTarget"
-          class="ai-action-anchor"
-          data-d1="ai-slot-daily_process_adapt"
-        ></div>
-      </el-card>
-
-      <el-card class="section">
-        <template #header>集体活动后游戏</template>
-        <div v-for="(group, gi) in form.post_group_games" :key="group.group_id || (group as any)._tmp || `p-${gi}`" class="group-block">
-          <div class="group-head">
-            <el-select v-model="group.context_kind" size="small" class="context-select" :disabled="editDisabled">
-              <el-option label="室内区域" value="area" />
-              <el-option label="户外" value="outdoor" />
-              <el-option label="专用室" value="special_room" />
-            </el-select>
-            <el-input v-if="group.context_kind === 'area'" v-model="group.area" size="small" class="area-input" placeholder="两个区域，用顿号分隔，如美工区、建构区" :disabled="editDisabled" />
-            <el-button size="small" text type="danger" :disabled="editDisabled" @click="removePostGroup(gi)">移除该组</el-button>
-          </div>
-          <div v-for="(game, ggi) in group.games" :key="game.game_id || (game as any)._tmp || `p-${gi}-${ggi}`" class="game-row">
-            <el-input v-model="game.name" placeholder="游戏名称" :disabled="editDisabled" />
-            <el-button size="small" text type="danger" :disabled="editDisabled" data-d1="delete-post-game" @click="removePostGame(gi, ggi)">删除</el-button>
-          </div>
-          <el-button size="small" :disabled="editDisabled" @click="addPostGame(gi)">添加游戏</el-button>
           <div class="field-grid">
-            <div class="field"><label>重点指导（区域名称）</label><el-input v-model="group.focus_guidance" placeholder="填写上述区域中的一个名称" :disabled="editDisabled" /></div>
-            <div class="field"><label>目标</label><el-input v-model="group.objectives" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-            <div class="field"><label>指导</label><el-input v-model="group.guidance" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-            <div class="field"><label>支持策略</label><el-input v-model="group.support_strategy" type="textarea" :rows="2" :disabled="editDisabled" /></div>
+            <div class="field">
+              <label>重点观察（区域名称）</label>
+              <el-input
+                v-model="layoutDraft.form.afternoon_outdoor.observation_focus"
+                placeholder="填写上述户外区域中的一个名称"
+                :disabled="editDisabled"
+              />
+            </div>
+            <div class="field">
+              <label>目标</label>
+              <el-input v-model="layoutDraft.form.afternoon_outdoor.objectives" type="textarea" :rows="2" :disabled="editDisabled" />
+            </div>
+            <div class="field">
+              <label>指导</label>
+              <el-input v-model="layoutDraft.form.afternoon_outdoor.guidance" type="textarea" :rows="2" :disabled="editDisabled" />
+            </div>
+            <div class="field">
+              <label>支持策略</label>
+              <el-input
+                v-model="layoutDraft.form.afternoon_outdoor.support_strategy"
+                type="textarea"
+                :rows="2"
+                :disabled="editDisabled"
+              />
+            </div>
           </div>
-        </div>
-        <p v-if="!form.post_group_games.length" class="muted">暂无集体活动后游戏组</p>
-        <el-button size="small" :disabled="editDisabled" @click="addPostGroup">添加游戏组</el-button>
-      </el-card>
+        </template>
 
-      <el-card class="section">
-        <template #header>下午户外</template>
-        <div class="field"><label>区域名称</label><el-input v-model="form.afternoon_outdoor.area" placeholder="两个户外区域，用顿号分隔，如骑行、沙水池" :disabled="editDisabled" /></div>
-        <div v-for="(game, ggi) in form.afternoon_outdoor.games" :key="game.game_id || (game as any)._tmp || `a-${ggi}`" class="game-row">
-          <el-input v-model="game.name" placeholder="游戏名称" :disabled="editDisabled" />
-          <el-button size="small" text type="danger" :disabled="editDisabled" data-d1="delete-afternoon-game" @click="removeAfternoonGame(ggi)">删除</el-button>
-        </div>
-        <el-button size="small" :disabled="editDisabled" @click="addAfternoonGame">添加游戏</el-button>
-        <div class="field-grid">
-          <div class="field"><label>重点观察（区域名称）</label><el-input v-model="form.afternoon_outdoor.observation_focus" placeholder="填写上述户外区域中的一个名称" :disabled="editDisabled" /></div>
-          <div class="field"><label>目标</label><el-input v-model="form.afternoon_outdoor.objectives" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-          <div class="field"><label>指导</label><el-input v-model="form.afternoon_outdoor.guidance" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-          <div class="field"><label>支持策略</label><el-input v-model="form.afternoon_outdoor.support_strategy" type="textarea" :rows="2" :disabled="editDisabled" /></div>
-        </div>
-      </el-card>
-
-      <el-card class="section">
-        <template #header>反思</template>
-        <el-input v-model="form.reflection" type="textarea" :rows="4" :disabled="editDisabled" />
-        <div
-          ref="reflectionTarget"
-          class="ai-action-anchor"
-          data-d1="ai-slot-daily_reflection_generate"
-        ></div>
-        <div class="reflection-ai" data-d1="reflection-ai">
+        <template v-else-if="layoutEditing === 'reflection'">
+          <div class="field">
+            <label>反思</label>
+            <el-input
+              v-model="layoutDraft.form.reflection"
+              type="textarea"
+              :rows="6"
+              :disabled="editDisabled"
+              data-d1="layout-input-reflection"
+            />
+          </div>
           <div class="field">
             <label>活动实施材料（必填：只写实际发生的活动情况）</label>
             <el-input
-              v-model="reflectionMaterials"
+              v-model="layoutDraft.materials"
               type="textarea"
-              :rows="3"
+              :rows="5"
               maxlength="5000"
               show-word-limit
               placeholder="例如：幼儿分成四组，用纸杯搭桥；两组成功，一组反复倒塌后改用宽底座；教师提示后大部分幼儿能说出“底座要稳”。"
@@ -2629,105 +3701,22 @@ onBeforeUnmount(() => {
               data-d1="reflection-materials"
             />
           </div>
-          <p class="muted reflection-hint">
-            已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。
-            <el-button
-              size="small"
-              text
-              data-d1="reflection-guidance"
-              @click="openGuidance(REFLECTION_TASK_TYPE)"
-            >
-              查看反思提示词
-            </el-button>
-          </p>
-          <div class="row">
-            <template v-if="reflectionPending">
-              <el-button
-                size="small"
-                type="warning"
-                :loading="reflectionQuerying"
-                data-d1="reflection-query"
-                @click="queryReflectionCreate"
-              >
-                查询提交结果
-              </el-button>
-              <el-button
-                size="small"
-                type="danger"
-                :loading="reflectionBusy"
-                data-d1="reflection-resubmit"
-                @click="resubmitReflectionCreate"
-              >
-                重试原提交（同一请求）
-              </el-button>
-            </template>
-            <el-button
-              v-else
-              size="small"
-              type="primary"
-              :loading="reflectionBusy"
-              :disabled="editDisabled || reflectionFillBusy || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
-              data-d1="reflection-generate"
-              @click="createReflectionTask"
-            >
-              生成反思
-            </el-button>
-            <el-button
-              v-if="reflectionTask"
-              size="small"
-              :loading="reflectionQuerying"
-              data-d1="reflection-refresh"
-              @click="refreshReflectionTask"
-            >
-              刷新任务
-            </el-button>
-            <el-button
-              v-if="reflectionGenerated?.state === 'pending'"
-              size="small"
-              type="success"
-              :loading="reflectionFillBusy"
-              :disabled="editDisabled || !!reflectionFillBlockedReason"
-              data-d1="reflection-fill-result"
-              @click="fillPendingReflection"
-            >
-              填入生成的反思
-            </el-button>
-          </div>
-          <el-alert
-            v-if="reflectionTask"
-            class="section"
-            type="info"
-            :closable="false"
-            data-d1="reflection-task-status"
-            :title="reflectionStatusText()"
-          />
-          <div ref="reflectionProgressTarget" data-d1="reflection-progress-target" />
-          <el-alert
-            v-if="reflectionError"
-            class="section"
-            type="warning"
-            :closable="false"
-            data-d1="reflection-error"
-            :title="reflectionError"
-          />
-        </div>
-      </el-card>
-
-      <div class="row footer">
-        <el-button
-          type="primary"
-          :loading="phase === 'saving'"
-          :disabled="editDisabled || phase === 'conflict'"
-          data-d1="manual-save"
-          @click="manualSave"
-        >
-          保存
-        </el-button>
-        <span v-if="phase === 'conflict'" class="muted">请先处理上方的版本冲突</span>
-        <span v-else-if="plan" class="muted">内容版本 v{{ plan.current_content_version }}</span>
-        <span v-else class="muted">未保存草稿</span>
+        </template>
       </div>
-    </template>
+      <template #footer>
+        <div class="layout-dialog-actions">
+          <el-button data-d1="layout-edit-cancel" @click="cancelLayoutEdit">取消</el-button>
+          <el-button
+            type="primary"
+            data-d1="layout-edit-confirm"
+            :disabled="layoutConfirmDisabled"
+            @click="confirmLayoutEdit"
+          >
+            确定填回草稿
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
 
     <ExportDialog
       v-if="plan"
@@ -2844,6 +3833,155 @@ onBeforeUnmount(() => {
 }
 .area-input {
   width: 200px;
+}
+/* Left directory: labeled section buttons with an obvious selected state. */
+.daily-book {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  margin-top: 16px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+  background: var(--kgm-surface);
+  overflow: clip;
+}
+.daily-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 8px;
+  background: var(--kgm-bg);
+  border-right: 1px solid var(--kgm-border);
+  min-width: 0;
+}
+.daily-nav-label {
+  padding: 4px 10px 6px;
+  color: var(--kgm-muted);
+  font-size: 0.78rem;
+}
+.daily-nav-button {
+  width: 100%;
+  min-height: 38px;
+  height: auto;
+  margin-left: 0;
+  justify-content: flex-start;
+  white-space: normal;
+  text-align: left;
+}
+.daily-nav-selected {
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--kgm-accent);
+}
+.daily-panes {
+  min-width: 0;
+}
+.daily-pane {
+  padding: 18px 20px;
+  min-width: 0;
+}
+.read-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.read-title h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--kgm-text);
+  overflow-wrap: anywhere;
+}
+.read-kicker {
+  margin: 0 0 2px;
+  color: var(--kgm-muted);
+  font-size: 0.78rem;
+}
+.read-field {
+  margin-top: 12px;
+}
+.read-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--kgm-muted);
+  font-size: 0.8rem;
+}
+.read-value {
+  margin: 0;
+  color: var(--kgm-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.read-pre {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--kgm-text);
+  background: var(--kgm-bg);
+  border: 1px solid var(--kgm-border);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+.read-sub {
+  margin: 10px 0 4px;
+  color: var(--kgm-muted);
+  font-size: 0.8rem;
+}
+.read-list {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--kgm-text);
+  overflow-wrap: anywhere;
+}
+.read-group {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 4px;
+  background: var(--kgm-bg);
+}
+.read-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.layout-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@media (max-width: 760px) {
+  .daily-book {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: visible;
+  }
+  .daily-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid var(--kgm-border);
+  }
+  .daily-nav-label {
+    width: 100%;
+  }
+  .daily-nav-button {
+    width: auto;
+    flex: 1 1 auto;
+  }
+  .daily-nav-selected {
+    box-shadow: inset 0 -3px 0 var(--kgm-accent);
+  }
+  .daily-pane {
+    padding: 14px;
+  }
 }
 .footer {
   margin-top: 20px;

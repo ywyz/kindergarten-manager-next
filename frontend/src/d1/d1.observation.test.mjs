@@ -1038,6 +1038,16 @@ async function main() {
       },
     })
     const hook = harness.window.__d1ObservationEditor
+    // The body is read mode by default: no body textarea is mounted, the
+    // section modal owns the independent copy.
+    assert.equal(byD1(mountEl, 'obs-goal'), null)
+    assert.ok(byD1(mountEl, 'obs-section-pane'))
+    hook.selectSection('body')
+    await settle()
+    assert.ok(byD1(mountEl, 'obs-goal-read'))
+    assert.equal(byD1(mountEl, 'obs-goal'), null)
+    hook.selectSection('basic')
+    await settle()
     hook.setSubject(0, 'Synthetic child ')
     hook.setField('environment', 'Synthetic area ')
     hook.cancelAutoSave()
@@ -1048,9 +1058,9 @@ async function main() {
     assert.equal(patches[0].payload.subjects[0].name, 'Synthetic child')
     assert.equal(patches[0].payload.environment, 'Synthetic area ')
     assert.equal(hook.editDisabled(), true)
-    assert.equal(byD1(mountEl, 'obs-subject-0').props.disabled, false)
-    assert.equal(byD1(mountEl, 'obs-environment').props.disabled, false)
-    assert.equal(byD1(mountEl, 'obs-goal').props.disabled, false)
+    // Automatic saves never disable body typing; the modal copy follows the
+    // same rule and stays editable while the save is in flight.
+    assert.equal(hook.typingDisabled(), false)
 
     current = currentFixture({
       revision: 4,
@@ -1079,6 +1089,11 @@ async function main() {
     assert.equal(hook.autoSavePending(), false)
     assert.equal(patches.length, 1)
     assert.equal(hook.editDisabled(), false)
+    hook.openSectionEditor('subjects')
+    await settle()
+    assert.equal(byD1(mountEl, 'obs-subject-0').props.disabled, false)
+    assert.equal(byD1(mountEl, 'obs-environment').props.disabled, false)
+    hook.cancelSectionEditor()
     app.unmount()
     await settle()
     ok('R03 auto save keeps typing controls and canonical-only whitespace')
@@ -1111,7 +1126,7 @@ async function main() {
     hook.cancelAutoSave()
     const first = hook.saveNow('auto')
     await firstStarted.promise
-    assert.equal(byD1(mountEl, 'obs-environment').props.disabled, false)
+    assert.equal(hook.typingDisabled(), false)
     const editor = byD1(mountEl, 'obs-editor')
     dispatchDomEvent(editor, 'compositionstart')
     hook.setField('environment', 'Late ')
@@ -1248,8 +1263,10 @@ async function main() {
     assert.equal(requests[1].expected_revision, requests[0].expected_revision)
     assert.equal(requests[1].save_reason, 'auto')
     assert.deepEqual(plain(requests[1].payload), plain(requests[0].payload))
-    assert.equal(byD1(mountEl, 'obs-environment').props.disabled, true)
-    assert.equal(byD1(mountEl, 'obs-subject-0').props.disabled, true)
+    // The unresolved receipt locks body typing; the read pane offers no input
+    // and the modal cannot be opened while the receipt is pending.
+    assert.equal(byD1(mountEl, 'obs-environment'), null)
+    assert.equal(hook.typingDisabled(), true)
     assert.equal(hook.editDisabled(), true)
     replayReply.resolve(jsonResponse(200, savedFixture({ revision: 4 })))
     assert.equal(await replay, undefined)
@@ -2849,6 +2866,9 @@ async function main() {
     }
     const { mountEl, harness } = await mountEditorDom({ routes })
     const hook = harness.window.__d1ObservationEditor
+    // 2026-11-15: AI candidates live in the dedicated read-pane section.
+    hook.selectSection('ai')
+    await settle()
     await hook.openCandidate('c1')
     await settle()
     hook.setTargets(['observation_goal'])
@@ -3537,6 +3557,10 @@ async function main() {
     }
     const { mountEl, harness } = await mountEditorDom({ routes })
     const hook = harness.window.__d1ObservationEditor
+    // 2026-11-15: candidate editing (five domains included) renders in the
+    // dedicated AI section read pane.
+    hook.selectSection('ai')
+    await settle()
     await hook.openCandidate('c1')
     await settle()
     hook.setTargets(['analysis_evaluation'])
@@ -6107,6 +6131,180 @@ async function main() {
     assert.equal(hook.form().observation_goal, '候选目标')
     harness.unmount()
     ok('#16 an indeterminate adopt POST keeps the original key, token and targets')
+  }
+
+  // -- R03: a deferred body auto-save resumes after modal/freeze clears -----
+  {
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    const routesFor = (getCurrent, patches) => router({
+      'GET /api/observations/o1': () => jsonResponse(200, getCurrent()),
+      'PATCH /api/observations/o1': ({ body }) => {
+        patches.push(body)
+        return jsonResponse(200, savedFixture({ revision: 4 }))
+      },
+      'GET /api/observations/o1/ai-tasks*': () => jsonResponse(200, { items: [], next_cursor: null }),
+      'GET /api/observations/o1/ai-candidates*': () => jsonResponse(200, { items: [], next_cursor: null }),
+    })
+
+    // Exact regression: pending timer -> open modal -> freeze -> cancel ->
+    // unfreeze must resume the originally intended auto-save once.
+    {
+      let current = currentFixture()
+      const patches = []
+      const harness = new Harness({
+        fetchImpl: routesFor(() => current, patches),
+      })
+      const view = harness.setup('views/ObservationEditorView.vue', {
+        context,
+        observationId: 'o1',
+        frozen: false,
+      })
+      harness.runMounted()
+      await settle()
+      const hook = harness.window.__d1ObservationEditor
+      hook.setField('environment', '待恢复环境')
+      hook.openSectionEditor('body')
+      view.props.frozen = true
+      hook.cancelSectionEditor()
+      await settle()
+      await wait(1350)
+      assert.equal(patches.length, 0, 'frozen cancel must not save')
+      assert.equal(hook.dirty(), true)
+      assert.equal(hook.autoSavePending(), false)
+      view.props.frozen = false
+      await wait(1350)
+      await settle()
+      assert.equal(patches.length, 1)
+      assert.equal(patches[0].save_reason, 'auto')
+      assert.equal(patches[0].payload.environment, '待恢复环境')
+      assert.equal(hook.dirty(), false)
+      assert.equal(hook.autoSavePending(), false)
+      harness.unmount()
+    }
+
+    // Control: closing without the temporary freeze still saves once.
+    {
+      const current = currentFixture()
+      const patches = []
+      const harness = new Harness({
+        fetchImpl: routesFor(() => current, patches),
+      })
+      harness.setup('views/ObservationEditorView.vue', {
+        context,
+        observationId: 'o1',
+        frozen: false,
+      })
+      harness.runMounted()
+      await settle()
+      const hook = harness.window.__d1ObservationEditor
+      hook.setField('environment', '关闭后环境')
+      hook.openSectionEditor('body')
+      hook.cancelSectionEditor()
+      await wait(1350)
+      await settle()
+      assert.equal(patches.length, 1)
+      assert.equal(patches[0].payload.environment, '关闭后环境')
+      assert.equal(hook.dirty(), false)
+      harness.unmount()
+    }
+
+    // No timer is set while the modal remains open; cancel then resumes it.
+    {
+      const current = currentFixture()
+      const patches = []
+      const harness = new Harness({
+        fetchImpl: routesFor(() => current, patches),
+      })
+      harness.setup('views/ObservationEditorView.vue', {
+        context,
+        observationId: 'o1',
+        frozen: false,
+      })
+      harness.runMounted()
+      await settle()
+      const hook = harness.window.__d1ObservationEditor
+      hook.setField('environment', '弹窗打开期间')
+      hook.openSectionEditor('body')
+      await wait(1350)
+      assert.equal(patches.length, 0, 'modal-open must not schedule')
+      assert.equal(hook.autoSavePending(), false)
+      assert.equal(hook.dirty(), true)
+      hook.cancelSectionEditor()
+      await wait(1350)
+      await settle()
+      assert.equal(patches.length, 1)
+      assert.equal(patches[0].payload.environment, '弹窗打开期间')
+      harness.unmount()
+    }
+
+    // Unchanged content never gets an auto-save after modal/freeze cycles.
+    {
+      const current = currentFixture()
+      const patches = []
+      const harness = new Harness({
+        fetchImpl: routesFor(() => current, patches),
+      })
+      const view = harness.setup('views/ObservationEditorView.vue', {
+        context,
+        observationId: 'o1',
+        frozen: false,
+      })
+      harness.runMounted()
+      await settle()
+      const hook = harness.window.__d1ObservationEditor
+      hook.openSectionEditor('body')
+      view.props.frozen = true
+      hook.cancelSectionEditor()
+      view.props.frozen = false
+      await wait(1350)
+      await settle()
+      assert.equal(patches.length, 0)
+      assert.equal(hook.dirty(), false)
+      harness.unmount()
+    }
+
+    // A pending photo/material receipt keeps the deferred save blocked until
+    // the receipt guard clears; then it resumes once.
+    {
+      const current = currentFixture()
+      const patches = []
+      const harness = new Harness({
+        fetchImpl: routesFor(() => current, patches),
+      })
+      const view = harness.setup('views/ObservationEditorView.vue', {
+        context,
+        observationId: 'o1',
+        frozen: false,
+      })
+      harness.runMounted()
+      await settle()
+      const hook = harness.window.__d1ObservationEditor
+      hook.setField('environment', '回执恢复环境')
+      hook.openSectionEditor('body')
+      view.props.frozen = true
+      hook.cancelSectionEditor()
+      view.state.pendingMaterial.value = {
+        kind: 'import',
+        requestId: 'pending-autosave',
+        expectedRevision: 3,
+        assetId: 'asset-pending',
+        label: '合成照片',
+        body: {},
+      }
+      view.props.frozen = false
+      await wait(1350)
+      assert.equal(patches.length, 0, 'pending receipt must keep autosave deferred')
+      assert.equal(hook.autoSavePending(), false)
+      assert.equal(hook.dirty(), true)
+      view.state.pendingMaterial.value = null
+      await wait(1350)
+      await settle()
+      assert.equal(patches.length, 1)
+      assert.equal(patches[0].payload.environment, '回执恢复环境')
+      assert.equal(hook.dirty(), false)
+      harness.unmount()
+    }
+    ok('R03 deferred auto-save resumes after modal/freeze blockers clear without duplicates')
   }
 
   console.log(`\n${passed} observation page checks passed`)
