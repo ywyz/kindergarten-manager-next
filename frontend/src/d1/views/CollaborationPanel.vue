@@ -36,7 +36,9 @@ import type { ClassGames, GameLocation } from '../types'
 
 const props = withDefaults(defineProps<{
   frozen?: boolean
-}>(), { frozen: false })
+  navigationTarget?: string
+  navigationVisible?: boolean
+}>(), { frozen: false, navigationTarget: '', navigationVisible: true })
 
 const emit = defineEmits<{
   (e: 'draft-active', active: boolean): void
@@ -1712,7 +1714,22 @@ defineExpose({
         </el-button>
       </div>
 
-      <div class="kgm-page-nav" data-d1="collaboration-page-nav" aria-label="在线协作页面">
+      <div
+        class="collaboration-page-body"
+        :class="{
+          'collaboration-page-body-local': !navigationTarget && navigationVisible,
+        }"
+      >
+      <Teleport
+        :to="navigationTarget || '#d1-page-navigation'"
+        :disabled="!navigationTarget"
+      >
+        <div
+          v-if="navigationVisible"
+          class="kgm-page-nav"
+          data-d1="collaboration-page-nav"
+          aria-label="在线协作页面"
+        >
         <el-button
           size="small"
           data-d1="collaboration-page-connection"
@@ -1747,7 +1764,8 @@ defineExpose({
           配置预览与同步
           <el-tag v-if="pendingWrite" size="small" type="danger">待核对</el-tag>
         </el-button>
-      </div>
+        </div>
+      </Teleport>
 
       <div class="kgm-page-layout" data-d1="collaboration-layout">
         <div class="kgm-page-main" data-d1="collaboration-main">
@@ -2301,6 +2319,7 @@ defineExpose({
           </div>
         </aside>
       </div>
+      </div>
     </div>
   </el-card>
 </template>
@@ -2321,6 +2340,37 @@ defineExpose({
 }
 .kgm-page {
   gap: 12px;
+}
+.collaboration-page-body {
+  min-width: 0;
+}
+.collaboration-page-body-local {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.collaboration-page-body-local > .kgm-page-nav {
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.collaboration-page-body-local > .kgm-page-layout {
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .collaboration-page-body-local {
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+@media (max-width: 640px) {
+  .collaboration-page-body-local {
+    grid-template-columns: 156px minmax(0, 1fr);
+    gap: 10px;
+  }
 }
 .pending-actions {
   display: flex;

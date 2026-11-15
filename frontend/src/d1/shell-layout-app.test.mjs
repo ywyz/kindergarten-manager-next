@@ -264,13 +264,13 @@ function navButton(html, marker) {
   const { state } = harness.setupApp()
   state.bootState.value = 'ready'
   state.context.value = contextFixture()
-  state.view.value = { name: 'workbench' }
+  state.view.value = { name: 'workbench', panel: 'home' }
   const workbench = await renderApp(state)
   for (const marker of NAV_MARKERS) {
     assert.ok(navButton(workbench, marker), `${marker} is a visible button`)
   }
-  assert.match(navButton(workbench, 'module-nav-todos'), /data-type="primary"/)
-  assert.doesNotMatch(navButton(workbench, 'module-nav-workbench'), /data-type="primary"/)
+  assert.match(navButton(workbench, 'module-nav-workbench'), /data-type="primary"/)
+  assert.doesNotMatch(navButton(workbench, 'module-nav-todos'), /data-type="primary"/)
   assert.doesNotMatch(navButton(workbench, 'module-nav-settings'), /data-type="primary"/)
   assert.equal(
     (workbench.match(/data-type="primary"/g) ?? []).length,
@@ -278,6 +278,17 @@ function navButton(html, marker) {
     'exactly one module entry is selected',
   )
   assert.match(workbench, /工作台[\s\S]*个人待办[\s\S]*日计划[\s\S]*周计划[\s\S]*游戏观察[\s\S]*一对一倾听[\s\S]*课程审议[\s\S]*在线协作[\s\S]*设置/)
+  const railIndex = workbench.indexOf('data-d1="left-rail"')
+  const navIndex = workbench.indexOf('data-d1="module-nav"')
+  const pageTargetIndex = workbench.indexOf('data-d1="page-navigation"')
+  const contentIndex = workbench.indexOf('class="d1-content"')
+  assert.ok(railIndex >= 0 && navIndex > railIndex, 'global module nav is inside the left rail')
+  assert.ok(pageTargetIndex > navIndex, 'stable page-navigation target follows the global group')
+  assert.ok(contentIndex > pageTargetIndex, 'page-navigation target is before page content')
+  assert.match(workbench, /class="d1-left-rail"/)
+  assert.match(workbench, /id="d1-page-navigation"/)
+  assert.match(workbench, /<main class="d1-content">/)
+  ok('left rail owns the global 9 modules and stable page-navigation target before content')
 
   state.view.value = { name: 'settings', section: 'collaboration' }
   const collaboration = await renderApp(state)
@@ -303,13 +314,15 @@ function navButton(html, marker) {
   state.settingsDraftActive.value = false
   await state.goModule('workbench')
   assert.equal(state.view.value.name, 'workbench')
-  assert.equal(state.view.value.panel, 'todos', 'the workbench home is personal todos')
+  assert.equal(state.view.value.panel, 'home', 'the workbench module is the home panel')
 
   await state.goModule('daily')
   assert.equal(state.view.value.name, 'workbench')
   assert.equal(state.view.value.panel, 'daily', 'daily module opens the calendar/history pane')
   await state.goModule('todos')
-  assert.equal(state.view.value.panel, 'todos', 'personal todo entry shares the workbench target')
+  assert.equal(state.view.value.panel, 'todos', 'personal todo entry is its own full-management panel')
+  await state.goModule('workbench')
+  assert.equal(state.view.value.panel, 'home', 'returning to workbench selects the home panel')
 
   state.closeLocked.value = true
   const before = state.view.value.name
@@ -317,6 +330,35 @@ function navButton(html, marker) {
   assert.equal(state.view.value.name, before, 'close freeze blocks module navigation')
   assert.ok(harness.messages.some((message) => String(message).includes('关闭请求处理中')))
   ok('module buttons reuse the leave coordinator and the close-specific freeze')
+}
+
+async function testHomeTodosSwitchesUseLeaveCoordinator() {
+  const harness = new Harness()
+  const { state } = harness.setupApp()
+  state.bootState.value = 'ready'
+  state.context.value = contextFixture()
+  state.view.value = { name: 'workbench', panel: 'home' }
+  state.workbenchRef.value = {
+    blockingDraft: () => ({ kind: 'material', message: '个人待办编辑尚未填回草稿' }),
+  }
+
+  await state.goModule('todos')
+  assert.equal(state.view.value.panel, 'home', 'home → todos is blocked by the real draft guard')
+  assert.ok(harness.messages.some((message) => String(message).includes('个人待办编辑')))
+
+  state.workbenchRef.value = null
+  await state.goModule('todos')
+  assert.equal(state.view.value.panel, 'todos')
+  state.workbenchRef.value = {
+    blockingDraft: () => ({ kind: 'material', message: '个人待办编辑尚未填回草稿' }),
+  }
+  await state.goModule('workbench')
+  assert.equal(state.view.value.panel, 'todos', 'todos → home also goes through the coordinator')
+  state.workbenchRef.value = null
+  state.view.value = { name: 'workbench', panel: 'home' }
+  await state.openTodosFromWorkbench()
+  assert.equal(state.view.value.panel, 'todos', 'open-todos routes through the coordinator')
+  ok('home/todos/daily switches have no same-page early-return bypass')
 }
 
 async function testWorkbenchModalDraftJoinsBlockingDraft() {
@@ -389,9 +431,10 @@ async function testRealWorkbenchTodoModalBinding() {
   const app = harness.setupApp()
   app.state.bootState.value = 'ready'
   app.state.context.value = contextFixture()
-  app.state.view.value = { name: 'workbench' }
+  app.state.view.value = { name: 'workbench', panel: 'todos' }
   const workbench = harness.setupSfc('views/WorkbenchView.vue', {
     context: contextFixture(),
+    panel: 'todos',
     frozen: false,
   })
   const store = fakeTodoStore()
@@ -408,7 +451,7 @@ async function testRealWorkbenchTodoModalBinding() {
   assert.match(app.state.currentBlockingDraft().message, /个人待办编辑/)
   assert.equal(workbench.state.activePanel.value, 'todos')
   await app.state.goModule('daily')
-  assert.equal(app.state.view.value.panel, undefined, 'the open todo modal blocks the pane switch')
+  assert.equal(app.state.view.value.panel, 'todos', 'the open todo modal blocks the pane switch')
   assert.ok(harness.messages.some((message) => String(message).includes('个人待办编辑')))
   todo.state.cancelEditor()
   assert.equal(app.state.currentBlockingDraft(), null)
@@ -485,9 +528,9 @@ async function testCalendarLeaveRestoresDailyAndKeepsOrdinaryHome() {
   state.view.value = { name: 'settings' }
   await state.leaveForAction('calendar', () => 'left')
   assert.equal(state.view.value.name, 'workbench')
-  assert.equal(state.view.value.panel, 'todos', 'ordinary 返回工作台 still lands on personal todos')
+  assert.equal(state.view.value.panel, 'home', 'ordinary 返回工作台 lands on Workbench home')
   const homeHtml = await renderApp(state)
-  assert.match(navButton(homeHtml, 'module-nav-todos'), /data-type="primary"/)
+  assert.match(navButton(homeHtml, 'module-nav-workbench'), /data-type="primary"/)
 
   state.view.value = { name: 'editor', planDate: '2026-09-15', mode: 'open', planId: 'p2' }
   state.registerEditor({
@@ -498,7 +541,7 @@ async function testCalendarLeaveRestoresDailyAndKeepsOrdinaryHome() {
   await state.leaveForAction('calendar', () => 'left')
   assert.equal(state.view.value.name, 'editor', 'a failed save still keeps the editor')
   assert.equal(state.activeModule.value, 'daily')
-  ok('actual calendar leave returns editor to daily, ordinary home to todos, and keeps save/conflict guards')
+  ok('actual calendar leave returns editor to daily, ordinary home to Workbench, and keeps save/conflict guards')
 }
 
 async function testModuleNavigationSavesDirtyEditor() {
@@ -536,6 +579,7 @@ async function testModuleNavigationSavesDirtyEditor() {
 const tests = [
   testVisibleLabeledButtonsAndSelectedState,
   testNavigationKeepsLeaveAndCloseGuards,
+  testHomeTodosSwitchesUseLeaveCoordinator,
   testWorkbenchModalDraftJoinsBlockingDraft,
   testRealWorkbenchTodoModalBinding,
   testCalendarLeaveRestoresDailyAndKeepsOrdinaryHome,

@@ -1,17 +1,21 @@
 <script setup lang="ts">
 /**
- * Workbench home is the teacher's personal todo list. The daily entry uses the
- * same component with the calendar panel: a term selector filters to one term
- * (positioning at its start month) and shows its full saved-plan list by stored
- * term_id. Existing records open regardless of the current creation
- * eligibility; clicking an eligible empty date asks for a create confirmation
- * first (never an empty auto-created plan).
+ * Workbench has three explicit pages: home (independent calendar + read-only
+ * incomplete-todo summary), full personal-todo management, and the daily
+ * saved-plan calendar. Home is the default when `panel` is omitted.
+ *
+ * The daily entry keeps the term selector (positioning at its start month) and
+ * the full saved-plan list by stored term_id. Existing records open regardless
+ * of the current creation eligibility; clicking an eligible empty date asks for
+ * a create confirmation first (never an empty auto-created plan). Daily reads
+ * and watches only run while the daily pane is active.
  *
  * All date/term/list reads carry a request sequence so only the response for
  * the current selection is applied.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiGet, ApiError, pathSegment } from '../client'
+import WorkbenchHomePanel from './WorkbenchHomePanel.vue'
 import WorkbenchTodoPanel from './WorkbenchTodoPanel.vue'
 import type {
   CalendarDayItem,
@@ -26,7 +30,7 @@ import type { BlockingDraft } from '../leave'
 
 const props = defineProps<{
   context: LocalContext
-  panel?: 'todos' | 'daily'
+  panel?: 'home' | 'todos' | 'daily'
   frozen?: boolean
 }>()
 const emit = defineEmits<{
@@ -37,6 +41,7 @@ const emit = defineEmits<{
     planId?: string,
     termId?: string,
   ): void
+  (e: 'open-todos'): void
   (e: 'open-observations'): void
   (e: 'open-curriculum'): void
   (e: 'open-weekly-plans'): void
@@ -58,9 +63,12 @@ function frozenNow(): boolean {
 }
 
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
-const activePanel = computed<'daily' | 'todos'>(() =>
-  props.panel === 'daily' ? 'daily' : 'todos',
-)
+const activePanel = computed<'home' | 'todos' | 'daily'>(() => {
+  if (props.panel === 'daily') return 'daily'
+  if (props.panel === 'todos') return 'todos'
+  return 'home'
+})
+const homePanelRef = ref<{ loadTodos?: () => Promise<void> } | null>(null)
 const todoPanelRef = ref<{ blockingDraft?: () => BlockingDraft | null } | null>(null)
 
 /** A hidden todo edit modal joins the shell leave/close guard. */
@@ -340,13 +348,35 @@ const todayPlan = computed(
 watch([termFilter, month], () => {
   // Invalidate any in-flight read synchronously, before the async loader
   // starts, so a slow older response cannot paint the new month/term.
+  if (activePanel.value !== 'daily') return
   requestSeq += 1
   if (termFilter.value === null) clearPlanState()
 }, { flush: 'sync' })
 
 watch([termFilter, month], () => {
-  void load()
+  if (activePanel.value === 'daily') void load()
 })
+
+watch(activePanel, (panel, previous) => {
+  if (panel === 'daily') {
+    void load()
+    return
+  }
+  if (previous === 'daily') {
+    requestSeq += 1
+    loading.value = false
+  }
+})
+
+async function reload(): Promise<void> {
+  if (activePanel.value === 'daily') {
+    await load()
+    return
+  }
+  if (activePanel.value === 'home') {
+    await homePanelRef.value?.loadTodos?.()
+  }
+}
 
 onMounted(() => {
   // Verification hook for the packaged selftest driver: opens a date through
@@ -354,28 +384,29 @@ onMounted(() => {
   ;(window as unknown as { __d1Workbench?: object }).__d1Workbench = {
     openDate: (date: string) => emit('open-editor', date, 'open'),
   }
-  void load()
+  if (activePanel.value === 'daily') void load()
 })
 
 onBeforeUnmount(() => {
   delete (window as unknown as { __d1Workbench?: object }).__d1Workbench
 })
 
-defineExpose({ reload: load, blockingDraft })
+defineExpose({ reload, blockingDraft })
 </script>
 
 <template>
   <div class="kgm-page workbench">
     <div class="kgm-page-head">
       <div>
-        <h2>{{ activePanel === 'daily' ? '日计划' : '个人待办' }}</h2>
+        <h2>{{ activePanel === 'daily' ? '日计划' : activePanel === 'todos' ? '个人待办' : '工作台' }}</h2>
         <p class="kgm-page-kicker">
           {{ props.context.profile?.display_name }} ·
           {{ props.context.class?.name }}（{{
             { small: '小班', middle: '中班', large: '大班' }[props.context.class?.grade ?? 'middle']
           }}）· 园所：{{ props.context.school_name || '（未填写）' }}
           <span v-if="activePanel === 'daily'"> · 月历、学期筛选与已保存历史</span>
-          <span v-else> · 仅本人可见，不随班级或学期变化</span>
+          <span v-else-if="activePanel === 'todos'"> · 仅本人可见，不随班级或学期变化</span>
+          <span v-else> · 日历与未完成待办；完整待办管理在个人待办</span>
         </p>
       </div>
       <div class="actions">
@@ -386,7 +417,7 @@ defineExpose({ reload: load, blockingDraft })
     </div>
 
     <el-alert
-      v-if="loadError"
+      v-if="activePanel === 'daily' && loadError"
       type="error"
       :closable="false"
       :title="loadError"
@@ -395,7 +426,16 @@ defineExpose({ reload: load, blockingDraft })
       <el-button size="small" @click="load">重试</el-button>
     </el-alert>
 
-    <div v-if="activePanel === 'todos'" class="workbench-todos" data-d1="workbench-todos-pane">
+    <div v-if="activePanel === 'home'" class="workbench-home-pane" data-d1="workbench-home-pane">
+      <WorkbenchHomePanel
+        ref="homePanelRef"
+        :profile-id="props.context.profile?.id ?? ''"
+        :disabled="frozen"
+        @open-todos="emit('open-todos')"
+      />
+    </div>
+
+    <div v-else-if="activePanel === 'todos'" class="workbench-todos" data-d1="workbench-todos-pane">
       <WorkbenchTodoPanel
         ref="todoPanelRef"
         :profile-id="props.context.profile?.id ?? ''"
@@ -536,6 +576,9 @@ defineExpose({ reload: load, blockingDraft })
 }
 .workbench-todos :deep(.el-card) {
   margin-top: 0;
+}
+.workbench-home-pane {
+  min-width: 0;
 }
 .workbench-daily {
   display: flex;

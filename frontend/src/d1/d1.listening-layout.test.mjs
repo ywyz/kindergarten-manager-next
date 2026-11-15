@@ -477,6 +477,34 @@ function bridgeOf(emitted) {
   assert.ok(editorSource.includes('ListeningExportDialog'))
   assert.match(
     editorSource,
+    /<Teleport[\s\S]*?:to="navigationTarget \|\| 'body'"[\s\S]*?:disabled="!navigationTarget"/,
+  )
+  assert.ok(
+    editorSource.includes("'has-local-navigation': !navigationTarget"),
+  )
+  assert.ok(
+    editorSource.includes(
+      "'listening-domain-nav-local': !navigationTarget",
+    ),
+  )
+  assert.equal(
+    (editorSource.match(/data-d1="listening-batch-open"/g) || []).length,
+    1,
+  )
+  assert.ok(
+    editorSource.indexOf('data-d1="listening-batch-open"') <
+      editorSource.indexOf('<ListeningAiPanel'),
+  )
+  assert.match(
+    editorSource,
+    /\.listening-body-layout\.has-local-navigation\s*\{[\s\S]*?grid-template-columns:\s*minmax\(132px,\s*176px\)\s+minmax\(0,\s*1fr\)/,
+  )
+  assert.match(
+    editorSource,
+    /\.listening-domain-nav\s*\{[\s\S]*?flex-direction:\s*column/,
+  )
+  assert.match(
+    editorSource,
     /width="min\(720px, calc\(100vw - 32px\)\)"/,
   )
   assert.ok(editorSource.includes('max-height: 65vh'))
@@ -970,6 +998,411 @@ function bridgeOf(emitted) {
   assert.equal(state.directionalOpen.value, false)
   assert.equal(state.directionalRequest.value, null)
   ok('revision and session changes invalidate captured rail selections')
+}
+
+// Actual compiled component: domain buttons move to the shared target and
+// return/remove on unmount; standalone mode keeps a local left navigation.
+function createMiniDom() {
+  const make = (type, extra = {}) => ({
+    type,
+    tag: null,
+    text: '',
+    props: {},
+    children: [],
+    parent: null,
+    ...extra,
+  })
+  const root = make('root')
+  const findById = (node, id) => {
+    if (node.props && node.props.id === id) return node
+    for (const child of node.children ?? []) {
+      const found = findById(child, id)
+      if (found) return found
+    }
+    return null
+  }
+  const ops = {
+    createElement: (tag) => make('element', { tag }),
+    createText: (text) => make('text', { text }),
+    createComment: (text) => make('comment', { text }),
+    setText: (node, text) => {
+      node.text = text
+    },
+    setElementText: (node, text) => {
+      node.text = text
+      node.children = []
+    },
+    insert: (child, parent, anchor) => {
+      child.parent = parent
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      if (index >= 0) parent.children.splice(index, 0, child)
+      else parent.children.push(child)
+    },
+    remove: (child) => {
+      const parent = child.parent
+      if (!parent) return
+      const index = parent.children.indexOf(child)
+      if (index >= 0) parent.children.splice(index, 1)
+    },
+    parentNode: (node) => node.parent,
+    nextSibling: (node) => {
+      const parent = node.parent
+      if (!parent) return null
+      const index = parent.children.indexOf(node)
+      return parent.children[index + 1] ?? null
+    },
+    querySelector: (selector) =>
+      selector.startsWith('#')
+        ? findById(root, selector.slice(1))
+        : null,
+    setScopeId: () => {},
+    cloneNode: (node) => ({ ...node, props: { ...node.props } }),
+    insertStaticContent: (content, parent, anchor) => {
+      const node = make('element', { tag: 'static', text: content })
+      ops.insert(node, parent, anchor)
+      return [node, node]
+    },
+    patchProp: (el, key, _prev, next) => {
+      el.props[key] = next
+    },
+  }
+  return { root, ops }
+}
+
+function walkElements(node, out = []) {
+  if (node && node.type === 'element') out.push(node)
+  for (const child of node?.children ?? []) walkElements(child, out)
+  return out
+}
+
+function classText(value) {
+  if (!value) return ''
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(classText).join(' ')
+  if (typeof value === 'object') {
+    return Object.keys(value)
+      .filter((key) => value[key])
+      .join(' ')
+  }
+  return ''
+}
+
+function isDescendant(node, ancestor) {
+  let current = node?.parent ?? null
+  while (current) {
+    if (current === ancestor) return true
+    current = current.parent
+  }
+  return false
+}
+
+const DomButtonStub = {
+  props: {
+    disabled: Boolean,
+    loading: Boolean,
+    type: String,
+    size: String,
+    text: Boolean,
+    link: Boolean,
+  },
+  emits: ['click'],
+  setup(props, { slots, emit, attrs }) {
+    return () =>
+      vue.h(
+        'button',
+        {
+          ...attrs,
+          disabled: !!props.disabled,
+          onClick: (event) => {
+            if (!props.disabled) emit('click', event)
+          },
+        },
+        slots.default ? slots.default() : [],
+      )
+  },
+}
+const DomCardStub = {
+  setup(_props, { slots, attrs }) {
+    return () =>
+      vue.h('div', attrs, [
+        slots.header ? slots.header() : null,
+        slots.default ? slots.default() : null,
+      ])
+  },
+}
+const DomAlertStub = {
+  setup(_props, { slots, attrs }) {
+    return () =>
+      vue.h('div', attrs, slots.default ? slots.default() : [])
+  },
+}
+const DomInputStub = {
+  props: { modelValue: [String, Number], type: String },
+  setup(_props, { attrs }) {
+    return () => vue.h('input', attrs)
+  },
+}
+const DomDatePickerStub = {
+  setup(_props, { attrs }) {
+    return () => vue.h('div', attrs)
+  },
+}
+const DomSelectStub = {
+  setup(_props, { slots, attrs }) {
+    return () =>
+      vue.h('div', attrs, slots.default ? slots.default() : [])
+  },
+}
+const DomOptionStub = { setup: () => () => null }
+const DomDialogStub = {
+  props: { modelValue: Boolean },
+  setup(props, { slots, attrs }) {
+    return () =>
+      props.modelValue
+        ? vue.h('div', attrs, [
+            slots.default ? slots.default() : null,
+            slots.footer ? slots.footer() : null,
+          ])
+        : null
+  },
+}
+
+async function mountListeningDom(navigationTarget) {
+  const { client } = makeClient()
+  const listening = loadCore(client)
+  const file = path.join(d1Dir, 'views', 'ListeningEditorView.vue')
+  const sourceText = fs.readFileSync(file, 'utf8')
+  const { descriptor } = parse(sourceText, { filename: file })
+  const compiled = compileScript(descriptor, {
+    id: 'sidebar-listening-dom',
+    inlineTemplate: true,
+  }).content
+  const js = ts.transpileModule(compiled, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+  }).outputText
+  const module = { exports: {} }
+  const messages = []
+  const message = (value) => messages.push(value)
+  message.success = message
+  message.warning = message
+  message.error = message
+  message.info = message
+  const AiStub = {
+    render: () =>
+      vue.h('div', { 'data-d1': 'listening-ai-stub' }, 'AI 协助填写'),
+  }
+  const NullStub = { render: () => null }
+  const requireMap = {
+    'element-plus': {
+      ElMessage: message,
+      ElMessageBox: { confirm: async () => undefined },
+    },
+    '../types': {},
+    '../leave': {},
+    '../client': {
+      ApiError,
+      getSessionEpoch: () => 1,
+      apiGet: () => Promise.reject(new Error('unexpected dom apiGet')),
+      apiPost: () => Promise.reject(new Error('unexpected dom apiPost')),
+      apiPatch: () => Promise.reject(new Error('unexpected dom apiPatch')),
+      apiDelete: () => Promise.reject(new Error('unexpected dom apiDelete')),
+      apiUpload: () => Promise.reject(new Error('unexpected dom apiUpload')),
+      apiGetBlob: () =>
+        Promise.reject(new Error('unexpected dom apiGetBlob')),
+      pathSegment: (value) => encodeURIComponent(String(value)),
+    },
+    '../observation-photos': { PhotoUrlCache: FakePhotoCache },
+    '../components/ListeningAiPanel.vue': AiStub,
+    '../components/ListeningExportDialog.vue': NullStub,
+    '../components/DirectionalRevisionDialog.vue': NullStub,
+    '../components/DirectionalRevisionTrigger.vue': NullStub,
+    '../directional-revision': {
+      captureDirectionalSelection: () => null,
+      directionalSelectionKey: (field, group = '', candidate = '') =>
+        `${candidate}:${field}:${group}`,
+      validateDirectionalSelection: () => '',
+      wholeDirectionalSelection: (text) => ({
+        start: 0,
+        end: text.length,
+        text,
+      }),
+    },
+    '../listening': listening,
+  }
+  vm.runInNewContext(js, {
+    module,
+    exports: module.exports,
+    require: (spec) => {
+      if (spec === 'vue') return vue
+      if (Object.prototype.hasOwnProperty.call(requireMap, spec)) {
+        return requireMap[spec]
+      }
+      throw new Error(`unexpected dom import ${spec}`)
+    },
+    console,
+    Date,
+    JSON,
+    Math,
+    Number,
+    Object,
+    Array,
+    String,
+    Boolean,
+    Promise,
+    Map,
+    Set,
+    URL,
+    URLSearchParams,
+    Blob,
+    setTimeout,
+    clearTimeout,
+    crypto: { randomUUID: uuid },
+  })
+  const component = module.exports.default
+  const { root, ops } = createMiniDom()
+  const target = ops.createElement('div')
+  target.props.id = 'd1-page-navigation'
+  ops.insert(target, root)
+  const appRoot = ops.createElement('div')
+  ops.insert(appRoot, root)
+  const app = vue.createRenderer(ops).createApp({
+    render: () =>
+      vue.h(component, {
+        context: {
+          terms: [{ id: 'term-1', name: '本学期' }],
+          class: { name: '中一班', grade: 'middle' },
+          profile: { display_name: '王老师' },
+          term: { id: 'term-1' },
+        },
+        recordId: 'record-1',
+        frozen: false,
+        disabled: false,
+        profileEpoch: 1,
+        ...(navigationTarget ? { navigationTarget } : {}),
+      }),
+  })
+  app.component('el-button', DomButtonStub)
+  app.component('el-card', DomCardStub)
+  app.component('el-alert', DomAlertStub)
+  app.component('el-input', DomInputStub)
+  app.component('el-date-picker', DomDatePickerStub)
+  app.component('el-select', DomSelectStub)
+  app.component('el-option', DomOptionStub)
+  app.component('el-dialog', DomDialogStub)
+  app.directive('loading', {})
+  app.config.warnHandler = () => {}
+  app.mount(appRoot)
+  for (let i = 0; i < 200; i += 1) {
+    if (
+      walkElements(root).some(
+        (node) => node.props['data-d1'] === 'listening-domain-nav',
+      )
+    ) {
+      break
+    }
+    await wait(5)
+  }
+  return { root, target, app, messages }
+}
+
+{
+  const mounted = await mountListeningDom('#d1-page-navigation')
+  const nav = walkElements(mounted.root).find(
+    (node) => node.props['data-d1'] === 'listening-domain-nav',
+  )
+  assert.ok(nav, 'teleported domain navigation renders')
+  assert.ok(isDescendant(nav, mounted.target))
+  const domainButtons = walkElements(nav).filter(
+    (node) =>
+      node.tag === 'button' &&
+      String(node.props['data-d1'] ?? '').startsWith('listening-domain-'),
+  )
+  assert.equal(domainButtons.length, 5)
+  const bodyLayout = walkElements(mounted.root).find((node) =>
+    classText(node.props.class).includes('listening-body-layout'),
+  )
+  assert.ok(bodyLayout)
+  assert.equal(
+    classText(bodyLayout.props.class).includes('has-local-navigation'),
+    false,
+  )
+  const rail = walkElements(mounted.root).find(
+    (node) => node.props['data-d1'] === 'listening-operations-rail',
+  )
+  assert.ok(rail)
+  const batch = rail.children.find(
+    (node) => node.props['data-d1'] === 'listening-batch-open',
+  )
+  const ai = rail.children.find(
+    (node) => node.props['data-d1'] === 'listening-ai-stub',
+  )
+  assert.ok(batch && ai, 'rail has bulk button and AI panel')
+  assert.ok(rail.children.indexOf(batch) < rail.children.indexOf(ai))
+  assert.equal(
+    walkElements(mounted.root).filter(
+      (node) => node.props['data-d1'] === 'listening-batch-open',
+    ).length,
+    1,
+  )
+  mounted.app.unmount()
+  await vue.nextTick()
+  assert.equal(
+    walkElements(mounted.target).some(
+      (node) => node.props['data-d1'] === 'listening-domain-nav',
+    ),
+    false,
+  )
+  ok('shared navigation teleports, unmounts cleanly, and bulk stays above AI')
+}
+
+{
+  const mounted = await mountListeningDom(undefined)
+  const nav = walkElements(mounted.root).find(
+    (node) => node.props['data-d1'] === 'listening-domain-nav',
+  )
+  assert.ok(nav, 'standalone local navigation renders')
+  assert.equal(isDescendant(nav, mounted.target), false)
+  assert.ok(
+    classText(nav.props.class).includes('listening-domain-nav-local'),
+  )
+  const bodyLayout = walkElements(mounted.root).find((node) =>
+    classText(node.props.class).includes('listening-body-layout'),
+  )
+  assert.ok(bodyLayout)
+  assert.ok(
+    classText(bodyLayout.props.class).includes('has-local-navigation'),
+  )
+  assert.equal(
+    walkElements(nav).filter(
+      (node) =>
+        node.tag === 'button' &&
+        String(node.props['data-d1'] ?? '').startsWith('listening-domain-'),
+    ).length,
+    5,
+  )
+  mounted.app.unmount()
+  await vue.nextTick()
+  ok('standalone listening keeps the five domains in local left navigation')
+}
+
+// Domain navigation continues through the original dirty-domain save guard.
+{
+  const h = await mountEditor()
+  const state = h.state
+  state.session.setField('goal', '导航切换前未保存目标')
+  const patches = h.client.patchCalls.length
+  await state.selectDomain('language')
+  assert.equal(state.state.domain, 'language')
+  assert.ok(h.client.patchCalls.length > patches)
+  assert.equal(
+    h.client.patchCalls.at(-1).body.goal,
+    '导航切换前未保存目标',
+  )
+  ok('domain navigation still saves the dirty draft through selectDomain')
 }
 
 console.log(`listening-layout: ${passed} checks passed`)

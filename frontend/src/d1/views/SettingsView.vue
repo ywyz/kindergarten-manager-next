@@ -31,6 +31,7 @@ const props = defineProps<{
   focusPrompt?: string
   reloadContext?: () => Promise<LocalContext>
   updateStatus?: UpdateStatus | null
+  navigationTarget?: string
 }>()
 const emit = defineEmits<{
   (e: 'draft-targets', targets: SettingsDraftTarget[]): void
@@ -2051,7 +2052,22 @@ defineExpose({
           </div>
         </el-card>
 
-        <div class="kgm-page-nav" data-d1="settings-page-nav" aria-label="设置页面">
+        <div
+          class="settings-page-body"
+          :class="{
+            'settings-page-body-local': !navigationTarget && activeSection === 'main',
+          }"
+        >
+        <Teleport
+          :to="navigationTarget || '#d1-page-navigation'"
+          :disabled="!navigationTarget"
+        >
+          <div
+            v-if="activeSection === 'main'"
+            class="kgm-page-nav"
+            data-d1="settings-page-nav"
+            aria-label="设置页面"
+          >
           <el-button
             size="small"
             data-d1="settings-page-identity"
@@ -2112,7 +2128,8 @@ defineExpose({
           >
             版本说明
           </el-button>
-        </div>
+          </div>
+        </Teleport>
 
         <div class="kgm-page-layout" data-d1="settings-layout">
           <div class="kgm-page-main" data-d1="settings-page-main">
@@ -2389,12 +2406,15 @@ defineExpose({
             </div>
           </aside>
         </div>
+        </div>
       </div>
     </div>
     <div :hidden="activeSection !== 'collaboration'" class="settings-collaboration">
       <CollaborationPanel
         ref="collaborationPanelRef"
         :frozen="frozen"
+        :navigation-target="navigationTarget"
+        :navigation-visible="activeSection === 'collaboration'"
         @draft-active="(value: boolean) => (collaborationDraftActive = value)"
       />
     </div>
@@ -2645,6 +2665,37 @@ defineExpose({
 }
 .settings :deep(.el-card) {
   border-radius: var(--kgm-radius);
+}
+.settings-page-body {
+  min-width: 0;
+}
+.settings-page-body-local {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.settings-page-body-local > .kgm-page-nav {
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.settings-page-body-local > .kgm-page-layout {
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .settings-page-body-local {
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 12px;
+  }
+}
+@media (max-width: 640px) {
+  .settings-page-body-local {
+    grid-template-columns: 156px minmax(0, 1fr);
+    gap: 10px;
+  }
 }
 .kgm-page-main > section {
   min-width: 0;

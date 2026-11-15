@@ -80,6 +80,8 @@ const props = defineProps<{
   initialMode: 'open' | 'create'
   planId?: string
   frozen: boolean
+  /** Stable App-owned left navigation rail; absent keeps the local left column. */
+  navigationTarget?: string
 }>()
 
 const emit = defineEmits<{
@@ -2904,8 +2906,21 @@ onBeforeUnmount(() => {
            stays mounted with v-show so the single AiTaskPanel's teleport anchors,
            inline candidates and reflection progress keep their state while the
            teacher switches columns. -->
-      <div class="daily-book" data-d1="daily-book">
-        <nav class="daily-nav" aria-label="日计划栏目">
+      <div
+        class="daily-book"
+        :class="{ 'daily-book-teleported': !!navigationTarget }"
+        data-d1="daily-book"
+      >
+        <Teleport
+          :to="navigationTarget || 'body'"
+          :disabled="!navigationTarget"
+        >
+        <nav
+          class="daily-nav"
+          :class="{ 'daily-nav-in-rail': !!navigationTarget }"
+          data-d1="daily-sections"
+          aria-label="日计划栏目"
+        >
           <span class="daily-nav-label">当天安排</span>
           <el-button
             v-for="section in LAYOUT_SECTIONS"
@@ -3000,6 +3015,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </nav>
+        </Teleport>
         <div class="daily-panes">
           <section
             v-show="layoutSection === 'raw'"
@@ -3957,6 +3973,9 @@ onBeforeUnmount(() => {
   background: var(--kgm-surface);
   overflow: clip;
 }
+.daily-book-teleported {
+  grid-template-columns: minmax(0, 1fr);
+}
 .daily-nav {
   display: flex;
   flex-direction: column;
@@ -3965,6 +3984,18 @@ onBeforeUnmount(() => {
   background: var(--kgm-bg);
   border-right: 1px solid var(--kgm-border);
   min-width: 0;
+  position: sticky;
+  top: 8px;
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+.daily-nav-in-rail {
+  position: static;
+  max-height: none;
+  overflow: visible;
+  border-right: 0;
+  background: transparent;
+  padding: 0;
 }
 .daily-nav-label {
   padding: 4px 10px 6px;
@@ -4136,36 +4167,40 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 760px) {
   .daily-book {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: clamp(150px, 34vw, 190px) minmax(0, 1fr);
     overflow: visible;
   }
-  .daily-nav {
-    flex-direction: row;
-    flex-wrap: wrap;
-    border-right: 0;
-    border-bottom: 1px solid var(--kgm-border);
+  .daily-book-teleported {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .daily-nav-label {
-    width: 100%;
+  .daily-nav {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    border-right: 1px solid var(--kgm-border);
+    border-bottom: 0;
+    max-height: calc(100vh - 1rem);
+    overflow-y: auto;
+  }
+  .daily-nav-in-rail {
+    border-right: 0;
+    max-height: none;
+    overflow: visible;
+  }
+  .daily-nav-label,
+  .daily-actions-label {
+    width: auto;
   }
   .daily-nav-button {
-    width: auto;
-    flex: 1 1 auto;
+    width: 100%;
+    flex: 0 0 auto;
   }
   .daily-generation-actions {
     width: 100%;
-    flex: 1 0 100%;
-    margin-top: 4px;
-  }
-  .daily-actions-label {
-    width: 100%;
-    padding: 0 4px;
+    flex: 0 0 auto;
+    margin-top: 6px;
   }
   .daily-generation-button {
     width: 100%;
-  }
-  .daily-nav-selected {
-    box-shadow: inset 0 -3px 0 var(--kgm-accent);
   }
   .daily-pane {
     padding: 14px;

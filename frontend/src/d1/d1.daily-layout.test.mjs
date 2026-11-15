@@ -150,11 +150,16 @@ function between(source, startToken, endToken, needle, label) {
   assert.match(panelSource, /emit\('action-start', taskType\)/)
   assert.match(panelSource, /emit\('locate-task', type\)/)
   assert.match(editorSource, /@locate-task="onAiLocate"/)
-  assert.match(
-    editorSource,
-    /@media \(max-width: 760px\)[\s\S]{0,900}\.daily-generation-actions[\s\S]{0,160}flex: 1 0 100%/,
-    'narrow wrapping keeps the generation group after the directory items',
-  )
+  assert.match(editorSource, /:to="navigationTarget \|\| 'body'"/, 'directory teleports to the shared target')
+  assert.match(editorSource, /:disabled="!navigationTarget"/, 'standalone keeps the local left fallback')
+  assert.match(editorSource, /daily-book-teleported/, 'teleported mode drops the inner directory column')
+  assert.match(editorSource, /daily-nav-in-rail/, 'rail mode avoids a nested sidebar frame')
+  const narrowStart = editorSource.indexOf('@media (max-width: 760px)')
+  const narrowStyles = editorSource.slice(narrowStart, editorSource.indexOf('.footer', narrowStart))
+  assert.match(narrowStyles, /\.daily-nav\s*\{[^}]*flex-direction:\s*column/, 'narrow daily navigation stays left, not top')
+  assert.doesNotMatch(narrowStyles, /\.daily-nav\s*\{[^}]*flex-direction:\s*row/, 'narrow daily navigation never becomes a horizontal row')
+  assert.match(narrowStyles, /grid-template-columns:\s*clamp\(150px/, 'narrow book keeps the left rail and content columns')
+  assert.match(narrowStyles, /daily-book-teleported[\s\S]{0,120}grid-template-columns:\s*minmax\(0, 1fr\)/, 'teleported narrow layout has one content column')
   assert.match(editorSource, /:content-version="plan\.current_content_version"/)
   assert.match(editorSource, /:has-raw="hasRaw"/)
   assert.match(editorSource, /:has-process="hasProcess"/)

@@ -20,21 +20,31 @@ const viewFile = process.env.KGM_WORKBENCH_VIEW || path.join(d1Dir, 'views', 'Wo
 const source = fs.readFileSync(viewFile, 'utf8')
 assert.match(source, /data-d1="daily-plan-module"/)
 assert.match(source, /data-d1="workbench-daily-pane"/)
+assert.match(source, /data-d1="workbench-home-pane"/)
+assert.match(source, /@open-todos="emit\('open-todos'\)"/)
 assert.match(source, /data-d1="workbench-todos-pane"/)
-assert.match(source, /panel\?: 'todos' \| 'daily'/)
-assert.match(source, /v-if="activePanel === 'todos'"/)
+assert.match(source, /panel\?: 'home' \| 'todos' \| 'daily'/)
+assert.match(source, /v-if="activePanel === 'home'"/)
+assert.match(source, /v-else-if="activePanel === 'todos'"/)
 assert.match(source, /v-else class="workbench-daily"/)
 assert.doesNotMatch(source, /data-d1="workbench-sidebar"/)
 assert.doesNotMatch(source, /data-d1="workbench-nav-daily"/)
 assert.ok(
-  source.includes("const activePanel = computed<'daily' | 'todos'>(") &&
-    source.includes("props.panel === 'daily' ? 'daily' : 'todos'"),
-  'workbench home defaults to personal todos; daily is an explicit page entry',
+  source.includes("const activePanel = computed<'home' | 'todos' | 'daily'>(") &&
+    source.includes("if (props.panel === 'daily') return 'daily'") &&
+    source.includes("if (props.panel === 'todos') return 'todos'") &&
+    source.includes("return 'home'"),
+  'workbench defaults to the home calendar; personal todos and daily are explicit page entries',
+)
+assert.ok(
+  source.indexOf('data-d1="workbench-home-pane"') <
+    source.indexOf('data-d1="workbench-todos-pane"'),
+  'the home calendar pane is the default content before full personal todos',
 )
 assert.ok(
   source.indexOf('data-d1="workbench-todos-pane"') <
     source.indexOf('data-d1="daily-plan-module"'),
-  'personal todo pane is the home content; daily calendar is the daily entry',
+  'full personal todos remain a separate pane before the daily calendar entry',
 )
 assert.ok(
   source.indexOf('data-d1="daily-plan-module"') <
@@ -184,6 +194,9 @@ function evaluateComponent({ items = [], now = '2026-02-15T12:00:00', apiGet } =
       if (spec === './WorkbenchTodoPanel.vue') {
         return { default: { name: 'WorkbenchTodoPanel', setup: () => () => null } }
       }
+      if (spec === './WorkbenchHomePanel.vue') {
+        return { default: { name: 'WorkbenchHomePanel', setup: () => () => null } }
+      }
       throw new Error(`unexpected import ${spec}`)
     },
     console,
@@ -245,10 +258,16 @@ function createWorkbench({
   apiGet,
   context = contextFixture(),
   frozen = false,
+  panel = 'daily',
+  omitPanel = false,
 } = {}) {
   const emitted = []
   const component = evaluateComponent({ items, now, apiGet })
-  const props = vue.reactive({ context, frozen, panel: 'daily' })
+  const props = vue.reactive({
+    context,
+    frozen,
+    ...(omitPanel ? {} : { panel }),
+  })
   const previousWarn = console.warn
   let state
   try {
@@ -615,7 +634,7 @@ function assertMonthGrid(section, month) {
   ok('calendar CSS keeps seven fixed columns with horizontal scrolling and a narrow-window breakpoint')
 }
 
-// Workbench home/daily panes come from the top-level entry, not a second nav.
+// Workbench home/todos/daily panes come from the top-level entry, not a second nav.
 {
   let calendarCalls = 0
   const apiGet = async (url) => {
@@ -644,13 +663,33 @@ function assertMonthGrid(section, month) {
   const todosHtml = await renderWorkbench(state, state.props)
   assert.match(todosHtml, /data-d1="workbench-todos-pane"/)
   assert.doesNotMatch(todosHtml, /data-d1="workbench-daily-pane"/)
+  assert.doesNotMatch(todosHtml, /data-d1="workbench-home-pane"/)
+  state.props.panel = 'home'
+  await vue.nextTick()
+  assert.equal(state.activePanel.value, 'home')
+  await settle()
+  assert.equal(calendarCalls, callsAfterMount, 'home does not load the teaching calendar')
+  const homeHtml = await renderWorkbench(state, state.props)
+  assert.match(homeHtml, /data-d1="workbench-home-pane"/)
+  assert.doesNotMatch(homeHtml, /data-d1="workbench-todos-pane"/)
+  assert.doesNotMatch(homeHtml, /data-d1="workbench-daily-pane"/)
   state.props.panel = 'daily'
   await vue.nextTick()
   assert.equal(state.activePanel.value, 'daily')
   const dailyHtml = await renderWorkbench(state, state.props)
+  assert.doesNotMatch(dailyHtml, /data-d1="workbench-home-pane"/)
   assert.doesNotMatch(dailyHtml, /data-d1="workbench-todos-pane"/)
   assert.match(dailyHtml, /data-d1="workbench-daily-pane"/)
-  ok('top-level entry selects the todo home or daily calendar without a second workbench nav')
+
+  // An omitted panel is the new home default; it must not mount/load daily.
+  const defaultCalls = calendarCalls
+  const defaultWorkbench = createWorkbench({ omitPanel: true, apiGet })
+  assert.equal(defaultWorkbench.state.activePanel.value, 'home')
+  assert.equal(calendarCalls, defaultCalls)
+  const defaultHtml = await renderWorkbench(defaultWorkbench.state, defaultWorkbench.props)
+  assert.match(defaultHtml, /data-d1="workbench-home-pane"/)
+  assert.doesNotMatch(defaultHtml, /data-d1="workbench-daily-pane"/)
+  ok('top-level entry defaults to home and selects home/todos/daily without a second workbench nav')
 }
 
 console.log(`workbench: ${passed} checks passed`)

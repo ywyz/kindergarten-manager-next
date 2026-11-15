@@ -62,7 +62,7 @@ import type { CurriculumContent } from './curriculum'
 
 type View =
   | { name: 'setup' }
-  | { name: 'workbench'; panel?: 'todos' | 'daily' }
+  | { name: 'workbench'; panel?: 'home' | 'todos' | 'daily' }
   | {
       name: 'editor'
       planDate: string
@@ -93,14 +93,14 @@ const bootError = ref('')
 /** The one host instance captured by this page realm; never a later global. */
 const pageHost = ref<HostApi | null>(null)
 const context = ref<LocalContext | null>(null)
-const view = ref<View>({ name: 'workbench' })
+const view = ref<View>({ name: 'workbench', panel: 'home' })
+/** Stable left-page navigation target for child editors' Teleport. */
+const PAGE_NAVIGATION_TARGET = '#d1-page-navigation'
 /** The mounted workbench; its local todo editor joins the leave/close guard. */
 const workbenchRef = ref<{
   reload?: () => Promise<void>
   blockingDraft?: () => BlockingDraft | null
 } | null>(null)
-/** Home is one todo target; both Workbench and 个人待办 may share it. */
-const homeEntry = ref<'workbench' | 'todos'>('todos')
 /** Close-specific freeze: input stops before the allow leaves the page. */
 const closeLocked = ref(false)
 /** The finally allowed closing: never unlocked by late notifications. */
@@ -237,7 +237,9 @@ type ModuleKey =
 const activeModule = computed<ModuleKey>(() => {
   switch (view.value.name) {
     case 'workbench':
-      return view.value.panel === 'daily' ? 'daily' : homeEntry.value
+      if (view.value.panel === 'daily') return 'daily'
+      if (view.value.panel === 'todos') return 'todos'
+      return 'workbench'
     case 'editor':
       return 'daily'
     case 'weekly-plans':
@@ -835,7 +837,9 @@ function updateContext(next: LocalContext): void {
   context.value = next
   bootState.value = next.status === 'ready' ? 'ready' : 'uninitialized'
   if (next.status === 'uninitialized') view.value = { name: 'setup' }
-  else if (view.value.name === 'setup') view.value = { name: 'workbench' }
+  else if (view.value.name === 'setup') {
+    view.value = { name: 'workbench', panel: 'home' }
+  }
   initializeTheme(next)
 }
 
@@ -951,7 +955,7 @@ async function requestLeave(
 // --- navigation actions -----------------------------------------------------
 
 async function goWorkbench(
-  panel: 'todos' | 'daily' = 'todos',
+  panel: 'home' | 'todos' | 'daily' = 'home',
 ): Promise<'left' | 'stayed'> {
   editorBridge = null
   editorBridgeOwner = null
@@ -959,7 +963,6 @@ async function goWorkbench(
   clearWeeklyState()
   clearListeningState()
   clearCurriculumState()
-  if (panel === 'todos') homeEntry.value = 'todos'
   view.value = { name: 'workbench', panel }
   return 'left'
 }
@@ -1013,17 +1016,17 @@ function moduleNavBlocked(): boolean {
 /** Top-level module buttons reuse the existing route/leave guards. */
 async function goModule(module: ModuleKey): Promise<void> {
   if (moduleNavBlocked()) return
-  if (module === 'workbench' || module === 'todos') {
-    homeEntry.value = module
-    if (view.value.name === 'workbench' && view.value.panel !== 'daily') {
+  if (module === 'workbench' || module === 'todos' || module === 'daily') {
+    const panel = module === 'workbench' ? 'home' : module
+    if (
+      view.value.name === 'workbench'
+      && (view.value.panel ?? 'home') === panel
+    ) {
       return
     }
-    await leaveForAction('calendar', () => goWorkbench('todos'))
-    return
-  }
-  if (module === 'daily') {
-    if (view.value.name === 'workbench' && view.value.panel === 'daily') return
-    await leaveForAction('calendar', () => goWorkbench('daily'))
+    // Workbench home/todos/daily are distinct pages; every switch goes through
+    // the existing leave coordinator, including home<->todos.
+    await leaveForAction('calendar', () => goWorkbench(panel))
     return
   }
   if (module === activeModule.value) return
@@ -1085,6 +1088,15 @@ async function openEditor(
 ): Promise<'left' | 'stayed'> {
   view.value = { name: 'editor', planDate, mode, planId, fromTermId }
   return 'left'
+}
+
+/** Workbench home → full personal-todo management, through the leave guard. */
+async function openTodosFromWorkbench(): Promise<void> {
+  if (closeLocked.value || closeFinalAllowed.value) {
+    ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
+    return
+  }
+  await leaveForAction('calendar', () => goWorkbench('todos'))
 }
 
 /** Workbench day/list navigation under the close-specific freeze (R1). */
@@ -1196,7 +1208,7 @@ async function backFromListeningList(): Promise<void> {
     { kind: 'listening', target_key: 'listening-workbench' },
     async (): Promise<'left'> => {
       clearListeningState()
-      view.value = { name: 'workbench' }
+      view.value = { name: 'workbench', panel: 'home' }
       return 'left'
     },
   )
@@ -1263,7 +1275,7 @@ async function backFromCurriculumList(): Promise<void> {
     { kind: 'calendar', target_key: 'curriculum-workbench' },
     async (): Promise<'left'> => {
       clearCurriculumState()
-      view.value = { name: 'workbench' }
+      view.value = { name: 'workbench', panel: 'home' }
       return 'left'
     },
   )
@@ -1343,7 +1355,7 @@ async function leaveForAction(
       clearListeningState()
       view.value = {
         name: 'workbench',
-        panel: returnsToDailyCalendar ? 'daily' : 'todos',
+        panel: returnsToDailyCalendar ? 'daily' : 'home',
       }
     } else if (kind === 'observations') {
       editorBridge = null
@@ -2216,12 +2228,16 @@ onMounted(() => {
       @open-maintenance="openMaintenance"
     />
     <template v-else>
-      <nav
-        v-if="bootState === 'ready'"
-        class="kgm-module-nav"
-        data-d1="module-nav"
-        aria-label="应用模块"
-      >
+      <div class="d1-shell">
+        <aside class="d1-left-rail" data-d1="left-rail" aria-label="左侧导航">
+          <div class="d1-rail-group">
+            <div class="d1-rail-heading">模块</div>
+            <nav
+              v-if="bootState === 'ready'"
+              class="kgm-module-nav"
+              data-d1="module-nav"
+              aria-label="应用模块"
+            >
         <el-button
           size="small"
           data-d1="module-nav-workbench"
@@ -2321,13 +2337,25 @@ onMounted(() => {
         >
           设置
         </el-button>
-      </nav>
+            </nav>
+          </div>
+          <div class="d1-rail-group">
+            <div class="d1-rail-heading">当前页面</div>
+            <div
+              id="d1-page-navigation"
+              class="d1-page-navigation"
+              data-d1="page-navigation"
+            ></div>
+          </div>
+        </aside>
+        <main class="d1-content">
       <WorkbenchView
         v-if="view.name === 'workbench'"
         ref="workbenchRef"
         :context="context!"
-        :panel="view.panel ?? 'todos'"
+        :panel="view.panel ?? 'home'"
         :frozen="closeLocked"
+        @open-todos="() => void openTodosFromWorkbench()"
         @open-editor="openEditorFromWorkbench"
         @open-weekly-plans="() => void openWeeklyPlansFromWorkbench()"
         @open-observations="openObservationsFromWorkbench"
@@ -2343,7 +2371,7 @@ onMounted(() => {
         :frozen="closeLocked"
         :preselect="observationsPreselect"
         @open-observation="openObservationFromList"
-        @back="() => (view = { name: 'workbench' })"
+        @back="() => (view = { name: 'workbench', panel: 'home' })"
         @busy="(value) => (observationsBusy = value)"
         @preselect-consumed="observationsPreselect = null"
       />
@@ -2382,6 +2410,7 @@ onMounted(() => {
         :frozen="closeLocked"
         :disabled="closeLocked || maintenanceLocked"
         :profile-epoch="profileEpoch"
+        :navigation-target="PAGE_NAVIGATION_TARGET"
         @register-editor="registerListeningEditor"
         @busy="onListeningEditorBusy"
         @back="() => void backFromListeningEditor()"
@@ -2432,6 +2461,7 @@ onMounted(() => {
         :disabled="closeLocked || maintenanceLocked"
         :profile-epoch="profileEpoch"
         :host="pageHost"
+        :navigation-target="PAGE_NAVIGATION_TARGET"
         @register-editor="registerWeeklyEditor"
         @busy="onWeeklyEditorBusy"
         @back="() => void backFromWeeklyEditor()"
@@ -2444,6 +2474,7 @@ onMounted(() => {
         :initial-mode="view.mode"
         :plan-id="view.planId"
         :frozen="closeLocked"
+        :navigation-target="PAGE_NAVIGATION_TARGET"
         @register-editor="registerEditor"
         @leave="(kind, run) => void leaveForAction(kind, run)"
         @open-settings="onEditorOpenSettings"
@@ -2460,6 +2491,7 @@ onMounted(() => {
         :focus-prompt="view.focusPrompt ?? ''"
         :reload-context="reloadContext"
         :update-status="updateStatus"
+        :navigation-target="PAGE_NAVIGATION_TARGET"
         @draft-active="(active) => settingsDraftActive = active"
         @draft-targets="(targets) => settingsDraftTargets = targets"
         @section="onSettingsSection"
@@ -2467,6 +2499,8 @@ onMounted(() => {
         @open-maintenance="openMaintenance"
         @check-update="openUpdateManual"
       />
+        </main>
+      </div>
     </template>
 
     <BackupRestorePanel
@@ -2556,9 +2590,60 @@ body {
   font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
 }
 .d1-page {
-  max-width: 1080px;
+  max-width: 1360px;
   margin: 0 auto;
   padding: 20px 16px 64px;
+}
+.d1-shell {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  margin-top: 8px;
+  min-width: 0;
+}
+.d1-left-rail {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  max-height: calc(100vh - 24px);
+  padding-right: 2px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.d1-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.d1-rail-heading {
+  padding: 0 4px;
+  color: var(--kgm-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.d1-content {
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .d1-shell {
+    grid-template-columns: 200px minmax(0, 1fr);
+    gap: 14px;
+  }
+}
+@media (max-width: 640px) {
+  .d1-page {
+    padding: 12px 10px 48px;
+  }
+  .d1-shell {
+    grid-template-columns: 168px minmax(0, 1fr);
+    gap: 10px;
+  }
 }
 .d1-theme-bar {
   display: flex;

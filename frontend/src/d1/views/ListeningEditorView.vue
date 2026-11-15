@@ -76,6 +76,7 @@ const props = defineProps<{
   frozen?: boolean
   disabled?: boolean
   profileEpoch?: number
+  navigationTarget?: string
 }>()
 
 const emit = defineEmits<{
@@ -1939,13 +1940,6 @@ defineExpose({
           按幼儿合册
         </el-button>
         <el-button
-          data-d1="listening-batch-open"
-          :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
-          @click="openBatch"
-        >
-          批量选择照片
-        </el-button>
-        <el-button
           type="primary"
           data-d1="listening-editor-save"
           :loading="actionBusy"
@@ -2005,21 +1999,44 @@ defineExpose({
       正在读取倾听记录...
     </div>
     <template v-else>
-      <div class="domain-tabs" data-d1="listening-domain-nav">
-        <el-button
-          v-for="domain in LISTENING_DOMAINS"
-          :key="domain"
-          :type="state.domain === domain ? 'primary' : 'default'"
-          :data-d1="`listening-domain-${domain}`"
-          :disabled="!canMutate"
-          @click="selectDomain(domain)"
+      <div
+        class="listening-body-layout"
+        :class="{ 'has-local-navigation': !navigationTarget }"
+      >
+        <Teleport
+          :to="navigationTarget || 'body'"
+          :disabled="!navigationTarget"
         >
-          {{ DOMAIN_LABELS[domain] }}
-        </el-button>
-      </div>
+          <nav
+            class="listening-domain-nav"
+            :class="{ 'listening-domain-nav-local': !navigationTarget }"
+            data-d1="listening-domain-nav"
+            aria-label="倾听领域"
+          >
+            <el-button
+              v-for="domain in LISTENING_DOMAINS"
+              :key="domain"
+              :type="state.domain === domain ? 'primary' : 'default'"
+              :data-d1="`listening-domain-${domain}`"
+              :disabled="!canMutate"
+              @click="selectDomain(domain)"
+            >
+              {{ DOMAIN_LABELS[domain] }}
+            </el-button>
+          </nav>
+        </Teleport>
 
-      <div class="listening-workspace">
+        <div class="listening-content">
+          <div class="listening-workspace">
         <aside class="listening-rail" data-d1="listening-operations-rail">
+          <el-button
+            class="rail-batch-button"
+            data-d1="listening-batch-open"
+            :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
+            @click="openBatch"
+          >
+            批量选择照片
+          </el-button>
           <ListeningAiPanel
             v-if="state.loaded && form && template"
             ref="aiPanel"
@@ -2577,6 +2594,8 @@ defineExpose({
       </el-card>
         </div>
       </div>
+        </div>
+      </div>
     </template>
 
     <el-alert
@@ -3123,11 +3142,33 @@ defineExpose({
   gap: 10px;
   flex-wrap: wrap;
 }
-.domain-tabs {
+.listening-body-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  align-items: start;
+  margin-top: 14px;
+}
+.listening-body-layout.has-local-navigation {
+  grid-template-columns: minmax(132px, 176px) minmax(0, 1fr);
+}
+.listening-content {
+  min-width: 0;
+}
+.listening-domain-nav {
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 12px;
+  min-width: 0;
+}
+.listening-domain-nav :deep(.el-button) {
+  width: 100%;
+  justify-content: flex-start;
+  min-height: 42px;
+  margin: 0;
+  white-space: normal;
+  text-align: left;
+  border-radius: 8px;
 }
 .header-grid {
   display: grid;
@@ -3558,14 +3599,15 @@ defineExpose({
 .listening-rail :deep(.rail-ai-panel .el-card__body) {
   padding: 14px;
 }
-.domain-tabs {
-  margin-top: 16px;
-  gap: 10px;
+.listening-domain-nav-local {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
-.domain-tabs :deep(.el-button) {
-  min-width: 96px;
+.rail-batch-button {
+  width: 100%;
   min-height: 42px;
-  border-radius: 8px;
 }
 .actions :deep(.el-button) {
   min-height: 42px;

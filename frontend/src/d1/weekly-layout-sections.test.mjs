@@ -378,6 +378,8 @@ function createMiniDom() {
     ...(type === 'element' ? { style: {} } : {}),
     ...extra,
   })
+  let queryTarget = null
+  const root = make('root')
   const ops = {
     createElement: (tag) => make('element', { tag }),
     createText: (text) => make('text', { text }),
@@ -402,7 +404,9 @@ function createMiniDom() {
       if (!parent) return null
       return parent.children[parent.children.indexOf(node) + 1] ?? null
     },
-    querySelector: () => null,
+    querySelector: (selector) => (
+      selector === '#test-weekly-nav' ? queryTarget : null
+    ),
     setScopeId: () => {},
     cloneNode: (node) => ({ ...node, props: { ...node.props } }),
     insertStaticContent: (content, parent, anchor) => {
@@ -412,7 +416,7 @@ function createMiniDom() {
     },
     patchProp: (el, key, _prev, next) => { el.props[key] = next },
   }
-  return { ops }
+  return { root, ops, setQueryTarget: (node) => { queryTarget = node } }
 }
 
 const DomButtonStub = {
@@ -520,6 +524,10 @@ function byD1(root, value) {
   return walkElements(root).find((node) => node.props['data-d1'] === value) ?? null
 }
 
+function allByD1(root, value) {
+  return walkElements(root).filter((node) => node.props['data-d1'] === value)
+}
+
 function byClass(root, name) {
   return walkElements(root).find((node) => String(node.props?.class ?? '').split(/\s+/).includes(name)) ?? null
 }
@@ -545,13 +553,32 @@ function loadLeaveCoordinator() {
   return mod.LeaveCoordinator
 }
 
-async function mountEditorDom({ detail, overrides = {} }) {
+async function mountEditorDom({ detail, overrides = {}, navigationTarget = false }) {
   const harness = makeHarness(detail, { overrides })
   const component = harness.loadSfc('views/WeeklyPlanEditorView.vue', { inlineTemplate: true })
-  const { ops } = createMiniDom()
+  const { ops, setQueryTarget } = createMiniDom()
   const renderer = vue.createRenderer(ops)
+  const mountEl = {
+    type: 'element', tag: 'div', text: '', props: {}, children: [], parent: null,
+    style: {},
+  }
+  const sharedTarget = navigationTarget
+    ? {
+        type: 'element', tag: 'div', text: '', props: { 'data-d1': 'test-navigation-target' },
+        children: [], parent: mountEl, style: {},
+      }
+    : null
+  if (sharedTarget) {
+    mountEl.children.push(sharedTarget)
+    setQueryTarget(sharedTarget)
+  }
   const app = renderer.createApp({
-    render: () => vue.h(component, { planId: 'p1', disabled: false, profileEpoch: 0 }),
+    render: () => vue.h(component, {
+      planId: 'p1',
+      disabled: false,
+      profileEpoch: 0,
+      ...(sharedTarget ? { navigationTarget: '#test-weekly-nav' } : {}),
+    }),
   })
   app.component('el-dialog', DomDialogStub)
   app.component('el-card', DomGenericStub)
@@ -562,13 +589,10 @@ async function mountEditorDom({ detail, overrides = {} }) {
   app.component('el-alert', DomAlertStub)
   app.component('el-form', DomGenericStub)
   app.component('el-form-item', DomGenericStub)
-  const mountEl = {
-    type: 'element', tag: 'div', text: '', props: {}, children: [], parent: null,
-  }
   app.mount(mountEl)
   harness.runMounted()
   await settle()
-  return { app, mountEl, harness }
+  return { app, mountEl, harness, sharedTarget }
 }
 
 function makePanelStub() {
@@ -1072,6 +1096,56 @@ async function main() {
     ok('weekly DOM renders a read pane, labeled buttons and a modal copy with focus return')
   }
 
+  // -- DOM: shared navigation target, order, selection and cleanup -----------
+  {
+    const { app, mountEl, harness, sharedTarget } = await mountEditorDom({
+      detail: detailFixture(),
+      navigationTarget: true,
+    })
+    assert.ok(sharedTarget, 'shared target exists')
+    assert.ok(byD1(sharedTarget, 'weekly-sections'), 'weekly directory teleports into the shared left target')
+    assert.equal(allByD1(mountEl, 'weekly-sections').length, 1, 'one weekly directory instance after teleport')
+    assert.match(String(byClass(mountEl, 'weekly-workspace').props.class), /weekly-workspace-teleported/)
+    const navButtons = walkElements(sharedTarget).filter((node) => (
+      node.tag === 'button'
+      && String(node.props?.class ?? '').split(/\s+/).includes('section-button')
+    ))
+    assert.deepEqual(
+      navButtons.map((node) => node.props['data-d1']),
+      ['overview', 'collective_1', 'collective_2', 'free_choice_1', 'focus', 'columns', 'materials', 'sources', 'ai']
+        .map((key) => `weekly-section-${key}`),
+      'all nine sections including AI tasks stay in order in the rail',
+    )
+    assert.ok(nodeText(navButtons[8]).includes('AI 候选与任务'))
+    const paneLabel = () => byD1(mountEl, 'weekly-section-pane').props['aria-label']
+    byD1(sharedTarget, 'weekly-section-ai').props.onClick({ currentTarget: byD1(sharedTarget, 'weekly-section-ai') })
+    await settle()
+    assert.equal(paneLabel(), 'AI 候选与任务')
+    byD1(sharedTarget, 'weekly-section-collective_1').props.onClick({ currentTarget: byD1(sharedTarget, 'weekly-section-collective_1') })
+    await settle()
+    assert.equal(paneLabel(), '集体游戏一')
+
+    // Dirty modal guard: navigation remains in the target but cannot switch.
+    byD1(mountEl, 'weekly-section-edit').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-edit') })
+    await settle()
+    assert.equal(byD1(sharedTarget, 'weekly-section-focus').props.disabled, true)
+    byD1(sharedTarget, 'weekly-section-focus').props.onClick({ currentTarget: byD1(sharedTarget, 'weekly-section-focus') })
+    await settle()
+    assert.equal(paneLabel(), '集体游戏一', 'open editing copy keeps the current section')
+    byD1(mountEl, 'weekly-section-cancel').props.onClick()
+    await settle()
+
+    harness.unmount()
+    app.unmount()
+    await settle()
+    assert.equal(
+      sharedTarget.children.filter((child) => child.type === 'element').length,
+      0,
+      'unmount removes teleported weekly navigation',
+    )
+    ok('weekly navigation target: nine ordered sections, selection, dirty modal guard and target cleanup')
+  }
+
   // -- DOM: modal cancel restores the opening copy exactly -------------------
   {
     const { app, mountEl, harness } = await mountEditorDom({ detail: detailFixture() })
@@ -1486,6 +1560,17 @@ async function main() {
     assert.match(navButtonRule, /min-height:/)
     assert.match(navButtonRule, /flex:\s*0 0 auto/)
     assert.doesNotMatch(navButtonRule, /overflow\s*:\s*hidden/)
+    assert.match(source, /navigationTarget\?: string/)
+    assert.match(source, /:to="navigationTarget \|\| 'body'"/)
+    assert.match(source, /:disabled="!navigationTarget"/)
+    assert.match(source, /weekly-workspace-teleported/)
+    assert.match(source, /section-nav-in-rail/)
+    const mediaStart = styles.indexOf('@media (max-width: 900px)')
+    const media = styles.slice(mediaStart)
+    assert.match(media, /\.section-nav\s*\{[^}]*flex-direction:\s*column/, 'narrow weekly navigation stays a left column')
+    assert.doesNotMatch(media, /\.section-nav\s*\{[^}]*flex-direction:\s*row/, 'narrow weekly navigation never becomes a row')
+    assert.match(media, /grid-template-columns:\s*clamp\(180px/, 'narrow workspace keeps a left rail and content')
+    assert.match(media, /weekly-workspace-teleported[\s\S]{0,120}grid-template-columns:\s*minmax\(0, 1fr\)/)
     const plansStyles = (fs.readFileSync(path.join(d1Dir, 'views', 'WeeklyPlansView.vue'), 'utf8').match(/<style[\s\S]*?<\/style>/g) || []).join('\n')
     assert.match(plansStyles, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
     assert.match(plansStyles, /border-radius: 12px/)

@@ -62,6 +62,8 @@ const props = withDefaults(defineProps<{
   profileEpoch?: number
   host?: HostApi | null
   sessionEpoch?: number
+  /** Stable App-owned left navigation rail; absent keeps the local column. */
+  navigationTarget?: string
 }>(), { disabled: false, profileEpoch: 0, sessionEpoch: 0, host: null })
 const emit = defineEmits<{
   (e: 'register-editor', bridge: LeaveEditor | null): void
@@ -1191,8 +1193,20 @@ defineExpose({ resetForContext })
     </div>
 
     <template v-if="detail && content">
-      <div class="weekly-workspace">
-        <nav class="section-nav" data-d1="weekly-sections" aria-label="周计划栏目">
+      <div
+        class="weekly-workspace"
+        :class="{ 'weekly-workspace-teleported': !!navigationTarget }"
+      >
+        <Teleport
+          :to="navigationTarget || 'body'"
+          :disabled="!navigationTarget"
+        >
+        <nav
+          class="section-nav"
+          :class="{ 'section-nav-in-rail': !!navigationTarget }"
+          data-d1="weekly-sections"
+          aria-label="周计划栏目"
+        >
           <button
             v-for="section in weeklySectionNav"
             :key="section.key"
@@ -1209,6 +1223,7 @@ defineExpose({ resetForContext })
             <span class="section-badge">{{ section.badge }}</span>
           </button>
         </nav>
+        </Teleport>
         <article
           class="section-pane"
           data-d1="weekly-section-pane"
@@ -1617,6 +1632,9 @@ defineExpose({ resetForContext })
   gap: 20px;
   align-items: start;
 }
+.weekly-workspace-teleported {
+  grid-template-columns: minmax(0, 1fr);
+}
 .section-nav {
   display: flex;
   flex-direction: column;
@@ -1625,6 +1643,11 @@ defineExpose({ resetForContext })
   top: 0.5rem;
   max-height: calc(100vh - 3rem);
   overflow: auto;
+}
+.section-nav-in-rail {
+  position: static;
+  max-height: none;
+  overflow: visible;
 }
 .section-button {
   display: flex;
@@ -1722,15 +1745,22 @@ defineExpose({ resetForContext })
 .ai-inline :deep(.el-checkbox-group) { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 .slot { margin-top: 0.5rem; }
 @media (max-width: 900px) {
-  .weekly-workspace { grid-template-columns: minmax(0, 1fr); }
-  .section-nav {
-    position: static;
-    flex-direction: row;
-    max-height: none;
-    overflow-x: auto;
-    padding-bottom: 0.25rem;
+  .weekly-workspace {
+    grid-template-columns: clamp(180px, 30vw, 230px) minmax(0, 1fr);
   }
-  .section-button { min-width: 11rem; width: auto; flex: 0 0 auto; }
-  .section-hint { display: none; }
+  .weekly-workspace-teleported {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .section-nav {
+    flex-direction: column;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+    overflow-x: visible;
+  }
+  .section-nav-in-rail {
+    max-height: none;
+    overflow: visible;
+  }
+  .section-button { width: 100%; min-width: 0; flex: 0 0 auto; }
 }
 </style>
