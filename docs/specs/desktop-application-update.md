@@ -1,5 +1,13 @@
 # D3-U：应用版本更新
 
+## 2026-11-16：所有安装包同步提供在线更新资产
+
+用户明确要求本版及以后每个安装包均支持在线更新。今后每次 Windows 安装包发布，必须同时提供有效签名 Setup、`KindergartenManager-windows-x64.zip`、Ed25519 签名的 `update-manifest-windows-x64.json` 和 `SHA256SUMS.txt`。先完成本地身份／信任／完整包验证，再上传草稿、核对服务端摘要与下载字节，最后公开符合渠道规则的 Release；不公开缺失资产的标准版本 tag 抢占完整更新候选。
+
+SimplySign／Authenticode 负责 Windows 文件签名；更新清单沿用原 Ed25519 发行密钥和内嵌公钥，不每版换钥。完整安装器须携带独立 updater 与一致信任配置。在线 ZIP 当前只替换 app，helper 兼容、旧版本来源 revision／迁移和信任过渡须逐版核定。严格版本递增保持，同版本不同安装方式不产生重复升级。
+
+本轮用户已亲自执行打包、签名及上传，完整标准版 `v0.1.0-listening-test.20261116` 已公开为预发布、非 Latest。四附件公开下载摘要、安装器签名、生产解析器的清单／包验证及 `20261115` 新版选择独立通过；实际安装替换／重启及教师验收仍待反馈，见[本轮结果](../bootstrap/desktop-signed-test-20261116-review.md#用户手动发布结果与公开下载复核)。原 `20261116-manual` 保留。初版草稿读取错误已修入[手动命令](../bootstrap/windows-preview-manual-release.md)，采用草稿 ID 与整段失败中止，不要求用户重发已成功发布的版本。本段更新当前发布要求，以下历史未验结论保留各自日期和范围。
+
 更新：2026-10-30。**U1–U3的2026-10-25限定源码／合成工程结论保持，证据见[核查§20](../bootstrap/desktop-update-review.md#20-最终独立核查u1u3限定源码合成工程通过)。2026-10-30用户决定通过GitHub Releases检查最新正式版本，当前规则见§10，实施／回修与独立结果见[本轮核查](../bootstrap/desktop-retry-github-review.md)。真实冻结更新与发行仍未验。** 本片不继续D3-B0跨设备摸底。依据[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)、[现有升级保护](desktop-ai-engineering.md#2-e1持久数据约束和升级)及[阶段顺序](desktop-foundation-plan.md#4-建议切片顺序)。
 
 ## 1. 用户已确认的行为

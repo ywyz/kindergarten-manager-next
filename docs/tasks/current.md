@@ -1,5 +1,13 @@
 # 当前任务
 
+## 2026-11-16 续：完整在线更新版已发布，等待真机更新反馈
+
+用户已亲自制作、签名并于北京时间 2026-11-16 19:52:36 公开发布[完整预览版 `v0.1.0-listening-test.20261116`](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261116)，Release ID `446972237`，预发布、非 Latest。四附件为签名 Setup、在线更新 ZIP、Ed25519 签名清单和 SHA256SUMS；tag 指向原冻结 `ddd97086a8c784c5c33bf390bab903f5b9f36f58`。原 `-manual` Release 保留。
+
+初版[手动命令](../bootstrap/windows-preview-manual-release.md)在未发布草稿按 tag 查询时返回 404，逐行执行未阻止后续发布，导致验证 ID 缺失并报错；实际发布成功，不重建或重传。Codex 已补核四附件本地／服务端／公开重新下载摘要、安装器原证书和时间戳、清单 Ed25519 签名及 Release 绑定、ZIP 大小／摘要与包内内容。348 个既有应用文件不变，仅新增包内清单；生产解析器从 `20261115` 选中完整 `20261116`，同版本不重复升级。实际安装替换／重启、教师真机数据保留待验，未自动执行安装或真实 AI。
+
+命令已修为整段执行、分阶段成功标识、草稿按唯一 ID 查询及发布、固定验证文件和摘要复核；失败不能继续下一阶段。以后所有安装包同时具备完整在线更新资产，见[更新规格](../specs/desktop-application-update.md#2026-11-16所有安装包同步提供在线更新资产)。实际产物身份与本次独立验证详见[包审核续记](../bootstrap/desktop-signed-test-20261116-review.md#用户手动发布结果与公开下载复核)。
+
 ## 2026-11-16：签名测试包已完成，等待真机反馈
 
 用户续要求上传 GitHub Release，已发布[手动安装预览版 `v0.1.0-listening-test.20261116-manual`](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261116-manual)。tag 指向实际冻结源码 `ddd97086a8c784c5c33bf390bab903f5b9f36f58`，标记 prerelease、非 Latest；三个附件为签名 Setup、`SHA256SUMS.txt`、`TESTING-README.txt`。GitHub 端摘要及重新下载的全部附件与本地一致，下载后的安装器签名、原证书和时间戳仍有效。`-manual` 沿用现有手动安装规则，避免缺少应用内更新资产的测试包抢占完整更新候选；本次不新增自动更新 ZIP 或更新清单，不修改 main、不自动安装。教师真机验收仍待反馈。
