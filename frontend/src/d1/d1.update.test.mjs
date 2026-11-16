@@ -378,6 +378,17 @@ const target = {
   published_at: '2026-10-24T00:00:00Z',
 }
 
+function lastInstallFailure(overrides = {}) {
+  return {
+    plan_id: 'plan-failed-1',
+    target_version: '0.2.0',
+    status: 'failed',
+    code: 'INSTALL_PACKAGE_PATH_TOO_LONG',
+    updated_at: '2026-11-16T12:00:00Z',
+    ...overrides,
+  }
+}
+
 async function mountPanel(props = {}) {
   const harness = new Harness()
   const component = harness.component('views/UpdatePanel.vue')
@@ -468,6 +479,220 @@ async function testAppStartupCheckPromptsAvailable() {
   }
 }
 
+async function testAppPromptsInstallFailureOncePerPlan() {
+  let planId = 'plan-failed-1'
+  let installCalls = 0
+  let downloadCalls = 0
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () =>
+      status({
+        state: 'idle',
+        last_install_failure: lastInstallFailure({ plan_id: planId }),
+      }),
+    get_update_state: async () =>
+      status({
+        state: 'idle',
+        last_install_failure: lastInstallFailure({ plan_id: planId }),
+      }),
+    start_update_download: async () => {
+      downloadCalls += 1
+      return status({ state: 'downloading', target })
+    },
+    install_update: async () => {
+      installCalls += 1
+      return { accepted: false, reason: 'UPDATE_INSTALL_UNAVAILABLE' }
+    },
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateOpen() === true, 'failed install prompt')
+    assert.equal(app.updateState().state, 'idle')
+    assert.equal(app.updateState().last_install_failure.plan_id, 'plan-failed-1')
+    assert.equal(installCalls, 0)
+    assert.equal(downloadCalls, 0)
+
+    app.closeUpdate()
+    await settle()
+    await app.refreshUpdate()
+    await settle()
+    assert.equal(app.updateOpen(), false, 'same plan must not reopen on refresh')
+
+    planId = 'plan-failed-2'
+    await app.refreshUpdate()
+    await waitUntil(() => app.updateOpen() === true, 'new failed plan prompt')
+    assert.equal(app.updateState().last_install_failure.plan_id, 'plan-failed-2')
+    assert.equal(installCalls, 0)
+    assert.equal(downloadCalls, 0)
+    ok('update: failed-install digest prompts once per plan and never installs automatically')
+  } finally {
+    harness.unmount()
+  }
+}
+
+async function testAppNetworkFailureKeepsLocalInstallFailure() {
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () => {
+      throw new Error('synthetic network failure')
+    },
+    get_update_state: async () =>
+      status({
+        state: 'idle',
+        last_install_failure: lastInstallFailure({ plan_id: 'plan-local-failure' }),
+      }),
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateOpen() === true, 'local failure after network error')
+    assert.equal(app.updateState().state, 'failed')
+    assert.equal(
+      app.updateState().last_install_failure.plan_id,
+      'plan-local-failure',
+    )
+    ok('update: a network check failure cannot hide the local install-failure digest')
+  } finally {
+    harness.unmount()
+  }
+}
+
+async function testAppOrdinaryFailedCheckKeepsLocalDigest() {
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () =>
+      status({
+        state: 'failed',
+        reason: 'UPDATE_CHECK_FAILED',
+        error_code: 'UPDATE_CHECK_FAILED',
+        error_message: '检查更新失败',
+      }),
+    get_update_state: async () =>
+      status({
+        state: 'idle',
+        last_install_failure: lastInstallFailure({ plan_id: 'plan-ordinary-failed' }),
+      }),
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateState()?.state === 'failed', 'ordinary failed check')
+    assert.equal(
+      app.updateState().last_install_failure.plan_id,
+      'plan-ordinary-failed',
+    )
+    assert.equal(app.updateOpen(), true)
+    ok('update: an ordinary failed check without a digest cannot erase the local failure')
+  } finally {
+    harness.unmount()
+  }
+}
+
+async function testAppDelayedCheckShowsLocalFailureFirst() {
+  const checkGate = deferred()
+  let checkCalls = 0
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: () => {
+      checkCalls += 1
+      return checkGate.promise
+    },
+    get_update_state: async () =>
+      status({
+        state: 'idle',
+        last_install_failure: lastInstallFailure({ plan_id: 'plan-deferred' }),
+      }),
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(
+      () => checkCalls === 1 && app.updateOpen() === true,
+      'local failure before delayed discovery',
+    )
+    assert.equal(
+      app.updateState().last_install_failure.plan_id,
+      'plan-deferred',
+    )
+    app.closeUpdate()
+    await settle()
+    assert.equal(app.updateOpen(), false)
+    checkGate.resolve(
+      status({
+        state: 'failed',
+        reason: 'UPDATE_CHECK_FAILED',
+        error_code: 'UPDATE_CHECK_FAILED',
+        error_message: '检查更新失败',
+      }),
+    )
+    await waitUntil(() => app.updateState()?.state === 'failed', 'delayed check')
+    await settle()
+    assert.equal(app.updateOpen(), false, 'same plan must not reopen after delayed check')
+    assert.equal(app.updateState().last_install_failure.plan_id, 'plan-deferred')
+    ok('update: local failure is visible before delayed discovery and is not re-prompted')
+  } finally {
+    harness.unmount()
+  }
+}
+
+async function testAppExplicitNullClearsLocalFailure() {
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () =>
+      status({ state: 'up_to_date', last_install_failure: null }),
+    get_update_state: async () =>
+      status({
+        state: 'idle',
+        last_install_failure: lastInstallFailure({ plan_id: 'plan-cleared' }),
+      }),
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateState()?.state === 'up_to_date', 'explicit null clear')
+    assert.equal(app.updateState().last_install_failure, null)
+    ok('update: an explicit null digest from the host clears the local failure')
+  } finally {
+    harness.unmount()
+  }
+}
+
+async function testAppDoesNotPromptReachedFailureTarget() {
+  const local = status({
+    state: 'up_to_date',
+    current: { ...status().current, version: '0.2.0' },
+    last_install_failure: lastInstallFailure(),
+  })
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => local.current,
+    check_for_update: async () => local,
+    get_update_state: async () => local,
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => app.updateState()?.state === 'up_to_date', 'up to date')
+    await settle()
+    assert.equal(app.updateOpen(), false)
+    ok('update: a failure target already reached does not prompt as a current failure')
+  } finally {
+    harness.unmount()
+  }
+}
+
 async function testAppStartupKeepsPollingThroughMetadataChecking() {
   const polls = []
   let checkCalls = 0
@@ -481,6 +706,11 @@ async function testAppStartupKeepsPollingThroughMetadataChecking() {
       return status({ state: 'checking' })
     },
     get_update_state: () => {
+      if (!polls.length && checkCalls === 0) {
+        // The new startup path reads the authoritative local snapshot before
+        // starting discovery; this is not a poll response.
+        return status({ state: 'idle' })
+      }
       const pending = deferred()
       polls.push(pending)
       return pending.promise
@@ -528,7 +758,11 @@ async function testAppPanelCloseKeepsPollingInFlight() {
       }),
     get_update_state: async () => {
       calls.state += 1
-      if (calls.state < 2) {
+      if (calls.state === 1) {
+        // Authoritative local read before discovery.
+        return status({ state: 'idle' })
+      }
+      if (calls.state === 2) {
         return status({
           state: 'downloading',
           target,
@@ -579,6 +813,90 @@ async function testAppUnmountIgnoresLateCheck() {
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.notEqual(app.updateState()?.state, 'available')
   ok('update U1 App: late response after unmount is not applied')
+}
+
+async function testAppUnmountDuringLocalReadStartsNoDiscovery() {
+  const gate = deferred()
+  let stateCalls = 0
+  let checkCalls = 0
+  let downloadCalls = 0
+  let installCalls = 0
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () => {
+      checkCalls += 1
+      return status({ state: 'available', target })
+    },
+    get_update_state: () => {
+      stateCalls += 1
+      return gate.promise
+    },
+    start_update_download: async () => {
+      downloadCalls += 1
+      return status({ state: 'downloading', target })
+    },
+    install_update: async () => {
+      installCalls += 1
+      return { accepted: false }
+    },
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  await waitUntil(() => stateCalls === 1, 'initial local read')
+  harness.unmount()
+  gate.resolve(
+    status({
+      state: 'idle',
+      last_install_failure: lastInstallFailure({ plan_id: 'plan-unmounted' }),
+    }),
+  )
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(checkCalls, 0)
+  assert.equal(downloadCalls, 0)
+  assert.equal(installCalls, 0)
+  assert.equal(app.updateOpen(), false)
+  assert.equal(app.updatePollActive(), false)
+  ok('update: unmount during the startup local read starts no stale discovery or actions')
+}
+
+async function testAppManualActionSupersedesStartupDiscovery() {
+  const localGate = deferred()
+  let stateCalls = 0
+  let checkCalls = 0
+  const api = {
+    get_bootstrap: async () => ({ bridge_protocol: 1, launch_token: 'T' }),
+    page_ready: async () => ({ accepted: true }),
+    get_app_identity: async () => status().current,
+    check_for_update: async () => {
+      checkCalls += 1
+      return status({ state: 'available', target })
+    },
+    get_update_state: () => {
+      stateCalls += 1
+      return localGate.promise
+    },
+  }
+  const { harness } = await mountApp({ api })
+  const app = harness.window.__d1App
+  try {
+    await waitUntil(() => stateCalls === 1, 'pending startup local read')
+    await app.checkUpdate()
+    assert.equal(checkCalls, 1)
+    localGate.resolve(
+      status({
+        state: 'idle',
+        last_install_failure: lastInstallFailure({ plan_id: 'plan-superseded' }),
+      }),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(checkCalls, 1, 'superseded startup read must not launch another check')
+    assert.equal(app.updateOpen(), true)
+    ok('update: a newer manual action supersedes the pending startup discovery')
+  } finally {
+    harness.unmount()
+  }
 }
 
 async function testAppEchoesUpdatePlanInPageReady() {
@@ -697,7 +1015,8 @@ async function testAppLateRefreshResponseIgnored() {
     check_for_update: async () => status({ state: 'available', target }),
     get_update_state: () => {
       stateCalls += 1
-      if (stateCalls === 1) return first.promise
+      if (stateCalls === 1) return Promise.resolve(status({ state: 'idle' }))
+      if (stateCalls === 2) return first.promise
       return Promise.resolve(status({ state: 'up_to_date' }))
     },
   }
@@ -789,6 +1108,92 @@ async function testDownloadingProgressAndCancel() {
   cancel.props.onClick({})
   assert.deepEqual(emitted.at(-1), ['cancel'])
   ok('update U1: downloading shows bounded progress and explicit cancel')
+}
+
+async function testPanelShowsLastInstallFailureIndependentOfState() {
+  for (const state of ['idle', 'checking', 'available', 'up_to_date']) {
+    const panel = await mountPanel({
+      status: status({
+        state,
+        target: state === 'available' ? target : null,
+        last_install_failure: lastInstallFailure(),
+      }),
+    })
+    const alert = byD1(panel.mountEl, 'update-last-install-failure')
+    assert.ok(alert, `${state} must show the last install failure`)
+    const text = nodeText(alert)
+    assert.match(text, /上次更新未完成/)
+    assert.match(text, /v0\.2\.0/)
+    assert.match(text, /v0\.1\.0/)
+    assert.match(text, /路径过长/)
+    assert.match(text, /等待修复版/)
+    assert.match(text, /不需要修改注册表/)
+    assert.match(text, /INSTALL_PACKAGE_PATH_TOO_LONG/)
+  }
+
+  const hidden = await mountPanel({
+    status: status({
+      state: 'up_to_date',
+      current: { ...status().current, version: '0.2.0' },
+      last_install_failure: lastInstallFailure(),
+    }),
+  })
+  assert.equal(byD1(hidden.mountEl, 'update-last-install-failure'), null)
+
+  const legacy = await mountPanel({
+    status: status({
+      state: 'idle',
+      last_install_failure: lastInstallFailure({ code: 'INSTALL_PACKAGE_INVALID' }),
+    }),
+  })
+  assert.match(nodeText(byD1(legacy.mountEl, 'update-last-install-failure')), /校验不通过/)
+
+  const io = await mountPanel({
+    status: status({
+      state: 'idle',
+      last_install_failure: lastInstallFailure({ code: 'INSTALL_PACKAGE_IO_ERROR' }),
+    }),
+  })
+  assert.match(nodeText(byD1(io.mountEl, 'update-last-install-failure')), /读取或解压失败/)
+
+  const unknown = await mountPanel({
+    status: status({
+      state: 'idle',
+      last_install_failure: lastInstallFailure({ code: 'INSTALL_PACKAGE_OTHER' }),
+    }),
+  })
+  const unknownText = nodeText(byD1(unknown.mountEl, 'update-last-install-failure'))
+  assert.match(unknownText, /上次安装未完成/)
+  assert.match(unknownText, /不要盲目重复安装/)
+  assert.doesNotMatch(unknownText, /已保留旧版/)
+  assert.doesNotMatch(unknownText, /路径过长/)
+
+  const cancelled = await mountPanel({
+    status: status({ state: 'cancelled', last_install_failure: null }),
+  })
+  assert.equal(byD1(cancelled.mountEl, 'update-last-install-failure'), null)
+  assert.ok(byD1(cancelled.mountEl, 'update-cancelled'))
+
+  const available = await mountPanel({
+    status: status({
+      state: 'available',
+      target,
+      download_available: true,
+      last_install_failure: lastInstallFailure(),
+    }),
+  })
+  assert.ok(byButton(available.mountEl, 'update-download'))
+  assert.ok(byButton(available.mountEl, 'update-check'))
+  const ready = await mountPanel({
+    status: status({
+      state: 'ready',
+      target,
+      install_available: true,
+      last_install_failure: lastInstallFailure(),
+    }),
+  })
+  assert.ok(byButton(ready.mountEl, 'update-install'))
+  ok('update: last-install failure is independent of state, mapped and does not block a legal update')
 }
 
 async function testFailedAndUnconfiguredStates() {
@@ -977,7 +1382,8 @@ async function testAppChannelSwitchDropsTargetAndIgnoresOldRefresh() {
     check_for_update: async () => status({ state: 'available', target }),
     get_update_state: async () => {
       stateCalls += 1
-      if (stateCalls === 1) return gate.promise
+      if (stateCalls === 1) return status({ state: 'idle' })
+      if (stateCalls === 2) return gate.promise
       return status({ state: 'idle', target: null, check_channel: 'preview' })
     },
     set_update_channel: async (channel) => {
@@ -1147,7 +1553,10 @@ async function testAppSwitchAndReadLossClearsTargetUntilRecovery() {
     },
     get_update_state: async () => {
       stateCalls += 1
-      if (stateCalls <= 2) throw new Error('synthetic lost state reply')
+      if (stateCalls === 1) {
+        return status({ state: 'idle', target: null })
+      }
+      if (stateCalls <= 3) throw new Error('synthetic lost state reply')
       return status({
         state: 'idle',
         target: null,
@@ -1224,12 +1633,21 @@ const tests = [
   testReadyInstallConfirmation,
   testAvailableShowsTargetAndDownload,
   testDownloadingProgressAndCancel,
+  testPanelShowsLastInstallFailureIndependentOfState,
   testFailedAndUnconfiguredStates,
   testNoReleaseAndUnavailableDownload,
   testAppStartupCheckPromptsAvailable,
+  testAppPromptsInstallFailureOncePerPlan,
+  testAppNetworkFailureKeepsLocalInstallFailure,
+  testAppOrdinaryFailedCheckKeepsLocalDigest,
+  testAppDelayedCheckShowsLocalFailureFirst,
+  testAppExplicitNullClearsLocalFailure,
+  testAppDoesNotPromptReachedFailureTarget,
   testAppStartupKeepsPollingThroughMetadataChecking,
   testAppPanelCloseKeepsPollingInFlight,
   testAppUnmountIgnoresLateCheck,
+  testAppUnmountDuringLocalReadStartsNoDiscovery,
+  testAppManualActionSupersedesStartupDiscovery,
   testAppLateRefreshResponseIgnored,
   testAppCanceledCloseRevokesInstallIntent,
   testAppEchoesUpdatePlanInPageReady,

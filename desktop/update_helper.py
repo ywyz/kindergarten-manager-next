@@ -314,29 +314,117 @@ def _load_manifest(
     return manifest
 
 
+_DIAGNOSTIC_PATH_LIMIT = 160
+_DIAGNOSTIC_TYPE_LIMIT = 80
+
+
+def _relative_diagnostic_path(exc: OSError, roots: tuple[Path, ...]) -> str | None:
+    """Return a bounded path relative to a known safe root, never an absolute path."""
+    filename = getattr(exc, "filename", None)
+    if not isinstance(filename, str) or not filename:
+        return None
+    normalized = os.path.normpath(filename)
+    for root in roots:
+        try:
+            relative = os.path.relpath(normalized, os.path.normpath(str(root)))
+        except (OSError, ValueError):
+            continue
+        if relative == os.curdir or os.path.isabs(relative):
+            continue
+        if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+            continue
+        text = relative.replace(os.sep, "/")
+        if not text:
+            continue
+        if any(ord(char) < 32 or ord(char) == 127 for char in text):
+            continue
+        if len(text) > _DIAGNOSTIC_PATH_LIMIT:
+            return None
+        return text
+    return None
+
+
+def _package_failure_diagnostic(
+    exc: OSError, roots: tuple[Path, ...]
+) -> dict[str, Any]:
+    """Keep only bounded, path-safe facts for the local install result."""
+    diagnostic: dict[str, Any] = {
+        "type": type(exc).__name__[:_DIAGNOSTIC_TYPE_LIMIT],
+    }
+    winerror = getattr(exc, "winerror", None)
+    if isinstance(winerror, int) and not isinstance(winerror, bool):
+        diagnostic["winerror"] = winerror
+    errno_value = getattr(exc, "errno", None)
+    if isinstance(errno_value, int) and not isinstance(errno_value, bool):
+        diagnostic["errno"] = errno_value
+    relative = _relative_diagnostic_path(exc, roots)
+    filename = getattr(exc, "filename", None)
+    if isinstance(filename, str) and filename:
+        diagnostic["path_length"] = len(filename)
+    if relative is not None:
+        diagnostic["relative_path"] = relative
+    return diagnostic
+
+
+def _classify_package_oserror(
+    exc: OSError, roots: tuple[Path, ...]
+) -> update_install.InstallPlanError:
+    winerror = getattr(exc, "winerror", None)
+    errno_value = getattr(exc, "errno", None)
+    if winerror == 206 or errno_value == 206:
+        code = "INSTALL_PACKAGE_PATH_TOO_LONG"
+        message = "更新包解压路径超过系统限制"
+    else:
+        code = "INSTALL_PACKAGE_IO_ERROR"
+        message = "更新包读取或解压失败"
+    error = update_install.InstallPlanError(code, message)
+    error.diagnostic = _package_failure_diagnostic(exc, roots)
+    return error
+
+
+def _package_failure_details(exc: BaseException) -> dict[str, Any]:
+    diagnostic = getattr(exc, "diagnostic", None)
+    if isinstance(diagnostic, dict) and diagnostic:
+        return {"diagnostic": diagnostic}
+    return {}
+
+
 def _verify_saved_package(plan: update_install.InstallPlan, manifest):
     """Re-verify the saved ZIP against the signed manifest and package list."""
     archive = Path(plan.package_zip)
-    if archive.stat().st_size != manifest.package_size:
-        raise update_install.InstallPlanError(
-            "INSTALL_PACKAGE_MISMATCH", "保存的完整包大小与签名元数据不一致"
-        )
-    import hashlib
-
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    if digest != manifest.package_sha256:
-        raise update_install.InstallPlanError(
-            "INSTALL_PACKAGE_MISMATCH", "保存的完整包 SHA-256 与签名元数据不一致"
-        )
     verify_dir = Path(plan.state_dir) / "verified"
-    if verify_dir.exists():
-        raise update_install.InstallPlanError(
-            "INSTALL_VERIFY_DIR_EXISTS", "校验目录已存在"
-        )
-    ensure_safe_path(verify_dir)
-    verified = verify_package_zip(archive, manifest, verify_dir)
-    ensure_safe_tree(verified.root)
-    return verified
+    try:
+        if archive.stat().st_size != manifest.package_size:
+            raise update_install.InstallPlanError(
+                "INSTALL_PACKAGE_MISMATCH", "保存的完整包大小与签名元数据不一致"
+            )
+        import hashlib
+
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        if digest != manifest.package_sha256:
+            raise update_install.InstallPlanError(
+                "INSTALL_PACKAGE_MISMATCH", "保存的完整包 SHA-256 与签名元数据不一致"
+            )
+        if verify_dir.exists():
+            raise update_install.InstallPlanError(
+                "INSTALL_VERIFY_DIR_EXISTS", "校验目录已存在"
+            )
+        ensure_safe_path(verify_dir)
+        verified = verify_package_zip(archive, manifest, verify_dir)
+        ensure_safe_tree(verified.root)
+        return verified
+    except (update_install.InstallPlanError, ManifestError):
+        # Business/manifest codes stay exactly as already defined.
+        raise
+    except OSError as exc:
+        # The extraction itself can hit a filesystem limit (notably WinError
+        # 206) after some entries were written.  Keep the existing result
+        # record path, but preserve a stable code and a bounded diagnostic
+        # instead of collapsing it into INSTALL_PACKAGE_INVALID.
+        raise _classify_package_oserror(
+            exc,
+            (verify_dir, archive.parent, Path(plan.state_dir)),
+        ) from exc
 
 
 def _wait_for_authorization(
@@ -713,6 +801,7 @@ def run(
                 plan,
                 "failed",
                 getattr(exc, "code", "INSTALL_PACKAGE_INVALID"),
+                **_package_failure_details(exc),
             )
         _record(plan, "package_reverified")
         if not _require_same_authorization(plan, authorized):

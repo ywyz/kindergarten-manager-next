@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ from update_fs import (
     ensure_safe_tree,
     has_multiple_hard_links,
 )
-from update_identity import AppIdentity
+from update_identity import AppIdentity, version_key
 from update_manifest import (
     MAX_PACKAGE_BYTES,
     ManifestError,
@@ -71,6 +72,70 @@ class InstallPlanError(RuntimeError):
 
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+_RECORD_TIME_LIMIT = 40
+_RECORD_MIN_YEAR = 2000
+_RECORD_MAX_YEAR = 2100
+_PLAN_ID_LENGTH = 32
+_PLAN_ID_CHARS = frozenset("0123456789abcdef")
+
+
+def _bounded_record_time(value: object) -> datetime | None:
+    """Parse a bounded, timezone-aware ISO-8601 result time."""
+    if not isinstance(value, str) or not value or len(value) > _RECORD_TIME_LIMIT:
+        return None
+    text = value
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    try:
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        parsed = parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return None
+    if not (_RECORD_MIN_YEAR <= parsed.year <= _RECORD_MAX_YEAR):
+        return None
+    return parsed
+
+
+def _safe_plan_id(value: object) -> str | None:
+    """Only the production uuid4().hex shape may reach the public digest."""
+    if not isinstance(value, str) or len(value) != _PLAN_ID_LENGTH:
+        return None
+    if any(char not in _PLAN_ID_CHARS for char in value):
+        return None
+    return value
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(
+            os.path.abspath(str(right))
+        )
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _safety_version_key(value: object):
+    try:
+        return version_key(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_failure_code(value: object) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 80:
+        return None
+    if not value.isascii() or not value.isupper():
+        return None
+    if not all(char.isalnum() or char == "_" for char in value):
+        return None
+    return value
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -529,6 +594,34 @@ def read_result(plan: InstallPlan) -> dict[str, Any] | None:
     return data
 
 
+def _failure_summary(
+    plan: InstallPlan, result: dict[str, Any]
+) -> tuple[datetime, dict[str, Any]] | None:
+    """Build the bounded frontend digest for one verified failed record."""
+    plan_id = _safe_plan_id(plan.plan_id)
+    code = _safe_failure_code(result.get("code"))
+    target = plan.target if isinstance(plan.target, dict) else None
+    target_version = target.get("version") if isinstance(target, dict) else None
+    updated_at = result.get("updated_at")
+    parsed = _bounded_record_time(updated_at)
+    if (
+        plan_id is None
+        or code is None
+        or not isinstance(target_version, str)
+        or _safety_version_key(target_version) is None
+        or parsed is None
+    ):
+        return None
+    summary = {
+        "plan_id": plan_id,
+        "target_version": target_version,
+        "status": "failed",
+        "code": code,
+        "updated_at": updated_at,
+    }
+    return parsed, summary
+
+
 def write_helper_process(plan: InstallPlan, identity: ProcessIdentity | None = None) -> None:
     identity = identity or current_process_identity()
     _atomic_json(
@@ -713,6 +806,7 @@ class InstallCoordinator:
         self._destroyer = None
         self._recovery_checked = False
         self._recovery_reason: str | None = None
+        self._last_install_failure: dict[str, Any] | None = None
         self._recovery_check()
 
     def set_destroyer(self, destroyer) -> None:
@@ -778,75 +872,155 @@ class InstallCoordinator:
         )
 
     def _scan_persistent_state(self) -> str | None:
+        self._last_install_failure = None
         root = self.install_root / "install-state"
         if not root.is_dir():
             return None
+        reason: str | None = None
+        successes: list[tuple[datetime, tuple[Any, ...]]] = []
+        failures: list[tuple[datetime, dict[str, Any]]] = []
+
+        def note(value: str) -> None:
+            nonlocal reason
+            if reason is None:
+                reason = value
+
         for state in sorted(root.iterdir()):
             if not state.is_dir():
                 continue
             try:
                 plan = load_plan(state / "install-plan.json")
             except InstallPlanError:
-                return "INSTALL_RECOVERY_RECORD_INVALID"
+                note("INSTALL_RECOVERY_RECORD_INVALID")
+                continue
+            if _safe_plan_id(plan.plan_id) is None:
+                note("INSTALL_RECOVERY_RECORD_INVALID")
+                continue
+            if state.name != plan.plan_id:
+                note("INSTALL_RECOVERY_RECORD_INVALID")
+                continue
+            if not _same_path(Path(plan.state_dir), state):
+                note("INSTALL_RECOVERY_RECORD_INVALID")
+                continue
+            if not _same_path(plan.plan_path, state / "install-plan.json"):
+                note("INSTALL_RECOVERY_RECORD_INVALID")
+                continue
+            if not _same_path(Path(plan.install_root), self.install_root):
+                note("INSTALL_RECOVERY_RECORD_INVALID")
+                continue
+            if not isinstance(plan.target, dict):
+                note("INSTALL_RECOVERY_RECORD_INVALID")
+                continue
             result_path = state / "install-result.json"
             result: dict[str, Any] | None = None
             if result_path.is_file():
                 try:
                     result = _safe_json(result_path)
                 except InstallPlanError:
-                    return "INSTALL_RECOVERY_RECORD_INVALID"
+                    note("INSTALL_RECOVERY_RECORD_INVALID")
+                    continue
                 if (
                     result.get("schema_version") != RESULT_SCHEMA
                     or result.get("plan_id") != plan.plan_id
                     or result.get("nonce") != plan.nonce
                 ):
-                    return "INSTALL_RECOVERY_RECORD_INVALID"
+                    note("INSTALL_RECOVERY_RECORD_INVALID")
+                    continue
             helper_path = state / "helper-process.json"
             if helper_path.is_file():
                 try:
                     helper_raw = _safe_json(helper_path)
                     helper = identity_from_dict(helper_raw)
                 except InstallPlanError:
-                    return "INSTALL_RECOVERY_RECORD_INVALID"
+                    note("INSTALL_RECOVERY_RECORD_INVALID")
+                    continue
                 if helper is None:
-                    return "INSTALL_RECOVERY_RECORD_INVALID"
+                    note("INSTALL_RECOVERY_RECORD_INVALID")
+                    continue
                 if process_matches(helper):
-                    return "INSTALL_HELPER_ALIVE"
+                    note("INSTALL_HELPER_ALIVE")
+                    continue
             if result is not None and result.get("status") == "success":
                 if not self._valid_success_receipt(plan, result):
-                    return "INSTALL_RECOVERY_RECEIPT_INVALID"
-                # A completed install is a legal terminal state and must not
-                # block a future update forever.  Validate against its own
-                # historical plan/target, never against the current app.
+                    note("INSTALL_RECOVERY_RECEIPT_INVALID")
+                    continue
+                success_time = _bounded_record_time(result.get("updated_at"))
+                target_key = _safety_version_key(plan.target.get("version"))
+                if success_time is None or target_key is None:
+                    note("INSTALL_RECOVERY_RECORD_INVALID")
+                    continue
+                successes.append((success_time, target_key))
                 continue
             try:
                 phases = read_phases_at(state / "phases")
             except InstallPlanError:
-                return "INSTALL_PHASE_RECORD_INVALID"
+                note("INSTALL_PHASE_RECORD_INVALID")
+                continue
             if result is None:
-                return "INSTALL_RESULT_MISSING"
-            if result.get("status") == "unknown":
-                return "INSTALL_RESULT_UNKNOWN"
-            if result.get("status") in ("failed", "revoked"):
-                unsafe = {
-                    "old_app_backed_up",
-                    "new_app_moved",
-                    "new_process_started",
-                }
-                phase_names = {item.get("phase") for item in phases}
-                switched = {"new_app_moved", "new_process_started"} & phase_names
-                # A failed directory switch that restored the unchanged old
-                # tree is a definite pre-launch failure, not an ambiguous
-                # half-install.  Only a later move/start or a missing restore
-                # record keeps the plan in needs_review.
-                if "old_app_restored" in phase_names and not switched:
-                    continue
-                if phase_names & unsafe:
-                    return "INSTALL_RESULT_NEEDS_REVIEW"
+                note("INSTALL_RESULT_MISSING")
+                continue
+            status = result.get("status")
+            if status == "unknown":
+                note("INSTALL_RESULT_UNKNOWN")
+                continue
+            if status not in ("failed", "revoked"):
+                note("INSTALL_RECOVERY_RECORD_INVALID")
+                continue
+            unsafe = {
+                "old_app_backed_up",
+                "new_app_moved",
+                "new_process_started",
+            }
+            phase_names = {item.get("phase") for item in phases}
+            switched = {"new_app_moved", "new_process_started"} & phase_names
+            # A failed directory switch that restored the unchanged old
+            # tree is a definite pre-launch failure, not an ambiguous
+            # half-install.  Only a later move/start or a missing restore
+            # record keeps the plan in needs_review.
+            if "old_app_restored" in phase_names and not switched:
+                definite = True
+            elif phase_names & unsafe:
+                note("INSTALL_RESULT_NEEDS_REVIEW")
+                continue
+            else:
                 # A definite pre-switch failure/revocation is terminal and
                 # does not block a later, separate install.
+                definite = True
+            if status == "revoked":
+                # Revocation is not an install failure and must never be
+                # echoed as one.
                 continue
-            return "INSTALL_RECOVERY_RECORD_INVALID"
+            assert definite
+            candidate = _failure_summary(plan, result)
+            if candidate is None:
+                note("INSTALL_RECOVERY_RECORD_INVALID")
+                continue
+            failures.append(candidate)
+        if reason is not None:
+            return reason
+        if failures:
+            current_key = _safety_version_key(self.identity.version)
+            eligible: list[
+                tuple[datetime, tuple[Any, ...], dict[str, Any]]
+            ] = []
+            for failure_time, summary in failures:
+                target_key = _safety_version_key(summary["target_version"])
+                if target_key is None:
+                    return "INSTALL_RECOVERY_RECORD_INVALID"
+                if current_key is not None and current_key >= target_key:
+                    # The currently installed identity already reached the
+                    # failed target; no new success record is needed.
+                    continue
+                suppressed = any(
+                    success_key >= target_key and success_time > failure_time
+                    for success_time, success_key in successes
+                )
+                if not suppressed:
+                    eligible.append((failure_time, target_key, summary))
+            if eligible:
+                self._last_install_failure = max(
+                    eligible, key=lambda item: (item[0], item[1])
+                )[2]
         return None
 
     # -- public state -----------------------------------------------------
@@ -872,15 +1046,28 @@ class InstallCoordinator:
 
     def state(self) -> dict[str, Any]:
         with self._lock:
-            self._recovery_check()
+            available = not self._busy_locked()
             result = read_result(self._plan) if self._plan is not None else None
             state = "needs_review" if self._recovery_reason else self._state
+            failure = self._last_install_failure
+            if failure is not None and self._plan is not None and self._state in (
+                "pending",
+                "bound",
+                "authorized",
+                "unknown",
+            ):
+                # A live handoff of a newer plan takes precedence over a
+                # historical failure digest.
+                failure = None
             return {
                 "install_state": state,
                 "install_plan_id": self._plan.plan_id if self._plan else None,
                 "install_result": result,
                 "install_reason": self._recovery_reason or self._reason,
-                "install_available": not self._busy_locked(),
+                "install_available": available,
+                "last_install_failure": (
+                    dict(failure) if failure is not None else None
+                ),
             }
 
     # -- close lifecycle --------------------------------------------------
@@ -928,6 +1115,7 @@ class InstallCoordinator:
                     "message": exc.message,
                 }
             self._plan = plan
+            self._last_install_failure = None
             self._state = "pending"
             self._awaiting_close = True
             self._arm_deadline = time.monotonic() + ARM_GRACE_SECONDS

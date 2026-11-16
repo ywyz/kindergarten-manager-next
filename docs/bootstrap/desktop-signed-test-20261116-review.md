@@ -94,3 +94,19 @@ Codex 在新建 `codex-public-review-r01` 证据目录重新下载全部公开�
 重新下载的 Setup 及解包主入口均为原 Certum 证书 `Valid` 且有时间戳。以冻结源码的生产解析器及原嵌入公钥验证 Ed25519 清单、Release tag／包 URL／版本绑定、ZIP 整体大小与摘要、安全解包与全文件清单均通过；包内与原审核 stage 比较，348 个既有文件字节不变，仅新增 `_internal/package_manifest.json`。来源数据库 revision 与目标仍同为 `20261112_0021_local_term_name_changes`。
 
 公开 Release 列表经生产解析器处理，从 `20261115` 选择完整 `20261116`；以 `20261116` 为已安装版本返回无更新。此为真实公开资产的发现／下载／解析验证，未启动冻结应用的更新界面、未执行安装器或 helper 替换／重启，不声称已到 GUI `ready` 或完成真实更新。教师真机安装、关闭保存保护、替换后重启及数据保留仍待实际反馈。本次 Codex 未签名、解密私钥、改远端资产或调用真实 AI。
+
+## 默认安装路径的实机更新失败
+
+北京时间 2026-11-16 20:05，用户亲自尝试本机在线更新：应用关闭，重新打开仍未更新，也未看到明确错误。应用户请求调用 Computer Use，枚举只见对话应用，没有可检查的幼儿园窗口；系统进程核对亦无 app/helper。因此本轮没有取得失败 UI 截图，不将文件分析冒作界面验收。
+
+只读核对实际安装根的最新更新计划 `597c2d5aacac4a6392fee727a627ece7`：阶段依次到达 `authorized`、`old_process_exited`、`data_released`，随后在 20:05:32 记录 `failed/INSTALL_PACKAGE_INVALID`，没有 `package_reverified`、旧目录备份或新目录移动阶段，也没有该计划的备份目录。当前应用身份仍是 `20261115`。安装根的既有 348 个应用文件与此前签名 bundle 字节相同，另有 3 个既有／来源未归因的附加文件，未删除或宣称其由本次更新产生；真实业务数据不作修复写入。
+
+实际 ZIP 为 46,181,471 字节，SHA-256 仍是 `053dcf1cdc01cdd8429736a923d8ad012c16cc884f03a0b1cd9af7b3f7f524c5`，和公开发布相同。349 条 ZIP 文件按中央目录顺序，实际只完整解出连续前 316 条，字节均与已审包一致；剩余连续 33 条全部缺失。首个未解出项为 `licenses/redistribution/python/pyinstaller-hooks-contrib-2026.9/pyinstaller_hooks_contrib-2026.9.dist-info/licenses/LICENSE`，在实际 `install-state/<plan>/verified/KindergartenManager` 下的完整目标路径长 270 个 UTF-16 单元。
+
+实际 helper 的 77 个文件与 `20261115` 签名更新器完全一致，主 EXE SHA-256 为 `2c2ecfeb7d4b8980708f0209e6563b5681bd7864aeaad7b9d979128777e8159c`；其清单已有 `longPathAware=true`，不能归因为漏加该标志。系统当前 `LongPathsEnabled=0`；Windows 新长路径行为需要进程清单和系统选项共同满足，目录创建还存在传统路径限制，见[微软路径长度说明](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation)。本轮只读，不改系统设置。
+
+在独立新根 `KGNext-Update-Diagnosis-20261116-r01`，使用原发行公钥、已下载公开 ZIP 和冻结源码的生产 `verify_package_zip`，把合成校验根长度设为与实机相同的 126 单元；实际复现 `FileNotFoundError / WinError 206`，发生在同一许可证的父目录创建，仍恰好解出连续前 316 项。原失败目录的状态／计划／阶段文件指纹前后相同。此为源码函数在实际 Windows 文件系统的隔离复现，没有再次执行冻结 helper、真实安装计划或旧应用。
+
+根因是当前发布包许可证路径过深，在默认安装与二次校验布局下触发路径限制。此前公开包验签使用较短校验根，因此证明了内容和信任，却遗漏了实际安装根长度条件。更新器把未带业务 code 的文件系统异常折叠为 `INSTALL_PACKAGE_INVALID`，没有保留 WinError；重开恢复逻辑把确定的替换前失败当终态放行，本轮没有 UI 证据说明何处显示过错误，用户反馈未看到提示保持为未通过项。
+
+修复要求：缩短许可副本路径且保留全部许可文本及索引对应；用实际默认更新路径和未启用长路径的系统条件验证完整二次解包；补充可定位而不泄露凭据的失败记录及重开提示。不可改注册表、缩短教师安装根、删除失败目录或盲目重试代替产品修复。当前诊断与复现完成，产品修复／新包／实际安装替换和重启尚未通过；原 `20261116` 完整发布不冒作更新成功。

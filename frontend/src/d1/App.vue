@@ -31,7 +31,7 @@ import {
   type LeaveEditor,
   type SaveOutcome,
 } from './leave'
-import { isUpdateBusy, type UpdateChannel, type UpdateStatus } from './update'
+import { effectiveInstallFailure, isUpdateBusy, type UpdateChannel, type UpdateStatus } from './update'
 import type { AiTaskList, LocalContext } from './types'
 import type { ObservationListItem } from './observation'
 import { isLiveTask } from './ai'
@@ -315,6 +315,8 @@ const installError = ref('')
 let updatePollTimer: ReturnType<typeof setTimeout> | null = null
 let updateSeq = 0
 let updateStartupPending = false
+/** One proactive failed-install prompt per plan per window session. */
+const promptedInstallFailurePlans = new Set<string>()
 const activeCloseId = ref<string | null>(null)
 /**
  * Resolution of each close attempt, keyed by request id. A late reply or a
@@ -1815,10 +1817,41 @@ function clearUpdatePoll(): void {
   }
 }
 
+function preserveInstallFailure(
+  next: UpdateStatus,
+  previous: UpdateStatus | null,
+): UpdateStatus {
+  if (
+    !Object.prototype.hasOwnProperty.call(next, 'last_install_failure')
+    && previous?.last_install_failure
+  ) {
+    return {
+      ...next,
+      last_install_failure: previous.last_install_failure,
+    }
+  }
+  return next
+}
+
+function maybePromptInstallFailure(status: UpdateStatus | null): void {
+  const failure = effectiveInstallFailure(status)
+  if (!failure) return
+  if (promptedInstallFailurePlans.has(failure.plan_id)) return
+  promptedInstallFailurePlans.add(failure.plan_id)
+  // Reuse the existing panel; opening it never starts a download, retry,
+  // close or install by itself.
+  updateOpen.value = true
+}
+
 function applyUpdateStatus(next: unknown, seq: number): void {
   if (seq !== updateSeq) return
   if (!next || typeof next !== 'object') return
-  updateStatus.value = next as UpdateStatus
+  const merged = preserveInstallFailure(
+    next as UpdateStatus,
+    updateStatus.value,
+  )
+  updateStatus.value = merged
+  maybePromptInstallFailure(merged)
 }
 
 function scheduleUpdatePoll(): void {
@@ -1835,8 +1868,8 @@ function scheduleUpdatePoll(): void {
   }, 400)
 }
 
-async function refreshUpdateStatus(): Promise<void> {
-  if (updateSwitching.value) return
+async function refreshUpdateStatus(): Promise<number | null> {
+  if (updateSwitching.value) return null
   const seq = ++updateSeq
   try {
     const next = await hostGlobal()?.api?.get_update_state?.()
@@ -1850,6 +1883,7 @@ async function refreshUpdateStatus(): Promise<void> {
     // state and let the next poll/manual check retry.
   }
   if (seq === updateSeq) scheduleUpdatePoll()
+  return seq === updateSeq ? seq : null
 }
 
 async function checkForUpdate(manual: boolean): Promise<void> {
@@ -1871,14 +1905,30 @@ async function checkForUpdate(manual: boolean): Promise<void> {
   } catch {
     if (seq !== updateSeq) return
     updateStartupPending = false
+    // A network/check failure must not hide a local failed-install digest.
+    // Read the host's local snapshot once; if that also fails, keep the last
+    // bounded status rather than inventing a fresh one.
+    let local: UpdateStatus | null = null
+    try {
+      const raw = await hostGlobal()?.api?.get_update_state?.()
+      if (raw && typeof raw === 'object') local = raw as UpdateStatus
+    } catch {
+      local = null
+    }
+    if (seq !== updateSeq) return
+    const base = preserveInstallFailure(
+      local ?? updateStatus.value ?? ({} as UpdateStatus),
+      updateStatus.value,
+    )
     updateStatus.value = {
-      ...(updateStatus.value ?? {}),
+      ...base,
       state: 'failed',
       reason: 'UPDATE_CHECK_FAILED',
       error_code: 'UPDATE_CHECK_FAILED',
       error_message: '检查更新失败',
       install_available: false,
     } as UpdateStatus
+    maybePromptInstallFailure(updateStatus.value)
     updateOpen.value = true
   } finally {
     updateChecking.value = false
@@ -1888,11 +1938,31 @@ async function checkForUpdate(manual: boolean): Promise<void> {
 
 function openUpdateManual(): void {
   updateOpen.value = true
+  maybePromptInstallFailure(updateStatus.value)
   if (updateStatus.value?.state === 'idle' || updateStatus.value === null) {
     void checkForUpdate(true)
   } else {
     void refreshUpdateStatus()
   }
+}
+
+/**
+ * Read the authoritative local status before starting network discovery. The
+ * local failed-install digest must become visible even when discovery later
+ * returns an ordinary failed object (without a digest) or never completes.
+ */
+async function startupUpdateRecovery(): Promise<void> {
+  let localSeq: number | null = null
+  try {
+    localSeq = await refreshUpdateStatus()
+  } catch {
+    localSeq = null
+  }
+  // Do not start a stale startup discovery after unmount or after a newer
+  // manual/channel operation has superseded the local read.
+  if (!pageBusyAlive) return
+  if (localSeq === null || updateSeq !== localSeq) return
+  void checkForUpdate(false)
 }
 
 async function downloadUpdate(): Promise<void> {
@@ -1913,6 +1983,7 @@ async function downloadUpdate(): Promise<void> {
       error_message: '下载更新失败',
       install_available: false,
     } as UpdateStatus
+    maybePromptInstallFailure(updateStatus.value)
   }
   if (seq === updateSeq) scheduleUpdatePoll()
 }
@@ -2002,6 +2073,7 @@ async function switchUpdateChannel(channel: UpdateChannel): Promise<void> {
   } finally {
     updateSwitching.value = false
   }
+  maybePromptInstallFailure(updateStatus.value)
   if (seq === updateSeq) scheduleUpdatePoll()
 }
 
@@ -2099,9 +2171,11 @@ async function bootstrap(): Promise<void> {
         page_ticket: pageTicket || undefined,
       })
       ?.catch(() => undefined)
-    // Startup check is non-blocking; a missing/unconfigured channel or a
-    // network failure never prevents opening the workbench.
-    void checkForUpdate(false)
+    // Read the local authoritative status (including any failed-install
+    // digest) first, then start non-blocking network discovery. Neither a
+    // normal failed check object nor a delayed/failed discovery may hide the
+    // local digest or prevent the workbench from opening.
+    void startupUpdateRecovery()
   } catch (err) {
     bootState.value = 'error'
     if (err instanceof ApiError) {
@@ -2157,6 +2231,7 @@ onMounted(() => {
     }),
     updateState: () => updateStatus.value,
     updateOpen: () => updateOpen.value,
+    updatePollActive: () => updatePollTimer !== null,
     closeUpdate: () => {
       updateOpen.value = false
     },

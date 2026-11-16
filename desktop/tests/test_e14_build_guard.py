@@ -1016,6 +1016,7 @@ def test_source_freeze_contains_every_migration_and_env():
         "backend/migrations_local/versions/"
         "20261108_0016_local_listening_goal_suggest.py"
     ) in paths
+    assert "desktop/release_license_layout.py" in paths
 
 
 def _write_synthetic_migration(path: Path, revision: str, down: object) -> None:
@@ -1372,6 +1373,8 @@ def test_build_package_excludes_optional_sqlalchemy_cyextensions(monkeypatch, tm
     command = commands[0]
     pairs = set(zip(command, command[1:]))
     for module in build_e14.SQLALCHEMY_CYEXTENSION_MODULES:
+        assert ("--exclude-module", module) in pairs, module
+    for module in build_e14.LXML_EXCLUDED_MODULES:
         assert ("--exclude-module", module) in pairs, module
     separator = build_e14.os_sep()
     assert (

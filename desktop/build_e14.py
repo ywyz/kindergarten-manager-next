@@ -112,6 +112,11 @@ SQLALCHEMY_CYEXTENSION_MODULES = (
 )
 SQLALCHEMY_COMPILED_SUFFIXES = (".pyd", ".dll")
 
+# lxml is required for OOXML point edits, but its optional Schematron validator
+# is unused by product code and ships no needed runtime data. Excluding only
+# this module avoids collecting its long nested resource paths.
+LXML_EXCLUDED_MODULES = ("lxml.isoschematron",)
+
 # Never write into these roots. ``desktop-e14`` and ``desktop-e14-r02`` are
 # preserved candidates; ``desktop-e14-r03`` and later suffixed roots are the
 # only allowed build-root family.
@@ -176,6 +181,7 @@ SOURCE_GROUPS: dict[str, tuple[str, ...]] = {
         "desktop/e14_online_integration_test_hook.py",
         "desktop/build_d0.py",
         "desktop/verify_e14_package.py",
+        "desktop/release_license_layout.py",
         "desktop/requirements-d1.in",
         "desktop/requirements-d1.lock.txt",
         "desktop/requirements-d1-build-constraints.txt",
@@ -781,6 +787,8 @@ def build_package(
         "PIL",
     ]
     for module in SQLALCHEMY_CYEXTENSION_MODULES:
+        command.extend(["--exclude-module", module])
+    for module in LXML_EXCLUDED_MODULES:
         command.extend(["--exclude-module", module])
     if runtime_hook is not None:
         hook_path = Path(runtime_hook)

@@ -52,6 +52,14 @@ export interface UpdateProgress {
   percent: number
 }
 
+export interface LastInstallFailure {
+  plan_id: string
+  target_version: string
+  status: 'failed'
+  code: string
+  updated_at: string
+}
+
 export interface UpdateStatus {
   state: UpdateState
   reason: string | null
@@ -63,6 +71,8 @@ export interface UpdateStatus {
   error_message: string | null
   /** True only when the host has a verified package ready to install. */
   install_available: boolean
+  /** Bounded, path-free digest of the latest verified install failure. */
+  last_install_failure?: LastInstallFailure | null
   download_available?: boolean
   allow_install?: boolean
   install_block_reason?: string | null
@@ -91,6 +101,7 @@ export const EMPTY_UPDATE_STATUS: UpdateStatus = {
   error_code: null,
   error_message: null,
   install_available: false,
+  last_install_failure: null,
   download_id: null,
   install_block_reason: null,
   check_channel: 'stable',
@@ -138,6 +149,42 @@ export function updateStateLabel(status: UpdateStatus | null): string {
 
 export function isUpdateBusy(status: UpdateStatus | null): boolean {
   return ['checking', 'downloading', 'verifying'].includes(status?.state ?? '')
+}
+
+/**
+ * A bounded failure digest is shown only when it is a verified failed install
+ * for a target the current application has not already reached. It remains
+ * independent from the current discovery/download state.
+ */
+export function effectiveInstallFailure(
+  status: UpdateStatus | null,
+): LastInstallFailure | null {
+  const failure = status?.last_install_failure
+  if (
+    !failure
+    || failure.status !== 'failed'
+    || !failure.plan_id
+    || !failure.target_version
+    || !failure.code
+  ) {
+    return null
+  }
+  const currentVersion = status?.current?.version
+  if (currentVersion && currentVersion === failure.target_version) return null
+  return failure
+}
+
+export function installFailureReason(code: string): string {
+  switch (code) {
+    case 'INSTALL_PACKAGE_PATH_TOO_LONG':
+      return '更新包路径过长，更新未完成；请等待修复版，不需要修改注册表或更换安装位置。'
+    case 'INSTALL_PACKAGE_IO_ERROR':
+      return '更新包读取或解压失败，更新未完成；请先重新检查更新或使用完整安装包，避免反复安装同一个包。'
+    case 'INSTALL_PACKAGE_INVALID':
+      return '更新包内容校验不通过，更新未完成；请先重新检查更新或使用完整安装包。'
+    default:
+      return '上次安装未完成；请查看错误代码并重新检查更新后再决定，不要盲目重复安装。'
+  }
 }
 
 export function canCheckUpdate(status: UpdateStatus | null): boolean {

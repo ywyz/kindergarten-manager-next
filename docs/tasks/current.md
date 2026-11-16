@@ -1,5 +1,21 @@
 # 当前任务
 
+## 2026-11-16 续授权：修复后构建、签名并发布新预览
+
+用户明确授权调用原 OpenCode／Command Code 修复，Codex 审核后完成打包、签名及上传，继续测试。本轮执行及审核结果见[更新失败修复审核](../bootstrap/desktop-update-fix-20261117-review.md)。本轮新版本为递增预览 `0.1.0-listening-test.20261117`（发布时间按实际记录），新建独立 `KGNext-UpdateFix-20261117` 证据／构建根。原 `20261116`、真实失败计划、原安装及 data／credentials 保留，不自动在教师根安装；同根长路径条件及完整更新交接使用独立合成根验证。此次授权覆盖上一节仅诊断范围及上轮用户手动签名／上传安排，不扩展为 main 合并、依赖升级、真实 AI 或删除旧 Release。
+
+互斥责任（仅原会话，DeepSeek V4.1 Flash max，不 fork）：A／OpenCode 独占 `desktop/update_helper.py`、`desktop/update_install.py`、`desktop/tests/test_update_failure_recovery.py`，负责文件系统失败分类与持久失败回显，原关闭／未知保护保持；B／OpenCode 独占 `frontend/src/d1/update.ts`、`frontend/src/d1/views/UpdatePanel.vue`、`frontend/src/d1/App.vue`、`frontend/src/d1/d1.update.test.mjs`，负责中文失败展示、重开提示及前端验证；C／Command Code 独占新 `desktop/release_license_layout.py`、`desktop/tests/test_release_license_layout.py`，并仅为冻结该模块更新 `desktop/build_e14.py` 的构建输入清单，并针对完整路径预算排除未使用的 `lxml.isoschematron` 打包资源（保留实际 XML／Word 能力），以及必要的 `desktop/tests/test_e14_build_guard.py` 断言，另含本轮仓外 `C-release-tools/`，负责完整许可文本的短路径布局、索引及发布路径门槛；B 前端审核结束后另独占仓外 `B-tools/` 及后续明确 SHA 的新冻结 worktree 依赖副本／构建根，先准备已审构建工具适配，再由具体门禁执行；D／Command Code 仅写仓外 `D-tools/` 合成旧 helper 交接工具及其独立合成根，不与 B 并写构建源或产物。Codex 独占规格／审核文档、独立验证、签名及发行管理；A 仅收到具体文件／blob／parent／tree 门禁后普通提交推送。任何越界新增文件先交 Codex 分配，不能交叉写、还原他方修改。
+
+前后端新增只读 `last_install_failure` 摘要合同：`{plan_id,target_version,status:'failed',code,updated_at}` 或 null；不含 nonce、绝对路径、凭据或原始异常文本。只回显经身份核验的确定失败，未知／损坏／在途继续原保护；最新有效成功或当前已达到该失败目标时不继续冒作本次失败。历史失败回显不能自动发起重试／关闭／安装，也不能阻塞后续合法更新。路径过长使用稳定码 `INSTALL_PACKAGE_PATH_TOO_LONG`，一般 IO 失败保留可定位的有界本地诊断。各实现完成后逐项独立审核，有问题退回原责任者；发布前必须核对签名产物、完整资产和实际受管根更新链路。
+
+## 2026-11-16 20:05 实机反馈：在线更新解包失败，根因已复现
+
+用户反馈应用确认更新后自动关闭，重新打开仍是旧版且没有明确错误提示。Computer Use 未发现目标窗口，进程核对也无 app/helper；只读检查最新更新状态确认已完成旧进程退出及数据占用释放，在包复验阶段以 `INSTALL_PACKAGE_INVALID` 失败，未发生程序目录替换。当前仍为 `20261115`。这更新了下节“等待真机反馈”的状态，不撤销公开附件下载／验签通过的事实。
+
+失败 ZIP 大小／摘要与公开包相同。按 ZIP 顺序完整解出前 316 项，第 317 项许可证在实际校验根下完整路径为 270 个 UTF-16 单元；剩余 33 项均未解出。系统 `LongPathsEnabled=0`，实际 helper 与既有 `20261115` 签名 bundle 的 77 文件完全一致。使用生产 ZIP 验证函数、同长度路径、独立新合成目录复现 `WinError 206`，同样停在第 317 项；原失败状态指纹不变。详见[本轮实机失败记录](../bootstrap/desktop-signed-test-20261116-review.md#默认安装路径的实机更新失败)。
+
+下一修复范围：压短发布包许可目录并保持法律文本及索引完整；把实际默认安装／二次解包路径纳入发行门槛，覆盖未启用系统长路径的条件；补齐解包异常的可定位记录和重开后的失败提示。修复须由原实现者在明确互斥责任内完成，Codex 独立审核；不能要求教师改注册表或换安装位置来替代修复。用户此步要求查看故障，本轮完成诊断和独立复现，尚未修改产品／构建脚本、重签、重发或重试实际安装。保留原程序、业务数据和首失败现场，旧包实际更新未通过，不写成已修复。
+
 ## 2026-11-16 续：完整在线更新版已发布，等待真机更新反馈
 
 用户已亲自制作、签名并于北京时间 2026-11-16 19:52:36 公开发布[完整预览版 `v0.1.0-listening-test.20261116`](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261116)，Release ID `446972237`，预发布、非 Latest。四附件为签名 Setup、在线更新 ZIP、Ed25519 签名清单和 SHA256SUMS；tag 指向原冻结 `ddd97086a8c784c5c33bf390bab903f5b9f36f58`。原 `-manual` Release 保留。

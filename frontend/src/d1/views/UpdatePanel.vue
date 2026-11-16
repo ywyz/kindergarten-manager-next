@@ -12,7 +12,9 @@ import {
   canInstallUpdate,
   canRetryUpdate,
   canSwitchUpdateChannel,
+  effectiveInstallFailure,
   formatBytes,
+  installFailureReason,
   isUpdateBusy,
   updateChannelLabel,
   updateChannelNotice,
@@ -68,6 +70,14 @@ const stateLabel = computed(() => updateStateLabel(props.status))
 const errorText = computed(() => updateErrorText(props.status))
 const progressText = computed(() => updateProgressText(props.status))
 const progressPercent = computed(() => props.status?.progress.percent ?? 0)
+const lastInstallFailure = computed(() =>
+  effectiveInstallFailure(props.status),
+)
+const lastInstallFailureReason = computed(() =>
+  lastInstallFailure.value
+    ? installFailureReason(lastInstallFailure.value.code)
+    : '',
+)
 const showError = computed(() => props.status?.state === 'failed')
 const showNoRelease = computed(() => props.status?.state === 'no_release')
 const showIncomplete = computed(() => props.status?.state === 'incomplete')
@@ -219,6 +229,26 @@ function requestChannel(value: string | number | boolean | undefined): void {
             </table>
           </div>
         </div>
+
+        <el-alert
+          v-if="lastInstallFailure"
+          type="warning"
+          :closable="false"
+          class="section"
+          data-d1="update-last-install-failure"
+          title="上次更新未完成"
+        >
+          <p data-d1="update-last-install-failure-summary">
+            目标版本 <strong>v{{ lastInstallFailure.target_version }}</strong>
+            · 当前版本 <strong>v{{ currentVersion }}</strong>
+          </p>
+          <p data-d1="update-last-install-failure-reason">
+            {{ lastInstallFailureReason }}
+          </p>
+          <p class="muted" data-d1="update-last-install-failure-code">
+            代码：{{ lastInstallFailure.code }}
+          </p>
+        </el-alert>
 
         <el-alert
           v-if="showUnconfigured"
