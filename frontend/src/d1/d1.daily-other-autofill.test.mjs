@@ -224,7 +224,7 @@ const candidateSource = fs.readFileSync(path.join(d1Dir, 'views', 'CandidatePrev
     assert.ok(afterAwait.includes(guard), `fill re-checks ${guard} after the GET`)
   }
   const recheckIndex = afterAwait.indexOf('// Re-check every live write guard')
-  const applyIndex = afterAwait.indexOf('applyOtherGeneratedCandidate(detail, boards)')
+  const applyIndex = afterAwait.indexOf('applyOtherGeneratedCandidate(detail, boards, pending.targetSection ?? null)')
   assert.ok(recheckIndex >= 0 && applyIndex > recheckIndex, 'write guards are re-checked before applying')
   for (const guard of [
     'dirty.value',
@@ -262,7 +262,11 @@ const candidateSource = fs.readFileSync(path.join(d1Dir, 'views', 'CandidatePrev
     /putTask\(recovered\)[\s\S]{0,200}trackAcceptedTask\(recovered\)/,
     'query-recovered acceptance is tracked',
   )
-  assert.match(panelSource, /if \(seenLiveTasks\.has\(task\.id\)\) announceOtherTask\(task\)/, 'refresh announces only tracked/accepted tasks')
+  assert.match(
+    panelSource,
+    /if \(!seenLiveTasks\.has\(task\.id\)\) continue[\s\S]{0,240}daily_other_activities'\) announceOtherTask\(task\)/,
+    'refresh announces only tracked/accepted tasks',
+  )
   const refreshBlock = panelSource.slice(
     panelSource.indexOf('for (const task of collected)'),
     panelSource.indexOf('// Stable wait start per live task'),

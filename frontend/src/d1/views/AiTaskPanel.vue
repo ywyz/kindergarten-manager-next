@@ -16,7 +16,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiGet, apiPost, ApiError, pathSegment } from '../client'
 import { isIndeterminate, queryAiReceipt, receiptMessage } from '../operations'
 import type { SaveOutcome } from '../leave'
-import type { AiTask, AiTaskList, AiTaskProgress, Grade, PromptList, SplitAdaptContinuation, TaskType } from '../types'
+import type { AiTask, AiTaskList, AiTaskProgress, Grade, OtherSection, PromptList, SplitAdaptContinuation, TaskType } from '../types'
 import {
   TASK_TYPES,
   TASK_TYPE_HINTS,
@@ -24,6 +24,7 @@ import {
   actionLabel,
   describeCalendarWarning,
   isLiveTask,
+  otherSectionLabel,
   taskReasonLabel,
   taskStatusLabel,
 } from '../ai'
@@ -56,12 +57,17 @@ const props = defineProps<{
    * and errors at their field anchors; task state stays in this single panel.
    */
   generationTarget?: HTMLElement | null
+  /** The single task/history panel is shown as a modal when true. */
+  dialogOpen?: boolean
+  /** The daily editor renders four independent section entries itself. */
+  hideOtherRow?: boolean
 }>()
 
 const emit = defineEmits<{
-  (e: 'open-candidate', candidateId: string, taskType: TaskType): void
+  (e: 'open-candidate', candidateId: string, taskType: TaskType, targetSection?: OtherSection | null): void
   (e: 'open-guidance', taskType: TaskType): void
   (e: 'draft-active', active: boolean): void
+  (e: 'update:dialogOpen', value: boolean): void
   /**
    * A task accepted by this page (create or query recovery), or one observed
    * live here, has succeeded with a candidate. Used for direct-filling the
@@ -69,11 +75,15 @@ const emit = defineEmits<{
    * (background page reopen) is never announced.
    */
   (e: 'other-generated', task: AiTask): void
+  (e: 'split-generated', task: AiTask): void
+  (e: 'adapt-updated', task: AiTask): void
   (e: 'reflection-updated', task: AiTask): void
   /** A teacher-started task from the left generation group. */
   (e: 'action-start', taskType: TaskType): void
   /** Explicit "go to this column" action; never forced by an async reply. */
   (e: 'locate-task', taskType: TaskType): void
+  (e: 'open-section-ai', section: OtherSection): void
+  (e: 'open-reflection-ai'): void
 }>()
 
 const GRADE_LABELS: Record<Grade, string> = { small: '小班', middle: '中班', large: '大班' }
@@ -82,7 +92,7 @@ const PAGE_LIMIT = 100
 const rowTargets = computed<Record<TaskType, HTMLElement | null>>(() => ({
   daily_lesson_split: props.splitTarget ?? null,
   daily_process_adapt: props.processTarget ?? null,
-  daily_other_activities: props.otherTarget ?? null,
+  daily_other_activities: props.hideOtherRow ? null : props.otherTarget ?? null,
   daily_reflection_generate: null,
 }))
 
@@ -136,9 +146,12 @@ const progressTerminalAt = ref<Record<string, number>>({})
 const progressClosingFetched = new Set<string>()
 const pendingSince = ref<Record<string, number>>({})
 const lastTaskStatus = ref<Record<string, string>>({})
-/** Tasks accepted or observed live in this panel mount; initial success is not. */
+/** Tasks this panel accepted by create or receipt recovery in this mount. */
 const seenLiveTasks = new Set<string>()
 const announcedOtherCandidates = new Set<string>()
+const announcedSplitCandidates = new Set<string>()
+const otherSection = ref<OtherSection | null>(null)
+const otherInstruction = ref('')
 
 const TERMINAL_PROGRESS_PHASES = [
   'completed',
@@ -510,6 +523,19 @@ function announceOtherTask(task: AiTask): void {
   emit('other-generated', task)
 }
 
+function announceSplitTask(task: AiTask): void {
+  if (
+    task.task_type !== 'daily_lesson_split' ||
+    task.status !== 'succeeded' ||
+    !task.candidate_id ||
+    announcedSplitCandidates.has(task.id)
+  ) {
+    return
+  }
+  announcedSplitCandidates.add(task.id)
+  emit('split-generated', task)
+}
+
 /**
  * A successful create/recovery response is an acceptance by *this page*, even
  * when the task is already succeeded before the first refresh. Mark it before
@@ -517,9 +543,16 @@ function announceOtherTask(task: AiTask): void {
  * historical succeeded row loaded at mount never passes through here.
  */
 function trackAcceptedTask(task: AiTask): void {
-  if (task.task_type !== 'daily_other_activities') return
-  seenLiveTasks.add(task.id)
-  announceOtherTask(task)
+  if (task.task_type === 'daily_other_activities') {
+    seenLiveTasks.add(task.id)
+    announceOtherTask(task)
+  } else if (task.task_type === 'daily_lesson_split') {
+    seenLiveTasks.add(task.id)
+    announceSplitTask(task)
+  } else if (task.task_type === 'daily_process_adapt') {
+    seenLiveTasks.add(task.id)
+    emit('adapt-updated', task)
+  }
 }
 
 function requestId(): string {
@@ -550,16 +583,21 @@ async function refresh(): Promise<void> {
     const reflection = collected.find((task) => task.id === observedReflectionTaskId.value
       && task.plan_id === props.planId && task.task_type === 'daily_reflection_generate')
     if (reflection) emit('reflection-updated', reflection)
-    // Direct-fill only for a task this panel actually watched transition from
-    // live to succeeded. A page reopened after completion has no live
-    // observation and must not overwrite the freshly loaded draft.
+    // Direct-fill / follow-up only for a task this page itself accepted
+    // (create or receipt recovery), never for a live row merely loaded from
+    // history. A page reopened on an old running task must not gain automatic
+    // chain rights from read-only polling.
     for (const task of collected) {
-      if (task.task_type !== 'daily_other_activities') continue
       if (isLiveTask(task)) {
-        seenLiveTasks.add(task.id)
+        if (task.task_type === 'daily_process_adapt') emit('adapt-updated', task)
         continue
       }
-      if (seenLiveTasks.has(task.id)) announceOtherTask(task)
+      if (!seenLiveTasks.has(task.id)) continue
+      if (task.task_type === 'daily_other_activities') announceOtherTask(task)
+      else if (task.task_type === 'daily_lesson_split') announceSplitTask(task)
+      else if (task.task_type === 'daily_process_adapt') {
+        emit('adapt-updated', task)
+      }
     }
     // Stable wait start per live task/execution/attempt: a missing progress
     // snapshot must not reset the visible elapsed time on every render.
@@ -672,7 +710,10 @@ async function loadGuidanceStatus(): Promise<void> {
   }
 }
 
-function blockedReason(taskType: TaskType): string | null {
+function blockedReason(
+  taskType: TaskType,
+  targetSection: OtherSection | null = null,
+): string | null {
   if (props.frozen) return '窗口正在关闭，暂不能发起新的 AI 任务'
   if (pendingCreates.value[taskType]) return '存在未决提交：请先查询提交结果'
   if (taskType === 'daily_lesson_split' && !props.hasRaw) {
@@ -687,7 +728,7 @@ function blockedReason(taskType: TaskType): string | null {
   const existing = tasks.value.find(
     (task) => task.task_type === taskType && isLiveTask(task),
   )
-  if (existing) return '该类型已有任务进行中'
+  if (existing) return '该类型已有任务进行中：请先查询或等待当前任务结束'
   return null
 }
 
@@ -695,7 +736,7 @@ async function submitCreate(
   taskType: TaskType,
   requestIdValue: string,
   body: Record<string, unknown>,
-): Promise<boolean> {
+): Promise<AiTask | null> {
   try {
     const created = await apiPost<AiTask>(
       `/api/daily-plans/${pathSegment(props.planId)}/ai-tasks`,
@@ -705,7 +746,7 @@ async function submitCreate(
     trackAcceptedTask(created)
     void fetchProgress()
     schedulePoll()
-    return true
+    return created
   } catch (err) {
     if (isIndeterminate(err)) {
       // Keep the complete original context; never rebuild or re-key.
@@ -714,17 +755,27 @@ async function submitCreate(
         ...createError.value,
         [taskType]: '提交结果未知：请查询提交结果，或用同一请求 ID 与请求体重试原提交',
       }
-      return false
+      return null
     }
     handleCreateError(taskType, err)
-    return false
+    return null
   }
 }
 
-async function trigger(taskType: TaskType): Promise<void> {
+interface TriggerOptions {
+  targetSection?: OtherSection | null
+  instruction?: string
+}
+
+async function trigger(
+  taskType: TaskType,
+  options: TriggerOptions = {},
+): Promise<void> {
   // The teacher clicked a visible generation entry: expose its section/state
   // before any await so a slow save, blocked reason or async error stays in
   // context. This is a UI notification only; guards and callbacks are unchanged.
+  otherSection.value = options.targetSection ?? null
+  otherInstruction.value = options.instruction ?? ''
   emit('action-start', taskType)
   if (creating.value[taskType]) return
   if (pendingCreates.value[taskType]) {
@@ -734,7 +785,7 @@ async function trigger(taskType: TaskType): Promise<void> {
     }
     return
   }
-  const blocked = blockedReason(taskType)
+  const blocked = blockedReason(taskType, options.targetSection ?? null)
   if (blocked) {
     createError.value = { ...createError.value, [taskType]: blocked }
     return
@@ -765,11 +816,17 @@ async function trigger(taskType: TaskType): Promise<void> {
       return
     }
     const rid = requestId()
-    const body = {
+    const body: Record<string, unknown> = {
       request_id: rid,
       task_type: taskType,
       expected_content_version: props.contentVersion,
       target_grade: targetGrade.value,
+    }
+    if (taskType === 'daily_other_activities' && options.targetSection) {
+      body.target_section = options.targetSection
+    }
+    if (taskType === 'daily_other_activities' && options.instruction?.trim()) {
+      body.revision_instruction = options.instruction.trim()
     }
     await submitCreate(taskType, rid, body)
   } finally {
@@ -777,21 +834,38 @@ async function trigger(taskType: TaskType): Promise<void> {
   }
 }
 
-/** Continue from the exact saved split; never save newer edits or retry here. */
+async function triggerOtherSection(
+  section: OtherSection,
+  instruction = '',
+): Promise<void> {
+  await trigger('daily_other_activities', {
+    targetSection: section,
+    instruction,
+  })
+}
+
+/** Continue directly from an unsaved split candidate; never save it first. */
 async function continueAfterSplit(
   input: SplitAdaptContinuation,
   isCurrent: () => boolean,
-): Promise<boolean> {
+): Promise<AiTask | null> {
   const taskType = 'daily_process_adapt'
   if (
-    !active || creating.value[taskType] || !isCurrent()
+    !active || creating.value[taskType] || pendingCreates.value[taskType]
+    || !isCurrent()
     || props.planId !== input.planId || props.contentVersion !== input.contentVersion
-  ) return false
-  const blocked = blockedReason(taskType)
-  if (blocked) {
-    createError.value = { ...createError.value, [taskType]: blocked }
-    return false
+  ) return null
+  const existing = tasks.value.find(
+    (task) => task.task_type === taskType && isLiveTask(task),
+  )
+  if (existing) {
+    createError.value = {
+      ...createError.value,
+      [taskType]: '已有一个适龄任务进行中：请先查询原任务',
+    }
+    return null
   }
+  if (props.frozen) return null
   creating.value = { ...creating.value, [taskType]: true }
   createError.value = { ...createError.value, [taskType]: '' }
   try {
@@ -801,6 +875,7 @@ async function continueAfterSplit(
       task_type: taskType,
       expected_content_version: input.contentVersion,
       target_grade: input.targetGrade,
+      source_candidate_id: input.sourceCandidateId,
     })
   } finally {
     creating.value = { ...creating.value, [taskType]: false }
@@ -1009,7 +1084,16 @@ function handleActionError(taskId: string, err: unknown): void {
 }
 
 function viewCandidate(task: AiTask): void {
-  if (task.candidate_id) emit('open-candidate', task.candidate_id, task.task_type)
+  if (task.candidate_id) {
+    emit(
+      'open-candidate',
+      task.candidate_id,
+      task.task_type,
+      task.task_type === 'daily_other_activities'
+        ? task.input_summary.target_section ?? null
+        : null,
+    )
+  }
 }
 
 function guidanceLabel(taskType: TaskType): string {
@@ -1036,8 +1120,11 @@ onMounted(() => {
     pendingCreates: () => pendingCreates.value,
     pendingActions: () => pendingActions.value,
     guidanceStatus: () => guidanceStatus.value,
-    blockedReason: (taskType: TaskType) => blockedReason(taskType),
+    blockedReason: (taskType: TaskType, targetSection: OtherSection | null = null) =>
+      blockedReason(taskType, targetSection),
     trigger: (taskType: TaskType) => trigger(taskType),
+    triggerOtherSection: (section: OtherSection, instruction = '') =>
+      triggerOtherSection(section, instruction),
     queryCreate: (taskType: TaskType) => queryCreate(taskType),
     resubmitCreate: (taskType: TaskType) => resubmitCreate(taskType),
     runAction: (taskId: string, kind: 'cancel' | 'resume' | 'retry') => runAction(taskId, kind),
@@ -1082,16 +1169,37 @@ onBeforeUnmount(() => {
   emit('draft-active', false)
   delete (window as unknown as { __d1AiTasks?: object }).__d1AiTasks
 })
-defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
+defineExpose({ trigger, triggerOtherSection, continueAfterSplit, observeReflectionTask })
 </script>
 
 <template>
-  <el-card class="section" data-d1="ai-tasks">
+  <div
+    v-if="dialogOpen"
+    class="ai-task-backdrop"
+    data-d1="ai-task-backdrop"
+    @click.self="emit('update:dialogOpen', false)"
+  ></div>
+  <el-card
+    class="section"
+    :class="{ 'ai-task-dialog': dialogOpen === true, 'ai-task-inline-hidden': dialogOpen === false }"
+    :role="dialogOpen === true ? 'dialog' : undefined"
+    :aria-modal="dialogOpen === true ? 'true' : undefined"
+    data-d1="ai-tasks"
+  >
     <template #header>
       <div class="head">
-        <span>{{ generationTarget ? 'AI 任务状态与历史' : 'AI 助手（三类任务分别触发）' }}</span>
+        <span>{{ dialogOpen ? 'AI 任务与历史' : 'AI 任务状态与历史' }}</span>
         <el-tag v-if="liveCount" size="small" type="warning">{{ liveCount }} 个进行中</el-tag>
         <el-tag v-if="panelBusy" size="small" type="danger">有未决提交</el-tag>
+        <el-button
+          v-if="dialogOpen"
+          size="small"
+          text
+          data-d1="ai-task-dialog-close"
+          @click="emit('update:dialogOpen', false)"
+        >
+          关闭
+        </el-button>
       </div>
     </template>
     <Teleport v-if="generationTarget" :to="generationTarget">
@@ -1181,6 +1289,22 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
         </div>
       </div>
     </Teleport>
+    <div v-if="dialogOpen" class="dialog-generation" data-d1="ai-dialog-generation">
+      <span class="muted">全局生成入口（本栏入口仍在各栏目内）</span>
+      <div class="row">
+        <el-button size="small" type="primary" :disabled="frozen || !!blockedReason('daily_lesson_split')" @click="trigger('daily_lesson_split')">
+          教案拆分
+        </el-button>
+        <el-button size="small" type="primary" :disabled="frozen || !!blockedReason('daily_process_adapt')" @click="trigger('daily_process_adapt')">
+          过程适龄
+        </el-button>
+        <el-button size="small" :disabled="frozen" @click="emit('open-section-ai', 'morning_games')">晨间活动</el-button>
+        <el-button size="small" :disabled="frozen" @click="emit('open-section-ai', 'morning_talk')">晨间谈话</el-button>
+        <el-button size="small" :disabled="frozen" @click="emit('open-section-ai', 'post_group_games')">活动后游戏</el-button>
+        <el-button size="small" :disabled="frozen" @click="emit('open-section-ai', 'afternoon_outdoor')">下午户外</el-button>
+        <el-button size="small" :disabled="frozen" @click="emit('open-reflection-ai')">一日反思</el-button>
+      </div>
+    </div>
     <div class="trigger-row">
       <label class="grade-label">本次目标年级</label>
       <el-select v-model="targetGrade" size="small" :disabled="frozen" data-d1="ai-target-grade">
@@ -1210,7 +1334,7 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
         </div>
         <div class="trigger-row">
           <el-button
-            v-if="!generationTarget"
+            v-if="!generationTarget && !(hideOtherRow && type === 'daily_other_activities')"
             size="default"
             type="primary"
             :loading="!!creating[type]"
@@ -1257,6 +1381,12 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
         </el-tag>
         <span v-if="task.input_summary.target_grade" class="muted">
           年级：{{ GRADE_LABELS[task.input_summary.target_grade] || task.input_summary.target_grade }}
+        </span>
+        <span
+          v-if="task.task_type === 'daily_other_activities' && task.input_summary.target_section"
+          class="muted"
+        >
+          栏目：{{ otherSectionLabel(task.input_summary.target_section) }}
         </span>
         <span class="muted">内容版本 v{{ task.input_summary.content_version ?? '—' }}</span>
       </div>
@@ -1370,10 +1500,42 @@ defineExpose({ trigger, continueAfterSplit, observeReflectionTask })
 .section {
   margin-top: 16px;
 }
+.ai-task-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 1500;
+}
+.ai-task-inline-hidden {
+  display: none;
+}
+.ai-task-dialog {
+  position: fixed;
+  z-index: 1501;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(860px, 94vw);
+  max-height: 88vh;
+  overflow: auto;
+  margin: 0;
+  background: var(--kgm-surface);
+}
 .head {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.dialog-generation {
+  border-bottom: 1px dashed var(--kgm-border);
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+.dialog-generation .row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
 }
 .trigger-row {
   display: flex;

@@ -33,6 +33,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
@@ -405,6 +406,8 @@ def _preflight_size(
     base_candidate_id: str | None = None,
     revision_instruction: str | None = None,
     implementation_materials: str | None = None,
+    target_section: str | None = None,
+    source_candidate_id: str | None = None,
 ) -> None:
     """Refuse an over-limit *serialized* request before creating anything.
 
@@ -425,6 +428,8 @@ def _preflight_size(
             base_candidate_id=base_candidate_id,
             revision_instruction=revision_instruction,
             implementation_materials=implementation_materials,
+            target_section=target_section,
+            source_candidate_id=source_candidate_id,
         )
         if task_type == "daily_process_adapt":
             require_adapt_baseline(projected.payload)
@@ -550,6 +555,20 @@ def task_out(session: Session, task: LocalAITask) -> dict[str, Any]:
         "source_revision": inp.source_revision if inp else None,
     }
     if inp is not None:
+        deps = dict(inp.dependencies_json or {})
+        target_section = deps.get("target_section")
+        if target_section is not None:
+            input_summary["target_section"] = target_section
+        if inp.task_type == "daily_process_adapt" and deps.get("source_split_candidate_id"):
+            input_summary["source_split_candidate_id"] = deps.get(
+                "source_split_candidate_id"
+            )
+            input_summary["source_split_content_version"] = deps.get(
+                "source_split_content_version"
+            )
+            input_summary["source_split_target_grade"] = deps.get(
+                "source_split_target_grade"
+            )
         warning = ai_inputs.calendar_coverage_warning(inp.dependencies_json or {})
         if warning is not None:
             input_summary["calendar_coverage_warning"] = warning
@@ -697,6 +716,8 @@ def create_task(
     base_candidate_id: object = None,
     revision_instruction: object = None,
     implementation_materials: object = None,
+    target_section: object = None,
+    source_candidate_id: object = None,
 ) -> tuple[dict[str, Any], bool]:
     """Submit one task; return ``(TaskOut, created)``."""
     if task_type not in TASK_TYPES:
@@ -715,15 +736,38 @@ def create_task(
     materials = _normalize_optional_text(
         implementation_materials, "implementation_materials", 5000
     )
+    target = target_section
+    if target is not None:
+        if task_type != "daily_other_activities":
+            raise LocalValidationError("target_section 只适用于其他活动生成")
+        if target not in (
+            "morning_games",
+            "morning_talk",
+            "post_group_games",
+            "afternoon_outdoor",
+        ):
+            raise LocalValidationError("target_section 不是可生成的日计划栏目")
+    source = _normalize_optional_text(
+        source_candidate_id, "source_candidate_id", 64
+    )
+    if source is not None and task_type != "daily_process_adapt":
+        raise LocalValidationError("source_candidate_id 只适用于过程适龄调整")
+    if source is not None and base is not None:
+        raise LocalValidationError("不能同时引用拆分来源和适龄原候选")
     if task_type == "daily_reflection_generate":
-        if base is not None or instruction is not None:
-            raise LocalValidationError("反思生成不接受原候选或定向修改要求")
+        if base is not None or target is not None or source is not None:
+            raise LocalValidationError("反思生成不接受原候选、拆分来源或栏目目标")
         if materials is None:
             raise LocalValidationError("请先填写活动实施材料，再生成反思")
     else:
         if materials is not None:
             raise LocalValidationError("该任务不接受活动实施材料")
-        if instruction is not None and base is None:
+        if (
+            instruction is not None
+            and base is None
+            and source is None
+            and task_type != "daily_other_activities"
+        ):
             raise LocalValidationError("定向修改要求必须绑定原候选")
     fingerprint_payload: dict[str, Any] = {
         "plan_id": plan_id,
@@ -737,6 +781,10 @@ def create_task(
         fingerprint_payload["revision_instruction"] = instruction
     if materials is not None:
         fingerprint_payload["implementation_materials"] = materials
+    if target is not None:
+        fingerprint_payload["target_section"] = target
+    if source is not None:
+        fingerprint_payload["source_candidate_id"] = source
     fingerprint = _fingerprint(OP_CREATE, fingerprint_payload)
     # Receipt priority: a committed re-send is read back before anything else,
     # including the executor/credential readiness checks.
@@ -759,6 +807,8 @@ def create_task(
             base_candidate_id=base,
             revision_instruction=instruction,
             implementation_materials=materials,
+            target_section=target,
+            source_candidate_id=source,
         )
 
     begin_immediate(session)
@@ -788,6 +838,27 @@ def create_task(
                 session, plan=plan, content=content, input_row=source_input
             ):
                 raise LocalValidationError("原候选的真实来源或拆分基准已变化")
+        if source is not None:
+            from app.local import ai_candidates
+
+            source_candidate = ai_candidates._require_candidate(
+                session, plan, source
+            )
+            if source_candidate.task_type != "daily_lesson_split":
+                raise LocalValidationError("拆分来源候选任务类型不一致")
+            source_input = session.get(
+                LocalAIInput, source_candidate.input_id
+            )
+            if source_input is None:
+                raise LocalValidationError("拆分来源候选输入不可用")
+            if source_input.content_version != expected_content_version:
+                raise LocalValidationError(
+                    "拆分来源候选绑定的保存内容版本与本次请求不一致"
+                )
+            if not ai_inputs.dependency_matches(
+                session, plan=plan, content=content, input_row=source_input
+            ):
+                raise LocalValidationError("拆分来源候选的真实来源已变化")
         active = session.scalars(
             select(LocalAITask).where(
                 LocalAITask.source_kind == "daily_plan",
@@ -811,6 +882,8 @@ def create_task(
             base_candidate_id=base,
             revision_instruction=instruction,
             implementation_materials=materials,
+            target_section=target,
+            source_candidate_id=source,
         )
         if task_type == "daily_process_adapt":
             require_adapt_baseline(projected.payload)
@@ -855,7 +928,12 @@ def create_task(
             updated_at=now,
         )
         session.add(task)
-        session.flush()
+        try:
+            session.flush()
+        except IntegrityError:
+            # The per-plan/type active-task unique constraint is a normal
+            # business conflict, not an internal 500.
+            raise LocalAiTaskActive(details={}) from None
         result = task_out(session, task)
         _store_receipt(
             session,
@@ -1829,7 +1907,27 @@ def _preflight_for_task(
             grade = inp.target_grade if inp is not None else "middle"
     _preflight_ready(runtime, session, task_type)
     if plan_id is not None:
-        _preflight_size(runtime, session, task_type, grade, plan_id, None)
+        if inp is None:
+            _preflight_size(runtime, session, task_type, grade, plan_id, None)
+        else:
+            payload = dict(inp.payload_json or {})
+            dependencies = dict(inp.dependencies_json or {})
+            _preflight_size(
+                runtime,
+                session,
+                task_type,
+                grade,
+                plan_id,
+                None,
+                base_candidate_id=dependencies.get("base_candidate_id"),
+                revision_instruction=dependencies.get(
+                    "teacher_revision_instruction",
+                    payload.get("revision_instruction"),
+                ),
+                implementation_materials=payload.get("implementation_materials"),
+                target_section=dependencies.get("target_section"),
+                source_candidate_id=dependencies.get("source_split_candidate_id"),
+            )
     elif source_kind == "weekly_plan":
         _preflight_weekly_size(
             runtime,
@@ -2105,6 +2203,7 @@ def _render_system_text(
         ],
         "daily_other_activities": [
             "可以根据日期、周次、班级年级、可用游戏配置和当前日计划，提出新的游戏与活动建议。",
+            "若输入 revision_instruction 明确要求本次只生成某一个栏目，只返回该栏目并省略其他三个栏目；不得把同一全量输出冒充多个栏目的独立生成。",
             "只填写 output_contract 已有的 morning_games、morning_talk、post_group_games、afternoon_outdoor 板块及其字段；不合并、改名或新增板块，不输出未列出的字段。",
             "若输入含 revision_instruction，只能在现有候选板块/游戏组结构内调整，不得绕过结构、编造日计划事实或新增未提供的板块。",
             "base_candidate 是上一候选的只读文字参照，不是日计划事实；不得复制出未提供的板块、冒用其它计划/任务内容或把候选说成已保存记录。",
@@ -2133,6 +2232,8 @@ def _render_system_text(
         ],
         "daily_reflection_generate": [
             "plan_snapshot 是教师已保存的日计划，只表示原定安排；implementation_materials 是教师提供的活动实施材料，只表示教师明确说已经发生的情况。",
+            "若输入含 revision_instruction，只用于调整已提供实施材料支持的反思表达与侧重；不得借此补写材料没有提到的课堂事实、幼儿反应、对话或结果。",
+            "若输入同时含 current_reflection，它是教师当前已保存的反思原稿，只用于本次定向修改；不得把原稿当作新增实施事实，也不得在普通生成路径复制它。",
             "计划中的活动步骤不能改写成已经实施的事实；材料没有提到的幼儿反应、对话、结果、困难或时间不得补写。",
             "只输出一段可直接编辑的反思正文，以自然段落书写，围绕今日亮点、存在问题、调整策略，篇幅约100～200字；不输出标题、列表编号、审核说明或候选元数据。",
             "材料不足以支持具体判断时，只写材料能够支持的内容，并明确还需教师补充观察；不要用计划内容替代实施事实，也不要声称已经发生的课堂。",
@@ -3169,6 +3270,21 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
                 _normalize_generated_activity_regions(
                     validated, dict(input_row.payload_json or {}) if input_row is not None else {}
                 )
+                target_section = (
+                    dict(input_row.dependencies_json or {}).get("target_section")
+                    if input_row is not None
+                    else None
+                )
+                if target_section in (
+                    "morning_games",
+                    "morning_talk",
+                    "post_group_games",
+                    "afternoon_outdoor",
+                ):
+                    target_value = validated.get(target_section)
+                    if target_value is None:
+                        raise CandidateInvalid("目标栏目未生成")
+                    validated = {target_section: target_value}
                 validated = validate_candidate(claim.task_type, validated)
             if input_row is not None and claim.task_type in (
                 "daily_lesson_split",

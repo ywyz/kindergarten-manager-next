@@ -56,11 +56,11 @@ function ok(name) {
   const panelTag = editorSource.match(/<AiTaskPanel\b[\s\S]*?\/>/)?.[0]
   assert.ok(panelTag, 'the real editor task panel exists')
   assert.match(panelTag, /@draft-active="aiTaskDraftActive = \$event"/, 'pending task submission participates in editor leave protection')
-  assert.match(editorSource, /candidateInline\.value =[\s\S]{0,120}daily_lesson_split[\s\S]{0,80}daily_other_activities/, 'only split/other are inline')
+  assert.match(editorSource, /candidateInline\.value = false/, 'ordinary daily candidates use dialogs')
   assert.match(panelSource, /'open-candidate', candidateId: string, taskType: TaskType/, 'task type reaches the editor')
-  assert.match(panelSource, /emit\('open-candidate', task\.candidate_id, task\.task_type\)/, 'real task type is emitted')
+  assert.match(panelSource, /emit\(\s*'open-candidate',[\s\S]{0,160}task\.candidate_id[\s\S]{0,120}task\.task_type/, 'real task type is emitted')
   assert.match(panelSource, /defineExpose\(\{[^}]*\bcontinueAfterSplit\b[^}]*\}\)/, 'the parent component ref can call the guarded continuation')
-  ok('inline wiring: split/other use the field card, adapt keeps the dialog, cancel keeps its locator')
+  ok('candidate wiring: dialogs keep the field review card and cancel locators')
 }
 
 // ---------------------------------------------------------------------------

@@ -66,7 +66,7 @@ import {
   type DailyLayoutDraft,
   type DailyLayoutSectionKey,
 } from '../daily-layout-draft'
-import type { AdoptionResult, AiTask, CandidateAdoptionOrigin, CandidateDetail, DailyPlan, Grade, LocalContext, SplitAdaptContinuation, TaskType } from '../types'
+import type { AdoptionResult, AiTask, CandidateAdoptionOrigin, CandidateDetail, DailyPlan, Grade, LocalContext, OtherSection, SplitAdaptContinuation, TaskType } from '../types'
 import type { SaveOutcome, BlockingDraft } from '../leave'
 import ExportDialog from './ExportDialog.vue'
 import AiTaskPanel from './AiTaskPanel.vue'
@@ -201,6 +201,7 @@ const exportOpen = ref(false)
 /** D2 W5: candidate review dialog (independent from the body editor). */
 const candidateOpen = ref(false)
 const candidateId = ref('')
+const candidateSection = ref<OtherSection | null>(null)
 const candidateDraftActive = ref(false)
 const aiTaskDraftActive = ref(false)
 /** #16: ordinary daily candidates render beside their own editing region. */
@@ -213,18 +214,43 @@ const candidateInlineTarget = ref<HTMLElement | null>(null)
  */
 const aiTaskPanelRef = ref<{
   trigger?: (taskType: TaskType) => Promise<void>
-  continueAfterSplit?: (input: SplitAdaptContinuation, isCurrent: () => boolean) => Promise<boolean>
+  triggerOtherSection?: (section: OtherSection, instruction?: string) => Promise<void>
+  continueAfterSplit?: (input: SplitAdaptContinuation, isCurrent: () => boolean) => Promise<AiTask | null>
   observeReflectionTask?: (task: AiTask) => boolean
 } | null>(null)
-// Only the adoption event can start this chain; reloads and saved plans cannot.
-const splitAdaptContinuations = new Set<string>()
+const aiTaskDialogOpen = ref(false)
+const sectionAiOpen = ref(false)
+const sectionAiTarget = ref<OtherSection>('morning_games')
+const sectionAiInstruction = ref('')
+const splitFlow = ref<{
+  splitTaskId: string
+  splitCandidateId: string
+  planId: string
+  contentVersion: number
+  targetGrade: Grade
+  adaptTaskId?: string
+  status: 'pending' | 'ready' | 'failed' | 'unknown'
+  process?: string
+  message?: string
+  historical?: boolean
+} | null>(null)
+/** The four independent other-activity generation entries. */
+const SECTION_AI: Array<{
+  key: OtherSection
+  layout: DailyLayoutSectionKey
+  label: string
+}> = [
+  { key: 'morning_games', layout: 'morning', label: '晨间活动' },
+  { key: 'morning_talk', layout: 'talk', label: '晨间谈话' },
+  { key: 'post_group_games', layout: 'post', label: '活动后游戏' },
+  { key: 'afternoon_outdoor', layout: 'afternoon', label: '下午户外' },
+]
+// Only the new live split task can start the pre-adoption adapt chain.
 const splitTarget = ref<HTMLElement | null>(null)
 const processTarget = ref<HTMLElement | null>(null)
 const otherTarget = ref<HTMLElement | null>(null)
 const reflectionTarget = ref<HTMLElement | null>(null)
 const reflectionProgressTarget = ref<HTMLElement | null>(null)
-/** Left-directory generation entries receive the three existing panel triggers. */
-const generationActionTarget = ref<HTMLElement | null>(null)
 /**
  * 2026-11-15 left-directory layout: reading is the default; only an explicit
  * column button opens a dialog with an independent draft copy. The modal is
@@ -251,6 +277,7 @@ const otherGenerated = ref<{
   taskId: string
   contentVersion: number
   boards: OtherBoardName[]
+  targetSection?: OtherSection | null
   state: 'applied' | 'pending'
   message: string
 } | null>(null)
@@ -1336,6 +1363,22 @@ function removeLayoutAfternoonGame(gameIndex: number): void {
 const planGrade = computed<Grade>(() => (plan.value?.grade as Grade) ?? 'middle')
 const hasRaw = computed(() => rawLessonPlan.value.trim() !== '')
 const hasProcess = computed(() => form.value.group_activity.process.trim() !== '')
+const sectionAiCurrentText = computed(() => {
+  switch (sectionAiTarget.value) {
+    case 'morning_games':
+      return form.value.morning_games
+        .map((group) => `${group.group_kind === 'collective' ? '集体' : '自选'}：${group.games.map((g) => g.name).join('、')}`)
+        .join('\n')
+    case 'morning_talk':
+      return [form.value.morning_talk.topic, form.value.morning_talk.questions].filter(Boolean).join('\n')
+    case 'post_group_games':
+      return form.value.post_group_games
+        .map((group) => `${group.area}：${group.games.map((g) => g.name).join('、')}`)
+        .join('\n')
+    default:
+      return [form.value.afternoon_outdoor.area, form.value.afternoon_outdoor.games.map((g) => g.name).join('、')].filter(Boolean).join('\n')
+  }
+})
 
 /**
  * Read-only morning selection, matching the existing Word/current rule. The
@@ -1352,6 +1395,8 @@ const morningFocusGroupIndex = computed(() =>
 // teacher's implementation material describes what actually happened.
 const REFLECTION_TASK_TYPE: TaskType = 'daily_reflection_generate'
 const reflectionMaterials = ref('')
+const reflectionInstruction = ref('')
+const reflectionAiOpen = ref(false)
 const reflectionTask = ref<AiTask | null>(null)
 const reflectionBusy = ref(false)
 const reflectionRequestActive = ref(false)
@@ -1570,6 +1615,7 @@ async function openCandidate(
   taskType?: string,
   force = false,
   pin?: CandidateOpenPin,
+  targetSection: OtherSection | null = null,
 ): Promise<void> {
   if (pin && (!plan.value || plan.value.id !== pin.planId)) return
   if (
@@ -1638,25 +1684,29 @@ async function openCandidate(
     return
   }
   candidateId.value = id
-  candidateInline.value =
-    taskType === 'daily_lesson_split' ||
-    taskType === 'daily_other_activities' ||
-    taskType === REFLECTION_TASK_TYPE
-  candidateInlineTarget.value =
-    taskType === 'daily_other_activities'
-      ? otherTarget.value
-      : taskType === REFLECTION_TASK_TYPE
-        ? reflectionTarget.value
-        : splitTarget.value
-  if (candidateInline.value) {
-    layoutSection.value =
-      taskType === 'daily_lesson_split'
-        ? 'raw'
-        : taskType === 'daily_other_activities'
-          ? 'morning'
-          : 'reflection'
-  }
+  candidateSection.value = targetSection
+  candidateInline.value = false
+  candidateInlineTarget.value = null
+  if (taskType === 'daily_lesson_split') layoutSection.value = 'raw'
+  else if (taskType === 'daily_other_activities' && targetSection) {
+    const section = SECTION_AI.find((item) => item.key === targetSection)
+    if (section) layoutSection.value = section.layout
+  } else if (taskType === REFLECTION_TASK_TYPE) layoutSection.value = 'reflection'
   candidateOpen.value = true
+  // A new split candidate starts a fresh pre-adoption adapt chain; opening
+  // another candidate must not cancel an already registered split relation.
+  if (taskType === 'daily_lesson_split') {
+    if (splitFlow.value && splitFlow.value.splitCandidateId !== id) {
+      splitFlow.value = null
+    }
+    if (!splitFlow.value) {
+      void reconstructSplitFlow(
+        id,
+        planAtStart,
+        plan.value?.current_content_version ?? null,
+      )
+    }
+  }
 }
 
 function otherCandidateVersion(detail: CandidateDetail): number | null {
@@ -1666,11 +1716,15 @@ function otherCandidateVersion(detail: CandidateDetail): number | null {
 function applyOtherGeneratedCandidate(
   detail: CandidateDetail,
   boards: OtherBoardName[],
+  targetSection: OtherSection | null,
 ): void {
+  const targets = targetSection
+    ? detail.available_targets.filter((target) => target === targetSection)
+    : detail.available_targets
   const result = applyOtherCandidateToForm(
     form.value,
     detail.raw_candidate,
-    detail.available_targets,
+    targets,
   )
   form.value = result.form
   // The fill is a real local edit: invalidate any older save/adopt ordering
@@ -1681,6 +1735,7 @@ function applyOtherGeneratedCandidate(
     taskId: detail.task_id,
     contentVersion: otherCandidateVersion(detail) ?? 0,
     boards: result.appliedBoards,
+    targetSection,
     state: 'applied',
     message: '已填入当前草稿，可直接核对、修改并保存；未另存候选版本。',
   }
@@ -1711,6 +1766,7 @@ async function onOtherGenerated(task: AiTask): Promise<void> {
     return
   }
   const planId = plan.value.id
+  const targetSection = task.input_summary.target_section ?? null
   const editorKeyAtStart = editorKey.value
   const sessionEpochAtStart = getSessionEpoch()
   const contentVersionAtStart = plan.value.current_content_version
@@ -1759,9 +1815,12 @@ async function onOtherGenerated(task: AiTask): Promise<void> {
       }
       return
     }
+    const availableTargets = targetSection
+      ? detail.available_targets.filter((target) => target === targetSection)
+      : detail.available_targets
     const boards = otherBoardsProvided(
       detail.raw_candidate,
-      detail.available_targets,
+      availableTargets,
     )
     if (boards.length === 0) {
       otherGenerated.value = {
@@ -1811,7 +1870,7 @@ async function onOtherGenerated(task: AiTask): Promise<void> {
       }
       return
     }
-    applyOtherGeneratedCandidate(detail, boards)
+    applyOtherGeneratedCandidate(detail, boards, targetSection)
   } catch (err) {
     if (!editorAlive) return
     otherGenerated.value = {
@@ -1913,7 +1972,7 @@ async function fillPendingOtherGenerated(): Promise<void> {
       ElMessage.warning('本次没有可填入的活动板块')
       return
     }
-    applyOtherGeneratedCandidate(detail, boards)
+    applyOtherGeneratedCandidate(detail, boards, pending.targetSection ?? null)
   } catch (err) {
     ElMessage.warning(
       err instanceof ApiError
@@ -1994,7 +2053,7 @@ async function submitReflectionBody(
   }
 }
 
-async function createReflectionTask(): Promise<void> {
+async function createReflectionTask(instruction = ''): Promise<void> {
   if (reflectionBusy.value || reflectionFillBusy.value || reflectionPending.value) return
   if (locked.value || props.frozen) {
     reflectionError.value = '窗口正在关闭：未发起反思任务'
@@ -2039,6 +2098,7 @@ async function createReflectionTask(): Promise<void> {
       expected_content_version: plan.value.current_content_version,
       target_grade: planGrade.value,
       implementation_materials: materials,
+      ...(instruction.trim() ? { revision_instruction: instruction.trim() } : {}),
     }
     await submitReflectionBody(planAtStart, requestId, body)
   } finally {
@@ -2156,6 +2216,7 @@ function onCandidateOpen(value: boolean): void {
   candidateOpen.value = value
   if (value) return
   candidateId.value = ''
+  candidateSection.value = null
   candidateDraftActive.value = false
 }
 
@@ -2294,6 +2355,374 @@ function openGuidance(taskType?: TaskType): void {
   goSettings()
 }
 
+/** New live split: open its candidate and start one pre-adoption adapt task. */
+async function onSplitGenerated(task: AiTask): Promise<void> {
+  if (
+    !plan.value
+    || task.plan_id !== plan.value.id
+    || task.task_type !== 'daily_lesson_split'
+    || task.status !== 'succeeded'
+    || !task.candidate_id
+  ) return
+  const currentPlan = plan.value
+  if (
+    splitFlow.value?.splitTaskId === task.id
+    && splitFlow.value.splitCandidateId === task.candidate_id
+  ) return
+  const version = task.input_summary.content_version
+  if (version === null || version !== currentPlan.current_content_version) {
+    splitFlow.value = {
+      splitTaskId: task.id,
+      splitCandidateId: task.candidate_id,
+      planId: currentPlan.id,
+      contentVersion: version ?? currentPlan.current_content_version,
+      targetGrade: planGrade.value,
+      status: 'failed',
+      message: '拆分生成后计划已保存新版本：未自动适龄，请重新发起拆分。',
+    }
+    return
+  }
+  const grade = task.input_summary.target_grade
+  if (grade !== 'small' && grade !== 'middle' && grade !== 'large') return
+  splitFlow.value = {
+    splitTaskId: task.id,
+    splitCandidateId: task.candidate_id,
+    planId: currentPlan.id,
+    contentVersion: version,
+    targetGrade: grade,
+    status: 'pending',
+    message: '正在按拆分原过程自动生成适龄过程…',
+  }
+  // Open the real candidate dialog unless the teacher has an unsaved/other
+  // blocking edit; the split candidate itself is never written to the plan.
+  if (
+    !dirty.value
+    && !locked.value
+    && !props.frozen
+    && !layoutEditing.value
+    && !candidateDraftActive.value
+    && !candidateOpen.value
+    && !historyOpen.value
+    && !historyRestoreBlocked.value
+  ) {
+    candidateId.value = task.candidate_id
+    candidateSection.value = null
+    candidateInline.value = false
+    candidateInlineTarget.value = null
+    layoutSection.value = 'raw'
+    candidateOpen.value = true
+  }
+  const isCurrent = (): boolean =>
+    editorAlive
+    && !!plan.value
+    && plan.value.id === currentPlan.id
+    && plan.value.current_content_version === version
+    && !props.frozen
+    && !locked.value
+    && !layoutEditing.value
+    && !candidateDraftActive.value
+    && !historyOpen.value
+    && !historyRestoreBlocked.value
+  const accepted = await aiTaskPanelRef.value?.continueAfterSplit?.(
+    {
+      planId: currentPlan.id,
+      contentVersion: version,
+      targetGrade: grade,
+      sourceCandidateId: task.candidate_id,
+    },
+    isCurrent,
+  )
+  if (!splitFlow.value || splitFlow.value.splitTaskId !== task.id) return
+  if (!accepted) {
+    splitFlow.value = {
+      ...splitFlow.value,
+      status: 'failed',
+      message: '拆分结果已保留，但自动适龄未发起成功；可查看任务与回执，或显式重试。',
+    }
+    return
+  }
+  splitFlow.value = {
+    ...splitFlow.value,
+    adaptTaskId: accepted.id,
+    status: 'pending',
+    message: '正在按拆分原过程自动生成适龄过程…',
+  }
+  await onAdaptUpdated(accepted)
+}
+
+let splitAdaptLoadSeq = 0
+let splitFlowReconstructSeq = 0
+
+/** Rebuild the split review from the persisted task relationship, not a live ref. */
+async function reconstructSplitFlow(
+  splitCandidateId: string,
+  planId: string,
+  currentVersion: number | null,
+): Promise<void> {
+  const seq = ++splitFlowReconstructSeq
+  try {
+    const collected: AiTask[] = []
+    let cursor: string | null = null
+    do {
+      const url: string = `/api/local/ai/tasks?plan_id=${encodeURIComponent(planId)}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`
+      const page: { items: AiTask[]; next_cursor: string | null } =
+        await apiGet<{ items: AiTask[]; next_cursor: string | null }>(url)
+      collected.push(...page.items)
+      cursor = page.next_cursor
+    } while (cursor)
+    if (seq !== splitFlowReconstructSeq) return
+    if (!editorAlive || !plan.value || plan.value.id !== planId) return
+    const linked = collected
+      .filter((task) => task.task_type === 'daily_process_adapt'
+        && task.input_summary.source_split_candidate_id === splitCandidateId
+        && task.plan_id === planId)
+      .sort((left, right) => (right.created_at ?? '').localeCompare(left.created_at ?? ''))[0]
+    if (!linked) return
+    if (splitFlow.value?.splitCandidateId === splitCandidateId) return
+    const linkedVersion = linked.input_summary.source_split_content_version ?? currentVersion
+    const linkedGrade = linked.input_summary.source_split_target_grade
+    splitFlow.value = {
+      splitTaskId: linked.id,
+      splitCandidateId,
+      planId,
+      contentVersion: linkedVersion ?? currentVersion ?? 0,
+      targetGrade:
+        linkedGrade === 'small' || linkedGrade === 'middle' || linkedGrade === 'large'
+          ? linkedGrade
+          : planGrade.value,
+      adaptTaskId: linked.id,
+      status: 'pending',
+      historical: linkedVersion !== plan.value.current_content_version,
+      message: '正在读取已登记的拆分适龄关系…',
+    }
+    await onAdaptUpdated(linked)
+  } catch {
+    // A missing/unreadable history relationship simply leaves the split
+    // candidate viewable with its original process; it never starts a task.
+  }
+}
+
+/** An adapt task accepted by this page; only the one bound to the live split
+ * candidate may populate the split review, and only after receipt validation. */
+async function onAdaptUpdated(task: AiTask): Promise<void> {
+  const flow = splitFlow.value
+  if (
+    !flow
+    || task.task_type !== 'daily_process_adapt'
+    || task.plan_id !== flow.planId
+    || (flow.adaptTaskId !== undefined && task.id !== flow.adaptTaskId)
+    || (flow.adaptTaskId === undefined
+      && task.input_summary.source_split_candidate_id !== flow.splitCandidateId)
+    || (flow.adaptTaskId === undefined && task.status === 'succeeded' && !task.candidate_id)
+  ) return
+  if (
+    !flow.historical
+    && (
+      !plan.value
+      || plan.value.id !== flow.planId
+      || plan.value.current_content_version !== flow.contentVersion
+    )
+  ) {
+    splitFlow.value = {
+      ...flow,
+      status: 'failed',
+      message: '计划已保存新版本：未把旧拆分候选的适龄结果填入，请重新拆分。',
+    }
+    return
+  }
+  if (flow.adaptTaskId === undefined) {
+    splitFlow.value = { ...flow, adaptTaskId: task.id }
+  }
+  if (task.status === 'outcome_unknown') {
+    splitFlow.value = {
+      ...splitFlow.value!,
+      status: 'unknown',
+      message: '适龄提交结果未知：拆分结果已保留，不会自动重发；请查询原任务或显式重试。',
+    }
+    return
+  }
+  if (task.status === 'failed' || task.status === 'cancelled' || task.status === 'paused') {
+    splitFlow.value = {
+      ...splitFlow.value!,
+      status: 'failed',
+      message: '适龄生成未完成：拆分结果已保留，可按原拆分采用或显式重试。',
+    }
+    return
+  }
+  if (task.status !== 'succeeded' || !task.candidate_id) {
+    splitFlow.value = {
+      ...splitFlow.value!,
+      status: 'pending',
+      message: '正在按拆分原过程自动生成适龄过程…',
+    }
+    return
+  }
+  const flowAtStart = splitFlow.value
+  if (!flowAtStart || flowAtStart.splitCandidateId === '') return
+  const seq = ++splitAdaptLoadSeq
+  try {
+    const detail = await apiGet<CandidateDetail>(
+      `/api/daily-plans/${pathSegment(task.plan_id)}/ai-candidates/${pathSegment(task.candidate_id)}`,
+    )
+    if (seq !== splitAdaptLoadSeq) return
+    if (!editorAlive || !plan.value || plan.value.id !== task.plan_id) return
+    const current = splitFlow.value
+    if (
+      !current
+      || current.planId !== task.plan_id
+      || current.adaptTaskId !== task.id
+      || detail.task_type !== 'daily_process_adapt'
+      || detail.plan_id !== task.plan_id
+      || detail.task_id !== task.id
+      || detail.id !== task.candidate_id
+      || (!current.historical
+        && detail.source.content_version !== null
+        && detail.source.content_version !== current.contentVersion)
+      || (task.execution?.id !== undefined
+        && task.execution?.id !== null
+        && detail.execution_id !== task.execution.id)
+    ) return
+    const sourceCandidate =
+      detail.source.dependencies.source_split_candidate_id
+      ?? detail.source.source_excerpt.source_split_candidate_id
+    const process = detail.raw_candidate.process
+    if (
+      sourceCandidate !== current.splitCandidateId
+      || typeof process !== 'string'
+      || process.trim() === ''
+    ) {
+      splitFlow.value = {
+        ...current,
+        status: 'failed',
+        message: '适龄结果与本次拆分候选不一致：未自动填入，拆分结果仍保留。',
+      }
+      return
+    }
+    splitFlow.value = {
+      ...current,
+      status: 'ready',
+      process,
+      message: '已按拆分原过程自动接续一次适龄调整。',
+    }
+  } catch (err) {
+    if (seq !== splitAdaptLoadSeq) return
+    const current = splitFlow.value
+    if (!current || current.adaptTaskId !== task.id) return
+    splitFlow.value = {
+      ...current,
+      status: 'failed',
+      message: err instanceof ApiError
+        ? `适龄结果读取失败：${err.message}；拆分结果仍保留。`
+        : '适龄结果读取失败：拆分结果仍保留，可显式重试。',
+    }
+  }
+}
+
+async function querySplitAdaptTask(): Promise<void> {
+  const flow = splitFlow.value
+  if (!flow || !flow.adaptTaskId) {
+    if (flow) {
+      splitFlow.value = {
+        ...flow,
+        message: '原适龄提交没有可查询的任务号：请在 AI 任务与历史中先查询原回执，不能直接新建请求。',
+      }
+    }
+    return
+  }
+  try {
+    const task = await apiGet<AiTask>(
+      `/api/local/ai/tasks/${pathSegment(flow.adaptTaskId)}`,
+    )
+    if (
+      !editorAlive
+      || !splitFlow.value
+      || splitFlow.value.splitCandidateId !== flow.splitCandidateId
+      || task.id !== flow.adaptTaskId
+      || task.task_type !== 'daily_process_adapt'
+      || task.plan_id !== flow.planId
+    ) return
+    await onAdaptUpdated(task)
+  } catch (err) {
+    if (splitFlow.value?.splitCandidateId !== flow.splitCandidateId) return
+    splitFlow.value = {
+      ...splitFlow.value,
+      message: err instanceof ApiError
+        ? `适龄任务查询失败：${err.message}；未新建请求。`
+        : '适龄任务查询失败：未新建请求，请稍后重试查询。',
+    }
+  }
+}
+
+async function retrySplitAdapt(): Promise<void> {
+  const flow = splitFlow.value
+  if (!flow || !plan.value || flow.status === 'pending') return
+  if (flow.status === 'unknown') {
+    await querySplitAdaptTask()
+    return
+  }
+  if (flow.historical) {
+    splitFlow.value = {
+      ...flow,
+      message: '这是已保存的历史适龄结果，不能从当前拆分候选直接新建请求；请回到原任务记录处理。',
+    }
+    return
+  }
+  if (
+    plan.value.id !== flow.planId
+    || plan.value.current_content_version !== flow.contentVersion
+  ) {
+    splitFlow.value = {
+      ...flow,
+      status: 'failed',
+      message: '当前计划已保存新版本：不能沿用旧拆分候选自动适龄，请重新拆分。',
+    }
+    return
+  }
+  splitFlow.value = {
+    ...flow,
+    status: 'pending',
+    adaptTaskId: undefined,
+    process: undefined,
+    message: '正在重新按拆分原过程生成适龄过程…',
+  }
+  const isCurrent = (): boolean =>
+    editorAlive
+    && !!plan.value
+    && plan.value.id === flow.planId
+    && plan.value.current_content_version === flow.contentVersion
+    && !props.frozen
+    && !locked.value
+    && !layoutEditing.value
+    && !candidateDraftActive.value
+    && !historyOpen.value
+    && !historyRestoreBlocked.value
+  const accepted = await aiTaskPanelRef.value?.continueAfterSplit?.(
+    {
+      planId: flow.planId,
+      contentVersion: flow.contentVersion,
+      targetGrade: flow.targetGrade,
+      sourceCandidateId: flow.splitCandidateId,
+    },
+    isCurrent,
+  )
+  if (!accepted) {
+    if (splitFlow.value?.splitTaskId === flow.splitTaskId) {
+      splitFlow.value = {
+        ...splitFlow.value,
+        status: 'failed',
+        message: '适龄重试未发起成功：拆分结果仍保留，可查询原任务或稍后重试。',
+      }
+    }
+    return
+  }
+  splitFlow.value = {
+    ...splitFlow.value!,
+    adaptTaskId: accepted.id,
+    status: 'pending',
+  }
+  await onAdaptUpdated(accepted)
+}
+
 /**
  * Apply an adopt result only when the editor is still on the adopted plan and
  * the edit epoch still matches; any external-plan or late response never
@@ -2304,16 +2733,6 @@ async function onCandidateAdopted(
   epochAtAdopt: number,
   origin?: CandidateAdoptionOrigin,
 ): Promise<void> {
-  const splitAdopted = result.changed === true
-    && origin?.taskType === 'daily_lesson_split'
-    && origin.planId === result.plan_id
-    && origin.candidateId === result.candidate_id
-    && candidateId.value === origin.candidateId
-  const continuationKey = `${result.plan_id}:${result.candidate_id}:${result.content_version}`
-  const continueSplit = splitAdopted && !splitAdaptContinuations.has(continuationKey)
-  // Reserve before the first await, including failed/unknown creation outcomes.
-  // A duplicate receipt must never silently start another paid request.
-  if (continueSplit) splitAdaptContinuations.add(continuationKey)
   candidateOpen.value = false
   candidateDraftActive.value = false
   const targetPlan = result.plan_id
@@ -2324,34 +2743,8 @@ async function onCandidateAdopted(
     if (!plan.value || plan.value.id !== targetPlan || server.id !== targetPlan) return
     if (editEpoch.value === epochAtAdopt) {
       applyPlan(server)
+      if (origin?.taskType === 'daily_lesson_split') splitFlow.value = null
       ElMessage.success(`已采用并保存（内容版本 v${result.content_version}）`)
-      if (continueSplit) {
-        const grade = origin?.targetGrade
-        const isCurrent = (): boolean => editorAlive
-          && !props.frozen && !locked.value && !dirty.value
-          && !historyRestoreBlocked.value && !composing.value
-          && !candidateOpen.value && !candidateDraftActive.value
-          && !layoutEditing.value
-          && candidateId.value === origin?.candidateId
-          && editEpoch.value === epochAtAdopt
-          && plan.value?.id === targetPlan
-          && plan.value.current_content_version === result.content_version
-          && !!plan.value.content.split_baseline
-        await nextTick()
-        if (isCurrent() && (grade === 'small' || grade === 'middle' || grade === 'large')) {
-          const accepted = await aiTaskPanelRef.value?.continueAfterSplit?.({
-            planId: targetPlan,
-            contentVersion: result.content_version,
-            targetGrade: grade,
-          }, isCurrent)
-          if (accepted && editorAlive && plan.value?.id === targetPlan) {
-            if (!layoutEditing.value) layoutSection.value = 'group'
-            ElMessage.success('拆分已保存，已自动发起过程适龄调整；完成后请比较并采用')
-          }
-        } else {
-          ElMessage.warning('拆分已保存，当前内容或操作状态已变化：未自动接续，请按需手动发起过程适龄调整')
-        }
-      }
     } else {
       // R11: the body changed after the adopt was submitted. Never advance the
       // baseline/version or silently rebase; keep the original input and
@@ -2389,22 +2782,6 @@ function goSettings(): void {
   leave('settings', () => 'left')
 }
 
-/** Save the unsaved draft first, then start the split on the same page. */
-async function saveDraftForSplit(): Promise<void> {
-  if (!rawLessonPlan.value.trim() || editDisabled.value) return
-  const outcome = await saveCurrent()
-  if (outcome !== 'saved' && outcome !== 'unchanged') {
-    ElMessage.warning('日计划尚未保存成功：请先处理保存结果，再发起拆分')
-    return
-  }
-  await nextTick()
-  if (!plan.value) {
-    ElMessage.warning('日计划保存后尚未就绪：请稍后在同页发起拆分')
-    return
-  }
-  await aiTaskPanelRef.value?.trigger?.('daily_lesson_split')
-}
-
 // -- left-directory generation entries -----------------------------------------
 
 const AI_ACTION_SECTIONS: Partial<Record<TaskType, DailyLayoutSectionKey>> = {
@@ -2421,8 +2798,32 @@ const AI_ACTION_SECTIONS: Partial<Record<TaskType, DailyLayoutSectionKey>> = {
  */
 function onAiActionStart(taskType: TaskType): void {
   if (layoutEditing.value) return
+  aiTaskDialogOpen.value = true
   const section = AI_ACTION_SECTIONS[taskType]
   if (section) layoutSection.value = section
+}
+
+function openSectionAi(section: OtherSection): void {
+  if (layoutEditing.value) {
+    ElMessage.info('栏目编辑弹窗未关闭：请先确定或取消后再发起 AI 操作')
+    return
+  }
+  sectionAiTarget.value = section
+  sectionAiInstruction.value = ''
+  sectionAiOpen.value = true
+}
+
+function submitSectionAi(): void {
+  if (layoutEditing.value) return
+  const section = SECTION_AI.find((item) => item.key === sectionAiTarget.value)
+  if (!section) return
+  sectionAiOpen.value = false
+  layoutSection.value = section.layout
+  aiTaskDialogOpen.value = true
+  void aiTaskPanelRef.value?.triggerOtherSection?.(
+    section.key,
+    sectionAiInstruction.value.trim(),
+  )
 }
 
 /**
@@ -2441,16 +2842,82 @@ function onAiLocate(taskType: TaskType): void {
   onAiActionStart(taskType)
 }
 
-function startSplitFromActions(): void {
-  if (layoutEditing.value) return
-  layoutSection.value = 'raw'
-  void saveDraftForSplit()
-}
-
 function startReflectionFromActions(): void {
   if (layoutEditing.value) return
   layoutSection.value = 'reflection'
+  aiTaskDialogOpen.value = true
   void createReflectionTask()
+}
+
+let splitFromRailBusy = false
+
+/**
+ * The right rail is the direct split action: save the current body through the
+ * normal guarded path, wait for the single task panel to exist for a newly
+ * created plan, then start the same explicit split task the panel exposes.
+ * A failed or unknown save never registers a task, and the panel's own guard
+ * still blocks duplicate/pending/live requests.
+ */
+async function startSplitFromRail(): Promise<void> {
+  if (props.frozen) return
+  if (layoutEditing.value) {
+    ElMessage.info('栏目编辑弹窗未关闭：请先确定或取消后再发起教案拆分')
+    return
+  }
+  if (splitFromRailBusy) return
+  if (!hasRaw.value) {
+    aiTaskDialogOpen.value = true
+    layoutSection.value = 'raw'
+    ElMessage.warning('原始教案为空：请先填写或粘贴原文再拆分')
+    return
+  }
+  splitFromRailBusy = true
+  try {
+    onAiActionStart('daily_lesson_split')
+    const outcome = await saveCurrent()
+    if (outcome !== 'saved' && outcome !== 'unchanged') {
+      if (outcome === 'conflict') {
+        ElMessage.warning('内容版本冲突：本地编辑已保留，未发起教案拆分')
+      } else if (outcome === 'indeterminate') {
+        ElMessage.warning('保存结果待核对：未发起教案拆分，请先核对服务端内容')
+      } else {
+        ElMessage.error(errorText.value || '保存失败：未发起教案拆分')
+      }
+      return
+    }
+    await nextTick()
+    if (!editorAlive || props.frozen || !plan.value) return
+    // A new plan mounts the single task panel only after the create response
+    // is applied; wait for its ref before triggering the same explicit action.
+    let panel = aiTaskPanelRef.value
+    for (let attempt = 0; attempt < 5 && !panel?.trigger; attempt += 1) {
+      await nextTick()
+      panel = aiTaskPanelRef.value
+    }
+    if (!panel?.trigger) {
+      ElMessage.warning('AI 任务面板尚未就绪：请从“AI 任务与历史”重试')
+      return
+    }
+    await panel.trigger('daily_lesson_split')
+  } finally {
+    splitFromRailBusy = false
+  }
+}
+
+function openReflectionAi(): void {
+  if (layoutEditing.value) {
+    ElMessage.info('栏目编辑弹窗未关闭：请先确定或取消后再发起反思')
+    return
+  }
+  reflectionInstruction.value = ''
+  reflectionAiOpen.value = true
+}
+
+function submitReflectionAi(): void {
+  reflectionAiOpen.value = false
+  layoutSection.value = 'reflection'
+  aiTaskDialogOpen.value = true
+  void createReflectionTask(reflectionInstruction.value)
 }
 
 function onDateChange(value: string | null): void {
@@ -2483,6 +2950,16 @@ const bridge: EditorBridge = {
           message:
             '候选预览有未采用的编辑：请采用并保存，或取消本次候选编辑后再离开',
         }
+      : sectionAiOpen.value && sectionAiInstruction.value.trim() !== ''
+        ? {
+            kind: 'candidate',
+            message: '栏目 AI 定向修改弹窗有未提交的要求：请生成或取消后再离开',
+          }
+      : reflectionAiOpen.value && reflectionInstruction.value.trim() !== ''
+        ? {
+            kind: 'history',
+            message: '反思定向修改弹窗有未提交的要求：请生成或取消后再离开',
+          }
       : layoutDraftDirty.value
         ? {
             kind: 'candidate',
@@ -2693,7 +3170,7 @@ onBeforeUnmount(() => {
   >
     <div class="toolbar">
       <h2>日计划 · {{ props.planDate }}</h2>
-      <div class="actions">
+      <div class="toolbar-meta">
         <el-date-picker
           v-model="datePickerValue"
           type="date"
@@ -2704,27 +3181,14 @@ onBeforeUnmount(() => {
           data-d1="editor-date"
           @change="onDateChange"
         />
-        <el-button size="small" :disabled="props.frozen || !plan" data-d1="open-export" @click="exportOpen = true">
-          导出 Word
-        </el-button>
-        <el-button
-          size="small"
-          :disabled="props.frozen || !plan || historyRestoreBlocked"
-          data-d1="open-history"
-          @click="openHistory"
-        >
-          历史记录
-        </el-button>
-        <el-button size="small" :disabled="props.frozen" data-d1="daily-ai-settings" @click="openGuidance()">
-          AI 设置
-        </el-button>
-        <el-button size="small" :disabled="props.frozen" data-d1="go-settings" @click="goSettings">设置</el-button>
-        <el-button size="small" :disabled="props.frozen" data-d1="back-calendar" @click="backToCalendar">
-          返回日历
-        </el-button>
+        <el-tag v-if="draftActive" size="small" type="warning" data-d1="draft">草稿未保存</el-tag>
+        <el-tag v-else-if="dirty" size="small" type="warning" data-d1="dirty">未保存</el-tag>
+        <el-tag v-if="props.frozen || locked" size="small" type="info">已锁定</el-tag>
       </div>
     </div>
 
+    <div class="editor-layout">
+      <div class="editor-main">
     <el-card v-if="phase === 'loading'" class="section">
       <p class="muted">正在读取日计划…</p>
     </el-card>
@@ -2756,20 +3220,6 @@ onBeforeUnmount(() => {
     </el-card>
 
     <template v-else-if="plan || draftActive">
-      <el-card class="section">
-        <div class="meta">
-          <span>班级：{{ plan?.class_name ?? props.context.class?.name ?? '（未填写）' }}（{{ GRADE_LABELS[plan?.grade ?? props.context.class?.grade ?? 'middle'] || plan?.grade || props.context.class?.grade }}）</span>
-          <span>园所：{{ plan?.school_name || props.context.school_name || '（未填写）' }}</span>
-          <span v-if="plan">{{ weekLabel }}</span>
-          <span v-if="plan">内容版本：v{{ plan.current_content_version }}</span>
-          <span v-if="plan">更新时间：{{ plan.updated_at }}</span>
-          <span v-else>未保存草稿</span>
-          <el-tag v-if="draftActive" size="small" type="warning" data-d1="draft">草稿未保存</el-tag>
-          <el-tag v-else-if="dirty" size="small" type="warning" data-d1="dirty">未保存</el-tag>
-          <el-tag v-else size="small" type="success">已同步</el-tag>
-          <el-tag v-if="props.frozen || locked" size="small" type="info">已锁定</el-tag>
-        </div>
-      </el-card>
       <el-alert
         v-if="draftActive"
         type="info"
@@ -2934,86 +3384,6 @@ onBeforeUnmount(() => {
           >
             {{ section.label }}
           </el-button>
-          <div
-            class="daily-generation-actions"
-            data-d1="daily-generation-actions"
-            aria-label="日计划生成操作"
-          >
-            <span class="daily-actions-label">生成操作</span>
-            <div
-              ref="generationActionTarget"
-              class="daily-generation-slot"
-              data-d1="daily-generation-slot"
-            ></div>
-            <el-button
-              v-if="!plan"
-              size="default"
-              type="primary"
-              class="daily-generation-button"
-              data-d1="split-save-and-start"
-              :loading="phase === 'saving'"
-              :disabled="!rawLessonPlan.trim() || editDisabled"
-              @click="startSplitFromActions"
-            >
-              保存并拆分
-            </el-button>
-            <el-button
-              size="default"
-              type="primary"
-              class="daily-generation-button"
-              :loading="reflectionBusy"
-              :disabled="editDisabled || reflectionFillBusy || !!reflectionPending || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
-              data-d1="reflection-generate"
-              @click="startReflectionFromActions"
-            >
-              生成反思
-            </el-button>
-            <div
-              v-if="reflectionError"
-              class="daily-action-status"
-              data-d1="reflection-action-error"
-            >
-              <p class="daily-action-error">{{ reflectionError }}</p>
-              <el-button
-                v-if="!reflectionPending"
-                size="small"
-                text
-                data-d1="reflection-locate-error"
-                @click="onAiLocate(REFLECTION_TASK_TYPE)"
-              >
-                到本栏查看
-              </el-button>
-            </div>
-            <p v-if="!plan" class="muted daily-action-note">
-              保存日计划后可发起过程适龄调整与其他活动。
-            </p>
-            <div v-if="reflectionPending" class="muted daily-action-note">
-              反思提交待核对：请到“一日反思”查看并查询原回执。
-              <el-button
-                size="small"
-                text
-                data-d1="reflection-locate-pending"
-                @click="onAiLocate(REFLECTION_TASK_TYPE)"
-              >
-                到本栏查看
-              </el-button>
-            </div>
-            <div
-              v-else-if="reflectionTask"
-              class="muted daily-action-note"
-              data-d1="daily-reflection-status"
-            >
-              {{ reflectionStatusText() }}
-              <el-button
-                size="small"
-                text
-                data-d1="reflection-locate-status"
-                @click="onAiLocate(REFLECTION_TASK_TYPE)"
-              >
-                到本栏查看
-              </el-button>
-            </div>
-          </div>
         </nav>
         </Teleport>
         <div class="daily-panes">
@@ -3085,6 +3455,16 @@ onBeforeUnmount(() => {
               </el-button>
             </div>
             <p class="fixed-label">固定栏目：<strong>{{ MORNING_EXERCISE_LABEL }}</strong></p>
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              data-d1="section-ai-morning_games"
+              :disabled="editDisabled"
+              @click="openSectionAi('morning_games')"
+            >
+              AI 生成 / 定向修改
+            </el-button>
             <div
               ref="otherTarget"
               class="ai-action-anchor"
@@ -3159,6 +3539,16 @@ onBeforeUnmount(() => {
               <span class="read-label">话题</span>
               <p class="read-value">{{ form.morning_talk.topic || '（未填写）' }}</p>
             </div>
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              data-d1="section-ai-morning_talk"
+              :disabled="editDisabled"
+              @click="openSectionAi('morning_talk')"
+            >
+              AI 生成 / 定向修改
+            </el-button>
             <div class="read-field">
               <span class="read-label">问题设计</span>
               <p class="read-value">{{ form.morning_talk.questions || '（未填写）' }}</p>
@@ -3241,6 +3631,16 @@ onBeforeUnmount(() => {
                 编辑本栏
               </el-button>
             </div>
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              data-d1="section-ai-post_group_games"
+              :disabled="editDisabled"
+              @click="openSectionAi('post_group_games')"
+            >
+              AI 生成 / 定向修改
+            </el-button>
             <div
               v-for="(group, gi) in form.post_group_games"
               :key="group.group_id || (group as any)._tmp || `p-${gi}`"
@@ -3299,6 +3699,16 @@ onBeforeUnmount(() => {
                 编辑本栏
               </el-button>
             </div>
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              data-d1="section-ai-afternoon_outdoor"
+              :disabled="editDisabled"
+              @click="openSectionAi('afternoon_outdoor')"
+            >
+              AI 生成 / 定向修改
+            </el-button>
             <div class="read-field">
               <span class="read-label">区域名称</span>
               <p class="read-value">{{ form.afternoon_outdoor.area || '（未填写区域名称）' }}</p>
@@ -3350,6 +3760,27 @@ onBeforeUnmount(() => {
                 编辑反思与材料
               </el-button>
             </div>
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :loading="reflectionBusy"
+              :disabled="editDisabled || reflectionFillBusy || !!reflectionPending || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
+              data-d1="reflection-generate"
+              @click="startReflectionFromActions"
+            >
+              AI 生成反思
+            </el-button>
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :disabled="editDisabled || reflectionBusy || reflectionFillBusy || !!reflectionPending"
+              data-d1="reflection-ai-edit"
+              @click="openReflectionAi"
+            >
+              AI 定向修改
+            </el-button>
             <pre v-if="form.reflection.trim()" class="read-pre" data-d1="read-reflection">{{ form.reflection }}</pre>
             <p v-else class="read-value">（未填写反思）</p>
             <div
@@ -3453,17 +3884,32 @@ onBeforeUnmount(() => {
         :process-target="processTarget"
         :other-target="otherTarget"
         :reflection-progress-target="reflectionProgressTarget"
-        :generation-target="generationActionTarget"
+        :dialog-open="aiTaskDialogOpen"
+        hide-other-row
+        @update:dialogOpen="aiTaskDialogOpen = $event"
         @draft-active="aiTaskDraftActive = $event"
-        @open-candidate="(id: string, taskType: TaskType) => openCandidate(id, taskType)"
+        @open-candidate="(id: string, taskType: TaskType, targetSection?: OtherSection | null) => openCandidate(id, taskType, false, undefined, targetSection ?? null)"
         @open-guidance="openGuidance"
         @other-generated="onOtherGenerated"
+        @split-generated="onSplitGenerated"
+        @adapt-updated="onAdaptUpdated"
         @reflection-updated="onReflectionUpdated"
         @action-start="onAiActionStart"
         @locate-task="onAiLocate"
+        @open-section-ai="openSectionAi"
+        @open-reflection-ai="openReflectionAi"
       />
 
       <div class="row footer">
+        <span v-if="phase === 'conflict'" class="muted">请先处理上方的版本冲突</span>
+        <span v-else class="muted">
+          正文为阅读模式；点击各栏“编辑本栏”修改，确定后只填回草稿；右侧“保存”写入新版本。
+        </span>
+      </div>
+    </template>
+      </div>
+      <aside class="editor-actions-rail" data-d1="editor-actions-rail" aria-label="日计划操作">
+        <span class="rail-label">操作</span>
         <el-button
           type="primary"
           :loading="phase === 'saving'"
@@ -3473,14 +3919,31 @@ onBeforeUnmount(() => {
         >
           保存
         </el-button>
-        <span v-if="phase === 'conflict'" class="muted">请先处理上方的版本冲突</span>
-        <span v-else class="muted">
-          正文为阅读模式；点击各栏“编辑本栏”修改，确定后只填回草稿，保存由上按钮执行。
-        </span>
-        <span v-if="plan" class="muted">内容版本 v{{ plan.current_content_version }}</span>
-        <span v-else class="muted">未保存草稿</span>
-      </div>
-    </template>
+        <el-button :disabled="props.frozen || !plan" data-d1="open-export" @click="exportOpen = true">
+          导出 Word
+        </el-button>
+        <el-button :disabled="props.frozen" data-d1="start-split-from-rail" @click="startSplitFromRail">
+          教案拆分
+        </el-button>
+        <el-button :disabled="props.frozen" data-d1="open-ai-history" @click="aiTaskDialogOpen = true">
+          AI 任务与历史
+        </el-button>
+        <el-button
+          :disabled="props.frozen || !plan || historyRestoreBlocked"
+          data-d1="open-history"
+          @click="openHistory"
+        >
+          版本历史
+        </el-button>
+        <el-button :disabled="props.frozen" data-d1="daily-ai-settings" @click="openGuidance()">
+          AI 设置
+        </el-button>
+        <el-button :disabled="props.frozen" data-d1="go-settings" @click="goSettings">设置</el-button>
+        <el-button :disabled="props.frozen" data-d1="back-calendar" @click="backToCalendar">
+          返回日历
+        </el-button>
+      </aside>
+    </div>
 
     <el-dialog
       :model-value="layoutModalOpen"
@@ -3847,6 +4310,85 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="reflectionAiOpen"
+      title="AI 定向修改：一日反思"
+      width="min(680px, 94vw)"
+      :close-on-click-modal="false"
+      append-to-body
+      data-d1="reflection-ai-dialog"
+    >
+      <p class="muted">
+        只依据下方真实实施材料调整反思表达；没有材料时不生成，不得补写已发生的课堂事实。结果仍先进入草稿，保存由教师确认。
+      </p>
+      <div class="read-field">
+        <span class="read-label">当前已保存反思正文（定向修改原稿，只读）</span>
+        <pre class="read-pre" data-d1="reflection-ai-current">{{ form.reflection.trim() || '（当前反思为空）' }}</pre>
+      </div>
+      <div class="read-field">
+        <span class="read-label">活动实施材料（当前输入）</span>
+        <pre class="read-pre" data-d1="reflection-ai-materials">{{ reflectionMaterials.trim() || '（未填写实施材料；请先编辑反思与材料）' }}</pre>
+      </div>
+      <div class="field">
+        <label>定向修改要求（可选：调整重点、语气或篇幅）</label>
+        <el-input
+          v-model="reflectionInstruction"
+          type="textarea"
+          :rows="3"
+          maxlength="500"
+          show-word-limit
+          data-d1="reflection-ai-instruction"
+          placeholder="例如：突出幼儿合作与教师支持，保留材料中的事实，不补写未发生的回答。"
+        />
+      </div>
+      <template #footer>
+        <el-button data-d1="reflection-ai-cancel" @click="reflectionAiOpen = false">取消</el-button>
+        <el-button type="primary" data-d1="reflection-ai-submit" @click="submitReflectionAi">
+          生成反思
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="sectionAiOpen"
+      :title="`AI 生成 / 定向修改：${SECTION_AI.find((item) => item.key === sectionAiTarget)?.label || ''}`"
+      width="min(680px, 94vw)"
+      :close-on-click-modal="false"
+      append-to-body
+      data-d1="section-ai-dialog"
+    >
+      <p class="muted">
+        每次只生成所选栏目；其他栏目和已保存内容保持。生成结果先进入当前草稿或候选，核对后由教师保存。
+      </p>
+      <div class="read-field">
+        <span class="read-label">当前栏目内容（只读）</span>
+        <pre class="read-pre" data-d1="section-ai-current">{{ sectionAiCurrentText || '（未填写）' }}</pre>
+      </div>
+      <div class="field">
+        <label>定向修改要求（可选：说明要改哪里、怎么改）</label>
+        <el-input
+          v-model="sectionAiInstruction"
+          type="textarea"
+          :rows="3"
+          maxlength="500"
+          show-word-limit
+          data-d1="section-ai-instruction"
+          placeholder="例如：晨间谈话更贴近本周主题，保留原有问题数量；只调整本栏。"
+        />
+      </div>
+      <template #footer>
+        <el-button data-d1="section-ai-cancel" @click="sectionAiOpen = false">取消</el-button>
+        <el-button
+          type="primary"
+          data-d1="section-ai-submit"
+          :disabled="editDisabled"
+          @click="submitSectionAi"
+        >
+          生成所选栏目
+        </el-button>
+      </template>
+    </el-dialog>
+
     <ExportDialog
       v-if="plan"
       v-model:open="exportOpen"
@@ -3867,11 +4409,14 @@ onBeforeUnmount(() => {
       :capture-epoch="captureEpoch"
       :inline="candidateInline"
       :inline-target="candidateInlineTarget"
+      :target-section="candidateSection"
+      :split-adapt="splitFlow && splitFlow.splitCandidateId === candidateId ? splitFlow : null"
       @update:open="onCandidateOpen"
       @adopted="onCandidateAdopted"
       @draft-active="onCandidateDraft"
       @open-candidate="(next) => openCandidate(next, 'daily_process_adapt')"
-      @open-regenerated="(next, type) => openCandidate(next, type, true)"
+      @open-regenerated="(next, type, targetSection) => openCandidate(next, type, true, undefined, targetSection ?? null)"
+      @retry-split-adapt="retrySplitAdapt"
     />
 
     <HistoryPanel
@@ -3895,6 +4440,40 @@ onBeforeUnmount(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+.toolbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 210px;
+  gap: 16px;
+  align-items: start;
+}
+.editor-main {
+  min-width: 0;
+}
+.editor-actions-rail {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--kgm-border);
+  border-radius: 6px;
+  background: var(--kgm-surface);
+}
+.editor-actions-rail .el-button {
+  width: 100%;
+  margin-left: 0;
+}
+.rail-label {
+  color: var(--kgm-muted);
+  font-size: 0.8rem;
 }
 .actions {
   display: flex;
@@ -4164,6 +4743,20 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+@media (max-width: 1100px) {
+  .editor-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .editor-actions-rail {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .editor-actions-rail .el-button {
+    width: auto;
+  }
 }
 @media (max-width: 760px) {
   .daily-book {

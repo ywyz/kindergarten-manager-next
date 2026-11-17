@@ -303,6 +303,13 @@ export type TaskType =
   | 'daily_other_activities'
   | 'daily_reflection_generate'
 
+/** One independently generated daily-plan activity column. */
+export type OtherSection =
+  | 'morning_games'
+  | 'morning_talk'
+  | 'post_group_games'
+  | 'afternoon_outdoor'
+
 /** GET/PATCH /api/local/ai/config (engineering spec §5.1 ``ConfigOut``). */
 export interface AiConfig {
   ai_config_version: number
@@ -389,6 +396,12 @@ export interface AiTaskInputSummary {
   content_version: number | null
   target_grade: Grade | null
   dependency_hash: string | null
+  /** Selected other-activities column for a targeted task. */
+  target_section?: OtherSection | null
+  /** Persisted split-candidate relationship for the pre-adoption adapt chain. */
+  source_split_candidate_id?: string | null
+  source_split_content_version?: number | null
+  source_split_target_grade?: Grade | null
   /** Real backend type: a small object, never a string (R01/附加). */
   calendar_coverage_warning?: {
     coverage?: string
@@ -500,11 +513,13 @@ export interface CandidateAdoptionOrigin {
   targetGrade: string | null
 }
 
-/** A split version that was just adopted, before any further local editing. */
+/** A split candidate that was just generated, before adoption. */
 export interface SplitAdaptContinuation {
   planId: string
   contentVersion: number
   targetGrade: Grade
+  /** The unsaved split candidate whose generated process is adapted once. */
+  sourceCandidateId: string
 }
 
 /** GET /api/local/ai/operations/{request_id} (receipt read-back). */

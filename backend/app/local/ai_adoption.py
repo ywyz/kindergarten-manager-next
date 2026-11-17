@@ -374,6 +374,10 @@ def preview_adoption(
         raw, _execution, input_row = require_candidate_chain(
             session, plan, candidate
         )
+        if bool((input_row.dependencies_json or {}).get("pre_adoption_split")):
+            raise LocalValidationError(
+                "该适龄候选只用于拆分确认，不能单独采用"
+            )
         if not ai_candidates.contract_adoptable(session, profile_id, candidate):
             raise LocalAiContractObsolete()
         validated = _validate_edit(candidate.task_type, edited_candidate)
@@ -578,6 +582,10 @@ def adopt(
         raw, _execution, input_row = require_candidate_chain(
             session, plan, candidate
         )
+        if bool((input_row.dependencies_json or {}).get("pre_adoption_split")):
+            raise LocalValidationError(
+                "该适龄候选只用于拆分确认，不能单独采用"
+            )
         if not ai_candidates.contract_adoptable(session, profile_id, candidate):
             raise LocalAiContractObsolete()
         if payload.get("contract_version") != candidate.contract_version:

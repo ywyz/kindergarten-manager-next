@@ -98,6 +98,44 @@ class ReflectionContractTests(unittest.TestCase):
                 {"reflection": "正文", "group_activity": {}},
             )
 
+    def test_projection_carries_reflection_revision_instruction(self):
+        plan = SimpleNamespace(
+            id="plan-1",
+            plan_date=date(2026, 11, 8),
+            week_number=3,
+            weekday=6,
+            class_id="class-1",
+        )
+        content = SimpleNamespace(version=7, adopted_content=saved_content())
+        instruction = "突出幼儿合作与教师支持，保留材料事实"
+        projected = ai_inputs.project_input(
+            SimpleNamespace(),
+            plan=plan,
+            content=content,
+            task_type="daily_reflection_generate",
+            target_grade="middle",
+            implementation_materials=MATERIALS,
+            revision_instruction=instruction,
+        )
+        self.assertEqual(projected.payload["revision_instruction"], instruction)
+        self.assertEqual(projected.payload["current_reflection"], "旧反思：活动尚未开展。")
+        self.assertEqual(projected.dependencies["revision_instruction"], instruction)
+        self.assertEqual(
+            projected.dependencies["current_reflection"], "旧反思：活动尚未开展。"
+        )
+        self.assertEqual(
+            projected.source_excerpt["revision_instruction"], instruction
+        )
+        self.assertEqual(
+            projected.source_excerpt["current_reflection"], "旧反思：活动尚未开展。"
+        )
+        self.assertEqual(
+            prompt_bundles.validate_input(
+                "daily_reflection_generate", projected.payload
+            ),
+            projected.payload,
+        )
+
     def test_projection_uses_saved_plan_and_materials_not_old_reflection(self):
         plan = SimpleNamespace(
             id="plan-1",

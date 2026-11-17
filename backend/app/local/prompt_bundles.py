@@ -1558,6 +1558,8 @@ class ReflectionInput(_InputModel):
     target_grade: Literal["small", "middle", "large"]
     plan_snapshot: _ReflectionPlanSnapshot
     implementation_materials: StrictStr = Field(..., min_length=1, max_length=5000)
+    revision_instruction: StrictStr | None = Field(default=None, max_length=500)
+    current_reflection: StrictStr | None = Field(default=None, max_length=100000)
 
 
 # ---------------------------------------------------------------------------

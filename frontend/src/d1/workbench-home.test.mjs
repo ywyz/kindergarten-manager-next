@@ -287,6 +287,18 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+function detailText(exposed) {
+  const details = exposed.selectedDetails
+  if (!details) return ''
+  return [
+    details.gregorianLabel,
+    details.weekdayLabel,
+    `农历 ${details.lunar.display || details.lunar.reason}`,
+    `节气 ${details.solarTerm.name || details.solarTerm.reason}`,
+    `节日 ${details.festivals.join('、') || '无'}`,
+    `年度 ${details.annual.label}`,
+  ].join(' ')
+}
 function todo(id, overrides = {}) {
   return {
     todo_id: id,
@@ -301,21 +313,59 @@ function todo(id, overrides = {}) {
   }
 }
 
+function homeStore(items) {
+  const calls = []
+  const queries = []
+  const retries = []
+  const state = vue.reactive({
+    profileId: 'p1', items, loading: false, saving: false, checking: false,
+    error: '', notice: '', conflict: false, draftTitle: '', draftDueDate: '',
+    editingId: null, editingVersion: 0, pending: null, showArchived: false,
+    selectedIds: [], batching: false, listReady: true,
+  })
+  const busy = vue.computed(
+    () => state.saving || state.batching || state.checking || state.pending !== null,
+  )
+  return {
+    state, busy, calls, queries, retries,
+    setProfile(id) { state.profileId = id; state.items = []; state.listReady = false },
+    setArchivedView: async (value) => { state.showArchived = value; state.listReady = true },
+    load: async () => { state.listReady = true },
+    toggle: async (item) => {
+      calls.push(item.todo_id)
+      if (state.pending) return
+      const updated = { ...item, completed: !item.completed, version: item.version + 1 }
+      state.items = state.items.map((row) => row.todo_id === updated.todo_id ? updated : row)
+    },
+    queryPending: async () => {
+      queries.push(state.pending?.requestId ?? '')
+      state.pending = null
+      state.error = ''
+    },
+    retryPending: async () => {
+      retries.push(state.pending?.requestId ?? '')
+      state.pending = null
+      state.error = ''
+    },
+  }
+}
 const props = vue.reactive({
   profileId: 'p1',
   disabled: false,
   today: '2026-11-15',
+  store: null,
 })
 const emitted = []
 let panelRef = null
 let app = null
 let root = null
 
-async function mountPanel(api, { profileId = 'p1', disabled = false, today = '2026-11-15' } = {}) {
+async function mountPanel(api, { profileId = 'p1', disabled = false, today = '2026-11-15', store = null } = {}) {
   activeTodoApi = api
   props.profileId = profileId
   props.disabled = disabled
   props.today = today
+  props.store = store
   emitted.length = 0
   intervalFns.length = 0
   clearedIntervalIds.length = 0
@@ -392,11 +442,13 @@ async function main() {
     assert.ok(byD1(mountEl, 'home-calendar-grid'))
     assert.ok(byD1(mountEl, 'home-month-picker'))
     assert.ok(byD1(mountEl, 'home-day-2026-11-15'))
-    const detail = nodeText(byD1(mountEl, 'home-day-detail'))
-    assert.match(detail, /2026年11月15日/)
-    assert.match(detail, /星期日/)
-    assert.match(detail, /农历/)
-    assert.match(detail, /无放假或调休/)
+    assert.equal(byD1(mountEl, 'home-day-detail'), null)
+    click(byD1(mountEl, 'home-day-2026-11-15'))
+    assert.equal(exposed.dayDialogOpen, true)
+    assert.match(exposed.selectedDetails.gregorianLabel, /2026年11月15日/)
+    assert.match(exposed.selectedDetails.weekdayLabel, /星期日/)
+    assert.ok(exposed.selectedDetails.lunar.display)
+    assert.match(exposed.selectedDetails.annual.label, /无放假或调休/)
     click(byD1(mountEl, 'home-manage-todos'))
     assert.deepEqual(emitted, ['open-todos'])
     await unmountPanel()
@@ -413,7 +465,7 @@ async function main() {
     assert.equal(exposed.month, '2026-12')
     assert.equal(exposed.selectedDate, '2026-12-01')
     assert.ok(byD1(mountEl, 'home-day-2026-12-01'))
-    assert.match(nodeText(byD1(mountEl, 'home-day-detail')), /2026年12月1日/)
+    assert.match(detailText(exposed), /2026年12月1日/)
     click(byD1(mountEl, 'home-calendar-prev'))
     click(byD1(mountEl, 'home-calendar-prev'))
     await settle()
@@ -472,7 +524,7 @@ async function main() {
     const { exposed, mountEl } = await mountPanel(api, { today: '' })
     await waitFor(() => exposed.loading === false, 'clock todo load')
     exposed.setMonth('2026-11')
-    exposed.selectDay('2026-11-01')
+    click(byD1(mountEl, 'home-day-2026-11-01'))
     await settle()
     exposed.refreshToday(new Date('2026-11-15T23:59:00+08:00'))
     await settle()
@@ -481,6 +533,7 @@ async function main() {
     assert.match(nodeText(byD1(mountEl, 'home-todo-d16')), /截止 2026-11-16/)
     assert.equal(exposed.month, '2026-11')
     assert.equal(exposed.selectedDate, '2026-11-01')
+    assert.equal(exposed.dayDialogOpen, true)
 
     exposed.refreshToday(new Date('2026-11-16T00:01:00+08:00'))
     await settle()
@@ -491,6 +544,7 @@ async function main() {
     // Refreshing the clock does not discard a manually chosen month/day.
     assert.equal(exposed.month, '2026-11')
     assert.equal(exposed.selectedDate, '2026-11-01')
+    assert.equal(exposed.dayDialogOpen, true)
 
     // Crossing a month boundary also leaves the manual browse untouched.
     exposed.selectDay('2026-11-10')
@@ -521,7 +575,7 @@ async function main() {
     await settle()
     click(byD1(mountEl, 'home-day-2026-10-01'))
     await settle()
-    let detail = nodeText(byD1(mountEl, 'home-day-detail'))
+    let detail = detailText(exposed)
     assert.match(detail, /国庆节/)
     assert.match(detail, /放假（年度安排）/)
     assert.match(detail, /国庆节/)
@@ -532,7 +586,7 @@ async function main() {
     await settle()
     click(byD1(mountEl, 'home-day-2026-11-22'))
     await settle()
-    detail = nodeText(byD1(mountEl, 'home-day-detail'))
+    detail = detailText(exposed)
     assert.match(detail, /小雪/)
     assert.match(detail, /节气/)
 
@@ -540,7 +594,7 @@ async function main() {
     await settle()
     click(byD1(mountEl, 'home-day-2026-02-14'))
     await settle()
-    detail = nodeText(byD1(mountEl, 'home-day-detail'))
+    detail = detailText(exposed)
     assert.match(detail, /调休上班（年度安排）/)
     assert.match(String(byD1(mountEl, 'home-day-2026-02-14').props.class), /makeup/)
     assert.match(nodeText(byD1(mountEl, 'home-day-2026-02-14')), /班/)
@@ -549,7 +603,7 @@ async function main() {
     await settle()
     click(byD1(mountEl, 'home-day-2025-07-25'))
     await settle()
-    detail = nodeText(byD1(mountEl, 'home-day-detail'))
+    detail = detailText(exposed)
     assert.match(detail, /闰六月初一/)
     assert.match(detail, /节日/)
     assert.match(detail, /无/)
@@ -558,19 +612,19 @@ async function main() {
     await settle()
     click(byD1(mountEl, 'home-day-2027-02-05'))
     await settle()
-    assert.match(nodeText(byD1(mountEl, 'home-day-detail')), /除夕/)
+    assert.match(detailText(exposed), /除夕/)
     click(byD1(mountEl, 'home-day-2027-02-06'))
     await settle()
-    assert.match(nodeText(byD1(mountEl, 'home-day-detail')), /春节/)
+    assert.match(detailText(exposed), /春节/)
     click(byD1(mountEl, 'home-day-2027-02-07'))
     await settle()
-    assert.match(nodeText(byD1(mountEl, 'home-day-detail')), /正月初二/)
+    assert.match(detailText(exposed), /正月初二/)
 
     exposed.setMonth('2028-01')
     await settle()
     click(byD1(mountEl, 'home-day-2028-01-01'))
     await settle()
-    detail = nodeText(byD1(mountEl, 'home-day-detail'))
+    detail = detailText(exposed)
     assert.match(detail, /元旦/)
     assert.match(detail, /年度放假安排未载入/)
     assert.doesNotMatch(String(byD1(mountEl, 'home-day-2028-01-01').props.class), /rest/)
@@ -646,18 +700,59 @@ async function main() {
     ok('unmount discards a late todo list response')
   }
 
+  // -- injected shared-store calendar write gate --
+  {
+    const store = homeStore([todo('cal1', { due_date: '2026-11-15' })])
+    const api = { list: async () => ({ items: [] }) }
+    const { exposed, mountEl } = await mountPanel(api, { store })
+    click(byD1(mountEl, 'home-day-2026-11-15'))
+    assert.equal(exposed.dayDialogOpen, true, 'actual date click opens the dialog')
+
+    await exposed.toggleTodo(store.state.items[0])
+    await settle()
+    assert.deepEqual(store.calls, ['cal1'])
+    assert.equal(store.state.items[0].completed, true)
+    assert.equal(exposed.todos.length, 0, 'completed todo leaves the incomplete summary')
+
+    await exposed.toggleTodo(store.state.items[0])
+    await settle()
+    assert.deepEqual(store.calls, ['cal1', 'cal1'])
+    assert.equal(exposed.todos.length, 1, 'restoring completion returns to the summary')
+
+    store.state.pending = { requestId: 'req-cal-1' }
+    await exposed.toggleTodo(store.state.items[0])
+    assert.deepEqual(store.calls, ['cal1', 'cal1'], 'pending never sends a second write')
+    await exposed.queryTodoReceipt()
+    assert.deepEqual(store.queries, ['req-cal-1'], 'query uses the original receipt id')
+
+    props.profileId = 'p1'
+    store.state.profileId = 'p2'
+    store.state.items = []
+    await exposed.toggleTodo(todo('foreign', { due_date: '2026-11-15' }))
+    assert.deepEqual(store.calls, ['cal1', 'cal1'], 'foreign profile cannot write through the old item')
+    await unmountPanel()
+    ok('calendar dialog writes through the shared protected todo store and queries unknown receipts')
+  }
   // -- source contract: no singleton store, no teaching calendar, readonly --
   {
     assert.match(panelSource, /createTodoApi\(\)/)
     assert.match(panelSource, /api\.list\(false\)/)
-    assert.match(panelSource, /!item\.completed && item\.archived_at === null/)
-    assert.doesNotMatch(panelSource, /todoStore|state\.items|state\.draft|state\.pending/)
+    assert.match(panelSource, /allTodos\.value = payload\.items\.filter\(\(item\) => item\.archived_at === null\)/)
+    assert.match(panelSource, /todos\.value = allTodos\.value\.filter\(\(item\) => !item\.completed\)/)
+    assert.match(panelSource, /data-d1="home-day-dialog"/)
+    assert.match(panelSource, /async function toggleTodo\(/)
+    assert.match(panelSource, /data-d1="home-day-todos"/)
+    assert.match(panelSource, /todoCountOnDate/)
+    assert.match(panelSource, /props\.store/)
+    assert.match(panelSource, /store\.toggle\(/)
+    assert.match(panelSource, /store\.state\.pending/)
+    assert.doesNotMatch(panelSource, /state\.draft|createTodoStore\s*\(/)
     assert.doesNotMatch(panelSource, /api\/local\/calendar|api\/daily-plans|open-editor/)
     assert.doesNotMatch(panelSource, /\bfetch\s*\(|XMLHttpRequest|WebSocket/)
     assert.match(panelSource, /data-d1="workbench-home-calendar"/)
     assert.match(panelSource, /data-d1="workbench-home-todos"/)
     assert.match(panelSource, /data-d1="home-month-picker"/)
-    assert.match(panelSource, /data-d1="home-day-detail"/)
+    assert.match(panelSource, /data-d1="home-day-dialog"/)
     assert.match(panelSource, /const monthModel = computed<string>/)
     assert.match(panelSource, /v-model="monthModel"/)
     assert.match(panelSource, /setInterval\(\(\) => refreshToday\(\), 30_000\)/)

@@ -40,6 +40,20 @@ const selectedItems = computed(() =>
   state.items.filter((item) => state.selectedIds.includes(item.todo_id)),
 )
 const selectedCount = computed(() => selectedItems.value.length)
+const allSelected = computed(
+  () => state.items.length > 0 && state.items.every((item) => state.selectedIds.includes(item.todo_id)),
+)
+const someSelected = computed(
+  () => state.items.some((item) => state.selectedIds.includes(item.todo_id)) && !allSelected.value,
+)
+function toggleSelectAll(value: boolean): void {
+  if (writeDisabled.value) return
+  if (value) {
+    for (const item of state.items) activeStore.toggleSelected(item.todo_id, true)
+  } else {
+    activeStore.clearSelection()
+  }
+}
 const viewLocked = computed(() =>
   state.saving
   || state.batching
@@ -352,6 +366,15 @@ defineExpose({
     </div>
 
     <div class="todo-batchbar">
+      <el-checkbox
+        :model-value="allSelected"
+        :indeterminate="someSelected"
+        :disabled="writeDisabled || !state.items.length"
+        data-d1="todo-select-all"
+        @change="toggleSelectAll($event === true)"
+      >
+        {{ allSelected ? '取消全选' : '全选' }}
+      </el-checkbox>
       <span class="muted" data-d1="todo-selected-count">
         已选 {{ selectedCount }} 项
       </span>

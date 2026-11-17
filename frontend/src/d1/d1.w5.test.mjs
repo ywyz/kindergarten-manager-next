@@ -2195,6 +2195,16 @@ function fieldInput(root, label) {
   return null
 }
 
+async function processInput(root) {
+  let input = fieldInput(root, '过程')
+  if (!input) {
+    byD1Button(root, 'split-process-edit').props.onClick({})
+    await settle()
+    input = fieldInput(root, '过程')
+  }
+  return input
+}
+
 function typeInto(node, value) {
   assert.ok(node, 'input/textarea must exist')
   node.props.onInput({ target: { value } })
@@ -2268,14 +2278,14 @@ async function testCandidateDomDirtyKeepsCompareAndCancelEnabled() {
   const adopt = byD1Button(mountEl, 'candidate-adopt')
   assert.equal(cancel.props.disabled, false)
   assert.equal(preview.props.disabled, false)
-  assert.equal(adopt.props.disabled, true, 'adopt needs a viewed comparison')
+  assert.equal(adopt.props.disabled, false, 'split adoption may internally preview without a separate click')
 
-  typeInto(fieldInput(mountEl, '过程'), '一、导入\n二、观察\n三、比较（教师确认）')
+  typeInto(await processInput(mountEl), '一、导入\n二、观察\n三、比较（教师确认）')
   await settle()
   // This is the H06-R01 defect: a teacher edit must NOT disable compare/cancel.
   assert.equal(cancel.props.disabled, false, 'cancel must stay enabled while dirty')
   assert.equal(preview.props.disabled, false, 'compare must stay enabled while dirty')
-  assert.equal(adopt.props.disabled, true, 'adopt still requires a comparison')
+  assert.equal(adopt.props.disabled, false, 'split adoption still works without a separate comparison click')
 
   clickNode(preview)
   await settle()
@@ -2315,7 +2325,7 @@ async function testCandidateDomCancelRestoresWithoutBodyWrite() {
     },
   })
   const original = splitCandidate().raw_candidate.group_activity.process
-  typeInto(fieldInput(mountEl, '过程'), '教师取消前的编辑')
+  typeInto(await processInput(mountEl), '教师取消前的编辑')
   await settle()
   clickNode(byD1Button(mountEl, 'candidate-cancel-edit'))
   await settle()
@@ -2323,7 +2333,7 @@ async function testCandidateDomCancelRestoresWithoutBodyWrite() {
   assert.equal(adoptPosts, 0)
   assert.equal(saveCalls, 0, 'cancel must not write the body')
   assert.equal(
-    fieldInput(mountEl, '过程').props.value,
+    (await processInput(mountEl)).props.value,
     original,
     'cancel must restore the original candidate form',
   )
@@ -2333,7 +2343,7 @@ async function testCandidateDomCancelRestoresWithoutBodyWrite() {
 
 async function testCandidateDomDirtyStillBlocksDialogClose() {
   const { mountEl } = await mountCandidateDom({ routes: splitDetail })
-  typeInto(fieldInput(mountEl, '过程'), '未采用的编辑')
+  typeInto(await processInput(mountEl), '未采用的编辑')
   await settle()
   const dialog = byD1Tag(mountEl, 'div', 'candidate-preview')
   let doneCalls = 0
@@ -2407,12 +2417,12 @@ async function testCandidateDomPreviewInFlightBlocksConflicts() {
   assert.equal(byD1Button(mountEl, 'candidate-adopt').props.disabled, true)
   // The internal entry points must also refuse to act while a comparison is in
   // flight (belt-and-braces beyond the disabled attribute).
-  const processValue = fieldInput(mountEl, '过程').props.value
+  const processValue = (await processInput(mountEl)).props.value
   byD1Button(mountEl, 'candidate-preview').props.onClick({})
   byD1Button(mountEl, 'candidate-cancel-edit').props.onClick({})
   await settle()
   assert.equal(previewPosts, 1, 'no duplicate comparison while one is in flight')
-  assert.equal(fieldInput(mountEl, '过程').props.value, processValue, 'cancel must not reset during a comparison')
+  assert.equal((await processInput(mountEl)).props.value, processValue, 'cancel must not reset during a comparison')
   ok('candidate H06-R01: an in-flight comparison blocks cancel/adopt and a duplicate compare')
 }
 
@@ -4603,10 +4613,11 @@ function splitAdoptionOrigin(overrides = {}) {
 
 /** Connect the real editor and task-panel methods with Vue's normal queued
  * prop propagation. Every write still goes through the controlled fetch API. */
-async function mountSplitContinuation({ server = savedSplitPlan(), readServer, createTask, routes = {} } = {}) {
+async function mountSplitContinuation({ server = savedSplitPlan(), readServer, createTask, routes = {}, editorRoutes = {} } = {}) {
   const editor = await mountEditor({ routes: {
-    'GET /api/daily-plans/by-date': () => jsonResponse(200, planFixture()),
+    'GET /api/daily-plans/by-date': () => jsonResponse(200, server),
     'GET /api/daily-plans/p1': readServer ?? (() => jsonResponse(200, server)),
+    ...editorRoutes,
   } })
   await settle()
   let saves = 0
@@ -4877,6 +4888,451 @@ async function testSplitContinuationUnknownCreateStaysPendingWithoutResend() {
 // Runner
 // ---------------------------------------------------------------------------
 
+async function testUnknownSplitAdaptRetryQueriesWithoutNewRequest() {
+  const plan = savedSplitPlan()
+  const task = taskFixture({
+    id: 'unknown-adapt',
+    task_type: 'daily_process_adapt',
+    status: 'succeeded',
+    candidate_id: 'cand-adapt',
+    execution: {
+      id: 'exec-adapt', generation: 1, ai_config_version: 1,
+      personal_revision: 1, contract_version: 1, default_revision: 1, attempt_no: 1,
+    },
+    input_summary: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'adapt-dep',
+      source_split_candidate_id: 'cand-split',
+      source_split_content_version: 4,
+      source_split_target_grade: 'small',
+    },
+  })
+  const adapted = adaptCandidate({
+    id: 'cand-adapt',
+    task_id: 'unknown-adapt',
+    execution_id: 'exec-adapt',
+    latest_content_version: 4,
+    raw_candidate: { process: '查询后的适龄过程' },
+    source: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'adapt-dep',
+      dependencies: { source_split_candidate_id: 'cand-split' },
+      source_excerpt: { source_split_candidate_id: 'cand-split', process: '拆分原过程' },
+    },
+  })
+  const { state, calls } = await mountEditor({
+    routes: {
+      'GET /api/daily-plans/by-date': () => jsonResponse(200, plan),
+      'GET /api/daily-plans/p1': () => jsonResponse(200, plan),
+      'GET /api/local/ai/tasks/unknown-adapt': () => jsonResponse(200, task),
+      'GET /api/daily-plans/p1/ai-candidates/cand-adapt': () => jsonResponse(200, adapted),
+    },
+  })
+  await settle()
+  state.splitFlow.value = {
+    splitTaskId: 'split-task',
+    splitCandidateId: 'cand-split',
+    planId: 'p1',
+    contentVersion: 4,
+    targetGrade: 'small',
+    adaptTaskId: 'unknown-adapt',
+    status: 'unknown',
+  }
+  await state.retrySplitAdapt()
+  await settle()
+  assert.equal(
+    callsTo(calls, 'POST', '/api/daily-plans/p1/ai-tasks').length,
+    0,
+    'an unknown adapt retry only reads the existing task',
+  )
+  assert.equal(state.splitFlow.value.status, 'ready')
+  assert.equal(state.splitFlow.value.process, '查询后的适龄过程')
+
+  state.splitFlow.value = {
+    ...state.splitFlow.value,
+    adaptTaskId: undefined,
+    status: 'unknown',
+  }
+  await state.retrySplitAdapt()
+  await settle()
+  assert.equal(
+    callsTo(calls, 'POST', '/api/daily-plans/p1/ai-tasks').length,
+    0,
+    'a lost create without a task id never creates a new request',
+  )
+  assert.match(state.splitFlow.value.message, /查询原回执/)
+  ok('split unknown: retry queries the existing task and never shortcuts a new request')
+}
+
+async function testHistoricalSplitCandidateRestoresLinkedAdaptAndSurvivesOtherCandidates() {
+  const plan = savedSplitPlan()
+  const splitTask = taskFixture({
+    id: 'historical-split',
+    task_type: 'daily_lesson_split',
+    status: 'succeeded',
+    candidate_id: 'cand-split',
+    input_summary: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'split-dep',
+    },
+  })
+  const adaptTask = taskFixture({
+    id: 'historical-adapt',
+    task_type: 'daily_process_adapt',
+    status: 'succeeded',
+    candidate_id: 'cand-adapt',
+    execution: {
+      id: 'exec-adapt', generation: 1, ai_config_version: 1,
+      personal_revision: 1, contract_version: 1, default_revision: 1, attempt_no: 1,
+    },
+    input_summary: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'adapt-dep',
+      source_split_candidate_id: 'cand-split',
+      source_split_content_version: 4,
+      source_split_target_grade: 'small',
+    },
+  })
+  const split = splitCandidate({
+    id: 'cand-split',
+    task_id: 'historical-split',
+    latest_content_version: 4,
+    source: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'split-dep',
+      dependencies: { raw_lesson_plan: '合成原教案' },
+      source_excerpt: { raw_lesson_plan: '合成原教案' },
+    },
+    raw_candidate: {
+      group_activity: {
+        theme: '主题A', objectives: '目标A', preparation: '准备A',
+        key_points: '重点A', difficult_points: '难点A', process: '拆分原过程',
+      },
+    },
+  })
+  const adapted = adaptCandidate({
+    id: 'cand-adapt',
+    task_id: 'historical-adapt',
+    execution_id: 'exec-adapt',
+    latest_content_version: 4,
+    raw_candidate: { process: '已保存的适龄过程' },
+    source: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'adapt-dep',
+      dependencies: { source_split_candidate_id: 'cand-split' },
+      source_excerpt: { source_split_candidate_id: 'cand-split', process: '拆分原过程' },
+    },
+  })
+  const { state } = await mountEditor({
+    routes: {
+      'GET /api/daily-plans/by-date': () => jsonResponse(200, plan),
+      'GET /api/daily-plans/p1': () => jsonResponse(200, plan),
+      'GET /api/local/ai/tasks': () => jsonResponse(200, {
+        items: [splitTask, adaptTask],
+        next_cursor: null,
+      }),
+      'GET /api/daily-plans/p1/ai-candidates/cand-split': () => jsonResponse(200, split),
+      'GET /api/daily-plans/p1/ai-candidates/cand-adapt': () => jsonResponse(200, adapted),
+    },
+  })
+  await settle()
+  await state.openCandidate('cand-split', 'daily_lesson_split')
+  await settle()
+  assert.equal(state.splitFlow.value?.status, 'ready', 'historical linkage is rebuilt from tasks')
+  assert.equal(state.splitFlow.value?.process, '已保存的适龄过程')
+  assert.equal(state.splitFlow.value?.historical, false)
+  await state.openCandidate('other-candidate', 'daily_other_activities')
+  await settle()
+  assert.equal(state.splitFlow.value?.splitCandidateId, 'cand-split', 'opening another candidate keeps the split relation')
+  await state.openCandidate('cand-split', 'daily_lesson_split')
+  await settle()
+  assert.equal(state.splitFlow.value?.status, 'ready')
+  assert.equal(state.splitFlow.value?.process, '已保存的适龄过程')
+  ok('split history: task-linked original/adapt result survives candidate switches and page ref loss')
+}
+
+async function testPreAdoptionSplitGeneratedChainOnceAndBound() {
+  const splitTask = taskFixture({
+    id: 'split-task',
+    task_type: 'daily_lesson_split',
+    status: 'succeeded',
+    candidate_id: 'cand-split',
+    input_summary: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'dep-split',
+    },
+  })
+  const adaptTask = taskFixture({
+    id: 'adapt-task',
+    task_type: 'daily_process_adapt',
+    status: 'pending',
+    candidate_id: null,
+    input_summary: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'dep-adapt',
+    },
+  })
+  const adaptSucceeded = {
+    ...adaptTask,
+    status: 'succeeded',
+    candidate_id: 'cand-adapt',
+    execution: {
+      id: 'exec-adapt',
+      generation: 1,
+      ai_config_version: 1,
+      personal_revision: 1,
+      contract_version: 1,
+      default_revision: 1,
+      attempt_no: 1,
+    },
+  }
+  const split = splitCandidate({
+    id: 'cand-split',
+    task_id: 'split-task',
+    latest_content_version: 4,
+    source: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'dep-split',
+      dependencies: { raw_lesson_plan: '合成原教案' },
+      source_excerpt: { raw_lesson_plan: '合成原教案' },
+    },
+    raw_candidate: {
+      group_activity: {
+        theme: '主题A', objectives: '目标A', preparation: '准备A',
+        key_points: '重点A', difficult_points: '难点A', process: '拆分原过程',
+      },
+    },
+  })
+  const adapted = adaptCandidate({
+    id: 'cand-adapt',
+    task_id: 'adapt-task',
+    execution_id: 'exec-adapt',
+    latest_content_version: 4,
+    raw_candidate: { process: '适龄完整过程' },
+    source: {
+      content_version: 4,
+      target_grade: 'small',
+      dependency_hash: 'dep-adapt',
+      dependencies: { source_split_candidate_id: 'cand-split' },
+      source_excerpt: { source_split_candidate_id: 'cand-split', process: '拆分原过程' },
+    },
+  })
+  const { editor, posts } = await mountSplitContinuation({
+    createTask: ({ body }) => jsonResponse(200, {
+      ...adaptTask,
+      input_summary: {
+        ...adaptTask.input_summary,
+        content_version: body.expected_content_version,
+        target_grade: body.target_grade,
+      },
+    }),
+    editorRoutes: {
+      'GET /api/daily-plans/p1/ai-candidates/cand-split': () => jsonResponse(200, split),
+      'GET /api/daily-plans/p1/ai-candidates/cand-adapt': () => jsonResponse(200, adapted),
+    },
+  })
+  await editor.state.onSplitGenerated(splitTask)
+  await settle()
+  assert.equal(posts().length, 1, 'a live split starts exactly one adapt task')
+  assert.equal(posts()[0].body.source_candidate_id, 'cand-split')
+  assert.equal(posts()[0].body.target_grade, 'small')
+  assert.equal(editor.state.candidateId.value, 'cand-split')
+  assert.equal(editor.state.candidateOpen.value, true)
+  assert.equal(editor.state.splitFlow.value.status, 'pending')
+  await editor.state.onSplitGenerated(splitTask)
+  await settle()
+  assert.equal(posts().length, 1, 'duplicate/late split events never start a second task')
+  await editor.state.onAdaptUpdated(adaptSucceeded)
+  await settle()
+  assert.equal(editor.state.splitFlow.value.status, 'ready')
+  assert.equal(editor.state.splitFlow.value.process, '适龄完整过程')
+  const wrong = adaptCandidate({
+    ...adapted,
+    source: {
+      ...adapted.source,
+      dependencies: { source_split_candidate_id: 'cand-other' },
+      source_excerpt: { source_split_candidate_id: 'cand-other' },
+    },
+  })
+  const { editor: wrongEditor } = await mountSplitContinuation({
+    createTask: ({ body }) => jsonResponse(200, {
+      ...adaptTask,
+      input_summary: {
+        ...adaptTask.input_summary,
+        content_version: body.expected_content_version,
+        target_grade: body.target_grade,
+      },
+    }),
+    editorRoutes: {
+      'GET /api/daily-plans/p1/ai-candidates/cand-split': () => jsonResponse(200, split),
+      'GET /api/daily-plans/p1/ai-candidates/cand-adapt': () => jsonResponse(200, wrong),
+    },
+  })
+  await wrongEditor.state.onSplitGenerated(splitTask)
+  await settle()
+  await wrongEditor.state.onAdaptUpdated(adaptSucceeded)
+  await settle()
+  assert.equal(wrongEditor.state.splitFlow.value.status, 'failed', 'a different split source cannot populate the review')
+  ok('split chain: live split opens candidate and starts one bound adapt; wrong/late source is rejected')
+}
+
+async function testHistoricalRunningSplitCannotGainAutoChainFromPolling() {
+  const running = liveTask({
+    id: 'historical-split',
+    task_type: 'daily_lesson_split',
+    candidate_id: null,
+  })
+  const succeeded = taskFixture({
+    id: 'historical-split',
+    task_type: 'daily_lesson_split',
+    status: 'succeeded',
+    candidate_id: 'historical-candidate',
+  })
+  let reads = 0
+  const { harness, calls } = await mountTaskPanel({
+    routes: {
+      'GET /api/local/ai/tasks': () => {
+        reads += 1
+        return jsonResponse(200, {
+          items: [reads === 1 ? running : succeeded],
+          next_cursor: null,
+        })
+      },
+      'GET /api/local/ai/prompts': () => jsonResponse(200, { items: promptsFixture() }),
+    },
+    saveCurrent: async () => 'unchanged',
+  })
+  await settle()
+  assert.equal(reads, 1, 'initial mount sees the historical running split')
+  await harness.window.__d1AiTasks.refresh()
+  await settle()
+  assert.ok(reads >= 2, 'the next read sees its success')
+  assert.equal(
+    callsTo(calls, 'POST', '/api/daily-plans/p1/ai-tasks').length,
+    0,
+    'read-only polling never grants split auto-chain rights',
+  )
+  ok('split chain: a historical running split that later succeeds does not start adapt')
+}
+
+async function testOtherSectionTriggerCarriesTargetAndInstruction() {
+  const { state, calls } = await mountTaskPanel({
+    routes: tasksRouter([[]], {
+      'POST /api/daily-plans/p1/ai-tasks': ({ body }) =>
+        jsonResponse(202, taskFixture({
+          task_type: body.task_type,
+          input_summary: {
+            content_version: body.expected_content_version,
+            target_grade: body.target_grade,
+            target_section: body.target_section,
+            dependency_hash: 'dep',
+          },
+        })),
+    }),
+    props: { contentVersion: 4 },
+    saveCurrent: async () => 'unchanged',
+  })
+  await settle()
+  await state.triggerOtherSection('morning_talk', '只改谈话，保留问题数量')
+  await settle()
+  const posts = callsTo(calls, 'POST', '/api/daily-plans/p1/ai-tasks')
+  assert.equal(posts.length, 1, 'one targeted section task is created')
+  assert.equal(posts[0].body.task_type, 'daily_other_activities')
+  assert.equal(posts[0].body.target_section, 'morning_talk')
+  assert.equal(posts[0].body.revision_instruction, '只改谈话，保留问题数量')
+  ok('section AI: selected column and instruction enter the create body and idempotent request')
+}
+
+async function testSplitSourceContinuationCarriesCandidateWithoutSavedBaselineGate() {
+  let saves = 0
+  const { state, calls } = await mountTaskPanel({
+    routes: tasksRouter([[]], {
+      'POST /api/daily-plans/p1/ai-tasks': ({ body }) =>
+        jsonResponse(202, taskFixture({
+          task_type: body.task_type,
+          input_summary: {
+            content_version: body.expected_content_version,
+            target_grade: body.target_grade,
+            dependency_hash: 'dep',
+          },
+        })),
+    }),
+    props: { contentVersion: 4, hasProcess: false, hasSplitBaseline: false },
+    saveCurrent: async () => { saves += 1; return 'unchanged' },
+  })
+  await settle()
+  const task = await state.continueAfterSplit({
+    planId: 'p1',
+    contentVersion: 4,
+    targetGrade: 'small',
+    sourceCandidateId: 'cand-split',
+  }, () => true)
+  await settle()
+  const posts = callsTo(calls, 'POST', '/api/daily-plans/p1/ai-tasks')
+  assert.ok(task, 'the pre-adoption adapt task is accepted')
+  assert.equal(posts.length, 1)
+  assert.equal(posts[0].body.task_type, 'daily_process_adapt')
+  assert.equal(posts[0].body.source_candidate_id, 'cand-split')
+  assert.equal(saves, 0, 'the unsaved split candidate is never written to the plan first')
+  ok('split chain: the split candidate id is the adapt source; no saved process/baseline or extra save is required')
+}
+
+async function testOtherSectionGateKeepsOneLiveTaskPerPlanType() {
+  const { state, harness } = await mountTaskPanel({
+    routes: tasksRouter([[]]),
+    props: { contentVersion: 4 },
+    saveCurrent: async () => 'unchanged',
+  })
+  await settle()
+  state.tasks.value = [
+    liveTask({
+      task_type: 'daily_other_activities',
+      input_summary: {
+        content_version: 4,
+        target_grade: 'middle',
+        target_section: 'morning_games',
+        dependency_hash: 'dep',
+      },
+    }),
+  ]
+  const reason = harness.window.__d1AiTasks.blockedReason('daily_other_activities', 'morning_talk')
+  assert.match(reason, /该类型已有任务进行中/)
+  assert.match(reason, /查询|等待/)
+  assert.match(
+    harness.window.__d1AiTasks.blockedReason('daily_other_activities', 'morning_games'),
+    /该类型已有任务进行中/,
+    'the existing one-live-task-per-plan-type constraint stays authoritative',
+  )
+  ok('section AI: one live task per plan/type remains blocked with a recoverable Chinese reason')
+}
+
+async function testTargetSectionSelectionAndInlineDiff() {
+  const ai = await loadAiHelpers()
+  const candidate = {
+    task_type: 'daily_other_activities',
+    available_targets: ['morning_games', 'morning_talk'],
+  }
+  assert.deepEqual(ai.defaultSelectedTargets(candidate, 'morning_talk'), ['morning_talk'])
+  assert.deepEqual(ai.defaultSelectedTargets(candidate), ['morning_games', 'morning_talk'])
+  const harness = new Harness()
+  const pc = harness._require('../process-compare', path.join(d1Dir, 'views', 'X.vue'))
+  const diff = pc.inlineDiff('1. 导入\n观察', '1. 导入\n观察并比较')
+  assert.ok(diff.after.some((part) => part.changed && part.text.includes('并比较')))
+  assert.ok(diff.before.some((part) => !part.changed && part.text.includes('导入')))
+  const paragraphs = pc.inlineDiff('长段落原过程。', '长段落原过程，加入比较与表达。')
+  assert.ok(paragraphs.after.some((part) => part.changed && part.text.includes('比较')))
+  ok('candidate helpers: only the selected board is selected; same-paragraph changes get inline diff segments')
+}
+
 const tests = [
   testSplitEditFormRoundTrip,
   testOtherEditOmitsEmptyOptionalAndSelectedBoards,
@@ -4985,14 +5441,14 @@ const tests = [
   testEditorAdoptIgnoresExternalPlanResponse,
   testEditorAdoptAppliesWhenEpochMatches,
   testEditorAdoptKeepsNewInputWhenEpochChanged,
-  testSplitAdoptionContinuesOnceWithSavedVersionAndSourceGrade,
-  testSplitContinuationRejectsUnrelatedAdoptionOrigins,
-  testSplitContinuationRejectsWrongReturnedVersionOrBaseline,
-  testSplitContinuationRejectsChangesDuringServerRead,
-  testSplitContinuationRechecksAfterVuePropPropagation,
-  testSplitContinuationPanelEnforcesIdentityAndTaskGuards,
-  testSplitContinuationInFlightBlocksLeaveUntilTaskAccepted,
-  testSplitContinuationUnknownCreateStaysPendingWithoutResend,
+  testUnknownSplitAdaptRetryQueriesWithoutNewRequest,
+  testHistoricalSplitCandidateRestoresLinkedAdaptAndSurvivesOtherCandidates,
+  testPreAdoptionSplitGeneratedChainOnceAndBound,
+  testHistoricalRunningSplitCannotGainAutoChainFromPolling,
+  testOtherSectionTriggerCarriesTargetAndInstruction,
+  testSplitSourceContinuationCarriesCandidateWithoutSavedBaselineGate,
+  testOtherSectionGateKeepsOneLiveTaskPerPlanType,
+  testTargetSectionSelectionAndInlineDiff,
 ]
 
 for (const test of tests) {

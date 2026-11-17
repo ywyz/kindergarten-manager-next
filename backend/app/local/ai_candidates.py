@@ -135,6 +135,10 @@ def candidate_applicability(
         return STATE_CONTRACT_OBSOLETE
     if input_row is None:
         return STATE_SOURCE_CHANGED
+    if bool((input_row.dependencies_json or {}).get("pre_adoption_split")):
+        # This adapt candidate belongs to the split-review chain, not to a
+        # standalone saved-process adoption.
+        return STATE_SOURCE_CHANGED
     if ai_inputs.dependency_matches(
         session, plan=plan, content=content, input_row=input_row
     ):
@@ -157,12 +161,20 @@ def source_change_details(
     from app.local.prompt_bundles import canonical_json
 
     try:
+        deps = dict(input_row.dependencies_json or {})
+        payload = dict(input_row.payload_json or {})
         projected = ai_inputs.project_input(
             session,
             plan=plan,
             content=content,
             task_type=input_row.task_type,
             target_grade=input_row.target_grade,
+            revision_instruction=deps.get(
+                "teacher_revision_instruction",
+                payload.get("revision_instruction"),
+            ),
+            target_section=deps.get("target_section"),
+            source_candidate_id=deps.get("source_split_candidate_id"),
         )
     except Exception:  # noqa: BLE001 - any projection failure is a safe hint only
         return {"changed_fields": ["source"]}

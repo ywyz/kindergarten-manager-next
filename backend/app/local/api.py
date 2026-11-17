@@ -834,6 +834,10 @@ def create_ai_task(
         peek_payload["revision_instruction"] = data.revision_instruction
     if data.implementation_materials is not None:
         peek_payload["implementation_materials"] = data.implementation_materials
+    if data.target_section is not None:
+        peek_payload["target_section"] = data.target_section
+    if data.source_candidate_id is not None:
+        peek_payload["source_candidate_id"] = data.source_candidate_id
     with storage_errors():
         peek = ai_task_service.peek_operation(
             session,
@@ -856,6 +860,8 @@ def create_ai_task(
             base_candidate_id=data.base_candidate_id,
             revision_instruction=data.revision_instruction,
             implementation_materials=data.implementation_materials,
+            target_section=data.target_section,
+            source_candidate_id=data.source_candidate_id,
         )
         executor.notify()
     return result

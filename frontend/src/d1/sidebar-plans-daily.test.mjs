@@ -399,36 +399,20 @@ async function testNavigationTarget() {
   const { root, app, target, hook } = await mountEditor(true, { realPanel: true })
   assert.ok(target, 'test navigation target exists')
   assert.ok(byD1(target, 'daily-sections'), 'daily directory teleports into the shared left target')
-  assert.ok(byD1(target, 'daily-generation-actions'), 'generation group travels with the directory')
   assert.equal(allByD1(root, 'daily-sections').length, 1, 'one directory instance after teleport')
+  assert.equal(byD1(target, 'daily-generation-actions'), null, 'the shared rail has no second generation group')
   const navButtons = walkElements(target).filter((node) => node.props['data-d1']?.startsWith('layout-nav-'))
   assert.equal(navButtons.length, 7, 'all seven sections remain in the shared directory')
   assert.deepEqual(
     navButtons.map((node) => node.props['data-d1']),
     ['raw', 'morning', 'talk', 'group', 'post', 'afternoon', 'reflection'].map((key) => `layout-nav-${key}`),
   )
-  const nodes = walkElements(target)
-  assert.ok(
-    nodes.indexOf(byD1(target, 'daily-generation-actions')) > nodes.indexOf(byD1(target, 'layout-nav-reflection')),
-    'generation actions stay below the final reflection directory item in the shared rail',
-  )
-  const generationButtons = walkElements(target).filter((node) => (
-    node.tag === 'button'
-    && (
-      node.props['data-d1']?.startsWith('ai-trigger-')
-      || node.props['data-d1'] === 'reflection-generate'
-    )
-  ))
-  assert.deepEqual(
-    generationButtons.map((node) => node.props['data-d1']),
-    [
-      'ai-trigger-daily_lesson_split',
-      'ai-trigger-daily_process_adapt',
-      'ai-trigger-daily_other_activities',
-      'reflection-generate',
-    ],
-    'four generation actions stay in order below the reflection item',
-  )
+  for (const key of ['morning_games', 'morning_talk', 'post_group_games', 'afternoon_outdoor']) {
+    assert.ok(byD1(root, `section-ai-${key}`), `${key} has its own entry outside the shared rail`)
+  }
+  assert.equal(byD1(target, 'reflection-generate'), null, 'reflection generation stays in its own section')
+  assert.equal(byD1(root, 'start-split-from-rail') != null, true, 'direct split action stays in the right toolbar')
+  assert.equal(byD1(root, 'open-ai-history') != null, true, 'AI task/history entry stays in the right toolbar')
   assert.equal(byD1(target, 'layout-nav-group').props['aria-pressed'], 'true')
   byD1(target, 'layout-nav-raw').props.onClick({})
   await settle()

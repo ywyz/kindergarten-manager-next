@@ -29,6 +29,12 @@ assert.match(source, /v-else-if="activePanel === 'todos'"/)
 assert.match(source, /v-else class="workbench-daily"/)
 assert.doesNotMatch(source, /data-d1="workbench-sidebar"/)
 assert.doesNotMatch(source, /data-d1="workbench-nav-daily"/)
+assert.match(source, /data-d1="daily-view-tabs"/)
+assert.match(source, /dailyView === 'calendar'/)
+assert.match(source, /v-model="dailyView"[\s\S]*?:disabled="frozen"/)
+assert.match(source, /已保存计划/)
+assert.match(source, /v-if="activePanel !== 'daily'"/)
+assert.doesNotMatch(source, /class="day-note"/)
 assert.ok(
   source.includes("const activePanel = computed<'home' | 'todos' | 'daily'>(") &&
     source.includes("if (props.panel === 'daily') return 'daily'") &&
@@ -376,7 +382,7 @@ function assertMonthGrid(section, month) {
   assert.match(section, /今天/)
   const plan = tokens.days.find((day) => day.date === '2026-02-10')
   assert.match(plan.classes, /has-plan/)
-  assert.match(section, /已有计划/)
+  assert.doesNotMatch(section, /已有计划/)
   const outsidePlan = tokens.days.find((day) => day.date === '2026-02-13')
   assert.match(outsidePlan.classes, /has-plan/)
   assert.doesNotMatch(outsidePlan.classes, /not-eligible/)
@@ -493,7 +499,6 @@ function assertMonthGrid(section, month) {
   await waitLoaded(state)
   assert.equal(state.termFilter.value, 't1')
   assert.equal(state.month.value, '2026-09')
-  assert.equal(state.selectedTerm.value.id, 't1')
   assert.equal(state.monthDays.value[0].date, '2026-09-01')
   assert.equal(state.termPlans.value.length, 1)
   state.month.value = '2026-10'
@@ -680,7 +685,32 @@ function assertMonthGrid(section, month) {
   assert.doesNotMatch(dailyHtml, /data-d1="workbench-home-pane"/)
   assert.doesNotMatch(dailyHtml, /data-d1="workbench-todos-pane"/)
   assert.match(dailyHtml, /data-d1="workbench-daily-pane"/)
+  assert.doesNotMatch(dailyHtml, /王老师|中一班|示范幼儿园|月历、学期筛选与已保存历史/)
+  assert.match(dailyHtml, /data-d1="month-picker"/)
+  assert.match(dailyHtml, /data-d1="term-/)
+  assert.match(dailyHtml, /data-d1="daily-view-tabs"/)
+  state.dailyView.value = 'saved'
+  const savedHtml = await renderWorkbench(state, state.props)
+  assert.match(savedHtml, /history-sheet/)
+  assert.match(savedHtml, /data-d1="month-picker"/)
+  assert.match(savedHtml, /data-d1="term-/)
+  state.dailyView.value = 'saved'
+  state.returnToToday()
+  assert.equal(state.dailyView.value, 'calendar', 'return-to-today exits the saved tab even in the current month')
+  assert.doesNotMatch(savedHtml, /data-d1="calendar"/)
+  state.dailyView.value = 'calendar'
 
+  state.termFilter.value = null
+  state.month.value = '2026-09'
+  state.dailyView.value = 'saved'
+  const savedState = state.captureDailyCalendarState()
+  state.termFilter.value = null
+  state.month.value = '2027-02'
+  state.dailyView.value = 'calendar'
+  state.restoreDailyCalendarState(savedState)
+  assert.equal(state.month.value, '2026-09')
+  assert.equal(state.termFilter.value, null)
+  assert.equal(state.dailyView.value, 'saved')
   // An omitted panel is the new home default; it must not mount/load daily.
   const defaultCalls = calendarCalls
   const defaultWorkbench = createWorkbench({ omitPanel: true, apiGet })

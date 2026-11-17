@@ -291,11 +291,13 @@ function navButton(html, marker) {
   ok('left rail owns the global 9 modules and stable page-navigation target before content')
 
   state.view.value = { name: 'settings', section: 'collaboration' }
+  state.moduleNavExpanded.value = true
   const collaboration = await renderApp(state)
   assert.match(navButton(collaboration, 'module-nav-collaboration'), /data-type="primary"/)
   assert.doesNotMatch(navButton(collaboration, 'module-nav-settings'), /data-type="primary"/)
 
   state.view.value = { name: 'editor', planDate: '2026-09-15', mode: 'open' }
+  state.moduleNavExpanded.value = true
   const editor = await renderApp(state)
   assert.match(navButton(editor, 'module-nav-daily'), /data-type="primary"/)
   assert.doesNotMatch(navButton(editor, 'module-nav-workbench'), /data-type="primary"/)
@@ -519,6 +521,10 @@ async function testCalendarLeaveRestoresDailyAndKeepsOrdinaryHome() {
   assert.equal(state.view.value.name, 'workbench')
   assert.equal(state.view.value.panel, 'daily', 'editor 返回月历 restores the daily calendar panel')
   assert.equal(state.activeModule.value, 'daily', 'daily is the single selected top module')
+  const dailyCollapsed = await renderApp(state)
+  assert.match(dailyCollapsed, /data-d1="module-nav-collapsed"/)
+  assert.match(dailyCollapsed, /当前：日计划/)
+  state.moduleNavExpanded.value = true
   const dailyHtml = await renderApp(state)
   assert.match(navButton(dailyHtml, 'module-nav-daily'), /data-type="primary"/)
   assert.doesNotMatch(navButton(dailyHtml, 'module-nav-todos'), /data-type="primary"/)

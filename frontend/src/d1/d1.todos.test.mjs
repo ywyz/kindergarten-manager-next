@@ -398,6 +398,8 @@ for (const marker of [
 ]) assert.ok(panel.includes(marker), marker)
 assert.match(panel, /:aria-pressed="item\.completed"/)
 assert.match(panel, /border-radius:\s*50%/)
+assert.ok(panel.includes('data-d1="todo-select-all"'))
+assert.match(panel, /function toggleSelectAll\(/)
 ok('workbench normal entry and minimal todo controls are present')
 
 {

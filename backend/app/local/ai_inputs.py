@@ -86,6 +86,19 @@ _OTHER_BOARDS = (
     "afternoon_outdoor",
 )
 
+_OTHER_SECTION_LABELS = {
+    "morning_games": "晨间活动",
+    "morning_talk": "晨间谈话",
+    "post_group_games": "活动后游戏",
+    "afternoon_outdoor": "下午户外",
+}
+
+
+def _require_other_section(value: object) -> str:
+    if value not in _OTHER_BOARDS:
+        raise LocalValidationError("target_section 不是可生成的日计划栏目")
+    return str(value)
+
 _REFLECTION_FIELDS = (
     "theme",
     "objectives",
@@ -327,11 +340,25 @@ def project_input(
     base_candidate_id: str | None = None,
     revision_instruction: str | None = None,
     implementation_materials: str | None = None,
+    target_section: str | None = None,
+    source_candidate_id: str | None = None,
 ) -> ProjectedInput:
     """Build the immutable input projection for one task submission."""
     if task_type not in TASK_TYPES:
         raise LocalValidationError("不支持的日任务类型")
     grade = _require_grade(target_grade)
+    target_section_value = (
+        _require_other_section(target_section)
+        if target_section is not None
+        else None
+    )
+    effective_revision_instruction = revision_instruction
+    if target_section_value is not None and task_type != "daily_other_activities":
+        raise LocalValidationError("target_section 只适用于其他活动生成")
+    if source_candidate_id is not None and task_type != "daily_process_adapt":
+        raise LocalValidationError("source_candidate_id 只适用于过程适龄调整")
+    if source_candidate_id is not None and base_candidate_id is not None:
+        raise LocalValidationError("不能同时引用拆分来源和适龄原候选")
 
     if task_type == "daily_lesson_split":
         raw = _require_non_empty(content.raw_lesson_plan, "原始教案")
@@ -344,60 +371,137 @@ def project_input(
         target_hashes = {"group_activity": _digest(group_activity)}
         excerpt = {"raw_lesson_plan": raw}
     elif task_type == "daily_process_adapt":
-        dumped = parse_adopted_content(content.adopted_content).model_dump(
-            exclude_none=True
-        )
-        process = (dumped.get("group_activity") or {}).get("process")
-        process = _require_non_empty(process, "活动过程")
-        baseline_candidate_id, baseline = _baseline_reference(session, plan, content)
-        payload = {"process_source": process, "grade": grade}
-        baseline_process = (
-            baseline.get("group_activity_process")
-            if isinstance(baseline, dict)
-            else None
-        )
-        if isinstance(baseline_process, str) and baseline_process.strip():
-            payload["split_baseline_process"] = baseline_process
-        dependencies = {
-            "process_source": process,
-            "grade": grade,
-            "baseline_candidate_id": baseline_candidate_id,
-            "split_baseline": baseline,
-        }
-        if revision_instruction is not None:
-            payload["revision_instruction"] = revision_instruction
-            dependencies["revision_instruction"] = revision_instruction
-        base_process: str | None = None
-        if base_candidate_id is not None:
+        if source_candidate_id is not None:
             from app.local.models import LocalAICandidate
 
-            candidate = session.get(LocalAICandidate, base_candidate_id)
+            source = session.get(LocalAICandidate, source_candidate_id)
             if (
-                candidate is None
-                or candidate.daily_plan_id != plan.id
-                or candidate.source_kind != "daily_plan"
-                or candidate.task_type != "daily_process_adapt"
+                source is None
+                or source.daily_plan_id != plan.id
+                or source.source_kind != "daily_plan"
+                or source.task_type != "daily_lesson_split"
             ):
-                raise LocalValidationError("原候选不属于当前计划或任务类型")
-            raw = dict(candidate.raw_candidate_json or {})
-            raw_process = raw.get("process")
-            if not isinstance(raw_process, str) or raw_process.strip() == "":
-                raise LocalValidationError("原候选正文不可用")
-            base_process = raw_process
-            payload["base_candidate_process"] = base_process
-            dependencies["base_candidate_id"] = base_candidate_id
-            dependencies["base_candidate_process"] = base_process
-        target_hashes = {"process": _digest(process)}
-        excerpt = {
-            "process": process,
-            "baseline_candidate_id": baseline_candidate_id,
-            "split_baseline": baseline,
-        }
-        if revision_instruction is not None:
-            excerpt["revision_instruction"] = revision_instruction
-        if base_candidate_id is not None:
-            excerpt["base_candidate_id"] = base_candidate_id
-            excerpt["base_candidate_process"] = base_process
+                raise LocalValidationError("拆分来源候选不属于当前计划或任务类型")
+            source_raw = dict(source.raw_candidate_json or {})
+            source_group = source_raw.get("group_activity")
+            source_process = (
+                source_group.get("process")
+                if isinstance(source_group, dict)
+                else None
+            )
+            source_process = _require_non_empty(
+                source_process, "拆分候选过程"
+            )
+            from app.local.models import LocalAIInput
+
+            source_input = session.get(LocalAIInput, source.input_id)
+            if (
+                source_input is None
+                or source_input.task_type != "daily_lesson_split"
+                or source_input.source_kind != "daily_plan"
+                or source_input.daily_plan_id != plan.id
+            ):
+                raise LocalValidationError("拆分来源候选输入不可用")
+            if source_input.target_grade != grade:
+                raise LocalValidationError("拆分来源候选的目标年级与本次适龄不一致")
+            if source_input.content_version != content.version:
+                raise LocalValidationError("拆分来源候选绑定的保存内容版本已变化")
+            source_projected = project_input(
+                session,
+                plan=plan,
+                content=content,
+                task_type="daily_lesson_split",
+                target_grade=source_input.target_grade,
+                holiday_provider=holiday_provider,
+            )
+            if source_projected.dependency_hash != source_input.dependency_hash:
+                raise LocalValidationError("拆分来源候选的真实来源已变化")
+            payload = {
+                "process_source": source_process,
+                "grade": grade,
+                "split_baseline_process": source_process,
+            }
+            dependencies = {
+                "process_source": source_process,
+                "grade": grade,
+                "source_split_candidate_id": source_candidate_id,
+                "source_split_candidate_process": source_process,
+                "source_split_content_version": source_input.content_version,
+                "source_split_dependency_hash": source_input.dependency_hash,
+                "source_split_target_grade": source_input.target_grade,
+                "split_baseline": {
+                    "group_activity_process": source_process,
+                },
+                "pre_adoption_split": True,
+            }
+            if revision_instruction is not None:
+                payload["revision_instruction"] = revision_instruction
+                dependencies["revision_instruction"] = revision_instruction
+            target_hashes = {"process": _digest(source_process)}
+            excerpt = {
+                "process": source_process,
+                "source_split_candidate_id": source_candidate_id,
+                "source_split_candidate_process": source_process,
+            }
+            if revision_instruction is not None:
+                excerpt["revision_instruction"] = revision_instruction
+        else:
+            dumped = parse_adopted_content(content.adopted_content).model_dump(
+                exclude_none=True
+            )
+            process = (dumped.get("group_activity") or {}).get("process")
+            process = _require_non_empty(process, "活动过程")
+            baseline_candidate_id, baseline = _baseline_reference(
+                session, plan, content
+            )
+            payload = {"process_source": process, "grade": grade}
+            baseline_process = (
+                baseline.get("group_activity_process")
+                if isinstance(baseline, dict)
+                else None
+            )
+            if isinstance(baseline_process, str) and baseline_process.strip():
+                payload["split_baseline_process"] = baseline_process
+            dependencies = {
+                "process_source": process,
+                "grade": grade,
+                "baseline_candidate_id": baseline_candidate_id,
+                "split_baseline": baseline,
+            }
+            if revision_instruction is not None:
+                payload["revision_instruction"] = revision_instruction
+                dependencies["revision_instruction"] = revision_instruction
+            base_process: str | None = None
+            if base_candidate_id is not None:
+                from app.local.models import LocalAICandidate
+
+                candidate = session.get(LocalAICandidate, base_candidate_id)
+                if (
+                    candidate is None
+                    or candidate.daily_plan_id != plan.id
+                    or candidate.source_kind != "daily_plan"
+                    or candidate.task_type != "daily_process_adapt"
+                ):
+                    raise LocalValidationError("原候选不属于当前计划或任务类型")
+                raw = dict(candidate.raw_candidate_json or {})
+                raw_process = raw.get("process")
+                if not isinstance(raw_process, str) or raw_process.strip() == "":
+                    raise LocalValidationError("原候选正文不可用")
+                base_process = raw_process
+                payload["base_candidate_process"] = base_process
+                dependencies["base_candidate_id"] = base_candidate_id
+                dependencies["base_candidate_process"] = base_process
+            target_hashes = {"process": _digest(process)}
+            excerpt = {
+                "process": process,
+                "baseline_candidate_id": baseline_candidate_id,
+                "split_baseline": baseline,
+            }
+            if revision_instruction is not None:
+                excerpt["revision_instruction"] = revision_instruction
+            if base_candidate_id is not None:
+                excerpt["base_candidate_id"] = base_candidate_id
+                excerpt["base_candidate_process"] = base_process
     elif task_type == "daily_other_activities":
         context, calendar_diagnostic = _calendar_context(
             session, plan, provider=holiday_provider
@@ -425,6 +529,13 @@ def project_input(
             "game_config": game_config,
             "daily_plan_snapshot": snapshot,
         }
+        if target_section_value is not None:
+            # A targeted section is independent: unrelated boards must not
+            # invalidate or dirty its source fingerprint.
+            dependencies["daily_plan_snapshot"] = {
+                "group_activity": snapshot.get("group_activity"),
+                target_section_value: snapshot.get(target_section_value),
+            }
         target_hashes = {
             board: _digest(boards.get(board)) for board in _OTHER_BOARDS
         }
@@ -433,6 +544,26 @@ def project_input(
             "game_revision_id": game_revision_id,
             "holiday_context": context["holiday_context"],
         }
+        if target_section_value is not None:
+            label = _OTHER_SECTION_LABELS[target_section_value]
+            prefix = (
+                f"本次只生成「{label}」栏目；只返回该栏目，"
+                "其他三个栏目不得生成或修改。"
+            )
+            if revision_instruction is not None:
+                effective_revision_instruction = (
+                    f"{prefix}\n教师定向要求：{revision_instruction}"
+                )
+            else:
+                effective_revision_instruction = prefix
+            dependencies["target_section"] = target_section_value
+            dependencies["teacher_revision_instruction"] = revision_instruction
+            target_hashes = {
+                target_section_value: _digest(
+                    boards.get(target_section_value)
+                )
+            }
+            excerpt["target_section"] = target_section_value
     else:  # daily_reflection_generate
         materials = _require_non_empty(implementation_materials, "活动实施材料")
         if len(materials) > 5000:
@@ -463,6 +594,11 @@ def project_input(
             "plan_snapshot": payload["plan_snapshot"],
             "implementation_materials": materials,
         }
+        if revision_instruction is not None:
+            payload["revision_instruction"] = revision_instruction
+            payload["current_reflection"] = current_reflection
+            dependencies["revision_instruction"] = revision_instruction
+            dependencies["current_reflection"] = current_reflection
         target_hashes = {"reflection": _digest(current_reflection)}
         excerpt = {
             "plan_date": plan.plan_date.isoformat(),
@@ -472,13 +608,16 @@ def project_input(
             "plan_snapshot": payload["plan_snapshot"],
             "implementation_materials": materials,
         }
+        if revision_instruction is not None:
+            excerpt["revision_instruction"] = revision_instruction
+            excerpt["current_reflection"] = current_reflection
     if task_type not in (
         "daily_process_adapt",
         "daily_reflection_generate",
-    ) and revision_instruction is not None:
-        payload["revision_instruction"] = revision_instruction
-        dependencies["revision_instruction"] = revision_instruction
-        excerpt["revision_instruction"] = revision_instruction
+    ) and effective_revision_instruction is not None:
+        payload["revision_instruction"] = effective_revision_instruction
+        dependencies["revision_instruction"] = effective_revision_instruction
+        excerpt["revision_instruction"] = effective_revision_instruction
     if task_type not in (
         "daily_process_adapt",
         "daily_reflection_generate",
@@ -579,8 +718,13 @@ def dependency_matches(
             target_grade=input_row.target_grade,
             holiday_provider=holiday_provider,
             base_candidate_id=dependencies.get("base_candidate_id"),
-            revision_instruction=payload.get("revision_instruction"),
+            revision_instruction=dependencies.get(
+                "teacher_revision_instruction",
+                payload.get("revision_instruction"),
+            ),
             implementation_materials=payload.get("implementation_materials"),
+            target_section=dependencies.get("target_section"),
+            source_candidate_id=dependencies.get("source_split_candidate_id"),
         )
 
     except (LocalValidationError, LocalStorageError, CandidateInvalid, ValueError):
@@ -615,9 +759,16 @@ def source_excerpt(
             excerpt["revision_instruction"] = payload.get("revision_instruction")
         if dependencies.get("base_candidate_id") is not None:
             excerpt["base_candidate_id"] = dependencies.get("base_candidate_id")
+        if dependencies.get("source_split_candidate_id") is not None:
+            excerpt["source_split_candidate_id"] = dependencies.get(
+                "source_split_candidate_id"
+            )
+            excerpt["source_split_candidate_process"] = dependencies.get(
+                "source_split_candidate_process"
+            )
         return excerpt
     if task_type == "daily_reflection_generate":
-        return {
+        excerpt = {
             "plan_date": payload.get("plan_date"),
             "week_number": payload.get("week_number"),
             "weekday": payload.get("weekday"),
@@ -625,6 +776,9 @@ def source_excerpt(
             "plan_snapshot": dependencies.get("plan_snapshot"),
             "implementation_materials": payload.get("implementation_materials"),
         }
+        if payload.get("revision_instruction") is not None:
+            excerpt["revision_instruction"] = payload.get("revision_instruction")
+        return excerpt
     calendar = payload.get("calendar_context")
     holiday = calendar.get("holiday_context") if isinstance(calendar, dict) else None
     return {
@@ -638,6 +792,7 @@ def source_excerpt(
         "game_config": dependencies.get("game_config"),
         "daily_plan_snapshot": dependencies.get("daily_plan_snapshot"),
         "holiday_context": holiday if isinstance(holiday, list) else [],
+        "target_section": dependencies.get("target_section"),
     }
 
 

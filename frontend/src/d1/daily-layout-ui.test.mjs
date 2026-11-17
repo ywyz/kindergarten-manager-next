@@ -608,7 +608,9 @@ async function mountEditor(routes, propsOverrides = {}, options = {}) {
   app.component('el-option', OptionStub)
   app.mount(appRoot)
   await waitUntil(
-    () => harness.window.__d1Editor?.version?.() === 3,
+    () => (propsOverrides.initialMode === 'create'
+      ? harness.window.__d1Editor?.draft?.() === true
+      : harness.window.__d1Editor?.version?.() === 3),
     'editor load',
   )
   await settle()
@@ -775,39 +777,25 @@ async function testMountedGenerationActions() {
   }
   const { root, hook, app, calls } = await mountEditor(routes, {}, { realPanel: true })
   await settle()
-  const actions = byD1(root, 'daily-generation-actions')
-  const navReflection = byD1Button(root, 'layout-nav-reflection')
-  assert.ok(actions && navReflection, 'left generation group and final directory item rendered')
-  const nodes = walkElements(root)
-  assert.ok(
-    nodes.indexOf(actions) > nodes.indexOf(navReflection),
-    'generation actions follow the final 一日反思 directory item',
-  )
-  const expected = [
-    'ai-trigger-daily_lesson_split',
-    'ai-trigger-daily_process_adapt',
-    'ai-trigger-daily_other_activities',
-    'reflection-generate',
+  assert.ok(byD1Button(root, 'manual-save'), 'save lives in the right toolbar')
+  assert.ok(byD1Button(root, 'open-export'), 'export lives in the right toolbar')
+  assert.ok(byD1Button(root, 'start-split-from-rail'), 'direct split action lives in the right toolbar')
+  assert.equal(byD1Button(root, 'open-ai-generate'), null, 'no generic global AI action shares the rail')
+  assert.ok(byD1Button(root, 'open-ai-history'), 'AI task/history lives in the right toolbar')
+  const sectionMarkers = [
+    'section-ai-morning_games',
+    'section-ai-morning_talk',
+    'section-ai-post_group_games',
+    'section-ai-afternoon_outdoor',
   ]
-  const buttons = expected.map((marker) => byD1Button(root, marker))
-  buttons.forEach((button, index) => {
-    assert.ok(button, `${expected[index]} is visible in the left group`)
-    assert.ok(nodes.indexOf(button) > nodes.indexOf(actions), `${expected[index]} is inside the left group`)
-  })
-  assert.deepEqual(
-    expected.slice(0, 3).map((marker) => byD1Button(root, marker).props.disabled),
-    [false, false, false],
-    'the three existing panel entries keep their real enabled states',
-  )
-  assert.equal(
-    walkElements(root).filter((node) => node.props['data-d1']?.startsWith('ai-trigger-')).length,
-    3,
-    'three panel triggers are moved once, not duplicated',
-  )
+  for (const marker of sectionMarkers) {
+    assert.ok(byD1Button(root, marker), `${marker} is visible in its own section`)
+  }
+  assert.equal(byD1(root, 'ai-trigger-daily_other_activities'), null, 'no shared full-output trigger remains')
   assert.equal(allByD1(root, 'reflection-generate').length, 1)
-  assert.ok(byD1(root, 'ai-generation-buttons'), 'single AiTaskPanel owns the three moved triggers')
+  assert.ok(byD1Button(root, 'ai-trigger-daily_lesson_split'), 'split remains in the raw section')
+  assert.ok(byD1Button(root, 'ai-trigger-daily_process_adapt'), 'adapt remains in the collective-activity section')
   assert.equal(allByD1(root, 'ai-tasks').length, 1, 'one AI task panel/state owner is mounted')
-  assert.ok(byD1(root, 'ai-target-grade'), 'target grade remains discoverable in the single task panel')
 
   byD1Button(root, 'ai-trigger-daily_lesson_split').props.onClick({})
   await settle()
@@ -815,38 +803,17 @@ async function testMountedGenerationActions() {
   byD1Button(root, 'ai-trigger-daily_process_adapt').props.onClick({})
   await settle()
   assert.equal(hook.layoutSection(), 'group')
-  byD1Button(root, 'ai-trigger-daily_other_activities').props.onClick({})
-  await settle()
-  assert.equal(hook.layoutSection(), 'morning')
-  assert.equal(calls.filter((call) => call.method === 'POST' && call.path.endsWith('/ai-tasks')).length, 3)
-
-  // Reflection entry is the moved EditorView control; missing material stays a
-  // visible prerequisite and the action still opens its own reading pane.
   byD1Button(root, 'reflection-generate').props.onClick({})
   await settle()
   assert.equal(hook.layoutSection(), 'reflection')
   assert.match(hook.reflectionError(), /实施材料/)
-  const reflectionError = byD1(root, 'reflection-action-error')
-  assert.ok(
-    reflectionError && walkElements(actions).includes(reflectionError),
-    'reflection prerequisite error is visible in the left action group',
-  )
-  assert.match(nodeText(reflectionError), /实施材料/)
-  assert.ok(byD1(reflectionError, 'reflection-locate-error'))
-  byD1Button(root, 'layout-nav-group').props.onClick({})
-  await settle()
-  assert.equal(byD1(root, 'reflection-action-error'), reflectionError, 'reflection error survives a section switch')
   assert.equal(
     calls.filter((call) => call.method === 'POST' && call.path.endsWith('/ai-tasks')).length,
-    3,
-    'reflection does not create a task without material',
+    2,
+    'only split/adapt create tasks; reflection still needs implementation material',
   )
-  for (const marker of expected) {
-    assert.ok(byD1Button(root, marker), `${marker} remains visible after switching sections`)
-  }
-  assert.equal(byD1(root, 'daily-generation-actions'), actions)
   app.unmount()
-  ok('mounted left actions: four real generation entries follow reflection, move existing controls, and switch context')
+  ok('mounted actions: right toolbar plus four section AI entries, one task owner, no shared full-output trigger')
 }
 
 async function testDeferredFailureStaysVisibleAfterSectionSwitch() {
@@ -1366,13 +1333,147 @@ async function testOpenDialogBlocksAutomaticAndLeaveWrites() {
   ok('open dialog: automatic other/reflection results defer, leave/date protection keeps the hidden draft')
 }
 
+async function testRailSplitSavesThenStartsOnce() {
+  const patches = []
+  const posts = []
+  const pending = deferred()
+  const routes = {
+    'GET /api/daily-plans/by-date': () => jsonResponse(200, planFixture()),
+    'PATCH /api/daily-plans/p1': ({ body }) => {
+      patches.push(body)
+      const next = planFixture({ current_content_version: 4 })
+      next.content = {
+        ...next.content,
+        version: 4,
+        raw_lesson_plan: body.raw_lesson_plan,
+        adopted_content: clone(body.adopted_content),
+      }
+      return jsonResponse(200, next)
+    },
+    'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
+    'POST /api/daily-plans/p1/ai-tasks': ({ body }) => {
+      posts.push(body)
+      return pending.promise
+    },
+  }
+  const { root, hook, app } = await mountEditor(routes, {}, { realPanel: true })
+  await settle()
+  hook.setText('更新后的原教案', hook.content().reflection)
+  await settle()
+  const button = byD1Button(root, 'start-split-from-rail')
+  button.props.onClick({})
+  button.props.onClick({})
+  await waitUntil(() => posts.length === 1, 'rail split POST')
+  await settle()
+  assert.equal(patches.length, 1, 'the first click saves once through the normal guarded path')
+  assert.equal(posts.length, 1, 'a double click never registers a second split request')
+  assert.equal(posts[0].task_type, 'daily_lesson_split')
+  assert.equal(posts[0].expected_content_version, 4, 'the split uses the saved content version')
+  assert.equal(patches[0].raw_lesson_plan, '更新后的原教案')
+  assert.ok(byD1(root, 'ai-task-backdrop'), 'the task/history dialog opens with the direct split action')
+  pending.resolve(jsonResponse(202, taskFixture({
+    task_type: posts[0].task_type,
+    input_summary: {
+      content_version: posts[0].expected_content_version,
+      target_grade: posts[0].target_grade,
+      dependency_hash: 'd',
+    },
+  })))
+  await settle()
+  app.unmount()
+  ok('rail split: the first click saves, opens task/history and registers one split')
+}
+
+async function testRailSplitSaveFailureOrUnknownDoesNotStart() {
+  for (const mode of ['failed', 'unknown']) {
+    const posts = []
+    const routes = {
+      'GET /api/daily-plans/by-date': () => jsonResponse(200, planFixture()),
+      'PATCH /api/daily-plans/p1': () => {
+        if (mode === 'unknown') throw new TypeError('network reset')
+        return apiError(500, 'SAVE_FAILED', '保存失败')
+      },
+      'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
+      'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
+      'POST /api/daily-plans/p1/ai-tasks': ({ body }) => {
+        posts.push(body)
+        return jsonResponse(202, taskFixture({ task_type: body.task_type }))
+      },
+    }
+    const { root, hook, app } = await mountEditor(routes, {}, { realPanel: true })
+    await settle()
+    hook.setText(`未保存的${mode}输入`, hook.content().reflection)
+    await settle()
+    byD1Button(root, 'start-split-from-rail').props.onClick({})
+    await waitUntil(() => hook.phase() === 'save_failed', `save ${mode}`)
+    await settle()
+    assert.equal(posts.length, 0, `${mode} save never registers a split task`)
+    assert.ok(byD1(root, 'ai-task-backdrop'), 'the task/history dialog stays open for the save result')
+    app.unmount()
+  }
+  ok('rail split: a failed or unknown save never registers a split')
+}
+
+async function testRailSplitCreatesDraftThenStartsOnce() {
+  const creates = []
+  const posts = []
+  const routes = {
+    'GET /api/daily-plans/by-date': () => apiError(404, 'DAILY_PLAN_NOT_FOUND', '未创建'),
+    'POST /api/daily-plans': ({ body }) => {
+      creates.push(body)
+      const created = planFixture({ current_content_version: 1 })
+      created.content = {
+        ...created.content,
+        version: 1,
+        raw_lesson_plan: body.raw_lesson_plan,
+        adopted_content: clone(body.adopted_content),
+      }
+      return jsonResponse(201, created)
+    },
+    'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
+    'POST /api/daily-plans/p1/ai-tasks': ({ body }) => {
+      posts.push(body)
+      return jsonResponse(202, taskFixture({
+        task_type: body.task_type,
+        input_summary: {
+          content_version: body.expected_content_version,
+          target_grade: body.target_grade,
+          dependency_hash: 'd',
+        },
+      }))
+    },
+  }
+  const { root, hook, app } = await mountEditor(
+    routes,
+    { initialMode: 'create' },
+    { realPanel: true },
+  )
+  await settle()
+  assert.equal(hook.draft(), true, 'the new plan starts as an unsaved draft')
+  hook.setText('新计划原教案', '')
+  await settle()
+  byD1Button(root, 'start-split-from-rail').props.onClick({})
+  await waitUntil(() => posts.length === 1, 'draft split POST')
+  await settle()
+  assert.equal(creates.length, 1, 'the unsaved draft is created by the normal save path')
+  assert.equal(posts.length, 1, 'only one split task is registered after creation')
+  assert.equal(posts[0].expected_content_version, 1, 'the split binds the newly created version')
+  assert.equal(creates[0].raw_lesson_plan, '新计划原教案')
+  assert.ok(byD1(root, 'ai-task-backdrop'), 'the dialog appears once the task panel mounts')
+  app.unmount()
+  ok('rail split: an unsaved draft is created first, then exactly one split starts')
+}
+
 await testMountedDirectoryAndReadPanes()
+await testRailSplitSavesThenStartsOnce()
+await testRailSplitSaveFailureOrUnknownDoesNotStart()
+await testRailSplitCreatesDraftThenStartsOnce()
 await testMountedGenerationActions()
-await testDeferredFailureStaysVisibleAfterSectionSwitch()
 await testMountedEditDialogIndependentCopy()
 await testMountedReflectionAndRawDialog()
 await testMountedCompositionAndFrozenConfirm()
-await testAutoAdaptContinuationOpensItsContext()
 await testStaleDialogCannotOverwriteNewVersion()
 await testOpenDialogBlocksAutomaticAndLeaveWrites()
 

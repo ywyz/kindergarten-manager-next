@@ -14,8 +14,29 @@ import type {
   AiTask,
   CandidateDetail,
   CandidateSource,
+  OtherSection,
   TaskType,
 } from './types'
+
+export const OTHER_SECTIONS: OtherSection[] = [
+  'morning_games',
+  'morning_talk',
+  'post_group_games',
+  'afternoon_outdoor',
+]
+
+export const OTHER_SECTION_LABELS: Record<OtherSection, string> = {
+  morning_games: '晨间活动',
+  morning_talk: '晨间谈话',
+  post_group_games: '活动后游戏',
+  afternoon_outdoor: '下午户外',
+}
+
+export function otherSectionLabel(section: string | null | undefined): string {
+  return section && section in OTHER_SECTION_LABELS
+    ? OTHER_SECTION_LABELS[section as OtherSection]
+    : '所选栏目'
+}
 
 export const TASK_TYPES: TaskType[] = [
   'daily_lesson_split',
@@ -566,8 +587,15 @@ export function otherBoardViews(
   }))
 }
 
-export function defaultSelectedTargets(candidate: CandidateDetail): string[] {
-  return selectableTargets(candidate)
+export function defaultSelectedTargets(
+  candidate: CandidateDetail,
+  targetSection?: OtherSection | null,
+): string[] {
+  const targets = selectableTargets(candidate)
+  if (candidate.task_type === 'daily_other_activities' && targetSection) {
+    return targets.filter((target) => target === targetSection)
+  }
+  return targets
 }
 
 /** True when the candidate can be previewed/adopted at all. */
@@ -648,6 +676,9 @@ export function sourceSummaryLines(
     lines.push('已保存计划只作原定安排；实施材料见下方')
   }
   if (taskType === 'daily_other_activities') {
+    if (excerpt.target_section) {
+      lines.push(`本次只生成栏目：${otherSectionLabel(String(excerpt.target_section))}`)
+    }
     // Judge by the frozen game-config *content*, not by key presence: the
     // backend returns the key even for an empty/absent revision.
     if (gameConfigPresent(excerpt.game_config)) {
@@ -743,6 +774,12 @@ export function sourceExcerptText(
       })
       .filter((line) => line !== '')
     const parts: string[] = []
+    if (typeof excerpt.revision_instruction === 'string' && excerpt.revision_instruction !== '') {
+      parts.push(`定向修改要求：${excerpt.revision_instruction}`)
+    }
+    if (typeof excerpt.current_reflection === 'string' && excerpt.current_reflection !== '') {
+      parts.push(`当前已保存反思（定向修改原稿，只读）：\n${excerpt.current_reflection}`)
+    }
     if (typeof materials === 'string' && materials !== '') {
       parts.push(`实施材料：\n${materials}`)
     }

@@ -27,11 +27,13 @@ import type {
   TermPlanListItem,
 } from '../types'
 import type { BlockingDraft } from '../leave'
+import type { TodoStore } from '../todos'
 
 const props = defineProps<{
   context: LocalContext
   panel?: 'home' | 'todos' | 'daily'
   frozen?: boolean
+  todoStore?: TodoStore | null
 }>()
 const emit = defineEmits<{
   (
@@ -84,6 +86,7 @@ const termPlans = ref<TermPlanListItem[] | null>(null)
 const termStatusByDate = ref<Record<string, string>>({})
 const loading = ref(false)
 const loadError = ref('')
+const dailyView = ref<'calendar' | 'saved'>('calendar')
 let requestSeq = 0
 
 type CalendarCell = { key: string; day: CalendarDayItem | null }
@@ -228,8 +231,27 @@ function clearPlanState(): void {
   termStatusByDate.value = {}
 }
 
+type DailyCalendarState = {
+  month: string
+  termFilter: string | null
+  dailyView: 'calendar' | 'saved'
+}
+
+function captureDailyCalendarState(): DailyCalendarState {
+  return { month: month.value, termFilter: termFilter.value, dailyView: dailyView.value }
+}
+
+function restoreDailyCalendarState(value: DailyCalendarState | null): void {
+  if (!value || props.frozen) return
+  if (typeof value.month === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(value.month)) month.value = value.month
+  if (value.termFilter === null || props.context.terms.some((term) => term.id === value.termFilter)) {
+    termFilter.value = value.termFilter
+  }
+  if (value.dailyView === 'calendar' || value.dailyView === 'saved') dailyView.value = value.dailyView
+}
 function returnToToday(): void {
   if (frozenNow()) return
+  dailyView.value = 'calendar'
   const now = new Date()
   const targetToday = toIso(now)
   const targetMonth = targetToday.slice(0, 7)
@@ -391,7 +413,7 @@ onBeforeUnmount(() => {
   delete (window as unknown as { __d1Workbench?: object }).__d1Workbench
 })
 
-defineExpose({ reload, blockingDraft })
+defineExpose({ reload, blockingDraft, dailyView, captureDailyCalendarState, restoreDailyCalendarState })
 </script>
 
 <template>
@@ -399,13 +421,12 @@ defineExpose({ reload, blockingDraft })
     <div class="kgm-page-head">
       <div>
         <h2>{{ activePanel === 'daily' ? '日计划' : activePanel === 'todos' ? '个人待办' : '工作台' }}</h2>
-        <p class="kgm-page-kicker">
+        <p v-if="activePanel !== 'daily'" class="kgm-page-kicker">
           {{ props.context.profile?.display_name }} ·
           {{ props.context.class?.name }}（{{
             { small: '小班', middle: '中班', large: '大班' }[props.context.class?.grade ?? 'middle']
           }}）· 园所：{{ props.context.school_name || '（未填写）' }}
-          <span v-if="activePanel === 'daily'"> · 月历、学期筛选与已保存历史</span>
-          <span v-else-if="activePanel === 'todos'"> · 仅本人可见，不随班级或学期变化</span>
+          <span v-if="activePanel === 'todos'"> · 仅本人可见，不随班级或学期变化</span>
           <span v-else> · 日历与未完成待办；完整待办管理在个人待办</span>
         </p>
       </div>
@@ -431,6 +452,7 @@ defineExpose({ reload, blockingDraft })
         ref="homePanelRef"
         :profile-id="props.context.profile?.id ?? ''"
         :disabled="frozen"
+        :store="props.todoStore ?? null"
         @open-todos="emit('open-todos')"
       />
     </div>
@@ -440,23 +462,17 @@ defineExpose({ reload, blockingDraft })
         ref="todoPanelRef"
         :profile-id="props.context.profile?.id ?? ''"
         :disabled="frozen"
+        :store="props.todoStore ?? null"
         @busy="onTodoBusy"
       />
     </div>
 
     <section v-else class="workbench-daily" data-d1="daily-plan-module">
       <div class="workbench-daily-pane" data-d1="workbench-daily-pane">
-        <div class="module-head">
+                <div class="module-head">
           <h3>日计划月历</h3>
-          <span v-if="todayPlan" class="muted" data-d1="daily-plan-module-status">
-            今天已有计划 · 内容版本 v{{ todayPlan.current_content_version }}
-          </span>
-          <span v-else class="muted" data-d1="daily-plan-module-status">
-            今天尚无已保存计划；可在下方日历确认新建。
-          </span>
         </div>
 
-        <div class="kgm-sheet">
           <div class="daily-filters">
             <el-radio-group
               :model-value="termFilter ?? ''"
@@ -480,10 +496,18 @@ defineExpose({ reload, blockingDraft })
               :disabled="frozen"
               data-d1="month-picker"
             />
-            <el-button data-d1="term-all" :disabled="frozen" @click="returnToToday">
-              回到今天
-            </el-button>
+
           </div>
+
+        <div class="daily-view-bar" data-d1="daily-view-bar">
+          <el-radio-group v-model="dailyView" size="small" :disabled="frozen" data-d1="daily-view-tabs">
+            <el-radio-button value="calendar">月历</el-radio-button>
+            <el-radio-button value="saved">已保存计划</el-radio-button>
+          </el-radio-group>
+          <el-button data-d1="term-all" :disabled="frozen" @click="returnToToday">回到今天</el-button>
+        </div>
+
+        <div v-if="dailyView === 'calendar'" class="kgm-sheet">
           <p class="muted daily-hint">
             {{ heading }}；点击可创建的日期先确认再新建，已有计划直接打开。
           </p>
@@ -509,14 +533,13 @@ defineExpose({ reload, blockingDraft })
                   {{ stateLabel(cell.day.effective_state) }}
                   <template v-if="cell.day.week_number">· 第{{ cell.day.week_number }}周</template>
                 </div>
-                <div class="day-note">{{ cellNote(cell.day) }}</div>
               </div>
               <div v-else class="day blank" aria-hidden="true"></div>
             </template>
           </div>
         </div>
 
-        <div class="kgm-sheet history-sheet">
+        <div v-else class="kgm-sheet history-sheet">
           <div class="kgm-sheet-header">
             日计划历史 · {{ selectedTerm ? '该学期已保存计划' : '本月已保存计划' }}
           </div>
@@ -535,14 +558,6 @@ defineExpose({ reload, blockingDraft })
               <template #default="{ row }">第{{ row.week_number }}周</template>
             </el-table-column>
             <el-table-column prop="current_content_version" label="内容版本" width="90" />
-            <el-table-column label="状态提示">
-              <template #default="{ row }">
-                <span v-if="selectedTerm">
-                  {{ termStatusByDate[row.plan_date] || '当前范围有效' }}
-                </span>
-                <span v-else>当前月份</span>
-              </template>
-            </el-table-column>
             <el-table-column label="" width="120">
               <template #default="{ row }">
                 <el-button size="small" data-d1="open-plan" @click="openListItem(row)">
@@ -687,5 +702,13 @@ defineExpose({ reload, blockingDraft })
     padding-left: 12px;
     padding-right: 12px;
   }
+}
+.daily-view-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 </style>

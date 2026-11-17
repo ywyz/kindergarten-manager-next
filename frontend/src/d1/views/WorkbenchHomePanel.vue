@@ -25,16 +25,18 @@ import {
   type CalendarGridCell,
   type WorkbenchDayDetails,
 } from '../workbench-calendar'
-import { createTodoApi, type LocalTodo } from '../todos'
+import { createTodoApi, type LocalTodo, type TodoStore } from '../todos'
 
 const props = withDefaults(defineProps<{
   profileId: string
   disabled?: boolean
   /** Optional fixed China date for deterministic source UI checks. */
   today?: string
+  store?: TodoStore | null
 }>(), {
   disabled: false,
   today: '',
+  store: null,
 })
 
 const emit = defineEmits<{
@@ -79,6 +81,7 @@ const selectedTermLabel = computed(() => {
 function selectDay(value: string | null): void {
   if (!value || !parseIsoDate(value)) return
   selectedDate.value = value
+  dayDialogOpen.value = true
 }
 
 function validMonth(value: string): boolean {
@@ -89,6 +92,7 @@ function validMonth(value: string): boolean {
 function setMonth(value: string): void {
   if (!validMonth(value)) return
   month.value = value
+  dayDialogOpen.value = false
   if (!selectedDate.value.startsWith(`${value}-`)) {
     selectedDate.value = value === todayIso.value.slice(0, 7)
       ? todayIso.value
@@ -106,6 +110,7 @@ function nextMonth(): void {
 
 function goToday(now: Date = new Date()): void {
   refreshToday(now)
+  dayDialogOpen.value = false
   const target = todayIso.value
   month.value = target.slice(0, 7)
   selectedDate.value = target
@@ -116,6 +121,7 @@ watch(() => props.today, (value) => {
 })
 
 watch(month, (value, previous) => {
+  dayDialogOpen.value = false
   if (value === previous) return
   if (!validMonth(value)) return
   if (!selectedDate.value.startsWith(`${value}-`)) {
@@ -174,7 +180,9 @@ function annualClass(details: WorkbenchDayDetails): string {
 }
 
 const api = createTodoApi()
+const allTodos = ref<LocalTodo[]>([])
 const todos = ref<LocalTodo[]>([])
+const dayDialogOpen = ref(false)
 const loading = ref(false)
 const error = ref('')
 const loadedProfile = ref('')
@@ -202,10 +210,76 @@ const todoRows = computed<TodoRow[]>(() =>
   todos.value.map((item) => ({ ...item, ...todoDueInfo(item) })),
 )
 
+const activeTodos = computed(() => allTodos.value.filter((item) => item.archived_at === null))
+
+function todosOnDate(date: string): LocalTodo[] {
+  return activeTodos.value.filter((item) => item.due_date === date)
+}
+
+function todoCountOnDate(date: string): number {
+  return todosOnDate(date).length
+}
+
+const storePending = computed(() => props.store?.state.pending ?? null)
+const storeBusy = computed(() => props.store?.busy.value ?? false)
+const storeQueryBusy = computed(() => {
+  const state = props.store?.state
+  return !!state && (state.saving || state.checking || state.batching || props.disabled)
+})
+
+function syncFromStore(): void {
+  const store = props.store
+  if (!store) return
+  allTodos.value = store.state.items.filter((item) => item.archived_at === null)
+  todos.value = allTodos.value.filter((item) => !item.completed)
+  error.value = store.state.error
+}
+
+async function toggleTodo(item: LocalTodo): Promise<void> {
+  if (props.disabled) return
+  const store = props.store
+  if (!store) {
+    error.value = '共享待办状态不可用，请稍后重试'
+    return
+  }
+  const profileId = props.profileId
+  if (!profileId) return
+  try {
+    if (store.state.profileId !== profileId) store.setProfile(profileId)
+    if (store.state.showArchived) await store.setArchivedView(false)
+    if (!store.state.listReady) await store.load(profileId)
+    if (store.busy.value || store.state.pending) {
+      syncFromStore()
+      return
+    }
+    const current = store.state.items.find((row) => row.todo_id === item.todo_id)
+    if (!current) {
+      await loadTodos()
+      return
+    }
+    await store.toggle(current)
+    syncFromStore()
+  } catch (err) {
+    error.value = err instanceof ApiError && err.message ? err.message : '待办状态更新失败，请稍后重试'
+  }
+}
+
+async function queryTodoReceipt(): Promise<void> {
+  if (!props.store || storeQueryBusy.value) return
+  await props.store.queryPending()
+  syncFromStore()
+}
+
+async function retryTodo(): Promise<void> {
+  if (!props.store || storeQueryBusy.value) return
+  await props.store.retryPending()
+  syncFromStore()
+}
 async function loadTodos(): Promise<void> {
   const profileId = props.profileId
   if (!profileId) {
     requestSeq += 1
+    allTodos.value = []
     todos.value = []
     loading.value = false
     error.value = ''
@@ -216,15 +290,27 @@ async function loadTodos(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
+    const store = props.store
+    if (store) {
+      if (store.state.profileId !== profileId) store.setProfile(profileId)
+      if (store.state.showArchived) await store.setArchivedView(false)
+      if (!store.state.listReady) await store.load(profileId)
+      if (!alive || seq !== requestSeq || props.profileId !== profileId) return
+      syncFromStore()
+      loadedProfile.value = profileId
+      return
+    }
     const payload = await api.list(false)
     if (!alive || seq !== requestSeq || props.profileId !== profileId) return
-    todos.value = payload.items.filter(
-      (item) => !item.completed && item.archived_at === null,
-    )
+    allTodos.value = payload.items.filter((item) => item.archived_at === null)
+    todos.value = allTodos.value.filter((item) => !item.completed)
     loadedProfile.value = profileId
   } catch (err) {
     if (!alive || seq !== requestSeq || props.profileId !== profileId) return
-    if (loadedProfile.value !== profileId) todos.value = []
+    if (loadedProfile.value !== profileId) {
+      allTodos.value = []
+      todos.value = []
+    }
     error.value = err instanceof ApiError && err.message
       ? err.message
       : '未完成待办读取失败，请稍后重试'
@@ -246,6 +332,7 @@ function openTodos(): void {
 
 watch(() => props.profileId, (value, previous) => {
   if (value === previous) return
+  allTodos.value = []
   todos.value = []
   loadedProfile.value = ''
   error.value = ''
@@ -292,8 +379,18 @@ defineExpose({
   calendarCells,
   selectedDetails,
   selectedTermLabel,
+  allTodos,
   todos,
   todoRows,
+  dayDialogOpen,
+  todosOnDate,
+  todoCountOnDate,
+  toggleTodo,
+  queryTodoReceipt,
+  retryTodo,
+  storePending,
+  storeBusy,
+  storeQueryBusy,
   loading,
   error,
   monthTitle,
@@ -358,40 +455,18 @@ defineExpose({
                 </span>
               </span>
               <span class="home-day-lunar">{{ cellLunar(cell) }}</span>
-              <span class="home-day-marker" :class="cellMarkerKind(cell)">{{ cellMarker(cell) }}</span>
+              <span class="home-day-marker" :class="cellMarkerKind(cell)">{{ cellMarker(cell) }}</span>              <span
+                v-if="cell.date && todoCountOnDate(cell.date)"
+                class="home-day-todo"
+                data-d1="home-day-todos"
+              >
+                待办 {{ todoCountOnDate(cell.date) }}
+              </span>
             </template>
           </button>
         </div>
       </div>
 
-      <div v-if="selectedDetails" class="home-day-detail" data-d1="home-day-detail">
-        <div class="home-detail-head">
-          <strong>{{ selectedDetails.gregorianLabel }}</strong>
-          <span>{{ selectedDetails.weekdayLabel }}</span>
-        </div>
-        <dl class="home-detail-list">
-          <div>
-            <dt>农历</dt>
-            <dd>{{ selectedDetails.lunar.available ? selectedDetails.lunar.display : selectedDetails.lunar.reason }}</dd>
-          </div>
-          <div>
-            <dt>节气</dt>
-            <dd :class="{ 'detail-term': selectedDetails.solarTerm.name, 'detail-muted': !selectedDetails.solarTerm.available }">
-              {{ selectedTermLabel }}
-            </dd>
-          </div>
-          <div>
-            <dt>节日</dt>
-            <dd class="detail-festival">{{ selectedDetails.festivals.join('、') || '无' }}</dd>
-          </div>
-          <div>
-            <dt>年度安排</dt>
-            <dd :class="`detail-annual ${annualClass(selectedDetails)}`">
-              {{ selectedDetails.annual.label }}
-            </dd>
-          </div>
-        </dl>
-      </div>
       <p class="home-calendar-note muted">{{ CALENDAR_SOURCE_NOTE }}</p>
     </section>
 
@@ -438,6 +513,50 @@ defineExpose({
       </div>
       <p v-if="todoRows.length" class="muted home-todo-count">共 {{ todoRows.length }} 项未完成</p>
     </aside>
+    <el-dialog
+      v-model="dayDialogOpen"
+      title="日期详情"
+      width="min(520px, 92vw)"
+      data-d1="home-day-dialog"
+    >
+      <div v-if="selectedDetails" class="home-dialog-detail">
+        <p><strong>{{ selectedDetails.gregorianLabel }}</strong> {{ selectedDetails.weekdayLabel }}</p>
+        <p>农历：{{ selectedDetails.lunar.available ? selectedDetails.lunar.display : selectedDetails.lunar.reason }}</p>
+        <p>节气：{{ selectedTermLabel }}</p>
+        <p>节日：{{ selectedDetails.festivals.join('、') || '无' }}</p>
+        <p>年度安排：{{ selectedDetails.annual.label }}</p>
+      </div>
+      <div class="home-dialog-todos" data-d1="home-dialog-todos">
+        <h4>该日待办</h4>
+        <el-empty
+          v-if="!todosOnDate(selectedDate).length"
+          description="该日没有待办"
+        />
+        <label v-for="item in todosOnDate(selectedDate)" :key="item.todo_id" class="home-dialog-todo">
+          <el-checkbox
+            :model-value="item.completed"
+            :disabled="disabled || storeBusy"
+            :data-d1="`home-dialog-todo-${item.todo_id}`"
+            @change="toggleTodo(item)"
+          />
+          <span :class="{ completed: item.completed }">{{ item.title }}</span>
+        </label>
+      </div>
+      <div v-if="storePending" class="home-dialog-pending" data-d1="home-dialog-pending">
+        <p>原待办请求结果未确认；请先查询原回执，不会自动再次写入。</p>
+        <div class="home-dialog-pending-actions">
+          <el-button size="small" :disabled="storeQueryBusy" data-d1="home-dialog-query" @click="queryTodoReceipt">
+            查询原回执
+          </el-button>
+          <el-button size="small" :disabled="storeQueryBusy" data-d1="home-dialog-retry" @click="retryTodo">
+            按原请求重试
+          </el-button>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="dayDialogOpen = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
   </div>
 </template>
@@ -725,4 +844,18 @@ defineExpose({
     padding: 12px;
   }
 }
+.home-day-todo {
+  margin-top: 2px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--kgm-accent) 14%, transparent);
+  color: var(--kgm-accent);
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+.home-dialog-detail p { margin: 4px 0; }
+.home-dialog-todos { margin-top: 14px; }
+.home-dialog-todos h4 { margin: 0 0 8px; }
+.home-dialog-todo { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.home-dialog-todo .completed { color: var(--kgm-muted); text-decoration: line-through; }
 </style>

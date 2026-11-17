@@ -96,10 +96,18 @@ const context = ref<LocalContext | null>(null)
 const view = ref<View>({ name: 'workbench', panel: 'home' })
 /** Stable left-page navigation target for child editors' Teleport. */
 const PAGE_NAVIGATION_TARGET = '#d1-page-navigation'
+type DailyCalendarReturnState = {
+  month: string
+  termFilter: string | null
+  dailyView: 'calendar' | 'saved'
+}
+let dailyCalendarReturn: DailyCalendarReturnState | null = null
 /** The mounted workbench; its local todo editor joins the leave/close guard. */
 const workbenchRef = ref<{
   reload?: () => Promise<void>
   blockingDraft?: () => BlockingDraft | null
+  captureDailyCalendarState?: () => DailyCalendarReturnState
+  restoreDailyCalendarState?: (value: DailyCalendarReturnState | null) => void
 } | null>(null)
 /** Close-specific freeze: input stops before the allow leaves the page. */
 const closeLocked = ref(false)
@@ -263,6 +271,23 @@ const activeModule = computed<ModuleKey>(() => {
   }
 })
 
+const MODULE_LABELS: Record<ModuleKey, string> = {
+  workbench: '工作台', todos: '个人待办', daily: '日计划', weekly: '周计划',
+  observations: '游戏观察', listening: '一对一倾听', curriculum: '课程审议',
+  collaboration: '在线协作', settings: '设置',
+}
+const moduleNavExpanded = ref(true)
+const activeModuleLabel = computed(() => MODULE_LABELS[activeModule.value])
+watch(
+  () => {
+    const current = view.value
+    return [current.name, current.name === 'workbench' ? current.panel : undefined] as const
+  },
+  ([name, panel]) => {
+    moduleNavExpanded.value = name === 'workbench' && (panel === undefined || panel === 'home')
+  },
+  { immediate: true },
+)
 let pageBusySeq = 0
 let pageBusyRetry: ReturnType<typeof setTimeout> | null = null
 let pageBusyAlive = true
@@ -1112,6 +1137,7 @@ function openEditorFromWorkbench(
     ElMessage.warning('关闭请求处理中：窗口可能即将关闭，暂不可切换页面')
     return
   }
+  dailyCalendarReturn = workbenchRef.value?.captureDailyCalendarState?.() ?? null
   view.value = { name: 'editor', planDate: date, mode, planId, fromTermId: termId }
 }
 
@@ -1355,9 +1381,14 @@ async function leaveForAction(
       weeklyListBusy.value = false
       clearWeeklyState()
       clearListeningState()
+      const restoreCalendar = returnsToDailyCalendar ? dailyCalendarReturn : null
+      dailyCalendarReturn = null
       view.value = {
         name: 'workbench',
         panel: returnsToDailyCalendar ? 'daily' : 'home',
+      }
+      if (restoreCalendar) {
+        void nextTick(() => workbenchRef.value?.restoreDailyCalendarState?.(restoreCalendar))
       }
     } else if (kind === 'observations') {
       editorBridge = null
@@ -2306,9 +2337,20 @@ onMounted(() => {
       <div class="d1-shell">
         <aside class="d1-left-rail" data-d1="left-rail" aria-label="左侧导航">
           <div class="d1-rail-group">
-            <div class="d1-rail-heading">模块</div>
+            <div class="d1-rail-heading d1-rail-heading-row">
+              <span>模块</span>
+              <el-button
+                link
+                size="small"
+                data-d1="module-nav-toggle"
+                :disabled="closeLocked"
+                @click="moduleNavExpanded = !moduleNavExpanded"
+              >
+                {{ moduleNavExpanded ? '收起' : '展开' }}
+              </el-button>
+            </div>
             <nav
-              v-if="bootState === 'ready'"
+              v-if="bootState === 'ready' && moduleNavExpanded"
               class="kgm-module-nav"
               data-d1="module-nav"
               aria-label="应用模块"
@@ -2413,6 +2455,16 @@ onMounted(() => {
           设置
         </el-button>
             </nav>
+            <div
+              v-if="bootState === 'ready' && !moduleNavExpanded"
+              class="d1-rail-current"
+              data-d1="module-nav-collapsed"
+            >
+              <div class="d1-rail-current-label">当前：{{ activeModuleLabel }}</div>
+              <el-button link size="small" data-d1="module-back-workbench" :disabled="closeLocked" @click="goModule('workbench')">
+                返回工作台
+              </el-button>
+            </div>
           </div>
           <div class="d1-rail-group">
             <div class="d1-rail-heading">当前页面</div>
@@ -2430,6 +2482,7 @@ onMounted(() => {
         :context="context!"
         :panel="view.panel ?? 'home'"
         :frozen="closeLocked"
+        :todo-store="todoStore"
         @open-todos="() => void openTodosFromWorkbench()"
         @open-editor="openEditorFromWorkbench"
         @open-weekly-plans="() => void openWeeklyPlansFromWorkbench()"
@@ -2739,5 +2792,23 @@ body {
 .maintenance-notice {
   margin-bottom: 12px;
   user-select: text;
+}
+.d1-rail-heading-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.d1-rail-current {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 6px 4px 10px;
+  border-bottom: 1px solid var(--kgm-line);
+}
+.d1-rail-current-label {
+  color: var(--kgm-muted);
+  font-size: 0.8rem;
 }
 </style>

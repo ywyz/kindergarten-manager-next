@@ -17,13 +17,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiGet, apiPost, ApiError, pathSegment } from '../client'
 import { queryAiReceipt, receiptMessage, isIndeterminate } from '../operations'
-import { alignProcess, type ProcessCompareRow } from '../process-compare'
+import { alignProcess, inlineDiff, type ProcessCompareRow } from '../process-compare'
 import type { SaveOutcome } from '../leave'
 import type {
   AdoptionPreview,
   AdoptionResult,
   CandidateAdoptionOrigin,
   CandidateDetail,
+  OtherSection,
   TaskType,
 } from '../types'
 import {
@@ -67,6 +68,15 @@ const props = defineProps<{
   inline?: boolean
   /** The real editing-area anchor the inline card is teleported beside. */
   inlineTarget?: HTMLElement | null
+  /** A new targeted other-activities candidate shows/adopts only this board. */
+  targetSection?: OtherSection | null
+  /** Status/process of the one automatic pre-adoption split adapt task. */
+  splitAdapt?: {
+    status: 'pending' | 'ready' | 'failed' | 'unknown'
+    process?: string
+    message?: string
+    historical?: boolean
+  } | null
 }>()
 
 const emit = defineEmits<{
@@ -74,7 +84,8 @@ const emit = defineEmits<{
   (e: 'adopted', result: AdoptionResult, epochAtAdopt: number, origin: CandidateAdoptionOrigin): void
   (e: 'draft-active', active: boolean): void
   (e: 'open-candidate', candidateId: string): void
-  (e: 'open-regenerated', candidateId: string, taskType: TaskType): void
+  (e: 'open-regenerated', candidateId: string, taskType: TaskType, targetSection?: OtherSection | null): void
+  (e: 'retry-split-adapt'): void
 }>()
 
 type Phase = 'idle' | 'loading' | 'ready' | 'failed'
@@ -120,6 +131,7 @@ interface PendingRegenerate {
   taskType: TaskType
   version: number
   body: Record<string, unknown>
+  targetSection?: OtherSection | null
 }
 const pendingRegenerate = ref<PendingRegenerate | null>(null)
 const regenerating = ref(false)
@@ -136,12 +148,14 @@ interface RegenerateAccepted {
   status?: string
   /** The succeeded task's own candidate, never the candidate being viewed. */
   newCandidateId?: string
+  targetSection?: OtherSection | null
 }
 const regenerateAccepted = ref<RegenerateAccepted | null>(null)
 /** Query and same-key retry are mutually exclusive. */
 const regenerateQuerying = ref(false)
 
 const splitForm = ref<SplitEditForm | null>(null)
+const splitEditProcess = ref(false)
 const adaptForm = ref('')
 const otherForm = ref<OtherEditForm | null>(null)
 const reflectionForm = ref('')
@@ -149,7 +163,14 @@ const selected = ref<string[]>([])
 
 const taskType = computed<TaskType | null>(() => candidate.value?.task_type ?? null)
 const editable = computed(() => !!candidate.value && candidateEditable(candidate.value))
-const availableTargets = computed(() => candidate.value?.available_targets ?? [])
+const directAdopt = computed(() => taskType.value === 'daily_lesson_split')
+const availableTargets = computed(() => {
+  const all = candidate.value?.available_targets ?? []
+  if (taskType.value === 'daily_other_activities' && props.targetSection) {
+    return all.filter((target) => target === props.targetSection)
+  }
+  return all
+})
 const stateNote = computed(() => {
   const state = candidate.value?.adoption_state
   if (state === 'source_changed') {
@@ -190,6 +211,16 @@ const adaptProcessRows = computed<ProcessCompareRow[]>(() => {
     typeof after === 'string' ? after : '',
   )
 })
+/** Split review compares the generated original process with the one adapt
+ * result/teacher edit that will be adopted, without a separate preview click. */
+const splitInlineDiff = computed(() =>
+  inlineDiff(originalProcessText.value ?? '', splitForm.value?.process ?? ''),
+)
+function showBoard(board: string): boolean {
+  return taskType.value !== 'daily_other_activities'
+    || !props.targetSection
+    || props.targetSection === board
+}
 
 let loadSeq = 0
 let operationSeq = 0
@@ -241,10 +272,29 @@ const blocking = computed(
 
 watch(blocking, (value) => emit('draft-active', value))
 
+function applySplitAdaptProcess(): void {
+  const value = props.splitAdapt?.process
+  if (
+    typeof value !== 'string'
+    || value === ''
+    || taskType.value !== 'daily_lesson_split'
+    || !splitForm.value
+  ) return
+  const original = originalProcessText.value ?? ''
+  const current = splitForm.value.process ?? ''
+  if (current !== original && current.trim() !== '') return
+  const wasDirty = dirty.value
+  splitForm.value.process = value
+  if (!wasDirty) reviewedSignature.value = editSignature()
+}
+
+watch(() => props.splitAdapt?.process, applySplitAdaptProcess, { immediate: true })
+
 function resetForms(): void {
   const current = candidate.value
   if (!current) return
   splitForm.value = null
+  splitEditProcess.value = false
   adaptForm.value = ''
   otherForm.value = null
   reflectionForm.value = ''
@@ -257,7 +307,8 @@ function resetForms(): void {
   } else {
     otherForm.value = otherEditFromRaw(current.raw_candidate, availableTargets.value)
   }
-  selected.value = defaultSelectedTargets(current)
+  if (current.task_type === 'daily_lesson_split') applySplitAdaptProcess()
+  selected.value = defaultSelectedTargets(current, props.targetSection)
   reviewedSignature.value = editSignature()
   invalidatePreview()
 }
@@ -687,6 +738,7 @@ function acceptRegenerateTask(
   requestId: string,
   version: number,
   taskType: TaskType,
+  targetSection: OtherSection | null,
 ): void {
   const execution = (task.execution ?? {}) as Record<string, unknown>
   const candidateId =
@@ -699,6 +751,7 @@ function acceptRegenerateTask(
     candidateId: props.candidateId,
     taskType,
     version,
+    targetSection,
     taskId: typeof task.id === 'string' ? task.id : undefined,
     generation,
     status,
@@ -749,11 +802,16 @@ async function regenerateAdapt(): Promise<void> {
     base_candidate_id: props.candidateId,
   }
   if (instruction !== '') body.revision_instruction = instruction
+  if (type === 'daily_other_activities' && props.targetSection) {
+    body.target_section = props.targetSection
+  }
   pendingRegenerate.value = {
     requestId: body.request_id as string,
     taskType: type,
     version,
     body,
+    targetSection:
+      type === 'daily_other_activities' ? props.targetSection ?? null : null,
   }
   regenerating.value = true
   errorText.value = ''
@@ -765,7 +823,13 @@ async function regenerateAdapt(): Promise<void> {
     )
     pendingRegenerate.value = null
     regenerateInstruction.value = ''
-    acceptRegenerateTask(task, body.request_id as string, version, type)
+    acceptRegenerateTask(
+      task,
+      body.request_id as string,
+      version,
+      type,
+      type === 'daily_other_activities' ? props.targetSection ?? null : null,
+    )
   } catch (err) {
     if (isIndeterminate(err)) {
       errorText.value = '提交结果未知：请查询提交结果，或用同一请求 ID 与请求体重试原提交'
@@ -839,6 +903,7 @@ async function queryPendingRegenerate(): Promise<void> {
         context.requestId,
         context.version,
         context.taskType,
+        context.targetSection ?? null,
       )
       return
     }
@@ -861,7 +926,13 @@ async function resubmitPendingRegenerate(): Promise<void> {
     )
     pendingRegenerate.value = null
     regenerateInstruction.value = ''
-    acceptRegenerateTask(task, context.requestId, context.version, context.taskType)
+    acceptRegenerateTask(
+      task,
+      context.requestId,
+      context.version,
+      context.taskType,
+      context.targetSection ?? null,
+    )
   } catch (err) {
     if (isIndeterminate(err)) {
       errorText.value = '重试结果仍未知：请稍后再次查询提交结果'
@@ -892,7 +963,12 @@ function regenerateStatusTitle(): string {
 function openAcceptedCandidate(): void {
   const accepted = regenerateAccepted.value
   if (!accepted?.newCandidateId) return
-  emit('open-regenerated', accepted.newCandidateId, accepted.taskType)
+  emit(
+    'open-regenerated',
+    accepted.newCandidateId,
+    accepted.taskType,
+    accepted.targetSection ?? null,
+  )
 }
 
 function cancelEdit(): void {
@@ -1132,15 +1208,15 @@ onBeforeUnmount(() => {
           重新生成会绑定当前原候选、已保存内容版本与真实拆分基准；新结果不会自动采用，原候选与已保存教案保持不变。
         </p>
       </div>
-      <div class="source-block">
+      <div v-if="taskType !== 'daily_lesson_split'" class="source-block">
         <p v-for="(line, index) in sourceLines" :key="index" class="muted">{{ line }}</p>
         <p class="muted">候选类型：{{ taskTypeLabel(taskType) }} · 契约 v{{ candidate.contract_version }} · 内容版本 v{{ candidate.latest_content_version }}</p>
       </div>
-      <div v-if="sourceExcerpt" class="readonly-block" data-d1="candidate-source-excerpt">
+      <div v-if="sourceExcerpt && taskType !== 'daily_lesson_split'" class="readonly-block" data-d1="candidate-source-excerpt">
         <p class="label">{{ sourceExcerpt.label }}</p>
         <pre class="block">{{ sourceExcerpt.value || '（空）' }}</pre>
       </div>
-      <div v-if="originalProcessText !== null" class="readonly-block">
+      <div v-if="originalProcessText !== null && taskType === 'daily_process_adapt'" class="readonly-block">
         <p class="label">原始拆分过程（只读，采用后作为标红基准；教师预览修改不改变基准）</p>
         <pre class="block">{{ originalProcessText || '（空）' }}</pre>
       </div>
@@ -1155,7 +1231,80 @@ onBeforeUnmount(() => {
           <div class="field"><label>准备</label><el-input v-model="splitForm.preparation" type="textarea" :rows="2" :disabled="!editable" /></div>
           <div class="field"><label>重点</label><el-input v-model="splitForm.key_points" type="textarea" :rows="2" :disabled="!editable" /></div>
           <div class="field"><label>难点</label><el-input v-model="splitForm.difficult_points" type="textarea" :rows="2" :disabled="!editable" /></div>
-          <div class="field"><label>过程</label><el-input v-model="splitForm.process" type="textarea" :rows="5" :disabled="!editable" /></div>
+        </div>
+        <div class="split-adapt-review" data-d1="split-adapt-review">
+          <el-alert
+            v-if="splitAdapt"
+            :type="splitAdapt.status === 'ready' ? 'success' : splitAdapt.status === 'pending' ? 'info' : 'warning'"
+            :closable="false"
+            class="section"
+            data-d1="split-adapt-status"
+            :title="splitAdapt.status === 'ready'
+              ? '已按拆分原过程自动接续一次适龄调整；下方可核对、修改后随拆分一起采用。'
+              : splitAdapt.status === 'pending'
+                ? '正在按拆分原过程和目标年级自动生成适龄过程…'
+                : splitAdapt.message || '适龄结果尚未完成：可先按原拆分采用，或显式重试。'"
+          />
+          <el-button
+            v-if="splitAdapt && splitAdapt.status !== 'pending' && splitAdapt.status !== 'ready'
+              && (splitAdapt.status === 'unknown' || !splitAdapt.historical)"
+            size="small"
+            type="warning"
+            data-d1="split-adapt-retry"
+            @click="emit('retry-split-adapt')"
+          >
+            {{ splitAdapt.status === 'unknown' ? '查询适龄结果' : '重新生成适龄过程（新请求）' }}
+          </el-button>
+          <div class="compare-cols split-process-cols" data-d1="split-process-diff">
+            <div>
+              <span class="muted">拆分原过程（只读，采用后作为标红基准）</span>
+              <pre class="block split-process-before" data-d1="split-process-before"><span
+                v-for="(segment, index) in splitInlineDiff.before"
+                :key="`sb-${index}`"
+                :class="{ 'diff-changed': segment.changed }"
+              >{{ segment.text }}</span></pre>
+            </div>
+            <div>
+              <div class="split-process-head">
+                <span class="muted">适龄后完整过程（仅替换过程）</span>
+                <el-button
+                  size="small"
+                  text
+                  data-d1="split-process-edit"
+                  :disabled="!editable"
+                  @click="splitEditProcess = !splitEditProcess"
+                >
+                  {{ splitEditProcess ? '完成编辑' : '编辑过程' }}
+                </el-button>
+              </div>
+              <div v-if="splitEditProcess" class="field">
+                <label>过程</label>
+                <el-input
+                  v-model="splitForm.process"
+                  type="textarea"
+                  :rows="10"
+                  :disabled="!editable"
+                  data-d1="split-process-after"
+                />
+              </div>
+              <pre v-else class="block split-process-after" data-d1="split-process-after"><span
+                v-for="(segment, index) in splitInlineDiff.after"
+                :key="`sa-${index}`"
+                :class="{ 'diff-changed': segment.changed }"
+              >{{ segment.text }}</span></pre>
+            </div>
+          </div>
+          <p class="muted">
+            红色文字表示相对拆分原过程的变化；同一段落内的增删改会直接标出。适龄只替换过程，五字段和过程均可核对修改。
+          </p>
+          <div class="source-block" data-d1="split-source-summary">
+            <p v-for="(line, index) in sourceLines" :key="`ss-${index}`" class="muted">{{ line }}</p>
+            <p class="muted">候选类型：{{ taskTypeLabel(taskType) }} · 契约 v{{ candidate.contract_version }} · 内容版本 v{{ candidate.latest_content_version }}</p>
+          </div>
+          <details v-if="sourceExcerpt" class="split-source-evidence" data-d1="split-source-evidence">
+            <summary>原始教案佐证（展开查看）</summary>
+            <pre class="block">{{ sourceExcerpt.value || '（空）' }}</pre>
+          </details>
         </div>
       </template>
 
@@ -1199,7 +1348,7 @@ onBeforeUnmount(() => {
           </el-checkbox>
         </div>
 
-        <div class="board-block" data-d1="board-morning_games">
+        <div v-if="showBoard('morning_games')" class="board-block" data-d1="board-morning_games">
           <div class="board-head">
             <h4>晨间游戏（一集体一自选，每组一个游戏）</h4>
             <el-tag v-if="!otherForm.morning_games" size="small" type="info">未生成</el-tag>
@@ -1217,7 +1366,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div class="board-block" data-d1="board-morning_talk">
+        <div v-if="showBoard('morning_talk')" class="board-block" data-d1="board-morning_talk">
           <div class="board-head">
             <h4>晨间谈话</h4>
             <el-tag v-if="!otherForm.morning_talk" size="small" type="info">未生成</el-tag>
@@ -1228,7 +1377,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div class="board-block" data-d1="board-post_group_games">
+        <div v-if="showBoard('post_group_games')" class="board-block" data-d1="board-post_group_games">
           <div class="board-head">
             <h4>集体活动后游戏</h4>
             <el-tag v-if="!otherForm.post_group_games" size="small" type="info">未生成</el-tag>
@@ -1258,7 +1407,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div class="board-block" data-d1="board-afternoon_outdoor">
+        <div v-if="showBoard('afternoon_outdoor')" class="board-block" data-d1="board-afternoon_outdoor">
           <div class="board-head">
             <h4>下午户外活动</h4>
             <el-tag v-if="!otherForm.afternoon_outdoor" size="small" type="info">未生成</el-tag>
@@ -1281,7 +1430,7 @@ onBeforeUnmount(() => {
       </template>
 
       <p v-if="candidate.task_type === 'daily_lesson_split'" class="muted" data-d1="split-adapt-continuation-hint">
-        采用并保存后，将按本次拆分的目标年级自动发起一次过程适龄调整；适龄结果仍需比较并采用。
+        拆分成功后已按本次目标年级自动接续一次过程适龄；适龄只改过程，五字段与结果仍可编辑，采用并保存前由教师确认。
       </p>
       <el-alert v-if="errorText" type="warning" :closable="false" class="section" data-d1="candidate-error" :title="errorText" />
       <el-alert v-if="resultText" type="success" :closable="false" class="section" data-d1="candidate-adopted" :title="resultText" />
@@ -1365,9 +1514,9 @@ onBeforeUnmount(() => {
           v-else
           data-d1="candidate-adopt"
           type="primary"
-          :loading="adopting || (inline && previewing)"
-          :disabled="disabled || !editable || operationBlocked || (!inline && !preview) || (inline && !inlineEligible())"
-          @click="inline ? adoptDirect() : adopt()"
+          :loading="adopting || ((inline || directAdopt) && previewing)"
+          :disabled="disabled || !editable || operationBlocked || (!inline && !directAdopt && !preview) || ((inline || directAdopt) && !inlineEligible())"
+          @click="inline || directAdopt ? adoptDirect() : adopt()"
         >
           采用并保存
         </el-button>
@@ -1471,6 +1620,24 @@ onBeforeUnmount(() => {
 }
 .warn {
   color: var(--kgm-warning);
+}
+.diff-changed {
+  color: var(--kgm-danger);
+  font-weight: 600;
+}
+.split-adapt-review {
+  margin-top: 14px;
+  border-top: 1px dashed var(--kgm-border);
+  padding-top: 10px;
+}
+.split-process-cols {
+  margin-top: 8px;
+}
+.split-process-before {
+  max-height: 260px;
+}
+.split-diff {
+  margin-top: 12px;
 }
 .muted {
   color: var(--kgm-muted);

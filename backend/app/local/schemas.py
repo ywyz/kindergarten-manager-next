@@ -887,11 +887,23 @@ class LocalAITaskCreateIn(BaseModel):
     # #27: teacher-provided implementation material is the only evidence the
     # model may use for what actually happened in class.
     implementation_materials: str | None = Field(default=None, max_length=5000)
+    # 2026-11-17 feedback: one selected other-activity section, and an
+    # unsaved split candidate as the direct source of a pre-adoption adapt.
+    target_section: Literal[
+        "morning_games",
+        "morning_talk",
+        "post_group_games",
+        "afternoon_outdoor",
+    ] | None = None
+    source_candidate_id: str | None = Field(
+        default=None, min_length=1, max_length=64
+    )
 
     @field_validator(
         "base_candidate_id",
         "revision_instruction",
         "implementation_materials",
+        "source_candidate_id",
     )
     @classmethod
     def _strip_optional_adapt_fields(cls, value: str | None) -> str | None:

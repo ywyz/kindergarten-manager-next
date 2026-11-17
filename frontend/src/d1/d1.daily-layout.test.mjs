@@ -129,24 +129,26 @@ function between(source, startToken, endToken, needle, label) {
   assert.match(editorSource, /:process-target="processTarget"/)
   assert.match(editorSource, /:other-target="otherTarget"/)
   assert.match(editorSource, /:reflection-progress-target="reflectionProgressTarget"/)
-  assert.match(editorSource, /:generation-target="generationActionTarget"/)
+  assert.match(editorSource, /:dialog-open="aiTaskDialogOpen"/)
+  assert.match(editorSource, /hide-other-row/)
   assert.match(editorSource, /@action-start="onAiActionStart"/)
-  assert.ok(
-    editorSource.indexOf('data-d1="daily-generation-actions"')
-      > editorSource.indexOf('v-for="section in LAYOUT_SECTIONS"'),
-    'generation actions follow the complete left directory item list',
-  )
-  assert.match(editorSource, /data-d1="daily-generation-slot"/)
+  assert.match(editorSource, /data-d1="start-split-from-rail"/)
+  assert.match(editorSource, /@click="startSplitFromRail"/)
+  assert.match(editorSource, /data-d1="open-ai-history"/)
+  for (const key of ['morning_games', 'morning_talk', 'post_group_games', 'afternoon_outdoor']) {
+    assert.match(editorSource, new RegExp(`data-d1="section-ai-${key}"`), `${key} has its own AI entry`)
+  }
   assert.equal(
     (editorSource.match(/data-d1="reflection-generate"/g) ?? []).length,
     1,
-    'reflection generation has one moved entry',
+    'reflection generation has one section entry',
   )
   assert.ok(
     editorSource.indexOf('data-d1="reflection-generate"')
-      > editorSource.indexOf('data-d1="daily-generation-actions"'),
-    'reflection generation sits in the left generation group',
+      > editorSource.indexOf('data-d1="layout-section-reflection"'),
+    'reflection generation sits inside its own section',
   )
+  assert.doesNotMatch(editorSource, /data-d1="daily-generation-actions"/, 'no second left module/generation list')
   assert.match(panelSource, /emit\('action-start', taskType\)/)
   assert.match(panelSource, /emit\('locate-task', type\)/)
   assert.match(editorSource, /@locate-task="onAiLocate"/)

@@ -195,3 +195,84 @@ function labelFor(before: ProcessStep | null, after: ProcessStep | null, index: 
   const number = after?.number ?? before?.number ?? null
   return number ? `环节 ${number}` : `段落 ${index + 1}`
 }
+
+export interface DiffSegment {
+  text: string
+  changed: boolean
+}
+
+interface DiffToken {
+  text: string
+}
+
+function diffTokens(text: string): DiffToken[] {
+  // Chinese text has no spaces, so code points are the useful token; Latin
+  // words and existing whitespace stay together for readable inline changes.
+  return (text.match(/[A-Za-z0-9]+|\s+|[\s\S]/gu) ?? []).map((part) => ({ text: part }))
+}
+
+function mergeSegments(parts: DiffToken[], changed: boolean): DiffSegment[] {
+  const out: DiffSegment[] = []
+  for (const part of parts) {
+    if (part.text === '') continue
+    const last = out[out.length - 1]
+    if (last && last.changed === changed) last.text += part.text
+    else out.push({ text: part.text, changed })
+  }
+  return out
+}
+
+/**
+ * Bounded inline character/word diff for a same-paragraph change. Long text
+ * falls back to whole-segment highlighting so a very large process never
+ * stalls the review dialog.
+ */
+export function inlineDiff(
+  before: string,
+  after: string,
+): { before: DiffSegment[]; after: DiffSegment[] } {
+  const left = diffTokens(before)
+  const right = diffTokens(after)
+  if (left.length === 0 && right.length === 0) {
+    return { before: [], after: [] }
+  }
+  if (left.length > 1500 || right.length > 1500) {
+    return { before: mergeSegments(left, true), after: mergeSegments(right, true) }
+  }
+  const n = left.length
+  const m = right.length
+  const dp: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      dp[i][j] = left[i].text === right[j].text
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1])
+    }
+  }
+  const beforeSegments: DiffSegment[] = []
+  const afterSegments: DiffSegment[] = []
+  let i = 0
+  let j = 0
+  while (i < n || j < m) {
+    if (i < n && j < m && left[i].text === right[j].text) {
+      pushSegment(beforeSegments, left[i].text, false)
+      pushSegment(afterSegments, right[j].text, false)
+      i += 1
+      j += 1
+    } else if (j < m && (i >= n || dp[i][j + 1] >= dp[i + 1][j])) {
+      pushSegment(afterSegments, right[j].text, true)
+      j += 1
+    } else {
+      pushSegment(beforeSegments, left[i].text, true)
+      i += 1
+    }
+  }
+  return { before: beforeSegments, after: afterSegments }
+}
+
+function pushSegment(target: DiffSegment[], text: string, changed: boolean): void {
+  if (text === '') return
+  const last = target[target.length - 1]
+  if (last && last.changed === changed) last.text += text
+  else target.push({ text, changed })
+}
