@@ -49,4 +49,11 @@ OpenCode Go 负责周计划与观察分栏。Command Code 负责共用布局、�
 - 从 `a304ce5` 的已审源码运行真实协作服务，核对 41 个协作源码、迁移及测试文件的候选身份。使用本机独立 MySQL 8.4.11 实例、隔离测试库、合成账号和 `READ COMMITTED` 会话。依次应用 0001–0006，核对每库 20 张 InnoDB 表。升级用例在 0006 之前写入旧班级，升级后班级、园所标识和存储名称一致，新增覆盖字段为空。
 - 旧空库用例只执行 0001，首次补测复现当前 ORM 写入 `display_name_override` 时缺列。测试夹具现保留对 0001 原七表、字段和约束的检查，随后执行 0002–0006 再运行当前业务回归。整套可使用 `KGM_COLLAB_TEST_DATABASE_URL` 指向已迁移测试库，另用 `KGM_COLLAB_TEST_EMPTY_DATABASE_URL` 指向独立空库。单独运行空库类仍支持原有变量。隔离候选的协作套件最终通过 88 项和 27 个子用例，零跳过、零失败。
 - Edge 用真实服务和 MySQL 完成九个场景。管理端改园所、班级和学期名后，两个独立教师会话读取到更新，原配对和游戏设置仍有效。两人保存与确认同一周计划，历史确认保留原名称，新确认使用新名称。同版本并发提交只有一笔成功，另一个收到冲突。重复请求返回原回执。跨园所改名、缺失 CSRF、陈旧编辑均被拒绝。
-- 公网健康和管理页只读访问均返回 HTTP 200，健康状态为 `ok`。公网管理页未显示该候选新增的班级显示名称控件。公网未写入、未部署。本轮 MySQL 测试不使用公网数据库或真实业务数据。[公网健康接口](https://manager-next.ywyz.tech/api/collaboration/health) · [公网管理页](https://manager-next.ywyz.tech/admin)
+- 本次补测在部署前只读访问公网。健康和管理页均返回 HTTP 200，当时公网旧管理页尚未显示班级维护。本轮 MySQL 业务用例使用隔离库和合成档案。[公网健康接口](https://manager-next.ywyz.tech/api/collaboration/health) · [公网管理页](https://manager-next.ywyz.tech/admin)
+
+## 11 月 19 日公网班级维护与签名预览
+
+- 公网协作服务更新了 `4657454` 中涉及班级维护的 7 个服务端文件。MySQL 8.4.7 的 20 张表均为 InnoDB，增量迁移 `0006_class_display_override.sql` 增加可空的班级显示名称覆盖及约束。16 个已有班级在迁移前后的标识及原存储名称一致。切换后公网管理页返回 HTTP 200，已包含“已有班级显示名称”和园所选择控件。管理员登录后可进入班级维护。公网健康为 `ok`，匿名访问班级接口返回 HTTP 401。实际改名和双教师配对已在隔离 MySQL 验证。[公网管理页](https://manager-next.ywyz.tech/admin) · [公网健康接口](https://manager-next.ywyz.tech/api/collaboration/health)
+- Windows 11 x64 预览使用 `465745480a3089f054a06c05e872482808cea1d4` 和锁定依赖编译，构建 ID 为 `55c9b3f5-6671-41dc-aad5-74e8068deee2`。应用与更新器共 167 个 PE 文件通过 Authenticode 验证。安装器及卸载器使用同一 Certum 证书签名并加时间戳。签名应用在新建隔离档案启动，Windows 原生窗口显示首次设置界面，本地页面返回 HTTP 200。
+- GitHub 于北京时间 11 月 19 日 07:10 发布 `v0.1.0-listening-test.20261119`。发行标签与编译提交一致。20261119 进入预览渠道，稳定渠道状态保持原样。[发行页与校验清单](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261119)
+- 通过公网重新下载四个发行附件，大小和 SHA-256 均与上传前一致。SignTool 复验下载所得安装器的 SHA-256 Authenticode 签名及 RFC 3161 时间戳。使用 20261117 的信任配置和更新校验逻辑选中 20261119，验证 Ed25519 更新清单、ZIP 大小、哈希、文件列表和包内构建身份。同版本返回无更新。验证覆盖公开下载、更新识别、包校验和签名应用隔离启动。实际安装及升级替换留待目标机验证。[签名安装器](https://github.com/ywyz/kindergarten-manager-next/releases/download/v0.1.0-listening-test.20261119/KGNext-Win11-x64-Preview-Setup.exe)
