@@ -1,10 +1,13 @@
 """Static and opt-in MySQL 8.4 checks for the collaboration slice.
 
-The integration class runs only when ``KGM_COLLAB_TEST_DATABASE_URL`` is set
-to an explicit ``mysql+pymysql://`` URL.  It requires a fresh database (zero
-tables), applies the explicit migration file once and reports the real server
-version and database name.  It never creates a database, drops tables, reads a
-real secret or runs during ordinary unit-test discovery without that URL.
+The integration class runs only when ``KGM_COLLAB_TEST_EMPTY_DATABASE_URL``
+(falling back to ``KGM_COLLAB_TEST_DATABASE_URL``) is set to an explicit
+``mysql+pymysql://`` URL.  It requires a fresh database (zero tables), applies
+the 0001 migration, verifies the original seven tables and constraints, then
+applies 0002-0006 in order before exercising the current ORM.  It reports the
+real server version and database name.  It never creates a database, drops
+tables, reads a real secret or runs during ordinary unit-test discovery
+without that URL.
 """
 
 from __future__ import annotations
@@ -52,11 +55,25 @@ BACKEND = REPO / "backend"
 MYSQL_MIGRATION = (
     BACKEND / "migrations_collaboration" / "mysql" / "0001_initial.sql"
 )
+MYSQL_UPGRADE_MIGRATIONS = (
+    BACKEND / "migrations_collaboration" / "mysql" / "0002_admin_codes.sql",
+    BACKEND / "migrations_collaboration" / "mysql" / "0003_class_promotion.sql",
+    BACKEND / "migrations_collaboration" / "mysql" / "0004_weekly_plan_sync.sql",
+    BACKEND / "migrations_collaboration" / "mysql" / "0005_prompt_releases.sql",
+    BACKEND / "migrations_collaboration" / "mysql" / "0006_class_display_override.sql",
+)
 POSTGRES_MIGRATION = (
     BACKEND / "migrations_collaboration" / "0001_initial.sql"
 )
 SYNTHETIC_PEPPER = "synthetic-collaboration-pepper-0123456789"
 SYNTHETIC_PREVIEW = "synthetic-collaboration-preview-0123456789"
+
+
+def _empty_database_url() -> str:
+    return (
+        os.environ.get("KGM_COLLAB_TEST_EMPTY_DATABASE_URL", "").strip()
+        or os.environ.get("KGM_COLLAB_TEST_DATABASE_URL", "").strip()
+    )
 
 
 def _settings(url: str) -> CollaborationSettings:
@@ -207,13 +224,14 @@ class CollaborationConfigAndModelTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.environ.get("KGM_COLLAB_TEST_DATABASE_URL", "").strip(),
-    "set KGM_COLLAB_TEST_DATABASE_URL to a fresh independent MySQL 8.4 database",
+    _empty_database_url(),
+    "set KGM_COLLAB_TEST_EMPTY_DATABASE_URL (or KGM_COLLAB_TEST_DATABASE_URL) "
+    "to a fresh independent MySQL 8.4 database",
 )
 class CollaborationMySQLIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        url = os.environ["KGM_COLLAB_TEST_DATABASE_URL"].strip()
+        url = _empty_database_url()
         settings = _settings(url)
         settings.validate()
         parsed = make_url(url)
@@ -268,15 +286,7 @@ class CollaborationMySQLIntegrationTests(unittest.TestCase):
             f"KGM_SQLALCHEMY_VERSION={sqlalchemy.__version__} "
             f"KGM_PYMYSQL_VERSION={pymysql_version}"
         )
-        statements = _sql_statements(MYSQL_MIGRATION.read_text(encoding="utf-8"))
-        raw = cls.engine.raw_connection()
-        try:
-            cursor = raw.cursor()
-            for statement in statements:
-                cursor.execute(statement)
-            raw.commit()
-        finally:
-            raw.close()
+        _apply_migration(cls.engine, MYSQL_MIGRATION)
         with cls.engine.connect() as connection:
             tables = connection.exec_driver_sql(
                 "SELECT TABLE_NAME, ENGINE, TABLE_COLLATION "
@@ -310,6 +320,8 @@ class CollaborationMySQLIntegrationTests(unittest.TestCase):
             raise AssertionError(f"JSON mapping mismatch: {json_columns!r}")
         if len(fks) != 10:
             raise AssertionError(f"unexpected foreign keys: {fks!r}")
+        for path in MYSQL_UPGRADE_MIGRATIONS:
+            _apply_migration(cls.engine, path)
         cls.Session = sessionmaker(
             bind=cls.engine, autoflush=False, expire_on_commit=False
         )
@@ -499,6 +511,18 @@ class CollaborationMySQLIntegrationTests(unittest.TestCase):
             with self.assertRaises(CollaborationError) as expired:
                 authenticate(session, token, SYNTHETIC_PEPPER)
         self.assertEqual(expired.exception.code, "AUTH_REQUIRED")
+
+
+def _apply_migration(engine, path: Path) -> None:
+    statements = _sql_statements(path.read_text(encoding="utf-8"))
+    raw = engine.raw_connection()
+    try:
+        cursor = raw.cursor()
+        for statement in statements:
+            cursor.execute(statement)
+        raw.commit()
+    finally:
+        raw.close()
 
 
 def _sql_statements(sql: str) -> list[str]:
