@@ -144,6 +144,187 @@ export function curriculumContentEquals(
   return CURRICULUM_CONTENT_FIELDS.every((field) => a[field] === b[field])
 }
 
+const CURRICULUM_REVISION_FIELDS = [
+  {
+    section: 'goals',
+    status: 'goals_status',
+    original: 'goals_original',
+    adjustment: 'goals_adjustment',
+  },
+  {
+    section: 'preparation',
+    status: 'preparation_status',
+    original: 'preparation_original',
+    adjustment: 'preparation_adjustment',
+  },
+  {
+    section: 'process',
+    status: null,
+    original: 'process_original',
+    adjustment: 'process_adjustment',
+  },
+] as const
+
+type CurriculumRevisionSection =
+  (typeof CURRICULUM_REVISION_FIELDS)[number]['section']
+
+function substantiveCurriculumText(value: string | undefined): boolean {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+function curriculumAdjustments(
+  content: CurriculumContent,
+): Map<CurriculumRevisionSection, string> {
+  const result = new Map<CurriculumRevisionSection, string>()
+  for (const item of CURRICULUM_REVISION_FIELDS) {
+    const adjusted =
+      item.status === null || content[item.status] === 'adjusted'
+    if (adjusted && substantiveCurriculumText(content[item.adjustment])) {
+      result.set(item.section, content[item.adjustment].trim())
+    }
+  }
+  return result
+}
+function curriculumDocumentBlocks(
+  document: CurriculumDocument | null | undefined,
+): Array<{ section: string; kind: string; text: string }> | null {
+  const raw = (document as Record<string, unknown> | null | undefined)?.original
+  const blocks = (raw as Record<string, unknown> | null | undefined)?.blocks
+  if (!Array.isArray(blocks)) return null
+  const result: Array<{ section: string; kind: string; text: string }> = []
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') return null
+    const item = block as Record<string, unknown>
+    if (
+      typeof item.section !== 'string' ||
+      typeof item.kind !== 'string' ||
+      typeof item.text !== 'string'
+    ) {
+      return null
+    }
+    result.push({ section: item.section, kind: item.kind, text: item.text })
+  }
+  return result
+}
+
+function sameCurriculumLessonText(left: string, right: string): boolean {
+  const clean = (value: string) =>
+    value
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join('\n')
+  return clean(left) === clean(right)
+}
+function revisedTextFromDocumentBlocks(
+  blocks: Array<{ section: string; kind: string; text: string }>,
+  adjustments: Map<CurriculumRevisionSection, string>,
+): string {
+  const result: string[] = []
+  const inserted = new Set<CurriculumRevisionSection>()
+  for (const block of blocks) {
+    const section = block.section as CurriculumRevisionSection
+    const adjusted = adjustments.get(section)
+    if (block.kind === 'heading') {
+      result.push(block.text)
+      continue
+    }
+    if (adjusted === undefined) {
+      result.push(block.text)
+      continue
+    }
+    if (!inserted.has(section)) {
+      result.push(adjusted)
+      inserted.add(section)
+    }
+  }
+  for (const [section, text] of adjustments) {
+    if (!inserted.has(section)) result.push(text)
+  }
+  return result.filter((text) => text.trim() !== '').join('\n')
+}
+function uniqueParagraphReplacements(
+  content: CurriculumContent,
+  adjustments: Map<CurriculumRevisionSection, string>,
+): string | null {
+  const paragraphs = content.lesson_original
+    .replace(/\r\n/g, '\n')
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== '')
+  const result = [...paragraphs]
+  const normalized = (value: string) => value.replace(/\s+/g, ' ')
+  for (const item of CURRICULUM_REVISION_FIELDS) {
+    const adjusted = adjustments.get(item.section)
+    if (adjusted === undefined) continue
+    const original = content[item.original].trim()
+    const matches = result
+      .map((paragraph, index) =>
+        normalized(paragraph) === normalized(original) ? index : -1,
+      )
+      .filter((index) => index >= 0)
+    if (matches.length !== 1) return null
+    result[matches[0]] = adjusted
+  }
+  return result.join('\n\n')
+}
+function integratedRevisionSections(
+  content: CurriculumContent,
+  adjustments: Map<CurriculumRevisionSection, string>,
+): string {
+  return CURRICULUM_REVISION_FIELDS.map((item) => {
+    const adjusted = adjustments.get(item.section)
+    if (adjusted !== undefined) return adjusted
+    const original = content[item.original]
+    return substantiveCurriculumText(original) ? original.trim() : ''
+  })
+    .filter((text) => text !== '')
+    .join('\n\n')
+}
+
+export function composeCurriculumRevised(
+  content: CurriculumContent,
+  document: CurriculumDocument | null | undefined = null,
+): string {
+  const adjustments = curriculumAdjustments(content)
+  if (adjustments.size === 0) return ''
+  const blocks = curriculumDocumentBlocks(document)
+  if (
+    blocks &&
+    sameCurriculumLessonText(
+      blocks.map((block) => block.text).join('\n'),
+      content.lesson_original,
+    )
+  ) {
+    return revisedTextFromDocumentBlocks(blocks, adjustments)
+  }
+  const matched = uniqueParagraphReplacements(content, adjustments)
+  if (matched !== null) return matched
+  return integratedRevisionSections(content, adjustments)
+}
+
+export function applyCurriculumRevisedDraft(
+  content: CurriculumContent,
+  previous?: CurriculumContent | null,
+  document: CurriculumDocument | null = null,
+): CurriculumContent {
+  const next = cloneCurriculumContent(content)
+  const derived = composeCurriculumRevised(next, document)
+  if (
+    previous &&
+    substantiveCurriculumText(previous.lesson_revised) &&
+    next.lesson_revised === composeCurriculumRevised(previous, document)
+  ) {
+    next.lesson_revised = derived
+    return next
+  }
+  if (!substantiveCurriculumText(next.lesson_revised)) {
+    next.lesson_revised = derived
+  }
+  return next
+}
+
 function sortDocumentValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortDocumentValue)
   if (value && typeof value === 'object') {

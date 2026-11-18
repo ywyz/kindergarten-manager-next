@@ -257,7 +257,12 @@ def _context(
     grade = latest_grade_at_date(session, class_id, first_date)
     if grade is None:
         raise class_not_ready()
-    class_name = make_class_name(grade, state.class_number)
+    class_name = (
+        class_row.display_name_override
+        if class_row.display_name_override is not None
+        and class_row.display_name_override.strip()
+        else make_class_name(grade, state.class_number)
+    )
     return WeekContext(
         class_id=class_id,
         school_id=principal.school_id,

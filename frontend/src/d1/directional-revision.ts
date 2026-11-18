@@ -11,6 +11,7 @@ export type DirectionalScopeKind =
   | 'listening_record'
   | 'listening_candidate'
   | 'weekly_candidate'
+  | 'weekly_record'
 
 export type DirectionalListeningField =
   | 'listening_text'

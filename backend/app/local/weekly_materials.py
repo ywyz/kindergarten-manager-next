@@ -195,8 +195,10 @@ def _config_refs_from_basis(config: Any) -> list[dict]:
     return refs
 
 
-def _ai_basis(item: Mapping[str, Any], content: Mapping[str, Any]) -> dict:
-    provenance = (content.get("ai_provenance") or {}).get("games")
+def _ai_basis(item: Mapping[str, Any], content: Mapping[str, Any], scope: str) -> dict:
+    provenance_map = content.get("ai_provenance") or {}
+    scoped = provenance_map.get(content_mod.SCOPED_GAMES_PROVENANCE_KEY) or {}
+    provenance = scoped.get(scope) or provenance_map.get("games")
     if provenance is None:
         _fail("AI 项缺少 games provenance", "ai_provenance.games")
     basis = provenance.get("basis") or {}
@@ -283,7 +285,7 @@ def build_selected_basis(*, grade: str, content: Mapping[str, Any]) -> dict:
             continue
         item = {"value": copy.deepcopy(slot), "ai_basis": None}
         if slot.get("source_kind") == "ai_supplement":
-            item["ai_basis"] = _ai_basis(slot, fixed)
+            item["ai_basis"] = _ai_basis(slot, fixed, key)
         slots[key] = item
     focus = fixed["focus_area"]
     if focus is None:
@@ -291,7 +293,7 @@ def build_selected_basis(*, grade: str, content: Mapping[str, Any]) -> dict:
     else:
         focus_item = {"value": copy.deepcopy(focus), "ai_basis": None}
         if focus.get("source_kind") == "ai_supplement":
-            focus_item["ai_basis"] = _ai_basis(focus, fixed)
+            focus_item["ai_basis"] = _ai_basis(focus, fixed, "focus_area")
     return {"outdoor_game_slots": slots, "focus_area": focus_item}
 
 
@@ -300,10 +302,14 @@ def _filter_configs(
 ) -> list[dict]:
     if not refs:
         return []
-    provenance = (content.get("ai_provenance") or {}).get("games")
-    if provenance is None:
-        return []
-    config = (provenance.get("basis") or {}).get("config") or []
+    provenance_map = content.get("ai_provenance") or {}
+    scoped = provenance_map.get(content_mod.SCOPED_GAMES_PROVENANCE_KEY) or {}
+    records = [provenance_map.get("games"), *scoped.values()]
+    config: list[dict] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        config.extend((record.get("basis") or {}).get("config") or [])
     wanted = {
         (
             ref.get("revision_id"),

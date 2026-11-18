@@ -135,6 +135,192 @@ class WeeklyAIAdoptionTests(WeeklyAIServiceFixture):
         self.assertEqual(slot["candidate_id"], candidate.id)
         self.assertEqual(slot["input_id"], candidate.input_id)
 
+    def test_scoped_games_receipts_survive_two_slots_then_full_replaces_them(self):
+        def create_scoped(scope, version):
+            result, created = weekly_ai_service.create_weekly_tasks(
+                self.session,
+                runtime=self.runtime,
+                profile_id=self.profile.id,
+                plan_id=self.plan_id,
+                request_id=str(uuid.uuid4()),
+                expected_draft_version=version,
+                operation_kind=weekly_ai_service.GAMES,
+                task_specs=[
+                    weekly_ai_service.WeeklyTaskSpec(
+                        "weekly_games_select", "games"
+                    )
+                ],
+                game_scope=scope,
+            )
+            self.assertTrue(created)
+            claim = ai_task_service.claim_next(
+                self.runtime, now=ai_task_service._now(), started_ticks=1
+            )
+            self.assertIsNotNone(claim)
+            self.assertEqual(claim.payload.get("game_scope"), scope)
+            self.assertIn("scope_instruction", claim.payload)
+            if scope in ("collective_1", "collective_2"):
+                self.assertTrue(
+                    all(
+                        group["group_kind"] == "collective"
+                        for day in claim.payload["days"]
+                        for group in day["morning_games"]
+                    )
+                )
+                self.assertTrue(
+                    all(not day["post_group_games"] for day in claim.payload["days"])
+                )
+            self.assertTrue(
+                ai_task_service.commit_dispatch_mark(
+                    self.session, claim, ai_task_service._now()
+                )
+            )
+            name = "补充集体一" if scope == "collective_1" else "补充集体二"
+            scoped_value = (
+                '{"kind":"ai_supplement","name":"%s",'
+                '"shared_objectives":"目标","guidance_points":"指导",'
+                '"focus_guidance":"关注","basis_handles":[]}' % name
+            )
+            text = (
+                '{"outdoor_game_slots":{"collective_1":'
+                + (scoped_value if scope == "collective_1" else "null")
+                + ',"collective_2":'
+                + (scoped_value if scope == "collective_2" else "null")
+                + ',"free_choice_1":null},"focus_area":null}'
+            )
+            self.assertTrue(
+                ai_task_service.finalize_success(
+                    self.session,
+                    claim,
+                    {"kind": "success", "candidate_text": text},
+                    ai_task_service._now(),
+                )
+            )
+            candidate = self.session.scalars(
+                select(LocalAICandidate).where(
+                    LocalAICandidate.task_id == claim.task_id
+                )
+            ).one()
+            raw = candidate.raw_candidate_json
+            self.assertIsNone(raw["outdoor_game_slots"]["free_choice_1"])
+            self.assertIsNone(raw["focus_area"])
+            if scope == "collective_1":
+                self.assertIsNotNone(raw["outdoor_game_slots"]["collective_1"])
+                self.assertIsNone(raw["outdoor_game_slots"]["collective_2"])
+            elif scope == "collective_2":
+                self.assertIsNone(raw["outdoor_game_slots"]["collective_1"])
+                self.assertIsNotNone(raw["outdoor_game_slots"]["collective_2"])
+            return result, claim, candidate
+
+        _, claim1, candidate1 = create_scoped("collective_1", self.version)
+        first_preview = weekly_ai_adoption.preview_adoption(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            plan_id=self.plan_id,
+            expected_draft_version=self.version,
+            selections=[{"candidate_id": candidate1.id, "target": "games"}],
+            launch_id=self.runtime.launch_id,
+            session_scope_hash="scope",
+        )
+        first = self._adopt(first_preview, self.version)
+        first_content = self.session.get(LocalWeeklyPlanContent, first["draft"]["id"])
+        self.assertIn(
+            "collective_1",
+            first_content.content_json["ai_provenance"]["game_scopes"],
+        )
+        version2 = first["draft"]["version"]
+
+        _, claim2, candidate2 = create_scoped("collective_2", version2)
+        second_preview = weekly_ai_adoption.preview_adoption(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            plan_id=self.plan_id,
+            expected_draft_version=version2,
+            selections=[{"candidate_id": candidate2.id, "target": "games"}],
+            launch_id=self.runtime.launch_id,
+            session_scope_hash="scope",
+        )
+        second = self._adopt(second_preview, version2)
+        second_content = self.session.get(
+            LocalWeeklyPlanContent, second["draft"]["id"]
+        )
+        scopes = second_content.content_json["ai_provenance"]["game_scopes"]
+        self.assertEqual(set(scopes), {"collective_1", "collective_2"})
+        self.assertEqual(
+            scopes["collective_1"]["candidate_id"], candidate1.id
+        )
+        self.assertEqual(
+            scopes["collective_2"]["candidate_id"], candidate2.id
+        )
+        version3 = second["draft"]["version"]
+
+        full_result, _ = weekly_ai_service.create_weekly_tasks(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            plan_id=self.plan_id,
+            request_id=str(uuid.uuid4()),
+            expected_draft_version=version3,
+            operation_kind=weekly_ai_service.GAMES,
+            task_specs=[
+                weekly_ai_service.WeeklyTaskSpec("weekly_games_select", "games")
+            ],
+        )
+        full_claim = ai_task_service.claim_next(
+            self.runtime, now=ai_task_service._now(), started_ticks=1
+        )
+        self.assertIsNotNone(full_claim)
+        self.assertNotIn("game_scope", full_claim.payload)
+        self.assertNotIn("scope_instruction", full_claim.payload)
+        self.assertTrue(
+            ai_task_service.commit_dispatch_mark(
+                self.session, full_claim, ai_task_service._now()
+            )
+        )
+        full_handle = next(
+            game["source_handle"]
+            for day in full_claim.payload["days"]
+            for group in day["morning_games"]
+            for game in group["games"]
+        )
+        full_text = (
+            '{"outdoor_game_slots":{"collective_1":{"kind":"source",'
+            f'"source_handle":"{full_handle}"}},"collective_2":null,'
+            '"free_choice_1":null},"focus_area":null}'
+        )
+        self.assertTrue(
+            ai_task_service.finalize_success(
+                self.session,
+                full_claim,
+                {"kind": "success", "candidate_text": full_text},
+                ai_task_service._now(),
+            )
+        )
+        full_candidate = self.session.scalars(
+            select(LocalAICandidate).where(
+                LocalAICandidate.task_id == full_claim.task_id
+            )
+        ).one()
+        full_preview = weekly_ai_adoption.preview_adoption(
+            self.session,
+            runtime=self.runtime,
+            profile_id=self.profile.id,
+            plan_id=self.plan_id,
+            expected_draft_version=version3,
+            selections=[{"candidate_id": full_candidate.id, "target": "games"}],
+            launch_id=self.runtime.launch_id,
+            session_scope_hash="scope",
+        )
+        full = self._adopt(full_preview, version3)
+        full_content = self.session.get(LocalWeeklyPlanContent, full["draft"]["id"])
+        provenance = full_content.content_json["ai_provenance"]
+        self.assertNotIn("game_scopes", provenance)
+        self.assertEqual(
+            provenance["games"]["candidate_id"], full_candidate.id
+        )
+
     def test_preview_token_allows_unrelated_newer_draft(self):
         _task_id, candidate_id = self._succeed_games()
         preview = weekly_ai_adoption.preview_adoption(

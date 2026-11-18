@@ -468,7 +468,7 @@ function bridgeOf(emitted) {
   assert.equal((editorSource.match(/:editable="false"/g) || []).length, 2)
   assert.ok(
     editorSource.indexOf('<ListeningAiPanel') <
-      editorSource.indexOf('<div class="groups">'),
+      editorSource.indexOf('<div class="groups"'),
   )
   assert.equal((editorSource.match(/<ListeningAiPanel\b/g) || []).length, 1)
   assert.ok(editorSource.includes('data-d1="listening-photo-rotate-left"'))
@@ -768,7 +768,9 @@ function bridgeOf(emitted) {
   assert.deepEqual(listTemplate.errors, [])
   assert.match(listSource, /data-d1="listening-records-cards"/)
   assert.match(listSource, /class="record-grid"/)
-  assert.match(listSource, /data-d1="listening-album-scope"/)
+  assert.match(listSource, /data-d1="listening-domain-export"/)
+  assert.doesNotMatch(listSource, /data-d1="listening-album-open"/)
+  assert.ok(listSource.includes('function openDomainExport'))
   assert.match(listSource, /data-d1="listening-create"/)
   assert.doesNotMatch(listSource, /<el-table\b/)
   assert.match(
@@ -1009,6 +1011,7 @@ function createMiniDom() {
     tag: null,
     text: '',
     props: {},
+    style: {},
     children: [],
     parent: null,
     ...extra,
@@ -1299,6 +1302,7 @@ async function mountListeningDom(
   app.component('el-option', DomOptionStub)
   app.component('el-dialog', DomDialogStub)
   app.directive('loading', {})
+
   app.config.warnHandler = () => {}
   app.mount(appRoot)
   for (let i = 0; i < 200; i += 1) {
@@ -1805,7 +1809,7 @@ async function mountListeningDom(
   const headerButtons = {
     'listening-editor-back': '返回列表',
     'listening-editor-settings': '设置与配置维护',
-    'listening-editor-export': '按幼儿合册',
+    'listening-editor-export': '导出 Word',
     'listening-editor-save': '保存',
   }
   for (const [marker, label] of Object.entries(headerButtons)) {
@@ -1829,6 +1833,193 @@ async function mountListeningDom(
   mounted.app.unmount()
   await vue.nextTick()
   ok('long record name keeps title, metadata, and all four header actions')
+}
+
+// Section navigation actually switches existing cards; overview is default.
+{
+  for (const id of [
+    'listening-record-info',
+    'listening-photos',
+    'listening-evaluation',
+    'listening-overall',
+    'listening-support',
+  ]) {
+    assert.ok(editorSource.includes(`id="${id}"`), `${id} target exists`)
+  }
+  assert.match(editorSource, /data-d1="listening-section-nav"/)
+  assert.match(
+    editorSource,
+    /const activeListeningSection = ref<ListeningSectionKey>\('overview'\)/,
+  )
+  assert.match(editorSource, /function selectListeningSection/)
+  assert.doesNotMatch(editorSource, /scrollIntoView/)
+  assert.match(
+    editorSource,
+    /\.listening-sheet\s*\{[\s\S]*?max-height:\s*calc\(100vh - 132px\);[\s\S]*?overflow-y:\s*auto;/,
+  )
+  assert.match(
+    editorSource,
+    /\.read-text\s*\{[\s\S]*?max-height:\s*min\(46vh,\s*380px\);[\s\S]*?overflow-y:\s*auto;/,
+  )
+  assert.match(
+    editorSource,
+    /\.table-scroll\s*\{[\s\S]*?overflow:\s*auto;[\s\S]*?max-height:\s*min\(56vh,\s*520px\);/,
+  )
+  for (const label of [
+    '总览',
+    '记录信息',
+    '照片与倾听记录',
+    '领域评价',
+    '综合评价',
+    '支持策略',
+  ]) {
+    assert.ok(editorSource.includes(label), `${label} section link exists`)
+  }
+  ok('overview is default and section nav switches instead of scrolling')
+}
+
+// Section switching uses v-show on the same mounted cards and preserves drafts.
+{
+  const hidden = (node) =>
+    node?.style?.display === 'none' ||
+    node?.props?.style?.display === 'none'
+  const mounted = await mountListeningDom(undefined)
+  const elements = walkElements(mounted.root)
+  const findMarker = (marker) =>
+    elements.find((node) => node.props['data-d1'] === marker)
+  const groupsCard = elements.find(
+    (node) => node.props['data-d1'] === 'listening-read-groups',
+  )
+  const groupHidden = () => {
+    let node = groupsCard
+    while (node) {
+      if (hidden(node)) return true
+      node = node.parent
+    }
+    return false
+  }
+  const markers = [
+    'listening-record-summary',
+    'listening-read-header',
+    'listening-read-evaluation',
+    'listening-read-overall',
+    'listening-read-support',
+  ]
+  assert.ok(groupsCard)
+  for (const marker of markers) assert.ok(!hidden(findMarker(marker)))
+  assert.ok(!groupHidden())
+
+  const sectionNav = walkElements(mounted.root).find(
+    (node) => node.props['data-d1'] === 'listening-section-nav',
+  )
+  assert.ok(sectionNav)
+  const clickSection = (id) => {
+    const button = walkElements(sectionNav).find(
+      (node) => node.props['data-d1'] === `listening-section-${id}`,
+    )
+    assert.ok(button, `${id} nav button renders`)
+    button.props.onClick({})
+  }
+
+  clickSection('record-info')
+  await vue.nextTick()
+  assert.ok(!hidden(findMarker('listening-record-summary')))
+  assert.ok(!hidden(findMarker('listening-read-header')))
+  assert.ok(groupHidden())
+  for (const marker of markers.slice(2)) {
+    assert.ok(hidden(findMarker(marker)))
+  }
+
+  clickSection('photos')
+  await vue.nextTick()
+  assert.ok(!groupHidden())
+  assert.ok(hidden(findMarker('listening-record-summary')))
+  assert.ok(hidden(findMarker('listening-read-header')))
+  for (const marker of markers.slice(2)) {
+    assert.ok(hidden(findMarker(marker)))
+  }
+
+  clickSection('evaluation')
+  await vue.nextTick()
+  assert.ok(!hidden(findMarker('listening-read-evaluation')))
+  assert.ok(groupHidden())
+  assert.ok(hidden(findMarker('listening-record-summary')))
+
+  clickSection('overview')
+  await vue.nextTick()
+  for (const marker of markers) assert.ok(!hidden(findMarker(marker)))
+  assert.ok(!groupHidden())
+  assert.equal(
+    walkElements(mounted.root).filter(
+      (node) => node.props['data-d1'] === 'listening-ai-stub',
+    ).length,
+    1,
+  )
+  assert.equal(
+    walkElements(mounted.root).filter(
+      (node) => node.props['data-d1'] === 'listening-batch-open',
+    ).length,
+    1,
+  )
+  mounted.app.unmount()
+  await vue.nextTick()
+  ok('section switches hide other cards, return to overview, and do not remount the rail')
+}
+// A group draft filled before switching remains intact through section moves.
+{
+  const h = await mountEditor()
+  const state = h.state
+  state.openListeningModal('group', 'g-health-0')
+  state.setListeningModalField('listening_text', '切换分栏前的未保存正文')
+  await state.confirmListeningModal()
+  state.selectListeningSection('photos')
+  assert.equal(state.activeListeningSection.value, 'photos')
+  state.selectListeningSection('record-info')
+  state.selectListeningSection('overview')
+  const group = state.session
+    .form()
+    .groups.find((item) => item.group_id === 'g-health-0')
+  assert.equal(group.listening_text, '切换分栏前的未保存正文')
+  assert.equal(h.client.patchCalls.length, 0)
+  ok('unsaved group edits survive section switching without implicit writes')
+}
+// The rail fixes adjacent-button indentation with one container-level rule.
+{
+  assert.match(
+    editorSource,
+    /\.listening-rail :deep\(\.el-button \+ \.el-button\)\s*\{[\s\S]*?margin-left:\s*0;/,
+  )
+  assert.doesNotMatch(editorSource, /\}\.rail-actions/)
+  const mounted = await mountListeningDom(undefined)
+  const rail = walkElements(mounted.root).find(
+    (node) => node.props['data-d1'] === 'listening-operations-rail',
+  )
+  assert.ok(rail, 'operations rail renders')
+  const sectionNav = rail.children.find(
+    (node) => node.props['data-d1'] === 'listening-section-nav',
+  )
+  const batch = rail.children.find(
+    (node) => node.props['data-d1'] === 'listening-batch-open',
+  )
+  const ai = rail.children.find(
+    (node) => node.props['data-d1'] === 'listening-ai-stub',
+  )
+  const directional = rail.children.find(
+    (node) => node.props['data-d1'] === 'listening-directional-rail',
+  )
+  assert.ok(sectionNav && batch && ai && directional)
+  assert.ok(rail.children.indexOf(sectionNav) < rail.children.indexOf(batch))
+  assert.ok(rail.children.indexOf(batch) < rail.children.indexOf(ai))
+  assert.ok(rail.children.indexOf(ai) < rail.children.indexOf(directional))
+  const links = walkElements(sectionNav).filter(
+    (node) =>
+      node.tag === 'button' &&
+      String(node.props['data-d1'] ?? '').startsWith('listening-section-'),
+  )
+  assert.equal(links.length, 6)
+  mounted.app.unmount()
+  await vue.nextTick()
+  ok('section nav stays discoverable and rail action buttons share one column')
 }
 
 console.log(`listening-layout: ${passed} checks passed`)

@@ -314,6 +314,8 @@ const photoDragActive = ref(false)
 let photoDragDepth = 0
 const exportBusy = ref(false)
 const photoBusy = ref(false)
+const photoDialogOpen = ref(false)
+const photoDialogFocus = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const photoSection = ref<HTMLElement | null>(null)
 const candidateAudit = ref<HTMLElement | null>(null)
@@ -550,6 +552,11 @@ const observationSectionNav = computed(() => OBSERVATION_SECTIONS.map((section) 
   badge: observationSectionBadge(section.key),
 })))
 
+/** Six direct section entries: five text sections plus independent photo management. */
+const observationQuickSections = computed(() =>
+  observationSectionNav.value.filter((section) => section.key !== 'ai'),
+)
+
 const sectionBasicMissing = computed(() => (
   sectionModal.value ? observationBasicMissing(sectionModal.value.form) : []
 ))
@@ -578,6 +585,14 @@ function observationSectionBadge(key: ObservationSectionKey): string {
 function selectObservationSection(key: ObservationSectionKey): void {
   if (sectionDialogOpen.value) return
   activeObservationSection.value = key
+}
+
+function openObservationSection(key: ObservationSectionKey, event?: MouseEvent): void {
+  if (key === 'photos') {
+    openPhotoManager(event)
+    return
+  }
+  openSectionEditor(key, event)
 }
 
 function openSectionEditor(key: ObservationSectionKey, event?: MouseEvent): void {
@@ -1147,15 +1162,33 @@ function changePhotoChunk(delta: number): void {
   void refreshPhotoChunk()
 }
 
-function focusPhotoSection(): void {
-  if (props.frozen) return
-  void nextTick(() => {
-    const element = photoSection.value
-    if (!element) return
-    element.scrollIntoView?.({ block: 'center' })
-    element.focus?.()
-  })
+function openPhotoManager(event?: MouseEvent): void {
+  if (props.frozen || editDisabled.value || sectionDialogOpen.value) return
+  photoDialogFocus.value = (event?.currentTarget as HTMLElement | null) ?? null
+  photoDialogOpen.value = true
 }
+
+function closePhotoManager(): void {
+  if (uploadBusy.value || photoBusy.value) return
+  photoDialogOpen.value = false
+}
+
+watch(photoDialogOpen, (open) => {
+  if (!editorAlive) return
+  if (open) {
+    void nextTick(() => {
+      photoSection.value?.focus?.()
+    })
+    return
+  }
+  const target = photoDialogFocus.value
+  photoDialogFocus.value = null
+  if (target && typeof target.focus === 'function') {
+    void nextTick(() => {
+      try { target.focus() } catch { /* detached node */ }
+    })
+  }
+})
 
 function retryPhoto(assetId: string): void {
   delete photoFailures.value[assetId]
@@ -4167,6 +4200,10 @@ onMounted(() => {
     activeSection: () => activeObservationSection.value,
     selectSection: (key: string) => selectObservationSection(key as ObservationSectionKey),
     openSectionEditor: (key: string) => openSectionEditor(key as ObservationSectionKey),
+    openObservationSection: (key: string) => openObservationSection(key as ObservationSectionKey),
+    photoDialogOpen: () => photoDialogOpen.value,
+    openPhotoManager: () => openPhotoManager(),
+    closePhotoManager: () => closePhotoManager(),
     cancelSectionEditor: () => cancelSectionEditor(),
     applySectionEditor: () => applySectionEditor(),
     sectionOpen: () => sectionDialogOpen.value,
@@ -4208,6 +4245,7 @@ onBeforeUnmount(() => {
   if (autoTimer.value !== null) clearTimeout(autoTimer.value)
   sectionModal.value = null
   sectionDialogOpen.value = false
+  photoDialogOpen.value = false
   sectionConflict.value = false
   sectionConflictSignature.value = null
   releaseModalComposition()
@@ -4413,6 +4451,24 @@ onBeforeUnmount(() => {
         </el-button>
       </el-alert>
 
+      <nav class="section-jumps" data-d1="obs-section-jumps" aria-label="直接编辑观察栏目">
+        <span class="section-jumps-label">直接编辑</span>
+        <el-button
+          v-for="section in observationQuickSections"
+          :key="section.key"
+          size="small"
+          class="section-jump"
+          :disabled="props.frozen || editDisabled"
+          :data-d1="`obs-section-open-${section.key}`"
+          :title="`直接打开${section.label}`"
+          @click="openObservationSection(section.key, $event)"
+        >
+          {{ section.label }}
+          <span class="section-jump-badge">{{ section.badge }}</span>
+        </el-button>
+        <span class="muted">默认仍显示整份总览；点栏目直接打开独立编辑，照片在独立管理弹窗中处理。</span>
+      </nav>
+
       <div class="obs-detail">
         <section class="read-sheet" data-d1="obs-read-table" role="table" aria-label="观察记录阅读表">
           <header class="sheet-title">
@@ -4473,11 +4529,11 @@ onBeforeUnmount(() => {
             <div class="sheet-body" role="cell" data-d1="obs-subjects">
               <div class="read-lines">
                 <div class="read-line"><span class="read-label">重点观察幼儿</span><span>{{ observationSubjectList(form.subjects).join('、') || '（未填写）' }}</span></div>
-                <div class="read-line"><span class="read-label">观察环境</span><span class="read-text">{{ observationDisplay(form.environment) }}</span></div>
+                <div class="read-line"><span class="read-label">观察环境</span><span class="read-text read-text-scroll" tabindex="0">{{ observationDisplay(form.environment) }}</span></div>
               </div>
             </div>
             <div class="sheet-edit">
-              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-subjects" @click="openSectionEditor('subjects', $event)">编辑</el-button>
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-subjects" @click="openSectionEditor('subjects', $event)">阅读 / 编辑</el-button>
             </div>
           </div>
 
@@ -4485,22 +4541,23 @@ onBeforeUnmount(() => {
             <div class="sheet-label" role="rowheader">观察正文</div>
             <div class="sheet-body" role="cell" data-d1="obs-body">
               <div class="read-lines">
-                <div class="read-line"><span class="read-label">观察目标</span><p class="read-text" data-d1="obs-goal-read">{{ observationDisplay(form.observation_goal) }}</p></div>
-                <div class="read-line"><span class="read-label">观察记录</span><p class="read-text" data-d1="obs-process-read">{{ observationDisplay(form.observation_process) }}</p></div>
+                <div class="read-line"><span class="read-label">观察目标</span><p class="read-text read-text-scroll" tabindex="0" data-d1="obs-goal-read">{{ observationDisplay(form.observation_goal) }}</p></div>
+                <div class="read-line"><span class="read-label">观察记录</span><p class="read-text read-text-scroll" tabindex="0" data-d1="obs-process-read">{{ observationDisplay(form.observation_process) }}</p></div>
               </div>
+              <p class="muted">长正文在本栏内滚动；点“阅读 / 编辑”打开全文并修改，不裁切内容。</p>
             </div>
             <div class="sheet-edit">
-              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-body" @click="openSectionEditor('body', $event)">编辑</el-button>
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-body" @click="openSectionEditor('body', $event)">阅读 / 编辑</el-button>
             </div>
           </div>
 
           <div class="sheet-row" data-d1="obs-section-support" role="row">
             <div class="sheet-label" role="rowheader">支持策略</div>
             <div class="sheet-body" role="cell" data-d1="obs-support-read">
-              <p class="read-text">{{ observationDisplay(form.support_strategy) }}</p>
+              <p class="read-text read-text-scroll" tabindex="0">{{ observationDisplay(form.support_strategy) }}</p>
             </div>
             <div class="sheet-edit">
-              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-support" @click="openSectionEditor('support', $event)">编辑</el-button>
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-support" @click="openSectionEditor('support', $event)">阅读 / 编辑</el-button>
             </div>
           </div>
 
@@ -4510,89 +4567,27 @@ onBeforeUnmount(() => {
               <div class="read-lines">
                 <div v-for="row in observationEvaluationRows(form)" :key="row.key" class="read-line" :data-d1="`obs-eval-read-${row.key}`">
                   <span class="read-label">{{ row.label }}</span>
-                  <p class="read-text">{{ observationDisplay(row.value) }}</p>
+                  <p class="read-text read-text-scroll" tabindex="0">{{ observationDisplay(row.value) }}</p>
                 </div>
               </div>
             </div>
             <div class="sheet-edit">
-              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-evaluation" @click="openSectionEditor('evaluation', $event)">编辑</el-button>
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-evaluation" @click="openSectionEditor('evaluation', $event)">阅读 / 编辑</el-button>
             </div>
           </div>
 
           <div class="sheet-row photo-row" data-d1="obs-section-photos" role="row">
             <div class="sheet-label" role="rowheader">有序照片</div>
-            <div class="sheet-body" role="cell">
-              <div
-                ref="photoSection"
-                class="photo-panel"
-                data-d1="obs-photos"
-                tabindex="-1"
-                @dragenter="onPhotoDragEnter"
-                @dragover="onPhotoDragOver"
-                @dragleave="onPhotoDragLeave"
-                @drop="onPhotoDrop"
-              >
-                <div v-if="photoDragActive" class="photo-drop-hint" data-d1="obs-photo-drop-hint">
-                  松开以添加图片（仅支持 JPG/PNG/WebP/GIF/BMP）
-                </div>
-                <div class="photo-actions">
-                  <input
-                    ref="fileInput"
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
-                    multiple
-                    hidden
-                    data-d1="obs-file"
-                    @change="onFilesPicked"
-                  />
-                  <el-button size="small" :loading="uploadBusy" :disabled="editDisabled" data-d1="obs-add-photo" @click="fileInput?.click()">
-                    添加照片
-                  </el-button>
-                  <span class="muted">共 {{ photos.length }} 张；当前显示第 {{ photoChunk + 1 }}/{{ Math.max(photoChunks.length, 1) }} 组</span>
-                  <span class="muted">也可将图片文件拖到本栏</span>
-                  <el-button size="small" :disabled="photoChunk <= 0" @click="changePhotoChunk(-1)">上一组</el-button>
-                  <el-button size="small" :disabled="photoChunk + 1 >= photoChunks.length" @click="changePhotoChunk(1)">下一组</el-button>
-                </div>
-                <p class="muted" data-d1="obs-photo-order">
-                  照片顺序：{{ photos.length ? photos.map((_, index) => `照片 ${index + 1}`).join(' → ') : '尚无照片' }}。
-                  说明和前后顺序会立即保存到当前草稿。
-                </p>
-                <el-empty v-if="!photos.length" description="还没有照片；无图也可以手写保存" />
-                <div v-else class="photo-grid">
-                  <div v-for="(photo, index) in visiblePhotos" :key="photo.asset_id" class="photo-item">
-                    <span class="photo-index">照片 {{ photoChunk * 8 + index + 1 }}</span>
-                    <img
-                      v-if="photoUrls[photo.asset_id]"
-                      :src="photoUrls[photo.asset_id]"
-                      :alt="photo.caption || '观察照片'"
-                      class="photo-img"
-                      @error="onPhotoError(photo.asset_id)"
-                    />
-                    <div v-else-if="photoFailures[photo.asset_id]" class="photo-placeholder">
-                      {{ photoFailures[photo.asset_id] }}
-                      <el-button size="small" text @click="retryPhoto(photo.asset_id)">重试</el-button>
-                    </div>
-                    <div v-else class="photo-placeholder">加载中…</div>
-                    <el-input
-                      v-model="photo.caption"
-                      size="small"
-                      placeholder="简短说明（可选，默认不印入 Word）"
-                      :disabled="editDisabled"
-                      @input="onUserInput"
-                      @change="saveCaption(photo)"
-                    />
-                    <div class="photo-tools">
-                      <el-button size="small" text :disabled="editDisabled || photoChunk * 8 + index === 0" @click="movePhoto(index, -1)">前移</el-button>
-                      <el-button size="small" text :disabled="editDisabled || photoChunk * 8 + index === photos.length - 1" @click="movePhoto(index, 1)">后移</el-button>
-                      <el-button size="small" text type="danger" :disabled="editDisabled" @click="removePhoto(photo)">移除</el-button>
-                    </div>
-                  </div>
-                </div>
-                <p v-if="photoLoadError" class="muted">{{ photoLoadError }}</p>
-              </div>
+            <div class="sheet-body" role="cell" data-d1="obs-photos-summary">
+              <p class="muted" data-d1="obs-photo-summary-order">
+                照片顺序：{{ photos.length ? photos.map((_, index) => `照片 ${index + 1}`).join(' → ') : '尚无照片' }}。
+              </p>
+              <p class="muted">
+                共 {{ photos.length }} 张；导入、说明、前移/后移和移除在独立照片管理中完成，仍写入当前记录。
+              </p>
             </div>
             <div class="sheet-edit">
-              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-photos" @click="focusPhotoSection">管理照片</el-button>
+              <el-button type="primary" text :disabled="props.frozen || editDisabled" data-d1="obs-section-edit-photos" @click="openPhotoManager($event)">管理照片</el-button>
             </div>
           </div>
         </section>
@@ -5167,6 +5162,92 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog
+      v-if="photoDialogOpen"
+      v-model="photoDialogOpen"
+      title="管理观察照片"
+      width="760px"
+      :close-on-click-modal="!uploadBusy && !photoBusy"
+      :close-on-press-escape="!uploadBusy && !photoBusy"
+      :show-close="!uploadBusy && !photoBusy"
+      data-d1="obs-photos-dialog"
+    >
+      <p class="muted">照片属于当前记录；导入、说明、前移/后移和移除会立即保存，未确认的回执仍由页面顶部提示核对。</p>
+      <div
+        ref="photoSection"
+        class="photo-panel"
+        data-d1="obs-photos"
+        tabindex="-1"
+        @dragenter="onPhotoDragEnter"
+        @dragover="onPhotoDragOver"
+        @dragleave="onPhotoDragLeave"
+        @drop="onPhotoDrop"
+      >
+        <div v-if="photoDragActive" class="photo-drop-hint" data-d1="obs-photo-drop-hint">
+          松开以添加图片（仅支持 JPG/PNG/WebP/GIF/BMP）
+        </div>
+        <div class="photo-actions">
+          <input
+            ref="fileInput"
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif,image/bmp"
+            multiple
+            hidden
+            data-d1="obs-file"
+            @change="onFilesPicked"
+          />
+          <el-button size="small" :loading="uploadBusy" :disabled="editDisabled" data-d1="obs-add-photo" @click="fileInput?.click()">
+            添加照片
+          </el-button>
+          <span class="muted">共 {{ photos.length }} 张；当前显示第 {{ photoChunk + 1 }}/{{ Math.max(photoChunks.length, 1) }} 组</span>
+          <span class="muted">也可将图片文件拖到本栏</span>
+          <el-button size="small" :disabled="photoChunk <= 0" @click="changePhotoChunk(-1)">上一组</el-button>
+          <el-button size="small" :disabled="photoChunk + 1 >= photoChunks.length" @click="changePhotoChunk(1)">下一组</el-button>
+        </div>
+        <p class="muted" data-d1="obs-photo-order">
+          照片顺序：{{ photos.length ? photos.map((_, index) => `照片 ${index + 1}`).join(' → ') : '尚无照片' }}。
+          说明和前后顺序会立即保存到当前草稿。
+        </p>
+        <el-empty v-if="!photos.length" description="还没有照片；无图也可以手写保存" />
+        <div v-else class="photo-grid">
+          <div v-for="(photo, index) in visiblePhotos" :key="photo.asset_id" class="photo-item">
+            <span class="photo-index">照片 {{ photoChunk * 8 + index + 1 }}</span>
+            <img
+              v-if="photoUrls[photo.asset_id]"
+              :src="photoUrls[photo.asset_id]"
+              :alt="photo.caption || '观察照片'"
+              class="photo-img"
+              @error="onPhotoError(photo.asset_id)"
+            />
+            <div v-else-if="photoFailures[photo.asset_id]" class="photo-placeholder">
+              {{ photoFailures[photo.asset_id] }}
+              <el-button size="small" text @click="retryPhoto(photo.asset_id)">重试</el-button>
+            </div>
+            <div v-else class="photo-placeholder">加载中…</div>
+            <el-input
+              v-model="photo.caption"
+              size="small"
+              placeholder="简短说明（可选，默认不印入 Word）"
+              :disabled="editDisabled"
+              @input="onUserInput"
+              @change="saveCaption(photo)"
+            />
+            <div class="photo-tools">
+              <el-button size="small" text :disabled="editDisabled || photoChunk * 8 + index === 0" @click="movePhoto(index, -1)">前移</el-button>
+              <el-button size="small" text :disabled="editDisabled || photoChunk * 8 + index === photos.length - 1" @click="movePhoto(index, 1)">后移</el-button>
+              <el-button size="small" text type="danger" :disabled="editDisabled" @click="removePhoto(photo)">移除</el-button>
+            </div>
+          </div>
+        </div>
+        <p v-if="photoLoadError" class="muted">{{ photoLoadError }}</p>
+      </div>
+      <template #footer>
+        <el-button data-d1="obs-photos-done" :disabled="uploadBusy || photoBusy" @click="closePhotoManager">
+          完成
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="termDialog.visible"
       title="选择学期归属"
       width="460px"
@@ -5392,6 +5473,29 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .obs-editor { padding: 1.25rem; color: var(--kgm-text); }
+.section-jumps {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+  background: var(--kgm-surface);
+}
+.section-jumps-label {
+  color: var(--kgm-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.section-jumps :deep(.el-button + .el-button) { margin-left: 0; }
+.section-jump { min-height: 36px; }
+.section-jump-badge {
+  margin-left: 4px;
+  color: var(--kgm-muted);
+  font-size: 0.78rem;
+}
 .obs-detail {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 280px;
@@ -5447,6 +5551,13 @@ onBeforeUnmount(() => {
   word-break: break-word;
   line-height: 1.55;
 }
+.read-text-scroll {
+  max-height: 16rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
 .term-row { align-items: center; }
 .photo-row { align-items: start; }
 .photo-panel {
@@ -5473,6 +5584,8 @@ onBeforeUnmount(() => {
 .rail-head h3 { margin: 0.1rem 0; }
 .rail-head p { margin: 0.2rem 0 0.8rem; }
 .rail-actions { display: flex; flex-direction: column; gap: 10px; }
+.rail-actions :deep(.el-button + .el-button) { margin-left: 0; }
+.rail-actions :deep(.el-button) { width: 100%; }
 .rail-action { width: 100%; min-height: 42px; justify-content: center; }
 .rail-alert { margin-top: 12px; }
 .rail-candidates { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }

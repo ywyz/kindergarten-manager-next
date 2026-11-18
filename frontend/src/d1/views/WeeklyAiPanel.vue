@@ -7,7 +7,7 @@ import { createWeeklyApi, newWeeklyRequestId } from '../weekly'
 import { getSessionEpoch } from '../client'
 import { isIndeterminate } from '../operations'
 import { acceptedProgress, progressPhaseLabel, progressMatchesTask, type AiProgressView } from '../ai-progress'
-import { candidateLines, createWeeklyAiApi, groupStatus, groupStatusLabel, eligibilityLabel, taskStatusLabel, certaintyLabel, targetLabel, projectWeeklyAiError, weeklyEditSignature, type WeeklyAiCandidate, type WeeklyAiColumn, type WeeklyAiCreateOut, type WeeklyAiSelection, type WeeklyAiTask, type WeeklyAiAdoptionPreview, type WeeklyAiAdoptionResult } from '../weekly-ai'
+import { WEEKLY_AI_COLUMNS, candidateLines, createWeeklyAiApi, gameScopeLabel, groupStatus, groupStatusLabel, eligibilityLabel, taskStatusLabel, certaintyLabel, targetLabel, projectWeeklyAiError, weeklyEditSignature, type WeeklyAiCandidate, type WeeklyAiColumn, type WeeklyAiCreateOut, type WeeklyAiSelection, type WeeklyAiTask, type WeeklyAiAdoptionPreview, type WeeklyAiAdoptionResult } from '../weekly-ai'
 import DirectionalRevisionDialog from '../components/DirectionalRevisionDialog.vue'
 import DirectionalRevisionTrigger from '../components/DirectionalRevisionTrigger.vue'
 import {
@@ -124,6 +124,7 @@ function epoch(): PanelEpoch { return { session: getSessionEpoch(), profile: pro
 function currentEpoch(value: PanelEpoch): boolean { return alive && toRaw(value.controller) === toRaw(props.controller) && value.session === getSessionEpoch() && value.profile === props.profileEpoch && value.plan === props.planId && value.identity === props.controller.identity() }
 function candidateTargets(candidate: WeeklyAiCandidate): WeeklyAiSelection[] { return (candidate.available_targets.length ? candidate.available_targets : [candidate.target]).map((target) => ({ candidate_id: candidate.candidate_id, target })) }
 const OUTDOOR_KEYS = ['collective_1', 'collective_2', 'free_choice_1'] as const
+const GAME_SCOPES = ['collective_1', 'collective_2', 'free_choice_1', 'focus_area'] as const
 const GAME_EDIT_FIELDS = ['name', 'shared_objectives', 'guidance_points', 'focus_guidance'] as const
 const FOCUS_EDIT_FIELDS = ['name', 'objectives', 'guidance', 'support_strategy'] as const
 function rec(value: unknown): Record<string, unknown> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {} }
@@ -614,12 +615,28 @@ async function refreshBatch(): Promise<void> {
 }
 onMounted(() => { void refreshBatch() })
 async function sendCreate(kind: 'games' | 'columns' | 'materials', body: Record<string, unknown>, planId: string): Promise<WeeklyAiCreateOut> {
-  if (kind === 'games') return api.games(planId, body as { request_id: string; expected_draft_version: number })
+  if (kind === 'games') return api.games(planId, body as { request_id: string; expected_draft_version: number; game_scope?: string })
   if (kind === 'columns') return api.columns(planId, body as { request_id: string; expected_draft_version: number; selected_fields: WeeklyAiColumn[] })
   return api.materials(planId, body as { request_id: string; expected_draft_version: number })
 }
-async function create(kind: 'games' | 'columns' | 'materials'): Promise<void> {
+async function create(
+  kind: 'games' | 'columns' | 'materials',
+  columns?: WeeklyAiColumn[],
+  gameScope?: string,
+): Promise<void> {
   if (!alive || props.disabled || aiBusy.value || panelRequestFlight || pendingCreate.value || pendingAdopt.value || pendingAction.value) { if (alive && !aiBusy.value) error.value = '请先处理已保留的未确认 AI 请求'; return }
+  if (kind === 'games' && gameScope && !GAME_SCOPES.some((scope) => scope === gameScope)) {
+    error.value = '不支持的生成范围'
+    return
+  }
+  const scopedColumns = kind === 'columns'
+    ? [...new Set(columns ?? props.selectedColumns)]
+      .filter((field) => (WEEKLY_AI_COLUMNS as readonly string[]).includes(field))
+    : []
+  if (kind === 'columns' && scopedColumns.length === 0) {
+    error.value = '请选择要生成的栏目'
+    return
+  }
   panelRequestFlight = true
   const ctx = epoch()
   if (!(await ensureSaved(ctx))) { panelRequestFlight = false; return }
@@ -627,7 +644,11 @@ async function create(kind: 'games' | 'columns' | 'materials'): Promise<void> {
   if (kind === 'materials' && !materialsContextSaved(ctx)) { panelRequestFlight = false; return }
   const saved = props.controller.savedDraftRef()
   const common = { request_id: newWeeklyRequestId(), expected_draft_version: saved.version }
-  const body: Record<string, unknown> = kind === 'columns' ? { ...common, selected_fields: [...props.selectedColumns] } : common
+  const body: Record<string, unknown> = kind === 'columns'
+    ? { ...common, selected_fields: scopedColumns }
+    : kind === 'games' && gameScope
+      ? { ...common, game_scope: gameScope }
+      : common
   pendingCreate.value = { kind, body, planId: ctx.plan, requestId: common.request_id, epoch: ctx, preservePrevious: false }
   submitted.value = props.controller.getContent()
   const busyToken = beginAiBusy(); error.value = ''; notice.value = ''
@@ -1011,6 +1032,7 @@ async function regenerateCandidate(candidate: WeeklyAiCandidate): Promise<void> 
   const instruction = instructionAtStart
   if (instruction) body.revision_instruction = instruction
   if (kind === 'columns') body.selected_fields = [candidate.target]
+  if (kind === 'games' && candidate.game_scope) body.game_scope = candidate.game_scope
   pendingCreate.value = { kind, body, planId: ctx.plan, requestId, epoch: ctx, preservePrevious: true }
   submitted.value = props.controller.getContent()
   const busyToken = beginAiBusy(); error.value = ''; notice.value = ''
@@ -1201,8 +1223,8 @@ function selectionKey(candidate: WeeklyAiCandidate, target: WeeklyAiSelection['t
 const batchStatus = computed(() => groupStatus(tasks.value))
 const materialEditable = computed(() => Boolean(props.detail?.draft.content.materials_provenance))
 defineExpose({
-  startGames: () => create('games'),
-  startColumns: () => create('columns'),
+  startGames: (scope?: string) => create('games', undefined, scope),
+  startColumns: (fields?: WeeklyAiColumn[]) => create('columns', fields),
   startMaterials: () => create('materials'),
   refreshBatch,
   create,
@@ -1223,10 +1245,10 @@ defineExpose({
     @blur.capture="rememberDirectionalSelection"
   >
     <div class="ai-head">
-      <h3>AI 候选与任务</h3>
+      <h3>AI 生成与候选</h3>
       <el-button size="small" :disabled="disabled || aiBusy" @click="refreshBatch">刷新候选与状态</el-button>
     </div>
-    <p class="muted">AI 由编辑页的“AI 生成（分别发起）”按钮按项发起，只生成候选；普通保存、改选和采用均不会自动连发。</p>
+    <p class="muted">本栏只显示 AI 候选与任务；当前正文仍按各栏阅读和编辑，“采用并保存”后才更新草稿。生成与定向修改都由教师明确点击发起，不会自动连发。</p>
     <el-alert v-if="error" :title="error" type="warning" :closable="false" />
     <el-alert v-if="readError" :title="readError" type="warning" :closable="false" />
     <div v-if="readError" class="actions"><el-button :disabled="disabled || aiBusy" @click="refreshBatch">重新读取任务与候选</el-button></div>
@@ -1256,7 +1278,7 @@ defineExpose({
       <p v-if="batchReadPending">本批状态：待刷新/待核对 · {{ pendingCreate || pendingAdopt || pendingAction ? '原请求仍保留' : '任务状态待刷新' }}</p>
       <p v-else>本批状态：{{ groupStatusLabel(batchStatus) }} · 子任务 {{ tasks.length }} 个</p>
       <div v-for="task in tasks" :key="task.task_id" class="task">
-        <strong>{{ targetLabel(task.target) }} · {{ taskStatusLabel(task.status) }}</strong>
+        <strong>{{ targetLabel(task.target) }}<span v-if="task.game_scope">（{{ gameScopeLabel(task.game_scope) }}）</span> · {{ taskStatusLabel(task.status) }}</strong>
         <span v-if="task.processing_certainty"> · {{ certaintyLabel(task.processing_certainty) }}</span>
         <div class="actions">
           <el-button size="small" :disabled="disabled || aiBusy" @click="loadProgress(task)">只读进度</el-button>
@@ -1272,7 +1294,7 @@ defineExpose({
       </div>
       <div v-for="candidate in visibleCandidates" :key="candidate.candidate_id" class="candidate" :data-d1="`weekly-candidate-${candidate.candidate_id}`">
         <div>
-          <strong>{{ targetLabel(candidate.target) }} · {{ eligibilityLabel(candidate.eligibility) }}</strong>
+          <strong>{{ targetLabel(candidate.target) }}<span v-if="candidate.game_scope">（{{ gameScopeLabel(candidate.game_scope) }}）</span> · {{ eligibilityLabel(candidate.eligibility) }}</strong>
           <span v-if="preservedCandidates.some((item) => item.candidate_id === candidate.candidate_id)" class="muted"> · 原候选批次</span>
         </div>
         <p class="candidate-source-title"><strong>原候选来源/证据（只读）</strong></p>
@@ -1410,7 +1432,7 @@ defineExpose({
             :rows="2"
             maxlength="500"
             show-word-limit
-            placeholder="定向修改要求（可选：说明希望怎么改）"
+            placeholder="定向修改要求（可选；只修改当前候选所属栏目）"
             :disabled="candidateFieldDisabled(candidate) || aiBusy"
             :data-d1="`weekly-regenerate-instruction-${candidate.candidate_id}`"
           />
@@ -1420,7 +1442,7 @@ defineExpose({
             :data-d1="`weekly-regenerate-${candidate.candidate_id}`"
             @click="regenerateCandidate(candidate)"
           >
-            重新生成
+            定向修改并重新生成
           </el-button>
         </div>
       </div>

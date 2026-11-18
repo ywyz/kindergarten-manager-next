@@ -2,11 +2,11 @@
 
 面向幼儿园教师的本地教育工作支持应用，支持每日活动计划、游戏观察记录和周计划。项目由个人维护，原创内容采用 MIT 许可，暂无商业发行计划。
 
-默认 [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) 保留已合并的稳定源码线；当前开发集成为 [`dev/0.1`](https://github.com/ywyz/kindergarten-manager-next/tree/dev/0.1)，文档维护使用独立的 [`docs`](https://github.com/ywyz/kindergarten-manager-next/tree/docs) 分支，预览更新修复使用从开发线准备的 [`fix/preview-update`](https://github.com/ywyz/kindergarten-manager-next/tree/fix/preview-update) 分支。`fix/<问题>` 是命名规则，`fix/preview-update` 是本轮测试起点；旧 `codex/*` 分支保留为历史，不作为新克隆入口。
+默认 [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) 保留已合并的稳定源码线；当前开发集成为 [`dev/0.1`](https://github.com/ywyz/kindergarten-manager-next/tree/dev/0.1)，文档维护使用独立的 [`docs`](https://github.com/ywyz/kindergarten-manager-next/tree/docs) 分支，预览体验修复在 [`fix/preview-feedback-20261117`](https://github.com/ywyz/kindergarten-manager-next/tree/fix/preview-feedback-20261117) 验证，预览在线更新修复历史见 [`fix/preview-update`](https://github.com/ywyz/kindergarten-manager-next/tree/fix/preview-update)。修复分支使用 `fix/<问题>`，旧 `codex/*` 分支保留历史。
 
-当前公开的 Windows 签名预览是 [`v0.1.0-listening-test.20261114`](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261114)，建立在 `20261112` 签名预览的修复上；`20261113` 是更新测试基线。公开 GitHub 下载、清单签名和 SHA-256 校验已达到 `ready`，实际安装替换与重启仍待用户设备验证。稳定签名的正式发行仍未确定。
+当前公开的 Windows 签名预览是 [`v0.1.0-listening-test.20261117`](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261117)。公开下载、验签及隔离根升级已通过，教师也已报告更新成功。[本次预览核查](docs/bootstrap/desktop-update-fix-20261117-review.md)记录适用范围。稳定签名的正式发行待定。
 
-English: A locally run Windows desktop application for kindergarten teachers, covering daily activity plans, game observation records, and weekly plans. Maintained by [ywyz](https://github.com/ywyz). Original project code and documentation are MIT licensed. The default [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) branch is the merged stable source line; active development is on [`dev/0.1`](https://github.com/ywyz/kindergarten-manager-next/tree/dev/0.1), documentation work uses the [`docs`](https://github.com/ywyz/kindergarten-manager-next/tree/docs) branch, and preview-update fixes use a [`fix/preview-update`](https://github.com/ywyz/kindergarten-manager-next/tree/fix/preview-update) branch prepared from development; `fix/<issue>` is the naming rule. Historical `codex/*` branches are retained but are not the current clone target. The public Windows signed preview is [`v0.1.0-listening-test.20261114`](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261114); public GitHub download, manifest signature and SHA-256 verification reached `ready`, while installation replacement and restart still require the user's device. A stable signed desktop release is not yet available.
+English: A locally run Windows desktop application for kindergarten teachers, covering daily and weekly plans, game observation records, one-to-one listening, curriculum deliberation, and optional class collaboration. Maintained by [ywyz](https://github.com/ywyz). Original project code and documentation are MIT licensed. The default [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) branch is the merged stable source line; active development is on [`dev/0.1`](https://github.com/ywyz/kindergarten-manager-next/tree/dev/0.1), documentation work uses the [`docs`](https://github.com/ywyz/kindergarten-manager-next/tree/docs) branch, and the current preview feedback is being verified on [`fix/preview-feedback-20261117`](https://github.com/ywyz/kindergarten-manager-next/tree/fix/preview-feedback-20261117). Fix branches use `fix/<issue>`. Historical `codex/*` branches are retained. The public signed Windows preview is [`v0.1.0-listening-test.20261117`](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261117). Public download, signature verification and an upgrade in an isolated installation passed. A teacher also reported a successful update. A stable signed desktop release is not yet available.
 
 ## 当前可以做什么
 
@@ -27,7 +27,7 @@ English: A locally run Windows desktop application for kindergarten teachers, co
 
 一对一倾听记录和课程审议已实现并纳入当前桌面源码；可选同班在线协作已部署到隔离测试范围，桌面仍以本地 SQLite 保存个人资料，在线服务保存同班共享字段。见[倾听产品规格](docs/specs/desktop-one-to-one-listening.md)、[倾听工程设计](docs/specs/desktop-one-to-one-listening-engineering.md)、[课程审议规格](docs/specs/desktop-curriculum-deliberation.md)及[当前任务](docs/tasks/current.md)。
 
-应用更新通过本项目 GitHub Releases 判断版本，普通代码提交不会触发更新提示；源码运行只读检查版本，禁止下载／安装替换仓库程序。当前没有稳定正式 Release，公开的 `20261114` 是签名预览。更新测试使用 `20261113` 基线，工作台步骤为：打开“检查更新”面板 → 切到预览渠道；界面提示重新检查时点面板的“检查更新” → “下载更新”并等待验签完成 → “安装并重启”。公开 GitHub 下载验签已达到 `ready`，实际安装替换和重启尚未在用户设备验收。AI 失败时保留原内容，结果不明的重试须确认可能重复处理／计费。证据见[多设备反馈与签名预览验收](docs/bootstrap/desktop-multi-device-preview-review.md)和[更新核查](docs/bootstrap/desktop-retry-github-review.md)。
+应用更新通过本项目 GitHub Releases 判断版本，普通代码提交不会触发更新提示；源码运行只读检查版本，禁止下载／安装替换仓库程序。稳定正式渠道尚无发行。需要体验公开预览时，在工作台打开“检查更新”，切到预览渠道并检查，下载完成且验签通过后选择“安装并重启”。AI 失败时保留原内容，结果不明的重试须确认可能重复处理或计费。[在线更新核查](docs/bootstrap/desktop-update-fix-20261117-review.md)和[多设备反馈](docs/bootstrap/desktop-multi-device-preview-review.md)保留各版本的验证边界。
 
 ## 数据和 AI
 
@@ -62,9 +62,12 @@ if ($LASTEXITCODE -ne 0) { throw '前端依赖安装失败' }
 npm --prefix frontend run build:d1 -- --outDir ../build/source-preview/frontend --emptyOutDir
 if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
 
-# 独立体验目录；不要指向原有业务库或旧包的数据目录。
-$previewData = Join-Path $env:LOCALAPPDATA 'KGNext-Source-Preview'
-& $sourcePython -X utf8 desktop/d1_main.py --frontend build/source-preview/frontend --data $previewData
+# 首次源码体验使用专用数据与凭据目录。已有体验环境继续使用原来的配置。
+$previewRoot = Join-Path $env:LOCALAPPDATA 'KGNext-New-Source-Review'
+$previewData = Join-Path $previewRoot 'data'
+$previewCredentials = Join-Path $previewRoot 'credentials'
+$env:APP_DISABLE_DOTENV = '1'
+& $sourcePython -X utf8 desktop/d1_main.py --frontend build/source-preview/frontend --data $previewData --credential-root $previewCredentials
 ```
 
 首次启动填写本地教师档案。AI 密钥在应用设置中输入，先不配置 AI 也可以验证手工编写、保存和导出。源码更新后应先查看迁移说明，并继续使用明确指定的数据目录；不要同时开启多个实例操作同一份数据。

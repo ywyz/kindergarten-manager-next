@@ -198,6 +198,10 @@ def _optional_text(value: object, field: str, maximum: int) -> str | None:
 
 
 def _weekly_field_shape(field: str) -> bool:
+    if field == "materials.text":
+        return True
+    if field.startswith("column."):
+        return field[len("column."):] in weekly_ai_contracts.COLUMN_FIELDS
     return bool(
         field == contracts.WEEKLY_COLUMN_FIELD
         or _ITEM_FIELD.fullmatch(field)
@@ -224,6 +228,7 @@ def normalize_request(
         "listening_record",
         "listening_candidate",
         "weekly_candidate",
+        "weekly_record",
     ):
         raise LocalValidationError("scope.kind 不合法")
     record_id = _optional_text(scope.get("record_id"), "record_id", 64)
@@ -285,10 +290,14 @@ def normalize_request(
     else:
         if domain is not None or group_id is not None:
             raise LocalValidationError("周计划候选不接受 domain 或 group_id")
-        if candidate_id is None:
-            raise LocalValidationError("周计划候选必须指定 candidate_id")
-        if task_id is not None:
-            raise LocalValidationError("周计划候选不接受 task_id")
+        if kind == "weekly_record":
+            if candidate_id is not None or task_id is not None:
+                raise LocalValidationError("已保存周计划不接受候选或任务标识")
+        else:
+            if candidate_id is None:
+                raise LocalValidationError("周计划候选必须指定 candidate_id")
+            if task_id is not None:
+                raise LocalValidationError("周计划候选不接受 task_id")
         if not _weekly_field_shape(field):
             raise LocalValidationError("周计划字段不合法")
 
@@ -563,7 +572,9 @@ def _validate_full_field(target: str, field: str, value: str) -> None:
         )
     elif target == "weekly_material":
         maximum, nonempty, strip = (
-            weekly_ai_contracts.MAX_MATERIAL_ITEM_TEXT,
+            weekly_ai_contracts.MAX_AI_TEXT_CHARS
+            if field == "materials.text"
+            else weekly_ai_contracts.MAX_MATERIAL_ITEM_TEXT,
             True,
             False,
         )
@@ -891,6 +902,54 @@ def _weekly_field_value(
     raise LocalValidationError("周游戏字段不合法")
 
 
+def _weekly_saved_field(
+    content: Mapping[str, Any], field: str
+) -> tuple[str, str, dict[str, Any]]:
+    if field == "materials.text":
+        provenance = content.get("materials_provenance")
+        text = content.get("materials")
+        if provenance is None or not isinstance(text, str) or not text.strip():
+            raise LocalValidationError("材料尚未采用或为空，不能定向修改")
+        return "weekly_material", text, {"origin": "adopted"}
+    columns = content.get("weekly_columns") or {}
+    if field.startswith("column."):
+        key = field[len("column."):]
+        if key not in weekly_ai_contracts.COLUMN_FIELDS:
+            raise LocalValidationError("周栏目字段不合法")
+        return "weekly_column", str(columns.get(key) or ""), {"column": key}
+    slot_match = _SLOT_FIELD.fullmatch(field)
+    if slot_match is not None:
+        slot, name = slot_match.groups()
+        if name not in contracts.WEEKLY_GAME_SLOT_FIELDS[slot]:
+            raise LocalValidationError("周游戏字段不合法")
+        item = (content.get("outdoor_game_slots") or {}).get(slot)
+        if not isinstance(item, Mapping):
+            raise LocalValidationError("周游戏槽位没有可修改内容")
+        if item.get("source_kind") == "daily_plan":
+            raise LocalValidationError("日计划固定来源不能直接改写；请按现有流程手工覆盖本栏")
+        return (
+            "weekly_game",
+            str(item.get(name) or ""),
+            {"source_kind": item.get("source_kind"), "slot": slot, "field": name},
+        )
+    focus_match = _FOCUS_FIELD.fullmatch(field)
+    if focus_match is not None:
+        name = focus_match.group(1)
+        if name not in contracts.WEEKLY_FOCUS_FIELDS:
+            raise LocalValidationError("周游戏重点区域字段不合法")
+        item = content.get("focus_area")
+        if not isinstance(item, Mapping):
+            raise LocalValidationError("周游戏重点区域没有可修改内容")
+        if item.get("source_kind") == "daily_plan":
+            raise LocalValidationError("日计划固定来源不能直接改写；请按现有流程手工覆盖本栏")
+        return (
+            "weekly_game",
+            str(item.get(name) or ""),
+            {"source_kind": item.get("source_kind"), "slot": "focus_area", "field": name},
+        )
+    raise LocalValidationError("当前周计划字段不支持定向修改")
+
+
 def project_create(
     session: Session,
     *,
@@ -975,6 +1034,21 @@ def project_create(
         candidate_input_id = inp.id
         candidate_source_revision = inp.source_revision
         source_identity["candidate_target_key"] = target_key
+    elif kind == "weekly_record":
+        weekly_plan_id = str(scope["record_id"])
+        plan = session.get(LocalWeeklyPlan, weekly_plan_id, populate_existing=True)
+        if plan is None or plan.profile_id != profile_id:
+            raise LocalAiNotFound("未找到该周计划")
+        content = _weekly_content(session, plan)
+        if content.version != version:
+            raise LocalVersionConflict(details={"draft_version": content.version})
+        field_target, saved_text, source_identity = _weekly_saved_field(
+            content.content_json, field
+        )
+        draft_id = content.id
+        draft_content_hash = content.content_hash
+        target = field_target
+        field_target = target
     elif kind == "weekly_candidate":
         weekly_plan_id = str(scope["record_id"])
         candidate, inp, plan, content, target, candidate_text, metadata = (
@@ -1329,6 +1403,17 @@ def revalidate_source(session: Session, task: LocalAITask) -> bool:
                 or content.id != deps.get("weekly_draft_id")
             ):
                 return False
+            if deps.get("scope_kind") == "weekly_record":
+                try:
+                    target, saved_text, _identity = _weekly_saved_field(
+                        content.content_json, str(deps.get("field") or "")
+                    )
+                except Exception:  # noqa: BLE001 - unreadable field is stale
+                    return False
+                return (
+                    target == deps.get("target")
+                    and saved_text == str(deps.get("saved_text") or "")
+                )
             candidate = session.get(
                 LocalAICandidate, str(deps.get("candidate_id"))
             )

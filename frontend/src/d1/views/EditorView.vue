@@ -2792,9 +2792,9 @@ const AI_ACTION_SECTIONS: Partial<Record<TaskType, DailyLayoutSectionKey>> = {
 }
 
 /**
- * The four entries stay visible in the left directory. Make the matching
- * reading pane current before starting so guidance, prerequisites, live
- * reasoning/progress and error/unknown receipts stay visible.
+ * Generation entries live in the right rail and their own sections. Make the
+ * matching reading pane current before starting so guidance, prerequisites,
+ * live reasoning/progress and error/unknown receipts stay visible.
  */
 function onAiActionStart(taskType: TaskType): void {
   if (layoutEditing.value) return
@@ -2824,22 +2824,6 @@ function submitSectionAi(): void {
     section.key,
     sectionAiInstruction.value.trim(),
   )
-}
-
-/**
- * Explicit "go to this column" from an always-visible status/error. Async
- * replies never call this; an open editing copy is never force-replaced.
- */
-function onAiLocate(taskType: TaskType): void {
-  if (layoutEditing.value) {
-    ElMessage.info('栏目编辑弹窗未关闭：已保留输入，请先确定或取消后再查看本栏')
-    return
-  }
-  if (candidateDraftActive.value) {
-    ElMessage.info('候选预览有未采用的编辑：请先处理当前候选后再切换本栏')
-    return
-  }
-  onAiActionStart(taskType)
 }
 
 function startReflectionFromActions(): void {
@@ -3424,8 +3408,8 @@ onBeforeUnmount(() => {
                 <span class="muted">
                   {{
                     rawLessonPlan.trim()
-                      ? '请使用左侧“生成操作”中的“保存并拆分”；保存成功后不会覆盖现有内容'
-                      : '请先点击“编辑本栏”粘贴原始教案，再使用左侧“生成操作”保存并拆分'
+                      ? '请使用右侧“教案拆分”发起拆分；保存成功后不会覆盖现有内容'
+                      : '请先点击“编辑本栏”粘贴原始教案，再使用右侧“教案拆分”保存并拆分'
                   }}
                 </span>
               </div>
@@ -3795,7 +3779,7 @@ onBeforeUnmount(() => {
                 <p v-else class="muted">（未填写实施材料；没有材料时不会发起生成）</p>
               </div>
               <p class="muted reflection-hint">
-                已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。生成入口在左侧“生成操作”中。
+                已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。生成入口为本栏“AI 生成反思”。
                 <el-button
                   size="small"
                   text
@@ -3895,9 +3879,6 @@ onBeforeUnmount(() => {
         @adapt-updated="onAdaptUpdated"
         @reflection-updated="onReflectionUpdated"
         @action-start="onAiActionStart"
-        @locate-task="onAiLocate"
-        @open-section-ai="openSectionAi"
-        @open-reflection-ai="openReflectionAi"
       />
 
       <div class="row footer">
@@ -3934,9 +3915,6 @@ onBeforeUnmount(() => {
           @click="openHistory"
         >
           版本历史
-        </el-button>
-        <el-button :disabled="props.frozen" data-d1="daily-ai-settings" @click="openGuidance()">
-          AI 设置
         </el-button>
         <el-button :disabled="props.frozen" data-d1="go-settings" @click="goSettings">设置</el-button>
         <el-button :disabled="props.frozen" data-d1="back-calendar" @click="backToCalendar">
@@ -4594,69 +4572,6 @@ onBeforeUnmount(() => {
   font-weight: 600;
   box-shadow: inset 3px 0 0 var(--kgm-accent);
 }
-.daily-generation-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--kgm-border);
-  min-width: 0;
-}
-.daily-actions-label {
-  padding: 0 10px 2px;
-  color: var(--kgm-muted);
-  font-size: 0.78rem;
-}
-.daily-generation-slot {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-}
-.daily-generation-button {
-  width: 100%;
-  min-height: 42px;
-  height: auto;
-  margin-left: 0;
-  white-space: normal;
-  line-height: 1.35;
-}
-.daily-generation-actions :deep(.generation-buttons) {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-}
-.daily-generation-actions :deep(.generation-button) {
-  width: 100%;
-  min-height: 42px;
-  height: auto;
-  margin-left: 0;
-  white-space: normal;
-  line-height: 1.35;
-}
-.daily-action-note {
-  margin: 2px 4px 0;
-  font-size: 0.78rem;
-  line-height: 1.45;
-}
-.daily-action-status {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  min-width: 0;
-}
-.daily-action-error {
-  margin: 0;
-  color: var(--kgm-danger);
-  font-size: 0.78rem;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
 .daily-panes {
   min-width: 0;
 }
@@ -4787,14 +4702,7 @@ onBeforeUnmount(() => {
     width: 100%;
     flex: 0 0 auto;
   }
-  .daily-generation-actions {
-    width: 100%;
-    flex: 0 0 auto;
-    margin-top: 6px;
-  }
-  .daily-generation-button {
-    width: 100%;
-  }
+
   .daily-pane {
     padding: 14px;
   }

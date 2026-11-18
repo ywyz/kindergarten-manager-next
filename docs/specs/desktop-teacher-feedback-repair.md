@@ -1,6 +1,6 @@
-# Windows 教师手测修复提示词
+# Windows 教师手测修复规格（历史合同）
 
-2026-11-07 教师已授权逐项开工。**历史基线**为 Windows 安装测试版 `v0.1.0-listening-test.20261107`，对应 `codex/desktop-one-to-one-listening` 的 `cfae26b`；本页保留原合同与验收边界，不代表当前分支或当前发布。当前状态、签名预览和在线部署见[多设备预览验收](../bootstrap/desktop-multi-device-preview-review.md)、[在线协作联调](../bootstrap/online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)及[当前任务](../tasks/current.md)。反馈涉及设置、工作台、日计划、游戏观察、周计划和一对一倾听。
+2026-11-07 教师已授权逐项开工。**历史基线**为 Windows 安装测试版 `v0.1.0-listening-test.20261107`，对应 `codex/desktop-one-to-one-listening` 的 `cfae26b`；本页保留原合同与验收边界，不代表当前分支或当前发布。其中「#6 提示词功能包」一节与第六批「搭班协作与在线数据库」规则为被其他规格引用的独有合同；本页其余内容为当轮手测修复历史合同，按原文保留。当前状态、签名预览和在线部署见[多设备预览验收](../bootstrap/desktop-multi-device-preview-review.md)、[在线协作联调](../bootstrap/online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)及[当前任务](../tasks/current.md)。反馈涉及设置、工作台、日计划、游戏观察、周计划和一对一倾听。
 
 ## 开工与交付
 

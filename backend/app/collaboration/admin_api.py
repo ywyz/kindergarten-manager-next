@@ -20,12 +20,14 @@ from .admin_service import (
     admin_cookie_secure,
     authenticate_admin,
     issue_code,
+    list_classes,
     list_schools,
     list_teachers,
     list_terms,
     login_admin,
     redeem_code,
     revoke_admin_session,
+    update_class_name,
     update_school_name,
     update_term_name,
     verify_csrf,
@@ -62,6 +64,17 @@ class AdminSchoolOut(_StrictModel):
 
 
 class AdminSchoolUpdateIn(_StrictModel):
+    expected_name: str = Field(..., min_length=1, max_length=120)
+    new_name: str = Field(..., min_length=1, max_length=120)
+
+
+class AdminClassOut(_StrictModel):
+    class_id: UUID
+    school_id: UUID
+    name: str
+
+
+class AdminClassUpdateIn(_StrictModel):
     expected_name: str = Field(..., min_length=1, max_length=120)
     new_name: str = Field(..., min_length=1, max_length=120)
 
@@ -294,6 +307,54 @@ def admin_update_school(
     _no_store(response)
     return AdminSchoolOut(school_id=updated.id, name=updated.name)
 
+
+@router.get(
+    "/api/collaboration/admin/schools/{school_id}/classes",
+    response_model=list[AdminClassOut],
+)
+def admin_classes(
+    school_id: UUID,
+    response: Response,
+    session: Session = Depends(get_session),
+    _principal: AdminPrincipal = Depends(get_admin_principal),
+) -> list[AdminClassOut]:
+    _no_store(response)
+    return [
+        AdminClassOut(
+            class_id=row.class_id,
+            school_id=row.school_id,
+            name=row.name,
+        )
+        for row in list_classes(session, school_id)
+    ]
+
+
+@router.patch(
+    "/api/collaboration/admin/schools/{school_id}/classes/{class_id}",
+    response_model=AdminClassOut,
+)
+def admin_update_class(
+    school_id: UUID,
+    class_id: UUID,
+    data: AdminClassUpdateIn,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+) -> AdminClassOut:
+    updated = update_class_name(
+        session,
+        principal,
+        school_id=school_id,
+        class_id=class_id,
+        expected_name=data.expected_name,
+        new_name=data.new_name,
+    )
+    _no_store(response)
+    return AdminClassOut(
+        class_id=updated.class_id,
+        school_id=updated.school_id,
+        name=updated.name,
+    )
 
 @router.get(
     "/api/collaboration/admin/schools/{school_id}/teachers",

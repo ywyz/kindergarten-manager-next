@@ -32,6 +32,8 @@ export interface WeeklySectionInfo {
   hint: string
   /** The reading pane offers 编辑本栏 for this section. */
   editable: boolean
+  /** Shown as a left-directory button; contextual panes stay reachable in-page. */
+  navigation?: boolean
 }
 
 export const WEEKLY_GAME_SLOTS: WeeklySlot[] = [
@@ -69,56 +71,58 @@ export const WEEKLY_CONTEXT_LABELS: Record<'area' | 'outdoor' | 'special_room', 
 export const WEEKLY_SECTIONS: WeeklySectionInfo[] = [
   {
     key: 'overview',
-    label: '主题与每日活动',
-    hint: '主题由教师决定；每日最终格默认跟随本人最新已保存日计划。',
+    label: '一周总览',
+    hint: '主题、每日活动与各栏摘要',
     editable: true,
   },
   {
     key: 'collective_1',
     label: '集体游戏一',
-    hint: '名称、共同目标、指导要点与重点指导均保留来源版本。',
+    hint: '名称、目标、指导与来源',
     editable: true,
   },
   {
     key: 'collective_2',
     label: '集体游戏二',
-    hint: '名称、共同目标、指导要点与重点指导均保留来源版本。',
+    hint: '名称、目标、指导与来源',
     editable: true,
   },
   {
     key: 'free_choice_1',
     label: '自选游戏',
-    hint: '名称、共同目标、指导要点与重点指导均保留来源版本。',
+    hint: '名称、目标、指导与来源',
     editable: true,
   },
   {
     key: 'focus',
-    label: '重点区域',
-    hint: '单独一项重点区域：环境类型、区域、游戏名称、目标、指导与支持策略。',
+    label: '重点区域与材料',
+    hint: '重点区域及材料准备',
     editable: true,
   },
   {
     key: 'columns',
     label: '本周栏目',
-    hint: '本周重点、环境创设、习惯与文化、家园合作；AI 只生成所选栏目。',
+    hint: '四个本周栏目',
     editable: true,
   },
   {
     key: 'materials',
     label: '材料准备',
-    hint: '材料只保存在周计划，采用后才可编辑；不回写日计划。',
+    hint: '在重点区域中编辑',
     editable: true,
+    navigation: false,
   },
   {
     key: 'sources',
     label: '来源核对',
-    hint: '只读核对缺项与来源变化；刷新后仍要点“应用刷新到目标草稿”。',
+    hint: '从有日计划来源的栏目进入',
     editable: false,
+    navigation: false,
   },
   {
     key: 'ai',
-    label: 'AI 候选与任务',
-    hint: '候选与任务集中在此处；采用仍按原来的预览和保存步骤。',
+    label: 'AI 生成与候选',
+    hint: '候选、进度与采用',
     editable: false,
   },
 ]
@@ -137,10 +141,45 @@ export function weeklyDisplay(value: string | null | undefined, empty = '（未�
   return text.trim() ? text : empty
 }
 
-export function weeklyGameSourceLabel(game: WeeklyGameChoice): string {
+/** Short teacher-facing date label; the source date comes from the saved plan. */
+export function weeklyPlanDateLabel(value: string | null | undefined): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? '')
+  if (!match) return ''
+  return `${Number(match[2])}月${Number(match[3])}日`
+}
+
+/** Default body label: date only; the version stays in check details/tooltips. */
+export function weeklyDailySourceLabel(
+  date: string | null | undefined,
+  _version?: number | null,
+): string {
+  const label = weeklyPlanDateLabel(date)
+  return label ? `${label}日计划` : '日计划（日期待核）'
+}
+
+/** Version detail for check panes and tooltips, never the default body label. */
+export function weeklyDailySourceDetail(
+  date: string | null | undefined,
+  version: number | null | undefined,
+): string {
+  const base = weeklyDailySourceLabel(date)
+  return version == null ? base : `${base} · v${version}`
+}
+
+/** Long bodies stay readable in the pane but collapse to one line in summaries. */
+export function weeklySummary(value: string | null | undefined, limit = 80): string {
+  const text = (value ?? '').replace(/\s+/g, ' ').trim()
+  if (!text) return '（未填写）'
+  return text.length > limit ? `${text.slice(0, limit)}…` : text
+}
+
+export function weeklyGameSourceLabel(
+  game: WeeklyGameChoice,
+  sourceDate?: string | null,
+): string {
   if (game.source_kind === 'manual') return '手工填写'
   if (game.source_kind === 'ai_supplement') return 'AI 补充（仅存于周计划）'
-  return `本人日计划 v${game.content_version}`
+  return weeklyDailySourceLabel(sourceDate)
 }
 
 /** The four required game fields, always all four, for reading and tests. */
@@ -158,9 +197,12 @@ export function weeklyFocusContextLabel(focus: WeeklyFocusChoice): string {
 }
 
 /** Attribution stays separate from the environment type label. */
-export function weeklyFocusSourceLabel(focus: WeeklyFocusChoice): string {
+export function weeklyFocusSourceLabel(
+  focus: WeeklyFocusChoice,
+  sourceDate?: string | null,
+): string {
   if (focus.source_kind === 'ai_supplement') return 'AI 补充（仅存于周计划）'
-  return `本人日计划 v${focus.content_version}`
+  return weeklyDailySourceLabel(sourceDate)
 }
 
 /** The single focus area keeps every stored field visible. */

@@ -1117,50 +1117,59 @@ def _games_payload(
     morning_handles: Mapping[tuple[str, str, str], str],
     post_handles: Mapping[tuple[str, str, str], str],
     config_handles: Mapping[int, str],
+    game_scope: str | None = None,
 ) -> dict:
     days: list[dict] = []
+    include_morning = game_scope in (None, "collective_1", "collective_2", "free_choice_1")
+    include_post = game_scope in (None, "focus_area")
     for raw_day in raw["days"]:
         if raw_day["day_state"] != "teaching":
             continue
         mornings = []
-        for group in raw_day["morning_groups"]:
-            mornings.append(
-                {
-                    "group_kind": group["group_kind"],
-                    "games": [
-                        {
-                            "source_handle": morning_handles[
-                                (raw_day["date"], group["group_id"], game["game_id"])
-                            ],
-                            "name": game["name"],
-                        }
-                        for game in group["games"]
-                    ],
-                    "shared_objectives": group.get("shared_objectives"),
-                    "guidance_points": group.get("guidance_points"),
-                    "focus_guidance": group.get("focus_guidance"),
-                }
-            )
+        if include_morning:
+            for group in raw_day["morning_groups"]:
+                if game_scope in ("collective_1", "collective_2") and group["group_kind"] != "collective":
+                    continue
+                if game_scope == "free_choice_1" and group["group_kind"] != "free_choice":
+                    continue
+                mornings.append(
+                    {
+                        "group_kind": group["group_kind"],
+                        "games": [
+                            {
+                                "source_handle": morning_handles[
+                                    (raw_day["date"], group["group_id"], game["game_id"])
+                                ],
+                                "name": game["name"],
+                            }
+                            for game in group["games"]
+                        ],
+                        "shared_objectives": group.get("shared_objectives"),
+                        "guidance_points": group.get("guidance_points"),
+                        "focus_guidance": group.get("focus_guidance"),
+                    }
+                )
         posts = []
-        for group in raw_day["post_group_groups"]:
-            posts.append(
-                {
-                    "context_kind": group["context_kind"],
-                    "area": group.get("area"),
-                    "games": [
-                        {
-                            "source_handle": post_handles[
-                                (raw_day["date"], group["group_id"], game["game_id"])
-                            ],
-                            "name": game["name"],
-                        }
-                        for game in group["games"]
-                    ],
-                    "objectives": group.get("objectives"),
-                    "guidance": group.get("guidance"),
-                    "support_strategy": group.get("support_strategy"),
-                }
-            )
+        if include_post:
+            for group in raw_day["post_group_groups"]:
+                posts.append(
+                    {
+                        "context_kind": group["context_kind"],
+                        "area": group.get("area"),
+                        "games": [
+                            {
+                                "source_handle": post_handles[
+                                    (raw_day["date"], group["group_id"], game["game_id"])
+                                ],
+                                "name": game["name"],
+                            }
+                            for game in group["games"]
+                        ],
+                        "objectives": group.get("objectives"),
+                        "guidance": group.get("guidance"),
+                        "support_strategy": group.get("support_strategy"),
+                    }
+                )
         days.append(
             {
                 "date": raw_day["date"],
@@ -1168,7 +1177,7 @@ def _games_payload(
                 "post_group_games": posts,
             }
         )
-    return {
+    payload = {
         "schema_version": 1,
         "task_type": "weekly_games_select",
         "grade": raw["header"]["grade"],
@@ -1176,6 +1185,19 @@ def _games_payload(
         "days": days,
         "config": _config_payload(raw["game_config"], config_handles),
     }
+    if game_scope is not None:
+        payload["game_scope"] = game_scope
+        label = {
+            "collective_1": "集体游戏一",
+            "collective_2": "集体游戏二",
+            "free_choice_1": "自选游戏",
+            "focus_area": "重点区域",
+        }[game_scope]
+        payload["scope_instruction"] = (
+            f"本次只生成“{label}”。其它户外槽和重点区域必须输出 null，"
+            "不得补写、替换或建议其他栏目。"
+        )
+    return payload
 
 
 def _focus_payload(raw: Mapping[str, Any], content: Mapping[str, Any]) -> dict:
@@ -1715,6 +1737,45 @@ def target_hash(content: Mapping[str, Any], target: object) -> str:
     ).hexdigest()
 
 
+def game_scope_target_projection(content: Mapping[str, Any], scope: str) -> dict:
+    fixed = weekly_plan_content.validate_content(content)
+    if scope not in ("collective_1", "collective_2", "free_choice_1", "focus_area"):
+        _fail("game_scope 非法", "game_scope")
+    if scope == "focus_area":
+        value = copy.deepcopy(fixed["focus_area"])
+    else:
+        value = copy.deepcopy(fixed["outdoor_game_slots"].get(scope))
+    scoped = (
+        (fixed.get("ai_provenance") or {}).get(
+            weekly_plan_content.SCOPED_GAMES_PROVENANCE_KEY
+        )
+        or {}
+    ).get(scope)
+    adoption = (
+        {
+            "candidate_id": scoped["candidate_id"],
+            "candidate_hash": scoped["candidate_hash"],
+            "adopted_value_hash": scoped["adopted_value_hash"],
+            "manual_edited": scoped["manual_edited"],
+        }
+        if scoped
+        else None
+    )
+    return {
+        "schema_version": 1,
+        "target": "games",
+        "game_scope": scope,
+        "value": value,
+        "adoption": adoption,
+    }
+
+
+def game_scope_target_hash(content: Mapping[str, Any], scope: str) -> str:
+    return hashlib.sha256(
+        _canonical(game_scope_target_projection(content, scope)).encode("utf-8")
+    ).hexdigest()
+
+
 REVISION_INSTRUCTION_MAX_CHARS = 500
 REQUEST_EXTRA_KEYS = frozenset({"base_candidate", "revision_instruction"})
 
@@ -1927,10 +1988,16 @@ def project_weekly_input(
     *,
     base_candidate: object = None,
     revision_instruction: object = None,
+    game_scope: object = None,
 ) -> ProjectedWeeklyInput:
     """Project one frozen weekly task input from A's raw manifest."""
     if task_type not in contracts.TASK_TARGETS:
         _fail("不支持的周任务类型", "task_type")
+    if game_scope is not None:
+        if task_type != "weekly_games_select":
+            _fail("game_scope 只适用于周游戏生成", "game_scope")
+        if game_scope not in contracts.GAME_SCOPES:
+            _fail("game_scope 不合法", "game_scope")
     raw = validate_raw_manifest(raw_manifest)
     saved = weekly_plan_content.validate_content(saved_content)
     _check_saved_against_raw(raw, saved)
@@ -1977,7 +2044,7 @@ def project_weekly_input(
         config_handles = {
             index: f"c{index + 1}" for index in range(len(config.get("locations") or []))
         }
-        payload = _games_payload(raw, saved, morning_handles, post_handles, config_handles)
+        payload = _games_payload(raw, saved, morning_handles, post_handles, config_handles, game_scope)
     elif task_type == "weekly_key_week_focus":
         payload = _focus_payload(raw, saved)
     elif task_type == "weekly_environment_setup":
@@ -2090,9 +2157,34 @@ def build_ai_facts(
             }
         )
 
+    def mark_game_scope_stale(scope: str, reason: str) -> None:
+        if scope == "focus_area":
+            focus = fixed["focus_area"]
+            if focus is not None and focus.get("source_kind") == "ai_supplement":
+                fact(
+                    stale,
+                    "stale_source",
+                    "focus_area",
+                    details={"reason": reason},
+                )
+            return
+        slot = fixed["outdoor_game_slots"].get(scope)
+        if slot is not None and slot.get("source_kind") == "ai_supplement":
+            fact(
+                stale,
+                "stale_source",
+                f"outdoor_game_slots.{scope}",
+                details={"reason": reason},
+            )
+
     def mark_target_stale(target: str, reason: str) -> None:
         if target == "games":
+            scoped = (fixed.get("ai_provenance") or {}).get(
+                weekly_plan_content.SCOPED_GAMES_PROVENANCE_KEY
+            ) or {}
             for key in weekly_plan_content.OUTDOOR_SLOT_KEYS:
+                if key in scoped:
+                    continue
                 slot = fixed["outdoor_game_slots"].get(key)
                 if slot is not None and slot.get("source_kind") == "ai_supplement":
                     fact(
@@ -2102,7 +2194,11 @@ def build_ai_facts(
                         details={"reason": reason},
                     )
             focus = fixed["focus_area"]
-            if focus is not None and focus.get("source_kind") == "ai_supplement":
+            if (
+                "focus_area" not in scoped
+                and focus is not None
+                and focus.get("source_kind") == "ai_supplement"
+            ):
                 fact(
                     stale,
                     "stale_source",
@@ -2119,6 +2215,8 @@ def build_ai_facts(
 
     provenance = fixed.get("ai_provenance") or {}
     for target, adoption in provenance.items():
+        if target == weekly_plan_content.SCOPED_GAMES_PROVENANCE_KEY:
+            continue
         if adoption is None:
             continue
         if adoption.get("contract_version") != 1:
@@ -2143,6 +2241,29 @@ def build_ai_facts(
         ):
             continue
         mark_target_stale(target, "ai_basis_changed")
+    scoped_provenance = provenance.get(
+        weekly_plan_content.SCOPED_GAMES_PROVENANCE_KEY
+    ) or {}
+    for scope, adoption in scoped_provenance.items():
+        if adoption.get("contract_version") != 1:
+            fact(
+                warnings,
+                "ai_contract_obsolete",
+                f"ai_provenance.{weekly_plan_content.SCOPED_GAMES_PROVENANCE_KEY}.{scope}",
+                details={"contract_version": adoption.get("contract_version")},
+            )
+            continue
+        basis = adoption.get("basis") or {}
+        try:
+            current = _current_dependencies("weekly_games_select", raw, fixed)
+        except contracts.WeeklyAIContractError:
+            mark_game_scope_stale(scope, "ai_basis_unresolved")
+            continue
+        if _canonical(_comparison_view(_basis_view(basis), drop_manual_text=True)) == _canonical(
+            _comparison_view(_basis_view(current), drop_manual_text=True)
+        ):
+            continue
+        mark_game_scope_stale(scope, "ai_basis_changed")
     materials = fixed.get("materials_provenance")
     if materials is not None:
         current: dict | None
@@ -2391,7 +2512,7 @@ def _stored_game_value(
 
 
 def _stored_game_handles(
-    manifest: Mapping[str, Any], business: Mapping[str, Any]
+    manifest: Mapping[str, Any], business: Mapping[str, Any], game_scope: str | None = None
 ) -> tuple[dict[tuple[str, str, str], str], dict[tuple[str, str, str], str], dict[int, str]]:
     used: set[str] = set()
     morning: dict[tuple[str, str, str], str] = {}
@@ -2427,8 +2548,11 @@ def _stored_game_handles(
                 post[key] = handle
                 used.add(handle)
     config = _stored_config_handles(manifest, business.get("config"), used)
-    if used != set(manifest["handles"]):
-        _stored_fail("存储输入存在未使用或缺失 handle", "dependencies")
+    if game_scope is None:
+        if used != set(manifest["handles"]):
+            _stored_fail("存储输入存在未使用或缺失 handle", "dependencies")
+    elif not used.issubset(set(manifest["handles"])):
+        _stored_fail("存储输入 handle 不属于 manifest", "dependencies")
     return morning, post, config
 
 
@@ -2501,9 +2625,16 @@ def _validate_stored_weekly_input_impl(
     allowed = set(BUSINESS_DEPENDENCY_KEYS) | {
         "_server_manifest",
         "_batch_snapshot_hash",
+        "_game_scope",
     }
     if not set(BUSINESS_DEPENDENCY_KEYS).issubset(deps) or set(deps) - allowed:
         _stored_fail("存储输入 dependencies 键不合法", "dependencies")
+    game_scope = deps.get("_game_scope")
+    if game_scope is not None:
+        if task_type != "weekly_games_select":
+            _stored_fail("存储输入 game_scope 只用于周游戏", "dependencies.game_scope")
+        if game_scope not in contracts.GAME_SCOPES:
+            _stored_fail("存储输入 game_scope 不合法", "dependencies.game_scope")
     if "_server_manifest" not in deps:
         _stored_fail("存储输入缺少 server manifest", "dependencies._server_manifest")
     if "_batch_snapshot_hash" in deps:
@@ -2566,9 +2697,9 @@ def _validate_stored_weekly_input_impl(
         selected = None
     raw_like = _stored_raw_like(business, frozen)
     if task_type == "weekly_games_select":
-        morning, post, config_handles = _stored_game_handles(manifest, business)
+        morning, post, config_handles = _stored_game_handles(manifest, business, game_scope)
         expected_payload = _games_payload(
-            raw_like, frozen, morning, post, config_handles
+            raw_like, frozen, morning, post, config_handles, game_scope
         )
         expected_dependencies = _dependency_view(
             task_type, target, raw_like, frozen, None, manifest
@@ -2654,7 +2785,13 @@ def _validate_stored_weekly_input_impl(
         payload=copy.deepcopy(expected_payload),
         dependencies=copy.deepcopy(expected_dependencies),
         dependency_hash=dependency_hash(expected_dependencies),
-        target_hashes={target: target_hash(frozen, target)},
+        target_hashes={
+            target: (
+                game_scope_target_hash(frozen, game_scope)
+                if game_scope is not None
+                else target_hash(frozen, target)
+            )
+        },
         server_manifest=copy.deepcopy(manifest),
     )
 

@@ -350,7 +350,11 @@ function weeklyStub(detail) {
     createWeeklyApi: () => ({ get: async () => clone(detail) }),
     newWeeklyRequestId: () => 'uuid-layout',
     projectWeeklyError: (error) => ({ message: String(error?.message ?? 'error') }),
-    weeklyFrozenSourceDates: () => ({}),
+    weeklyFrozenSourceDates: (content) => Object.fromEntries(
+      (content?.deterministic ?? [])
+        .filter((day) => day.source?.daily_plan_id && day.date)
+        .map((day) => [day.source.daily_plan_id, day.date]),
+    ),
     fetchWeeklySourceDate: async () => '2026-11-02',
     formatFrozenWeeklyTarget: () => [],
     formatWeeklyFact: () => '',
@@ -595,6 +599,8 @@ async function mountEditorDom({ detail, overrides = {}, navigationTarget = false
   return { app, mountEl, harness, sharedTarget }
 }
 
+const panelCalls = []
+
 function makePanelStub() {
   return {
     __esModule: true,
@@ -604,9 +610,9 @@ function makePanelStub() {
       setup(_props, { expose, emit }) {
         const text = vue.ref('等待发起')
         expose({
-          startGames: async () => { text.value = '任务已受理' },
-          startColumns: async () => { text.value = '生成前保存失败：合成原因' },
-          startMaterials: async () => { text.value = '尚无已采用材料候选' },
+          startGames: async (scope) => { panelCalls.push({ kind: 'games', fields: scope ? [scope] : [] }); text.value = '任务已受理' },
+          startColumns: async (fields) => { panelCalls.push({ kind: 'columns', fields: fields ? [...fields] : [] }); text.value = '生成前保存失败：合成原因' },
+          startMaterials: async () => { panelCalls.push({ kind: 'materials', fields: [] }); text.value = '尚无已采用材料候选' },
         })
         return () => vue.h('div', [
           vue.h('div', { 'data-d1': 'weekly-ai-stub' }, text.value),
@@ -631,8 +637,11 @@ async function main() {
     assert.equal(helpers.WEEKLY_SECTIONS.length, 9)
     assert.deepEqual(
       [...helpers.WEEKLY_SECTIONS.map((section) => section.label)],
-      ['主题与每日活动', '集体游戏一', '集体游戏二', '自选游戏', '重点区域', '本周栏目', '材料准备', '来源核对', 'AI 候选与任务'],
+      ['一周总览', '集体游戏一', '集体游戏二', '自选游戏', '重点区域与材料', '本周栏目', '材料准备', '来源核对', 'AI 生成与候选'],
     )
+    assert.equal(helpers.weeklyPlanDateLabel('2026-11-02'), '11月2日')
+    assert.equal(helpers.weeklyDailySourceLabel('2026-11-02', 3), '11月2日日计划')
+    assert.equal(helpers.weeklySummary(' 第一行\n第二行 '), '第一行 第二行')
     for (const key of ['collective_1', 'collective_2', 'free_choice_1']) {
       const rows = helpers.weeklyGameRows({
         source_kind: 'manual', manual_item_id: null, daily_plan_id: null, content_id: null,
@@ -645,7 +654,7 @@ async function main() {
     const focusRows = helpers.weeklyFocusRows(contentFixture().focus_area)
     assert.deepEqual([...focusRows.map((row) => row.label)], ['环境类型', '区域', '游戏名称', '活动目标', '指导要点', '支持策略'])
     assert.deepEqual([...focusRows.map((row) => row.value)], ['区域', '美工区', '会动的小鸟', '自主选择材料表达想法。', '交流制作中的问题。', '提供不同大小的纸板。'])
-    assert.equal(helpers.weeklyFocusSourceLabel(contentFixture().focus_area), '本人日计划 v1')
+    assert.equal(helpers.weeklyFocusSourceLabel(contentFixture().focus_area), '日计划（日期待核）')
     const aiFocus = {
       source_kind: 'ai_supplement',
       manual_item_id: null,
@@ -706,15 +715,16 @@ async function main() {
     assert.equal(state.activeSection.value, 'overview')
     assert.deepEqual(
       [...state.weeklySectionNav.value.map((section) => section.key)],
-      ['overview', 'collective_1', 'collective_2', 'free_choice_1', 'focus', 'columns', 'materials', 'sources', 'ai'],
+      ['overview', 'collective_1', 'collective_2', 'free_choice_1', 'focus', 'columns', 'ai'],
     )
     state.selectSection('collective_2')
     assert.equal(state.activeSection.value, 'collective_2')
     assert.deepEqual(
       [...state.weeklySectionNav.value.map((section) => section.badge)].slice(0, 3),
-      ['已存 v3', '本人日计划 v2', '未选择'],
+      ['已存 v3', '11月2日日计划', '未选择'],
     )
-    assert.equal(state.weeklySectionNav.value.find((section) => section.key === 'sources').badge, '无变化')
+    assert.equal(state.weeklySectionNav.value.find((section) => section.key === 'columns').badge, '已填 4/4')
+    assert.equal(state.weeklySectionNav.value.find((section) => section.key === 'focus').badge, '日计划（日期待核）')
     state.openSectionModal('collective_2')
     assert.equal(state.sectionDialogOpen.value, true)
     assert.equal(state.sectionModal.value.key, 'collective_2')
@@ -1050,16 +1060,37 @@ async function main() {
       node.tag === 'button'
       && String(node.props?.class ?? '').split(/\s+/).includes('section-button')
     ))
-    assert.equal(navButtons.length, 9)
+    assert.equal(navButtons.length, 7)
     const overviewNavText = nodeText(navButtons[0])
-    assert.ok(overviewNavText.includes('主题与每日活动'))
-    assert.ok(overviewNavText.includes('主题由教师决定'))
+    assert.ok(overviewNavText.includes('一周总览'))
     assert.ok(overviewNavText.includes('已存 v3'))
+    assert.equal(navButtons[0].props['data-d1'], 'weekly-section-overview')
     const overviewButton = byD1(mountEl, 'weekly-section-overview')
     assert.equal(overviewButton.props['aria-current'], 'true')
+    for (const marker of [
+      'weekly-framework-games',
+      'weekly-framework-columns',
+      'weekly-framework-materials',
+    ]) {
+      assert.ok(byD1(mountEl, marker), `${marker} is part of the default week framework`)
+    }
+    assert.match(nodeText(byD1(mountEl, 'weekly-daily-source')), /11月2日日计划/)
+    byD1(mountEl, 'weekly-daily-source-check').props.onClick({})
+    await settle()
+    assert.equal(harness.window.__d1WeeklyEditor.activeSection(), 'sources')
+    assert.ok(byD1(mountEl, 'weekly-sources'))
+    byD1(mountEl, 'weekly-sources-back').props.onClick({})
+    await settle()
+    assert.equal(harness.window.__d1WeeklyEditor.activeSection(), 'overview')
     byD1(mountEl, 'weekly-section-collective_1').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-collective_1') })
     await settle()
     assert.ok(byD1(mountEl, 'weekly-game-collective_1'))
+    assert.match(nodeText(byD1(mountEl, 'weekly-game-source')), /11月2日日计划/)
+    byD1(mountEl, 'weekly-game-source-check').props.onClick({})
+    await settle()
+    assert.equal(harness.window.__d1WeeklyEditor.activeSection(), 'sources')
+    byD1(mountEl, 'weekly-section-collective_1').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-collective_1') })
+    await settle()
     // The single AI panel stays mounted (pollers keep running) but hidden.
     assert.ok(byD1(mountEl, 'weekly-ai-pane'))
     assert.equal(walkElements(mountEl).filter((node) => node.props?.['data-d1'] === 'weekly-ai-pane').length, 1)
@@ -1096,6 +1127,43 @@ async function main() {
     ok('weekly DOM renders a read pane, labeled buttons and a modal copy with focus return')
   }
 
+  // -- DOM: focus owns material generation and a dated daily source ---------
+  {
+    const detail = detailFixture()
+    detail.source_candidates = [
+      candidateFixture({
+        date: '2026-11-04',
+        daily_plan_id: 'dp2',
+        section: 'post_group_games',
+        category: 'focus',
+        group_kind: null,
+        context_kind: 'area',
+        area: '美工区',
+        group_id: 'g2',
+        game_id: 'game2',
+        name: '会动的小鸟',
+      }),
+    ]
+    const { app, mountEl, harness } = await mountEditorDom({
+      detail,
+      overrides: { './WeeklyAiPanel.vue': makePanelStub() },
+    })
+    assert.equal(byD1(mountEl, 'weekly-section-materials'), null, 'materials has no separate left entry')
+    assert.equal(byD1(mountEl, 'weekly-section-sources'), null, 'sources has no global left entry')
+    byD1(mountEl, 'weekly-section-focus').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-focus') })
+    await settle()
+    assert.match(nodeText(byD1(mountEl, 'weekly-focus-source')), /11月4日日计划/)
+    assert.ok(byD1(mountEl, 'weekly-focus-source-check'), 'the focus source can be checked from its own frame')
+    assert.ok(byD1(mountEl, 'weekly-focus-materials'), 'material preparation lives in the focus frame')
+    byD1(mountEl, 'weekly-ai-materials').props.onClick({})
+    await settle()
+    assert.equal(harness.window.__d1WeeklyEditor.activeSection(), 'ai')
+    harness.unmount()
+    app.unmount()
+    await settle()
+    ok('weekly focus carries the dated daily source, contextual source check and material entry')
+  }
+
   // -- DOM: shared navigation target, order, selection and cleanup -----------
   {
     const { app, mountEl, harness, sharedTarget } = await mountEditorDom({
@@ -1112,15 +1180,15 @@ async function main() {
     ))
     assert.deepEqual(
       navButtons.map((node) => node.props['data-d1']),
-      ['overview', 'collective_1', 'collective_2', 'free_choice_1', 'focus', 'columns', 'materials', 'sources', 'ai']
+      ['overview', 'collective_1', 'collective_2', 'free_choice_1', 'focus', 'columns', 'ai']
         .map((key) => `weekly-section-${key}`),
-      'all nine sections including AI tasks stay in order in the rail',
+      'the weekly directory keeps the content frames and AI pane; materials/sources stay contextual',
     )
-    assert.ok(nodeText(navButtons[8]).includes('AI 候选与任务'))
+    assert.ok(nodeText(navButtons[6]).includes('AI 生成与候选'))
     const paneLabel = () => byD1(mountEl, 'weekly-section-pane').props['aria-label']
     byD1(sharedTarget, 'weekly-section-ai').props.onClick({ currentTarget: byD1(sharedTarget, 'weekly-section-ai') })
     await settle()
-    assert.equal(paneLabel(), 'AI 候选与任务')
+    assert.equal(paneLabel(), 'AI 生成与候选')
     byD1(sharedTarget, 'weekly-section-collective_1').props.onClick({ currentTarget: byD1(sharedTarget, 'weekly-section-collective_1') })
     await settle()
     assert.equal(paneLabel(), '集体游戏一')
@@ -1143,7 +1211,7 @@ async function main() {
       0,
       'unmount removes teleported weekly navigation',
     )
-    ok('weekly navigation target: nine ordered sections, selection, dirty modal guard and target cleanup')
+    ok('weekly navigation target: seven ordered content frames, selection, dirty modal guard and target cleanup')
   }
 
   // -- DOM: modal cancel restores the opening copy exactly -------------------
@@ -1172,8 +1240,9 @@ async function main() {
     ok('weekly modal cancel keeps the opening copy and reopening shows the original bytes')
   }
 
-  // -- DOM: top AI actions make their own pane and panel state visible --------
+  // -- DOM: section AI actions make their own pane and panel state visible ---
   {
+    panelCalls.length = 0
     const { app, mountEl, harness } = await mountEditorDom({
       detail: detailFixture(),
       overrides: { './WeeklyAiPanel.vue': makePanelStub() },
@@ -1181,14 +1250,28 @@ async function main() {
     const pane = byD1(mountEl, 'weekly-ai-pane')
     assert.ok(pane)
     assert.equal(pane.style.display, 'none')
-    assert.equal(byD1(mountEl, 'weekly-ai-games').props.disabled, false)
-    byD1(mountEl, 'weekly-ai-games').props.onClick({ currentTarget: byD1(mountEl, 'weekly-ai-games') })
+    assert.equal(byD1(mountEl, 'weekly-ai-actions'), null, 'no shared top generation block')
+    for (const marker of ['weekly-framework-games', 'weekly-framework-columns', 'weekly-framework-materials']) {
+      assert.ok(byD1(mountEl, marker), `${marker} is visible on the default overview`)
+    }
+    assert.deepEqual(panelCalls, [], 'mounting the page never starts a generation task')
+    assert.ok(byD1(mountEl, 'weekly-section-materials') == null, 'materials is not a separate left entry')
+    assert.ok(byD1(mountEl, 'weekly-section-sources') == null, 'source checking is contextual')
+    assert.ok(byD1(mountEl, 'weekly-section-overview').props['aria-current'] === 'true')
+
+    byD1(mountEl, 'weekly-section-collective_1').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-collective_1') })
+    await settle()
+    assert.equal(byD1(mountEl, 'weekly-ai-games'), null, 'no overview-wide game generation button')
+    assert.equal(byD1(mountEl, 'weekly-ai-game-collective_1').props.disabled, false)
+    byD1(mountEl, 'weekly-ai-game-collective_1').props.onClick({})
     await settle()
     assert.equal(harness.window.__d1WeeklyEditor.activeSection(), 'ai')
     assert.notEqual(pane.style.display, 'none')
     assert.equal(nodeText(byD1(mountEl, 'weekly-ai-stub')), '任务已受理')
-    assert.equal(walkElements(mountEl).filter((node) => node.props?.['data-d1'] === 'weekly-ai-stub').length, 1)
-    // A pre-save refusal is visible in the same pane after the top-bar action.
+    assert.deepEqual(panelCalls, [{ kind: 'games', fields: ['collective_1'] }])
+
+    // The overview column action starts all four week-level columns; the task
+    // boundary stays the existing columns batch.
     byD1(mountEl, 'weekly-section-overview').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-overview') })
     await settle()
     assert.equal(pane.style.display, 'none')
@@ -1196,13 +1279,34 @@ async function main() {
     await settle()
     assert.equal(harness.window.__d1WeeklyEditor.activeSection(), 'ai')
     assert.equal(nodeText(byD1(mountEl, 'weekly-ai-stub')), '生成前保存失败：合成原因')
-    // A materials refusal is likewise visible, not hidden behind another pane.
-    byD1(mountEl, 'weekly-section-overview').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-overview') })
+    assert.deepEqual(panelCalls.at(-1), {
+      kind: 'columns',
+      fields: ['key_week_focus', 'environment_setup', 'habit_culture', 'home_cooperation'],
+    })
+
+    // A per-column action exists inside the columns pane and sends only that
+    // one selected field. It never reuses the overview's all-column body.
+    byD1(mountEl, 'weekly-section-columns').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-columns') })
     await settle()
+    for (const key of ['key_week_focus', 'environment_setup', 'habit_culture', 'home_cooperation']) {
+      assert.ok(byD1(mountEl, `weekly-column-${key}`), `${key} has its own frame`)
+      assert.ok(byD1(mountEl, `weekly-ai-column-${key}`), `${key} has its own AI action`)
+    }
+    byD1(mountEl, 'weekly-ai-column-environment_setup').props.onClick({})
+    await settle()
+    assert.equal(harness.window.__d1WeeklyEditor.activeSection(), 'ai')
+    assert.deepEqual(panelCalls.at(-1), { kind: 'columns', fields: ['environment_setup'] })
+
+    // Materials stay with the focus area.
+    byD1(mountEl, 'weekly-section-focus').props.onClick({ currentTarget: byD1(mountEl, 'weekly-section-focus') })
+    await settle()
+    assert.ok(byD1(mountEl, 'weekly-focus-materials'))
     byD1(mountEl, 'weekly-ai-materials').props.onClick({ currentTarget: byD1(mountEl, 'weekly-ai-materials') })
     await settle()
     assert.equal(harness.window.__d1WeeklyEditor.activeSection(), 'ai')
     assert.equal(nodeText(byD1(mountEl, 'weekly-ai-stub')), '尚无已采用材料候选')
+    assert.deepEqual(panelCalls.at(-1), { kind: 'materials', fields: [] })
+
     // The existing focus-needed redirect still wins when the panel asks for it.
     byD1(mountEl, 'weekly-ai-stub-focus').props.onClick({})
     await settle()
@@ -1212,7 +1316,7 @@ async function main() {
     harness.unmount()
     app.unmount()
     await settle()
-    ok('weekly top AI actions open the AI pane so pre-save/material/task states are visible')
+    ok('weekly section AI actions stay scoped, open the AI pane and never auto-start')
   }
 
   // -- DOM: list view remains a useful record list ---------------------------
@@ -1536,13 +1640,29 @@ async function main() {
     ok('weekly unchanged modal composition blocks the real leave coordinator until settled')
   }
 
-  // -- static contract: one AI panel, three separate generation buttons ------
+  // -- static contract: one AI panel and scoped generation entries -----------
   {
     const source = fs.readFileSync(editorFile, 'utf8')
     assert.equal((source.match(/<WeeklyAiPanel/g) || []).length, 1)
-    assert.match(source, /data-d1="weekly-ai-games"/)
+    assert.match(source, /weekly-ai-game-\$\{activeGameSlot\}/)
+    assert.match(source, /weekly-ai-focus-area/)
+    assert.match(source, /liveFieldValue\(field\) !== payload\.snapshot\.fieldText/)
+    assert.match(source, /materials\.text/)
+    assert.match(source, /weekly-current-directional-focus-\$\{field\.key\}/)
     assert.match(source, /data-d1="weekly-ai-columns"/)
+    assert.match(source, /weekly-ai-column-\$\{key\}/)
     assert.match(source, /data-d1="weekly-ai-materials"/)
+    assert.match(source, /weekly-framework-games/)
+    assert.match(source, /weekly-framework-columns/)
+    assert.match(source, /weekly-focus-materials/)
+    assert.match(source, /weekly-daily-source-check/)
+    assert.equal(source.includes('weekly-framework-sources'), false)
+    assert.match(source, /v-if="gameHasDailySource\(activeGameSlot\)"/)
+    assert.match(source, /v-if="focusHasDailySource\(\)"/)
+    assert.equal(source.includes('weekly-ai-actions'), false)
+    assert.equal(source.includes('weekly-history-open'), false)
+    assert.equal(source.includes('本地确认历史'), false)
+    assert.match(source, /@open-history="openHistoryFromExport"/)
     assert.match(source, /v-show="activeSection === 'ai'"/)
     assert.equal(source.includes('业务版本'), false)
     assert.equal(source.includes('编辑副本'), false)
@@ -1551,8 +1671,8 @@ async function main() {
     assert.doesNotMatch(styles, /filter\s*:|invert\s*\(/i)
     assert.match(styles, /@media \(max-width: 900px\)/)
     // The scrolling left directory must keep each button at its content height.
-    // A shrinkable column flex item stops at min-height and lets its hint/badge
-    // text spill outside the border at 1166x813.
+    // A shrinkable column flex item stops at min-height and lets its badge text
+    // spill outside the border at 1166x813.
     const navRule = styles.match(/\.section-nav\s*\{[^}]*\}/)?.[0] ?? ''
     const navButtonRule = styles.match(/\.section-button\s*\{[^}]*\}/)?.[0] ?? ''
     assert.match(navRule, /max-height:/)
@@ -1574,7 +1694,7 @@ async function main() {
     const plansStyles = (fs.readFileSync(path.join(d1Dir, 'views', 'WeeklyPlansView.vue'), 'utf8').match(/<style[\s\S]*?<\/style>/g) || []).join('\n')
     assert.match(plansStyles, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
     assert.match(plansStyles, /border-radius: 12px/)
-    ok('weekly editor mounts one AI panel, three AI actions and token-only responsive styles')
+    ok('weekly editor mounts one AI panel, overview framework summaries and scoped AI actions with token-only responsive styles')
   }
 
   console.log(`\n${passed} weekly layout checks passed`)

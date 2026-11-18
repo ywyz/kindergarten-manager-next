@@ -60,6 +60,7 @@ const redeemCodeValue = ref('')
 const redeeming = ref(false)
 const redeemPurpose = ref<'join' | 'recovery' | null>(null)
 const redeemNotice = ref('')
+const adminPathNotice = ref('')
 const recoveryNoClass = ref(false)
 const connecting = ref(false)
 const disconnecting = ref(false)
@@ -771,6 +772,18 @@ async function reloadOnline(): Promise<void> {
   preview.value = null
   previewStale.value = false
   await loadDirectory(epoch)
+}
+
+async function copyAdminPath(): Promise<void> {
+  adminPathNotice.value = ''
+  try {
+    const clipboard = globalThis.navigator?.clipboard
+    if (!clipboard?.writeText) throw new Error('clipboard unavailable')
+    await clipboard.writeText('/admin')
+    adminPathNotice.value = '已复制 /admin 路径'
+  } catch {
+    adminPathNotice.value = '无法自动复制，请手动输入 /admin'
+  }
 }
 
 async function selectClass(classId: string): Promise<void> {
@@ -1833,34 +1846,12 @@ defineExpose({
                     已绑定园所：{{ status.teacher?.school_name ?? '在线园所' }}。尚未选择在线班级；请从下方班级目录自主选择，不会按名称自动匹配。
                   </div>
                 </div>
-                <div class="kgm-sheet-actions">
-                  <el-button
-                    size="small"
-                    :loading="loadingDirectory"
-                    :disabled="frozen || pendingWrite !== null || promotionBusy || promotionStale || connecting || disconnecting"
-                    data-d1="collaboration-refresh"
-                    @click="reloadOnline"
-                  >
-                    刷新
-                  </el-button>
-                </div>
               </div>
 
               <div class="kgm-sheet-row" data-d1="collaboration-directory">
                 <div class="kgm-sheet-label">班级目录</div>
                 <div class="kgm-sheet-value">
-                  <div class="row-inline">
-                    <el-button
-                      size="small"
-                      :loading="loadingDirectory"
-                      :disabled="frozen || pendingWrite !== null || connecting || disconnecting"
-                      data-d1="collaboration-load-classes"
-                      @click="reloadOnline"
-                    >
-                      读取 / 刷新班级目录
-                    </el-button>
-                    <span class="muted">选班前核对园所与班级；不会自动选班。</span>
-                  </div>
+                  <p class="muted">选班前核对园所与班级；不会自动选班。需要重新读取时使用右侧“刷新在线班级与配置”。</p>
                   <div v-if="classes.length" class="class-list">
                     <div v-for="item in classes" :key="item.class_id" class="class-row" data-d1="collaboration-class">
                       <span>{{ item.display_name }}</span>
@@ -1889,6 +1880,24 @@ defineExpose({
                   >
                     退出当前在线班级
                   </el-button>
+                </div>
+              </div>
+
+              <div class="kgm-sheet-row" data-d1="collaboration-admin-help">
+                <div class="kgm-sheet-label">管理员设置</div>
+                <div class="kgm-sheet-value">
+                  <p class="muted">
+                    教师身份只维护本次连接和在线班级，没有园所、班级、加入码或升班的管理写权限。
+                  </p>
+                  <p class="muted">
+                    管理员请使用部署服务的 <code class="class-id">/admin</code> 页面；访问地址由部署方提供，本页不内置环境地址。
+                  </p>
+                  <el-button size="small" data-d1="collaboration-copy-admin-path" @click="copyAdminPath">
+                    复制 /admin 路径
+                  </el-button>
+                  <span v-if="adminPathNotice" class="muted" data-d1="collaboration-admin-path-notice">
+                    {{ adminPathNotice }}
+                  </span>
                 </div>
               </div>
             </div>

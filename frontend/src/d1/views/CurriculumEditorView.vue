@@ -17,6 +17,7 @@ import {
   CURRICULUM_STATUS_OPTIONS,
   applyCurriculumAiPatch,
   applyCurriculumConflictChoice,
+  applyCurriculumRevisedDraft,
   captureCurriculumAiSnapshot,
   captureCurriculumSelection,
   cloneCurriculumContent,
@@ -358,10 +359,22 @@ function applyCurriculumModalDraft(
     )
     return false
   }
+  const before = cloneCurriculumContent(form.value)
+  const revisionTouched = [
+    'goals_adjustment',
+    'preparation_adjustment',
+    'process_adjustment',
+  ].some((field) =>
+    modal.fields.includes(field as keyof CurriculumContent),
+  )
   for (const field of modal.fields) {
     if (modal.copy[field] !== modal.snapshot[field]) {
       setField(field, modal.copy[field])
     }
+  }
+  if (revisionTouched) {
+    const after = cloneCurriculumContent(form.value)
+    form.value = applyCurriculumRevisedDraft(after, before, document.value)
   }
   closeCurriculumModal()
   if (notify) {
@@ -1092,7 +1105,20 @@ function onAiAdopt(payload: CurriculumAiAdoptPayload): void {
       actionError.value = '候选试图修改表头，已拒绝采用；请重新生成'
       return
     }
-    form.value = applied.content
+    const before = cloneCurriculumContent(form.value)
+    const patchHasRevised = Object.hasOwn(payload.patch, 'lesson_revised')
+    const adjustmentChanged = [
+      'goals_adjustment',
+      'preparation_adjustment',
+      'process_adjustment',
+    ].some((field) =>
+      applied.content[field as keyof CurriculumContent] !==
+        before[field as keyof CurriculumContent],
+  )
+    form.value =
+      adjustmentChanged && !patchHasRevised
+        ? applyCurriculumRevisedDraft(applied.content, before, document.value)
+        : applied.content
     document.value = cloneCurriculumDocument(payload.document)
   }
   if (payload.mode === 'reason' || payload.mode === 'both') {
@@ -1890,7 +1916,10 @@ defineExpose({
                   </div>
                 </td>
                 <td class="preview-action-cell">
-                  <el-button
+                    <el-tag size="small" :type="form.lesson_revised.trim() ? 'success' : 'info'">
+                      {{ form.lesson_revised.trim() ? '已有二次稿' : '未填写' }}
+                    </el-tag>
+                    <el-button
                     size="small"
                     data-d1="curriculum-edit-revised"
                     :disabled="!canMutate"
@@ -2428,7 +2457,7 @@ defineExpose({
   width: 112px;
 }
 .curriculum-preview-table .preview-action-cell {
-  width: 96px;
+  width: 190px;
 }
 .curriculum-preview-table .read-text {
   overflow-wrap: anywhere;

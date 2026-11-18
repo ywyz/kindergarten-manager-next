@@ -155,14 +155,14 @@ def test_partial_patch_preserves_omitted_fields_and_clears_explicit_null(tmp_pat
                 request_id=request_id,
                 expected_revision=record["revision"],
                 patch={
-                    "observation_date": "9月1日 上午",
+                    "observation_date": "2026-09",
                     "goal": "观察目标",
                     "overall_evaluation": "综合评价",
                     "evaluation": {"health_1": 2, "health_2": 3},
                     "groups": [
                         {
                             "group_id": group_id,
-                            "work_date": "9月2日",
+                            "work_date": "2026-09-02",
                             "listening_text": "孩子说：\n我想画太阳。",
                         }
                     ],
@@ -174,11 +174,11 @@ def test_partial_patch_preserves_omitted_fields_and_clears_explicit_null(tmp_pat
                 session, profile_id=profile_id, record_id=created["record_id"]
             )
             health = current["domains"][0]
-            assert health["observation_date"] == "9月1日 上午"
+            assert health["observation_date"] == "2026-09"
             assert health["goal"] == "观察目标"
             assert health["evaluation"][0]["stars"] == 2
             assert health["evaluation"][1]["stars"] == 3
-            assert health["groups"][0]["work_date"] == "9月2日"
+            assert health["groups"][0]["work_date"] == "2026-09-02"
             assert health["groups"][0]["listening_text"] == "孩子说：\n我想画太阳。"
             # Omitted fields/stars and the other four domains stay unchanged.
             second = listening_service.save_domain(

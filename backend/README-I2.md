@@ -1,5 +1,7 @@
 # Backend I2 说明
 
+> 历史范围：本页记录 v1 MySQL 阶段 I2 的流程与验证证据，按原文保留。桌面 v2 架构见 [../docs/adr/0004-local-desktop-architecture-proposal.md](../docs/adr/0004-local-desktop-architecture-proposal.md)，当前桌面业务实现位于 `app/local`，数据为本地 SQLite。
+
 本目录包含 I2「班级、教师分配、学期与有效日历」的后端实现。
 
 ## 范围

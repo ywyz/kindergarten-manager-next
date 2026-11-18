@@ -575,6 +575,12 @@ async function main() {
     assert.equal(supportHint.includes('导出'), false)
     assert.equal(supportHint.includes('保存'), false)
     assert.match(supportHint, /阅读|编辑/)
+    const bodyHint = helpers.OBSERVATION_SECTIONS.find((section) => section.key === 'body').hint
+    assert.match(bodyHint, /滚动/)
+    assert.match(bodyHint, /阅读 \/ 编辑/)
+    const photosHint = helpers.OBSERVATION_SECTIONS.find((section) => section.key === 'photos').hint
+    assert.match(photosHint, /独立照片管理/)
+    assert.match(photosHint, /当前记录/)
     assert.deepEqual([...helpers.observationSubjectList([' 小明 ', '', '  ', '小红'])], ['小明', '小红'])
     assert.equal(helpers.observationDisplay(' 保留 \n 换行 '), ' 保留 \n 换行 ')
     const form = {
@@ -951,6 +957,11 @@ async function main() {
     assert.ok(byD1(mountEl, 'obs-rail'))
     assert.ok(byD1(mountEl, 'obs-ai'))
     assert.equal(byD1(mountEl, 'obs-sections'), null)
+    assert.ok(byD1(mountEl, 'obs-section-jumps'))
+    for (const key of ['basic', 'subjects', 'body', 'support', 'evaluation', 'photos']) {
+      assert.ok(byD1(mountEl, `obs-section-open-${key}`), `${key} direct entry missing`)
+    }
+    assert.equal(byD1(mountEl, 'obs-section-open-ai'), null)
     for (const key of ['basic', 'subjects', 'body', 'support', 'evaluation', 'photos']) {
       assert.ok(byD1(mountEl, `obs-section-${key}`), `${key} row missing`)
     }
@@ -975,6 +986,15 @@ async function main() {
       assert.ok(byD1(mountEl, id), `${id} missing from rail`)
     }
     assert.equal(walkElements(mountEl).filter((node) => node.props?.['data-d1'] === 'obs-ai').length, 1)
+    // A quick entry opens the same independent modal copy directly.
+    const jumpBody = byD1(mountEl, 'obs-section-open-body')
+    jumpBody.props.onClick({ currentTarget: jumpBody })
+    await settle()
+    assert.equal(hook.sectionOpen(), true)
+    assert.equal(hook.sectionKey(), 'body')
+    byD1(mountEl, 'obs-section-cancel').props.onClick()
+    await settle()
+    assert.equal(hook.sectionOpen(), false)
     // Explicit row edit opens the independent modal copy.
     const edit = byD1(mountEl, 'obs-section-edit-body')
     assert.ok(edit)
@@ -999,10 +1019,27 @@ async function main() {
     assert.equal(byD1(mountEl, 'obs-process').props.value, '第一行\n第二行')
     byD1(mountEl, 'obs-section-cancel').props.onClick()
     await settle()
-    // Photos stay in the sheet; AI stays in the single rail.
-    assert.ok(byD1(mountEl, 'obs-photos'))
+    // Photos use one independent manager; the sheet keeps a read-only summary.
+    assert.equal(byD1(mountEl, 'obs-photos'), null)
+    assert.ok(byD1(mountEl, 'obs-photos-summary'))
+    assert.match(nodeText(byD1(mountEl, 'obs-photo-summary-order')), /照片 1.*照片 2/)
+    const photosNav = byD1(mountEl, 'obs-section-open-photos')
+    let photosFocused = false
+    photosNav.focus = () => { photosFocused = true }
+    photosNav.props.onClick({ currentTarget: photosNav })
+    await settle()
+    assert.ok(byD1(mountEl, 'obs-photos-dialog'))
+    assert.ok(byD1(mountEl, 'obs-file'))
     assert.ok(byD1(mountEl, 'obs-add-photo'))
     assert.match(nodeText(byD1(mountEl, 'obs-photo-order')), /照片 1.*照片 2/)
+    assert.equal(
+      walkElements(mountEl).filter((node) => node.props?.['data-d1'] === 'obs-file').length,
+      1,
+    )
+    byD1(mountEl, 'obs-photos-done').props.onClick()
+    await settle()
+    assert.equal(byD1(mountEl, 'obs-photos'), null)
+    assert.equal(photosFocused, true)
     assert.ok(byD1(mountEl, 'obs-generate'))
     harness.unmount()
     app.unmount()
@@ -1345,16 +1382,26 @@ async function main() {
     assert.match(source, /data-d1="obs-rail"/)
     assert.match(source, /data-d1="obs-open-history"/)
     assert.match(source, /data-d1="obs-export"/)
+    assert.match(source, /data-d1="obs-section-jumps"/)
+    assert.match(source, /data-d1="`obs-section-open-\$\{section\.key\}`"/)
     assert.match(source, /data-d1="obs-section-edit-body"/)
     assert.match(source, /data-d1="obs-section-edit-evaluation"/)
     assert.match(source, /data-d1="obs-section-edit-photos"/)
+    assert.match(source, /data-d1="obs-photos-dialog"/)
+    assert.equal((source.match(/data-d1="obs-photos"/g) || []).length, 1)
+    assert.equal((source.match(/data-d1="obs-file"/g) || []).length, 1)
+    assert.equal((source.match(/data-d1="obs-add-photo"/g) || []).length, 1)
+    assert.equal((source.match(/data-d1="obs-photo-order"/g) || []).length, 1)
     assert.match(source, /read-text/)
+    assert.match(source, /read-text-scroll/)
     assert.equal(source.includes('业务版本'), false)
     assert.equal(source.includes('空骨架'), false)
     assert.equal(source.includes('编辑副本'), false)
     const styles = (source.match(/<style[\s\S]*?<\/style>/g) || []).join('\n')
     assert.doesNotMatch(styles, /#[0-9a-fA-F]{3,8}/)
     assert.doesNotMatch(styles, /filter\s*:|invert\s*\(/i)
+    assert.match(styles, /\.rail-actions :deep\(\.el-button \+ \.el-button\) \{ margin-left: 0; \}/)
+    assert.match(styles, /\.read-text-scroll \{[^}]*max-height:[^}]*overflow-y: auto/)
     assert.match(styles, /@media \(max-width: (1050|900|720)px\)/)
     assert.match(styles, /grid-template-columns: minmax\(0, 1fr\) 280px/)
     assert.match(styles, /border-radius: 12px/)
@@ -1474,6 +1521,7 @@ async function main() {
     }
     const process = byD1(mountEl, 'obs-process-read')
     assert.ok(nodeText(process).includes(longText))
+    assert.match(String(process.props.class), /read-text-scroll/)
     const processLine = process.parent
     const lineClasses = processLine.children
       .filter((child) => child.type === 'element')

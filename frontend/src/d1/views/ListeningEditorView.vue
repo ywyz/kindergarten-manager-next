@@ -202,6 +202,45 @@ const canMutate = computed(
     !aiBusy.value &&
     !directionalBusy.value,
 )
+type ListeningSectionKey =
+  | 'overview'
+  | 'record-info'
+  | 'photos'
+  | 'evaluation'
+  | 'overall'
+  | 'support'
+
+const activeListeningSection = ref<ListeningSectionKey>('overview')
+const listeningSectionLinks: Array<{
+  id: ListeningSectionKey
+  label: string
+}> = [
+  { id: 'overview', label: '总览' },
+  { id: 'record-info', label: '记录信息' },
+  { id: 'photos', label: '照片与倾听记录' },
+  { id: 'evaluation', label: '领域评价' },
+  { id: 'overall', label: '综合评价' },
+  { id: 'support', label: '支持策略' },
+]
+
+function listeningSectionVisible(
+  section: Exclude<ListeningSectionKey, 'overview'>,
+): boolean {
+  return (
+    activeListeningSection.value === 'overview' ||
+    activeListeningSection.value === section
+  )
+}
+
+function selectListeningSection(section: ListeningSectionKey): void {
+  activeListeningSection.value = section
+}
+function listeningSectionStyle(
+  section: Exclude<ListeningSectionKey, 'overview'>,
+): Record<string, string> | undefined {
+  return listeningSectionVisible(section) ? undefined : { display: 'none' }
+}
+
 const exportOpen = ref(false)
 const exportTermId = ref('')
 const exportBusy = ref(false)
@@ -1937,7 +1976,7 @@ defineExpose({
           :disabled="!canMutate || state.unknown"
           @click="openExport"
         >
-          按幼儿合册
+          导出 Word
         </el-button>
         <el-button
           type="primary"
@@ -2029,6 +2068,30 @@ defineExpose({
         <div class="listening-content">
           <div class="listening-workspace">
         <aside class="listening-rail" data-d1="listening-operations-rail">
+          <nav
+            class="rail-card section-nav"
+            data-d1="listening-section-nav"
+            aria-label="倾听分栏"
+          >
+            <div class="rail-head">
+              <strong>阅读与编辑分栏</strong>
+              <span class="muted">总览或单栏；内容仍在同一记录草稿中。</span>
+            </div>
+            <div class="section-links">
+              <el-button
+                v-for="section in listeningSectionLinks"
+                :key="section.id"
+                size="small"
+                class="section-link"
+                :type="activeListeningSection === section.id ? 'primary' : 'default'"
+                :data-d1="`listening-section-${section.id}`"
+                @click="selectListeningSection(section.id)"
+              >
+                {{ section.label }}
+              </el-button>
+            </div>
+          </nav>
+
           <el-button
             class="rail-batch-button"
             data-d1="listening-batch-open"
@@ -2128,7 +2191,9 @@ defineExpose({
         <div class="listening-sheet">
           <el-card
             shadow="never"
+            :style="listeningSectionStyle('record-info')"
             class="sheet-section sheet-record"
+            id="listening-record-info"
             data-d1="listening-record-summary"
           >
             <div class="reading-head">
@@ -2189,6 +2254,7 @@ defineExpose({
 
           <el-card
             v-if="form && template"
+            :style="listeningSectionStyle('record-info')"
             shadow="never"
             class="sheet-section"
             data-d1="listening-read-header"
@@ -2279,10 +2345,12 @@ defineExpose({
       </el-card>
 
       <template v-if="form">
+      <div :style="listeningSectionStyle('photos')">
       <div class="groups">
         <el-card
           shadow="never"
           class="block reading-card"
+          id="listening-photos"
           data-d1="listening-read-groups"
         >
           <div class="reading-head">
@@ -2481,12 +2549,15 @@ defineExpose({
           </div>
         </el-card>
       </div>
+      </div>
       </template>
 
       <el-card
         shadow="never"
         v-if="form && template"
+        :style="listeningSectionStyle('evaluation')"
         class="block reading-card"
+        id="listening-evaluation"
         data-d1="listening-read-evaluation"
       >
         <div class="reading-head">
@@ -2544,7 +2615,9 @@ defineExpose({
       <el-card
         shadow="never"
         v-if="form"
+        :style="listeningSectionStyle('overall')"
         class="block reading-card"
+        id="listening-overall"
         data-d1="listening-read-overall"
       >
         <div class="reading-head">
@@ -2576,7 +2649,9 @@ defineExpose({
       <el-card
         shadow="never"
         v-if="form"
+        :style="listeningSectionStyle('support')"
         class="block reading-card"
+        id="listening-support"
         data-d1="listening-read-support"
       >
         <div class="reading-head">
@@ -3473,10 +3548,13 @@ defineExpose({
   overflow-wrap: anywhere;
   line-height: 1.65;
   min-height: 1.5em;
+  max-height: min(46vh, 380px);
+  overflow-y: auto;
 }
 .table-scroll {
   width: 100%;
-  overflow-x: auto;
+  overflow: auto;
+  max-height: min(56vh, 520px);
   margin-top: 10px;
 }
 .read-table {
@@ -3633,11 +3711,14 @@ defineExpose({
   display: flex;
   flex-direction: column;
   min-width: 0;
+  max-height: calc(100vh - 132px);
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--kgm-surface);
   border: 1px solid var(--kgm-border);
   border-radius: 12px;
-  overflow: hidden;
 }
+
 .listening-sheet > .el-card,
 .listening-sheet .reading-card {
   margin-top: 0;
@@ -3691,14 +3772,23 @@ defineExpose({
 .rail-field :deep(.el-select) {
   width: 100%;
 }
+.section-links,
 .rail-actions {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
+.section-links :deep(.el-button),
 .rail-actions :deep(.el-button) {
   width: 100%;
   min-height: 42px;
+  justify-content: flex-start;
+  margin: 0;
+  text-align: left;
+  white-space: normal;
+}
+.listening-rail :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 .listening-rail :deep(.rail-ai-panel) {
   margin-top: 0;

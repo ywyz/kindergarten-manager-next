@@ -416,6 +416,9 @@ def _apply(
         )
         if target == "games" and ai_ids is None:
             ai_ids = {}
+        game_scope = None
+        if target == "games":
+            game_scope = dict(input_row.dependencies_json or {}).get("_game_scope")
         content = weekly_plan_content.apply_weekly_ai_adoption(
             content,
             target=target,
@@ -429,24 +432,63 @@ def _apply(
             if target == "materials"
             else None,
             ai_item_ids=ai_ids,
+            game_scope=game_scope,
         )
     return weekly_plan_content.validate_content(content, expected_schema=2)
 
 
+def _selection_scope(input_row: LocalAIInput, target: str) -> str | None:
+    if target != "games":
+        return None
+    scope = dict(input_row.dependencies_json or {}).get("_game_scope")
+    return scope if isinstance(scope, str) else None
+
+
 def _target_hashes(
-    content: Mapping[str, Any], targets: Sequence[str]
+    content: Mapping[str, Any],
+    selected: Sequence[Mapping[str, Any]],
+    inputs: Mapping[str, LocalAIInput],
 ) -> dict[str, str]:
-    return {target: weekly_ai_inputs.target_hash(content, target) for target in targets}
+    result: dict[str, str] = {}
+    for item in selected:
+        target = item["target"]
+        inp = inputs[item["candidate_id"]]
+        scope = _selection_scope(inp, target)
+        result[target] = (
+            weekly_ai_inputs.game_scope_target_hash(content, scope)
+            if scope is not None
+            else weekly_ai_inputs.target_hash(content, target)
+        )
+    return result
 
 
 def _before_after(
-    content: Mapping[str, Any], new_content: Mapping[str, Any], targets: Sequence[str]
+    content: Mapping[str, Any],
+    new_content: Mapping[str, Any],
+    selected: Sequence[Mapping[str, Any]],
+    inputs: Mapping[str, LocalAIInput],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     before: dict[str, Any] = {}
     after: dict[str, Any] = {}
-    for target in targets:
-        before[target] = weekly_ai_inputs.target_projection(content, target)["value"]
-        after[target] = weekly_ai_inputs.target_projection(new_content, target)["value"]
+    for item in selected:
+        target = item["target"]
+        scope = _selection_scope(inputs[item["candidate_id"]], target)
+        if scope is None:
+            before[target] = weekly_ai_inputs.target_projection(content, target)["value"]
+            after[target] = weekly_ai_inputs.target_projection(new_content, target)["value"]
+            continue
+        def scoped_value(source: Mapping[str, Any]) -> dict[str, Any]:
+            fixed = weekly_plan_content.validate_content(source)
+            if scope == "focus_area":
+                return {"outdoor_game_slots": {}, "focus_area": copy.deepcopy(fixed["focus_area"])}
+            return {
+                "outdoor_game_slots": {
+                    scope: copy.deepcopy(fixed["outdoor_game_slots"].get(scope))
+                },
+                "focus_area": None,
+            }
+        before[target] = scoped_value(content)
+        after[target] = scoped_value(new_content)
     return before, after
 
 
@@ -528,9 +570,9 @@ def preview_adoption(
             ai_ids_by_target=ai_ids,
             edited_values=edited_values,
         )
-        before, after = _before_after(content.content_json, new_content, [x["target"] for x in selected])
-        target_hashes = _target_hashes(content.content_json, [x["target"] for x in selected])
-        after_hashes = _target_hashes(new_content, [x["target"] for x in selected])
+        before, after = _before_after(content.content_json, new_content, selected, inputs)
+        target_hashes = _target_hashes(content.content_json, selected, inputs)
+        after_hashes = _target_hashes(new_content, selected, inputs)
         token, expires = _TOKENS.issue(
             {
                 "v": 1,
@@ -697,7 +739,7 @@ def adopt(
                 edited_values[candidate.id]
             ) != (payload.get("edited_value_hashes") or {}).get(candidate.id):
                 raise LocalWeeklyAiPreviewExpired(details={"reason": "edit_changed"})
-        if _target_hashes(content.content_json, [x["target"] for x in selected]) != payload.get("target_hashes"):
+        if _target_hashes(content.content_json, selected, inputs) != payload.get("target_hashes"):
             raise LocalWeeklyAiTargetChanged()
         new_id = new_opaque_id()
         new_version = content.version + 1
@@ -714,7 +756,7 @@ def adopt(
             ai_ids_by_target=payload.get("ai_item_ids") or {},
             edited_values=edited_values,
         )
-        if _target_hashes(new_content, [x["target"] for x in selected]) != payload.get("after_hashes"):
+        if _target_hashes(new_content, selected, inputs) != payload.get("after_hashes"):
             raise LocalWeeklyAiSourceChanged()
         new_hash = weekly_plan_content.content_hash(new_content)
         operation_id = new_opaque_id()

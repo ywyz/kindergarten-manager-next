@@ -430,7 +430,7 @@ defineExpose({ reload: load, resetForContext })
           :disabled="!canNavigate || !termId"
           @click="openDomainExport"
         >
-          按领域合册
+          按领域导出合册
         </el-button>
       </div>
     </div>
@@ -531,37 +531,6 @@ defineExpose({ reload: load, resetForContext })
             </div>
           </el-card>
 
-          <el-card
-            shadow="never"
-            class="record-card album-scope-card"
-            data-d1="listening-album-scope"
-          >
-            <div class="record-card-head">
-              <div>
-                <h3>合册范围</h3>
-                <p class="muted">按领域或按幼儿生成合册</p>
-              </div>
-              <el-button
-                link
-                type="primary"
-                data-d1="listening-album-open"
-                :disabled="!canNavigate || !termId"
-                @click="openDomainExport"
-              >
-                打开
-              </el-button>
-            </div>
-            <div class="record-meta">
-              <div>
-                <span class="meta-label">按领域</span>
-                <span>健康、语言、社会、科学、艺术</span>
-              </div>
-              <div>
-                <span class="meta-label">按幼儿</span>
-                <span>从该幼儿记录中汇集</span>
-              </div>
-            </div>
-          </el-card>
         </div>
         <div v-else class="empty-cards">本学期还没有倾听记录</div>
       </div>

@@ -11,6 +11,7 @@ from fastapi import Response
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.dialects.mysql import dialect as mysql_dialect
 from sqlalchemy.schema import CreateTable
 
 from app.collaboration import admin_api, admin_service, prompt_release_api
@@ -243,3 +244,98 @@ class AdminSchoolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class AdminClassTests(unittest.TestCase):
+    setUp = AdminSchoolTests.setUp
+    _principal = AdminSchoolTests._principal
+
+    def test_class_display_rename_preserves_id_school_and_conflict(self):
+        with self.Session() as session:
+            listed = admin_service.list_classes(session, self.school_id)
+        self.assertEqual([item.name for item in listed], ["中一班"])
+        with self.Session() as session:
+            updated = admin_service.update_class_name(
+                session,
+                self._principal(),
+                school_id=self.school_id,
+                class_id=self.classroom_id,
+                expected_name="中一班",
+                new_name="太阳班",
+            )
+            self.assertEqual(updated.class_id, self.classroom_id)
+            self.assertEqual(updated.school_id, self.school_id)
+            self.assertEqual(updated.name, "太阳班")
+        with self.Session() as session:
+            classroom = session.get(Classroom, self.classroom_id)
+            self.assertEqual(classroom.school_id, self.school_id)
+            self.assertEqual(classroom.display_name, "中一班")
+            self.assertEqual(classroom.display_name_override, "太阳班")
+        with self.Session() as session:
+            retried = admin_service.update_class_name(
+                session,
+                self._principal(),
+                school_id=self.school_id,
+                class_id=self.classroom_id,
+                expected_name="中一班",
+                new_name="太阳班",
+            )
+            self.assertEqual(retried.name, "太阳班")
+        with self.Session() as session:
+            with self.assertRaises(CollaborationError) as conflict:
+                admin_service.update_class_name(
+                    session,
+                    self._principal(),
+                    school_id=self.school_id,
+                    class_id=self.classroom_id,
+                    expected_name="中一班",
+                    new_name="月亮班",
+                )
+        self.assertEqual(conflict.exception.status_code, 409)
+        self.assertEqual(conflict.exception.code, "CLASS_NAME_CONFLICT")
+        self.assertEqual(conflict.exception.details["current_name"], "太阳班")
+        with self.Session() as session:
+            with self.assertRaises(CollaborationError) as wrong_school:
+                admin_service.update_class_name(
+                    session,
+                    self._principal(),
+                    school_id=self.other_school_id,
+                    class_id=self.classroom_id,
+                    expected_name="太阳班",
+                    new_name="别的班",
+                )
+        self.assertEqual(wrong_school.exception.status_code, 404)
+        self.assertEqual(wrong_school.exception.code, "CLASS_NOT_FOUND")
+
+    def test_0006_adds_nullable_class_display_override(self):
+        sql = (
+            Path(__file__).resolve().parents[2]
+            / "migrations_collaboration"
+            / "mysql"
+            / "0006_class_display_override.sql"
+        ).read_text(encoding="utf-8")
+        upper = sql.upper()
+        self.assertIn("ADD COLUMN display_name_override VARCHAR(120) NULL", sql)
+        self.assertIn("ck_classes_display_name_override", sql)
+        self.assertNotIn("DROP TABLE", upper)
+        self.assertNotIn("DROP COLUMN", upper)
+        ddl = str(CreateTable(Classroom.__table__).compile(dialect=mysql_dialect()))
+        self.assertIn("display_name_override VARCHAR(120)", ddl)
+        self.assertIn("display_name_override is null", ddl)
+    def test_admin_page_has_class_name_entry_and_route_uses_csrf(self):
+        page = (
+            Path(__file__).resolve().parents[2]
+            / "app"
+            / "collaboration"
+            / "admin_page.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn('id="class-list"', page)
+        self.assertIn("已有班级显示名称", page)
+        self.assertIn("保存班级名称", page)
+        self.assertIn("稳定班级 ID", page)
+        source = Path(admin_api.__file__).read_text(encoding="utf-8")
+        route = source[
+            source.index("def admin_update_class("):
+            source.index("def admin_teachers(")
+        ]
+        self.assertIn("Depends(get_admin_csrf_principal)", route)
+        self.assertIn("list_classes", source)

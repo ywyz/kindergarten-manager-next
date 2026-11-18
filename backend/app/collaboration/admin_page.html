@@ -94,7 +94,21 @@
         <div class="list-block" id="school-list"></div>
       </section>
 
-      <section>
+            <section>
+        <h2>已有班级显示名称</h2>
+        <p class="muted">只修改班级显示名称；班级稳定 ID、教师绑定、班级号与年级升班记录保持不变。</p>
+        <div class="row">
+          <div>
+            <label for="class-school">园所</label>
+            <select id="class-school"></select>
+          </div>
+        </div>
+        <p class="muted hidden" id="class-empty">该园所暂无班级。</p>
+        <p class="error" id="class-error" role="alert"></p>
+        <p class="muted" id="class-notice"></p>
+        <div class="list-block" id="class-list"></div>
+      </section>
+<section>
         <h2>已有学期名称</h2>
         <p class="muted">只修改名称，学期 ID、开始日期和结束日期保持不变。</p>
         <div class="row">
@@ -173,6 +187,7 @@
         schools: [],
         teachers: [],
         terms: [],
+        classes: [],
         promptLoaded: false,
         promptBusy: false,
         prompt: null,
@@ -196,6 +211,11 @@
       var termError = document.getElementById("term-error");
       var termNotice = document.getElementById("term-notice");
       var termList = document.getElementById("term-list");
+      var classSchool = document.getElementById("class-school");
+      var classEmpty = document.getElementById("class-empty");
+      var classError = document.getElementById("class-error");
+      var classNotice = document.getElementById("class-notice");
+      var classList = document.getElementById("class-list");
       var purposeSelect = document.getElementById("purpose");
       var issueButton = document.getElementById("issue-button");
       var issueError = document.getElementById("issue-error");
@@ -305,6 +325,7 @@
         state.schools = data || [];
         schoolSelect.textContent = "";
         termSchool.textContent = "";
+        classSchool.textContent = "";
         state.schools.forEach(function (school) {
           var option = document.createElement("option");
           option.value = school.school_id;
@@ -314,10 +335,15 @@
           termOption.value = school.school_id;
           termOption.textContent = school.name;
           termSchool.appendChild(termOption);
+          var classOption = document.createElement("option");
+          classOption.value = school.school_id;
+          classOption.textContent = school.name;
+          classSchool.appendChild(classOption);
         });
         renderSchools();
         await loadTeachers();
         await loadTerms();
+        await loadClasses();
       }
 
       function renderTerms() {
@@ -429,6 +455,99 @@
           return school.school_id === selected;
         });
         if (exists) select.value = selected;
+      }
+      function renderClasses() {
+        classList.textContent = "";
+        classEmpty.classList.toggle("hidden", state.classes.length > 0);
+        state.classes.forEach(function (item) {
+          var row = document.createElement("div");
+          row.className = "row";
+          row.setAttribute("data-d1", "class-" + item.class_id);
+          var info = document.createElement("div");
+          var title = document.createElement("strong");
+          title.textContent = item.name;
+          var idLine = document.createElement("p");
+          idLine.className = "muted";
+          idLine.textContent = "稳定班级 ID：" + item.class_id;
+          info.appendChild(title);
+          info.appendChild(idLine);
+          var editor = document.createElement("div");
+          var label = document.createElement("label");
+          label.textContent = "班级显示名称";
+          label.htmlFor = "class-name-" + item.class_id;
+          var input = document.createElement("input");
+          input.id = "class-name-" + item.class_id;
+          input.value = item.name;
+          input.maxLength = 120;
+          var button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "保存班级名称";
+          button.addEventListener("click", function () {
+            void saveClass(item, input, button);
+          });
+          editor.appendChild(label);
+          editor.appendChild(input);
+          editor.appendChild(button);
+          row.appendChild(info);
+          row.appendChild(editor);
+          classList.appendChild(row);
+        });
+      }
+
+      async function loadClasses() {
+        state.classes = [];
+        classError.textContent = "";
+        classNotice.textContent = "";
+        if (!classSchool.value) {
+          renderClasses();
+          return;
+        }
+        try {
+          var data = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(classSchool.value) + "/classes"
+          );
+          state.classes = data || [];
+          renderClasses();
+        } catch (err) {
+          classError.textContent = errorText(err);
+          renderClasses();
+        }
+      }
+      async function saveClass(item, input, button) {
+        classError.textContent = "";
+        classNotice.textContent = "";
+        var next = input.value.trim();
+        if (!next) {
+          classError.textContent = "班级显示名称不能为空";
+          return;
+        }
+        var expected = item.name;
+        button.disabled = true;
+        try {
+          var updated = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(classSchool.value) +
+              "/classes/" + encodeURIComponent(item.class_id),
+            {
+              method: "PATCH",
+              body: { expected_name: expected, new_name: next }
+            }
+          );
+          item.name = updated.name;
+          renderClasses();
+          classNotice.textContent =
+            "班级显示名称已保存；稳定 ID、绑定和升班记录未改变。";
+        } catch (err) {
+          if (err.status === 409) {
+            classError.textContent =
+              "班级显示名称已在其他窗口修改，请刷新后按最新名称重试";
+          } else {
+            classError.textContent = errorText(err);
+          }
+        } finally {
+          button.disabled = false;
+        }
       }
       function renderSchools() {
         schoolList.textContent = "";
@@ -1114,6 +1233,9 @@
 
       termSchool.addEventListener("change", function () {
         void loadTerms();
+      });
+      classSchool.addEventListener("change", function () {
+        void loadClasses();
       });
 
       issueButton.addEventListener("click", async function () {

@@ -6,6 +6,8 @@ export type WeeklyAITarget = 'games' | 'key_week_focus' | 'environment_setup' | 
 export type WeeklyAiEligibility = 'eligible' | 'source_changed' | 'contract_obsolete'
 export const WEEKLY_AI_COLUMNS = ['key_week_focus', 'environment_setup', 'habit_culture', 'home_cooperation'] as const
 export type WeeklyAiColumn = (typeof WEEKLY_AI_COLUMNS)[number]
+export const WEEKLY_GAME_SCOPES = ['collective_1', 'collective_2', 'free_choice_1', 'focus_area'] as const
+export type WeeklyGameScope = (typeof WEEKLY_GAME_SCOPES)[number]
 
 export interface WeeklyAiCreateTask { target: WeeklyAITarget; task_id: string }
 export interface WeeklyAiCreateOut { request_id: string; operation_kind: string; weekly_plan_id: string; draft: { id: string; version: number }; tasks: WeeklyAiCreateTask[]; replayed: boolean }
@@ -15,6 +17,7 @@ export interface WeeklyAiTask {
   source_id: string
   weekly_plan_id: string
   target: WeeklyAITarget
+  game_scope?: string | null
   task_type: string
   status: string
   reason: string | null
@@ -33,6 +36,7 @@ export interface WeeklyAiCandidate {
   candidate_id: string
   task_id: string
   target: WeeklyAITarget
+  game_scope?: string | null
   candidate_hash: string
   eligibility: WeeklyAiEligibility
   available_targets: WeeklyAITarget[]
@@ -86,7 +90,7 @@ export interface WeeklyAiCreateTicket {
 }
 
 export interface WeeklyAiApi {
-  games(planId: string, input: { request_id: string; expected_draft_version: number }): Promise<WeeklyAiCreateOut>
+  games(planId: string, input: { request_id: string; expected_draft_version: number; game_scope?: string }): Promise<WeeklyAiCreateOut>
   columns(planId: string, input: { request_id: string; expected_draft_version: number; selected_fields: WeeklyAiColumn[] }): Promise<WeeklyAiCreateOut>
   materials(planId: string, input: { request_id: string; expected_draft_version: number }): Promise<WeeklyAiCreateOut>
   tasks(planId: string, query?: { create_operation_id?: string; status?: string; cursor?: string; limit?: number }): Promise<WeeklyAiTaskList>
@@ -165,6 +169,7 @@ export function groupStatus(tasks: WeeklyAiTask[]): string {
   return 'failed'
 }
 export function targetLabel(target: string): string { return ({ games: '周游戏', key_week_focus: '本周重点', environment_setup: '环境创设', habit_culture: '习惯与文化', home_cooperation: '家园合作', materials: '材料' } as Record<string, string>)[target] ?? '待核对字段' }
+export function gameScopeLabel(scope: string | null | undefined): string { return ({ collective_1: '集体游戏一', collective_2: '集体游戏二', free_choice_1: '自选游戏', focus_area: '重点区域' } as Record<string, string>)[scope ?? ''] ?? (scope ? '待核对范围' : '') }
 export function eligibilityLabel(value: string): string { return ({ eligible: '可用', source_changed: '来源已变化', contract_obsolete: '旧规则候选' } as Record<string, string>)[value] ?? '待核对' }
 export function taskStatusLabel(value: string): string { return ({ pending: '等待', claimed: '已领取', dispatching: '发送中', retry_wait: '等待重试', succeeded: '已完成', failed: '失败', cancelled: '已取消', paused: '已暂停', outcome_unknown: '结果待核对' } as Record<string, string>)[value] ?? '待核对' }
 export function certaintyLabel(value: string): string { return ({ certain: '已确认', unknown: '未确认', none: '无' } as Record<string, string>)[value] ?? '' }

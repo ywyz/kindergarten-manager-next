@@ -121,7 +121,7 @@ function between(source, startToken, endToken, needle, label) {
 
   // Exactly one state owner: no duplicated panel, no duplicated trigger set.
   assert.equal((editorSource.match(/<AiTaskPanel\b/g) ?? []).length, 1, 'one AiTaskPanel mount')
-  assert.equal((panelSource.match(/ai-trigger-\$\{type\}/g) ?? []).length, 2, 'one left-group trigger and one standalone fallback per type loop')
+  assert.equal((panelSource.match(/ai-trigger-\$\{type\}/g) ?? []).length, 1, 'one inline fallback trigger per type loop')
   const panelMount = editorSource.match(/<AiTaskPanel\b[\s\S]*?\/>/)?.[0] ?? ''
   assert.match(panelMount, /v-if="plan"/)
   assert.match(panelMount, /:plan-id="plan\.id"/)
@@ -150,8 +150,8 @@ function between(source, startToken, endToken, needle, label) {
   )
   assert.doesNotMatch(editorSource, /data-d1="daily-generation-actions"/, 'no second left module/generation list')
   assert.match(panelSource, /emit\('action-start', taskType\)/)
-  assert.match(panelSource, /emit\('locate-task', type\)/)
-  assert.match(editorSource, /@locate-task="onAiLocate"/)
+  assert.doesNotMatch(panelSource, /locate-task/, 'removed left-group locate shortcuts stay removed')
+  assert.doesNotMatch(editorSource, /@locate-task=/, 'editor has no locate-task wiring')
   assert.match(editorSource, /:to="navigationTarget \|\| 'body'"/, 'directory teleports to the shared target')
   assert.match(editorSource, /:disabled="!navigationTarget"/, 'standalone keeps the local left fallback')
   assert.match(editorSource, /daily-book-teleported/, 'teleported mode drops the inner directory column')
@@ -515,7 +515,7 @@ async function waitUntil(condition, what) {
   throw new Error(`timed out waiting for ${what}`)
 }
 
-async function mountPanel({ routes, props = {}, targets = null, generationTarget = false }) {
+async function mountPanel({ routes, props = {}, targets = null }) {
   const fetchImpl = router(routes)
   const harness = new Harness({ fetchImpl })
   const component = harness.loadSfc(panelFile)
@@ -535,7 +535,6 @@ async function mountPanel({ routes, props = {}, targets = null, generationTarget
         otherTarget: slotAnchor('slot-other'),
       }
     : {}
-  const generationAnchor = generationTarget ? slotAnchor('slot-generation') : null
   const actionStarts = []
   const app = vue.createRenderer(ops).createApp({
     render: () =>
@@ -553,7 +552,6 @@ async function mountPanel({ routes, props = {}, targets = null, generationTarget
         onOpenGuidance: () => {},
         onDraftActive: () => {},
         onActionStart: (type) => actionStarts.push(type),
-        generationTarget: generationAnchor,
         ...anchors,
         ...props,
       }),
@@ -572,7 +570,6 @@ async function mountPanel({ routes, props = {}, targets = null, generationTarget
     root,
     appRoot,
     anchors,
-    generationAnchor,
     actionStarts,
     calls: fetchImpl.calls,
     app,
@@ -580,7 +577,7 @@ async function mountPanel({ routes, props = {}, targets = null, generationTarget
 }
 
 async function testStandalonePanelKeepsInlineRows() {
-  const { harness, appRoot, app } = await mountPanel({
+  const { harness, appRoot, actionStarts, app } = await mountPanel({
     routes: {
       'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
       'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
@@ -596,11 +593,17 @@ async function testStandalonePanelKeepsInlineRows() {
   }
   assert.equal(
     (panelSource.match(/<Teleport/g) ?? []).length,
-    3,
-    'generation group, action-row anchors and observed reflection remain within a single panel',
+    2,
+    'action-row anchors and observed reflection remain within a single panel',
   )
   assert.match(panelSource, /:disabled="!rowTargets\[type\]"/)
   assert.match(panelSource, /:disabled="task\.id !== observedReflectionTaskId \|\| !reflectionProgressTarget"/)
+  const splitTrigger = byD1Button(appRoot, 'ai-trigger-daily_lesson_split')
+  assert.equal(nodeText(splitTrigger).trim(), '发起教案拆分', 'the inline split trigger keeps its direct label')
+  splitTrigger.props.onClick({})
+  await settle()
+  assert.deepEqual(actionStarts, ['daily_lesson_split'], 'the standalone entry emits its task context')
+  assert.ok(byD1(card, 'ai-target-grade'), 'target grade remains in the single task panel')
   app.unmount()
   harness.unmount()
   ok('panel standalone: all three type rows stay inline when no field targets are present')
@@ -648,63 +651,6 @@ async function testTargetedRowsAreAdjacentAndSingle() {
   app.unmount()
   harness.unmount()
   ok('panel targets: three rows are adjacent to their fields and remain one state owner')
-}
-
-async function testGenerationTargetMovesAllThreeTriggers() {
-  const { harness, root, appRoot, anchors, generationAnchor, actionStarts, app } = await mountPanel({
-    routes: {
-      'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
-      'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
-      'POST /api/daily-plans/p1/ai-tasks': ({ body }) =>
-        jsonResponse(202, taskFixture({ task_type: body.task_type })),
-    },
-    targets: true,
-    generationTarget: true,
-  })
-  const card = byD1(appRoot, 'ai-tasks')
-  assert.ok(byD1(generationAnchor, 'ai-generation-buttons'), 'left generation group is rendered')
-  const types = ['daily_lesson_split', 'daily_process_adapt', 'daily_other_activities']
-  const generationButtons = walkElements(generationAnchor).filter(
-    (node) => node.tag === 'button' && node.props['data-d1']?.startsWith('ai-trigger-'),
-  )
-  assert.deepEqual(
-    generationButtons.map((node) => node.props['data-d1']),
-    types.map((type) => `ai-trigger-${type}`),
-    'three existing triggers appear in the left group in order',
-  )
-  assert.deepEqual(
-    generationButtons.map(nodeText),
-    ['教案拆分', '过程适龄调整', '其他活动生成'],
-    'entry labels are direct and visible',
-  )
-  assert.equal(generationButtons[0].props['aria-label'], '发起教案拆分')
-  const typeLabels = {
-    daily_lesson_split: '教案拆分',
-    daily_process_adapt: '过程适龄调整',
-    daily_other_activities: '其他活动生成',
-  }
-  for (const [type, anchor] of Object.entries({
-    daily_lesson_split: anchors.splitTarget,
-    daily_process_adapt: anchors.processTarget,
-    daily_other_activities: anchors.otherTarget,
-  })) {
-    assert.equal(byD1(anchor, `ai-trigger-${type}`), null, `${type} trigger left its field anchor`)
-    assert.match(nodeText(anchor), new RegExp(typeLabels[type]), `${type} row context stays at its field anchor`)
-    assert.ok(byD1(card, `ai-row-${type}`), `${type} row marker stays in the single panel`)
-  }
-  assert.equal(byD1(card, 'ai-trigger-daily_lesson_split'), null)
-  assert.equal(
-    walkElements(root).filter((node) => node.props['data-d1']?.startsWith('ai-trigger-')).length,
-    3,
-    'exactly one generation control exists per type',
-  )
-  assert.ok(byD1(card, 'ai-target-grade'), 'target grade remains in the single task panel')
-  generationButtons[0].props.onClick({})
-  await settle()
-  assert.deepEqual(actionStarts, ['daily_lesson_split'], 'the left entry emits its task context')
-  app.unmount()
-  harness.unmount()
-  ok('panel generation target: three existing triggers move to the left group with one state owner')
 }
 
 async function testSaveAndTaskGatesRemain() {
@@ -785,7 +731,6 @@ async function testMissingInputsDisableTheirOwnTrigger() {
 
 await testStandalonePanelKeepsInlineRows()
 await testTargetedRowsAreAdjacentAndSingle()
-await testGenerationTargetMovesAllThreeTriggers()
 await testSaveAndTaskGatesRemain()
 await testMissingInputsDisableTheirOwnTrigger()
 

@@ -1,6 +1,6 @@
 # 周计划 Contract
 
-Q1–Q6 已实施。手工周计划的指定验收见[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)。游戏、所选栏目及材料由教师分别发起，实际采用、Word 及恢复的验证范围见[Q5/Q6 实施核查](../bootstrap/desktop-weekly-ai-review.md)及[Q5/Q6 目标机核查](../bootstrap/desktop-weekly-ai-windows11-target-review.md)。
+Q1–Q6 已实施。手工周计划的指定验收见[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)。游戏、所选栏目及材料由教师分别发起。原 Q5/Q6 的采用、Word 及恢复验证范围见[Q5/Q6 实施核查](../bootstrap/desktop-weekly-ai-review.md)及[Q5/Q6 目标机核查](../bootstrap/desktop-weekly-ai-windows11-target-review.md)。
 
 状态：Architecture v2 有效 Contract，依据[ADR 0004](../adr/0004-local-desktop-architecture-proposal.md)。2026-11-01 用户已确认 Q1–Q6，[产品规格](../specs/desktop-weekly-plan.md)已定稿，[首片工程](../specs/desktop-weekly-plan-engineering.md)已落实Q1–Q4。历史准备轮（2026-11-02）只准备[Q5/Q6工程合同](../specs/desktop-weekly-ai-engineering.md)、[假供应商矩阵](../specs/desktop-weekly-ai-validation.md)和分工，当时未实现或调用真实AI；后续实施与验证见上段。[另机收口](../bootstrap/desktop-weekly-target-test-closeout.md)的限定目标／指定Word及教师整体接受保持原范围。
 
@@ -35,6 +35,8 @@ Q1–Q6 已实施。手工周计划的指定验收见[另机收口](../bootstrap
 材料保留生成依据，只存周计划，不回写日计划；提取与补充均进入候选采用及教师确认流程，不把支持策略全文直接当材料。既有映射和例子见[最小实施规格](../specs/manual-plans-and-word-export.md)，须先按本 Contract 检查来源与身份差异。
 
 ## 保存、生成与确认
+
+桌面默认总览展示主题与每日活动、周游戏、重点区域、本周栏目和材料准备。总览的“AI 生成”提交本周重点、环境创设、生活习惯培养和家园共育四栏。进入具体栏目后，教师从该栏发起生成。材料准备随重点区域查看，日计划来源在相应日期或栏目内核对。定向修改读取所选栏目当前正文，明确采用后填入草稿，随后按原流程保存。本人日计划的固定引用通过来源核对或手工覆盖处理。界面与验证见[11 月 18 日反馈审核](../bootstrap/desktop-preview-feedback-20261118-review.md)。
 
 本人日计划保存、删除或班级配置变化后，已关联周计划保留来源变化信息。打开或读取周计划时，每日最终格显示本人最新已存来源，保留人工覆盖和明确清空。读取时既有草稿版本保持原身份，保存或导出时才落盘。已选游戏、重点区域和日历仍按原刷新规则处理。Q1每日期一组最终晨谈／集体活动，手填有效且不因缺本人日计划报内容缺项。Q2离开自动存草稿，Q4名单／保育员设置可暂空且创建快照不回填。普通保存、来源变化、游戏采用不自动发AI；游戏、栏目和材料分别由教师从对应表单发起。
 

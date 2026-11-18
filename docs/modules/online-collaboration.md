@@ -21,11 +21,17 @@
 - `GET /api/collaboration/game-config` **只读取本人已保存配置**，不返回搭班教师配置正文；搭班配置版本通过 `GET /api/collaboration/classmates` 读取。`PUT /api/collaboration/game-config` 保存本人配置。
 - `POST /api/collaboration/game-config/preview` 预览另一教师配置的带入差异；教师明确确认后 `POST /api/collaboration/game-config/confirm` 才写入本人保存版本。来源版本变化时重新预览，取消不改变本人配置。原操作可用 `GET /api/collaboration/game-config/operations/{request_id}` 查询。
 
+## 园所与班级显示名称
+
+- 管理员在 `/admin` 维护园所和班级显示名称。园所列表为 `GET /api/collaboration/admin/schools`，园所内的班级列表为 `GET /api/collaboration/admin/schools/{school_id}/classes`。园所和班级的对应 `PATCH` 路径接收 `expected_name` 与 `new_name`，写入要求管理员会话和 CSRF 校验。
+- 名称更新保留园所 ID、班级 ID、班级号、教师绑定及学期内的年级。原名称已变化时返回 409，已保存到目标名称的请求可重放，其他园所的班级 ID 返回 404。教师刷新园所身份、班级目录、当前班级或当前共享周时读取最新显示名称。
+- 迁移 `mysql/0006_class_display_override.sql` 在 0005 后为班级增加可空显示名称覆盖。历史行默认为空，按既有班级名和升班规则显示。管理员明确设置的名称单独保存，已确认共享周仍使用其确认时冻结的班名。
+
 ## 升班与学期名称
 
 - `GET /api/collaboration/me/class/promotion` 返回当前班级、年级、版本和可选学期项。学期项含 `term_id`、`name`、`start_date`、`end_date`。
 - `POST /api/collaboration/me/class/promotion` 提交 `request_id`、`class_id`、`expected_version`、`target_grade`、`effective_term_id`；回执保留稳定班级 ID、班名、年级、版本和生效学期。
-- `GET /api/collaboration/me/class/promotion/operations/{request_id}` 按原请求读取升班回执。失效基准返回 409，未知提交只按原请求查询。桌面沿用未决和关闭保护。按上海日期到达生效学期后使用升班后的班名，班级 ID 保持稳定。
+- `GET /api/collaboration/me/class/promotion/operations/{request_id}` 按原请求读取升班回执。失效基准返回 409，未知提交只按原请求查询。桌面沿用未决和关闭保护。按上海日期到达生效学期后更新年级及默认班名，班级 ID 保持稳定。
 - 管理员通过 `GET /api/collaboration/admin/schools/{school_id}/terms` 读取学期，通过 `PATCH /api/collaboration/admin/schools/{school_id}/terms/{term_id}` 提交 `expected_name` 和 `new_name` 更新园所学期名称。更新要求 CSRF 管理员会话；陈旧 `expected_name` 返回 409，学期 ID 和日期保持不变。
 - 已连接在线班级的教师可在设置页点击“读取园所学期名称”。起止日期唯一匹配时可预填本机表单，已有自定义名称保留。教师可编辑名称，再按本机预览和确认流程保存。
 - 游戏观察和本机周计划可从指定历史版本预览并另存为当前本机学期名的确认版本。旧确认保留自己的名称、内容和日期，本机周计划工作草稿保留。一对一倾听沿用记录创建时的学期名称。在线共享周使用园所学期名称，确认时冻结该名称。

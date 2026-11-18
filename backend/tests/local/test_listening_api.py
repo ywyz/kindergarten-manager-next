@@ -58,13 +58,13 @@ class ListeningApiTests(LocalTestCase):
         save_body = {
             "request_id": save_request,
             "expected_revision": record["revision"],
-            "observation_date": "9月1日 上午",
+            "observation_date": "2026-09",
             "goal": "目标",
             "evaluation": {"health_1": 2},
             "groups": [
                 {
                     "group_id": group_id,
-                    "work_date": "9月2日",
+                    "work_date": "2026-09-02",
                     "listening_text": "孩子说：\n我想画太阳。",
                 }
             ],

@@ -1367,6 +1367,7 @@ class WeeklyAIGamesCreateIn(BaseModel):
 
     request_id: str
     expected_draft_version: int = Field(..., ge=1, strict=True)
+    game_scope: str | None = Field(default=None, min_length=1, max_length=20)
     base_candidate_id: str | None = Field(default=None, min_length=1, max_length=64)
     revision_instruction: str | None = Field(default=None, max_length=500)
 
@@ -1423,6 +1424,7 @@ class WeeklyAITaskOut(BaseModel):
     source_id: str
     weekly_plan_id: str
     target: str
+    game_scope: str | None = None
     task_type: str
     status: str
     reason: str | None = None
@@ -1451,6 +1453,7 @@ class WeeklyAICandidateListItemOut(BaseModel):
     candidate_id: str
     task_id: str
     target: str
+    game_scope: str | None = None
     candidate_hash: str
     eligibility: str
     available_targets: list[str]

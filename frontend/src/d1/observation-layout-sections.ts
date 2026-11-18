@@ -45,7 +45,7 @@ export const OBSERVATION_SECTIONS: ObservationSectionInfo[] = [
   {
     key: 'body',
     label: '观察正文',
-    hint: '观察目标与观察记录完整保留换行，只填回草稿。',
+    hint: '观察目标与观察记录完整保留换行；长文在栏内滚动，可打开“阅读 / 编辑”查看全文。',
     editable: true,
   },
   {
@@ -63,7 +63,7 @@ export const OBSERVATION_SECTIONS: ObservationSectionInfo[] = [
   {
     key: 'photos',
     label: '有序照片',
-    hint: '导入、顺序、说明与移除仍在原记录中处理。',
+    hint: '在独立照片管理弹窗中导入、排序、说明和移除；仍属于当前记录。',
     editable: false,
   },
   {

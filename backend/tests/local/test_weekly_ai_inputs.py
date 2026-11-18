@@ -1187,15 +1187,16 @@ def test_candidate_edit_rejects_structure_and_source_fields():
 
 
 def test_weekly_create_identity_omits_absent_fields_and_keeps_old_receipts():
-    old, base, instruction = weekly_ai_service.weekly_create_identity(
+    old, base, instruction, scope = weekly_ai_service.weekly_create_identity(
         plan_id="plan-1",
         expected_draft_version=3,
         operation_kind=weekly_ai_service.GAMES,
         targets=["games"],
     )
-    assert base is None and instruction is None
+    assert base is None and instruction is None and scope is None
     assert "base_candidate_id" not in old
     assert "revision_instruction" not in old
+    assert "game_scope" not in old
     legacy = {
         "weekly_plan_id": "plan-1",
         "expected_draft_version": 3,
@@ -1205,7 +1206,7 @@ def test_weekly_create_identity_omits_absent_fields_and_keeps_old_receipts():
     assert weekly_ai_service._fingerprint(
         weekly_ai_service.GAMES, old
     ) == weekly_ai_service._fingerprint(weekly_ai_service.GAMES, legacy)
-    new, base, instruction = weekly_ai_service.weekly_create_identity(
+    new, base, instruction, scope = weekly_ai_service.weekly_create_identity(
         plan_id="plan-1",
         expected_draft_version=3,
         operation_kind=weekly_ai_service.GAMES,
@@ -1215,8 +1216,18 @@ def test_weekly_create_identity_omits_absent_fields_and_keeps_old_receipts():
     )
     assert base == "candidate-1"
     assert instruction == "请更简洁"
+    assert scope is None
     assert new["base_candidate_id"] == "candidate-1"
     assert new["revision_instruction"] == "请更简洁"
+    scoped, _, _, scope = weekly_ai_service.weekly_create_identity(
+        plan_id="plan-1",
+        expected_draft_version=3,
+        operation_kind=weekly_ai_service.GAMES,
+        targets=["games"],
+        game_scope="collective_2",
+    )
+    assert scope == "collective_2"
+    assert scoped["game_scope"] == "collective_2"
     with pytest.raises(LocalValidationError):
         weekly_ai_service.weekly_create_identity(
             plan_id="plan-1",

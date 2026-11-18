@@ -262,12 +262,8 @@ function returnToToday(): void {
   month.value = targetMonth
 }
 
-function selectTerm(termId: string | null): void {
+function selectTerm(termId: string): void {
   if (frozenNow()) return
-  if (termId === null) {
-    returnToToday()
-    return
-  }
   // Only configured system terms are selectable; an unknown id is inert.
   const term = props.context.terms.find((item) => item.id === termId)
   if (!term) return
@@ -279,10 +275,6 @@ function selectTerm(termId: string | null): void {
 }
 
 function onTermChange(value: string | number | boolean | undefined): void {
-  if (value === '__all__') {
-    returnToToday()
-    return
-  }
   selectTerm(String(value))
 }
 

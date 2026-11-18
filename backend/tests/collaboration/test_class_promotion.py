@@ -501,6 +501,71 @@ class PromotionSQLiteUnitTests(unittest.TestCase):
         self.assertEqual(missing.exception.code, "OPERATION_NOT_FOUND")
 
 
+    def test_legacy_nonstandard_display_name_does_not_become_override(self):
+        principal = _principal(self.teacher_id, self.school_id)
+        with self.Session() as session:
+            with session.begin():
+                classroom = session.get(Classroom, self.class_id)
+                classroom.display_name = "太阳班"
+            classroom.display_name_override = None
+        with self.Session() as session:
+            receipt = submit_promotion(
+                session,
+                principal,
+                request_id=uuid4(),
+                class_id=self.class_id,
+                expected_version=1,
+                target_grade="middle",
+                effective_term_id=self.current_term_id,
+            )
+        self.assertEqual(receipt.class_name, "中一班")
+        with self.Session() as session:
+            current = get_promotion(session, principal)
+        self.assertEqual(current.class_name, "中一班")
+        self.assertEqual(current.class_id, self.class_id)
+        self.assertEqual(current.grade, "middle")
+        self.assertEqual(current.version, 2)
+
+    def test_explicit_override_displays_even_exactly_initial_name(self):
+        principal = _principal(self.teacher_id, self.school_id)
+        with self.Session() as session:
+            submit_promotion(
+                session,
+                principal,
+                request_id=uuid4(),
+                class_id=self.class_id,
+                expected_version=1,
+                target_grade="middle",
+                effective_term_id=self.current_term_id,
+            )
+        with self.Session() as session:
+            with session.begin():
+                classroom = session.get(Classroom, self.class_id)
+                classroom.display_name_override = "小一班"
+        with self.Session() as session:
+            current = get_promotion(session, principal)
+        self.assertEqual(current.class_name, "小一班")
+        self.assertEqual(current.class_id, self.class_id)
+        self.assertEqual(current.version, 2)
+        with self.Session() as session:
+            membership = current_membership(session, principal)
+        self.assertEqual(membership.class_name, "小一班")
+        with self.Session() as session:
+            names = [
+                item.display_name
+                for item in list_classes(session, principal)
+            ]
+        self.assertIn("小一班", names)
+        with self.Session() as session:
+            state = session.get(ClassPromotionState, self.class_id)
+            classroom = session.get(Classroom, self.class_id)
+        self.assertEqual(state.class_number, 1)
+        self.assertEqual(state.base_grade, "small")
+        self.assertEqual(state.version, 2)
+        self.assertEqual(classroom.display_name, "同名班")
+        self.assertEqual(classroom.display_name_override, "小一班")
+
+
 class PromotionSchemaAndRouteTests(unittest.TestCase):
     def test_0003_is_additive_and_matches_mysql_models(self):
         backend = Path(__file__).resolve().parents[2]

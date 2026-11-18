@@ -709,6 +709,17 @@ class WeeklyPlanSQLiteUnitTests(unittest.TestCase):
         self.assertEqual(read["class_name"], "中一班")
         self.assertEqual(grade_mock.call_count, 1)
 
+    def test_week_context_uses_explicit_display_override(self):
+        with self.Session() as session:
+            with session.begin():
+                classroom = session.get(Classroom, self.class_id)
+                classroom.display_name_override = "太阳班"
+        read = self._read()
+        self.assertEqual(read["class_name"], "太阳班")
+        with self.Session() as session:
+            classroom = session.get(Classroom, self.class_id)
+        self.assertEqual(classroom.display_name, "合成班")
+        self.assertEqual(classroom.display_name_override, "太阳班")
     def test_class_without_stage_two_state_and_missing_term_are_rejected(self):
         new_class_id = uuid4()
         with self.Session() as session:

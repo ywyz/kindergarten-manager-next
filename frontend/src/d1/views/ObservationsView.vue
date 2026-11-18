@@ -1486,15 +1486,6 @@ defineExpose({ reload: load })
       <article class="obs-card filter-summary" data-d1="obs-filter-summary">
         <div class="card-head">
           <h3>筛选与导出</h3>
-          <el-button
-            type="primary"
-            text
-            :disabled="frozen || busy || selectedCount === 0"
-            data-d1="obs-filter-export"
-            @click="openExport"
-          >
-            导出 Word
-          </el-button>
         </div>
         <dl class="card-meta">
           <div><dt>日期 / 学期</dt><dd>{{ rangeLabel }} · {{ termFilterLabel }}</dd></div>

@@ -50,13 +50,6 @@ const props = defineProps<{
   processTarget?: HTMLElement | null
   otherTarget?: HTMLElement | null
   reflectionProgressTarget?: HTMLElement | null
-  /**
-   * 2026-11-15 teacher feedback: when the daily editor supplies this target,
-   * the three per-type trigger buttons are moved (not copied) into the left
-   * directory generation group. Per-type rows keep guidance, pending receipts
-   * and errors at their field anchors; task state stays in this single panel.
-   */
-  generationTarget?: HTMLElement | null
   /** The single task/history panel is shown as a modal when true. */
   dialogOpen?: boolean
   /** The daily editor renders four independent section entries itself. */
@@ -78,12 +71,8 @@ const emit = defineEmits<{
   (e: 'split-generated', task: AiTask): void
   (e: 'adapt-updated', task: AiTask): void
   (e: 'reflection-updated', task: AiTask): void
-  /** A teacher-started task from the left generation group. */
+  /** A teacher-started generation task. */
   (e: 'action-start', taskType: TaskType): void
-  /** Explicit "go to this column" action; never forced by an async reply. */
-  (e: 'locate-task', taskType: TaskType): void
-  (e: 'open-section-ai', section: OtherSection): void
-  (e: 'open-reflection-ai'): void
 }>()
 
 const GRADE_LABELS: Record<Grade, string> = { small: '小班', middle: '中班', large: '大班' }
@@ -1202,109 +1191,6 @@ defineExpose({ trigger, triggerOtherSection, continueAfterSplit, observeReflecti
         </el-button>
       </div>
     </template>
-    <Teleport v-if="generationTarget" :to="generationTarget">
-      <div class="generation-buttons" data-d1="ai-generation-buttons">
-        <div
-          v-for="type in TASK_TYPES"
-          :key="type"
-          class="generation-entry"
-          :data-d1="`ai-generation-entry-${type}`"
-        >
-          <el-button
-            size="default"
-            type="primary"
-            class="generation-button"
-            :loading="!!creating[type]"
-            :disabled="frozen || !!blockedReason(type)"
-            :data-d1="`ai-trigger-${type}`"
-            :aria-label="`发起${TASK_TYPE_LABELS[type]}`"
-            @click="trigger(type)"
-          >
-            {{ TASK_TYPE_LABELS[type] }}
-          </el-button>
-          <div
-            v-if="createError[type]"
-            class="generation-status"
-            :data-d1="`ai-trigger-error-${type}`"
-          >
-            <p class="generation-error">{{ createError[type] }}</p>
-            <el-button
-              v-if="!pendingCreates[type]"
-              size="small"
-              text
-              :data-d1="`ai-locate-error-${type}`"
-              @click="emit('locate-task', type)"
-            >
-              到本栏查看
-            </el-button>
-          </div>
-          <div
-            v-if="pendingCreates[type]"
-            class="generation-recovery"
-            :data-d1="`ai-trigger-pending-${type}`"
-          >
-            <el-button
-              size="small"
-              type="warning"
-              :data-d1="`ai-query-create-${type}`"
-              @click="queryCreate(type)"
-            >
-              查询提交结果
-            </el-button>
-            <el-button
-              size="small"
-              type="danger"
-              :loading="!!creating[type]"
-              :data-d1="`ai-resubmit-create-${type}`"
-              @click="resubmitCreate(type)"
-            >
-              重试原提交（同一请求）
-            </el-button>
-            <el-button
-              size="small"
-              text
-              :data-d1="`ai-locate-pending-${type}`"
-              @click="emit('locate-task', type)"
-            >
-              到本栏查看
-            </el-button>
-          </div>
-          <div
-            v-if="latestByType[type] && ['failed', 'outcome_unknown'].includes(latestByType[type]!.status)"
-            class="generation-recovery"
-            :data-d1="`ai-trigger-task-status-${type}`"
-          >
-            <el-tag size="small" type="danger">
-              {{ taskStatusLabel(latestByType[type]!.status) }}
-            </el-tag>
-            <el-button
-              size="small"
-              text
-              :data-d1="`ai-locate-task-${type}`"
-              @click="emit('locate-task', type)"
-            >
-              到本栏查看
-            </el-button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-    <div v-if="dialogOpen" class="dialog-generation" data-d1="ai-dialog-generation">
-      <span class="muted">全局生成入口（本栏入口仍在各栏目内）</span>
-      <div class="row">
-        <el-button size="small" type="primary" :disabled="frozen || !!blockedReason('daily_lesson_split')" @click="trigger('daily_lesson_split')">
-          教案拆分
-        </el-button>
-        <el-button size="small" type="primary" :disabled="frozen || !!blockedReason('daily_process_adapt')" @click="trigger('daily_process_adapt')">
-          过程适龄
-        </el-button>
-        <el-button size="small" :disabled="frozen" @click="emit('open-section-ai', 'morning_games')">晨间活动</el-button>
-        <el-button size="small" :disabled="frozen" @click="emit('open-section-ai', 'morning_talk')">晨间谈话</el-button>
-        <el-button size="small" :disabled="frozen" @click="emit('open-section-ai', 'post_group_games')">活动后游戏</el-button>
-        <el-button size="small" :disabled="frozen" @click="emit('open-section-ai', 'afternoon_outdoor')">下午户外</el-button>
-        <el-button size="small" :disabled="frozen" @click="emit('open-reflection-ai')">一日反思</el-button>
-      </div>
-    </div>
     <div class="trigger-row">
       <label class="grade-label">本次目标年级</label>
       <el-select v-model="targetGrade" size="small" :disabled="frozen" data-d1="ai-target-grade">
@@ -1334,7 +1220,7 @@ defineExpose({ trigger, triggerOtherSection, continueAfterSplit, observeReflecti
         </div>
         <div class="trigger-row">
           <el-button
-            v-if="!generationTarget && !(hideOtherRow && type === 'daily_other_activities')"
+            v-if="!(hideOtherRow && type === 'daily_other_activities')"
             size="default"
             type="primary"
             :loading="!!creating[type]"
@@ -1344,7 +1230,7 @@ defineExpose({ trigger, triggerOtherSection, continueAfterSplit, observeReflecti
           >
             发起{{ TASK_TYPE_LABELS[type] }}
           </el-button>
-          <template v-if="!generationTarget && pendingCreates[type]">
+          <template v-if="pendingCreates[type]">
             <el-button size="small" type="warning" :data-d1="`ai-query-create-${type}`" @click="queryCreate(type)">
               查询提交结果
             </el-button>
@@ -1357,7 +1243,7 @@ defineExpose({ trigger, triggerOtherSection, continueAfterSplit, observeReflecti
         <p v-if="type === 'daily_process_adapt' && hasSplitBaseline === false" class="muted" data-d1="adapt-baseline-hint">
           请先采用并保存教案拆分结果，再发起过程适龄调整。
         </p>
-        <el-alert v-if="!generationTarget && createError[type]" type="warning" :closable="false" :title="createError[type]" />
+        <el-alert v-if="createError[type]" type="warning" :closable="false" :title="createError[type]" />
       </Teleport>
     </div>
 
@@ -1526,17 +1412,7 @@ defineExpose({ trigger, triggerOtherSection, continueAfterSplit, observeReflecti
   justify-content: space-between;
   align-items: center;
 }
-.dialog-generation {
-  border-bottom: 1px dashed var(--kgm-border);
-  padding-bottom: 8px;
-  margin-bottom: 10px;
-}
-.dialog-generation .row {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 6px;
-}
+
 .trigger-row {
   display: flex;
   align-items: center;
@@ -1544,42 +1420,7 @@ defineExpose({ trigger, triggerOtherSection, continueAfterSplit, observeReflecti
   flex-wrap: wrap;
   margin-bottom: 8px;
 }
-.generation-buttons {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-}
-.generation-entry {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.generation-status,
-.generation-recovery {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-.generation-error {
-  margin: 0;
-  color: var(--kgm-danger);
-  font-size: 0.78rem;
-  line-height: 1.4;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.generation-button {
-  width: 100%;
-  min-height: 42px;
-  height: auto;
-  margin-left: 0;
-  white-space: normal;
-  line-height: 1.35;
-}
+
 .type-row {
   border-top: 1px dashed var(--kgm-border);
   padding-top: 8px;

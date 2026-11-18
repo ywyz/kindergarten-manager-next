@@ -214,6 +214,7 @@ def get_promotion(
             TeacherClassMembership.school_id,
             TeacherClassMembership.class_id,
             Classroom.display_name,
+            Classroom.display_name_override,
             ClassPromotionState.class_number,
             ClassPromotionState.base_grade,
             ClassPromotionState.version,
@@ -240,6 +241,7 @@ def get_promotion(
         school_id,
         class_id,
         display_name,
+        display_name_override,
         class_number,
         base_grade,
         version,
@@ -252,7 +254,11 @@ def get_promotion(
     effective_grade = grade or base_grade
     return PromotionCurrentView(
         class_id=class_id,
-        class_name=make_class_name(effective_grade, class_number),
+        class_name=(
+            display_name_override
+            if display_name_override is not None and display_name_override.strip()
+            else make_class_name(effective_grade, class_number)
+        ),
         grade=effective_grade,
         version=version,
         terms=_terms(session, principal.school_id),
@@ -342,7 +348,12 @@ def submit_promotion(
         now = _utcnow()
         state.version = new_version
         state.updated_at = now
-        name = make_class_name(target_grade, state.class_number)
+        name = (
+            class_row.display_name_override
+            if class_row.display_name_override is not None
+            and class_row.display_name_override.strip()
+            else make_class_name(target_grade, state.class_number)
+        )
         session.add(
             ClassPromotionHistory(
                 id=uuid4(),

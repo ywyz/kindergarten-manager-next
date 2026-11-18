@@ -141,7 +141,7 @@ function targetLines(snapshot: ConfirmationSnapshotV1): string[] {
 
 </script>
 <template>
-  <el-dialog :model-value="open" title="历史确认（只读快照）" width="860px" @update:model-value="emit('update:open', $event)" @close="close">
+  <el-dialog :model-value="open" title="已确认版本（只读快照）" width="860px" @update:model-value="emit('update:open', $event)" @close="close">
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <div v-loading="loading" class="history-layout">
       <aside>

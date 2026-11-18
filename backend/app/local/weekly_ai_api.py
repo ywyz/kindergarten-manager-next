@@ -72,14 +72,16 @@ def _payload(
     specs,
     base_candidate_id: Any = None,
     revision_instruction: Any = None,
+    game_scope: Any = None,
 ) -> dict[str, Any]:
-    payload, _base_id, _instruction = weekly_ai_service.weekly_create_identity(
+    payload, _base_id, _instruction, _scope = weekly_ai_service.weekly_create_identity(
         plan_id=plan_id,
         expected_draft_version=expected,
         operation_kind=operation_kind,
         targets=[spec.target for spec in specs],
         base_candidate_id=base_candidate_id,
         revision_instruction=revision_instruction,
+        game_scope=game_scope,
     )
     return payload
 
@@ -97,6 +99,7 @@ def _create(
     specs = _specs(operation_kind, selected_fields)
     base_candidate_id = getattr(data, "base_candidate_id", None)
     revision_instruction = getattr(data, "revision_instruction", None)
+    game_scope = getattr(data, "game_scope", None)
     payload = _payload(
         plan_id,
         operation_kind,
@@ -104,6 +107,7 @@ def _create(
         specs,
         base_candidate_id=base_candidate_id,
         revision_instruction=revision_instruction,
+        game_scope=game_scope,
     )
     profile_id = _profile_id(session)
     with storage_errors():
@@ -133,6 +137,7 @@ def _create(
             task_specs=specs,
             base_candidate_id=base_candidate_id,
             revision_instruction=revision_instruction,
+            game_scope=game_scope,
         )
         executor.notify()
     if not created:

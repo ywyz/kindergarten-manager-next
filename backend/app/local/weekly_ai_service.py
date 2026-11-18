@@ -76,6 +76,14 @@ def _normalize_optional_text(value: Any, field: str, maximum: int) -> str | None
     return text
 
 
+def _normalize_game_scope(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in weekly_ai_contracts.GAME_SCOPES:
+        raise LocalValidationError("game_scope 不合法")
+    return value
+
+
 def weekly_create_identity(
     *,
     plan_id: str,
@@ -84,7 +92,8 @@ def weekly_create_identity(
     targets: Sequence[str],
     base_candidate_id: Any = None,
     revision_instruction: Any = None,
-) -> tuple[dict[str, Any], str | None, str | None]:
+    game_scope: Any = None,
+) -> tuple[dict[str, Any], str | None, str | None, str | None]:
     """Shared create fingerprint; optional keys appear only when supplied."""
     base_id = _normalize_optional_text(
         base_candidate_id, "base_candidate_id", 64
@@ -96,6 +105,9 @@ def weekly_create_identity(
     )
     if instruction is not None and base_id is None:
         raise LocalValidationError("定向修改要求必须绑定原候选")
+    scope = _normalize_game_scope(game_scope)
+    if scope is not None and operation_kind != GAMES:
+        raise LocalValidationError("game_scope 只适用于周游戏生成")
     order = ("key_week_focus", "environment_setup", "habit_culture", "home_cooperation")
     selected = list(targets)
     canonical_targets = [target for target in order if target in selected] + [
@@ -111,7 +123,9 @@ def weekly_create_identity(
         payload["base_candidate_id"] = base_id
     if instruction is not None:
         payload["revision_instruction"] = instruction
-    return payload, base_id, instruction
+    if scope is not None:
+        payload["game_scope"] = scope
+    return payload, base_id, instruction, scope
 
 
 def _fingerprint(operation_kind: str, payload: dict[str, Any]) -> str:
@@ -275,6 +289,7 @@ def create_weekly_tasks(
     task_specs: Sequence[WeeklyTaskSpec],
     base_candidate_id: Any = None,
     revision_instruction: Any = None,
+    game_scope: Any = None,
 ) -> tuple[dict[str, Any], bool]:
     if operation_kind not in CREATE_KINDS:
         raise LocalValidationError("operation_kind 不合法")
@@ -291,13 +306,14 @@ def create_weekly_tasks(
     canonical_targets = [target for target in order if target in selected] + [
         target for target in selected if target not in order
     ]
-    payload, base_id, instruction = weekly_create_identity(
+    payload, base_id, instruction, scope = weekly_create_identity(
         plan_id=plan_id,
         expected_draft_version=expected_draft_version,
         operation_kind=operation_kind,
         targets=canonical_targets,
         base_candidate_id=base_candidate_id,
         revision_instruction=revision_instruction,
+        game_scope=game_scope,
     )
     if base_id is not None and len(task_specs) != 1:
         raise LocalValidationError("定向重新生成只能绑定一个候选和目标")
@@ -395,6 +411,7 @@ def create_weekly_tasks(
                     content.content_json,
                     base_candidate=base_value,
                     revision_instruction=instruction,
+                    game_scope=scope if spec.task_type == "weekly_games_select" else None,
                 )
             except weekly_ai_contracts.WeeklyAIContractError as exc:
                 code = getattr(exc, "code", "")
@@ -412,6 +429,12 @@ def create_weekly_tasks(
                     raise LocalWeeklyAiSourceChanged() from None
                 raise LocalValidationError("周计划 AI 输入不合法") from None
             projections.append(projection)
+            if scope is not None and spec.task_type == "weekly_games_select":
+                projection.target_hashes[projection.target] = (
+                    weekly_ai_inputs.game_scope_target_hash(
+                        content.content_json, scope
+                    )
+                )
             if runtime is not None:
                 _preflight_projection_size(runtime, session, spec.task_type, projection)
         now = ai_task_service._now()
@@ -437,6 +460,8 @@ def create_weekly_tasks(
         ):
             deps = dict(projection.dependencies)
             deps["_batch_snapshot_hash"] = batch_hash
+            if scope is not None and spec.task_type == "weekly_games_select":
+                deps["_game_scope"] = scope
             session.add(
                 LocalAIInput(
                     id=input_id,

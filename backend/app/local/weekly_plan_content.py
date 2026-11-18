@@ -202,6 +202,7 @@ ADOPTION_KEYS = frozenset(
         "basis",
     }
 )
+SCOPED_GAMES_PROVENANCE_KEY = "game_scopes"
 MATERIALS_PROVENANCE_KEYS = frozenset(
     {
         "candidate_id",
@@ -1426,9 +1427,62 @@ def _normalize_basis(value: Any, field_path: str, *, expected_target: str, grade
     }
 
 
-def _normalize_adoption(value: Any, field_path: str, *, target: str, current_value: Any, grade: str) -> dict:
+def _normalize_scoped_games_target(
+    value: Any, field_path: str, game_scope: str
+) -> dict:
+    """A scoped adopted value only records the slot/focus the teacher applied."""
+    data = _map(value, field_path)
+    _exact_keys(data, frozenset({"outdoor_game_slots", "focus_area"}), field_path)
+    slots_raw = _map(
+        data.get("outdoor_game_slots"), f"{field_path}.outdoor_game_slots"
+    )
+    if game_scope == "focus_area":
+        _exact_keys(slots_raw, frozenset(), f"{field_path}.outdoor_game_slots")
+        focus = _normalize_focus(
+            data.get("focus_area"), allow_ai=True,
+            field_path=f"{field_path}.focus_area",
+        )
+        return {"outdoor_game_slots": {}, "focus_area": focus}
+    _exact_keys(slots_raw, frozenset({game_scope}), f"{field_path}.outdoor_game_slots")
+    slot = _normalize_slot(
+        slots_raw.get(game_scope),
+        f"{field_path}.outdoor_game_slots.{game_scope}",
+        allow_ai=True,
+    )
+    return {
+        "outdoor_game_slots": {game_scope: slot},
+        "focus_area": None,
+    }
+
+
+def _scoped_games_manual_edited(
+    adopted_value: Mapping[str, Any],
+    current_value: Any,
+    game_scope: str,
+) -> bool:
+    current = _normalize_games_target(current_value, "content.games")
+    if game_scope == "focus_area":
+        return canonical_json(adopted_value.get("focus_area")) != canonical_json(
+            current.get("focus_area")
+        )
+    adopted_slot = adopted_value.get("outdoor_game_slots", {}).get(game_scope)
+    current_slot = current.get("outdoor_game_slots", {}).get(game_scope)
+    return canonical_json(adopted_slot) != canonical_json(current_slot)
+
+
+def _normalize_adoption(
+    value: Any,
+    field_path: str,
+    *,
+    target: str,
+    current_value: Any,
+    grade: str,
+    scoped_game_scope: str | None = None,
+) -> dict:
     data = _map(value, field_path)
     _exact_keys(data, ADOPTION_KEYS, field_path)
+    if scoped_game_scope is not None and target != "games":
+        _fail("scoped games 采用只能出现在 game_scopes", f"{field_path}.game_scope")
     for key in ("candidate_id", "input_id", "execution_id", "adopted_draft_id", "adopter_profile_id"):
         _id(data.get(key), f"{field_path}.{key}")
     _hash(data.get("candidate_hash"), f"{field_path}.candidate_hash")
@@ -1439,7 +1493,12 @@ def _normalize_adoption(value: Any, field_path: str, *, target: str, current_val
     basis = _normalize_basis(data.get("basis"), f"{field_path}.basis", expected_target=target, grade=grade)
     adopted_value = data.get("adopted_value")
     if target == "games":
-        adopted_value = _normalize_games_target(adopted_value, f"{field_path}.adopted_value")
+        if scoped_game_scope is not None:
+            adopted_value = _normalize_scoped_games_target(
+                adopted_value, f"{field_path}.adopted_value", scoped_game_scope
+            )
+        else:
+            adopted_value = _normalize_games_target(adopted_value, f"{field_path}.adopted_value")
     elif target in WEEKLY_COLUMN_KEYS:
         raw = _map(adopted_value, f"{field_path}.adopted_value")
         _exact_keys(raw, frozenset({"text"}), f"{field_path}.adopted_value")
@@ -1451,7 +1510,14 @@ def _normalize_adoption(value: Any, field_path: str, *, target: str, current_val
         _fail("adopted_value_hash 不一致", f"{field_path}.adopted_value_hash")
     manual_edited = _bool(data.get("manual_edited"), f"{field_path}.manual_edited")
     if target == "games":
-        expected_edited = canonical_json(adopted_value) != canonical_json(_normalize_games_target(current_value, "content.games"))
+        if scoped_game_scope is not None:
+            expected_edited = _scoped_games_manual_edited(
+                adopted_value, current_value, scoped_game_scope
+            )
+        else:
+            expected_edited = canonical_json(adopted_value) != canonical_json(
+                _normalize_games_target(current_value, "content.games")
+            )
     else:
         expected_edited = adopted_value["text"] != _text(current_value, "weekly_columns.value")
     if manual_edited != expected_edited:
@@ -1474,6 +1540,37 @@ def _normalize_adoption(value: Any, field_path: str, *, target: str, current_val
     }
 
 
+def _normalize_scoped_games_provenance(
+    value: Any,
+    field_path: str,
+    *,
+    slots: Mapping[str, Any],
+    focus: Any,
+    grade: str,
+) -> dict:
+    """Optional per-slot receipts; absent in historical full-batch content."""
+    data = _map(value, field_path)
+    if not data:
+        _fail("game_scopes 不能为空", field_path)
+    from app.local import weekly_ai_contracts as contracts
+
+    valid_scopes = frozenset(contracts.GAME_SCOPES)
+    extra = set(data) - valid_scopes
+    if extra:
+        _fail("game_scopes 含未知范围", field_path)
+    result: dict[str, Any] = {}
+    for scope, raw in data.items():
+        result[scope] = _normalize_adoption(
+            raw,
+            f"{field_path}.{scope}",
+            target="games",
+            current_value={"outdoor_game_slots": slots, "focus_area": focus},
+            grade=grade,
+            scoped_game_scope=scope,
+        )
+    return result
+
+
 def _normalize_ai_provenance(
     value: Any,
     field_path: str,
@@ -1484,7 +1581,14 @@ def _normalize_ai_provenance(
     grade: str,
 ) -> dict:
     data = _map(value, field_path)
-    _exact_keys(data, AI_PROVENANCE_KEYS, field_path)
+    allowed = AI_PROVENANCE_KEYS | {SCOPED_GAMES_PROVENANCE_KEY}
+    missing = AI_PROVENANCE_KEYS - set(data)
+    extra = set(data) - allowed
+    if missing or extra:
+        _fail(
+            f"键不匹配 missing_count={len(missing)} extra_count={len(extra)}",
+            field_path,
+        )
     result: dict[str, Any] = {}
     for key in AI_PROVENANCE_KEYS:
         raw = data.get(key)
@@ -1504,34 +1608,77 @@ def _normalize_ai_provenance(
             current_value=current,
             grade=grade,
         )
+    if SCOPED_GAMES_PROVENANCE_KEY in data:
+        result[SCOPED_GAMES_PROVENANCE_KEY] = _normalize_scoped_games_provenance(
+            data[SCOPED_GAMES_PROVENANCE_KEY],
+            f"{field_path}.{SCOPED_GAMES_PROVENANCE_KEY}",
+            slots=slots,
+            focus=focus,
+            grade=grade,
+        )
     return result
 
 
+def _ai_item_matches_provenance(item: Mapping[str, Any], adopted_item: Any, provenance: Mapping[str, Any]) -> bool:
+    if adopted_item is None or not isinstance(adopted_item, Mapping):
+        return False
+    if item.get("candidate_id") != provenance.get("candidate_id"):
+        return False
+    if item.get("input_id") != provenance.get("input_id"):
+        return False
+    if adopted_item.get("ai_item_id") != item.get("ai_item_id"):
+        return False
+    for field in ("candidate_id", "input_id", "basis_keys"):
+        if adopted_item.get(field) != item.get(field):
+            return False
+    return True
+
+
 def _validate_ai_items_against_games(slots: Mapping[str, Any], focus: Any, provenance: Mapping[str, Any]) -> None:
-    ai_items: list[tuple[str, dict]] = []
+    scoped = provenance.get(SCOPED_GAMES_PROVENANCE_KEY) or {}
+    full = provenance.get("games")
+
+    def check(item: Mapping[str, Any], scope: str) -> bool:
+        scoped_row = scoped.get(scope)
+        if scoped_row is not None:
+            adopted = scoped_row["adopted_value"]
+            adopted_item = (
+                adopted.get("focus_area")
+                if scope == "focus_area"
+                else (adopted.get("outdoor_game_slots") or {}).get(scope)
+            )
+            if not _ai_item_matches_provenance(item, adopted_item, scoped_row):
+                _fail(
+                    "AI 项与 scoped games 回执不一致",
+                    "content.focus_area" if scope == "focus_area" else f"content.outdoor_game_slots.{scope}",
+                )
+            return True
+        if full is not None:
+            adopted = full["adopted_value"]
+            adopted_item = (
+                adopted.get("focus_area")
+                if scope == "focus_area"
+                else (adopted.get("outdoor_game_slots") or {}).get(scope)
+            )
+            if not _ai_item_matches_provenance(item, adopted_item, full):
+                _fail(
+                    "AI 项未绑定当前或旧全量 games 回执",
+                    "content.focus_area" if scope == "focus_area" else f"content.outdoor_game_slots.{scope}",
+                )
+            return True
+        return False
+
     for key, slot in slots.items():
-        if slot is not None and slot.get("source_kind") == "ai_supplement":
-            ai_items.append((key, slot))
+        if slot is None or slot.get("source_kind") != "ai_supplement":
+            continue
+        if not check(slot, key):
+            _fail(
+                "AI 槽缺少可用 games 回执",
+                f"content.outdoor_game_slots.{key}",
+            )
     if focus is not None and focus.get("source_kind") == "ai_supplement":
-        ai_items.append(("focus_area", focus))
-    if not ai_items:
-        return
-    games = provenance.get("games")
-    if games is None:
-        _fail("AI 槽/重点区域缺少 games provenance", "content.ai_provenance.games")
-    adopted = games["adopted_value"]
-    for key, item in ai_items:
-        if item["candidate_id"] != games["candidate_id"] or item["input_id"] != games["input_id"]:
-            _fail("AI 项 candidate/input 与 games provenance 不一致", f"content.outdoor_game_slots.{key}")
-        if key == "focus_area":
-            adopted_item = adopted.get("focus_area")
-        else:
-            adopted_item = adopted["outdoor_game_slots"].get(key)
-        if adopted_item is None or adopted_item.get("ai_item_id") != item["ai_item_id"]:
-            _fail("AI 项未出现在 games adopted_value", f"content.outdoor_game_slots.{key}")
-        for field in ("candidate_id", "input_id", "basis_keys"):
-            if adopted_item.get(field) != item.get(field):
-                _fail("AI 项与 games adopted_value 不一致", f"content.outdoor_game_slots.{key}")
+        if not check(focus, "focus_area"):
+            _fail("AI 重点区域缺少可用 games 回执", "content.focus_area")
 
 
 def _normalize_materials_text(value: Any, field_path: str) -> str | None:
@@ -2487,6 +2634,7 @@ def apply_weekly_ai_adoption(
     edited_value: Mapping[str, Any] | None = None,
     server_manifest: Mapping[str, Any] | None = None,
     ai_item_ids: Mapping[str, str] | None = None,
+    game_scope: str | None = None,
 ) -> dict:
     """Pure adoption merge; the original source value stays the provenance.
 
@@ -2518,19 +2666,56 @@ def apply_weekly_ai_adoption(
             input_id=meta["input_id"],
             ai_item_ids=ai_item_ids or {},
         )
-        base["outdoor_game_slots"] = copy.deepcopy(edited_finalized["outdoor_game_slots"])
-        base["focus_area"] = copy.deepcopy(edited_finalized["focus_area"])
-        adopted_value = {
-            "outdoor_game_slots": copy.deepcopy(original_finalized["outdoor_game_slots"]),
-            "focus_area": copy.deepcopy(original_finalized["focus_area"]),
-        }
-        base["ai_provenance"]["games"] = {
+        if game_scope is not None and game_scope in (
+            "collective_1",
+            "collective_2",
+            "free_choice_1",
+        ):
+            # Scoped adoption replaces only this slot; every other slot and
+            # the focus area keep the teacher's existing content.  The old
+            # full games receipt stays intact for items it still covers.
+            base["outdoor_game_slots"][game_scope] = copy.deepcopy(
+                edited_finalized["outdoor_game_slots"][game_scope]
+            )
+            adopted_value = {
+                "outdoor_game_slots": {
+                    game_scope: copy.deepcopy(
+                        original_finalized["outdoor_game_slots"][game_scope]
+                    )
+                },
+                "focus_area": None,
+            }
+        elif game_scope == "focus_area":
+            base["focus_area"] = copy.deepcopy(edited_finalized["focus_area"])
+            adopted_value = {
+                "outdoor_game_slots": {},
+                "focus_area": copy.deepcopy(original_finalized["focus_area"]),
+            }
+        else:
+            base["outdoor_game_slots"] = copy.deepcopy(
+                edited_finalized["outdoor_game_slots"]
+            )
+            base["focus_area"] = copy.deepcopy(edited_finalized["focus_area"])
+            adopted_value = {
+                "outdoor_game_slots": copy.deepcopy(
+                    original_finalized["outdoor_game_slots"]
+                ),
+                "focus_area": copy.deepcopy(original_finalized["focus_area"]),
+            }
+        adoption_record = {
             **copy.deepcopy(meta),
             "adopted_value": adopted_value,
             "adopted_value_hash": content_hash(adopted_value),
             "manual_edited": False,
             "basis": copy.deepcopy(dict(basis)),
         }
+        if game_scope is None:
+            base["ai_provenance"].pop(SCOPED_GAMES_PROVENANCE_KEY, None)
+            base["ai_provenance"]["games"] = adoption_record
+        else:
+            scopes = copy.deepcopy(base["ai_provenance"].get(SCOPED_GAMES_PROVENANCE_KEY) or {})
+            scopes[game_scope] = adoption_record
+            base["ai_provenance"][SCOPED_GAMES_PROVENANCE_KEY] = scopes
     elif target in WEEKLY_COLUMN_KEYS:
         _exact_keys(value, frozenset({"text"}), "candidate_value")
         _exact_keys(edited, frozenset({"text"}), "edited_value")
@@ -2611,6 +2796,27 @@ def _update_provenance_flags(result: dict) -> None:
             "focus_area": result["focus_area"],
         }
         games["manual_edited"] = canonical_json(current) != canonical_json(games["adopted_value"])
+    scoped = result["ai_provenance"].get(SCOPED_GAMES_PROVENANCE_KEY) or {}
+    for scope, adoption in scoped.items():
+        if scope == "focus_area":
+            current_part = {"focus_area": result["focus_area"]}
+            adopted_part = {"focus_area": adoption["adopted_value"].get("focus_area")}
+        else:
+            current_part = {
+                "outdoor_game_slots": {
+                    scope: result["outdoor_game_slots"].get(scope)
+                }
+            }
+            adopted_part = {
+                "outdoor_game_slots": {
+                    scope: adoption["adopted_value"]
+                    .get("outdoor_game_slots", {})
+                    .get(scope)
+                }
+            }
+        adoption["manual_edited"] = (
+            canonical_json(current_part) != canonical_json(adopted_part)
+        )
     for field in WEEKLY_COLUMN_KEYS:
         adoption = result["ai_provenance"].get(field)
         if adoption is not None:

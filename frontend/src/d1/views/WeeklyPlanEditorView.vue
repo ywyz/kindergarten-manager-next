@@ -25,6 +25,7 @@ import {
   type WeeklyRefreshPreview,
   type WeeklySlot,
   type WeeklySourceCandidate,
+  type WeeklyColumnKey,
 } from '../weekly'
 import { WEEKLY_AI_COLUMNS, type WeeklyAiColumn } from '../weekly-ai'
 import {
@@ -34,6 +35,8 @@ import {
   WEEKLY_SECTIONS,
   WEEKLY_SLOT_LABELS,
   weeklyColumnsSignature,
+  weeklyDailySourceLabel,
+  weeklyDailySourceDetail,
   weeklyDisplay,
   weeklyFocusRows,
   weeklyFocusSignature,
@@ -46,6 +49,7 @@ import {
   weeklyOverviewValues,
   weeklySectionInfo,
   weeklySectionSignature,
+  weeklySummary,
   type WeeklyDailyValues,
   type WeeklySectionKey,
 } from '../weekly-layout-sections'
@@ -55,6 +59,14 @@ import WeeklyCurrentExportDialog from './WeeklyCurrentExportDialog.vue'
 import WeeklyAiPanel from './WeeklyAiPanel.vue'
 import WeeklyCollaborationPanel from './WeeklyCollaborationPanel.vue'
 import WeeklyHistoryPanel from './WeeklyHistoryPanel.vue'
+import DirectionalRevisionDialog from '../components/DirectionalRevisionDialog.vue'
+import {
+  wholeDirectionalSelection,
+  type DirectionalAdoptPayload,
+  type DirectionalApplyResult,
+  type DirectionalOpenRequest,
+  type DirectionalScope,
+} from '../directional-revision'
 
 const props = withDefaults(defineProps<{
   planId: string
@@ -110,11 +122,15 @@ const historyExportOpen = ref(false)
 const exportConfirmation = ref<WeeklyConfirmationSummary | null>(null)
 const selectedAiColumns = ref<WeeklyAiColumn[]>([...WEEKLY_AI_COLUMNS])
 const aiPanel = ref<{
-  startGames: () => Promise<void>
-  startColumns: () => Promise<void>
+  startGames: (scope?: string) => Promise<void>
+  startColumns: (fields?: WeeklyAiColumn[]) => Promise<void>
   startMaterials: () => Promise<void>
 } | null>(null)
 const materialNotice = ref('')
+const currentDirectionalOpen = ref(false)
+const currentDirectionalBusy = ref(false)
+const currentDirectionalRequest = ref<DirectionalOpenRequest | null>(null)
+const currentDirectionalNotice = ref('')
 const focusCard = ref<HTMLElement | null>(null)
 const weeklyHost = computed<HostApi | null>(() => props.host)
 const sourceCandidates = computed(() => detail.value?.source_candidates ?? [])
@@ -210,9 +226,11 @@ function weeklySectionBadge(key: WeeklySectionKey): string {
   if (key === 'overview') return `已存 v${detail.value?.plan.current_draft_version ?? '—'}`
   if (key === 'collective_1' || key === 'collective_2' || key === 'free_choice_1') {
     const game = draft.outdoor_game_slots[key]
-    return game ? weeklyGameSourceLabel(game) : '未选择'
+    return game ? gameSourceLabel(game) : '未选择'
   }
-  if (key === 'focus') return draft.focus_area ? '已选择' : '未选择'
+  if (key === 'focus') {
+    return draft.focus_area ? focusSourceLabel(draft.focus_area) : '未选择'
+  }
   if (key === 'columns') {
     const filled = WEEKLY_COLUMN_KEYS.filter((field) => (draft.weekly_columns[field] ?? '').trim()).length
     return `已填 ${filled}/4`
@@ -226,10 +244,12 @@ function weeklySectionBadge(key: WeeklySectionKey): string {
   return aiBusy.value ? '进行中' : '候选'
 }
 
-const weeklySectionNav = computed(() => WEEKLY_SECTIONS.map((section) => ({
-  ...section,
-  badge: weeklySectionBadge(section.key),
-})))
+const weeklySectionNav = computed(() => WEEKLY_SECTIONS
+  .filter((section) => section.navigation !== false)
+  .map((section) => ({
+    ...section,
+    badge: weeklySectionBadge(section.key),
+  })))
 const activeGameSlot = computed<WeeklySlot | null>(() => {
   if (activeSection.value === 'collective_1') return 'collective_1'
   if (activeSection.value === 'collective_2') return 'collective_2'
@@ -239,6 +259,93 @@ const activeGameSlot = computed<WeeklySlot | null>(() => {
 const activeGame = computed<WeeklyGameChoice | null>(() => (
   activeGameSlot.value ? content.value?.outdoor_game_slots[activeGameSlot.value] ?? null : null
 ))
+
+/** Source dates are frozen in the saved weekly content, never re-guessed from a name. */
+function sourcePlanDate(dailyPlanId: string, fallback?: string | null): string {
+  return currentSourceDates.value[dailyPlanId] ?? fallback ?? ''
+}
+
+function gameSourceLabel(game: WeeklyGameChoice, fallback?: string | null): string {
+  return weeklyGameSourceLabel(
+    game,
+    game.source_kind === 'daily_plan'
+      ? sourcePlanDate(game.daily_plan_id, fallback)
+      : null,
+  )
+}
+
+function gameSourceDetail(game: WeeklyGameChoice, fallback?: string | null): string {
+  if (game.source_kind !== 'daily_plan') return gameSourceLabel(game, fallback)
+  return weeklyDailySourceDetail(
+    sourcePlanDate(game.daily_plan_id, fallback),
+    game.content_version,
+  )
+}
+
+function focusSourceLabel(focus: WeeklyFocusChoice): string {
+  return weeklyFocusSourceLabel(
+    focus,
+    focus.source_kind === 'daily_plan'
+      ? sourcePlanDate(focus.daily_plan_id)
+      : null,
+  )
+}
+
+function focusSourceDetail(focus: WeeklyFocusChoice): string {
+  if (focus.source_kind !== 'daily_plan') return focusSourceLabel(focus)
+  return weeklyDailySourceDetail(
+    sourcePlanDate(focus.daily_plan_id),
+    focus.content_version,
+  )
+}
+
+function dailySourceLabel(day: WeeklyDay): string {
+  if (!day.source) return ''
+  const date = sourcePlanDate(day.source.daily_plan_id, day.date)
+  return weeklyDailySourceLabel(date)
+}
+
+function dailySourceDetail(day: WeeklyDay): string {
+  if (!day.source) return ''
+  const date = sourcePlanDate(day.source.daily_plan_id, day.date)
+  return weeklyDailySourceDetail(date, day.source.content_version)
+}
+
+function gameHasDailySource(slot: WeeklySlot): boolean {
+  return content.value?.outdoor_game_slots[slot]?.source_kind === 'daily_plan'
+}
+
+function focusHasDailySource(): boolean {
+  return content.value?.focus_area?.source_kind === 'daily_plan'
+}
+
+function openSources(): void {
+  if (props.disabled) return
+  activeSection.value = 'sources'
+}
+
+function columnSummary(key: WeeklyColumnKey): string {
+  return weeklySummary(content.value?.weekly_columns[key] ?? '')
+}
+
+function materialsSummary(): string {
+  const materials = content.value?.materials
+  if (materials === null || materials === undefined) return '尚未采用材料候选'
+  if (materials.trim() === '') return '已明确采用空材料'
+  return weeklySummary(materials)
+}
+
+function frameworkGameSummary(slot: WeeklySlot): string {
+  const game = content.value?.outdoor_game_slots[slot] ?? null
+  if (!game) return '未选择'
+  return `${weeklyDisplay(game.name)} · ${gameSourceLabel(game)}`
+}
+
+function frameworkFocusSummary(): string {
+  const focus = content.value?.focus_area ?? null
+  if (!focus) return '未选择重点区域'
+  return `${focus.area || '未填区域'} · ${weeklyDisplay(focus.name)} · ${focusSourceLabel(focus)}`
+}
 const sectionModalTitle = computed(() => (
   sectionModal.value ? `编辑本栏 · ${weeklySectionInfo(sectionModal.value.key).label}` : '编辑本栏'
 ))
@@ -313,7 +420,9 @@ watch(sectionDialogOpen, (open) => {
 
 function selectSection(key: WeeklySectionKey): void {
   if (sectionDialogOpen.value) return
-  activeSection.value = key
+  // Material editing lives with the focus area; a programmatic or stale
+  // materials selection opens that same contextual frame.
+  activeSection.value = key === 'materials' ? 'focus' : key
 }
 
 function openSectionModal(key: WeeklySectionKey, event?: MouseEvent): void {
@@ -606,8 +715,11 @@ function syncState(): void {
   factsPending.value = controller.isFactsPending()
   factsStale.value = controller.factsAreStale()
   controllerBusy.value = controller.isBusy()
-  busy.value = controller.isBusy() || exportBusy.value || aiBusy.value || sharedBusy.value
+  busy.value = controller.isBusy() || exportBusy.value || aiBusy.value || sharedBusy.value || currentDirectionalBusy.value
   blocking.value = controller.blockingDraft()
+    ?? (currentDirectionalBusy.value
+      ? { kind: 'weekly', message: '当前正文定向修改正在生成或结果待核对：请先处理后再离开' }
+      : null)
     ?? (sectionDialogOpen.value && modalComposing.value
       ? { kind: 'weekly', message: '栏目编辑弹窗正在输入（输入法组合中）：请完成输入后再离开' }
       : null)
@@ -704,6 +816,10 @@ function resetForContext(): void {
   selectedAiColumns.value = [...WEEKLY_AI_COLUMNS]
   aiPanel.value = null
   materialNotice.value = ''
+  currentDirectionalOpen.value = false
+  currentDirectionalBusy.value = false
+  currentDirectionalRequest.value = null
+  currentDirectionalNotice.value = ''
   sectionModal.value = null
   sectionDialogOpen.value = false
   sectionConflict.value = false
@@ -828,7 +944,10 @@ function requestFocusArea(): void {
     element.focus?.()
   })
 }
-async function startAi(kind: 'games' | 'columns' | 'materials'): Promise<void> {
+async function startAi(
+  kind: 'games' | 'columns' | 'materials',
+  columns?: WeeklyAiColumn[],
+): Promise<void> {
   if (props.disabled || !aiPanel.value || sectionDialogOpen.value) return
   // The panel owns the local error/progress/candidate state. Bring its pane
   // into view before the request so a pre-save refusal, a missing-material
@@ -837,8 +956,127 @@ async function startAi(kind: 'games' | 'columns' | 'materials'): Promise<void> {
   await nextTick()
   if (!aiPanel.value) return
   if (kind === 'games') await aiPanel.value.startGames()
-  else if (kind === 'columns') await aiPanel.value.startColumns()
+  else if (kind === 'columns') await aiPanel.value.startColumns(columns)
   else await aiPanel.value.startMaterials()
+}
+
+/** Scoped game generation: only the current slot or focus area. */
+async function startScopedGame(scope: string): Promise<void> {
+  if (props.disabled || !aiPanel.value || sectionDialogOpen.value) return
+  activeSection.value = 'ai'
+  await nextTick()
+  if (!aiPanel.value) return
+  await aiPanel.value.startGames(scope)
+}
+
+function openCurrentDirectional(
+  field: string,
+  label: string,
+  text: string,
+): void {
+  if (props.disabled || !controller || !text.trim()) return
+  const saved = controller.savedDraftRef()
+  const scope: DirectionalScope = {
+    kind: 'weekly_record',
+    record_id: props.planId,
+    version: saved.version,
+    field,
+  }
+  currentDirectionalRequest.value = {
+    scope,
+    fieldText: text,
+    selection: wholeDirectionalSelection(text),
+    sourceLabel: `周计划 · ${label}（当前草稿正文）`,
+    sourceLines: [
+      `草稿 v${saved.version}`,
+      controller.isDirty() ? '含未保存修改；采用后仅写入草稿' : '与已保存草稿一致',
+      label,
+    ],
+  }
+  currentDirectionalOpen.value = true
+}
+
+function applyCurrentDirectional(
+  payload: DirectionalAdoptPayload,
+): DirectionalApplyResult {
+  const request = currentDirectionalRequest.value
+  if (!request || payload.snapshot.scope.kind !== 'weekly_record') {
+    return { ok: false, message: '当前周计划定向目标已失效，请重新选择' }
+  }
+  if (!controller || !content.value) {
+    return { ok: false, message: '周计划已变化，请重新选择' }
+  }
+  const saved = controller.savedDraftRef()
+  if (
+    payload.snapshot.scope.record_id !== props.planId
+    || payload.snapshot.scope.version !== saved.version
+    || payload.snapshot.scope.field !== request.scope.field
+    || payload.snapshot.profileEpoch !== props.profileEpoch
+  ) {
+    return { ok: false, message: '周计划、档案或字段版本已变化，请重新选择' }
+  }
+  const field = String(request.scope.field)
+  if (liveFieldValue(field) !== payload.snapshot.fieldText) {
+    return { ok: false, message: '当前正文已发生变化：请保留候选并重新选择本栏正文' }
+  }
+  const value = payload.fieldAfter
+  if (field.startsWith('column.')) {
+    const key = field.slice('column.'.length)
+    if (!(WEEKLY_COLUMN_KEYS as readonly string[]).includes(key)) {
+      return { ok: false, message: '当前栏目已变化，请重新选择' }
+    }
+    edit((draft) => { draft.weekly_columns[key as WeeklyColumnKey] = value })
+  } else if (field === 'materials.text') {
+    if (!materialEditable.value) {
+      return { ok: false, message: '材料尚未采用，不能定向修改' }
+    }
+    edit((draft) => { draft.materials = value })
+  } else if (field.startsWith('slot.')) {
+    const rest = field.slice('slot.'.length)
+    const dot = rest.lastIndexOf('.')
+    const slot = rest.slice(0, dot) as WeeklySlot
+    const gameField = rest.slice(dot + 1)
+    const game = content.value.outdoor_game_slots[slot]
+    if (
+      !game ||
+      game.source_kind === 'daily_plan' ||
+      !GAME_DIRECTION_FIELDS.some((item) => item.key === gameField)
+    ) {
+      return { ok: false, message: '当前游戏已变化，请重新选择' }
+    }
+    edit((draft) => {
+      const current = draft.outdoor_game_slots[slot]
+      if (current) draft.outdoor_game_slots[slot] = { ...current, [gameField]: value }
+    })
+  } else if (field.startsWith('focus.')) {
+    const focusField = field.slice('focus.'.length)
+    const focus = content.value.focus_area
+    if (
+      !focus ||
+      focus.source_kind === 'daily_plan' ||
+      !FOCUS_DIRECTION_FIELDS.some((item) => item.key === focusField)
+    ) {
+      return { ok: false, message: '当前重点区域已变化，请重新选择' }
+    }
+    edit((draft) => {
+      if (draft.focus_area) {
+        draft.focus_area = { ...draft.focus_area, [focusField]: value }
+      }
+    })
+  } else {
+    return { ok: false, message: '当前字段不支持定向修改' }
+  }
+  currentDirectionalOpen.value = false
+  currentDirectionalNotice.value = 'AI 结果已写入草稿，尚未保存；请核对后点击“保存”。'
+  return { ok: true }
+}
+
+async function startColumnAi(field: WeeklyColumnKey): Promise<void> {
+  await startAi('columns', [field])
+}
+
+async function startAllColumnsAi(): Promise<void> {
+  await startAi('columns', [...WEEKLY_AI_COLUMNS])
 }
 function candidateGame(candidate: WeeklySourceCandidate): WeeklyDailyGame | null {
   if (candidate.section !== 'morning_games' || (candidate.category !== 'collective' && candidate.category !== 'free_choice')) return null
@@ -870,8 +1108,53 @@ function applyFocusCandidate(candidate: WeeklySourceCandidate): void {
   if (focus) setFocus(focus)
 }
 
-const slotLabels: Record<WeeklySlot, string> = {
-  collective_1: '集体游戏一', collective_2: '集体游戏二', free_choice_1: '自选游戏',
+const GAME_DIRECTION_FIELDS = [
+  { key: 'name', label: '名称' },
+  { key: 'shared_objectives', label: '共享目标' },
+  { key: 'guidance_points', label: '指导' },
+  { key: 'focus_guidance', label: '重点指导' },
+] as const
+const FOCUS_DIRECTION_FIELDS = [
+  { key: 'name', label: '名称' },
+  { key: 'objectives', label: '目标' },
+  { key: 'guidance', label: '指导' },
+  { key: 'support_strategy', label: '支持策略' },
+] as const
+
+function liveFieldValue(field: string): string {
+  if (!content.value) return ''
+  if (field === 'materials.text') return content.value.materials ?? ''
+  if (field.startsWith('column.')) {
+    const key = field.slice('column.'.length) as WeeklyColumnKey
+    return content.value.weekly_columns[key] ?? ''
+  }
+  if (field.startsWith('slot.')) {
+    const rest = field.slice('slot.'.length)
+    const dot = rest.lastIndexOf('.')
+    const slot = rest.slice(0, dot) as WeeklySlot
+    const key = rest.slice(dot + 1)
+    return String((content.value.outdoor_game_slots[slot] as Record<string, unknown> | null)?.[key] ?? '')
+  }
+  if (field.startsWith('focus.')) {
+    const key = field.slice('focus.'.length)
+    return String((content.value.focus_area as Record<string, unknown> | null)?.[key] ?? '')
+  }
+  return ''
+}
+
+function openGameFieldDirectional(field: (typeof GAME_DIRECTION_FIELDS)[number]['key'], label: string): void {
+  if (!activeGameSlot.value || !activeGame.value) return
+  const value = String((activeGame.value as unknown as Record<string, unknown>)[field] ?? '')
+  if (!value.trim()) return
+  openCurrentDirectional(`slot.${activeGameSlot.value}.${field}`, `${WEEKLY_SLOT_LABELS[activeGameSlot.value]}·${label}`, value)
+}
+
+function openFocusFieldDirectional(field: typeof FOCUS_DIRECTION_FIELDS[number]['key'], label: string): void {
+  const focus = content.value?.focus_area
+  if (!focus) return
+  const value = String((focus as Record<string, unknown>)[field] ?? '')
+  if (!value.trim()) return
+  openCurrentDirectional(`focus.${field}`, `重点区域·${label}`, value)
 }
 const outdoorSlots: WeeklySlot[] = ['collective_1', 'collective_2', 'free_choice_1']
 function candidatesFor(slot: WeeklySlot): WeeklySourceCandidate[] {
@@ -911,7 +1194,7 @@ function candidateKey(candidate: WeeklySourceCandidate): string {
 function contentLines(content: WeeklyDraftContent): string[] {
   const lines = [`主题：${content.theme || '（空）'}`]
   for (const day of content.deterministic) lines.push(`${day.date} [${dayStateLabel(day.day_state)}/${sourceStateLabel(day.source_state)}] ${day.effective.morning_talk_topic || '—'} / ${day.effective.group_activity_theme || '—'}`)
-  for (const key of outdoorSlots) lines.push(`${slotLabels[key]}：${gameText(content.outdoor_game_slots[key])}`)
+  for (const key of outdoorSlots) lines.push(`${WEEKLY_SLOT_LABELS[key]}：${gameText(content.outdoor_game_slots[key])}`)
   lines.push(`重点区域：${content.focus_area ? focusText(content.focus_area) : '未选择'}`)
   for (const [label, value] of [['本周重点', content.weekly_columns.key_week_focus], ['环境创设', content.weekly_columns.environment_setup], ['习惯与文化', content.weekly_columns.habit_culture], ['家园合作', content.weekly_columns.home_cooperation]] as const) lines.push(`${label}：${value || '—'}`)
   if (content.materials === null) lines.push('材料：未选择材料')
@@ -1121,9 +1404,9 @@ function openExport(): void {
   if (props.disabled || !controller) return
   exportOpen.value = true
 }
-function openHistoryFromShared(): void {
+function openHistoryFromExport(): void {
   if (props.disabled) return
-  sharedOpen.value = false
+  exportOpen.value = false
   openHistory()
 }
 function onAiBusy(value: boolean): void { aiBusy.value = value; syncState() }
@@ -1141,15 +1424,13 @@ defineExpose({ resetForContext })
       <div class="title">
         <h2>周计划编辑</h2>
         <p v-if="detail" class="muted">
-          {{ detail.plan.header.class_name }} · {{ detail.plan.week_anchor_date }} · 第 {{ detail.plan.week_number_snapshot }} 周
+          {{ detail.plan.header.class_name }} · {{ detail.plan.week_anchor_date }} · 第 {{ detail.plan.week_number_snapshot }} 周 ·
+          已存 v{{ detail.plan.current_draft_version }} · 已确认 v{{ detail.plan.current_confirmed_version ?? '—' }}
         </p>
       </div>
       <div class="actions">
         <el-button data-d1="weekly-save" :disabled="disabled || busy" @click="save">保存</el-button>
         <el-button data-d1="weekly-back" :disabled="disabled" @click="emit('back')">返回</el-button>
-        <el-button data-d1="weekly-history-open" :disabled="disabled || loading || !detail" @click="openHistory">
-          本地确认历史
-        </el-button>
         <el-button
           data-d1="weekly-shared-open"
           :disabled="disabled || loading || !detail"
@@ -1173,24 +1454,6 @@ defineExpose({ resetForContext })
     <el-alert v-if="factsStale" title="服务器最新版本已变化；保留当前回执与输入，请另行核对，不自动替换" type="warning" :closable="false" />
     <el-alert v-if="!weeklyHost?.save_weekly_export && !weeklyHost?.get_weekly_export_result"
       title="原生周导出尚未就绪；查看、编辑和确认仍可正常使用" type="info" :closable="false" />
-
-    <div class="ai-command" data-d1="weekly-ai-actions">
-      <div class="ai-command-text">
-        <strong>AI 生成（分别发起）</strong>
-        <span class="muted">游戏、栏目和材料分别发起；只生成候选，采用仍需预览确认，不会自动保存或连发。</span>
-      </div>
-      <div class="actions">
-        <el-button type="primary" data-d1="weekly-ai-games" :disabled="disabled || busy || !aiPanel" @click="startAi('games')">
-          AI 补充游戏
-        </el-button>
-        <el-button type="primary" data-d1="weekly-ai-columns" :disabled="disabled || busy || !selectedAiColumns.length || !aiPanel" @click="startAi('columns')">
-          AI 生成所选栏目
-        </el-button>
-        <el-button type="primary" data-d1="weekly-ai-materials" :disabled="disabled || busy || !aiPanel" @click="startAi('materials')">
-          AI 生成材料
-        </el-button>
-      </div>
-    </div>
 
     <template v-if="detail && content">
       <div
@@ -1219,7 +1482,6 @@ defineExpose({ resetForContext })
             @click="selectSection(section.key)"
           >
             <span class="section-label">{{ section.label }}</span>
-            <span class="section-hint">{{ section.hint }}</span>
             <span class="section-badge">{{ section.badge }}</span>
           </button>
         </nav>
@@ -1233,112 +1495,255 @@ defineExpose({ resetForContext })
           <header class="pane-head">
             <div>
               <h3>{{ activeSectionInfo.label }}</h3>
-              <p class="muted">{{ activeSectionInfo.hint }}</p>
             </div>
-            <el-button
-              v-if="activeSectionEditable"
-              type="primary"
-              plain
-              size="small"
-              data-d1="weekly-section-edit"
-              :disabled="disabled || busy"
-              @click="openSectionModal(activeSection, $event)"
-            >
-              编辑本栏
-            </el-button>
+            <div class="pane-head-actions">
+              <el-button
+                v-if="activeSection === 'sources'"
+                size="small"
+                data-d1="weekly-sources-back"
+                :disabled="disabled"
+                @click="selectSection('overview')"
+              >
+                返回总览
+              </el-button>
+              <el-button
+                v-if="activeSectionEditable"
+                type="primary"
+                plain
+                size="small"
+                data-d1="weekly-section-edit"
+                :disabled="disabled || busy"
+                @click="openSectionModal(activeSection, $event)"
+              >
+                编辑本栏
+              </el-button>
+            </div>
           </header>
 
           <div v-if="activeSection === 'overview'" class="pane-body" data-d1="weekly-overview">
-            <dl class="read-grid">
-              <div><dt>班级 / 周次</dt><dd>{{ detail.plan.header.class_name }} · 第 {{ detail.plan.week_number_snapshot }} 周</dd></div>
-              <div><dt>周一日期</dt><dd>{{ detail.plan.week_anchor_date }}</dd></div>
-              <div><dt>园所</dt><dd>{{ detail.plan.header.school_name }}</dd></div>
-              <div><dt>教师 / 保育员</dt><dd>{{ detail.plan.header.header_teacher_names.join('、') || '（空）' }} / {{ detail.plan.header.caregiver_name || '（空）' }}</dd></div>
-              <div><dt>版本</dt><dd>已存 v{{ detail.plan.current_draft_version }} · 已确认 v{{ detail.plan.current_confirmed_version ?? '—' }}</dd></div>
-            </dl>
             <div class="read-block">
               <h4>主题</h4>
               <p class="read-text" data-d1="weekly-theme">{{ weeklyDisplay(content.theme) }}</p>
             </div>
+
             <div class="read-block">
-              <h4>每日活动与来源</h4>
-              <p class="muted">默认跟随本人最新已保存日计划；<span data-d1="weekly-daily-state">已明确覆盖或清空的格子保持教师决定</span>。</p>
-              <div v-for="day in content.deterministic" :key="day.date" class="day-row">
-                <h5>{{ day.date }} · {{ dayStateLabel(day.day_state) }}</h5>
-                <p v-if="day.source" class="source-line">
-                  本人日计划 v{{ day.source.content_version }} · {{ day.source.morning_talk_topic || '—' }} / {{ day.source.group_activity_theme || '—' }}
-                </p>
-                <p v-else class="muted">无本人日计划（{{ sourceStateLabel(day.source_state) }}）</p>
-                <dl class="read-grid">
-                  <div>
-                    <dt>晨谈最终格</dt>
-                    <dd class="read-text">{{ weeklyDisplay(dailyCellValue(day, 'morning_talk_topic')) }}</dd>
-                    <dd class="state">{{ dailyCellStateLabel(day, 'morning_talk_topic') }}</dd>
-                  </div>
-                  <div>
-                    <dt>集体活动最终格</dt>
-                    <dd class="read-text">{{ weeklyDisplay(dailyCellValue(day, 'group_activity_theme')) }}</dd>
-                    <dd class="state">{{ dailyCellStateLabel(day, 'group_activity_theme') }}</dd>
-                  </div>
-                </dl>
+              <h4>每日活动</h4>
+              <div class="day-table" data-d1="weekly-daily-table">
+                <div v-for="day in content.deterministic" :key="day.date" class="day-table-row">
+                  <span class="day-table-date">{{ day.date }} · {{ dayStateLabel(day.day_state) }}</span>
+                  <span class="day-table-cell">
+                    <span class="read-text" :title="dailyCellValue(day, 'morning_talk_topic')">{{ weeklySummary(dailyCellValue(day, 'morning_talk_topic'), 30) }}</span>
+                    <span v-if="dailyCellOverridden(day, 'morning_talk_topic')" class="state">{{ dailyCellStateLabel(day, 'morning_talk_topic') }}</span>
+                  </span>
+                  <span class="day-table-cell">
+                    <span class="read-text" :title="dailyCellValue(day, 'group_activity_theme')">{{ weeklySummary(dailyCellValue(day, 'group_activity_theme'), 30) }}</span>
+                    <span v-if="dailyCellOverridden(day, 'group_activity_theme')" class="state">{{ dailyCellStateLabel(day, 'group_activity_theme') }}</span>
+                  </span>
+                  <span v-if="day.source" class="day-table-source">
+                    <span class="source-line" data-d1="weekly-daily-source" :title="dailySourceDetail(day)">{{ dailySourceLabel(day) }}</span>
+                    <el-button text size="small" data-d1="weekly-daily-source-check" :disabled="disabled || busy" @click="openSources">核对</el-button>
+                  </span>
+                  <span v-else class="day-table-source muted">无本人日计划</span>
+                </div>
               </div>
+            </div>
+
+            <div class="framework-grid" data-d1="weekly-framework">
+              <section class="framework-block" data-d1="weekly-framework-games">
+                <div class="card-head">
+                  <h4>周游戏与重点区域</h4>
+                </div>
+                <div v-for="slot in WEEKLY_GAME_SLOTS" :key="slot" class="framework-row">
+                  <span class="framework-label">{{ WEEKLY_SLOT_LABELS[slot] }}</span>
+                  <span class="framework-value" :title="frameworkGameSummary(slot)">{{ frameworkGameSummary(slot) }}</span>
+                  <el-button text size="small" :disabled="disabled || busy" @click="openSectionModal(slot, $event)">编辑</el-button>
+                </div>
+                <div class="framework-row">
+                  <span class="framework-label">重点区域</span>
+                  <span class="framework-value" :title="frameworkFocusSummary()">{{ frameworkFocusSummary() }}</span>
+                  <el-button text size="small" :disabled="disabled || busy" @click="openSectionModal('focus', $event)">编辑</el-button>
+                </div>
+                <section class="framework-materials" data-d1="weekly-framework-materials">
+                  <div class="card-head">
+                    <h4>材料准备</h4>
+                    <el-button text size="small" :disabled="disabled" @click="requestFocusArea">在重点区域查看</el-button>
+                  </div>
+                  <p class="framework-value" :title="materialsSummary()">{{ materialsSummary() }}</p>
+                </section>
+              </section>
+
+              <section class="framework-block" data-d1="weekly-framework-columns">
+                <div class="card-head">
+                  <h4>本周栏目</h4>
+                  <div class="actions">
+                    <el-button
+                      type="primary"
+                      size="small"
+                      data-d1="weekly-ai-columns"
+                      :disabled="disabled || busy || !aiPanel"
+                      @click="startAllColumnsAi"
+                    >
+                      AI 生成
+                    </el-button>
+                    <el-button text size="small" :disabled="disabled || busy" @click="openSectionModal('columns', $event)">编辑</el-button>
+                  </div>
+                </div>
+                <div v-for="key in WEEKLY_COLUMN_KEYS" :key="key" class="framework-row">
+                  <span class="framework-label">{{ WEEKLY_COLUMN_LABELS[key] }}</span>
+                  <span class="framework-value" :title="columnSummary(key)">{{ columnSummary(key) }}</span>
+                </div>
+              </section>
+
             </div>
           </div>
 
           <div v-else-if="activeGameSlot" class="pane-body" :data-d1="`weekly-game-${activeGameSlot}`">
-            <p class="muted">来源：{{ activeGame ? weeklyGameSourceLabel(activeGame) : '未选择' }}</p>
-            <dl class="read-grid read-grid-wide">
-              <div v-for="row in weeklyGameRows(activeGame)" :key="row.label">
-                <dt>{{ row.label }}</dt>
-                <dd class="read-text">{{ row.value }}</dd>
+            <p class="source-line" data-d1="weekly-game-source" :title="activeGame ? gameSourceDetail(activeGame) : undefined">
+              来源：{{ activeGame ? gameSourceLabel(activeGame) : '未选择' }}
+              <el-button v-if="gameHasDailySource(activeGameSlot)" data-d1="weekly-game-source-check" text size="small" :disabled="disabled || busy" @click="openSources">核对来源</el-button>
+            </p>
+            <div class="card-head">
+              <h4>本栏游戏</h4>
+              <el-button
+                type="primary"
+                size="small"
+                :data-d1="`weekly-ai-game-${activeGameSlot}`"
+                :disabled="disabled || busy || !aiPanel"
+                @click="startScopedGame(activeGameSlot)"
+              >
+                AI 生成
+              </el-button>
+            </div>
+            <dl v-if="activeGame" class="read-grid read-grid-wide">
+              <div v-for="field in GAME_DIRECTION_FIELDS" :key="field.key">
+                <dt>{{ field.label }}</dt>
+                <dd class="read-text">{{ weeklyDisplay(String((activeGame as unknown as Record<string, unknown>)[field.key] ?? '')) }}</dd>
+                <el-button
+                  v-if="activeGame.source_kind !== 'daily_plan' && String((activeGame as unknown as Record<string, unknown>)[field.key] ?? '').trim()"
+                  text
+                  size="small"
+                  :data-d1="`weekly-current-directional-${field.key}`"
+                  :disabled="disabled || busy"
+                  @click="openGameFieldDirectional(field.key, field.label)"
+                >
+                  定向修改
+                </el-button>
               </div>
             </dl>
-            <p class="muted">来源候选 {{ candidatesFor(activeGameSlot).length }} 项；点“编辑本栏”比较采用、手工填写或清空。</p>
+            <p v-else class="muted">未选择本栏游戏。</p>
           </div>
 
           <div v-else-if="activeSection === 'focus'" ref="focusCard" class="pane-body focus-anchor" data-d1="weekly-focus" tabindex="-1">
             <p v-if="!content.focus_area" class="muted">未选择重点区域。</p>
             <template v-else>
-              <p class="muted">来源：{{ weeklyFocusSourceLabel(content.focus_area) }}</p>
+              <p class="source-line" data-d1="weekly-focus-source" :title="focusSourceDetail(content.focus_area)">
+                来源：{{ focusSourceLabel(content.focus_area) }}
+                <el-button v-if="focusHasDailySource()" data-d1="weekly-focus-source-check" text size="small" :disabled="disabled || busy" @click="openSources">核对来源</el-button>
+              </p>
               <dl class="read-grid read-grid-wide">
-                <div v-for="row in weeklyFocusRows(content.focus_area)" :key="row.label">
-                  <dt>{{ row.label }}</dt>
-                  <dd class="read-text">{{ row.value }}</dd>
+                <div v-for="field in FOCUS_DIRECTION_FIELDS" :key="field.key">
+                  <dt>{{ field.label }}</dt>
+                  <dd class="read-text">{{ weeklyDisplay(String((content.focus_area as unknown as Record<string, unknown>)[field.key] ?? '')) }}</dd>
+                  <el-button
+                    v-if="content.focus_area.source_kind !== 'daily_plan' && String((content.focus_area as unknown as Record<string, unknown>)[field.key] ?? '').trim()"
+                    text
+                    size="small"
+                    :data-d1="`weekly-current-directional-focus-${field.key}`"
+                    :disabled="disabled || busy"
+                    @click="openFocusFieldDirectional(field.key, field.label)"
+                  >
+                    定向修改
+                  </el-button>
                 </div>
               </dl>
             </template>
-            <p class="muted">来源候选 {{ focusCandidates().length }} 项；点“编辑本栏”比较采用或清空。</p>
+            <div class="card-head">
+              <h4>重点区域</h4>
+              <el-button
+                type="primary"
+                size="small"
+                data-d1="weekly-ai-focus-area"
+                :disabled="disabled || busy || !aiPanel"
+                @click="startScopedGame('focus_area')"
+              >
+                AI 生成
+              </el-button>
+            </div>
+
+            <section class="focus-materials" data-d1="weekly-focus-materials">
+              <div class="card-head">
+                <h4>材料准备</h4>
+                <div class="actions">
+                  <el-button
+                    type="primary"
+                    size="small"
+                    data-d1="weekly-ai-materials"
+                    aria-label="AI 生成材料"
+                    title="AI 生成材料"
+                    :disabled="disabled || busy || !aiPanel"
+                    @click="startAi('materials')"
+                  >
+                    AI 生成
+                  </el-button>
+                  <el-button
+                    v-if="materialEditable"
+                    size="small"
+                    :disabled="disabled || busy"
+                    @click="openSectionModal('materials', $event)"
+                  >
+                    编辑材料
+                  </el-button>
+                </div>
+              </div>
+              <p v-if="!materialEditable" class="muted">尚无已采用材料候选；生成并采用后可编辑或清空。</p>
+              <p v-else-if="content.materials === null" class="muted">未选择材料。</p>
+              <p v-else-if="content.materials === ''" class="muted">材料为空（已明确采用空材料）。</p>
+              <pre v-else class="read-text read-pre" data-d1="weekly-materials-text">{{ content.materials }}</pre>
+              <p v-if="materialEditable" class="muted">填回后点击“保存材料正文”或页首“保存”。</p>
+              <el-button v-if="materialEditable" size="small" :disabled="disabled || busy" @click="saveMaterials">保存材料正文</el-button>
+              <el-button
+                v-if="materialEditable && (content.materials ?? '').trim()"
+                text
+                size="small"
+                data-d1="weekly-current-directional-materials"
+                :disabled="disabled || busy"
+                @click="openCurrentDirectional('materials.text', '材料准备', content.materials ?? '')"
+              >
+                定向修改材料正文
+              </el-button>
+              <p v-if="materialNotice" class="muted">{{ materialNotice }}</p>
+            </section>
           </div>
 
           <div v-else-if="activeSection === 'columns'" class="pane-body" data-d1="weekly-columns">
-            <dl class="read-grid read-grid-wide">
-              <div v-for="key in WEEKLY_COLUMN_KEYS" :key="key">
-                <dt>{{ WEEKLY_COLUMN_LABELS[key] }}</dt>
-                <dd class="read-text">{{ weeklyDisplay(content.weekly_columns[key]) }}</dd>
+            <div v-for="key in WEEKLY_COLUMN_KEYS" :key="key" class="column-block" :data-d1="`weekly-column-${key}`">
+              <div class="card-head">
+                <h4>{{ WEEKLY_COLUMN_LABELS[key] }}</h4>
+                <div class="actions">
+                  <el-button
+                    type="primary"
+                    size="small"
+                    :data-d1="`weekly-ai-column-${key}`"
+                    :disabled="disabled || busy || !aiPanel"
+                    @click="startColumnAi(key)"
+                  >
+                    AI 生成
+                  </el-button>
+                  <el-button text size="small" :disabled="disabled || busy" @click="openSectionModal('columns', $event)">编辑</el-button>
+                </div>
               </div>
-            </dl>
-            <div class="ai-inline">
-              <span class="muted">AI 生成所选栏目</span>
-              <el-checkbox-group v-model="selectedAiColumns" :disabled="disabled || busy">
-                <el-checkbox v-for="field in WEEKLY_AI_COLUMNS" :key="field" :value="field">
-                  {{ WEEKLY_COLUMN_LABELS[field] }}
-                </el-checkbox>
-              </el-checkbox-group>
+              <p class="read-text">{{ weeklyDisplay(content.weekly_columns[key]) }}</p>
+              <el-button
+                v-if="content.weekly_columns[key].trim()"
+                text
+                size="small"
+                :data-d1="`weekly-current-directional-${key}`"
+                :disabled="disabled || busy"
+                @click="openCurrentDirectional(`column.${key}`, WEEKLY_COLUMN_LABELS[key], content.weekly_columns[key])"
+              >
+                定向修改当前正文
+              </el-button>
             </div>
-          </div>
-
-          <div v-else-if="activeSection === 'materials'" class="pane-body" data-d1="weekly-materials">
-            <p v-if="!focusSelected" class="muted">
-              未选择重点区域时，AI 只依据当前班级年龄、已保存周主题和已有可靠选择给出“建议材料”，每项无原文证据，请预览核对后采用。
-              <el-button text :disabled="disabled" @click="requestFocusArea">前往重点区域</el-button>
-            </p>
-            <p v-if="!materialEditable" class="muted">尚无已采用材料候选；生成并采用后可编辑或清空。</p>
-            <p v-else-if="content.materials === null" class="muted">未选择材料。</p>
-            <p v-else-if="content.materials === ''" class="muted">材料为空（已明确采用空材料）。</p>
-            <pre v-else class="read-text read-pre" data-d1="weekly-materials-text">{{ content.materials }}</pre>
-            <p v-if="materialEditable" class="muted">点“编辑本栏”修改材料正文；填回后仍需点“保存材料正文”或页首“保存”。</p>
-            <el-button v-if="materialEditable" size="small" :disabled="disabled || busy" @click="saveMaterials">保存材料正文</el-button>
-            <p v-if="materialNotice" class="muted">{{ materialNotice }}</p>
           </div>
 
           <div v-else-if="activeSection === 'sources'" class="pane-body" data-d1="weekly-sources">
@@ -1403,8 +1808,7 @@ defineExpose({ resetForContext })
       >
       <template v-if="sectionModal">
         <p class="muted" data-d1="weekly-section-identity">
-          正在编辑：{{ weeklySectionInfo(sectionModal.key).label }} ·
-          草稿 v{{ sectionModal.revision }} · 填回后只更新草稿，不会自动保存或确认。
+          正在编辑：{{ weeklySectionInfo(sectionModal.key).label }} · 草稿 v{{ sectionModal.revision }}
         </p>
         <p v-if="sectionModalDirty" class="muted" data-d1="weekly-section-pending">
           弹窗内容尚未填回草稿；离开前请先填回或取消。
@@ -1462,12 +1866,13 @@ defineExpose({ resetForContext })
               <dt>{{ row.label }}</dt><dd class="read-text">{{ row.value }}</dd>
             </div>
           </dl>
-          <p class="muted">来源候选（比较后明确采用；不会自动写入）：</p>
+          <p v-if="content?.outdoor_game_slots[sectionModal.game.slot]" class="muted">当前来源：{{ gameSourceLabel(content.outdoor_game_slots[sectionModal.game.slot]!) }}</p>
+          <p class="muted">来源候选：</p>
           <div v-for="candidate in candidatesFor(sectionModal.game.slot)" :key="candidateKey(candidate)" class="candidate">
             <span>{{ candidateText(candidate) }}</span>
             <el-button size="small" :disabled="disabled || !candidateGame(candidate)" @click="chooseSectionGame(candidate)">采用此来源</el-button>
           </div>
-          <p v-if="!candidatesFor(sectionModal.game.slot).length" class="muted">本周本人日计划暂无该类游戏候选；可手工填写或使用 AI 补充。</p>
+          <p v-if="!candidatesFor(sectionModal.game.slot).length" class="muted">本周本人日计划暂无该类游戏候选；可手工填写或另行生成 AI 候选。</p>
           <div v-if="sectionModal.game.mode === 'manual'" class="manual-fields">
             <el-input v-model="sectionModal.game.manual.name" :disabled="disabled" placeholder="名称" data-d1="weekly-section-game-name" />
             <el-input v-model="sectionModal.game.manual.shared_objectives" :disabled="disabled" type="textarea" :rows="2" placeholder="共同目标" data-d1="weekly-section-game-objectives" />
@@ -1487,8 +1892,8 @@ defineExpose({ resetForContext })
               <dt>{{ row.label }}</dt><dd class="read-text">{{ row.value }}</dd>
             </div>
           </dl>
-          <p v-if="content?.focus_area" class="muted">当前来源：{{ weeklyFocusSourceLabel(content.focus_area) }}</p>
-          <p class="muted">来源候选（比较后明确采用；不会自动写入）：</p>
+          <p v-if="content?.focus_area" class="muted">当前来源：{{ focusSourceLabel(content.focus_area) }}</p>
+          <p class="muted">来源候选：</p>
           <div v-for="candidate in focusCandidates()" :key="candidateKey(candidate)" class="candidate">
             <span>{{ candidateText(candidate) }}</span>
             <el-button size="small" :disabled="disabled" @click="chooseSectionFocus(candidate)">采用此重点区域</el-button>
@@ -1525,7 +1930,7 @@ defineExpose({ resetForContext })
           <p v-else class="muted">尚无已采用材料候选；生成并采用后可编辑或清空。</p>
         </template>
 
-        <p class="muted">填回只更新当前草稿；保存和确认仍按原来的操作。</p>
+        <p class="muted">填回只更新草稿。</p>
       </template>
       </div>
       <template #footer>
@@ -1576,8 +1981,23 @@ defineExpose({ resetForContext })
       :disabled="disabled || loading || reissuePending"
       @busy="onSharedBusy"
       @blocking="onSharedBlocking"
-      @open-history="openHistoryFromShared"
     />
+
+    <DirectionalRevisionDialog
+      v-if="currentDirectionalRequest"
+      :open="currentDirectionalOpen"
+      :scope="currentDirectionalRequest.scope"
+      :field-text="currentDirectionalRequest.fieldText"
+      :selection="currentDirectionalRequest.selection"
+      :profile-epoch="profileEpoch"
+      :source-label="currentDirectionalRequest.sourceLabel"
+      :source-lines="currentDirectionalRequest.sourceLines"
+      :disabled="disabled"
+      :apply-adoption="applyCurrentDirectional"
+      @update:open="currentDirectionalOpen = $event"
+      @busy="currentDirectionalBusy = $event; syncState()"
+    />
+    <p v-if="currentDirectionalNotice" class="muted">{{ currentDirectionalNotice }}</p>
 
     <WeeklyHistoryPanel
       v-if="detail"
@@ -1598,6 +2018,7 @@ defineExpose({ resetForContext })
       :disabled="disabled"
       :host="weeklyHost"
       @busy="onExportBusy"
+      @open-history="openHistoryFromExport"
     />
 
     <WeeklyExportDialog v-if="detail" v-model:open="historyExportOpen" :plan-id="detail.plan.id" mode="single" :confirmation="exportConfirmation" :disabled="disabled" :host="weeklyHost" @busy="onExportBusy" />
@@ -1612,20 +2033,93 @@ defineExpose({ resetForContext })
 .block { margin: 0.75rem 0; border-color: var(--kgm-border); background: var(--kgm-surface); }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
 .card-head h3 { margin: 0.25rem 0; }
-.ai-command {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin: 0.9rem 0;
-  padding: 0.75rem 0.9rem;
-  border: 1px solid var(--kgm-border);
-  border-radius: 12px;
-  background: var(--kgm-surface);
+.pane-head-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.framework-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.5rem;
 }
-.ai-command .el-button { min-height: 42px; }
-.ai-command-text { display: flex; flex-direction: column; gap: 0.15rem; min-width: 12rem; }
+.framework-block {
+  min-width: 0;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--kgm-border);
+  border-radius: 10px;
+  background: var(--kgm-bg);
+}
+.framework-block h4 { margin: 0.05rem 0; font-size: 0.9rem; }
+.framework-row {
+  display: grid;
+  grid-template-columns: 5.2rem minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.2rem;
+  padding: 0.08rem 0;
+  border-top: 1px dashed var(--kgm-border);
+}
+.framework-label { color: var(--kgm-muted); font-size: 0.75rem; line-height: 1.25; }
+.framework-value {
+  margin: 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+.framework-block :deep(.el-button) {
+  min-height: 24px;
+  height: 24px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+.column-block, .focus-materials {
+  margin-top: 0.7rem;
+  padding-top: 0.55rem;
+  border-top: 1px dashed var(--kgm-border);
+}
+.column-block h4, .focus-materials h4 { margin: 0.2rem 0; }
+.framework-materials {
+  margin-top: 0.3rem;
+  padding-top: 0.3rem;
+  border-top: 1px dashed var(--kgm-border);
+}
+.column-block .read-text { margin-top: 0.25rem; }
+.day-table {
+  display: grid;
+  gap: 0;
+  margin: 0.4rem 0;
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.day-table-row {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.1rem 0.45rem;
+  border-top: 1px solid var(--kgm-border);
+  font-size: 0.85rem; line-height: 1.25;
+}
+.day-table-row:first-child { border-top: 0; }
+.day-table-date {
+  color: var(--kgm-muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.25;
+}
+.day-table-cell { min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.day-table-cell .read-text {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.day-table-cell .state { font-size: 0.7rem; color: var(--kgm-muted); }
+.day-table-source { display: flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+@media (max-width: 760px) {
+  .day-table-row { grid-template-columns: 1fr; gap: 0.25rem; }
+  .day-table-cell .read-text { white-space: normal; }
+}
 .weekly-workspace {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
@@ -1660,7 +2154,7 @@ defineExpose({ resetForContext })
      hints make each item shrink to min-height and their badge text spills
      outside the border instead of the nav scrolling. */
   flex: 0 0 auto;
-  padding: 0.7rem 0.8rem;
+  padding: 0.5rem 0.65rem;
   border: 1px solid var(--kgm-border);
   border-radius: 12px;
   background: var(--kgm-surface);
@@ -1678,7 +2172,6 @@ defineExpose({ resetForContext })
 }
 .section-button:disabled { cursor: default; opacity: 0.75; }
 .section-label { font-weight: 600; }
-.section-hint { font-size: 0.75rem; color: var(--kgm-muted); line-height: 1.35; }
 .section-badge { font-size: 0.72rem; color: var(--kgm-muted); }
 .section-button.selected .section-badge { color: var(--kgm-text); }
 .section-pane {
@@ -1714,6 +2207,8 @@ defineExpose({ resetForContext })
 .read-grid dd.state { font-size: 0.75rem; color: var(--kgm-muted); }
 .read-block { margin: 0.75rem 0; }
 .read-block h4 { margin: 0.3rem 0; }
+[data-d1='weekly-overview'] .read-block { margin: 0.4rem 0; }
+[data-d1='weekly-overview'] .read-block h4 { margin: 0.1rem 0; }
 .read-text {
   margin: 0;
   white-space: pre-wrap;

@@ -46,7 +46,6 @@ const emit = defineEmits<{
   (e: 'update:open', value: boolean): void
   (e: 'busy', value: boolean): void
   (e: 'blocking', value: BlockingDraft | null): void
-  (e: 'open-history'): void
 }>()
 
 const api = createWeeklyCollaborationApi()
@@ -714,13 +713,6 @@ function loadLocalProjection(): void {
   useLocalProjection()
 }
 
-function openLocalHistory(): void {
-  if (blockingDraft.value) {
-    errorText.value = blockingDraft.value.message
-    return
-  }
-  emit('open-history')
-}
 
 onBeforeUnmount(() => {
   alive = false
@@ -801,13 +793,22 @@ defineExpose({
               :value="term.term_id"
             />
           </el-select>
-          <el-button size="small" :disabled="!selectedTermId || loading" @click="loadShared()">读取共享版</el-button>
+        </div>
+        <div v-if="selectedTermId" class="actions">
+          <el-button
+            size="small"
+            data-d1="weekly-collaboration-read"
+            :loading="loading"
+            :disabled="loading || saving || confirming || !!pending || disabled"
+            @click="loadShared()"
+          >
+            {{ shared ? '重新读取共享版' : '读取共享版' }}
+          </el-button>
         </div>
         <p v-else-if="termOptions.length === 0" class="muted">本地周日期不在当前在线学期范围内，未发送请求。</p>
 
         <template v-if="shared && draft">
           <div class="actions">
-            <el-button size="small" :disabled="saving || confirming || !!pending" @click="loadShared()">重新读取</el-button>
             <el-button
               size="small"
               :disabled="saving || confirming || !!pending || !localProjectionAvailable"
@@ -947,7 +948,6 @@ defineExpose({
       </template>
     </div>
     <template #footer>
-      <el-button data-d1="weekly-shared-history" :disabled="!!pending || saving || confirming || exportBusy" @click="openLocalHistory">本地确认历史</el-button>
       <el-button :disabled="!!pending || saving || confirming || exportBusy" @click="close">关闭</el-button>
       <el-button
         :disabled="!!pending || saving || confirming || !dirty"

@@ -1051,3 +1051,37 @@ class DirectionalMigrationTests(LocalTestCase):
             )
         finally:
             connection.close()
+
+
+class WeeklyRecordFieldGuardTests(LocalTestCase):
+    def test_weekly_record_rejects_daily_plan_fixed_source_directly(self):
+        content = {
+            "weekly_columns": {},
+            "outdoor_game_slots": {
+                "collective_1": {"source_kind": "daily_plan", "name": "固定来源"}
+            },
+            "focus_area": None,
+            "materials": None,
+            "materials_provenance": None,
+        }
+        with self.assertRaises(LocalValidationError):
+            directional_revision._weekly_saved_field(
+                content, "slot.collective_1.name"
+            )
+
+    def test_weekly_record_materials_require_adopted_nonempty_text(self):
+        content = {
+            "weekly_columns": {},
+            "outdoor_game_slots": {},
+            "focus_area": None,
+            "materials": "已采用材料",
+            "materials_provenance": None,
+        }
+        with self.assertRaises(LocalValidationError):
+            directional_revision._weekly_saved_field(content, "materials.text")
+        content["materials_provenance"] = {"candidate_id": "c1"}
+        target, text, _identity = directional_revision._weekly_saved_field(
+            content, "materials.text"
+        )
+        self.assertEqual(target, "weekly_material")
+        self.assertEqual(text, "已采用材料")

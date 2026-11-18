@@ -118,6 +118,11 @@ const state = mod.exports.default.setup(props, { expose() {}, emit: (...args) =>
 await (async () => { mounted[0](); await new Promise((resolve) => setTimeout(resolve, 0)) })()
 assert.equal(state.tasks.value.length, 1)
 assert.equal(state.candidates.value.length, 2)
+assert.equal(
+  calls.filter((item) => ['games', 'columns', 'materials'].includes(item.kind)).length,
+  0,
+  'loading tasks and candidates never starts a generation request',
+)
 await state.loadProgress(state.tasks.value[0])
 assert.equal(state.progressFor(state.tasks.value[0])?.task_id, 't1')
 assert.equal(state.progressFor(state.tasks.value[0])?.phase, 'thinking')
@@ -831,10 +836,32 @@ await panelState.refreshBatch()
   ok('an HTTP 200 receipt without draft keeps the pending ticket')
 }
 
+{
+  const props = vue.shallowReactive({ controller: fakeController, planId: 'p1', detail: detail(), disabled: false, profileEpoch: 1, sessionEpoch: 2 })
+  const panel = mod.exports.default.setup(props, { expose() {}, emit: () => {} })
+  await panel.refreshBatch()
+  const before = calls.filter((item) => item.kind === 'columns').length
+  await panel.create('columns', ['environment_setup'])
+  const one = calls.filter((item) => item.kind === 'columns').slice(before)
+  assert.equal(one.length, 1)
+  assert.deepEqual(one[0].body.selected_fields, ['environment_setup'])
+  assert.equal(panel.pendingCreate.value, null)
+  await panel.create('columns', ['key_week_focus', 'environment_setup', 'habit_culture', 'home_cooperation'])
+  const all = calls.filter((item) => item.kind === 'columns').slice(before + 1)
+  assert.equal(all.length, 1)
+  assert.deepEqual(all[0].body.selected_fields, ['key_week_focus', 'environment_setup', 'habit_culture', 'home_cooperation'])
+  const beforeEmpty = calls.filter((item) => item.kind === 'columns').length
+  await panel.create('columns', [])
+  assert.equal(calls.filter((item) => item.kind === 'columns').length, beforeEmpty)
+  assert.match(panel.error.value, /选择要生成的栏目/)
+  ok('a section AI action sends only its own column; the overview action sends all four, and an empty scope sends nothing')
+}
+
 const editorSource = fs.readFileSync(path.join(d1Dir, 'views', 'WeeklyPlanEditorView.vue'), 'utf8')
 assert.match(source, /未选择重点区域/)
 assert.match(source, /建议材料/)
-assert.match(editorSource, /前往重点区域/)
+assert.match(editorSource, /weekly-focus-materials/)
+assert.match(editorSource, /data-d1="weekly-ai-materials"/)
 assert.match(compiled, /materialsFocusReady/)
 ok('materials form explains suggested materials when no focus and keeps the optional focus-area action')
 

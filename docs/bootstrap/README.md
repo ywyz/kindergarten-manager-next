@@ -2,9 +2,9 @@
 
 当前工作只从[任务入口](../tasks/current.md)接续。[项目协作规则](../../AGENTS.md)、[v2 实施状态](architecture-v2-readiness.md)及[系统架构](../../ARCHITECTURE.md)分别说明权限、证据和架构职责。
 
-## 当前状态（2026-11-12）
+## 当前状态（2026-11-18）
 
-- 当前集成为 `dev/0.1`（`d1a4261`），`main` 为稳定线；签名预览为 `v0.1.0-listening-test.20261114`，不是稳定正式发行。入口与待验见[当前任务](../tasks/current.md)。
+- 当前集成为 `dev/0.1`，`main` 为稳定线。本轮体验修复在 `fix/preview-feedback-20261117` 接续。公开 Windows 签名预览为 `v0.1.0-listening-test.20261117`。[当前任务](../tasks/current.md)记录本轮源码验收，[发布核查](desktop-update-fix-20261117-review.md)记录已发布预览。
 - 多设备反馈、长文本、备份/提示词兼容和更新验签见[多设备预览验收](desktop-multi-device-preview-review.md)。
 - 在线管理端、学期更名、共享周和提示词发布见[在线协作联调](online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)，模块合同见[在线协作 Contract](../modules/online-collaboration.md)。
 - 备份恢复、倾听、定向修改和课程审议分别见[备份核查](desktop-backup-restore-release-review.md)、[倾听核查](desktop-one-to-one-listening-review.md)、[定向修改核查](desktop-directional-revision-review.md)和[课程审议核查](desktop-curriculum-deliberation-review.md)。

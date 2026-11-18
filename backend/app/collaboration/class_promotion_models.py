@@ -29,7 +29,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.mysql import VARCHAR
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from .models import CollaborationBase, UTCDateTime
+from .models import Classroom, CollaborationBase, UTCDateTime
 
 GRADES = ("small", "middle", "large")
 GRADE_LABELS = {"small": "小", "middle": "中", "large": "大"}
@@ -70,6 +70,15 @@ def make_class_name(grade: str, class_number: int) -> str:
     if grade not in GRADE_LABELS:
         raise ValueError("invalid grade")
     return f"{GRADE_LABELS[grade]}{_number_label(class_number)}班"
+
+def _effective_name(
+    grade: str,
+    class_number: int,
+    override: str | None = None,
+) -> str:
+    if override is not None and override.strip():
+        return override
+    return make_class_name(grade, class_number)
 
 
 def _ascii_string(length: int) -> String:
@@ -361,13 +370,20 @@ def effective_class_name_at_date(
     at_date: date,
     fallback: str | None = None,
 ) -> str | None:
+    override = session.scalar(
+        select(Classroom.display_name_override).where(
+            Classroom.id == class_id
+        )
+    )
+    if override is not None and override.strip():
+        return override
     state = session.get(ClassPromotionState, class_id)
     if state is None:
         return fallback
     grade = latest_grade_at_date(session, class_id, at_date)
     if grade is None:
         return fallback
-    return make_class_name(grade, state.class_number)
+    return _effective_name(grade, state.class_number, override)
 
 
 def effective_class_name_now(
@@ -384,6 +400,13 @@ def effective_class_names_now(
     session: Session, class_ids: Iterable[uuid.UUID]
 ) -> dict[uuid.UUID, str]:
     ids = list(dict.fromkeys(class_ids))
+    overrides = dict(
+        session.execute(
+            select(Classroom.id, Classroom.display_name_override).where(
+                Classroom.id.in_(ids)
+            )
+        ).all()
+    ) if ids else {}
     if not ids:
         return {}
     states = session.scalars(
@@ -415,9 +438,10 @@ def effective_class_names_now(
     ).all()
     latest = {class_id: grade for class_id, grade in rows}
     return {
-        state.class_id: make_class_name(
+        state.class_id: _effective_name(
             latest.get(state.class_id, state.base_grade),
             state.class_number,
+            overrides.get(state.class_id),
         )
         for state in states
     }

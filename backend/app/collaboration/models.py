@@ -124,6 +124,10 @@ class Classroom(CollaborationBase):
             "char_length(display_name) between 1 and 120",
             name="ck_classes_display_name",
         ),
+        CheckConstraint(
+            "display_name_override is null or char_length(display_name_override) between 1 and 120",
+            name="ck_classes_display_name_override",
+        ),
         Index("ix_classes_school", "school_id"),
         _table_options(),
     )
@@ -141,6 +145,7 @@ class Classroom(CollaborationBase):
         nullable=False,
     )
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name_override: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         nullable=False,

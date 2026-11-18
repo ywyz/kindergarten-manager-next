@@ -636,6 +636,7 @@ def task_out(session: Session, task: LocalAITask) -> dict[str, Any]:
                 "source_id": task.source_id,
                 "weekly_plan_id": task.weekly_plan_id,
                 "target": WEEKLY_TARGETS.get(task.task_type, ""),
+                "game_scope": deps.get("_game_scope"),
                 "draft": {
                     "id": inp.weekly_draft_id if inp is not None else "",
                     "version": inp.source_revision if inp is not None else 0,
@@ -3210,6 +3211,11 @@ def finalize_success(session: Session, claim: Claim, result: dict[str, Any], now
                 validated = weekly_ai_contracts.parse_games_candidate(
                     text, server_manifest=manifest
                 )
+                game_scope = dict(inp.dependencies_json or {}).get("_game_scope")
+                if game_scope is not None:
+                    validated = weekly_ai_contracts.project_scoped_games_candidate(
+                        validated, game_scope
+                    )
             elif claim.task_type == "weekly_materials_generate":
                 validated = weekly_ai_contracts.parse_materials_candidate(
                     text, server_manifest=manifest

@@ -17,14 +17,16 @@ from tests.local.backup_fixture_support import (
 )
 PROMPT_TABLES = {"local_prompt_bundles", "local_personal_prompt_heads",
                   "local_personal_prompt_versions"}
-# Current build adds one built-in default revision to these three tasks.  Their
-# uncustomised heads advance latest_default_revision while retaining the same
-# current personal revision; all other old heads must stay byte-identical.
-DEFAULT_HEAD_BUMP_TASKS = {
-    "daily_other_activities",
-    "game_observation_generate",
-    "game_observation_rewrite",
+# The two observation tasks and daily_other_activities are the only frozen 0007
+# heads allowed to advance in one ordinary runtime sync.  Current published
+# defaults are r3; an old r1/r2 pointer may jump directly to r3, but no other
+# task or revision is permitted here.
+DEFAULT_HEAD_TARGET_REVISIONS = {
+    "daily_other_activities": 3,
+    "game_observation_generate": 3,
+    "game_observation_rewrite": 3,
 }
+DEFAULT_HEAD_BUMP_TASKS = set(DEFAULT_HEAD_TARGET_REVISIONS)
 HEAD_KEY_COLUMNS = ("profile_id", "task_type")
 # Original 0007 archive/fidelity and plaintext/password restore tests use
 # create_old_0007_fixture() with its default frozen rows.  Current-build weekly
@@ -77,23 +79,31 @@ def _old_head_rows_preserved(old_rows: list[str], new_rows: list[str]) -> None:
         assert after_row is not None, key
         task_type = before_row["task_type"]
         if task_type in DEFAULT_HEAD_BUMP_TASKS:
-            # Only the default pointer and update stamp may advance, and only
-            # when the current sync actually registers that new default.  The
-            # chosen personal revision (customised or not) stays put; the
-            # existing personal version row is checked by the additive table
-            # assertion below.  Migration-only paths legitimately leave it
-            # unchanged.
+            # Only the published default pointer and update stamp may advance.
+            # Old r1/r2 heads may jump directly to the current catalog default
+            # (currently r3); the chosen personal revision (customised or not)
+            # stays put.  The existing personal version row is checked by the
+            # additive table assertion below.  Migration-only paths
+            # legitimately leave the head unchanged.
             assert after_row["current_revision"] == before_row["current_revision"], key
             assert (
                 after_row["required_contract_version"]
                 == before_row["required_contract_version"]
             ), key
             assert after_row["created_at"] == before_row["created_at"], key
-            if after_row != before_row:
-                assert (
-                    after_row["latest_default_revision"]
-                    == before_row["latest_default_revision"] + 1
-                ), key
+            assert (
+                after_row["latest_default_revision"]
+                == DEFAULT_HEAD_TARGET_REVISIONS[task_type]
+            ), key
+            changed_columns = {
+                column
+                for column in after_row
+                if after_row[column] != before_row[column]
+            }
+            assert changed_columns <= {
+                "latest_default_revision",
+                "updated_at",
+            }, (key, changed_columns)
         else:
             assert after_row == before_row, key
 
@@ -285,9 +295,10 @@ def test_0007_original_archive_accepts_known_historical_other_activities(
         runtime.dispose()
 
 
-def test_0007_aligned_runtime_sync_adds_only_weekly_prompt_rows(tmp_path):
-    """Deliberately aligned synthetic 0007: current-build weekly registration is
-    normal.  This is not an original-package fidelity test."""
+def test_0007_aligned_runtime_sync_registers_weekly_prompts_and_default_heads(tmp_path):
+    """Deliberately aligned synthetic 0007: current-build weekly registration
+    and published default-head sync are normal.  This is not an original-package
+    fidelity test."""
     old = tmp_path / "old-data"
     db = old / "kindergarten.db"
     create_old_0007_fixture(db, old, align_default_prompts=True)
@@ -526,6 +537,221 @@ from app.local import (weekly_ai_adoption, weekly_ai_contracts, weekly_ai_servic
                        weekly_plan_service)
 from app.local.models import (LocalAICandidate, LocalAIExecution, LocalAIInput,
                               LocalAITask, LocalWeeklyPlan)
+def _seed_scoped_games_adoption(case) -> dict:
+    """Create two real scoped game candidates; edit and adopt the second."""
+    from sqlalchemy import select
+    from app.local import ai_task_service
+
+    session = case.session
+    runtime = case.runtime
+    version = case.version
+    adopted = None
+    for scope in ("collective_1", "collective_2"):
+        result, created = weekly_ai_service.create_weekly_tasks(
+            session, runtime=runtime, profile_id=case.profile.id,
+            plan_id=case.plan_id, request_id=uuid.uuid4().hex,
+            expected_draft_version=version,
+            operation_kind=weekly_ai_service.GAMES,
+            task_specs=[weekly_ai_service.WeeklyTaskSpec(
+                "weekly_games_select", "games")],
+            game_scope=scope,
+        )
+        assert created
+        claim = ai_task_service.claim_next(
+            runtime, now=ai_task_service._now(), started_ticks=1
+        )
+        assert claim is not None
+        assert claim.payload.get("game_scope") == scope
+        assert ai_task_service.commit_dispatch_mark(
+            session, claim, ai_task_service._now()
+        )
+        slots = {
+            "collective_1": None,
+            "collective_2": None,
+            "free_choice_1": None,
+        }
+        slots[scope] = {
+            "kind": "ai_supplement",
+            "name": f"合成补充{scope}",
+            "shared_objectives": "目标",
+            "guidance_points": "指导",
+            "focus_guidance": "关注",
+            "basis_handles": [],
+        }
+        assert ai_task_service.finalize_success(
+            session, claim,
+            {"kind": "success", "candidate_text": json.dumps(
+                {"outdoor_game_slots": slots, "focus_area": None},
+                ensure_ascii=False,
+            )},
+            ai_task_service._now(),
+        )
+        candidate = session.scalars(
+            select(LocalAICandidate).where(
+                LocalAICandidate.task_id == claim.task_id
+            )
+        ).one()
+        selection = {"candidate_id": candidate.id, "target": "games"}
+        if scope == "collective_2":
+            selection["edit"] = {
+                "outdoor_game_slots": {
+                    scope: {
+                        "name": "编辑补充名称",
+                        "guidance_points": "编辑补充指导",
+                    }
+                }
+            }
+        preview = weekly_ai_adoption.preview_adoption(
+            session, runtime=runtime, profile_id=case.profile.id,
+            plan_id=case.plan_id, expected_draft_version=version,
+            selections=[selection],
+            launch_id=runtime.launch_id, session_scope_hash="scope",
+        )
+        adopted = weekly_ai_adoption.adopt(
+            session, runtime=runtime, profile_id=case.profile.id,
+            plan_id=case.plan_id, request_id=uuid.uuid4().hex,
+            expected_draft_version=version,
+            preview_token=preview["preview_token"],
+            launch_id=runtime.launch_id, session_scope_hash="scope",
+        )
+        version = adopted["draft"]["version"]
+    return {"plan_id": case.plan_id, "adopted": adopted}
+
+
+def test_scoped_edited_value_requires_both_sides_absent():
+    original = {
+        "adopted_value": {
+            "outdoor_game_slots": {"collective_1": None},
+            "focus_area": None,
+        }
+    }
+    absent = {"outdoor_game_slots": {"collective_1": None}, "focus_area": None}
+    assert backup_validate._weekly_scoped_edited_value(
+        {}, original, absent, "collective_1"
+    ) is None
+    with pytest.raises(backup_validate.BackupValidationError):
+        backup_validate._weekly_scoped_edited_value(
+            {}, original,
+            {"outdoor_game_slots": {"collective_1": {"name": "x"}},
+             "focus_area": None},
+            "collective_1",
+        )
+    with pytest.raises(backup_validate.BackupValidationError):
+        backup_validate._weekly_scoped_edited_value(
+            {}, {
+                "adopted_value": {
+                    "outdoor_game_slots": {"collective_1": {"name": "x"}},
+                    "focus_area": None,
+                }
+            },
+            absent,
+            "collective_1",
+        )
+
+
+def test_scoped_games_backup_round_trip_and_forged_receipt_rejected(tmp_path):
+    from tests.local.test_weekly_ai_service import WeeklyAIServiceTests
+    case = WeeklyAIServiceTests(
+        methodName="test_games_atomic_receipt_replay_and_task_projection"
+    )
+    case.setUp()
+    package = tmp_path / "scoped-games.kgmbackup"
+
+    def assert_scoped_content(db_path):
+        con = sqlite3.connect(str(db_path))
+        try:
+            row = con.execute(
+                "SELECT content_json FROM local_weekly_plan_contents "
+                "ORDER BY version DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            con.close()
+        content = json.loads(row[0])
+        scopes = content["ai_provenance"]["game_scopes"]
+        assert set(scopes) == {"collective_1", "collective_2"}
+        assert scopes["collective_1"]["manual_edited"] is False
+        assert scopes["collective_2"]["manual_edited"] is True
+        original = scopes["collective_2"]["adopted_value"]["outdoor_game_slots"][
+            "collective_2"
+        ]
+        assert original["name"] == "合成补充collective_2"
+        assert original["guidance_points"] == "指导"
+        current = content["outdoor_game_slots"]["collective_2"]
+        assert current["name"] == "编辑补充名称"
+        assert current["guidance_points"] == "编辑补充指导"
+
+    try:
+        _seed_scoped_games_adoption(case)
+        case.session.close()
+        source = case.runtime
+        source_db = source.db_path
+        assert_scoped_content(source_db)
+        backup_snapshot.SnapshotService(
+            source, app_version="g1-test", source_identity={"fixture": "scoped"}
+        ).create(package, password=None, cancel=threading.Event())
+        from tests.local.backup_fixture_support import database_fingerprint
+        expected = database_fingerprint(source_db, include_runtime_fields=True)
+        source.dispose()
+        (tmp_path / "scratch").mkdir(exist_ok=True)
+        backup_validate.validate_database(
+            source_db, migrate_old=False, require_current=True,
+            scratch_dir=tmp_path / "scratch",
+        )
+
+        target_data = tmp_path / "target-data"
+        target = LocalRuntime(
+            target_data, credential_root=tmp_path / "target-cred"
+        )
+        target.prepare()
+        try:
+            core = RestoreCore(target, app_version="g1-test")
+            preview = core.preview(package, None, operation_id=uuid.uuid4().hex,
+                                   cancel=threading.Event())
+            prepared = core.prepare(preview, cancel=threading.Event())
+            installed = core.install(prepared, hooks=_Hooks(),
+                                     cancel=threading.Event())
+            assert installed.state == "installed_retired", installed
+            assert core.reopen().state == "reopened"
+            restored_db = target_data / "kindergarten.db"
+            assert database_fingerprint(
+                restored_db, include_runtime_fields=True
+            ) == expected
+            assert_scoped_content(restored_db)
+            (tmp_path / "restored-scratch").mkdir(exist_ok=True)
+            target.dispose()
+            backup_validate.validate_database(
+                restored_db, migrate_old=False, require_current=True,
+                scratch_dir=tmp_path / "restored-scratch",
+            )
+        finally:
+            target.dispose()
+
+        forged = tmp_path / "forged-scoped.db"
+        shutil.copy2(source_db, forged)
+        con = sqlite3.connect(str(forged))
+        try:
+            row = con.execute(
+                "SELECT id FROM local_weekly_plan_ai_adoption "
+                "WHERE target_key='games' ORDER BY created_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            assert row is not None
+            con.execute(
+                "UPDATE local_weekly_plan_ai_adoption SET after_hash=? WHERE id=?",
+                ("f" * 64, row[0]),
+            )
+            con.commit()
+        finally:
+            con.close()
+        (tmp_path / "forged-scratch").mkdir(exist_ok=True)
+        with pytest.raises(backup_validate.BackupValidationError):
+            backup_validate.validate_database(
+                forged, migrate_old=False, require_current=True,
+                scratch_dir=tmp_path / "forged-scratch",
+            )
+    finally:
+        case.doCleanups()
+
+
 def _seed_real_adoption(runtime: LocalRuntime) -> dict:
     session = runtime.session()
     try:

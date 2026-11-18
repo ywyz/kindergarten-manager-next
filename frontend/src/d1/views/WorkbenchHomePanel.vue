@@ -576,7 +576,7 @@ defineExpose({
 .home-calendar,
 .home-todos {
   min-width: 0;
-  padding: 16px;
+  padding: 12px 16px;
 }
 .home-calendar-head,
 .home-todos-head {
@@ -588,7 +588,7 @@ defineExpose({
 }
 .home-calendar-head h3,
 .home-todos-head h3 {
-  margin: 0 0 4px;
+  margin: 0 0 2px;
 }
 .home-calendar-head p,
 .home-todos-head p {
@@ -604,14 +604,14 @@ defineExpose({
   width: 132px;
 }
 .home-calendar-scroll {
-  margin-top: 14px;
+  margin-top: 8px;
   overflow-x: auto;
 }
 .home-weekdays,
 .home-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 .home-weekdays {
@@ -621,19 +621,20 @@ defineExpose({
   text-align: center;
 }
 .home-weekdays span {
-  padding: 2px 0;
+  padding: 1px 0;
+  line-height: 1.25;
 }
 .home-grid {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 .home-day {
-  min-height: 74px;
+  min-height: clamp(48px, calc((100vh - 430px) / 6), 74px);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 2px;
-  padding: 6px 7px;
+  gap: 1px;
+  padding: 4px 6px;
   border: 1px solid var(--kgm-border);
   border-radius: 8px;
   background: var(--kgm-surface);
@@ -674,11 +675,13 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 4px;
+  gap: 2px;
+  line-height: 1.2;
 }
 .home-day-number {
   font-weight: 700;
   font-size: 0.92rem;
+  line-height: 1.1;
 }
 .home-day-annual {
   padding: 0 4px;
@@ -699,7 +702,7 @@ defineExpose({
 .home-day-lunar,
 .home-day-marker {
   font-size: 0.72rem;
-  line-height: 1.3;
+  line-height: 1.2;
   color: var(--kgm-muted);
   overflow-wrap: anywhere;
 }
@@ -770,9 +773,9 @@ defineExpose({
   font-weight: 600;
 }
 .home-calendar-note {
-  margin: 12px 0 0;
+  margin: 6px 0 0;
   font-size: 0.72rem;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 .home-todos {
   display: flex;
@@ -845,8 +848,9 @@ defineExpose({
   }
 }
 .home-day-todo {
-  margin-top: 2px;
-  padding: 1px 4px;
+  margin-top: 0;
+  padding: 0 4px;
+  line-height: 1.2;
   border-radius: 999px;
   background: color-mix(in srgb, var(--kgm-accent) 14%, transparent);
   color: var(--kgm-accent);

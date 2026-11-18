@@ -111,6 +111,29 @@ assert.match(panel, /preview\.source_version/, 'frozen import source version rem
 assert.match(panel, /preview\.target_version/, 'frozen import target version remains visible')
 assert.match(panel, /publishPreview\.classLabel/, 'publish destination class remains visible')
 assert.match(panel, /promotionOverview\.class_id/, 'promotion stable class id remains visible')
+assert.equal(
+  (panel.match(/data-d1="collaboration-refresh-online"/g) || []).length,
+  1,
+  'the account page keeps exactly one online refresh',
+)
+assert.equal(
+  (panel.match(/data-d1="collaboration-refresh"/g) || []).length,
+  0,
+  'the duplicate account-page refresh is removed',
+)
+assert.equal(
+  panel.includes('data-d1="collaboration-load-classes"'),
+  false,
+  'the duplicate account-page class-directory load is removed',
+)
+assert.match(panel, /data-d1="collaboration-reload-promotion"/, 'promotion refresh stays')
+assert.match(panel, /data-d1="collaboration-reload-online-config"/, 'game-config refresh stays')
+assert.match(panel, /data-d1="collaboration-query-promotion"/, 'promotion query receipt stays')
+assert.match(panel, /data-d1="collaboration-admin-help"/, 'account page explains the admin location')
+assert.match(panel, /<code class="class-id">\/admin<\/code>/, 'the admin path is visible')
+assert.match(panel, /没有园所、班级、加入码或升班的管理写权限/, 'teacher identity has no admin write permission')
+assert.match(panel, /data-d1="collaboration-copy-admin-path"/, 'the admin path can be copied')
+assert.equal(panel.includes('http://') || panel.includes('https://'), false, 'no environment URL is hard-coded')
 ok('redeem, manual credential, promotion, pending, page buttons, and frozen identities are present')
 
 // Execute the pure reconciliation helper from the real TypeScript module.

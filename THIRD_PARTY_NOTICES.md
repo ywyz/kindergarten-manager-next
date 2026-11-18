@@ -1,17 +1,17 @@
 # 第三方依赖与资源说明
 
-核对日期：2026-10-30。根目录 [MIT 许可证](LICENSE) 适用于本项目有权授权的原创内容，不替换第三方许可、版权或商标。
+核对日期：2026-11-18。根目录 [MIT 许可证](LICENSE) 适用于本项目有权授权的原创内容，不替换第三方许可、版权或商标。
 
 ## 记录范围
 
-Python 表来自当前已安装桌面验证环境的 47 个分发包及包内许可元数据；前端表来自 `frontend/package-lock.json` 的 93 个依赖项，含开发工具和不同平台的可选项。这里记录源码开发所用依赖，不表示这些包全部进入教师运行包，也不表示后续二进制发行的逐文件许可核查已经完成。
+Python 表记录 2026-10-30 桌面验证环境的 47 个分发包及包内许可元数据。前端表记录同期 `frontend/package-lock.json` 的 93 个依赖项，含开发工具及不同平台的可选项。当前版本以相应锁文件为准。这里记录源码开发所用依赖，不表示这些包全部进入教师运行包，也不表示后续二进制发行的逐文件许可核查已经完成。
 
 依赖权威文件为 `backend/pyproject.toml`、`backend/uv.lock`、`desktop/requirements-d1.in`、`desktop/requirements-d1.lock.txt` 及前端 package / lock。复用或分发依赖时仍须保留对应版本的完整许可证、版权与适用 NOTICE。下表不能替代这些原文。
 
 ## Word、截图和运行时
 
 - 五份受控 Word 模板位于 `backend/app/assets/word_templates/`。用户于 2026-10-30 明确确认模板由本人制作，或已取得可公开分发及采用 MIT 的授权；本轮清理后的模板按该授权纳入 MIT。清理内容与当前 hash 见资源 README，独立核查见 [开源准备检查](docs/bootstrap/open-source-readiness-review.md)。原始未清理文件及历史证据不因此变成可推荐公开的样例。
-- 2026-11-07，用户另行确认一对一倾听的小、中、大班五领域共 15 份指定空表可按 MIT 随公开仓库和应用分发。当前处于设计阶段，待清除个人文档属性、核对格式与评价原文后再纳入资源清单。许可范围限于指定空表；教师填好的幼儿记录、作品照片和私有资料另行保管。见[一对一倾听产品规格](docs/specs/desktop-one-to-one-listening.md)。
+- 2026-11-07，用户另行确认一对一倾听的小、中、大班五领域共 15 份指定空表可按 MIT 随公开仓库和应用分发；个人文档属性已清理，15 份空表已入库 `backend/app/assets/listening_templates/v1`，哈希与评价原文见 [倾听模板资源说明](backend/app/assets/listening_templates/README.md)。许可范围限于指定空表；教师填好的幼儿记录、作品照片和私有资料另行保管。见[一对一倾听产品规格](docs/specs/desktop-one-to-one-listening.md)。
 - 仓库中的历史界面截图是合成验证资料，不包含真实儿童照片；其中展示的 Microsoft 等产品界面、名称和商标仍归原权利人。
 - Windows、Microsoft Word、WebView2、.NET 以及系统字体不因项目采用 MIT 而取得额外分发授权；本源码仓库不提供这些产品的安装包或嵌入字体文件。
 - CPython 及其运行时组件遵守 Python Software Foundation 及所附许可。后续冻结包需保留实际随包组件的许可文件。
@@ -20,7 +20,7 @@ Python 表来自当前已安装桌面验证环境的 47 个分发包及包内许
 
 ## Python 分发包
 
-版本和许可字段取自本轮本地安装元数据；包含测试／打包工具。lxml、Pillow、cryptography 等二进制 wheel 还可能带有其他组件的许可证，应查看完整随包文件。
+版本和许可字段取自当时的本地安装元数据，包含测试和打包工具。lxml、Pillow、cryptography 等二进制 wheel 还可能带有其他组件的许可证，应查看完整随包文件。
 
 | 分发包 | 版本 | 许可标识或随包说明 |
 | --- | --- | --- |

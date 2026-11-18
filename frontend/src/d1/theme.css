@@ -353,6 +353,17 @@ body {
   width: 100%;
 }
 
+@media (min-width: 1600px) {
+  .kgm-page-layout {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+  .kgm-page-rail > .el-button,
+  .kgm-page-rail .rail-actions > .el-button {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+}
 @media (max-width: 900px) {
   .kgm-page-layout {
     grid-template-columns: minmax(0, 1fr);

@@ -1718,4 +1718,113 @@ const exportPreview = {
   assert.equal(saveBody.content.process_original, '老师输入')
   ok('AI adoption applies local patch/document, keeps reason separate and rejects stale')
 }
-console.log(`curriculum: ${passed} checks passed`)
+{
+  const curriculum = loadCurriculum(makeClient())
+  const base = content({
+    goals_original: '活动目标\n观察比较桥面',
+    goals_status: 'adjusted',
+    goals_adjustment: '活动目标\n用同一距离比较桥面',
+    preparation_original: '活动准备\n卡纸、积木',
+    preparation_status: 'adjusted',
+    preparation_adjustment: '活动准备\n加上定位线和记录卡',
+    process_original: '活动过程\n一、试搭\n二、比较',
+    process_adjustment: '活动过程\n一、试搭\n二、在同一距离比较',
+    lesson_original:
+      '活动目标\n观察比较桥面\n活动准备\n卡纸、积木\n活动过程\n一、试搭\n二、比较\n安全提示\n远离桌边',
+    reason: '统一距离，便于比较。',
+  })
+  const document = {
+    original: {
+      blocks: [
+        { section: 'goals', kind: 'heading', text: '活动目标' },
+        { section: 'goals', kind: 'body', text: '观察比较桥面' },
+        { section: 'preparation', kind: 'heading', text: '活动准备' },
+        { section: 'preparation', kind: 'body', text: '卡纸、积木' },
+        { section: 'process', kind: 'heading', text: '活动过程' },
+        { section: 'process', kind: 'body', text: '一、试搭' },
+        { section: 'process', kind: 'body', text: '二、比较' },
+        { section: 'other', kind: 'heading', text: '安全提示' },
+        { section: 'other', kind: 'body', text: '远离桌边' },
+      ],
+    },
+  }
+  const revised = curriculum.composeCurriculumRevised(base, document)
+  assert.match(revised, /用同一距离比较桥面/)
+  assert.match(revised, /加上定位线和记录卡/)
+  assert.match(revised, /在同一距离比较/)
+  assert.match(revised, /安全提示/)
+  assert.match(revised, /远离桌边/)
+  assert.doesNotMatch(revised, /观察比较桥面/)
+  assert.doesNotMatch(revised, /卡纸、积木/)
+  assert.doesNotMatch(revised, /二、比较/)
+  assert.doesNotMatch(revised, /原稿：/)
+  ok('structured revision replaces sections in place and keeps other lesson text')
+}
+
+{
+  const curriculum = loadCurriculum(makeClient())
+  const base = content({
+    preparation_original: '活动准备\n卡纸、积木',
+    preparation_status: 'adjusted',
+    preparation_adjustment: '活动准备\n加上定位线和记录卡',
+    process_original: '活动过程\n一、试搭\n二、比较',
+    process_adjustment: '活动过程\n一、试搭\n二、在同一距离比较',
+    lesson_original:
+      '活动目标\n观察比较桥面\n\n活动准备\n卡纸、积木\n\n活动过程\n一、试搭\n二、比较\n\n安全提示\n远离桌边',
+  })
+  const revised = curriculum.composeCurriculumRevised(base)
+  assert.match(revised, /活动目标\n观察比较桥面/)
+  assert.match(revised, /加上定位线和记录卡/)
+  assert.match(revised, /在同一距离比较/)
+  assert.match(revised, /安全提示\n远离桌边/)
+  assert.doesNotMatch(revised, /卡纸、积木/)
+  assert.doesNotMatch(revised, /二、比较/)
+  ok('unique legacy paragraphs are replaced without duplicating the original')
+}
+
+{
+  const curriculum = loadCurriculum(makeClient())
+  const reasonOnly = content({
+    reason: '只补充调整理由，不改教学安排。',
+  })
+  assert.equal(curriculum.composeCurriculumRevised(reasonOnly), '')
+  const handWritten = content({
+    preparation_original: '活动准备\n卡纸、积木',
+    preparation_status: 'adjusted',
+    preparation_adjustment: '活动准备\n加上定位线和记录卡',
+    lesson_revised: '教师独立手写的完整二次稿',
+  })
+  const preserved = curriculum.applyCurriculumRevisedDraft(handWritten)
+  assert.equal(preserved.lesson_revised, '教师独立手写的完整二次稿')
+  const first = curriculum.applyCurriculumRevisedDraft(
+    content({ process_adjustment: '两轮试搭用同一距离。' }),
+  )
+  const replay = curriculum.applyCurriculumRevisedDraft(
+    content({ process_adjustment: '两轮试搭用同一距离。' }),
+    first,
+  )
+  assert.equal(curriculum.curriculumContentEquals(first, replay), true)
+  const edited = {
+    ...first,
+    process_adjustment: '两轮试搭用同一张定位卡。',
+  }
+  const refreshed = curriculum.applyCurriculumRevisedDraft(edited, first)
+  assert.match(refreshed.lesson_revised, /同一张定位卡/)
+  const handEdited = {
+    ...refreshed,
+    lesson_revised: '教师刚改过的二次稿',
+  }
+  const later = curriculum.applyCurriculumRevisedDraft(handEdited, refreshed)
+  assert.equal(later.lesson_revised, '教师刚改过的二次稿')
+  ok('reason-only edits do not fabricate text and derived drafts replay exactly')
+}
+
+
+{
+  const editorSource = fs.readFileSync(
+    path.join(d1Dir, 'views', 'CurriculumEditorView.vue'),
+    'utf8',
+  )
+  assert.match(editorSource, /applyCurriculumRevisedDraft\(after, before, document\.value\)/)
+  ok('column draft application composes the revision into the same save payload')
+}console.log(`curriculum: ${passed} checks passed`)

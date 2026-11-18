@@ -664,6 +664,100 @@ def _weekly_hash(value: Any) -> str:
     return hashlib.sha256(_weekly_canonical(value).encode("utf-8")).hexdigest()
 
 
+def _weekly_input_game_scope(
+    connection: sqlite3.Connection, input_id: Any, *, label: str
+) -> str | None:
+    """Read the candidate input's frozen game scope; never infer it from text."""
+    row = connection.execute(
+        "SELECT dependencies_json FROM local_ai_inputs WHERE id=?", (input_id,)
+    ).fetchone()
+    _weekly_require(row is not None, f"{label} input")
+    dependencies = _weekly_json(row[0], f"{label} dependencies")
+    _weekly_require(isinstance(dependencies, dict), f"{label} dependencies")
+    scope = dependencies.get("_game_scope")
+    if scope is None:
+        return None
+    from app.local import weekly_ai_contracts
+
+    _weekly_require(isinstance(scope, str), f"{label} game_scope")
+    _weekly_require(scope in weekly_ai_contracts.GAME_SCOPES,
+                    f"{label} game_scope")
+    return scope
+
+
+def _weekly_target_digest(
+    content: Mapping[str, Any], target: str, game_scope: str | None
+) -> str:
+    from app.local import weekly_ai_inputs
+
+    if target == "games" and game_scope is not None:
+        return weekly_ai_inputs.game_scope_target_hash(content, game_scope)
+    return weekly_ai_inputs.target_hash(content, target)
+
+
+def _weekly_scoped_edited_value(
+    candidate_value: Mapping[str, Any],
+    provenance: dict,
+    origin_content: Mapping[str, Any],
+    game_scope: str,
+) -> dict | None:
+    """Rebuild only the legal teacher-edited scoped fields from the origin draft.
+
+    ``provenance.adopted_value`` remains the original candidate.  The resulting
+    draft may differ only in the documented editable fields; source identity,
+    basis handles, AI item ids and every sibling scope stay byte-identical.
+    """
+    from app.local import weekly_ai_adoption
+
+    adopted = provenance.get("adopted_value")
+    _weekly_require(isinstance(adopted, dict), "weekly scoped adopted value")
+    if game_scope == "focus_area":
+        original = adopted.get("focus_area")
+        current = origin_content.get("focus_area")
+        fields = weekly_ai_adoption._FOCUS_EDIT_FIELDS
+    else:
+        original = (adopted.get("outdoor_game_slots") or {}).get(game_scope)
+        current = (origin_content.get("outdoor_game_slots") or {}).get(game_scope)
+        fields = weekly_ai_adoption._GAME_SLOT_EDIT_FIELDS
+    # A scoped candidate may legally keep this item absent and the teacher may
+    # explicitly adopt that empty slot.  Both sides absent is exact, not an edit.
+    if original is None and current is None:
+        return None
+    _weekly_require(
+        isinstance(original, dict) and isinstance(current, dict),
+        "weekly scoped adopted value",
+    )
+    _weekly_require(set(original) == set(current),
+                    "weekly scoped adopted value keys")
+    editable = set(fields)
+    for key in set(original) - editable:
+        _weekly_require(
+            original[key] == current[key],
+            f"weekly scoped immutable {game_scope}.{key}",
+        )
+    changed = {
+        key: current[key]
+        for key in editable
+        if current.get(key) != original.get(key)
+    }
+    if not changed:
+        return None
+    edit = (
+        {"focus_area": changed}
+        if game_scope == "focus_area"
+        else {"outdoor_game_slots": {game_scope: changed}}
+    )
+    try:
+        return weekly_ai_adoption._apply_candidate_edit(
+            "games", candidate_value, edit
+        )
+    except Exception as exc:  # noqa: BLE001 - pure field/text refusal
+        raise BackupValidationError(
+            "BACKUP_DB_LOGICAL_INVALID",
+            "备份数据库周计划采用编辑无法重建",
+        ) from exc
+
+
 def _weekly_json(value: Any, label: str) -> Any:
     if isinstance(value, (str, bytes, bytearray)):
         try:
@@ -955,7 +1049,8 @@ def _weekly_reconstruct_adoption(connection: sqlite3.Connection, plans: dict[str
                                  contents: dict[tuple[str, str], dict],
                                  candidates: dict[str, tuple], provenance: dict,
                                  origin_id: str, origin_version: int,
-                                 target: str) -> None:
+                                 target: str,
+                                 *, game_scope: str | None = None) -> None:
     from app.local import weekly_ai_contracts, weekly_ai_inputs
     from app.local import weekly_plan_content
     candidate = candidates.get(provenance.get("candidate_id"))
@@ -964,6 +1059,11 @@ def _weekly_reconstruct_adoption(connection: sqlite3.Connection, plans: dict[str
                     "weekly origin candidate input")
     _weekly_require(candidate[6] == provenance.get("execution_id"),
                     "weekly origin candidate execution")
+    candidate_scope = _weekly_input_game_scope(
+        connection, candidate[7], label="weekly origin candidate"
+    )
+    _weekly_require(candidate_scope == game_scope,
+                    "weekly origin candidate scope")
     task = connection.execute(
         "SELECT id, profile_id, source_kind, source_id, weekly_plan_id, "
         "input_id, task_type FROM local_ai_tasks WHERE id=?", (candidate[5],)
@@ -1031,6 +1131,7 @@ def _weekly_reconstruct_adoption(connection: sqlite3.Connection, plans: dict[str
          if plan_key == plans[candidate[4]]["id"]
          and item["version"] == origin_version - 1), None)
     _weekly_require(before is not None, "weekly origin before draft")
+    origin_content = contents[(plans[candidate[4]]["id"], origin_id)]["content"]
     ai_ids = None
     if target == "games":
         ai_ids = {}
@@ -1042,27 +1143,70 @@ def _weekly_reconstruct_adoption(connection: sqlite3.Connection, plans: dict[str
         focus = value.get("focus_area")
         if isinstance(focus, dict) and focus.get("source_kind") == "ai_supplement":
             ai_ids["focus_area"] = focus["ai_item_id"]
+    edited_value = (
+        _weekly_scoped_edited_value(
+            candidate_value, provenance, origin_content, game_scope
+        )
+        if target == "games" and game_scope is not None
+        else None
+    )
     try:
         expected = weekly_plan_content.apply_weekly_ai_adoption(
             before["content"], target=target, candidate_value=candidate_value,
             adoption=meta, basis=basis,
+            edited_value=edited_value,
             server_manifest=manifest if target == "materials" else None,
             ai_item_ids=ai_ids if target == "games" else None,
+            game_scope=game_scope,
         )
     except Exception as exc:  # noqa: BLE001 - pure reconstruction refusal
         raise BackupValidationError(
             "BACKUP_DB_LOGICAL_INVALID", "备份数据库周计划采用目标无法重建"
         ) from exc
-    origin_content = contents[(plans[candidate[4]]["id"], origin_id)]["content"]
     if target == "games":
-        _weekly_require(
-            expected["outdoor_game_slots"] == origin_content["outdoor_game_slots"]
-            and expected["focus_area"] == origin_content["focus_area"]
-            and expected["ai_provenance"]["games"]
-            == origin_content["ai_provenance"]["games"]
-            and expected["ai_provenance"]["games"].get("manual_edited") is False,
-            "weekly origin games value",
-        )
+        if game_scope is None:
+            _weekly_require(
+                expected["outdoor_game_slots"] == origin_content["outdoor_game_slots"]
+                and expected["focus_area"] == origin_content["focus_area"]
+                and expected["ai_provenance"]["games"]
+                == origin_content["ai_provenance"]["games"]
+                and expected["ai_provenance"]["games"].get("manual_edited") is False,
+                "weekly origin games value",
+            )
+        else:
+            scoped_key = weekly_plan_content.SCOPED_GAMES_PROVENANCE_KEY
+            expected_scoped = (expected.get("ai_provenance") or {}).get(scoped_key) or {}
+            origin_scoped = (origin_content.get("ai_provenance") or {}).get(scoped_key) or {}
+            expected_siblings = {
+                key: value
+                for key, value in expected["outdoor_game_slots"].items()
+                if key != game_scope
+            }
+            origin_siblings = {
+                key: value
+                for key, value in origin_content["outdoor_game_slots"].items()
+                if key != game_scope
+            }
+            _weekly_require(
+                expected_siblings == origin_siblings
+                and expected["focus_area"] == origin_content["focus_area"],
+                "weekly origin scoped games siblings",
+            )
+            if game_scope == "focus_area":
+                _weekly_require(
+                    expected["focus_area"] == origin_content["focus_area"],
+                    "weekly origin scoped focus value",
+                )
+            else:
+                _weekly_require(
+                    expected["outdoor_game_slots"].get(game_scope)
+                    == origin_content["outdoor_game_slots"].get(game_scope),
+                    "weekly origin scoped games value",
+                )
+            _weekly_require(
+                expected_scoped == origin_scoped,
+                "weekly origin scoped games provenance",
+            )
     elif target == "materials":
         _weekly_require(
             expected["materials"] == origin_content["materials"]
@@ -1080,9 +1224,9 @@ def _weekly_reconstruct_adoption(connection: sqlite3.Connection, plans: dict[str
             and expected["ai_provenance"][target].get("manual_edited") is False,
             "weekly origin column value",
         )
-    expected_hash = weekly_ai_inputs.target_hash(expected, target)
+    expected_hash = _weekly_target_digest(expected, target, game_scope)
     _weekly_require(
-        weekly_ai_inputs.target_hash(origin_content, target) == expected_hash,
+        _weekly_target_digest(origin_content, target, game_scope) == expected_hash,
         "weekly origin target hash",
     )
 
@@ -1132,9 +1276,70 @@ def _weekly_ai_origin_chain(connection: sqlite3.Connection, plan: dict,
         "weekly origin draft/owner",
     )
 
+def _weekly_validate_adoption_provenance(
+    connection: sqlite3.Connection,
+    plans: dict[str, dict],
+    contents: dict[tuple[str, str], dict],
+    candidates: dict[str, tuple],
+    plan_id: str,
+    target: str,
+    provenance: dict,
+    *,
+    game_scope: str | None = None,
+) -> None:
+    from app.local import weekly_plan_content
+
+    label = f"weekly provenance {target}"
+    if game_scope is not None:
+        label = f"{label}.{game_scope}"
+    _weekly_require(isinstance(provenance, dict), label)
+    origin_id = provenance.get("adopted_draft_id")
+    origin = contents.get((plan_id, origin_id)) if isinstance(origin_id, str) else None
+    _weekly_require(
+        origin is not None
+        and origin["version"] == provenance.get("adopted_draft_version"),
+        f"{label} draft",
+    )
+    origin_provenance = origin["content"].get("ai_provenance") or {}
+    if game_scope is None:
+        origin_value = origin_provenance.get(target)
+    else:
+        scopes = origin_provenance.get(
+            weekly_plan_content.SCOPED_GAMES_PROVENANCE_KEY
+        ) or {}
+        origin_value = scopes.get(game_scope) if isinstance(scopes, dict) else None
+    _weekly_require(origin_value is not None, f"{label} origin")
+    for immutable_key in _ADOPTION_IMMUTABLE:
+        _weekly_require(
+            provenance.get(immutable_key) == origin_value.get(immutable_key),
+            f"{label} immutable {immutable_key}",
+        )
+    _weekly_ai_origin_chain(
+        connection, plans[plan_id], candidates, origin_value, origin_id,
+        provenance.get("adopted_draft_version"),
+    )
+    _weekly_reconstruct_adoption(
+        connection, plans, contents, candidates, origin_value,
+        origin_id, provenance.get("adopted_draft_version"), target,
+        game_scope=game_scope,
+    )
+    candidate = candidates.get(provenance.get("candidate_id"))
+    _weekly_require(
+        candidate is not None and candidate[1] == plans[plan_id]["profile_id"]
+        and candidate[4] == plan_id, f"{label} candidate",
+    )
+    adoption = connection.execute(
+        "SELECT 1 FROM local_weekly_plan_ai_adoption "
+        "WHERE draft_id=? AND target_key=? AND candidate_id=?",
+        (origin_id, target, provenance.get("candidate_id")),
+    ).fetchone()
+    _weekly_require(adoption is not None, f"{label} adoption")
+
+
 def _weekly_ai_provenance(connection: sqlite3.Connection, plans: dict[str, dict],
                           contents: dict[tuple[str, str], dict],
                           candidates: dict[str, tuple]) -> None:
+    from app.local import weekly_plan_content
     for (plan_id, content_id), item in contents.items():
         body = item["content"]
         if body.get("schema_version") != 2:
@@ -1148,37 +1353,25 @@ def _weekly_ai_provenance(connection: sqlite3.Connection, plans: dict[str, dict]
             provenance = (body.get("ai_provenance") or {}).get(target)
             if provenance is None:
                 continue
-            origin_id = provenance.get("adopted_draft_id")
-            origin = contents.get((plan_id, origin_id)) if isinstance(origin_id, str) else None
-            _weekly_require(
-                origin is not None
-                and origin["version"] == provenance.get("adopted_draft_version"),
-                f"weekly provenance draft {target}",
+            _weekly_validate_adoption_provenance(
+                connection, plans, contents, candidates, plan_id, target,
+                provenance,
             )
-            origin_value = (origin["content"].get("ai_provenance") or {}).get(target)
-            _weekly_require(origin_value is not None,
-                            f"weekly provenance origin {target}")
-            for immutable_key in _ADOPTION_IMMUTABLE:
-                _weekly_require(provenance.get(immutable_key) == origin_value.get(immutable_key),
-                                f"weekly provenance immutable {target}.{immutable_key}")
-            _weekly_ai_origin_chain(connection, plans[plan_id], candidates,
-                                    origin_value, origin_id,
-                                    provenance.get("adopted_draft_version"))
-            _weekly_reconstruct_adoption(
-                connection, plans, contents, candidates, origin_value,
-                origin_id, provenance.get("adopted_draft_version"), target
-            )
-            candidate = candidates.get(provenance.get("candidate_id"))
-            _weekly_require(
-                candidate is not None and candidate[1] == plans[plan_id]["profile_id"]
-                and candidate[4] == plan_id, f"weekly provenance candidate {target}",
-            )
-            adoption = connection.execute(
-                "SELECT 1 FROM local_weekly_plan_ai_adoption "
-                "WHERE draft_id=? AND target_key=? AND candidate_id=?",
-                (origin_id, target, provenance.get("candidate_id")),
-            ).fetchone()
-            _weekly_require(adoption is not None, f"weekly provenance adoption {target}")
+        scoped = (body.get("ai_provenance") or {}).get(
+            weekly_plan_content.SCOPED_GAMES_PROVENANCE_KEY
+        )
+        if scoped is not None:
+            from app.local import weekly_ai_contracts
+            _weekly_require(isinstance(scoped, dict), "weekly provenance game_scopes")
+            for scope, provenance in scoped.items():
+                _weekly_require(
+                    scope in weekly_ai_contracts.GAME_SCOPES,
+                    "weekly provenance game_scope",
+                )
+                _weekly_validate_adoption_provenance(
+                    connection, plans, contents, candidates, plan_id, "games",
+                    provenance, game_scope=scope,
+                )
         materials = body.get("materials_provenance")
         if materials is not None:
             origin_id = materials.get("adopted_draft_id")
@@ -1267,6 +1460,19 @@ def _weekly_ai_adoptions(connection: sqlite3.Connection, plans: dict[str, dict],
             candidate is not None and candidate[1] == profile_id
             and candidate[4] == plan_id, "weekly adoption candidate",
         )
+        from app.local import weekly_ai_contracts
+        _weekly_require(
+            weekly_ai_contracts.target_for_task(candidate[8]) == target_key,
+            "weekly adoption candidate target",
+        )
+        scope = _weekly_input_game_scope(
+            connection, candidate[7], label="weekly adoption candidate"
+        )
+        _weekly_require(
+            scope is None
+            or (target_key == "games" and candidate[8] == "weekly_games_select"),
+            "weekly adoption candidate scope",
+        )
         operation = connection.execute(
             "SELECT operation_kind, result_json, request_id FROM local_ai_operations "
             "WHERE id=? AND profile_id=?", (operation_id, profile_id)
@@ -1280,18 +1486,19 @@ def _weekly_ai_adoptions(connection: sqlite3.Connection, plans: dict[str, dict],
             "weekly adoption hash",
         )
         try:
-            from app.local import weekly_ai_inputs
-            expected_after = weekly_ai_inputs.target_hash(
-                content["content"], target_key
+            expected_after = _weekly_target_digest(
+                content["content"], target_key, scope
             )
             previous = [
                 item for (plan_key, _content_key), item in contents.items()
                 if plan_key == plan_id and item["version"] < draft_version
             ]
             expected_before = (
-                weekly_ai_inputs.target_hash(max(
-                    previous, key=lambda item: item["version"]
-                )["content"], target_key)
+                _weekly_target_digest(
+                    max(previous, key=lambda item: item["version"])["content"],
+                    target_key,
+                    scope,
+                )
                 if previous else None
             )
             result = _weekly_json(operation[1], "weekly adoption operation result")
@@ -1479,7 +1686,6 @@ def _weekly_ai_inputs(connection: sqlite3.Connection, plans: dict[str, dict],
                 dependencies
             )
             target = weekly_ai_contracts.target_for_task(task_type)
-            expected_target = weekly_ai_inputs.target_hash(content["content"], target)
             plan_identity = {
                 "weekly_plan_id": plan_id,
                 "draft_id": draft_id,
@@ -1495,6 +1701,7 @@ def _weekly_ai_inputs(connection: sqlite3.Connection, plans: dict[str, dict],
                 task_type, payload, dependencies, content["content"],
                 plan_identity=plan_identity,
             )
+            expected_target = projected.target_hashes.get(target)
         except Exception as exc:  # noqa: BLE001 - pure contract refusal
             raise BackupValidationError(
                 "BACKUP_DB_LOGICAL_INVALID", "备份数据库周计划输入无法规范化"

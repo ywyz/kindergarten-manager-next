@@ -1,6 +1,6 @@
 # 一对一倾听 L1–L4 核查
 
-2026-11-07，L1 已通过限定源码／合成资料技术核查，直接接续 L2；L2–L4 尚未通过，教师验收统一在四段接通后进行。唯一执行入口为[当前任务](../tasks/current.md)，产品及工程范围分别见[产品规格](../specs/desktop-one-to-one-listening.md)和[工程设计](../specs/desktop-one-to-one-listening-engineering.md)。
+2026-11-07，L1 已通过限定源码／合成资料技术核查，直接接续 L2；L2–L4 尚未通过，教师验收统一在四段接通后进行。此为开工时点快照：L2–L4 的后续限定结论见本报告下方各节，统一验收与教师短清单见[一对一倾听统一验收](desktop-one-to-one-listening-acceptance.md)。唯一执行入口为[当前任务](../tasks/current.md)，产品及工程范围分别见[产品规格](../specs/desktop-one-to-one-listening.md)和[工程设计](../specs/desktop-one-to-one-listening-engineering.md)。
 
 ## 开工身份与责任
 

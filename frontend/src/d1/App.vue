@@ -2718,9 +2718,9 @@ body {
   font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
 }
 .d1-page {
-  max-width: 1360px;
+  max-width: 2200px;
   margin: 0 auto;
-  padding: 20px 16px 64px;
+  padding: 20px clamp(16px, 1.5vw, 32px) 64px;
 }
 .d1-shell {
   display: grid;

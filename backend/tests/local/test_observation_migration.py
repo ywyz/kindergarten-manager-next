@@ -177,8 +177,8 @@ class ObservationMigrationTests(LocalTestCase):
             "FROM local_prompt_bundles WHERE task_type LIKE 'game_observation_%' "
             "ORDER BY task_type,contract_version,default_revision",
         )
-        # The builtin r1 is retained as the historical bundle identity while
-        # the new default r2 is also registered for both observation tasks.
+        # The builtin r1 and r2 stay registered as historical bundle
+        # identities; r3 is the current default for both observation tasks.
         self.assertEqual(
             observation_bundles,
             [
@@ -193,6 +193,11 @@ class ObservationMigrationTests(LocalTestCase):
                     "default_revision": 2,
                 },
                 {
+                    "task_type": "game_observation_generate",
+                    "contract_version": 1,
+                    "default_revision": 3,
+                },
+                {
                     "task_type": "game_observation_rewrite",
                     "contract_version": 1,
                     "default_revision": 1,
@@ -201,6 +206,11 @@ class ObservationMigrationTests(LocalTestCase):
                     "task_type": "game_observation_rewrite",
                     "contract_version": 1,
                     "default_revision": 2,
+                },
+                {
+                    "task_type": "game_observation_rewrite",
+                    "contract_version": 1,
+                    "default_revision": 3,
                 },
             ],
         )
@@ -236,12 +246,12 @@ class ObservationMigrationTests(LocalTestCase):
                 {
                     "task_type": "game_observation_generate",
                     "required_contract_version": 1,
-                    "latest_default_revision": 2,
+                    "latest_default_revision": 3,
                 },
                 {
                     "task_type": "game_observation_rewrite",
                     "required_contract_version": 1,
-                    "latest_default_revision": 2,
+                    "latest_default_revision": 3,
                 },
             ],
         )
@@ -261,13 +271,13 @@ class ObservationMigrationTests(LocalTestCase):
                     "task_type": "game_observation_generate",
                     "revision": 1,
                     "contract_version": 1,
-                    "based_default_revision": 2,
+                    "based_default_revision": 3,
                 },
                 {
                     "task_type": "game_observation_rewrite",
                     "revision": 1,
                     "contract_version": 1,
-                    "based_default_revision": 2,
+                    "based_default_revision": 3,
                 },
             ],
         )
@@ -729,8 +739,8 @@ class ObservationMigrationTests(LocalTestCase):
         self.addCleanup(normal.dispose)
         normal.prepare()
         self.assertIsNone(normal.prompt_sync_error)
-        # Both the historical r1 and the new default r2 bundle rows remain; the
-        # normal startup registers four observation bundle identities.
+        # The historical r1/r2 bundle rows remain; the normal startup registers
+        # six observation bundle identities with r3 as the current default.
         self.assertEqual(
             query_rows(
                 db,
@@ -751,6 +761,11 @@ class ObservationMigrationTests(LocalTestCase):
                     "default_revision": 2,
                 },
                 {
+                    "task_type": "game_observation_generate",
+                    "contract_version": 1,
+                    "default_revision": 3,
+                },
+                {
                     "task_type": "game_observation_rewrite",
                     "contract_version": 1,
                     "default_revision": 1,
@@ -759,6 +774,11 @@ class ObservationMigrationTests(LocalTestCase):
                     "task_type": "game_observation_rewrite",
                     "contract_version": 1,
                     "default_revision": 2,
+                },
+                {
+                    "task_type": "game_observation_rewrite",
+                    "contract_version": 1,
+                    "default_revision": 3,
                 },
             ],
         )
@@ -773,12 +793,12 @@ class ObservationMigrationTests(LocalTestCase):
                 {
                     "task_type": "game_observation_generate",
                     "required_contract_version": 1,
-                    "latest_default_revision": 2,
+                    "latest_default_revision": 3,
                 },
                 {
                     "task_type": "game_observation_rewrite",
                     "required_contract_version": 1,
-                    "latest_default_revision": 2,
+                    "latest_default_revision": 3,
                 },
             ],
         )
@@ -913,11 +933,11 @@ class ObservationMigrationTests(LocalTestCase):
                 )
             }
             self.assertEqual(first_counts, {
-                "local_prompt_bundles": 4,
+                "local_prompt_bundles": 6,
                 "local_personal_prompt_versions": 2,
                 "local_personal_prompt_heads": 2,
             })
-            # The two current heads select the new default r2, and their
+            # The two current heads select the new default r3, and their
             # initial personal snapshots are based on that same active bundle.
             self.assertEqual(
                 query_rows(
@@ -931,12 +951,12 @@ class ObservationMigrationTests(LocalTestCase):
                     {
                         "task_type": "game_observation_generate",
                         "required_contract_version": 1,
-                        "latest_default_revision": 2,
+                        "latest_default_revision": 3,
                     },
                     {
                         "task_type": "game_observation_rewrite",
                         "required_contract_version": 1,
-                        "latest_default_revision": 2,
+                        "latest_default_revision": 3,
                     },
                 ],
             )
@@ -956,13 +976,13 @@ class ObservationMigrationTests(LocalTestCase):
                         "task_type": "game_observation_generate",
                         "revision": 1,
                         "contract_version": 1,
-                        "based_default_revision": 2,
+                        "based_default_revision": 3,
                     },
                     {
                         "task_type": "game_observation_rewrite",
                         "revision": 1,
                         "contract_version": 1,
-                        "based_default_revision": 2,
+                        "based_default_revision": 3,
                     },
                 ],
             )

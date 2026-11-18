@@ -296,10 +296,12 @@ def _candidate_facts(task_type: str, deps: Mapping[str, Any]) -> tuple[list[dict
 def _item(
     session: Session, candidate: LocalAICandidate, input_row: LocalAIInput
 ) -> dict[str, Any]:
+    deps = dict(input_row.dependencies_json or {})
     return {
         "candidate_id": candidate.id,
         "task_id": candidate.task_id,
         "target": TARGETS.get(candidate.task_type, ""),
+        "game_scope": deps.get("_game_scope") if TARGETS.get(candidate.task_type) == "games" else None,
         "candidate_hash": candidate.candidate_hash,
         "eligibility": "eligible",
         "available_targets": [TARGETS.get(candidate.task_type, "")],

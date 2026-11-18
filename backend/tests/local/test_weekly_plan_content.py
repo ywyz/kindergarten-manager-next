@@ -1071,6 +1071,18 @@ def _with_empty_materials(snapshot: dict, *, with_ai: bool = True) -> dict:
     )
 
 
+def test_old_full_games_provenance_keeps_exact_identity_without_scope_field():
+    content = _with_ai_games(_snapshot())
+    provenance = content["ai_provenance"]["games"]
+    assert "game_scope" not in provenance
+    assert "game_scopes" not in content["ai_provenance"]
+    before = w.content_hash(content)
+    again = w.validate_content(content)
+    assert w.content_hash(again) == before
+    assert again["ai_provenance"] == content["ai_provenance"]
+    assert "game_scope" not in again["ai_provenance"]["games"]
+
+
 def test_patch_echoes_only_exact_trusted_ai_items_and_rejects_new_identity():
     snap = _snapshot()
     content = _with_ai_games(snap)

@@ -25,7 +25,7 @@ class DirectionalScopeIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal[
-        "listening_record", "listening_candidate", "weekly_candidate"
+        "listening_record", "listening_candidate", "weekly_candidate", "weekly_record"
     ]
     record_id: StrictStr
     version: StrictInt

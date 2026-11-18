@@ -47,6 +47,7 @@ COLUMN_FIELDS = (
 )
 COLUMN_TASK = {field: f"weekly_{field}" for field in COLUMN_FIELDS}
 TARGETS = ("games", *COLUMN_FIELDS, "materials")
+GAME_SCOPES = ("collective_1", "collective_2", "free_choice_1", "focus_area")
 
 HANDLE_RE = re.compile(r"^[a-z][0-9]{1,5}$")
 HANDLE_PREFIX = {
@@ -727,6 +728,16 @@ def parse_games_candidate(raw: str | bytes, *, server_manifest: Mapping[str, Any
             _fail("同类别同名游戏不能占两个集体槽", f"games.outdoor_game_slots.{key}", code="WEEKLY_AI_OUTPUT_INVALID")
         by_name[name] = key
     return {"outdoor_game_slots": slots, "focus_area": focus}
+
+
+def project_scoped_games_candidate(value: Mapping[str, Any], scope: str) -> dict:
+    if scope not in GAME_SCOPES:
+        raise ValueError("game_scope")
+    slots = {key: None for key in OUTDOOR_KEYS}
+    if scope == "focus_area":
+        return {"outdoor_game_slots": slots, "focus_area": copy.deepcopy(value.get("focus_area"))}
+    slots[scope] = copy.deepcopy((value.get("outdoor_game_slots") or {}).get(scope))
+    return {"outdoor_game_slots": slots, "focus_area": None}
 
 
 def finalize_games_value(
@@ -1411,6 +1422,7 @@ __all__ = [
     "validate_typed_handle",
     "validate_handle_manifest",
     "parse_games_candidate",
+    "project_scoped_games_candidate",
     "finalize_games_value",
     "parse_column_candidate",
     "parse_materials_candidate",

@@ -403,6 +403,11 @@ async function main() {
   for (const id of ['obs-create', 'obs-export-open', 'obs-range', 'obs-term', 'obs-type', 'obs-subject', 'obs-prev', 'obs-next']) {
     assert.ok(byD1(mountEl, id), `${id} must stay reachable`)
   }
+  assert.equal(byD1(mountEl, 'obs-filter-export'), null, 'summary must not duplicate the header export')
+  assert.equal(
+    walkElements(mountEl).filter((node) => node.props?.['data-d1'] === 'obs-export-open').length,
+    1,
+  )
   const cards = allD1(mountEl, 'obs-card')
   assert.equal(cards.length, 2)
   assert.equal(walkElements(mountEl).filter((node) => node.tag === 'table').length, 0)
@@ -460,6 +465,8 @@ async function main() {
   {
     const source = fs.readFileSync(path.join(d1Dir, 'views', 'ObservationsView.vue'), 'utf8')
     const styles = (source.match(/<style[\s\S]*?<\/style>/g) || []).join('\n')
+    assert.equal(source.includes('obs-filter-export'), false)
+    assert.match(source, /data-d1="obs-export-open"/)
     assert.match(styles, /grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/)
     assert.match(styles, /border-radius: 12px/)
     assert.match(styles, /gap: 20px/)
