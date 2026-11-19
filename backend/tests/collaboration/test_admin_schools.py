@@ -200,18 +200,21 @@ class AdminSchoolTests(unittest.TestCase):
         )
 
         for task_type in PACKAGE_OPEN_TASK_TYPES:
-            self.assertNotEqual(
-                prompt_release_api.task_display_label(task_type), "其他任务"
-            )
+            label = prompt_release_api.task_display_label(task_type)
+            self.assertNotEqual(label, task_type)
+            self.assertNotEqual(label, "其他任务")
             for field_name in PACKAGE_OPEN_GUIDANCE_FIELDS[task_type]:
                 label = prompt_release_api.field_display_label(field_name)
-                self.assertNotEqual(label, "其他字段")
                 self.assertNotEqual(label, field_name)
+                self.assertNotEqual(label, "其他字段")
+        # Unknown future identifiers fall back to the real key so a later
+        # release can never render an unrecognizable generic placeholder.
         self.assertEqual(
-            prompt_release_api.task_display_label("legacy_task"), "其他任务"
+            prompt_release_api.task_display_label("legacy_task"), "legacy_task"
         )
         self.assertEqual(
-            prompt_release_api.field_display_label("legacy_field"), "其他字段"
+            prompt_release_api.field_display_label("legacy_field"),
+            "legacy_field",
         )
 
     def test_workspace_response_adds_labels_without_changing_ids(self):
@@ -239,7 +242,7 @@ class AdminSchoolTests(unittest.TestCase):
         self.assertEqual(item.task_label, "日计划·教案拆分")
         self.assertEqual(item.fields["theme"], "主题文字")
         self.assertEqual(item.field_labels["theme"], "活动主题")
-        self.assertEqual(item.field_labels["legacy_key"], "其他字段")
+        self.assertEqual(item.field_labels["legacy_key"], "legacy_key")
 
 
 if __name__ == "__main__":

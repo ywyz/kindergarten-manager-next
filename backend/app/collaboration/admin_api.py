@@ -19,6 +19,10 @@ from .admin_service import (
     AdminPrincipal,
     admin_cookie_secure,
     authenticate_admin,
+    create_class,
+    create_school,
+    create_teacher,
+    create_term,
     issue_code,
     list_classes,
     list_schools,
@@ -29,6 +33,7 @@ from .admin_service import (
     revoke_admin_session,
     update_class_name,
     update_school_name,
+    update_teacher_name,
     update_term_name,
     verify_csrf,
 )
@@ -68,6 +73,17 @@ class AdminSchoolUpdateIn(_StrictModel):
     new_name: str = Field(..., min_length=1, max_length=120)
 
 
+class AdminSchoolCreateIn(_StrictModel):
+    school_id: UUID
+    name: str = Field(..., min_length=1, max_length=120)
+
+
+class AdminSchoolCreateOut(_StrictModel):
+    school_id: UUID
+    name: str
+    created: bool
+
+
 class AdminClassOut(_StrictModel):
     class_id: UUID
     school_id: UUID
@@ -79,10 +95,42 @@ class AdminClassUpdateIn(_StrictModel):
     new_name: str = Field(..., min_length=1, max_length=120)
 
 
+class AdminClassCreateIn(_StrictModel):
+    class_id: UUID
+    grade: Literal["small", "middle", "large"]
+    class_number: int = Field(..., ge=1, le=99, strict=True)
+
+
+class AdminClassCreateOut(_StrictModel):
+    class_id: UUID
+    school_id: UUID
+    name: str
+    grade: Literal["small", "middle", "large"]
+    class_number: int
+    created: bool
+
+
 class AdminTeacherOut(_StrictModel):
     teacher_id: UUID
     display_name: str
     active: bool
+
+
+class AdminTeacherCreateIn(_StrictModel):
+    teacher_id: UUID
+    name: str = Field(..., min_length=1, max_length=120)
+
+
+class AdminTeacherCreateOut(_StrictModel):
+    teacher_id: UUID
+    display_name: str
+    active: bool
+    created: bool
+
+
+class AdminTeacherUpdateIn(_StrictModel):
+    expected_name: str = Field(..., min_length=1, max_length=120)
+    new_name: str = Field(..., min_length=1, max_length=120)
 
 
 class AdminTermOut(_StrictModel):
@@ -96,6 +144,22 @@ class AdminTermOut(_StrictModel):
 class AdminTermUpdateIn(_StrictModel):
     expected_name: str = Field(..., min_length=1, max_length=80)
     new_name: str = Field(..., min_length=1, max_length=80)
+
+
+class AdminTermCreateIn(_StrictModel):
+    term_id: UUID
+    name: str = Field(..., min_length=1, max_length=80)
+    start_date: date
+    end_date: date
+
+
+class AdminTermCreateOut(_StrictModel):
+    term_id: UUID
+    school_id: UUID
+    name: str
+    start_date: date
+    end_date: date
+    created: bool
 
 
 class AdminCodeIn(_StrictModel):
@@ -308,6 +372,30 @@ def admin_update_school(
     return AdminSchoolOut(school_id=updated.id, name=updated.name)
 
 
+@router.post(
+    "/api/collaboration/admin/schools",
+    response_model=AdminSchoolCreateOut,
+)
+def admin_create_school(
+    data: AdminSchoolCreateIn,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+) -> AdminSchoolCreateOut:
+    school, created = create_school(
+        session,
+        principal,
+        school_id=data.school_id,
+        name=data.name,
+    )
+    _no_store(response)
+    return AdminSchoolCreateOut(
+        school_id=school.id,
+        name=school.name,
+        created=created,
+    )
+
+
 @router.get(
     "/api/collaboration/admin/schools/{school_id}/classes",
     response_model=list[AdminClassOut],
@@ -354,6 +442,91 @@ def admin_update_class(
         class_id=updated.class_id,
         school_id=updated.school_id,
         name=updated.name,
+    )
+
+
+@router.post(
+    "/api/collaboration/admin/schools/{school_id}/classes",
+    response_model=AdminClassCreateOut,
+)
+def admin_create_class(
+    school_id: UUID,
+    data: AdminClassCreateIn,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+) -> AdminClassCreateOut:
+    created_class = create_class(
+        session,
+        principal,
+        school_id=school_id,
+        class_id=data.class_id,
+        grade=data.grade,
+        class_number=data.class_number,
+    )
+    _no_store(response)
+    return AdminClassCreateOut(
+        class_id=created_class.view.class_id,
+        school_id=created_class.view.school_id,
+        name=created_class.view.name,
+        grade=created_class.grade,
+        class_number=created_class.class_number,
+        created=created_class.created,
+    )
+
+
+@router.post(
+    "/api/collaboration/admin/schools/{school_id}/teachers",
+    response_model=AdminTeacherCreateOut,
+)
+def admin_create_teacher(
+    school_id: UUID,
+    data: AdminTeacherCreateIn,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+) -> AdminTeacherCreateOut:
+    teacher, created = create_teacher(
+        session,
+        principal,
+        school_id=school_id,
+        teacher_id=data.teacher_id,
+        name=data.name,
+    )
+    _no_store(response)
+    return AdminTeacherCreateOut(
+        teacher_id=teacher.id,
+        display_name=teacher.display_name,
+        active=bool(teacher.active),
+        created=created,
+    )
+
+
+@router.patch(
+    "/api/collaboration/admin/schools/{school_id}/teachers/{teacher_id}",
+    response_model=AdminTeacherOut,
+)
+def admin_update_teacher(
+    school_id: UUID,
+    teacher_id: UUID,
+    data: AdminTeacherUpdateIn,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+) -> AdminTeacherOut:
+    updated = update_teacher_name(
+        session,
+        principal,
+        school_id=school_id,
+        teacher_id=teacher_id,
+        expected_name=data.expected_name,
+        new_name=data.new_name,
+    )
+    _no_store(response)
+    return AdminTeacherOut(
+        teacher_id=updated.id,
+        display_name=updated.display_name,
+        active=bool(updated.active),
     )
 
 @router.get(
@@ -427,6 +600,37 @@ def admin_update_term(
         name=updated.name,
         start_date=updated.start_date,
         end_date=updated.end_date,
+    )
+
+
+@router.post(
+    "/api/collaboration/admin/schools/{school_id}/terms",
+    response_model=AdminTermCreateOut,
+)
+def admin_create_term(
+    school_id: UUID,
+    data: AdminTermCreateIn,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+) -> AdminTermCreateOut:
+    term, created = create_term(
+        session,
+        principal,
+        school_id=school_id,
+        term_id=data.term_id,
+        name=data.name,
+        start_date=data.start_date,
+        end_date=data.end_date,
+    )
+    _no_store(response)
+    return AdminTermCreateOut(
+        term_id=term.term_id,
+        school_id=term.school_id,
+        name=term.name,
+        start_date=term.start_date,
+        end_date=term.end_date,
+        created=created,
     )
 
 

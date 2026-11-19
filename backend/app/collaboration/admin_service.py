@@ -6,6 +6,13 @@ keyed digests, and one-time codes are stored only as keyed digests.  Code
 redemption is a single transaction: the code row is locked, the teacher and
 school are rechecked, the code is consumed and the teacher bearer token is
 issued, then everything commits or rolls back together.
+
+The service also owns the small administrator provisioning transactions for
+the admin page: creating schools, registered classes (with their grade and
+class number in the same transaction, because the shared weekly plan and
+promotion flows refuse an unregistered class), named teachers and school
+terms.  Every create is idempotent on its visible identity so a retry after
+a lost response never mints a duplicate row.
 """
 
 from __future__ import annotations
@@ -21,11 +28,18 @@ from datetime import date, datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from .admin_models import AdminCode, AdminSession, AdminUser
 from .config import CollaborationSettings
-from .class_promotion_models import CollaborationTerm, effective_class_name_now
+from .class_promotion_models import (
+    GRADES,
+    ClassPromotionState,
+    CollaborationTerm,
+    effective_class_name_now,
+    make_class_name,
+)
 from .errors import CollaborationError
 from .models import Classroom, School, Teacher, TeacherClassMembership, TeacherToken
 from .schemas import MembershipOut
@@ -48,6 +62,42 @@ _SCRYPT_P = 1
 _SCRYPT_DKLEN = 32
 _USERNAME_RE = re.compile(r"[A-Za-z0-9_.-]{3,80}\Z")
 _CODE_MAX_CHARS = 512
+# MySQL error 1213 (ER_LOCK_DEADLOCK): InnoDB already rolled the whole
+# transaction back and asks the client to restart it.  A create request is
+# replay-safe through its explicit entity id, so a bounded retry of the
+# SAME transaction is the controlled resolution; any other database error
+# propagates unchanged.
+_MYSQL_DEADLOCK_ERROR = 1213
+_CREATE_DEADLOCK_ATTEMPTS = 3
+
+
+def _is_innodb_deadlock(exc: BaseException) -> bool:
+    origin = getattr(exc, "orig", None)
+    args = getattr(origin, "args", None)
+    return bool(args) and args[0] == _MYSQL_DEADLOCK_ERROR
+
+
+def _run_create_transaction(transaction):
+    """Run one create transaction, retrying an InnoDB deadlock a bounded
+    number of times.
+
+    A 1213 deadlock is reported after the server rolled the transaction
+    back, so replaying the same create request (same entity id, same
+    input) is safe by construction: the replay then observes the
+    concurrent winner through the normal read path.  Unrelated
+    OperationalErrors, every other database error and a deadlock that
+    persists after the last attempt all propagate unchanged — nothing is
+    converted or swallowed here.
+    """
+    for attempt in range(1, _CREATE_DEADLOCK_ATTEMPTS + 1):
+        try:
+            return transaction()
+        except OperationalError as exc:
+            if (
+                not _is_innodb_deadlock(exc)
+                or attempt == _CREATE_DEADLOCK_ATTEMPTS
+            ):
+                raise
 
 
 def _utcnow() -> datetime:
@@ -496,6 +546,78 @@ def update_school_name(
         raise school_name_conflict(current)
 
 
+def _committed_school_or_conflict(row: School, name: str) -> School:
+    """Verify a committed same-id school against this request's input.
+
+    The same check serves the pre-read hit and the insert-conflict path, so
+    a replay resolved through either route behaves identically.
+    """
+    if row.name != name:
+        raise CollaborationError(
+            409,
+            "SCHOOL_CREATE_CONFLICT",
+            "该园所 ID 已绑定其他名称，请重新发起新增",
+        )
+    return row
+
+
+def create_school(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    name: object,
+) -> tuple[School, bool]:
+    """Create a school from an explicit client-supplied entity id.
+
+    ``school_id`` identifies the create request itself: replaying the same
+    id with the same name returns the committed school with
+    ``created=False``, so a retry after a lost response never mints a
+    duplicate row.  A second, independently generated request id is a
+    deliberate second school even when the display name matches, which
+    mirrors the offline provisioning tool and never silently merges two
+    distinct requests.  No other school, class, teacher or code row is
+    touched.
+
+    Two truly concurrent creates with the same id may both pass their
+    first read; the committed primary key then makes exactly one insert
+    win.  The loser never surfaces a driver error: an insert conflict is
+    re-read and resolved through the same check (the same input returns a
+    normal replay with ``created=False``, a different input is a
+    controlled 409), and a pre-commit InnoDB deadlock — the server has
+    already rolled that transaction back — is retried as the same request
+    a bounded number of times.
+    """
+    clean = _valid_school_name(name)
+
+    def transaction() -> tuple[School, bool]:
+        with session.begin():
+            admin = session.get(AdminUser, principal.admin_id)
+            if admin is None or not admin.active:
+                raise admin_auth_required()
+            existing = session.get(School, school_id)
+            if existing is not None:
+                return (
+                    _committed_school_or_conflict(existing, clean),
+                    False,
+                )
+            row = School(id=school_id, name=clean)
+            session.add(row)
+            session.flush()
+            return row, True
+
+    try:
+        return _run_create_transaction(transaction)
+    except IntegrityError as original:
+        # A concurrent create with the same entity id committed between
+        # this request's read and its insert.  The failed transaction is
+        # already rolled back; resolve against the committed row.
+        row = session.get(School, school_id)
+        if row is None:
+            raise original from None
+        return _committed_school_or_conflict(row, clean), False
+
+
 def list_teachers(session: Session, school_id: UUID) -> list[Teacher]:
     return list(
         session.scalars(
@@ -504,6 +626,145 @@ def list_teachers(session: Session, school_id: UUID) -> list[Teacher]:
             .order_by(Teacher.active.desc(), Teacher.display_name, Teacher.id)
         ).all()
     )
+
+
+def _valid_teacher_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise admin_validation("教师名称必须是字符串")
+    name = value.strip()
+    if not (1 <= len(name) <= 120) or "\x00" in name:
+        raise admin_validation("教师名称长度必须为 1–120 个字符")
+    return name
+
+
+def _committed_teacher_or_conflict(
+    row: Teacher, *, school_id: UUID, name: str
+) -> Teacher:
+    """Verify a committed same-id teacher against this request's input."""
+    if row.school_id != school_id or row.display_name != name:
+        raise CollaborationError(
+            409,
+            "TEACHER_CREATE_CONFLICT",
+            "该教师 ID 已绑定其他园所或名称，请重新发起新增",
+        )
+    return row
+
+
+def create_teacher(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    teacher_id: UUID,
+    name: object,
+) -> tuple[Teacher, bool]:
+    """Create one named teacher from an explicit client-supplied entity id.
+
+    ``teacher_id`` identifies the create request itself: replaying the same
+    id with the same school and name returns the committed teacher with
+    ``created=False``, so a retry after a lost response never mints a
+    duplicate row.  A different, independently generated id is a
+    deliberate second teacher even when the display name matches — the
+    offline provisioning tool also allows same-name teachers with distinct
+    ids — and the returned rows keep their own ``active`` flag so the
+    issue-code list can tell them apart by stable id.  The school row lock
+    serializes concurrent creates within one school; a same-id create
+    racing in another school is resolved against the committed row, never
+    with a driver error, and a pre-commit InnoDB deadlock is retried as
+    the same request a bounded number of times.  Other teachers,
+    memberships and codes are never touched.
+    """
+    clean = _valid_teacher_name(name)
+
+    def transaction() -> tuple[Teacher, bool]:
+        with session.begin():
+            admin = session.get(AdminUser, principal.admin_id)
+            if admin is None or not admin.active:
+                raise admin_auth_required()
+            school = session.get(School, school_id, with_for_update=True)
+            if school is None:
+                raise CollaborationError(
+                    404, "SCHOOL_NOT_FOUND", "没有找到该园所"
+                )
+            existing = session.get(Teacher, teacher_id)
+            if existing is not None:
+                return (
+                    _committed_teacher_or_conflict(
+                        existing, school_id=school.id, name=clean
+                    ),
+                    False,
+                )
+            row = Teacher(
+                id=teacher_id,
+                school_id=school.id,
+                display_name=clean,
+                active=True,
+            )
+            session.add(row)
+            session.flush()
+            return row, True
+
+    try:
+        return _run_create_transaction(transaction)
+    except IntegrityError as original:
+        # A concurrent create with the same teacher id committed first
+        # (possibly in another school).  Resolve against the committed row.
+        row = session.get(Teacher, teacher_id)
+        if row is None:
+            raise original from None
+        return (
+            _committed_teacher_or_conflict(
+                row, school_id=school_id, name=clean
+            ),
+            False,
+        )
+
+
+def update_teacher_name(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    teacher_id: UUID,
+    expected_name: object,
+    new_name: object,
+) -> Teacher:
+    """Update only a teacher display name inside one school.
+
+    ``expected_name`` is the old-name baseline, mirroring the school/class
+    rename semantics: a lost-response retry is idempotent when the current
+    name already equals ``new_name``, while a different concurrent name
+    returns a 409 with the current value.  Teacher ID, school binding,
+    active flag, memberships and existing codes are never touched.
+    """
+    if not isinstance(expected_name, str):
+        raise admin_validation("旧名称必须是字符串")
+    expected = expected_name
+    if not (1 <= len(expected.strip()) <= 120) or "\x00" in expected:
+        raise admin_validation("旧名称长度必须为 1–120 个字符")
+    new = _valid_teacher_name(new_name)
+    with session.begin():
+        admin = session.get(AdminUser, principal.admin_id)
+        if admin is None or not admin.active:
+            raise admin_auth_required()
+        teacher = session.get(Teacher, teacher_id, with_for_update=True)
+        if teacher is None or teacher.school_id != school_id:
+            raise CollaborationError(404, "TEACHER_NOT_FOUND", "没有找到该教师")
+        current = teacher.display_name
+        if current == expected:
+            if new != current:
+                teacher.display_name = new
+                session.flush()
+            return teacher
+        if current == new:
+            # Same request retried after the first response was lost.
+            return teacher
+        raise CollaborationError(
+            409,
+            "TEACHER_NAME_CONFLICT",
+            "教师名称已被其他窗口修改，请刷新后重试",
+            details={"current_name": current},
+        )
 
 
 @dataclass(frozen=True)
@@ -677,6 +938,314 @@ def update_class_name(
             "CLASS_NAME_CONFLICT",
             "班级显示名称已被其他窗口修改，请刷新后重试",
             details={"current_name": current},
+        )
+
+
+@dataclass(frozen=True)
+class AdminClassCreate:
+    view: AdminClass
+    grade: str
+    class_number: int
+    created: bool
+
+
+def _valid_class_registration(
+    grade: object, class_number: object
+) -> tuple[str, int]:
+    if grade not in GRADES:
+        raise admin_validation("年级只能是小班、中班或大班")
+    if (
+        not isinstance(class_number, int)
+        or isinstance(class_number, bool)
+        or not (1 <= class_number <= 99)
+    ):
+        raise admin_validation("班号必须是 1–99 的整数")
+    return grade, class_number
+
+
+def _committed_class_or_conflict(
+    session: Session,
+    row: Classroom,
+    *,
+    school_id: UUID,
+    grade: str,
+    class_number: int,
+) -> tuple[Classroom, ClassPromotionState]:
+    """Verify a committed same-id class against this request's input."""
+    state = session.get(ClassPromotionState, row.id)
+    if (
+        row.school_id != school_id
+        or state is None
+        or state.base_grade != grade
+        or state.class_number != class_number
+    ):
+        raise CollaborationError(
+            409,
+            "CLASS_CREATE_CONFLICT",
+            "该班级 ID 已绑定其他园所、年级或班号，请重新发起新增",
+        )
+    return row, state
+
+
+def create_class(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    class_id: UUID,
+    grade: object,
+    class_number: object,
+) -> AdminClassCreate:
+    """Create one class with its grade and class number in one transaction.
+
+    ``class_id`` identifies the create request itself: replaying the same id
+    with the same school, grade and class number returns the committed
+    class with ``created=False``, so a retry after a lost response never
+    mints a duplicate row, and a concurrent replay of one request is
+    serialized by the committed primary key.  A new, independently
+    generated id always creates a new class — including a replacement
+    cohort with the same grade and number after promotion moved the
+    previous cohort up — because the class identity is the request id, and
+    an old class is never silently returned or reported as a conflict for a
+    fresh request.
+
+    The same-transaction registration is required, not optional: the shared
+    weekly-plan context and the promotion read both refuse a class without
+    a ``ClassPromotionState`` row, so leaving a new class unregistered would
+    hand teachers a class that lists and pairs but can never share a weekly
+    plan.  The display name is derived with the existing ``make_class_name``
+    standard, so the admin list (display name), the teacher list (registered
+    name) and the promotion view all show the same name.  Existing classes,
+    their semester/promotion history, game configurations and old pairings
+    are never touched.  The school row lock serializes concurrent creates
+    within one school; a same-id create racing in another school is
+    resolved against the committed row, never with a driver error, and a
+    pre-commit InnoDB deadlock is retried as the same request a bounded
+    number of times.
+    """
+    clean_grade, clean_number = _valid_class_registration(grade, class_number)
+
+    def transaction() -> AdminClassCreate:
+        with session.begin():
+            admin = session.get(AdminUser, principal.admin_id)
+            if admin is None or not admin.active:
+                raise admin_auth_required()
+            school = session.get(School, school_id, with_for_update=True)
+            if school is None:
+                raise CollaborationError(
+                    404, "SCHOOL_NOT_FOUND", "没有找到该园所"
+                )
+            existing = session.get(Classroom, class_id)
+            if existing is not None:
+                _row, state = _committed_class_or_conflict(
+                    session,
+                    existing,
+                    school_id=school.id,
+                    grade=clean_grade,
+                    class_number=clean_number,
+                )
+                return AdminClassCreate(
+                    view=_class_view(session, existing),
+                    grade=state.base_grade,
+                    class_number=state.class_number,
+                    created=False,
+                )
+            classroom = Classroom(
+                id=class_id,
+                school_id=school.id,
+                display_name=make_class_name(clean_grade, clean_number),
+            )
+            session.add(classroom)
+            # The registration row references (class_id, school_id) in
+            # ``classes`` through a composite foreign key, and MySQL 8.4
+            # enforces it at INSERT time.  The two mappers share no ORM
+            # relationship, so one combined flush may emit the registration
+            # INSERT first; the parent classroom row is therefore flushed
+            # into this transaction before the registration row is added.
+            # Both rows still commit or roll back together in this single
+            # transaction.
+            session.flush()
+            state = ClassPromotionState(
+                class_id=class_id,
+                school_id=school.id,
+                class_number=clean_number,
+                base_grade=clean_grade,
+                version=1,
+            )
+            session.add(state)
+            session.flush()
+            return AdminClassCreate(
+                view=_class_view(session, classroom),
+                grade=clean_grade,
+                class_number=clean_number,
+                created=True,
+            )
+
+    try:
+        return _run_create_transaction(transaction)
+    except IntegrityError as original:
+        # A concurrent create with the same class id committed first
+        # (possibly in another school).  Resolve against the committed row.
+        row = session.get(Classroom, class_id)
+        if row is None:
+            raise original from None
+        _row, state = _committed_class_or_conflict(
+            session,
+            row,
+            school_id=school_id,
+            grade=clean_grade,
+            class_number=clean_number,
+        )
+        return AdminClassCreate(
+            view=_class_view(session, row),
+            grade=state.base_grade,
+            class_number=state.class_number,
+            created=False,
+        )
+
+
+def _valid_term_dates(
+    start_date: object, end_date: object
+) -> tuple[date, date]:
+    if not isinstance(start_date, date) or isinstance(start_date, datetime):
+        raise admin_validation("学期开始日期必须是 YYYY-MM-DD")
+    if not isinstance(end_date, date) or isinstance(end_date, datetime):
+        raise admin_validation("学期结束日期必须是 YYYY-MM-DD")
+    if start_date > end_date:
+        raise admin_validation("学期开始日期不能晚于结束日期")
+    return start_date, end_date
+
+
+def _committed_term_or_conflict(
+    row: CollaborationTerm,
+    *,
+    school_id: UUID,
+    name: str,
+    start_date: date,
+    end_date: date,
+) -> CollaborationTerm:
+    """Verify a committed same-id term against this request's input."""
+    if (
+        row.school_id != school_id
+        or row.name != name
+        or row.start_date != start_date
+        or row.end_date != end_date
+    ):
+        raise CollaborationError(
+            409,
+            "TERM_CREATE_CONFLICT",
+            "该学期 ID 已绑定其他园所、名称或日期，请重新发起新增",
+        )
+    return row
+
+
+def create_term(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    term_id: UUID,
+    name: object,
+    start_date: object,
+    end_date: object,
+) -> tuple[AdminTerm, bool]:
+    """Create one school term from an explicit id, name and dates.
+
+    ``term_id`` identifies the create request itself: replaying the same id
+    with the same school, name and dates returns the committed term with
+    ``created=False``, so a retry after a lost response never mints a
+    duplicate row.  The dates are never guessed and no batch of terms is
+    ever derived: the administrator types the name, start and end dates,
+    and the existing term rules apply unchanged (school scoping, 1–80
+    character name, ordered dates, and no date overlap with another term of
+    the same school).  Any other date overlap — including a different id
+    with identical name and dates — is a 409 that names the conflicting
+    term, never a silent merge.  Existing terms and their promotion history
+    are never modified.  The school row lock serializes concurrent creates
+    within one school; a same-id create racing in another school is
+    resolved against the committed row, never with a driver error, and a
+    pre-commit InnoDB deadlock is retried as the same request a bounded
+    number of times.
+    """
+    clean = _valid_term_name(name)
+    start, end = _valid_term_dates(start_date, end_date)
+
+    def transaction() -> tuple[AdminTerm, bool]:
+        with session.begin():
+            admin = session.get(AdminUser, principal.admin_id)
+            if admin is None or not admin.active:
+                raise admin_auth_required()
+            school = session.get(School, school_id, with_for_update=True)
+            if school is None:
+                raise CollaborationError(
+                    404, "SCHOOL_NOT_FOUND", "没有找到该园所"
+                )
+            existing = session.get(CollaborationTerm, term_id)
+            if existing is not None:
+                return (
+                    _term_view(
+                        _committed_term_or_conflict(
+                            existing,
+                            school_id=school.id,
+                            name=clean,
+                            start_date=start,
+                            end_date=end,
+                        )
+                    ),
+                    False,
+                )
+            overlaps = session.scalars(
+                select(CollaborationTerm)
+                .where(
+                    CollaborationTerm.school_id == school.id,
+                    CollaborationTerm.start_date <= end,
+                    CollaborationTerm.end_date >= start,
+                )
+                .order_by(CollaborationTerm.start_date, CollaborationTerm.id)
+                .with_for_update()
+            ).all()
+            if overlaps:
+                conflict = overlaps[0]
+                raise CollaborationError(
+                    409,
+                    "TERM_OVERLAP",
+                    "学期日期与现有学期重叠，请调整日期",
+                    details={
+                        "conflict_name": conflict.name,
+                        "conflict_start_date": conflict.start_date.isoformat(),
+                        "conflict_end_date": conflict.end_date.isoformat(),
+                    },
+                )
+            row = CollaborationTerm(
+                id=term_id,
+                school_id=school.id,
+                name=clean,
+                start_date=start,
+                end_date=end,
+            )
+            session.add(row)
+            session.flush()
+            return _term_view(row), True
+
+    try:
+        return _run_create_transaction(transaction)
+    except IntegrityError as original:
+        # A concurrent create with the same term id committed first
+        # (possibly in another school).  Resolve against the committed row.
+        row = session.get(CollaborationTerm, term_id)
+        if row is None:
+            raise original from None
+        return (
+            _term_view(
+                _committed_term_or_conflict(
+                    row,
+                    school_id=school_id,
+                    name=clean,
+                    start_date=start,
+                    end_date=end,
+                )
+            ),
+            False,
         )
 
 def issue_code(

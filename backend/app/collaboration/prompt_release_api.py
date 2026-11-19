@@ -17,6 +17,7 @@ from .prompt_release_service import (
     MANIFEST_NAME,
     PromptReleaseConfig,
     create_draft,
+    field_display_label,
     get_workspace,
     latest_manifest_bytes,
     package_root_from_env,
@@ -25,73 +26,10 @@ from .prompt_release_service import (
     publish_rollback,
     publish_stable,
     resolve_package_path,
+    task_display_label,
 )
 
 Channels = Literal["preview", "stable"]
-
-TASK_LABELS: dict[str, str] = {
-    "daily_lesson_split": "日计划·教案拆分",
-    "daily_process_adapt": "日计划·过程适龄调整",
-    "daily_other_activities": "日计划·其他活动生成",
-    "daily_reflection_generate": "日计划·活动反思生成",
-    "game_observation_generate": "游戏观察·记录生成",
-    "game_observation_rewrite": "游戏观察·定向改写",
-    "weekly_games_select": "周计划·游戏选择",
-    "weekly_key_week_focus": "周计划·本周重点",
-    "weekly_environment_setup": "周计划·环境创设",
-    "weekly_habit_culture": "周计划·习惯与文化",
-    "weekly_home_cooperation": "周计划·家园合作",
-    "weekly_materials_generate": "周计划·材料生成",
-    "listening_note_draft": "一对一倾听·记录草稿",
-    "listening_domain_evaluate": "一对一倾听·领域评价",
-    "listening_group_notes": "一对一倾听·小组记录",
-    "listening_goal_suggest": "一对一倾听·目标建议",
-    "curriculum_split": "课程审议·原稿拆分",
-    "curriculum_review": "课程审议·审议建议",
-    "curriculum_edit": "课程审议·局部修改",
-    "class_game_config_extract": "班级游戏配置·文本解析",
-    "directional_revision": "定向修改",
-}
-FIELD_LABELS: dict[str, str] = {
-    "theme": "活动主题",
-    "objectives": "目标",
-    "preparation": "准备",
-    "key_points": "重点",
-    "difficult_points": "难点",
-    "process": "过程",
-    "morning_games": "晨间游戏",
-    "morning_talk": "晨间谈话",
-    "post_group_games": "集体活动后游戏",
-    "afternoon_outdoor": "下午户外活动",
-    "observation_goal": "观察目标",
-    "observation_process": "观察过程",
-    "analysis_evaluation": "分析评价",
-    "support_strategy": "支持策略",
-    "target": "改写目标",
-    "text": "文字内容",
-    "instructions": "栏目指导",
-    "uncertainties": "不确定事项",
-    "overall_evaluation": "整体评价",
-    "items": "逐条评价",
-    "focus_guidance": "重点指导",
-    "shared_objectives": "共同目标",
-    "guidance_points": "指导要点",
-    "guidance": "指导",
-    "shared": "共用指导",
-    "task": "任务指导",
-    "reflection": "反思指导",
-    "fidelity": "忠实原文",
-    "listening_evidence": "倾听证据",
-    "weekly_source": "周计划来源",
-}
-
-
-def task_display_label(task_type: str) -> str:
-    return TASK_LABELS.get(task_type, "其他任务")
-
-
-def field_display_label(field_name: str) -> str:
-    return FIELD_LABELS.get(field_name, "其他字段")
 
 
 class _StrictModel(BaseModel):

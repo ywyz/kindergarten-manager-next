@@ -79,6 +79,7 @@
         </div>
         <button id="issue-button" type="button">签发一次性码</button>
         <p class="error" id="issue-error" role="alert"></p>
+        <p class="muted hidden" id="issue-hint"></p>
         <div id="code-result" class="hidden">
           <p class="muted">兑换码只显示一次，请通过安全渠道交给教师；本页不写入日志或网址。</p>
           <pre class="code" id="issued-code"></pre>
@@ -89,9 +90,44 @@
       <section>
         <h2>已有园所名称</h2>
         <p class="muted">只修改园所显示名称；园所和班级稳定 ID、班级关系与教师绑定保持不变。</p>
+        <div class="row">
+          <div>
+            <label for="new-school-name">新增园所名称</label>
+            <input id="new-school-name" maxlength="120" placeholder="例如：阳光实验幼儿园">
+          </div>
+          <div>
+            <button type="button" id="create-school-button">新增园所</button>
+          </div>
+        </div>
+        <p class="error" id="new-school-error" role="alert"></p>
+        <p class="muted" id="new-school-notice"></p>
         <p class="error" id="school-error" role="alert"></p>
         <p class="muted" id="school-notice"></p>
         <div class="list-block" id="school-list"></div>
+      </section>
+
+      <section>
+        <h2>教师名称</h2>
+        <p class="muted">为所选园所新增具名教师并在下方维护名称；新教师立即出现在上方发码名单。教师 ID、园所绑定、兑换码资格与配对关系不受改名影响。</p>
+        <div class="row">
+          <div>
+            <label for="teacher-school">园所</label>
+            <select id="teacher-school"></select>
+          </div>
+          <div>
+            <label for="new-teacher-name">新增教师名称</label>
+            <input id="new-teacher-name" maxlength="120" placeholder="例如：王老师">
+          </div>
+          <div>
+            <button type="button" id="create-teacher-button">新增教师</button>
+          </div>
+        </div>
+        <p class="muted hidden" id="teacher-empty">该园所暂无教师。新增教师后即可在上方签发兑换码。</p>
+        <p class="error" id="new-teacher-error" role="alert"></p>
+        <p class="muted" id="new-teacher-notice"></p>
+        <p class="error" id="teacher-error" role="alert"></p>
+        <p class="muted" id="teacher-notice"></p>
+        <div class="list-block" id="teacher-list"></div>
       </section>
 
             <section>
@@ -103,6 +139,26 @@
             <select id="class-school"></select>
           </div>
         </div>
+        <div class="row">
+          <div>
+            <label for="new-class-grade">新增班级：年级</label>
+            <select id="new-class-grade">
+              <option value="small">小班</option>
+              <option value="middle">中班</option>
+              <option value="large">大班</option>
+            </select>
+          </div>
+          <div>
+            <label for="new-class-number">新增班级：班号（1–99）</label>
+            <input id="new-class-number" type="number" min="1" max="99" step="1">
+          </div>
+          <div>
+            <button type="button" id="create-class-button">新增班级</button>
+          </div>
+        </div>
+        <p class="muted" id="new-class-preview"></p>
+        <p class="error" id="new-class-error" role="alert"></p>
+        <p class="muted" id="new-class-notice"></p>
         <p class="muted hidden" id="class-empty">该园所暂无班级。</p>
         <p class="error" id="class-error" role="alert"></p>
         <p class="muted" id="class-notice"></p>
@@ -117,6 +173,25 @@
             <select id="term-school"></select>
           </div>
         </div>
+        <div class="row">
+          <div>
+            <label for="new-term-name">新增学期名称</label>
+            <input id="new-term-name" maxlength="80" placeholder="例如：2026 秋季学期">
+          </div>
+          <div>
+            <label for="new-term-start">新增学期：开始日期</label>
+            <input id="new-term-start" type="date">
+          </div>
+          <div>
+            <label for="new-term-end">新增学期：结束日期</label>
+            <input id="new-term-end" type="date">
+          </div>
+          <div>
+            <button type="button" id="create-term-button">新增学期</button>
+          </div>
+        </div>
+        <p class="error" id="new-term-error" role="alert"></p>
+        <p class="muted" id="new-term-notice"></p>
         <p class="muted hidden" id="term-empty">该园所暂无学期。</p>
         <p class="error" id="term-error" role="alert"></p>
         <p class="muted" id="term-notice"></p>
@@ -188,6 +263,7 @@
         teachers: [],
         terms: [],
         classes: [],
+        teacherDirectory: [],
         promptLoaded: false,
         promptBusy: false,
         prompt: null,
@@ -219,10 +295,36 @@
       var purposeSelect = document.getElementById("purpose");
       var issueButton = document.getElementById("issue-button");
       var issueError = document.getElementById("issue-error");
+      var issueHint = document.getElementById("issue-hint");
       var codeBox = document.getElementById("code-result");
       var codeText = document.getElementById("issued-code");
       var codeMeta = document.getElementById("issued-meta");
       var adminName = document.getElementById("admin-name");
+      var newSchoolName = document.getElementById("new-school-name");
+      var createSchoolButton = document.getElementById("create-school-button");
+      var newSchoolError = document.getElementById("new-school-error");
+      var newSchoolNotice = document.getElementById("new-school-notice");
+      var teacherSchool = document.getElementById("teacher-school");
+      var teacherEmpty = document.getElementById("teacher-empty");
+      var teacherError = document.getElementById("teacher-error");
+      var teacherNotice = document.getElementById("teacher-notice");
+      var teacherList = document.getElementById("teacher-list");
+      var newTeacherName = document.getElementById("new-teacher-name");
+      var createTeacherButton = document.getElementById("create-teacher-button");
+      var newTeacherError = document.getElementById("new-teacher-error");
+      var newTeacherNotice = document.getElementById("new-teacher-notice");
+      var newClassGrade = document.getElementById("new-class-grade");
+      var newClassNumber = document.getElementById("new-class-number");
+      var createClassButton = document.getElementById("create-class-button");
+      var newClassPreview = document.getElementById("new-class-preview");
+      var newClassError = document.getElementById("new-class-error");
+      var newClassNotice = document.getElementById("new-class-notice");
+      var newTermName = document.getElementById("new-term-name");
+      var newTermStart = document.getElementById("new-term-start");
+      var newTermEnd = document.getElementById("new-term-end");
+      var createTermButton = document.getElementById("create-term-button");
+      var newTermError = document.getElementById("new-term-error");
+      var newTermNotice = document.getElementById("new-term-notice");
       var promptPanel = document.getElementById("prompt-release-panel");
       var promptLatest = document.getElementById("prompt-latest");
       var promptError = document.getElementById("prompt-error");
@@ -323,27 +425,36 @@
       async function loadSchools() {
         var data = await request("/api/collaboration/admin/schools");
         state.schools = data || [];
-        schoolSelect.textContent = "";
-        termSchool.textContent = "";
-        classSchool.textContent = "";
-        state.schools.forEach(function (school) {
-          var option = document.createElement("option");
-          option.value = school.school_id;
-          option.textContent = school.name;
-          schoolSelect.appendChild(option);
-          var termOption = document.createElement("option");
-          termOption.value = school.school_id;
-          termOption.textContent = school.name;
-          termSchool.appendChild(termOption);
-          var classOption = document.createElement("option");
-          classOption.value = school.school_id;
-          classOption.textContent = school.name;
-          classSchool.appendChild(classOption);
-        });
+        [schoolSelect, termSchool, classSchool, teacherSchool].forEach(
+          function (select) {
+            select.textContent = "";
+            state.schools.forEach(function (school) {
+              var option = document.createElement("option");
+              option.value = school.school_id;
+              option.textContent = school.name;
+              select.appendChild(option);
+            });
+          }
+        );
+        updateIssueHint();
         renderSchools();
         await loadTeachers();
         await loadTerms();
         await loadClasses();
+        await loadTeacherDirectory();
+      }
+
+      function updateIssueHint() {
+        var text = "";
+        if (!state.schools.length) {
+          text =
+            "尚无园所。请先在下方“新增园所”录入园所，再在“教师名称”中新增教师，然后回来签发兑换码。";
+        } else if (!state.teachers.length) {
+          text =
+            "当前园所暂无教师。请在下方“教师名称”中选择该园所并新增教师，然后回来签发兑换码。";
+        }
+        issueHint.textContent = text;
+        issueHint.classList.toggle("hidden", !text);
       }
 
       function renderTerms() {
@@ -631,10 +742,21 @@
         }
       }
 
+      // Same-name teachers stay visually distinguishable in the issue list:
+      // every option carries its stable-id tail next to the display name,
+      // so the admin never silently picks the wrong teacher.
+      function teacherIdTail(teacherId) {
+        var digits = String(teacherId).replace(/-/g, "");
+        return "（ID 尾号 " + digits.slice(-4) + "）";
+      }
+
       async function loadTeachers() {
         state.teachers = [];
         teacherSelect.textContent = "";
-        if (!schoolSelect.value) return;
+        if (!schoolSelect.value) {
+          updateIssueHint();
+          return;
+        }
         var data = await request(
           "/api/collaboration/admin/schools/" +
             encodeURIComponent(schoolSelect.value) + "/teachers"
@@ -643,12 +765,362 @@
         state.teachers.forEach(function (teacher) {
           var option = document.createElement("option");
           option.value = teacher.teacher_id;
+          var label =
+            teacher.display_name + teacherIdTail(teacher.teacher_id);
           option.textContent = teacher.active
-            ? teacher.display_name
-            : teacher.display_name + "（已停用，不可发码）";
+            ? label
+            : label + "（已停用，不可发码）";
           option.disabled = !teacher.active;
           teacherSelect.appendChild(option);
         });
+        updateIssueHint();
+      }
+
+      function renderTeachers() {
+        teacherList.textContent = "";
+        teacherEmpty.classList.toggle(
+          "hidden", state.teacherDirectory.length > 0
+        );
+        state.teacherDirectory.forEach(function (teacher) {
+          var row = document.createElement("div");
+          row.className = "row";
+          row.setAttribute("data-d1", "teacher-" + teacher.teacher_id);
+          var info = document.createElement("div");
+          var title = document.createElement("strong");
+          title.textContent = teacher.display_name + (teacher.active
+            ? "" : "（已停用，不可发码）");
+          var idLine = document.createElement("p");
+          idLine.className = "muted";
+          idLine.textContent = "稳定教师 ID：" + teacher.teacher_id;
+          info.appendChild(title);
+          info.appendChild(idLine);
+          var editor = document.createElement("div");
+          var label = document.createElement("label");
+          label.textContent = "教师名称";
+          label.htmlFor = "teacher-name-" + teacher.teacher_id;
+          var input = document.createElement("input");
+          input.id = "teacher-name-" + teacher.teacher_id;
+          input.value = teacher.display_name;
+          input.maxLength = 120;
+          var button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "保存教师名称";
+          button.addEventListener("click", function () {
+            void saveTeacher(teacher, input, button);
+          });
+          editor.appendChild(label);
+          editor.appendChild(input);
+          editor.appendChild(button);
+          row.appendChild(info);
+          row.appendChild(editor);
+          teacherList.appendChild(row);
+        });
+      }
+
+      async function loadTeacherDirectory() {
+        state.teacherDirectory = [];
+        teacherError.textContent = "";
+        teacherNotice.textContent = "";
+        if (!teacherSchool.value) {
+          renderTeachers();
+          return;
+        }
+        try {
+          var data = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(teacherSchool.value) + "/teachers"
+          );
+          state.teacherDirectory = data || [];
+          renderTeachers();
+        } catch (err) {
+          teacherError.textContent = errorText(err);
+          renderTeachers();
+        }
+      }
+
+      async function saveTeacher(teacher, input, button) {
+        teacherError.textContent = "";
+        teacherNotice.textContent = "";
+        var next = input.value.trim();
+        if (!next) {
+          teacherError.textContent = "教师名称不能为空";
+          return;
+        }
+        var expected = teacher.display_name;
+        button.disabled = true;
+        try {
+          var updated = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(teacherSchool.value) +
+              "/teachers/" + encodeURIComponent(teacher.teacher_id),
+            {
+              method: "PATCH",
+              body: { expected_name: expected, new_name: next }
+            }
+          );
+          teacher.display_name = updated.display_name;
+          await loadTeacherDirectory();
+          if (schoolSelect.value === teacherSchool.value) {
+            await loadTeachers();
+          }
+          teacherNotice.textContent =
+            "教师名称已保存；教师 ID、园所绑定与发码资格未改变。";
+        } catch (err) {
+          if (err.status === 409) {
+            teacherError.textContent =
+              "教师名称已在其他窗口修改，请刷新后按最新名称重试";
+          } else {
+            teacherError.textContent = errorText(err);
+          }
+        } finally {
+          button.disabled = false;
+        }
+      }
+
+      // A create request keeps its entity id until the outcome is known: an
+      // unknown failure (network drop, 5xx) replays the SAME id, so the
+      // server returns the already committed row instead of a duplicate;
+      // editing the input or a confirmed success starts a fresh request.
+      var pendingSchoolId = "";
+      var pendingClassId = "";
+      var pendingTeacherId = "";
+      var pendingTermId = "";
+
+      function newRequestId() {
+        if (
+          typeof crypto !== "undefined" &&
+          crypto &&
+          typeof crypto.randomUUID === "function"
+        ) {
+          return crypto.randomUUID();
+        }
+        var bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        var hex = [];
+        for (var i = 0; i < 16; i += 1) {
+          hex.push((bytes[i] + 0x100).toString(16).slice(1));
+        }
+        return hex.slice(0, 4).join("") + "-" + hex.slice(4, 6).join("") +
+          "-" + hex.slice(6, 8).join("") + "-" + hex.slice(8, 10).join("") +
+          "-" + hex.slice(10, 16).join("");
+      }
+
+      async function createSchool() {
+        newSchoolError.textContent = "";
+        newSchoolNotice.textContent = "";
+        var name = newSchoolName.value.trim();
+        if (!name) {
+          newSchoolError.textContent = "园所名称不能为空";
+          return;
+        }
+        if (!pendingSchoolId) pendingSchoolId = newRequestId();
+        var requestId = pendingSchoolId;
+        createSchoolButton.disabled = true;
+        try {
+          var data = await request("/api/collaboration/admin/schools", {
+            method: "POST",
+            body: { school_id: requestId, name: name }
+          });
+          newSchoolName.value = "";
+          pendingSchoolId = "";
+          await loadSchools();
+          [schoolSelect, termSchool, classSchool, teacherSchool].forEach(
+            function (select) {
+              select.value = data.school_id;
+            }
+          );
+          await loadTeachers().catch(function () { return undefined; });
+          await loadTerms().catch(function () { return undefined; });
+          await loadClasses().catch(function () { return undefined; });
+          await loadTeacherDirectory().catch(function () { return undefined; });
+          newSchoolNotice.textContent = data.created
+            ? "已新增园所：" + data.name +
+              "（稳定园所 ID：" + data.school_id + "）。"
+            : "园所已按同一创建请求返回：" + data.name +
+              "（稳定园所 ID：" + data.school_id + "）；未重复新增。";
+        } catch (err) {
+          newSchoolError.textContent = errorText(err);
+        } finally {
+          createSchoolButton.disabled = false;
+        }
+      }
+
+      function classGradeLabel(grade) {
+        if (grade === "small") return "小";
+        if (grade === "middle") return "中";
+        if (grade === "large") return "大";
+        return "";
+      }
+
+      function classNumberLabel(number) {
+        var digits = "零一二三四五六七八九";
+        if (number < 10) return digits.charAt(number);
+        if (number === 10) return "十";
+        if (number < 20) return "十" + digits.charAt(number - 10);
+        var tens = Math.floor(number / 10);
+        var ones = number % 10;
+        return digits.charAt(tens) + "十" +
+          (ones ? digits.charAt(ones) : "");
+      }
+
+      function previewNewClassName() {
+        var number = parseInt(newClassNumber.value, 10);
+        if (!newClassGrade.value || !(number >= 1 && number <= 99)) {
+          newClassPreview.textContent = "";
+          return;
+        }
+        newClassPreview.textContent =
+          "将创建班级：" + classGradeLabel(newClassGrade.value) +
+          classNumberLabel(number) + "班（同事务登记年级和班号）。";
+      }
+
+      async function createClass() {
+        newClassError.textContent = "";
+        newClassNotice.textContent = "";
+        if (!classSchool.value) {
+          newClassError.textContent =
+            "请先选择园所；尚无园所时请先在上方“新增园所”录入。";
+          return;
+        }
+        var grade = newClassGrade.value;
+        var number = parseInt(newClassNumber.value, 10);
+        if (!grade || !(number >= 1 && number <= 99)) {
+          newClassError.textContent = "请选择年级并填写 1–99 的班号。";
+          return;
+        }
+        if (!pendingClassId) pendingClassId = newRequestId();
+        var requestId = pendingClassId;
+        createClassButton.disabled = true;
+        try {
+          var data = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(classSchool.value) + "/classes",
+            {
+              method: "POST",
+              body: { class_id: requestId, grade: grade, class_number: number }
+            }
+          );
+          newClassNumber.value = "";
+          previewNewClassName();
+          pendingClassId = "";
+          await loadClasses();
+          newClassNotice.textContent = data.created
+            ? "已新增班级：" + data.name +
+              "（年级：" + classGradeLabel(data.grade) +
+              "，班号：" + data.class_number +
+              "，稳定班级 ID：" + data.class_id +
+              "）；原班级的学期、游戏配置与旧配对未受影响。"
+            : "该班级已按同一创建请求返回：" + data.name +
+              "（稳定班级 ID：" + data.class_id + "）；未重复新增。";
+        } catch (err) {
+          newClassError.textContent = errorText(err);
+        } finally {
+          createClassButton.disabled = false;
+        }
+      }
+
+      async function createTeacher() {
+        newTeacherError.textContent = "";
+        newTeacherNotice.textContent = "";
+        if (!teacherSchool.value) {
+          newTeacherError.textContent =
+            "请先选择园所；尚无园所时请先在上方“新增园所”录入。";
+          return;
+        }
+        var name = newTeacherName.value.trim();
+        if (!name) {
+          newTeacherError.textContent = "教师名称不能为空";
+          return;
+        }
+        if (!pendingTeacherId) pendingTeacherId = newRequestId();
+        var requestId = pendingTeacherId;
+        createTeacherButton.disabled = true;
+        try {
+          var data = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(teacherSchool.value) + "/teachers",
+            {
+              method: "POST",
+              body: { teacher_id: requestId, name: name }
+            }
+          );
+          newTeacherName.value = "";
+          pendingTeacherId = "";
+          await loadTeacherDirectory();
+          if (schoolSelect.value === teacherSchool.value) {
+            await loadTeachers();
+          }
+          newTeacherNotice.textContent = data.created
+            ? "已新增教师：" + data.display_name +
+              "（稳定教师 ID：" + data.teacher_id +
+              "）；可在上方为其签发兑换码。同名教师以稳定 ID 区分。"
+            : "教师已按同一创建请求返回：" + data.display_name +
+              "（稳定教师 ID：" + data.teacher_id + "）" +
+              (data.active ? "；未重复新增。" : "；该教师已停用，暂不可发码。");
+        } catch (err) {
+          newTeacherError.textContent = errorText(err);
+        } finally {
+          createTeacherButton.disabled = false;
+        }
+      }
+
+      async function createTerm() {
+        newTermError.textContent = "";
+        newTermNotice.textContent = "";
+        if (!termSchool.value) {
+          newTermError.textContent =
+            "请先选择园所；尚无园所时请先在上方“新增园所”录入。";
+          return;
+        }
+        var name = newTermName.value.trim();
+        var start = newTermStart.value;
+        var end = newTermEnd.value;
+        if (!name) {
+          newTermError.textContent = "学期名称不能为空";
+          return;
+        }
+        if (!start || !end) {
+          newTermError.textContent = "请显式填写开始和结束日期，系统不会代填日期。";
+          return;
+        }
+        if (start > end) {
+          newTermError.textContent = "开始日期不能晚于结束日期";
+          return;
+        }
+        if (!pendingTermId) pendingTermId = newRequestId();
+        var requestId = pendingTermId;
+        createTermButton.disabled = true;
+        try {
+          var data = await request(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(termSchool.value) + "/terms",
+            {
+              method: "POST",
+              body: {
+                term_id: requestId,
+                name: name,
+                start_date: start,
+                end_date: end
+              }
+            }
+          );
+          newTermName.value = "";
+          newTermStart.value = "";
+          newTermEnd.value = "";
+          pendingTermId = "";
+          await loadTerms();
+          newTermNotice.textContent = data.created
+            ? "已新增学期：" + data.name + "（" + data.start_date + " 至 " +
+              data.end_date + "，学期 ID：" + data.term_id + "）。"
+            : "学期已按同一创建请求返回：" + data.name +
+              "（学期 ID：" + data.term_id + "）；未重复新增。";
+        } catch (err) {
+          newTermError.textContent = errorText(err);
+        } finally {
+          createTermButton.disabled = false;
+        }
       }
 
       function hasOwn(object, key) {
@@ -670,12 +1142,84 @@
         return null;
       }
 
+      // Presentation-only fallback copies of the server's authoritative label
+      // registry: a deployed backend that predates task_label/field_labels
+      // still renders recognizable Chinese names, and the server values stay
+      // authoritative whenever they are present.  Keys missing here (a future
+      // task/field) fall back to the raw identifier, which stays recognizable
+      // and never blocks publishing or rollback.
+      var TASK_LABEL_FALLBACK = {
+        daily_lesson_split: "日计划·教案拆分",
+        daily_process_adapt: "日计划·过程适龄调整",
+        daily_other_activities: "日计划·其他活动生成",
+        daily_reflection_generate: "日计划·活动反思生成",
+        game_observation_generate: "游戏观察·记录生成",
+        game_observation_rewrite: "游戏观察·定向改写",
+        weekly_games_select: "周计划·游戏选择",
+        weekly_key_week_focus: "周计划·本周重点",
+        weekly_environment_setup: "周计划·环境创设",
+        weekly_habit_culture: "周计划·习惯与文化",
+        weekly_home_cooperation: "周计划·家园合作",
+        weekly_materials_generate: "周计划·材料生成",
+        listening_note_draft: "一对一倾听·记录草稿",
+        listening_domain_evaluate: "一对一倾听·领域评价",
+        listening_group_notes: "一对一倾听·小组记录",
+        listening_goal_suggest: "一对一倾听·目标建议",
+        curriculum_split: "课程审议·原稿拆分",
+        curriculum_review: "课程审议·审议建议",
+        curriculum_edit: "课程审议·局部修改",
+        class_game_config_extract: "班级游戏配置·文本解析",
+        directional_revision: "定向修改"
+      };
+      var FIELD_LABEL_FALLBACK = {
+        theme: "活动主题",
+        objectives: "目标",
+        preparation: "准备",
+        key_points: "重点",
+        difficult_points: "难点",
+        process: "过程",
+        morning_games: "晨间游戏",
+        morning_talk: "晨间谈话",
+        post_group_games: "集体活动后游戏",
+        afternoon_outdoor: "下午户外活动",
+        observation_goal: "观察目标",
+        observation_process: "观察过程",
+        analysis_evaluation: "分析评价",
+        support_strategy: "支持策略",
+        target: "改写目标",
+        text: "文字内容",
+        instructions: "栏目指导",
+        uncertainties: "不确定事项",
+        overall_evaluation: "整体评价",
+        items: "逐条评价",
+        focus_guidance: "重点指导",
+        shared_objectives: "共同目标",
+        guidance_points: "指导要点",
+        guidance: "指导",
+        shared: "共用指导",
+        task: "任务指导",
+        reflection: "反思指导",
+        fidelity: "忠实原文",
+        listening_evidence: "倾听证据",
+        weekly_source: "周计划来源"
+      };
+
+      // Both the Chinese label and the real identifier are always shown for
+      // an editable task/field, and an identifier without metadata falls back
+      // to the raw key so a future unknown entry stays recognizable.
+      function optionText(label, key) {
+        return label === key ? key : label + "（" + key + "）";
+      }
+
       function promptTaskLabel(taskType) {
         var task = promptTaskInfo(taskType);
         if (task && typeof task.task_label === "string" && task.task_label) {
           return task.task_label;
         }
-        return "其他任务";
+        if (typeof TASK_LABEL_FALLBACK[taskType] === "string") {
+          return TASK_LABEL_FALLBACK[taskType];
+        }
+        return taskType;
       }
 
       function promptFieldLabel(taskType, fieldName) {
@@ -686,12 +1230,15 @@
         if (labels && typeof labels[fieldName] === "string" && labels[fieldName]) {
           return labels[fieldName];
         }
-        return "其他字段";
+        if (typeof FIELD_LABEL_FALLBACK[fieldName] === "string") {
+          return FIELD_LABEL_FALLBACK[fieldName];
+        }
+        return fieldName;
       }
 
       function promptTaskFieldText(taskType, fieldName) {
-        return promptTaskLabel(taskType) + "（" + taskType + "） / " +
-          promptFieldLabel(taskType, fieldName) + "（" + fieldName + "）";
+        return optionText(promptTaskLabel(taskType), taskType) + " / " +
+          optionText(promptFieldLabel(taskType, fieldName), fieldName);
       }
       function promptFieldNames(taskType) {
         var task = promptTaskInfo(taskType);
@@ -753,7 +1300,9 @@
         names.forEach(function (fieldName) {
           var option = document.createElement("option");
           option.value = fieldName;
-          option.textContent = promptFieldLabel(taskType, fieldName);
+          option.textContent = optionText(
+            promptFieldLabel(taskType, fieldName), fieldName
+          );
           option.title = fieldName;
           promptField.appendChild(option);
         });
@@ -770,7 +1319,9 @@
         editable.forEach(function (task) {
           var option = document.createElement("option");
           option.value = task.task_type;
-          option.textContent = promptTaskLabel(task.task_type);
+          option.textContent = optionText(
+            promptTaskLabel(task.task_type), task.task_type
+          );
           option.title = task.task_type;
           promptTask.appendChild(option);
         });
@@ -1237,6 +1788,48 @@
       classSchool.addEventListener("change", function () {
         void loadClasses();
       });
+      teacherSchool.addEventListener("change", function () {
+        void loadTeacherDirectory();
+      });
+
+      // Editing an input starts a fresh create request; the pending id is
+      // kept only while the outcome of the submitted request is unknown.
+      newSchoolName.addEventListener("input", function () {
+        pendingSchoolId = "";
+      });
+      newClassGrade.addEventListener("change", function () {
+        pendingClassId = "";
+        previewNewClassName();
+      });
+      newClassNumber.addEventListener("input", function () {
+        pendingClassId = "";
+        previewNewClassName();
+      });
+      newTeacherName.addEventListener("input", function () {
+        pendingTeacherId = "";
+      });
+      newTermName.addEventListener("input", function () {
+        pendingTermId = "";
+      });
+      newTermStart.addEventListener("input", function () {
+        pendingTermId = "";
+      });
+      newTermEnd.addEventListener("input", function () {
+        pendingTermId = "";
+      });
+
+      createSchoolButton.addEventListener("click", function () {
+        void createSchool();
+      });
+      createClassButton.addEventListener("click", function () {
+        void createClass();
+      });
+      createTeacherButton.addEventListener("click", function () {
+        void createTeacher();
+      });
+      createTermButton.addEventListener("click", function () {
+        void createTerm();
+      });
 
       issueButton.addEventListener("click", async function () {
         issueError.textContent = "";
@@ -1259,7 +1852,7 @@
           });
           codeText.textContent = data.code;
           codeMeta.textContent =
-            "教师：" + data.teacher_name +
+            "教师：" + data.teacher_name + teacherIdTail(data.teacher_id) +
             "；类型：" + (data.purpose === "join" ? "首次加入" : "换机恢复") +
             "；有效期至：" + data.expires_at;
           codeBox.classList.remove("hidden");

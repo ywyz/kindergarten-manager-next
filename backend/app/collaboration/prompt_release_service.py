@@ -1,10 +1,12 @@
 """Signed prompt-release drafts, preview/stable channels and rollbacks.
 
-The service owns three things:
+The service owns four things:
 
 * immutable, complete guidance snapshots (draft -> preview -> stable);
 * a serialized release ledger with strictly increasing sequences;
-* signed package/manifest files written before the database becomes visible.
+* signed package/manifest files written before the database becomes visible;
+* the authoritative Chinese display-label metadata for the editable task
+  and field identifiers (the "edit and stage" workspace consumes it).
 
 It deliberately imports the pure local prompt catalogue lazily so an
 unconfigured collaboration service still starts and keeps the existing admin
@@ -52,6 +54,82 @@ _VERSION_FILE_RE = re.compile(r"^v([1-9][0-9]*)-([0-9a-f]{64})\.json$")
 ENV_SIGNING_KEY_FILE = "KGM_COLLAB_PROMPT_SIGNING_KEY_FILE"
 ENV_KEY_ID = "KGM_COLLAB_PROMPT_KEY_ID"
 ENV_PACKAGE_DIR = "KGM_COLLAB_PROMPT_PACKAGE_DIR"
+
+
+# Authoritative admin-facing Chinese display labels for the package catalogue
+# task/field identifiers.  Keys are the real identifiers that travel through
+# every draft/preview/release payload, so a label can never drift from the
+# identity it names.  The catalogue build below refuses to start when a task
+# or field opened for editing has no label, which keeps this registry in
+# lockstep with the source model instead of relying on a generic fallback.
+# Identifiers that are not listed (for example a task type opened by a future
+# release before its label lands here) fall back to the raw key, which stays
+# recognizable for review.
+TASK_DISPLAY_LABELS: dict[str, str] = {
+    "daily_lesson_split": "日计划·教案拆分",
+    "daily_process_adapt": "日计划·过程适龄调整",
+    "daily_other_activities": "日计划·其他活动生成",
+    "daily_reflection_generate": "日计划·活动反思生成",
+    "game_observation_generate": "游戏观察·记录生成",
+    "game_observation_rewrite": "游戏观察·定向改写",
+    "weekly_games_select": "周计划·游戏选择",
+    "weekly_key_week_focus": "周计划·本周重点",
+    "weekly_environment_setup": "周计划·环境创设",
+    "weekly_habit_culture": "周计划·习惯与文化",
+    "weekly_home_cooperation": "周计划·家园合作",
+    "weekly_materials_generate": "周计划·材料生成",
+    "listening_note_draft": "一对一倾听·记录草稿",
+    "listening_domain_evaluate": "一对一倾听·领域评价",
+    "listening_group_notes": "一对一倾听·小组记录",
+    "listening_goal_suggest": "一对一倾听·目标建议",
+    "curriculum_split": "课程审议·原稿拆分",
+    "curriculum_review": "课程审议·审议建议",
+    "curriculum_edit": "课程审议·局部修改",
+    "class_game_config_extract": "班级游戏配置·文本解析",
+    "directional_revision": "定向修改",
+}
+FIELD_DISPLAY_LABELS: dict[str, str] = {
+    "theme": "活动主题",
+    "objectives": "目标",
+    "preparation": "准备",
+    "key_points": "重点",
+    "difficult_points": "难点",
+    "process": "过程",
+    "morning_games": "晨间游戏",
+    "morning_talk": "晨间谈话",
+    "post_group_games": "集体活动后游戏",
+    "afternoon_outdoor": "下午户外活动",
+    "observation_goal": "观察目标",
+    "observation_process": "观察过程",
+    "analysis_evaluation": "分析评价",
+    "support_strategy": "支持策略",
+    "target": "改写目标",
+    "text": "文字内容",
+    "instructions": "栏目指导",
+    "uncertainties": "不确定事项",
+    "overall_evaluation": "整体评价",
+    "items": "逐条评价",
+    "focus_guidance": "重点指导",
+    "shared_objectives": "共同目标",
+    "guidance_points": "指导要点",
+    "guidance": "指导",
+    "shared": "共用指导",
+    "task": "任务指导",
+    "reflection": "反思指导",
+    "fidelity": "忠实原文",
+    "listening_evidence": "倾听证据",
+    "weekly_source": "周计划来源",
+}
+
+
+def task_display_label(task_type: str) -> str:
+    """Chinese label for a task; an unknown future key uses the raw key."""
+    return TASK_DISPLAY_LABELS.get(task_type, task_type)
+
+
+def field_display_label(field_name: str) -> str:
+    """Chinese label for a field; an unknown future key uses the raw key."""
+    return FIELD_DISPLAY_LABELS.get(field_name, field_name)
 
 
 @dataclass(frozen=True)
@@ -108,9 +186,28 @@ def _catalog() -> _PromptCatalog:
         guidance = latest_bundles[task_type]["guidance_defaults_json"]
         if not set(fields).issubset(set(guidance)):
             raise RuntimeError("prompt release catalogue field mismatch")
+    open_task_types = PACKAGE_OPEN_TASK_TYPES
+    missing_task_labels = [
+        task_type
+        for task_type in open_task_types
+        if not TASK_DISPLAY_LABELS.get(task_type)
+    ]
+    missing_field_labels = sorted(
+        {
+            f"{task_type}.{field}"
+            for task_type in open_task_types
+            for field in open_fields[task_type]
+            if not FIELD_DISPLAY_LABELS.get(field)
+        }
+    )
+    if missing_task_labels or missing_field_labels:
+        raise RuntimeError(
+            "prompt release display labels incomplete: "
+            f"tasks={missing_task_labels} fields={missing_field_labels}"
+        )
     return _PromptCatalog(
         task_types=tuple(PACKAGE_TASK_TYPES),
-        open_task_types=tuple(PACKAGE_OPEN_TASK_TYPES),
+        open_task_types=open_task_types,
         open_fields=open_fields,
         latest_bundles=latest_bundles,
         guidance_max_chars=int(GUIDANCE_MAX_CHARS),
