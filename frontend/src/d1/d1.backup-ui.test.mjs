@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
-import { compileScript, parse } from '@vue/compiler-sfc'
+import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
 
@@ -170,6 +170,7 @@ function status(overrides = {}) {
 
 function makeHost(overrides = {}) {
   const calls = []
+  const webdavCalls = []
   let currentStatus = null
   const host = {
     getStartupMaintenanceState: async () => ({ state: 'ready' }),
@@ -207,11 +208,61 @@ function makeHost(overrides = {}) {
       calls.push({ name: 'cancelMaintenance', ref })
       return { accepted: true, state: 'cancelled' }
     },
+    getWebdavConfig: async () => {
+      webdavCalls.push({ name: 'getWebdavConfig' })
+      return {
+        available: true,
+        config: {
+          configured: true,
+          url: 'https://dav.example/backup/',
+          username: 'teacher',
+          passwordAvailable: true,
+        },
+      }
+    },
+    saveWebdavConfig: async (input) => {
+      webdavCalls.push({ name: 'saveWebdavConfig', input })
+      return {
+        ok: true,
+        config: {
+          configured: true,
+          url: input.url,
+          username: input.username,
+          passwordAvailable: true,
+        },
+      }
+    },
+    listWebdavVersions: async () => {
+      webdavCalls.push({ name: 'listWebdavVersions' })
+      return {
+        versions: [
+          {
+            name: 'kgm-backup-20261119T120000Z-' + 'a'.repeat(32) + '.kgmbackup',
+            size: 2048,
+            modifiedAt: 'Wed, 19 Nov 2026 12:00:00 GMT',
+          },
+        ],
+        endpointFingerprint: 'fingerprint-1',
+      }
+    },
+    startWebdavBackup: async (input) => {
+      webdavCalls.push({ name: 'startWebdavBackup', input })
+      return { requestId: input.requestId, operationId: 'webdav-backup-op', generation: 1 }
+    },
+    startWebdavDownload: async (input) => {
+      webdavCalls.push({ name: 'startWebdavDownload', input })
+      return { requestId: input.requestId, operationId: 'webdav-download-op', generation: 1 }
+    },
+    releaseWebdavSelection: async (selectionId) => {
+      webdavCalls.push({ name: 'releaseWebdavSelection', selectionId })
+      return { released: true }
+    },
   }
   Object.assign(host, overrides)
   return {
     host,
     calls,
+    webdavCalls,
     setStatus: (value) => {
       currentStatus = value
     },
@@ -243,6 +294,9 @@ async function testSetupOnlyOffersRestoreAndCancelLeavesIdle() {
   })
   assert.equal(state.canStartBackup.value, false)
   assert.equal(state.canStartRestore.value, true)
+  // The shared panel's setup title names both sources; the local action keeps
+  // its explicit local wording below.
+  assert.equal(state.title.value, '从备份恢复')
   await state.chooseBackupTarget()
   assert.equal(fake.calls.length, 0, 'setup must not offer backup')
   await state.chooseRestoreSource()
@@ -255,7 +309,7 @@ async function testSetupOnlyOffersRestoreAndCancelLeavesIdle() {
 
 async function testBackupPasswordChoiceNeverDowngrades() {
   const fake = makeHost()
-  const { state, unmount } = await mountPanel({ host: fake.host })
+  const { state, emitted, unmount } = await mountPanel({ host: fake.host })
   await state.chooseBackupTarget()
   assert.equal(state.phase.value, 'password')
   assert.equal(state.passwordChoice.value, null)
@@ -286,6 +340,14 @@ async function testBackupPasswordChoiceNeverDowngrades() {
   assert.equal(state.phase.value, 'creating')
   assert.match(state.progressText.value, /创建完整备份/)
   assert.equal(state.password.value, '')
+  fake.setStatus(
+    status({ kind: 'backup', phase: 'completed', operationId: 'backup-op' }),
+  )
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  await flush()
+  const completed = emitted.filter(([event]) => event === 'completed').at(-1)?.[1]
+  assert.equal(completed.kind, 'backup')
+  assert.equal(completed.target, 'local')
   unmount()
   ok('backup requires explicit password/plaintext choice and never downgrades')
 }
@@ -945,6 +1007,206 @@ async function testNativeSelectionCancelIsNotFailure() {
   ok('native chooser cancel is silent idle, not success/failure')
 }
 
+// ---------------------------------------------------------------------------
+// WebDAV (remote backup / cross-machine restore)
+// ---------------------------------------------------------------------------
+
+async function testWebdavWrongPasswordKeepsConfigFormAndShowsError() {
+  const fake = makeHost()
+  fake.host.saveWebdavConfig = async (input) => {
+    fake.webdavCalls.push({ name: 'saveWebdavConfig', input })
+    throw new Error('WebDAV 用户名或密码不正确，或没有访问权限')
+  }
+  const { state, unmount } = await mountPanel({ host: fake.host })
+  state.openWebdavConfig()
+  state.webdavUrl.value = 'https://dav.example/backup/'
+  state.webdavUsername.value = 'teacher'
+  state.webdavPassword.value = 'wrong'
+  await state.saveWebdavConfigAction()
+  await flush()
+  assert.equal(state.webdavView.value, 'config')
+  assert.match(state.webdavError.value, /用户名或密码/)
+  assert.equal(state.webdavUrl.value, 'https://dav.example/backup/')
+  assert.equal(state.webdavUsername.value, 'teacher')
+  assert.equal(state.webdavPassword.value, 'wrong')
+  unmount()
+  ok('WebDAV wrong password keeps the form and shows the reason')
+}
+
+async function testWebdavEmptyVersionListIsUnderstandable() {
+  const fake = makeHost({
+    listWebdavVersions: async () => {
+      fake.webdavCalls.push({ name: 'listWebdavVersions' })
+      return { versions: [], endpointFingerprint: 'fingerprint-1' }
+    },
+  })
+  const { state, unmount } = await mountPanel({ host: fake.host })
+  await state.openWebdavVersions()
+  await flush()
+  assert.equal(state.webdavView.value, 'versions')
+  assert.equal(state.webdavError.value, '')
+  assert.match(state.webdavNotice.value, /还没有可恢复/)
+  assert.equal(state.webdavSelected.value, null)
+  unmount()
+  ok('empty WebDAV version list has a readable state')
+}
+
+async function testWebdavDownloadHandoffWrongPasswordRetryAndCancel() {
+  const fake = makeHost()
+  const { state, unmount } = await mountPanel({ host: fake.host })
+  const versionName = 'kgm-backup-20261119T120000Z-' + 'a'.repeat(32) + '.kgmbackup'
+  await state.openWebdavVersions()
+  await flush()
+  assert.equal(state.webdavVersions.value.length, 1)
+  state.selectWebdavVersion(state.webdavVersions.value[0])
+  fake.setStatus(
+    status({ phase: 'downloading', kind: 'restore', operationId: 'webdav-download-op' }),
+  )
+  await state.downloadWebdavVersion()
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  await flush()
+
+  const selection = {
+    selectionId: 'webdav-sel-1',
+    displayName: versionName,
+    encrypted: true,
+  }
+  fake.setStatus(
+    status({
+      phase: 'downloaded',
+      kind: 'restore',
+      operationId: 'webdav-download-op',
+      selection,
+    }),
+  )
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  await flush()
+  assert.equal(state.phase.value, 'password')
+  assert.equal(state.selection.value.selectionId, 'webdav-sel-1')
+  const downloadStart = fake.webdavCalls
+    .filter((call) => call.name === 'startWebdavDownload')
+    .at(-1)
+  assert.equal(downloadStart.input.versionName, versionName)
+  assert.equal(downloadStart.input.endpointFingerprint, 'fingerprint-1')
+
+  state.password.value = 'wrong'
+  await state.submitCredentials()
+  await flush()
+  const firstVerify = lastStart(fake.calls, 'startRestoreVerify')
+  assert.equal(firstVerify.selectionId, 'webdav-sel-1')
+
+  fake.setStatus(
+    status({
+      phase: 'password',
+      kind: 'restore',
+      operationId: 'restore-op',
+      error: {
+        code: 'WRONG_PASSWORD',
+        message: '密码不正确，请重新输入',
+        committed: false,
+        nextAction: 'retry_password',
+      },
+    }),
+  )
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  await flush()
+  assert.equal(state.phase.value, 'password')
+  assert.equal(state.selection.value.selectionId, 'webdav-sel-1')
+  assert.equal(
+    fake.webdavCalls.filter((call) => call.name === 'releaseWebdavSelection').length,
+    0,
+  )
+
+  await state.cancel()
+  await flush()
+  const released = fake.webdavCalls
+    .filter((call) => call.name === 'releaseWebdavSelection')
+    .at(-1)
+  assert.equal(released.selectionId, 'webdav-sel-1')
+  assert.equal(state.phase.value, 'idle')
+  unmount()
+  ok('WebDAV download hands off, wrong password keeps it, cancel releases it')
+}
+
+async function testWebdavBackupRequiresPasswordOnly() {
+  const fake = makeHost()
+  const { state, emitted, unmount } = await mountPanel({ host: fake.host })
+  await flush()
+  assert.equal(state.canStartWebdavBackup.value, true)
+  state.openWebdavBackupPassword()
+  assert.equal(state.phase.value, 'password')
+  assert.equal(state.webdavPasswordOnly.value, true)
+  assert.equal(state.canSubmitCredentials.value, false)
+  state.password.value = 'pw'
+  assert.equal(state.canSubmitCredentials.value, true)
+  await state.submitCredentials()
+  await flush()
+  const start = fake.webdavCalls
+    .filter((call) => call.name === 'startWebdavBackup')
+    .at(-1)
+  assert.equal(start.input.password, 'pw')
+  assert.equal(state.phase.value, 'creating')
+  fake.setStatus(
+    status({ kind: 'backup', phase: 'completed', operationId: 'webdav-backup-op' }),
+  )
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  await flush()
+  const completed = emitted.filter(([event]) => event === 'completed').at(-1)?.[1]
+  assert.equal(completed.kind, 'backup')
+  assert.equal(completed.target, 'webdav')
+  unmount()
+  ok('WebDAV backup requires a password and never offers plaintext')
+}
+
+async function testSetupModeCanRestoreFromWebdav() {
+  const fake = makeHost()
+  const { state, unmount } = await mountPanel({ mode: 'setup', host: fake.host })
+  await flush()
+  assert.equal(state.canStartWebdavBackup.value, false)
+  assert.equal(state.canOpenWebdavVersions.value, true)
+  await state.openWebdavVersions()
+  assert.equal(state.webdavView.value, 'versions')
+  unmount()
+  ok('first setup can open WebDAV versions and restore')
+}
+
+async function testWebdavTemplateAlertsVisibleOutsideBranches() {
+  const source = fs.readFileSync(panelFile, 'utf8')
+  const configIndex = source.indexOf('data-d1="backup-webdav-config"')
+  const versionsIndex = source.indexOf('data-d1="backup-webdav-versions"')
+  const errorIndex = source.indexOf('data-d1="backup-webdav-error"')
+  const noticeIndex = source.indexOf('data-d1="backup-webdav-notice"')
+  assert.ok(configIndex > 0 && versionsIndex > 0)
+  assert.ok(errorIndex > 0 && noticeIndex > 0)
+  assert.ok(errorIndex < configIndex && errorIndex < versionsIndex)
+  assert.ok(noticeIndex < configIndex && noticeIndex < versionsIndex)
+  assert.match(source, /role="alert"/)
+  const { descriptor } = parse(source, { filename: panelFile })
+  const compiled = compileTemplate({
+    source: descriptor.template.content,
+    filename: panelFile,
+    id: 'backup-panel-webdav',
+  })
+  assert.equal(compiled.errors.length, 0, String(compiled.errors))
+  ok('WebDAV error/notice alerts stay visible in every WebDAV view')
+}
+
+async function testUnmountClearsWebdavPasswordAndReleasesSelection() {
+  const fake = makeHost()
+  const { state, unmount } = await mountPanel({ host: fake.host })
+  await flush()
+  state.webdavPassword.value = 'top-secret'
+  state.webdavSelectionId.value = 'webdav-sel-9'
+  unmount()
+  await flush()
+  assert.equal(state.webdavPassword.value, '')
+  const released = fake.webdavCalls
+    .filter((call) => call.name === 'releaseWebdavSelection')
+    .at(-1)
+  assert.equal(released.selectionId, 'webdav-sel-9')
+  ok('unmount clears the WebDAV password and releases delivered staging')
+}
+
 async function main() {
   const tests = [
     testSetupOnlyOffersRestoreAndCancelLeavesIdle,
@@ -967,6 +1229,13 @@ async function main() {
     testUnmountIgnoresLateStartReply,
     testProtectionTextIsPlainAndNoVHtml,
     testNativeSelectionCancelIsNotFailure,
+    testWebdavWrongPasswordKeepsConfigFormAndShowsError,
+    testWebdavEmptyVersionListIsUnderstandable,
+    testWebdavDownloadHandoffWrongPasswordRetryAndCancel,
+    testWebdavBackupRequiresPasswordOnly,
+    testSetupModeCanRestoreFromWebdav,
+    testWebdavTemplateAlertsVisibleOutsideBranches,
+    testUnmountClearsWebdavPasswordAndReleasesSelection,
   ]
   for (const test of tests) {
     await test()

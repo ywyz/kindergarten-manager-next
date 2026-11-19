@@ -348,6 +348,44 @@ function baseStatus(overrides = {}) {
 }
 
 
+// --- WebDAV downloaded status through the real adapter ---------------------
+{
+  installApi({
+    async query_maintenance() {
+      return {
+        state: 'found',
+        status: {
+          ...baseStatus({
+            request_id: 'req-webdav-download',
+            operation_id: 'op-webdav-download',
+            generation: 4,
+            phase: 'downloaded',
+            preview: null,
+            protection: null,
+          }),
+          selection: {
+            selection_id: 'webdav-selection-1',
+            display_name: 'kgm-backup-20261119T120000Z-' + 'a'.repeat(32) + '.kgmbackup',
+            encrypted: true,
+          },
+        },
+      }
+    },
+  })
+  const host = createBackupRestoreHost()
+  const result = await host.queryMaintenance({ requestId: 'req-webdav-download' })
+  assert.equal(result.state, 'found')
+  assert.equal(result.status.phase, 'downloaded')
+  assert.deepEqual(result.status.selection, {
+    selectionId: 'webdav-selection-1',
+    displayName: 'kgm-backup-20261119T120000Z-' + 'a'.repeat(32) + '.kgmbackup',
+    encrypted: true,
+  })
+  // Still opaque: no local path/credential leaks into the panel DTO.
+  assert.equal('path' in result.status.selection, false)
+  ok('real adapter maps the WebDAV downloaded selection hand-off')
+}
+
 // --- existing-shell wiring (source-level integration) ----------------------
 {
   const fs = await import('node:fs')
@@ -365,6 +403,9 @@ function baseStatus(overrides = {}) {
   assert.match(app, /@busy="maintenanceBusy = \$event"/)
   assert.match(app, /@blocking="maintenanceBlocking = \$event"/)
   assert.match(app, /@recovered="onMaintenanceRecovered"/)
+  assert.match(app, /completion\.target === 'webdav'/)
+  assert.match(app, /WebDAV 备份已创建/)
+  assert.match(app, /完整本地备份已创建/)
   assert.match(app, /maintenanceLocked/)
   assert.match(app, /page_business_ready\?\.\(/)
   assert.match(app, /bootstrapInfo\.maintenance_notice/)
@@ -377,6 +418,8 @@ function baseStatus(overrides = {}) {
   assert.match(settings, /data-d1="open-backup-restore"/)
   assert.match(settings, /emit\('open-maintenance'\)/)
   assert.match(setup, /data-d1="setup-restore"/)
+  assert.match(setup, /从备份恢复/)
+  assert.match(setup, /WebDAV/)
   assert.match(setup, /emit\('open-maintenance'\)/)
   assert.match(bridge, /export function createBackupRestoreHost/)
   assert.match(bridge, /page_business_ready\?:/)
@@ -521,6 +564,164 @@ function baseStatus(overrides = {}) {
   assert.ok(!error.includes('WorkbenchView'))
 
   ok('App.vue notice renders with the page chain, not instead of it')
+}
+
+// --- WebDAV bridge adapter -------------------------------------------------
+{
+  const calls = []
+  installApi({
+    async webdav_get_config() {
+      return {
+        available: true,
+        config: {
+          configured: true,
+          url: 'https://dav.example/backup/',
+          username: 'teacher',
+          password_available: true,
+        },
+      }
+    },
+    async save_webdav_config(payload) {
+      calls.push({ name: 'save', payload })
+      return {
+        ok: true,
+        config: {
+          configured: true,
+          url: payload.url,
+          username: payload.username,
+          password_available: true,
+        },
+      }
+    },
+    async webdav_list_versions() {
+      return {
+        versions: [
+          {
+            name: 'kgm-backup-20261119T120000Z-' + 'a'.repeat(32) + '.kgmbackup',
+            size: 2048,
+            modified_at: 'Wed, 19 Nov 2026 12:00:00 GMT',
+          },
+        ],
+        endpoint_fingerprint: 'fingerprint-1',
+        config: { configured: true },
+      }
+    },
+    async start_webdav_backup(payload) {
+      calls.push({ name: 'backup', payload })
+      return { request_id: payload.request_id, operation_id: 'op-wb', generation: 1 }
+    },
+    async start_webdav_download(payload) {
+      calls.push({ name: 'download', payload })
+      return { request_id: payload.request_id, operation_id: 'op-wd', generation: 2 }
+    },
+    async release_webdav_selection(payload) {
+      calls.push({ name: 'release', payload })
+      return { released: true }
+    },
+  })
+  const { createWebdavHost } = await import('./backupMaintenance.ts')
+  const webdav = createWebdavHost()
+  const config = await webdav.getWebdavConfig()
+  assert.deepEqual(config, {
+    available: true,
+    config: {
+      configured: true,
+      url: 'https://dav.example/backup/',
+      username: 'teacher',
+      passwordAvailable: true,
+    },
+  })
+  const saved = await webdav.saveWebdavConfig({
+    url: 'https://dav.example/backup/',
+    username: 'teacher',
+    password: 's3cret',
+  })
+  assert.equal(saved.ok, true)
+  assert.deepEqual(calls[0], {
+    name: 'save',
+    payload: {
+      url: 'https://dav.example/backup/',
+      username: 'teacher',
+      password: 's3cret',
+    },
+  })
+  const versions = await webdav.listWebdavVersions()
+  assert.equal(versions.endpointFingerprint, 'fingerprint-1')
+  assert.equal(versions.versions[0].size, 2048)
+  assert.equal(versions.versions[0].modifiedAt, 'Wed, 19 Nov 2026 12:00:00 GMT')
+
+  const backup = await webdav.startWebdavBackup({
+    requestId: 'req-wb',
+    password: 'pw',
+  })
+  assert.deepEqual(backup, {
+    requestId: 'req-wb',
+    operationId: 'op-wb',
+    generation: 1,
+  })
+  assert.equal(calls.at(-1).payload.explicit_plaintext, false)
+
+  const download = await webdav.startWebdavDownload({
+    requestId: 'req-wd',
+    versionName: 'kgm-backup-20261119T120000Z-' + 'a'.repeat(32) + '.kgmbackup',
+    endpointFingerprint: 'fingerprint-1',
+  })
+  assert.deepEqual(download, {
+    requestId: 'req-wd',
+    operationId: 'op-wd',
+    generation: 2,
+  })
+  assert.equal(calls.at(-1).payload.endpoint_fingerprint, 'fingerprint-1')
+  assert.deepEqual(await webdav.releaseWebdavSelection('sel-1'), {
+    released: true,
+  })
+  assert.deepEqual(calls.at(-1), {
+    name: 'release',
+    payload: { selection_id: 'sel-1' },
+  })
+  ok('WebDAV adapter maps opaque DTOs and never sends plaintext uploads')
+}
+
+{
+  installApi({
+    async webdav_list_versions() {
+      return {
+        error: {
+          code: 'WEBDAV_AUTH_FAILED',
+          message: 'WebDAV 用户名或密码不正确，或没有访问权限',
+        },
+      }
+    },
+  })
+  const { createWebdavHost, WebdavHostError } = await import('./backupMaintenance.ts')
+  const webdav = createWebdavHost()
+  await assert.rejects(
+    () => webdav.listWebdavVersions(),
+    (err) =>
+      err instanceof WebdavHostError &&
+      err.code === 'WEBDAV_AUTH_FAILED' &&
+      /用户名或密码/.test(err.message),
+  )
+  ok('WebDAV host errors keep the coded teacher-facing message')
+}
+
+{
+  globalThis.window = {}
+  const { createWebdavHost } = await import('./backupMaintenance.ts')
+  const webdav = createWebdavHost()
+  assert.deepEqual(await webdav.getWebdavConfig(), {
+    available: false,
+    config: { configured: false, passwordAvailable: false },
+  })
+  await assert.rejects(
+    () =>
+      webdav.startWebdavBackup({ requestId: 'r', password: 'pw' }),
+    (err) => err.code === 'WEBDAV_UNAVAILABLE',
+  )
+  assert.deepEqual(await webdav.releaseWebdavSelection('sel'), {
+    released: false,
+  })
+  ok('missing WebDAV host degrades without inventing success')
 }
 
 console.log(`OK B2 backup host adapter (${passed} groups)`)

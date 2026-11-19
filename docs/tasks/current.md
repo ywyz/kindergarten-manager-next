@@ -14,6 +14,17 @@
 
 在线管理提交 `278a961` 已部署，修复候选已通过独立编译、运行和专项验收。[本轮修复审核与复验](../bootstrap/desktop-preview-feedback-20261119-review.md)
 
+
+## dev/0.1 新功能实现阶段
+
+修复提交 `54c5887d64587f22a0af033a8fbd027f4b023903` 已快进至 `dev/0.1` 并推送。在线管理已部署。两个新功能按[开发范围](../specs/desktop-webdav-and-online-feedback.md)并行开工，下一次提交前由 Codex 独立审核和复验。
+
+- W OpenCode Go 独占备份恢复宿主、WebDAV 传输与存储、备份面板、首次设置恢复入口及对应测试。
+- F Command Code GOAT 独占协作网站与本地反馈接口、设置页反馈入口、增量 0007 迁移和对应测试。生产部署由 Codex 负责。
+- 两个会话均按 max 推理，分别在白名单内写入。源码测试用隔离档案、WebDAV 服务、合成反馈和独立 MySQL，教师原件留在原位。
+
+在线反馈提交 `b8db80b` 已独立验收、推送并上线。管理页可查看并处理反馈，生产数据库增量 0007 已验。WebDAV 已通过 Codex 回修审核、隔离源码编译、跨档案恢复、Edge 工作流及 Windows 原生入口检查。本轮桌面验证使用隔离资料，AI 流程采用合成响应。[审核、测试与上线记录](../bootstrap/desktop-preview-feedback-20261119-review.md)
+
 ## 前序证据
 
 - [11 月 18 日体验修复、MySQL 联调及 20261119 预览](../bootstrap/desktop-preview-feedback-20261118-review.md)

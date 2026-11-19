@@ -246,7 +246,7 @@ async function submit(): Promise<void> {
       <template #header><span>首次设置（一个本地教师档案）</span></template>
       <p class="muted">
         资料仅保存在本机。填写后将直接进入工作台；园所名称可留空后补。
-        也可先从本地备份恢复，无需先填写临时档案。
+        也可先从本地备份文件或 WebDAV 备份恢复，无需先填写临时档案。
       </p>
       <el-alert v-if="errorText" type="error" :closable="false" :title="errorText" data-d1="setup-error" />
       <div class="kgm-page-layout">
@@ -295,7 +295,7 @@ async function submit(): Promise<void> {
               完成设置并进入工作台
             </el-button>
             <el-button data-d1="setup-restore" :disabled="editorDirty" @click="emit('open-maintenance')">
-              从本地备份恢复
+              从备份恢复
             </el-button>
             <p class="muted">姓名、年级、班号和学期为必填；园所可留空。所有资料只保存在本机。</p>
           </div>

@@ -101,6 +101,12 @@ BRIDGE_ALLOWED_ENDPOINTS = frozenset(
         "confirm_restore",
         "query_maintenance",
         "cancel_maintenance",
+        "webdav_get_config",
+        "save_webdav_config",
+        "webdav_list_versions",
+        "start_webdav_backup",
+        "start_webdav_download",
+        "release_webdav_selection",
         "complete_close",
         "get_close_state",
         "save_docx",
@@ -1814,6 +1820,115 @@ class D1HostApi:
             return host.cancel(payload if isinstance(payload, dict) else {})
         except Exception:
             return {"accepted": False, "state": "unknown"}
+
+    # -- WebDAV (remote backup / cross-machine restore) -------------------
+    def webdav_get_config(self) -> dict:
+        """Display-safe local endpoint state; never the password."""
+        if self._retired:
+            return {"available": False, "config": {"configured": False}}
+        host = self._maintenance_host
+        if host is None:
+            return {"available": False, "config": {"configured": False}}
+        try:
+            return dict(host.webdav_config())
+        except Exception:  # noqa: BLE001 - status must stay a value
+            return {"available": False, "config": {"configured": False}}
+
+    def save_webdav_config(self, payload: object = None) -> dict:
+        guard = self._maintenance_guard()
+        if guard is not None:
+            return guard
+        host = self._maintenance_host
+        if host is None:
+            return {
+                "error": {
+                    "code": "HOST_CORE_UNAVAILABLE",
+                    "message": "维护服务尚未就绪",
+                }
+            }
+        body = payload if isinstance(payload, dict) else {}
+        try:
+            return host.save_webdav_config(
+                url=body.get("url"),
+                username=body.get("username"),
+                password=body.get("password"),
+            )
+        except Exception as exc:  # noqa: BLE001 - bounded host error
+            return self._maintenance_error(exc)
+
+    def webdav_list_versions(self) -> dict:
+        guard = self._maintenance_guard()
+        if guard is not None:
+            return guard
+        host = self._maintenance_host
+        if host is None:
+            return {
+                "error": {
+                    "code": "HOST_CORE_UNAVAILABLE",
+                    "message": "维护服务尚未就绪",
+                }
+            }
+        try:
+            return host.webdav_list_versions()
+        except Exception as exc:  # noqa: BLE001 - bounded host error
+            return self._maintenance_error(exc)
+
+    def start_webdav_backup(self, payload: object = None) -> dict:
+        guard = self._maintenance_guard()
+        if guard is not None:
+            return guard
+        host = self._maintenance_host
+        if host is None:
+            return {
+                "error": {
+                    "code": "HOST_CORE_UNAVAILABLE",
+                    "message": "维护服务尚未就绪",
+                }
+            }
+        body = payload if isinstance(payload, dict) else {}
+        try:
+            return host.start_webdav_backup(
+                request_id=str(body.get("request_id") or ""),
+                password=body.get("password"),
+                explicit_plaintext=body.get("explicit_plaintext") is True,
+            )
+        except Exception as exc:  # noqa: BLE001 - bounded host error
+            return self._maintenance_error(exc)
+
+    def start_webdav_download(self, payload: object = None) -> dict:
+        guard = self._maintenance_guard()
+        if guard is not None:
+            return guard
+        host = self._maintenance_host
+        if host is None:
+            return {
+                "error": {
+                    "code": "HOST_CORE_UNAVAILABLE",
+                    "message": "维护服务尚未就绪",
+                }
+            }
+        body = payload if isinstance(payload, dict) else {}
+        try:
+            return host.start_webdav_download(
+                request_id=str(body.get("request_id") or ""),
+                version_name=str(body.get("version_name") or ""),
+                endpoint_fingerprint=str(body.get("endpoint_fingerprint") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - bounded host error
+            return self._maintenance_error(exc)
+
+    def release_webdav_selection(self, payload: object = None) -> dict:
+        """Release one handed-to-UI download staging selection."""
+        if self._retired:
+            return {"released": False}
+        host = self._maintenance_host
+        if host is None:
+            return {"released": False}
+        body = payload if isinstance(payload, dict) else {}
+        try:
+            return host.release_webdav_selection(body.get("selection_id"))
+        except Exception:  # noqa: BLE001 - release is best effort
+            return {"released": False}
 
     # -- session / bridge --------------------------------------------------
     def get_bootstrap(self) -> dict:

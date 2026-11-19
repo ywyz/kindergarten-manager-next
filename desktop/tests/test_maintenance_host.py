@@ -9,6 +9,7 @@ monotonicity, retirement, exact protection/reopen text and safe error DTOs.
 from __future__ import annotations
 
 import dataclasses
+import os
 import threading
 import time
 from pathlib import Path
@@ -180,6 +181,25 @@ def wait_phase(host: mh.MaintenanceHost, request_id: str, phases, timeout=3.0):
                 return result["status"]
         time.sleep(0.01)
     raise AssertionError(f"phase {phases} not reached: {host.query({'request_id': request_id})}")
+
+
+def wait_absent(path: Path, timeout=3.0) -> None:
+    """Wait for the worker's finally-block staging cleanup to finish."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not path.exists():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"staging path still exists: {path}")
+
+
+def wait_no_matches(root: Path, pattern: str, timeout=3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not any(root.glob(pattern)):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"staging still exists: {pattern}")
 
 
 @pytest.fixture()
@@ -1283,3 +1303,456 @@ def test_preview_finally_cannot_release_new_install_owner():
     core.install_gate.set()
     wait_phase(host, "confirm-owner-race", {"completed", "error"})
     wait_owners(manager, set())
+
+
+# ---------------------------------------------------------------------------
+# WebDAV host operations (fake store/client; real private staging primitive)
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class FakeUpload:
+    name: str
+    size: int
+    already_published: bool = False
+    verified: bool = True
+
+
+@dataclasses.dataclass(frozen=True)
+class FakeDownload:
+    name: str
+    size: int
+    sha256: str = "0" * 64
+
+
+class FakeWebdavEndpoint:
+    def __init__(self, url="https://dav.example/backup/", username="teacher"):
+        self.url = url
+        self.username = username
+        self.password = "secret"
+
+
+class FakeWebdavStore:
+    def __init__(self, configured=True):
+        self.configured = configured
+        self.saved: dict | None = None
+        self.loaded = FakeWebdavEndpoint()
+
+    def status(self):
+        if not self.configured:
+            return {"configured": False}
+        return {
+            "configured": True,
+            "url": self.loaded.url,
+            "username": self.loaded.username,
+            "password_available": True,
+        }
+
+    def save(self, *, url, username, password):
+        self.saved = {"url": url, "username": username, "password": password}
+        self.configured = True
+        return self.status()
+
+    def load(self):
+        if not self.configured:
+            raise _credential_error("WEBDAV_NOT_CONFIGURED", "尚未配置 WebDAV")
+        return self.loaded
+
+
+def _credential_error(code: str, message: str):
+    import webdav_credentials
+
+    return webdav_credentials.WebdavCredentialError(code, message)
+
+
+@dataclasses.dataclass(frozen=True)
+class FakeSnapshot:
+    path: Path
+    snapshot_id: str
+    manifest: dict
+
+
+class FakeWebdavBackup(FakeBackup):
+    """A backup engine that writes a real staging file and returns a result."""
+
+    def create(self, target, *, password, cancel, progress):
+        self.calls += 1
+        self.gate.wait(2.0)
+        if cancel.is_set():
+            raise FakeBackupCancelled("synthetic backup cancelled")
+        path = Path(target)
+        path.write_bytes(b"synthetic-encrypted-snapshot")
+        if progress is not None:
+            progress({"stage": "verify", "done": 1, "total": 1, "message": "校验完成"})
+        return FakeSnapshot(
+            path=path,
+            snapshot_id="a" * 32,
+            manifest={"created_at": "2026-11-19T12:00:00+00:00"},
+        )
+
+
+class FakeWebdavClient:
+    instances: list["FakeWebdavClient"] = []
+
+    def __init__(self, endpoint, *, versions=None):
+        self.endpoint = endpoint
+        self.versions = list(versions or [])
+        self.uploads: list[dict] = []
+        self.downloads: list[dict] = []
+        self.collection_checks = 0
+        self.connect_error = None
+        self.upload_error = None
+        self.download_error = None
+        self.download_bytes = b"synthetic-downloaded-package"
+        FakeWebdavClient.instances.append(self)
+
+    def ensure_collection(self, timeout=None):
+        self.collection_checks += 1
+        if self.connect_error is not None:
+            raise self.connect_error
+        return {"ok": True, "created": False}
+
+    def list_versions(self):
+        if self.connect_error is not None:
+            raise self.connect_error
+        return self.versions
+
+    def upload(self, path, snapshot_id, *, created_at=None, cancel=None, progress=None):
+        if self.upload_error is not None:
+            raise self.upload_error
+        self.uploads.append(
+            {
+                "path": Path(path),
+                "snapshot_id": snapshot_id,
+                "created_at": created_at,
+                "bytes": Path(path).read_bytes(),
+            }
+        )
+        if progress is not None:
+            progress({"stage": "upload", "done": 1, "total": 1, "message": "上传备份"})
+        name = f"kgm-backup-20261119T120000Z-{snapshot_id}.kgmbackup"
+        return FakeUpload(name=name, size=Path(path).stat().st_size)
+
+    def download(self, name, destination, *, fd=None, progress=None, cancel=None):
+        if self.download_error is not None:
+            raise self.download_error
+        self.downloads.append({"name": name, "destination": Path(destination)})
+        if fd is not None:
+            with os.fdopen(fd, "wb") as sink:
+                sink.write(self.download_bytes)
+                sink.flush()
+                os.fsync(sink.fileno())
+        else:
+            Path(destination).write_bytes(self.download_bytes)
+        if progress is not None:
+            progress({"stage": "download", "done": 1, "total": 1, "message": "下载备份"})
+        return FakeDownload(name=name, size=len(self.download_bytes))
+
+
+def webdav_host(tmp_path: Path, *, store=None, client=None, backup=None):
+    store = store or FakeWebdavStore()
+    client = client or FakeWebdavClient(FakeWebdavEndpoint())
+    backup = backup or FakeWebdavBackup()
+    core = FakeCore()
+    host = mh.MaintenanceHost(
+        backup_service=backup,
+        restore_core=core,
+        webdav_store=store,
+        webdav_client_factory=lambda _endpoint: client,
+        webdav_work_root=tmp_path / "webdav-work",
+    )
+    host.test_endpoint_fingerprint = mh.MaintenanceHost._endpoint_fingerprint(
+        store.load()
+    )
+    return host, backup, core, store, client
+
+
+def test_webdav_config_is_connection_checked_before_saving(tmp_path):
+    host, _backup, _core, store, client = webdav_host(tmp_path)
+    result = host.save_webdav_config(
+        url="HTTPS://Dav.Example:8443/backup",
+        username="teacher",
+        password="secret",
+    )
+    assert result["ok"] is True
+    assert client.collection_checks == 1
+    assert store.saved == {
+        "url": "https://dav.example:8443/backup/",
+        "username": "teacher",
+        "password": "secret",
+    }
+    assert result["config"]["configured"] is True
+
+
+def test_webdav_config_connect_failure_is_not_saved(tmp_path):
+    import webdav_backup
+
+    client = FakeWebdavClient(FakeWebdavEndpoint())
+    client.connect_error = webdav_backup.WebdavError(
+        "WEBDAV_AUTH_FAILED", "WebDAV 用户名或密码不正确，或没有访问权限"
+    )
+    host, _backup, _core, store, _client = webdav_host(tmp_path, client=client)
+    with pytest.raises(mh.MaintenanceHostError) as caught:
+        host.save_webdav_config(
+            url="https://dav.example/backup/", username="teacher", password="wrong"
+        )
+    assert caught.value.code == "WEBDAV_AUTH_FAILED"
+    assert store.saved is None
+
+
+def test_webdav_list_versions_maps_display_dto(tmp_path):
+    import webdav_backup
+
+    client = FakeWebdavClient(FakeWebdavEndpoint())
+    client.versions = [
+        webdav_backup.WebdavVersion(
+            name="kgm-backup-20261119T120000Z-" + "a" * 32 + ".kgmbackup",
+            size=2048,
+            modified_at="Wed, 19 Nov 2026 12:00:00 GMT",
+        )
+    ]
+    host, _backup, _core, _store, _client = webdav_host(tmp_path, client=client)
+    result = host.webdav_list_versions()
+    assert result["versions"] == [
+        {
+            "name": "kgm-backup-20261119T120000Z-" + "a" * 32 + ".kgmbackup",
+            "size": 2048,
+            "modified_at": "Wed, 19 Nov 2026 12:00:00 GMT",
+        }
+    ]
+    assert result["config"]["configured"] is True
+
+
+def test_webdav_backup_requires_password_and_uploads_under_staging(tmp_path):
+    host, backup, _core, _store, client = webdav_host(tmp_path)
+    with pytest.raises(mh.MaintenanceHostError) as caught:
+        host.start_webdav_backup(request_id="webdav-plain", password=None)
+    assert caught.value.code == "WEBDAV_ENCRYPTION_REQUIRED"
+
+    ref = host.start_webdav_backup(request_id="webdav-backup-1", password="pw")
+    status = wait_phase(host, "webdav-backup-1", {"completed", "error"})
+    assert status["phase"] == "completed"
+    assert status["committed"] if "committed" in status else True
+    assert "WebDAV 备份版本：" in status["protection"]["display_text"]
+    assert backup.calls == 1
+    assert len(client.uploads) == 1
+    assert client.uploads[0]["bytes"]
+    # The private upload staging is removed after the terminal state.
+    work_root = tmp_path / "webdav-work"
+    wait_no_matches(work_root, "webdav-backup-*")
+    assert ref["operation_id"]
+
+
+def test_webdav_backup_error_maps_message_and_keeps_no_staging(tmp_path):
+    import webdav_backup
+
+    client = FakeWebdavClient(FakeWebdavEndpoint())
+    client.upload_error = webdav_backup.WebdavError(
+        "WEBDAV_CONNECT_FAILED", "无法连接 WebDAV 服务器"
+    )
+    host, _backup, _core, _store, _client = webdav_host(tmp_path, client=client)
+    host.start_webdav_backup(request_id="webdav-backup-2", password="pw")
+    status = wait_phase(host, "webdav-backup-2", {"error"})
+    assert status["error"]["code"] == "WEBDAV_CONNECT_FAILED"
+    assert status["error"]["committed"] is False
+    assert "无法连接 WebDAV 服务器" in status["error"]["message"]
+    wait_no_matches(tmp_path / "webdav-work", "webdav-backup-*")
+
+
+def test_webdav_backup_without_size_confirmation_is_honest(tmp_path):
+    class UnverifiedClient(FakeWebdavClient):
+        def upload(self, *args, **kwargs):
+            return dataclasses.replace(
+                super().upload(*args, **kwargs), verified=False
+            )
+
+    client = UnverifiedClient(FakeWebdavEndpoint())
+    host, _backup, _core, _store, _client = webdav_host(tmp_path, client=client)
+    host.start_webdav_backup(request_id="webdav-unverified", password="pw")
+    status = wait_phase(host, "webdav-unverified", {"completed"})
+    notice = status["protection"]["display_text"]
+    assert "WebDAV 备份已发布" in notice
+    assert "未提供大小核对" in notice
+    assert "备份版本：" not in notice
+
+
+def test_webdav_download_registers_managed_selection_and_sweeps(tmp_path):
+    host, _backup, core, _store, client = webdav_host(tmp_path)
+    first = host.start_webdav_download(
+        request_id="webdav-download-1",
+        version_name="kgm-backup-20261119T120000Z-" + "b" * 32 + ".kgmbackup",
+        endpoint_fingerprint=host.test_endpoint_fingerprint,
+    )
+    status = wait_phase(host, "webdav-download-1", {"downloaded"})
+    selection = status["selection"]
+    assert selection["encrypted"] is True
+    assert selection["display_name"].endswith(".kgmbackup")
+    first_path = Path(client.downloads[0]["destination"])
+    # The handed-to-panel package survives the download worker's own sweep.
+    assert first_path.is_file()
+    assert first["operation_id"]
+
+    # Choosing another version replaces the previous handed-out staging.
+    host.start_webdav_download(
+        request_id="webdav-download-2",
+        version_name="kgm-backup-20261119T120100Z-" + "c" * 32 + ".kgmbackup",
+        endpoint_fingerprint=host.test_endpoint_fingerprint,
+    )
+    second_status = wait_phase(host, "webdav-download-2", {"downloaded"})
+    assert not first_path.exists()
+    second_selection = second_status["selection"]
+    second_path = Path(client.downloads[1]["destination"])
+    assert second_path.is_file()
+
+    # A verify operation references the second selection: sweep keeps it.
+    core.preview_error = _restore_error("RESTORE_VERIFY_FAILED", "校验失败")
+    host.start_restore_verify(
+        request_id="webdav-verify-1",
+        selection_id=second_selection["selection_id"],
+        password="pw",
+    )
+    wait_phase(host, "webdav-verify-1", {"error"})
+    # Terminal verify released the managed staging package (in the worker's
+    # finally, which may trail the phase transition).
+    wait_absent(second_path)
+
+
+def _restore_error(code: str, message: str):
+    import app.local.restore_types as restore_types
+
+    return restore_types.RestoreFailure(code=code, phase="preview", message=message)
+
+
+def test_webdav_download_cancel_cleans_staging(tmp_path):
+    import webdav_backup
+
+    class SlowClient(FakeWebdavClient):
+        def download(self, name, destination, *, fd=None, progress=None, cancel=None):
+            if fd is not None:
+                os.close(fd)
+            raise webdav_backup.WebdavCancelled()
+
+    client = SlowClient(FakeWebdavEndpoint())
+    host, _backup, _core, _store, _client = webdav_host(tmp_path, client=client)
+    host.start_webdav_download(
+        request_id="webdav-download-cancel",
+        version_name="kgm-backup-20261119T120000Z-" + "d" * 32 + ".kgmbackup",
+        endpoint_fingerprint=host.test_endpoint_fingerprint,
+    )
+    status = wait_phase(host, "webdav-download-cancel", {"cancelled"})
+    assert status["phase"] == "cancelled"
+    wait_no_matches(tmp_path / "webdav-work", "webdav-download-*")
+
+
+def test_webdav_operations_refuse_unavailable_store(tmp_path):
+    store = FakeWebdavStore()
+    host, _backup, _core, _store, _client = webdav_host(tmp_path, store=store)
+    host.webdav_store = None
+    with pytest.raises(mh.MaintenanceHostError) as caught:
+        host.webdav_list_versions()
+    assert caught.value.code == "WEBDAV_UNAVAILABLE"
+    assert host.webdav_config() == {
+        "available": False,
+        "config": {"configured": False},
+    }
+
+
+def test_webdav_wrong_password_keeps_package_for_retry(tmp_path):
+    host, _backup, core, _store, client = webdav_host(tmp_path)
+    host.start_webdav_download(
+        request_id="webdav-download-retry",
+        version_name="kgm-backup-20261119T120000Z-" + "e" * 32 + ".kgmbackup",
+        endpoint_fingerprint=host.test_endpoint_fingerprint,
+    )
+    status = wait_phase(host, "webdav-download-retry", {"downloaded"})
+    selection_id = status["selection"]["selection_id"]
+    package = Path(client.downloads[0]["destination"])
+
+    core.preview_error = _restore_error("WRONG_PASSWORD", "密码不正确")
+    host.start_restore_verify(
+        request_id="webdav-verify-wrong",
+        selection_id=selection_id,
+        password="wrong",
+    )
+    password_status = wait_phase(host, "webdav-verify-wrong", {"password"})
+    assert password_status["error"]["code"] == "WRONG_PASSWORD"
+    # The core retired the failed operation; the downloaded package must stay
+    # so the same selection can be retried with the correct password.
+    assert package.is_file()
+
+    core.preview_error = None
+    host.start_restore_verify(
+        request_id="webdav-verify-right",
+        selection_id=selection_id,
+        password="right",
+    )
+    preview = wait_phase(host, "webdav-verify-right", {"preview"})
+    assert preview["phase"] == "preview"
+    assert package.is_file()
+
+    host.confirm_restore(
+        request_id="webdav-confirm-right",
+        operation_id=preview["operation_id"],
+        generation=preview["generation"],
+        confirmation_token=preview["preview"]["preview_id"],
+    )
+    completed = wait_phase(host, "webdav-confirm-right", {"completed", "error"})
+    assert completed["phase"] == "completed"
+    # After the terminal restore the managed staging package is removed.
+    wait_absent(package)
+    assert host.release_webdav_selection(selection_id) == {"released": False}
+
+
+def test_webdav_download_rejects_stale_endpoint_fingerprint(tmp_path):
+    host, _backup, _core, _store, _client = webdav_host(tmp_path)
+    with pytest.raises(mh.MaintenanceHostError) as caught:
+        host.start_webdav_download(
+            request_id="webdav-stale",
+            version_name="kgm-backup-20261119T120000Z-" + "f" * 32 + ".kgmbackup",
+            endpoint_fingerprint="stale-fingerprint",
+        )
+    assert caught.value.code == "WEBDAV_ENDPOINT_CHANGED"
+    assert host.query({"request_id": "webdav-stale"})["status"]["phase"] == "error"
+
+
+def test_webdav_config_change_is_refused_during_active_operation(tmp_path):
+    host, _backup, _core, _store, client = webdav_host(tmp_path)
+    client.upload_error = None
+    # Hold the backup worker inside the snapshot engine.
+    host.backup_service.gate.clear()
+    host.start_webdav_backup(request_id="webdav-busy", password="pw")
+    with pytest.raises(mh.MaintenanceHostError) as caught:
+        host.save_webdav_config(
+            url="https://other.example/dav/", username="u", password="p"
+        )
+    assert caught.value.code == "WEBDAV_BUSY"
+    host.backup_service.gate.set()
+    wait_phase(host, "webdav-busy", {"completed", "error"})
+
+
+def test_webdav_operation_uses_captured_endpoint_not_later_config(tmp_path):
+    captured: list = []
+
+    class RecordingClient(FakeWebdavClient):
+        def __init__(self, endpoint):
+            super().__init__(endpoint)
+            captured.append(endpoint)
+
+    store = FakeWebdavStore()
+    client = RecordingClient(store.load())
+    host = mh.MaintenanceHost(
+        backup_service=FakeWebdavBackup(),
+        restore_core=FakeCore(),
+        webdav_store=store,
+        webdav_client_factory=lambda endpoint: captured.append(endpoint) or client,
+        webdav_work_root=tmp_path / "webdav-work",
+    )
+    original = store.load()
+    host.backup_service.gate.clear()
+    host.start_webdav_backup(request_id="webdav-capture", password="pw")
+    # The teacher changes the endpoint while the snapshot/upload is running.
+    store.loaded = FakeWebdavEndpoint(url="https://changed.example/dav/")
+    host.backup_service.gate.set()
+    wait_phase(host, "webdav-capture", {"completed", "error"})
+    assert captured[0] is original
+    assert all(endpoint.url != "https://changed.example/dav/" for endpoint in captured)

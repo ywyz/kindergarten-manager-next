@@ -26,8 +26,12 @@ class MaintenanceHostError(RuntimeError):
         self.message = message
 
 
-_TERMINAL = {"completed", "cancelled", "error", "recovery_required"}
+_TERMINAL = {"completed", "cancelled", "error", "recovery_required", "downloaded"}
 _TOO_LATE = {"switching", "reopening"}
+# Handed-to-panel WebDAV selections kept for an immediate retry/verify.  A
+# version change or retirement removes the rest; this bound only limits
+# abandoned staging if the panel never reports back.
+_MAX_HANDED_SELECTIONS = 2
 
 # Controlled progress keys from the core are mapped to teacher-facing text.
 # Raw stages remain in the host operation for phase reasoning; they are never
@@ -43,6 +47,8 @@ _STAGE_TEXT = {
     "protection": "保留恢复前保护副本",
     "switch": "替换当前档案",
     "installed": "安装完成",
+    "upload": "上传备份",
+    "download": "下载备份",
 }
 _MESSAGE_TEXT = {
     "准备备份": "准备备份",
@@ -133,11 +139,22 @@ class MaintenanceHost:
         reopen_host: Callable[[], dict[str, Any] | None] | None = None,
         before_reopen: Callable[[], None] | None = None,
         weekly_export_manager: Any = None,
+        webdav_store: Any = None,
+        webdav_client_factory: Callable[[Any], Any] | None = None,
+        webdav_work_root: Path | None = None,
     ):
         self.backup_service = backup_service
         self.restore_core = restore_core
         self._base_hooks = hooks
         self.weekly_export_manager = weekly_export_manager
+        # Optional WebDAV endpoint store/client.  Both stay None when the
+        # runtime has no credential root, and every WebDAV request then fails
+        # with a readable "not available" error instead of a half-feature.
+        self.webdav_store = webdav_store
+        self.webdav_client_factory = webdav_client_factory
+        self.webdav_work_root = Path(webdav_work_root) if webdav_work_root else None
+        self._managed_selections: dict[str, Any] = {}
+        self._managed_consumed: set[str] = set()
         self.hooks = _MaintenanceHooks(self, hooks)
         self.app_version = app_version
         self.source_identity = dict(source_identity or {})
@@ -209,6 +226,204 @@ class MaintenanceHost:
     def retire(self) -> None:
         with self._lock:
             self._retired = True
+        self._sweep_managed_staging(retire_all=True)
+
+    # -- WebDAV endpoint / transport --------------------------------------
+    def _require_webdav(self) -> None:
+        if self.webdav_store is None or self.webdav_work_root is None:
+            raise MaintenanceHostError("WEBDAV_UNAVAILABLE", "本机未启用 WebDAV 备份")
+
+    @staticmethod
+    def _endpoint_fingerprint(endpoint) -> str:
+        """Stable non-secret identity of one configured endpoint."""
+        raw = f"{endpoint.url}\n{endpoint.username}".encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()[:16]
+
+    def _active_webdav_operations(self) -> list[dict[str, Any]]:
+        return [
+            op
+            for op in self._ops.values()
+            if op.get("category") == "webdav"
+            and op["phase"] not in _TERMINAL
+            and not op.get("_core_retired")
+        ]
+
+    def _webdav_client(self, endpoint):
+        if self.webdav_client_factory is not None:
+            return self.webdav_client_factory(endpoint)
+        import webdav_backup
+
+        return webdav_backup.WebdavClient(endpoint)
+
+    def _load_endpoint(self):
+        import webdav_credentials
+
+        try:
+            return self.webdav_store.load()
+        except webdav_credentials.WebdavCredentialError as exc:
+            raise MaintenanceHostError(exc.code, exc.message) from exc
+
+    def webdav_config(self) -> dict:
+        if self.webdav_store is None:
+            return {"available": False, "config": {"configured": False}}
+        try:
+            return {"available": True, "config": dict(self.webdav_store.status())}
+        except Exception:  # noqa: BLE001 - status must stay a value
+            return {"available": False, "config": {"configured": False}}
+
+    def save_webdav_config(self, *, url, username, password) -> dict:
+        """Validate + connect-check + persist one endpoint (synchronous)."""
+        self._require_operable()
+        self._require_webdav()
+        import webdav_backup
+        import webdav_credentials
+
+        with self._lock:
+            if self._active_webdav_operations():
+                raise MaintenanceHostError(
+                    "WEBDAV_BUSY", "WebDAV 操作正在进行，请完成后再修改配置"
+                )
+        try:
+            normalized = webdav_credentials.normalize_collection_url(url)
+            user = webdav_credentials.validate_username(username)
+            secret = webdav_credentials.validate_password(password)
+        except webdav_credentials.WebdavCredentialError as exc:
+            raise MaintenanceHostError(exc.code, exc.message) from exc
+        endpoint = webdav_credentials.WebdavEndpoint(
+            url=normalized, username=user, password=secret
+        )
+        try:
+            self._webdav_client(endpoint).ensure_collection(timeout=30.0)
+        except webdav_backup.WebdavError as exc:
+            raise MaintenanceHostError(exc.code, exc.message) from exc
+        try:
+            status = self.webdav_store.save(
+                url=normalized, username=user, password=secret
+            )
+        except webdav_credentials.WebdavCredentialError as exc:
+            raise MaintenanceHostError(exc.code, exc.message) from exc
+        return {"ok": True, "config": dict(status)}
+
+    def webdav_list_versions(self) -> dict:
+        """List recoverable remote versions (synchronous, bounded)."""
+        self._require_operable()
+        self._require_webdav()
+        import webdav_backup
+
+        endpoint = self._load_endpoint()
+        try:
+            versions = self._webdav_client(endpoint).list_versions()
+        except webdav_backup.WebdavError as exc:
+            raise MaintenanceHostError(exc.code, exc.message) from exc
+        return {
+            "versions": [
+                {
+                    "name": item.name,
+                    "size": item.size,
+                    "modified_at": item.modified_at,
+                }
+                for item in versions
+            ],
+            "endpoint_fingerprint": self._endpoint_fingerprint(endpoint),
+            "config": dict(self.webdav_store.status()),
+        }
+
+    # -- managed download staging -----------------------------------------
+    def _work_area(self, kind: str):
+        from app.local import backup_fs, credentials
+
+        try:
+            credentials._ensure_unmanaged_parents(self.webdav_work_root)
+            return backup_fs.PrivateWorkArea(self.webdav_work_root, kind)
+        except Exception as exc:  # noqa: BLE001 - staging is a hard precondition
+            raise MaintenanceHostError(
+                "WEBDAV_STAGING_FAILED", "无法创建 WebDAV 暂存目录"
+            ) from exc
+
+    def _sweep_managed_staging(
+        self,
+        *,
+        version_change: bool = False,
+        retire_all: bool = False,
+    ) -> None:
+        """Drop downloaded staging only when it is no longer needed.
+
+        - A selection referenced by a non-terminal operation (verifying,
+          preview, confirm/password retry) stays.
+        - A selection handed to the panel but not yet used stays, bounded to
+          the most recent few (a new download/list refresh is a version change
+          and drops the others).
+        - A selection whose operation reached a terminal state, a version
+          change, or host retirement removes the private staging tree.
+        """
+        with self._lock:
+            if not self._managed_selections:
+                return
+            active = {
+                op.get("_selection_id")
+                for op in self._ops.values()
+                if op["phase"] not in _TERMINAL and not op.get("_core_retired")
+            }
+            stale: list[str] = []
+            handed: list[str] = []
+            for selection_id in list(self._managed_selections):
+                if selection_id in active:
+                    continue
+                if (
+                    retire_all
+                    or version_change
+                    or selection_id in self._managed_consumed
+                ):
+                    stale.append(selection_id)
+                    continue
+                handed.append(selection_id)
+            if len(handed) > _MAX_HANDED_SELECTIONS:
+                stale.extend(handed[: len(handed) - _MAX_HANDED_SELECTIONS])
+            # Decide and detach under the same lock hold: a worker beginning a
+            # valid verify between the decision and the removal would otherwise
+            # lose its package to a stale decision.
+            removed = []
+            for selection_id in stale:
+                work = self._managed_selections.pop(selection_id, None)
+                self._selections.pop(selection_id, None)
+                self._managed_consumed.discard(selection_id)
+                if work is not None:
+                    removed.append(work)
+        for work in removed:
+            try:
+                work.cleanup()
+            except Exception:  # noqa: BLE001 - cleanup never masks a result
+                pass
+
+    def _retire_operation_selection(self, op: dict[str, Any]) -> None:
+        """Mark the selection of a terminal operation as consumed."""
+        with self._lock:
+            if op["phase"] in _TERMINAL:
+                selection_id = op.get("_selection_id")
+                if selection_id:
+                    self._managed_consumed.add(selection_id)
+
+    def release_webdav_selection(self, selection_id: object) -> dict:
+        """Release one handed-to-UI staging selection (cancel/close)."""
+        if not isinstance(selection_id, str) or not selection_id:
+            return {"released": False}
+        with self._lock:
+            for op in self._ops.values():
+                if (
+                    op.get("_selection_id") == selection_id
+                    and op["phase"] not in _TERMINAL
+                    and not op.get("_core_retired")
+                ):
+                    return {"released": False, "reason": "in_use"}
+            work = self._managed_selections.pop(selection_id, None)
+            self._selections.pop(selection_id, None)
+            self._managed_consumed.discard(selection_id)
+        if work is not None:
+            try:
+                work.cleanup()
+            except Exception:  # noqa: BLE001 - cleanup is best effort
+                pass
+        return {"released": work is not None}
 
     def _pause_weekly(self, owner: str) -> None:
         manager = self.weekly_export_manager
@@ -437,6 +652,7 @@ class MaintenanceHost:
             "preview": op["preview"],
             "protection": op["protection"],
             "error": op["error"],
+            "selection": op.get("selection"),
             "cancel_requested": op["cancel_requested"],
             "stale": op["stale"],
             "reopened": op["reopened"],
@@ -548,6 +764,7 @@ class MaintenanceHost:
                 self._record_rejection(request_id, "backup", fingerprint, exc)
                 raise
             op = self._new_op(request_id, "backup", "creating", fingerprint)
+            self._sweep_managed_staging()
             owner = f"host:{op['operation_id']}:backup"
             try:
                 self._pause_weekly(owner)
@@ -606,6 +823,269 @@ class MaintenanceHost:
                 )
         finally:
             self._resume_weekly(weekly_owner)
+            self._sweep_managed_staging()
+
+    def start_webdav_backup(
+        self,
+        *,
+        request_id: str,
+        password: str | None,
+        explicit_plaintext: bool = False,
+    ) -> dict[str, Any]:
+        """Create an encrypted snapshot locally, then upload it to WebDAV."""
+        with self._lock:
+            payload = {
+                "password": password,
+                "explicit_plaintext": bool(explicit_plaintext),
+            }
+            fingerprint = self._fingerprint("webdav-backup", payload)
+            existing = self._check_request(request_id, "webdav-backup", payload)
+            if existing is not None:
+                return self._ref(existing)
+            try:
+                if self._retired:
+                    raise MaintenanceHostError("HOST_RETIRED", "宿主已退休，请重新打开应用")
+                self._require_operable()
+                self._require_webdav()
+                if password is not None:
+                    if not isinstance(password, str) or not password:
+                        raise MaintenanceHostError(
+                            "PASSWORD_REQUIRED", "请输入密码；WebDAV 备份必须加密"
+                        )
+                else:
+                    raise MaintenanceHostError(
+                        "WEBDAV_ENCRYPTION_REQUIRED",
+                        "WebDAV 备份必须使用密码加密；请选择密码后重试",
+                    )
+                if self.backup_service is None:
+                    raise MaintenanceHostError(
+                        "HOST_CORE_UNAVAILABLE", "备份引擎尚未就绪"
+                    )
+                endpoint = self._load_endpoint()
+            except MaintenanceHostError as exc:
+                self._record_rejection(request_id, "webdav-backup", fingerprint, exc)
+                raise
+            op = self._new_op(request_id, "backup", "creating", fingerprint)
+            op["category"] = "webdav"
+            # The immutable endpoint (with its credentials) lives only in this
+            # start method and the worker arguments, never in the long-lived
+            # operation registry that the status DTOs expose.
+            self._sweep_managed_staging()
+            owner = f"host:{op['operation_id']}:webdav-backup"
+            try:
+                self._pause_weekly(owner)
+            except MaintenanceHostError as exc:
+                with self._lock:
+                    op["phase"] = "error"
+                    op["error"] = self._error(exc.code, exc.message)
+                raise
+            thread = threading.Thread(
+                target=self._run_webdav_backup,
+                args=(op, password, endpoint, owner),
+                name=f"maintenance-webdav-backup-{op['operation_id'][:8]}",
+                daemon=True,
+            )
+            self._start_worker(op, thread, owner)
+            return self._ref(op)
+
+    def _run_webdav_backup(
+        self,
+        op: dict[str, Any],
+        password: str | None,
+        endpoint,
+        weekly_owner: str,
+    ) -> None:
+        work = None
+        try:
+            work = self._work_area("webdav-backup")
+            work.__enter__()
+            package_path = work.path / f"{op['operation_id']}.kgmbackup"
+            snapshot = self.backup_service.create(
+                package_path,
+                password=password,
+                cancel=op["_cancel"],
+                progress=lambda value: self._progress(op, value),
+            )
+            client = self._webdav_client(endpoint)
+            upload = client.upload(
+                snapshot.path,
+                snapshot.snapshot_id,
+                created_at=(snapshot.manifest or {}).get("created_at"),
+                cancel=op["_cancel"],
+                progress=lambda value: self._progress(op, value),
+            )
+            with self._lock:
+                if op["phase"] in _TERMINAL:
+                    return
+                op["_webdav_version"] = upload.name
+                if upload.verified:
+                    notice = (
+                        f"WebDAV 备份版本：{upload.name}。"
+                        "远端已有版本不会被覆盖。"
+                    )
+                else:
+                    # The MOVE succeeded but the server offered no size
+                    # confirmation; never present that as byte-verified.
+                    notice = (
+                        f"WebDAV 备份已发布：{upload.name}，"
+                        "但服务器未提供大小核对；请刷新版本列表确认。"
+                    )
+                op["protection"] = {"display_text": notice}
+            self._transition(op, "completed", committed=True, progress=None)
+        except Exception as exc:  # noqa: BLE001 - host boundary
+            code = str(getattr(exc, "code", ""))
+            cancelled = code in {
+                "LOCAL_BACKUP_CANCELLED",
+                "WEBDAV_CANCELLED",
+            } or type(exc).__name__ in {"SnapshotCancelled", "WebdavCancelled"}
+            message = getattr(exc, "message", "") or "WebDAV 备份失败，当前档案未更改"
+            with self._lock:
+                if op["phase"] in _TERMINAL:
+                    return
+                if cancelled:
+                    op["phase"] = "cancelled"
+                    return
+                op["phase"] = "error"
+                op["error"] = self._error(code or "WEBDAV_BACKUP_FAILED", message)
+        finally:
+            if work is not None:
+                try:
+                    work.cleanup()
+                except Exception:  # noqa: BLE001 - cleanup never masks a result
+                    pass
+            self._resume_weekly(weekly_owner)
+            self._sweep_managed_staging()
+
+    def start_webdav_download(
+        self,
+        *,
+        request_id: str,
+        version_name: str,
+        endpoint_fingerprint: str,
+    ) -> dict[str, Any]:
+        """Download one remote version into private staging for local verify.
+
+        ``endpoint_fingerprint`` comes from the version listing the teacher
+        selected from; a changed endpoint invalidates that selection instead of
+        silently downloading a same-named file from another service.
+        """
+        with self._lock:
+            payload = {
+                "version_name": version_name,
+                "endpoint_fingerprint": endpoint_fingerprint,
+            }
+            fingerprint = self._fingerprint("webdav-download", payload)
+            existing = self._check_request(request_id, "webdav-download", payload)
+            if existing is not None:
+                return self._ref(existing)
+            try:
+                if self._retired:
+                    raise MaintenanceHostError("HOST_RETIRED", "宿主已退休，请重新打开应用")
+                self._require_operable()
+                self._require_webdav()
+                import webdav_backup
+
+                if not isinstance(version_name, str) or not webdav_backup.FINAL_PATTERN.fullmatch(
+                    version_name
+                ):
+                    raise MaintenanceHostError(
+                        "WEBDAV_NAME_INVALID", "所选远端备份名称不合法"
+                    )
+                endpoint = self._load_endpoint()
+                if (
+                    not isinstance(endpoint_fingerprint, str)
+                    or not endpoint_fingerprint
+                    or endpoint_fingerprint != self._endpoint_fingerprint(endpoint)
+                ):
+                    raise MaintenanceHostError(
+                        "WEBDAV_ENDPOINT_CHANGED",
+                        "WebDAV 配置已变更，请刷新版本列表后重新选择",
+                    )
+            except MaintenanceHostError as exc:
+                self._record_rejection(
+                    request_id, "webdav-download", fingerprint, exc
+                )
+                raise
+            op = self._new_op(request_id, "restore", "downloading", fingerprint)
+            op["category"] = "webdav"
+            # Choosing a version replaces any previous handed-out staging.
+            self._sweep_managed_staging(version_change=True)
+            owner = f"host:{op['operation_id']}:webdav-download"
+            try:
+                self._pause_weekly(owner)
+            except MaintenanceHostError as exc:
+                with self._lock:
+                    op["phase"] = "error"
+                    op["error"] = self._error(exc.code, exc.message)
+                raise
+            thread = threading.Thread(
+                target=self._run_webdav_download,
+                args=(op, version_name, endpoint, owner),
+                name=f"maintenance-webdav-download-{op['operation_id'][:8]}",
+                daemon=True,
+            )
+            self._start_worker(op, thread, owner)
+            return self._ref(op)
+
+    def _run_webdav_download(
+        self,
+        op: dict[str, Any],
+        version_name: str,
+        endpoint,
+        weekly_owner: str,
+    ) -> None:
+        work = None
+        try:
+            work = self._work_area("webdav-download")
+            work.__enter__()
+            target = work.path / version_name
+            client = self._webdav_client(endpoint)
+            fd = work.create_file(target)
+            client.download(
+                version_name,
+                target,
+                fd=fd,
+                cancel=op["_cancel"],
+                progress=lambda value: self._progress(op, value),
+            )
+            selection_id = secrets.token_urlsafe(18)
+            with self._lock:
+                if op["phase"] in _TERMINAL or op["_cancel"].is_set():
+                    if op["phase"] not in _TERMINAL:
+                        op["phase"] = "cancelled"
+                    return
+                self._selections[selection_id] = target
+                self._managed_selections[selection_id] = work
+                op["selection"] = {
+                    "selection_id": selection_id,
+                    "display_name": version_name,
+                    "encrypted": True,
+                }
+                op["phase"] = "downloaded"
+                op["progress"] = None
+            work = None  # ownership moved into the managed selection map
+        except Exception as exc:  # noqa: BLE001 - host boundary
+            code = str(getattr(exc, "code", ""))
+            cancelled = code == "WEBDAV_CANCELLED" or type(exc).__name__ == "WebdavCancelled"
+            message = getattr(exc, "message", "") or "WebDAV 下载失败，当前档案未更改"
+            with self._lock:
+                if op["phase"] in _TERMINAL:
+                    return
+                if cancelled:
+                    op["phase"] = "cancelled"
+                    return
+                op["phase"] = "error"
+                op["error"] = self._error(
+                    code or "WEBDAV_DOWNLOAD_FAILED", message
+                )
+        finally:
+            if work is not None:
+                try:
+                    work.cleanup()
+                except Exception:  # noqa: BLE001 - cleanup never masks a result
+                    pass
+            self._resume_weekly(weekly_owner)
+            self._sweep_managed_staging()
 
     def start_restore_verify(
         self,
@@ -644,6 +1124,8 @@ class MaintenanceHost:
             op = self._new_op(
                 request_id, "restore", "verifying", fingerprint
             )
+            op["_selection_id"] = selection_id
+            self._sweep_managed_staging()
             owner = f"host:{op['operation_id']}:verify"
             try:
                 self._pause_weekly(owner)
@@ -759,6 +1241,8 @@ class MaintenanceHost:
                         op["_core_retired"] = True
         finally:
             self._resume_weekly(weekly_owner)
+            self._retire_operation_selection(op)
+            self._sweep_managed_staging()
 
     def confirm_restore(
         self,
@@ -1097,6 +1581,8 @@ class MaintenanceHost:
             )
         finally:
             self._resume_weekly(weekly_owner)
+            self._retire_operation_selection(op)
+            self._sweep_managed_staging()
 
     # -- query / cancel --------------------------------------------------
     def _find(self, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1130,10 +1616,11 @@ class MaintenanceHost:
             kind = op["kind"]
             operation_id = op["operation_id"]
             phase = op["phase"]
-            if kind != "restore" or self.restore_core is None:
+            if op.get("category") == "webdav" or kind != "restore" or self.restore_core is None:
                 op["_cancel"].set()
-                # A backup may already have published before returning; the
-                # caller must wait for the real terminal fact.
+                # A WebDAV upload/download or backup may already have
+                # published/completed before returning; the caller must wait
+                # for the real terminal fact.
                 return {"accepted": True, "state": "unknown"}
             op["_cancelling"] = True
             op["_cancel"].set()
@@ -1160,6 +1647,8 @@ class MaintenanceHost:
                 op["preview"] = None
                 op["_preview_obj"] = None
                 op["progress"] = None
+                self._retire_operation_selection(op)
+                self._sweep_managed_staging()
                 return {"accepted": True, "state": "cancelled"}
             if state == "switching":
                 return {"accepted": False, "state": "too_late"}

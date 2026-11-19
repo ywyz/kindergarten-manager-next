@@ -550,6 +550,7 @@ function toStatus(raw: Record<string, unknown>): MaintenanceStatus {
   const preview = raw.preview as Record<string, unknown> | undefined
   const protection = raw.protection as { display_text?: string } | undefined
   const error = raw.error as Record<string, unknown> | undefined
+  const selection = raw.selection as Record<string, unknown> | undefined
   return {
     requestId: String(raw.request_id ?? ''),
     operationId: raw.operation_id ? String(raw.operation_id) : null,
@@ -566,6 +567,15 @@ function toStatus(raw: Record<string, unknown>): MaintenanceStatus {
         }
       : undefined,
     preview: preview ? toPreview(preview) : undefined,
+    // WebDAV download hand-off: the same opaque selection shape used by the
+    // native local chooser, with no path or credential.
+    selection: selection?.selection_id
+      ? {
+          selectionId: String(selection.selection_id),
+          displayName: String(selection.display_name ?? ''),
+          encrypted: selection.encrypted !== false,
+        }
+      : undefined,
     protection: protection?.display_text
       ? { displayText: String(protection.display_text) }
       : undefined,

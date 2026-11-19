@@ -16,6 +16,8 @@ export type MaintenancePhase =
   | 'password'
   | 'creating'
   | 'verifying'
+  | 'downloading'
+  | 'downloaded'
   | 'preview'
   | 'waiting'
   | 'protection'
@@ -124,6 +126,8 @@ export interface MaintenanceStatus {
   stale?: boolean
   /** Restore only: host has reopened the new data and the UI may continue. */
   reopened?: boolean
+  /** WebDAV download: private staging selection handed to this panel. */
+  selection?: RestoreSelection
 }
 
 export interface MaintenanceCompletion {
@@ -133,6 +137,8 @@ export interface MaintenanceCompletion {
   committed: boolean
   reopened: boolean
   protectionDisplay?: string
+  /** Backup only: where the published package actually lives. */
+  target?: 'local' | 'webdav'
 }
 
 export type MaintenanceQuery =
@@ -169,6 +175,7 @@ const TERMINAL_PHASES: ReadonlySet<MaintenancePhase> = new Set([
   'completed',
   'cancelled',
   'error',
+  'downloaded',
 ])
 
 const ACTIVE_PHASES: ReadonlySet<MaintenancePhase> = new Set([
@@ -176,6 +183,7 @@ const ACTIVE_PHASES: ReadonlySet<MaintenancePhase> = new Set([
   'password',
   'creating',
   'verifying',
+  'downloading',
   'preview',
   'waiting',
   'protection',
@@ -206,6 +214,8 @@ const PHASE_RANK: Record<MaintenancePhase, number> = {
   password: 2,
   creating: 3,
   verifying: 4,
+  downloading: 4,
+  downloaded: 5,
   preview: 5,
   waiting: 6,
   protection: 7,
@@ -298,6 +308,10 @@ export function phaseText(phase: MaintenancePhase, kind: MaintenanceKind): strin
       return '正在创建完整备份…'
     case 'verifying':
       return '正在校验备份…'
+    case 'downloading':
+      return '正在下载远端备份…'
+    case 'downloaded':
+      return '远端备份已下载'
     case 'preview':
       return '校验完成：确认预览'
     case 'waiting':
@@ -317,4 +331,234 @@ export function phaseText(phase: MaintenancePhase, kind: MaintenanceKind): strin
     case 'recovery_required':
       return '需要处理上次恢复状态'
   }
+}
+
+// ---------------------------------------------------------------------------
+// WebDAV (remote backup / cross-machine restore)
+// ---------------------------------------------------------------------------
+
+export interface WebdavConfigView {
+  configured: boolean
+  url?: string
+  username?: string
+  passwordAvailable: boolean
+  detail?: string
+}
+
+export interface WebdavVersionView {
+  name: string
+  size: number
+  modifiedAt?: string
+}
+
+export interface WebdavConfigSaveInput {
+  url: string
+  username: string
+  password: string
+}
+
+export interface WebdavBackupStartInput extends MaintenanceRequestRef {
+  /** WebDAV packages must be encrypted; the host never accepts plaintext. */
+  password: string
+}
+
+export interface WebdavDownloadInput extends MaintenanceRequestRef {
+  versionName: string
+  /** Listing identity; a changed endpoint invalidates this selection. */
+  endpointFingerprint: string
+}
+
+export interface WebdavHostMethods {
+  getWebdavConfig(): Promise<{
+    available: boolean
+    config: WebdavConfigView
+  }>
+  saveWebdavConfig(
+    input: WebdavConfigSaveInput,
+  ): Promise<{ ok: boolean; config: WebdavConfigView }>
+  listWebdavVersions(): Promise<{
+    versions: WebdavVersionView[]
+    endpointFingerprint: string
+  }>
+  startWebdavBackup(
+    input: WebdavBackupStartInput,
+  ): Promise<MaintenanceOperationRef>
+  startWebdavDownload(
+    input: WebdavDownloadInput,
+  ): Promise<MaintenanceOperationRef>
+  releaseWebdavSelection(selectionId: string): Promise<{ released: boolean }>
+}
+
+export class WebdavHostError extends Error {
+  code: string
+
+  constructor(code: string, message: string) {
+    super(message)
+    this.code = code
+  }
+}
+
+function webdavRawConfig(raw: unknown): WebdavConfigView {
+  const value = (raw ?? {}) as Record<string, unknown>
+  const config: WebdavConfigView = {
+    configured: value.configured === true,
+    passwordAvailable: value.password_available === true,
+  }
+  if (typeof value.url === 'string' && value.url) config.url = value.url
+  if (typeof value.username === 'string' && value.username) {
+    config.username = value.username
+  }
+  if (typeof value.detail === 'string' && value.detail) config.detail = value.detail
+  return config
+}
+
+function webdavRawError(raw: Record<string, unknown>): never {
+  const error = (raw.error ?? {}) as Record<string, unknown>
+  throw new WebdavHostError(
+    String(error.code ?? 'WEBDAV_HOST_ERROR'),
+    String(error.message ?? 'WebDAV 操作失败，请稍后重试'),
+  )
+}
+
+function webdavBridgeApi(): Record<string, unknown> | null {
+  const candidate = (globalThis as { window?: { pywebview?: { api?: unknown } } })
+    .window?.pywebview?.api
+  return candidate && typeof candidate === 'object'
+    ? (candidate as Record<string, unknown>)
+    : null
+}
+
+function webdavOperationRef(raw: unknown): MaintenanceOperationRef {
+  const value = (raw ?? {}) as Record<string, unknown>
+  if (value.error) webdavRawError(value)
+  const requestId = String(value.request_id ?? '')
+  const operationId = String(value.operation_id ?? '')
+  if (!requestId || !operationId) throw new WebdavHostError('WEBDAV_HOST_ERROR', '维护服务未返回操作编号')
+  return {
+    requestId,
+    operationId,
+    generation: Number(value.generation ?? 0),
+  }
+}
+
+/**
+ * Default pywebview adapter for the WebDAV endpoints.  The panel receives the
+ * regular ``BackupRestoreHost`` from the bridge; when that object does not
+ * implement the WebDAV methods this adapter calls the allowlisted host API
+ * directly.  Credentials stay in this process; no URL with userinfo and no
+ * password is ever placed in a DTO.
+ */
+export function createWebdavHost(): WebdavHostMethods {
+  return {
+    async getWebdavConfig() {
+      const api = webdavBridgeApi()
+      if (!api || typeof api.webdav_get_config !== 'function') {
+        return { available: false, config: { configured: false, passwordAvailable: false } }
+      }
+      const raw = (await (api.webdav_get_config as () => Promise<Record<string, unknown>>)()) ?? {}
+      return {
+        available: raw.available === true,
+        config: webdavRawConfig(raw.config),
+      }
+    },
+    async saveWebdavConfig(input) {
+      const api = webdavBridgeApi()
+      if (!api || typeof api.save_webdav_config !== 'function') {
+        throw new WebdavHostError('WEBDAV_UNAVAILABLE', '本机未启用 WebDAV 备份')
+      }
+      const raw =
+        (await (
+          api.save_webdav_config as (payload: unknown) => Promise<Record<string, unknown>>
+        )({
+          url: input.url,
+          username: input.username,
+          password: input.password,
+        })) ?? {}
+      if (raw.error) webdavRawError(raw)
+      return { ok: raw.ok === true, config: webdavRawConfig(raw.config) }
+    },
+    async listWebdavVersions() {
+      const api = webdavBridgeApi()
+      if (!api || typeof api.webdav_list_versions !== 'function') {
+        throw new WebdavHostError('WEBDAV_UNAVAILABLE', '本机未启用 WebDAV 备份')
+      }
+      const raw =
+        (await (api.webdav_list_versions as () => Promise<Record<string, unknown>>)()) ?? {}
+      if (raw.error) webdavRawError(raw)
+      const versions = Array.isArray(raw.versions) ? raw.versions : []
+      return {
+        versions: versions.map((item) => {
+          const value = (item ?? {}) as Record<string, unknown>
+          return {
+            name: String(value.name ?? ''),
+            size: Number(value.size ?? 0),
+            modifiedAt:
+              typeof value.modified_at === 'string' ? value.modified_at : undefined,
+          }
+        }),
+        endpointFingerprint: String(raw.endpoint_fingerprint ?? ''),
+      }
+    },
+    async startWebdavBackup(input) {
+      const api = webdavBridgeApi()
+      if (!api || typeof api.start_webdav_backup !== 'function') {
+        throw new WebdavHostError('WEBDAV_UNAVAILABLE', '本机未启用 WebDAV 备份')
+      }
+      return webdavOperationRef(
+        await (
+          api.start_webdav_backup as (payload: unknown) => Promise<unknown>
+        )({
+          request_id: input.requestId,
+          password: input.password,
+          explicit_plaintext: false,
+        }),
+      )
+    },
+    async startWebdavDownload(input) {
+      const api = webdavBridgeApi()
+      if (!api || typeof api.start_webdav_download !== 'function') {
+        throw new WebdavHostError('WEBDAV_UNAVAILABLE', '本机未启用 WebDAV 备份')
+      }
+      return webdavOperationRef(
+        await (
+          api.start_webdav_download as (payload: unknown) => Promise<unknown>
+        )({
+          request_id: input.requestId,
+          version_name: input.versionName,
+          endpoint_fingerprint: input.endpointFingerprint,
+        }),
+      )
+    },
+    async releaseWebdavSelection(selectionId) {
+      const api = webdavBridgeApi()
+      if (!api || typeof api.release_webdav_selection !== 'function') {
+        return { released: false }
+      }
+      try {
+        const raw =
+          (await (
+            api.release_webdav_selection as (payload: unknown) => Promise<Record<string, unknown>>
+          )({ selection_id: selectionId })) ?? {}
+        return { released: raw.released === true }
+      } catch {
+        return { released: false }
+      }
+    },
+  }
+}
+
+/** Resolve the panel's WebDAV methods: host object first, bridge fallback. */
+export function resolveWebdavHost(host: BackupRestoreHost): WebdavHostMethods {
+  const candidate = host as unknown as Partial<WebdavHostMethods>
+  if (
+    typeof candidate.getWebdavConfig === 'function' &&
+    typeof candidate.saveWebdavConfig === 'function' &&
+    typeof candidate.listWebdavVersions === 'function' &&
+    typeof candidate.startWebdavBackup === 'function' &&
+    typeof candidate.startWebdavDownload === 'function' &&
+    typeof candidate.releaseWebdavSelection === 'function'
+  ) {
+    return candidate as WebdavHostMethods
+  }
+  return createWebdavHost()
 }

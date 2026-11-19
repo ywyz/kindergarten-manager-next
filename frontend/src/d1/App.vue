@@ -906,9 +906,16 @@ async function onMaintenanceRecovered(): Promise<void> {
   }
 }
 
-function onMaintenanceCompleted(completion: { kind: string }): void {
+function onMaintenanceCompleted(completion: {
+  kind: string
+  target?: 'local' | 'webdav'
+}): void {
   if (completion.kind === 'backup') {
-    ElMessage.success('完整本地备份已创建')
+    ElMessage.success(
+      completion.target === 'webdav'
+        ? 'WebDAV 备份已创建'
+        : '完整本地备份已创建',
+    )
   }
 }
 

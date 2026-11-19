@@ -7796,6 +7796,22 @@ def _build_maintenance_host(args, runtime, lifecycle, bundle):
         source_identity=source,
         weekly_export_manager=weekly_export_manager,
     )
+    # WebDAV endpoint storage shares the injected credential root but lives in
+    # its own child directory, so different explicit roots never share a
+    # store and a restore never replaces it.  The private transport staging
+    # sits beside the credential root, away from the live data root.
+    webdav_store = None
+    webdav_work_root = None
+    credential_root = getattr(runtime, "credential_root", None)
+    if credential_root is not None:
+        try:
+            from webdav_credentials import WebdavCredentialStore
+
+            webdav_store = WebdavCredentialStore(credential_root)
+            webdav_work_root = Path(credential_root).parent / "webdav-work"
+        except Exception:  # noqa: BLE001 - WebDAV degrades to unavailable
+            webdav_store = None
+            webdav_work_root = None
     return maintenance_host.MaintenanceHost(
         backup_service=backup_service,
         restore_core=restore_core,
@@ -7805,6 +7821,8 @@ def _build_maintenance_host(args, runtime, lifecycle, bundle):
         reopen_host=reopen_host,
         before_reopen=before_reopen,
         weekly_export_manager=weekly_export_manager,
+        webdav_store=webdav_store,
+        webdav_work_root=webdav_work_root,
     )
 
 

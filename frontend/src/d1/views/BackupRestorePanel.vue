@@ -21,6 +21,7 @@ import {
   progressLabel,
   progressPercent,
   REOPEN_FAILED_MESSAGE,
+  resolveWebdavHost,
   statusMatchesRef,
   type BackupRestoreHost,
   type BackupTargetSelection,
@@ -33,6 +34,8 @@ import {
   type MaintenanceStatus,
   type RestorePreviewView,
   type RestoreSelection,
+  type WebdavConfigView,
+  type WebdavVersionView,
 } from '../backupMaintenance'
 
 const props = defineProps<{
@@ -51,6 +54,8 @@ const emit = defineEmits<{
 }>()
 
 const POLL_MS = 350
+
+const webdav = resolveWebdavHost(props.host)
 
 let disposed = false
 let epoch = 0
@@ -75,6 +80,37 @@ const operation = ref<MaintenanceOperationRef | null>(null)
 const pendingRequestId = ref('')
 const startUnconfirmed = ref(false)
 const cancelRequested = ref(false)
+
+// WebDAV (remote backup / cross-machine restore).  The endpoint password is
+// only ever held in these local input refs until the host stores it with
+// machine-local DPAPI protection; it is never part of a DTO or log.
+const webdavAvailable = ref(true)
+const webdavConfig = ref<WebdavConfigView | null>(null)
+const webdavView = ref<'none' | 'config' | 'versions'>('none')
+const webdavLoading = ref(false)
+const webdavError = ref('')
+const webdavNotice = ref('')
+const webdavUrl = ref('')
+const webdavUsername = ref('')
+const webdavPassword = ref('')
+const webdavVersions = ref<WebdavVersionView[]>([])
+const webdavFingerprint = ref('')
+const webdavSelected = ref<WebdavVersionView | null>(null)
+const webdavPasswordOnly = ref(false)
+const webdavSelectionId = ref('')
+const backupTargetKind = ref<'local' | 'webdav'>('local')
+
+const webdavConfigured = computed(
+  () =>
+    webdavAvailable.value &&
+    webdavConfig.value?.configured === true &&
+    webdavConfig.value?.passwordAvailable === true,
+)
+const webdavPasswordUnavailable = computed(
+  () =>
+    webdavConfig.value?.configured === true &&
+    webdavConfig.value?.passwordAvailable === false,
+)
 
 const busy = computed(
   () =>
@@ -109,7 +145,11 @@ const canConfirmPreview = computed(
     !props.frozen,
 )
 const canSubmitCredentials = computed(() => {
-  if (props.frozen || passwordChoice.value === null && kind.value === 'backup') {
+  if (props.frozen) return false
+  if (kind.value === 'backup' && webdavPasswordOnly.value) {
+    return password.value.length > 0
+  }
+  if (passwordChoice.value === null && kind.value === 'backup') {
     return false
   }
   if (kind.value === 'restore') {
@@ -118,16 +158,36 @@ const canSubmitCredentials = computed(() => {
   if (passwordChoice.value === 'password') return password.value.length > 0
   return passwordChoice.value === 'plaintext' && plaintextAcknowledged.value
 })
-const passwordRequired = computed(
+const passwordRequired = computed(() =>
+  kind.value === 'restore'
+    ? selection.value?.encrypted === true
+    : webdavPasswordOnly.value || passwordChoice.value === 'password',
+)
+const canStartWebdavBackup = computed(
   () =>
-    kind.value === 'restore'
-      ? selection.value?.encrypted === true
-      : passwordChoice.value === 'password',
+    props.mode === 'settings' &&
+    phase.value === 'idle' &&
+    webdavConfigured.value &&
+    !props.frozen &&
+    webdavView.value === 'none',
+)
+const canOpenWebdavVersions = computed(
+  () =>
+    phase.value === 'idle' &&
+    webdavConfigured.value &&
+    !props.frozen,
 )
 const progressPercentValue = computed(() => progressPercent(progress.value))
 const progressText = computed(() => progressLabel(progress.value))
 const errorTextValue = computed(() => errorText(error.value ?? undefined))
-const title = computed(() => phaseText(phase.value, kind.value))
+const title = computed(() => {
+  // The shared panel is also the first-setup entry; there it must not claim
+  // that only a local file can be used.
+  if (phase.value === 'idle' && props.mode === 'setup' && kind.value === 'restore') {
+    return '从备份恢复'
+  }
+  return phaseText(phase.value, kind.value)
+})
 const credentialLabel = computed(() => {
   switch (preview.value?.credentialAvailability) {
     case 'available':
@@ -163,6 +223,10 @@ onBeforeUnmount(() => {
   clearPoll()
   cancelInFlight = null
   password.value = ''
+  webdavPassword.value = ''
+  // A delivered WebDAV staging selection that was not consumed by a verify is
+  // released here; the host refuses while an operation still owns it.
+  releaseHeldWebdavSelection()
   emit('busy', false)
   emit('blocking', false)
 })
@@ -175,7 +239,28 @@ function clearPoll(): void {
   polling = false
 }
 
+function releaseHeldWebdavSelection(): void {
+  const selectionId = webdavSelectionId.value
+  webdavSelectionId.value = ''
+  if (!selectionId) return
+  void webdav.releaseWebdavSelection(selectionId).catch(() => undefined)
+}
+
+function resetWebdavView(): void {
+  webdavView.value = 'none'
+  webdavLoading.value = false
+  webdavError.value = ''
+  webdavNotice.value = ''
+  webdavSelected.value = null
+  webdavVersions.value = []
+  webdavFingerprint.value = ''
+  webdavPassword.value = ''
+  webdavPasswordOnly.value = false
+  backupTargetKind.value = 'local'
+}
+
 function resetLocal(): void {
+  releaseHeldWebdavSelection()
   epoch += 1
   clearPoll()
   cancelInFlight = null
@@ -196,6 +281,7 @@ function resetLocal(): void {
   pendingRequestId.value = ''
   startUnconfirmed.value = false
   cancelRequested.value = false
+  resetWebdavView()
 }
 
 async function initialize(): Promise<void> {
@@ -218,7 +304,162 @@ async function initialize(): Promise<void> {
       committed: false,
       nextAction: 'restart_app',
     }
+    return
   }
+  void loadWebdavConfig(myEpoch)
+}
+
+async function loadWebdavConfig(myEpoch: number): Promise<void> {
+  try {
+    const result = await webdav.getWebdavConfig()
+    if (!active(myEpoch)) return
+    webdavAvailable.value = result.available
+    webdavConfig.value = result.config
+    if (result.config.url) webdavUrl.value = result.config.url
+    if (result.config.username) webdavUsername.value = result.config.username
+  } catch {
+    if (!active(myEpoch)) return
+    webdavAvailable.value = false
+    webdavConfig.value = null
+  }
+}
+
+function openWebdavConfig(): void {
+  if (phase.value !== 'idle' || props.frozen) return
+  webdavView.value = 'config'
+  webdavError.value = ''
+  webdavNotice.value = ''
+  webdavPassword.value = ''
+  if (webdavConfig.value?.url) webdavUrl.value = webdavConfig.value.url
+  if (webdavConfig.value?.username) webdavUsername.value = webdavConfig.value.username
+}
+
+function closeWebdavView(): void {
+  if (webdavLoading.value) return
+  resetWebdavView()
+}
+
+async function saveWebdavConfigAction(): Promise<void> {
+  if (webdavLoading.value || props.frozen) return
+  if (!webdavUrl.value.trim() || !webdavUsername.value.trim() || !webdavPassword.value) {
+    webdavError.value = '请填写 HTTPS 地址、用户名和密码'
+    return
+  }
+  webdavError.value = ''
+  webdavNotice.value = ''
+  webdavLoading.value = true
+  const myEpoch = epoch
+  try {
+    const result = await webdav.saveWebdavConfig({
+      url: webdavUrl.value.trim(),
+      username: webdavUsername.value.trim(),
+      password: webdavPassword.value,
+    })
+    if (!active(myEpoch)) return
+    webdavConfig.value = result.config
+    webdavPassword.value = ''
+    webdavNotice.value = 'WebDAV 已连接并保存到本机'
+    webdavView.value = 'none'
+  } catch (err) {
+    if (!active(myEpoch)) return
+    webdavError.value = webdavErrorMessage(err)
+  } finally {
+    if (active(myEpoch)) webdavLoading.value = false
+  }
+}
+
+async function openWebdavVersions(): Promise<void> {
+  if (!canOpenWebdavVersions.value || webdavLoading.value) return
+  webdavView.value = 'versions'
+  webdavError.value = ''
+  webdavNotice.value = ''
+  webdavSelected.value = null
+  webdavVersions.value = []
+  webdavLoading.value = true
+  const myEpoch = epoch
+  try {
+    const result = await webdav.listWebdavVersions()
+    if (!active(myEpoch)) return
+    webdavVersions.value = result.versions
+    webdavFingerprint.value = result.endpointFingerprint
+    if (result.versions.length === 0) {
+      webdavNotice.value = '远端还没有可恢复的备份版本'
+    }
+  } catch (err) {
+    if (!active(myEpoch)) return
+    webdavError.value = webdavErrorMessage(err)
+  } finally {
+    if (active(myEpoch)) webdavLoading.value = false
+  }
+}
+
+function selectWebdavVersion(version: WebdavVersionView): void {
+  if (webdavLoading.value || props.frozen) return
+  webdavSelected.value = version
+  webdavError.value = ''
+}
+
+async function downloadWebdavVersion(): Promise<void> {
+  const chosen = webdavSelected.value
+  if (!chosen || webdavLoading.value || props.frozen) return
+  if (!webdavFingerprint.value) {
+    webdavError.value = '请重新读取远端版本列表'
+    return
+  }
+  releaseHeldWebdavSelection()
+  webdavError.value = ''
+  webdavView.value = 'none'
+  kind.value = 'restore'
+  await beginStart('downloading', (requestId) =>
+    webdav.startWebdavDownload({
+      requestId,
+      versionName: chosen.name,
+      endpointFingerprint: webdavFingerprint.value,
+    }),
+  )
+}
+
+function openWebdavBackupPassword(): void {
+  if (!canStartWebdavBackup.value) return
+  webdavError.value = ''
+  webdavNotice.value = ''
+  webdavPassword.value = ''
+  webdavPasswordOnly.value = true
+  kind.value = 'backup'
+  passwordChoice.value = 'password'
+  phase.value = 'password'
+}
+
+async function startWebdavBackup(): Promise<void> {
+  if (!webdavPasswordOnly.value || !password.value) return
+  const secret = password.value
+  webdavPasswordOnly.value = false
+  backupTargetKind.value = 'webdav'
+  await beginStart('creating', (requestId) =>
+    webdav.startWebdavBackup({ requestId, password: secret }),
+  )
+}
+
+function webdavErrorMessage(err: unknown): string {
+  // Cross-realm safe: the host adapter and this panel may not share an Error
+  // constructor, but every host error carries a teacher-facing message.
+  if (
+    err &&
+    typeof err === 'object' &&
+    typeof (err as { message?: unknown }).message === 'string' &&
+    (err as { message: string }).message
+  ) {
+    return (err as { message: string }).message
+  }
+  return 'WebDAV 操作失败，请稍后重试'
+}
+
+function formatSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—'
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GiB`
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KiB`
+  return `${bytes} B`
 }
 
 function active(myEpoch: number): boolean {
@@ -329,6 +570,19 @@ function onPasswordMode(value: unknown): void {
 async function submitCredentials(): Promise<void> {
   if (phase.value !== 'password' || props.frozen) return
   if (kind.value === 'backup') {
+    if (webdavPasswordOnly.value) {
+      if (!password.value) {
+        error.value = {
+          code: 'PASSWORD_REQUIRED',
+          message: '请输入密码；WebDAV 备份必须加密',
+          committed: false,
+          nextAction: 'retry',
+        }
+        return
+      }
+      await startWebdavBackup()
+      return
+    }
     if (passwordChoice.value === null) {
       error.value = {
         code: 'PASSWORD_MODE_REQUIRED',
@@ -383,6 +637,7 @@ async function startBackup(): Promise<void> {
   if (choice === 'password' && !secret) return
   if (choice === 'plaintext' && !plaintextAcknowledged.value) return
   kind.value = 'backup'
+  backupTargetKind.value = 'local'
   await beginStart('creating', (requestId) =>
     props.host.startBackup({
       requestId,
@@ -409,7 +664,7 @@ async function startRestoreVerify(): Promise<void> {
 }
 
 async function beginStart(
-  startingPhase: 'creating' | 'verifying',
+  startingPhase: 'creating' | 'verifying' | 'downloading',
   call: (requestId: string) => Promise<MaintenanceOperationRef>,
 ): Promise<void> {
   const requestId = newRequestId()
@@ -424,7 +679,9 @@ async function beginStart(
     stage:
       startingPhase === 'creating'
         ? '正在创建完整备份，请稍候…'
-        : '正在校验备份并准备预览…',
+        : startingPhase === 'downloading'
+          ? '正在下载远端备份…'
+          : '正在校验备份并准备预览…',
     indeterminate: true,
   }
   password.value = ''
@@ -521,6 +778,7 @@ function shouldPoll(value: MaintenancePhase): boolean {
     pendingRequestId.value !== '' ||
     value === 'creating' ||
     value === 'verifying' ||
+    value === 'downloading' ||
     value === 'waiting' ||
     value === 'protection' ||
     value === 'switching' ||
@@ -561,6 +819,36 @@ function adoptStatus(status: MaintenanceStatus): void {
     operation.value = null
     pendingRequestId.value = ''
     clearPoll()
+    return
+  }
+  if (status.phase === 'downloaded') {
+    // A WebDAV version finished downloading into private staging.  This is a
+    // hand-off, not a restore: continue with the same verify/preview/confirm
+    // chain the local flow uses, and keep the selection for a wrong-password
+    // retry (the host retains its staging).
+    clearPoll()
+    password.value = ''
+    operation.value = null
+    pendingRequestId.value = ''
+    const handed = status.selection
+    if (!handed) {
+      phase.value = 'error'
+      error.value = {
+        code: 'WEBDAV_DOWNLOAD_FAILED',
+        message: '远端备份未返回可恢复的选择，请重新下载',
+        committed: false,
+        nextAction: 'retry',
+      }
+      return
+    }
+    selection.value = handed
+    webdavSelectionId.value = handed.selectionId
+    kind.value = 'restore'
+    if (handed.encrypted) {
+      phase.value = 'password'
+    } else {
+      void startRestoreVerify()
+    }
     return
   }
   phase.value = status.phase
@@ -607,6 +895,9 @@ function complete(status: MaintenanceStatus): void {
     committed: true,
     reopened: kind.value === 'restore' ? status.reopened === true : false,
     protectionDisplay: protection.value?.displayText,
+  }
+  if (kind.value === 'backup') {
+    completion.target = backupTargetKind.value
   }
   emit('completed', completion)
   if (completion.kind === 'restore' && completion.reopened) {
@@ -691,6 +982,7 @@ async function cancel(): Promise<void> {
   }
   if (phase.value === 'password' && !operation.value && !pendingRequestId.value) {
     epoch += 1
+    if (kind.value === 'restore') releaseHeldWebdavSelection()
     phase.value = 'idle'
     preview.value = null
     selection.value = null
@@ -699,6 +991,7 @@ async function cancel(): Promise<void> {
     passwordChoice.value = null
     plaintextAcknowledged.value = false
     error.value = null
+    webdavPasswordOnly.value = false
     return
   }
   if (cancelInFlight) return cancelInFlight
@@ -834,7 +1127,7 @@ function onDialogValue(value: boolean): void {
       <div class="kgm-page-layout">
         <div class="kgm-page-main">
           <div class="kgm-sheet">
-            <div class="kgm-sheet-header">{{ kind === 'backup' ? '创建完整备份' : '从本地备份恢复' }}</div>
+            <div class="kgm-sheet-header">{{ kind === 'backup' ? '创建完整备份' : (props.mode === 'setup' ? '从备份恢复' : '从本地备份恢复') }}</div>
             <div class="kgm-preview-wrap">
               <table class="kgm-preview-table" data-d1="backup-status-table">
                 <thead>
@@ -865,7 +1158,7 @@ function onDialogValue(value: boolean): void {
             <p class="muted sheet-note">
               {{
                 props.mode === 'setup'
-                  ? '当前还没有教师档案。可从本地备份恢复；恢复前会先校验、预览并保留当前空档案的保护副本。'
+                  ? '当前还没有教师档案。可从本地备份文件或 WebDAV 备份恢复；恢复前会先校验、预览并保留当前空档案的保护副本。'
                   : '备份包含全部受管业务、设置、历史与照片；恢复会替换当前档案并保留恢复前完整保护副本。'
               }}
             </p>
@@ -888,6 +1181,153 @@ function onDialogValue(value: boolean): void {
                 </tbody>
               </table>
             </div>
+
+            <div class="kgm-sheet-header" data-d1="backup-webdav-header">WebDAV 远端备份</div>
+            <p class="muted sheet-note">
+              远端备份必须使用密码加密；WebDAV 密码只保存在本机受保护存储，
+              不会写入备份包或日志。两台电脑连接同一 WebDAV 地址即可跨机恢复。
+            </p>
+
+            <el-alert
+              v-if="webdavError"
+              type="error"
+              :closable="false"
+              role="alert"
+              data-d1="backup-webdav-error"
+              :title="webdavError"
+            />
+            <el-alert
+              v-if="webdavNotice"
+              type="success"
+              :closable="false"
+              data-d1="backup-webdav-notice"
+              :title="webdavNotice"
+            />
+
+            <div v-if="webdavView === 'config'" class="preview" data-d1="backup-webdav-config">
+              <p class="muted">请输入 WebDAV 的 HTTPS 地址、用户名和密码。保存前会先连接并校验目录。</p>
+              <div class="webdav-field">
+                <span class="muted">https 地址（集合目录）</span>
+                <el-input
+                  v-model="webdavUrl"
+                  :disabled="props.frozen || webdavLoading"
+                  data-d1="backup-webdav-url"
+                  placeholder="https://example.com/dav/kgm-backups/"
+                />
+              </div>
+              <div class="webdav-field">
+                <span class="muted">用户名</span>
+                <el-input
+                  v-model="webdavUsername"
+                  :disabled="props.frozen || webdavLoading"
+                  data-d1="backup-webdav-username"
+                  autocomplete="username"
+                />
+              </div>
+              <div class="webdav-field">
+                <span class="muted">密码</span>
+                <el-input
+                  v-model="webdavPassword"
+                  type="password"
+                  autocomplete="new-password"
+                  :disabled="props.frozen || webdavLoading"
+                  data-d1="backup-webdav-password"
+                />
+              </div>
+              <div class="actions">
+                <el-button
+                  type="primary"
+                  :loading="webdavLoading"
+                  :disabled="props.frozen"
+                  data-d1="backup-webdav-save"
+                  @click="saveWebdavConfigAction"
+                >
+                  连接并保存到本机
+                </el-button>
+                <el-button :disabled="webdavLoading" data-d1="backup-webdav-cancel" @click="closeWebdavView">
+                  取消
+                </el-button>
+              </div>
+            </div>
+
+            <div v-else-if="webdavView === 'versions'" class="preview" data-d1="backup-webdav-versions">
+              <p class="muted">选择一个远端版本，下载到独立暂存后再走本地校验、预览和确认替换。</p>
+              <el-alert
+                v-if="webdavLoading"
+                type="info"
+                :closable="false"
+                title="正在读取远端版本列表…"
+              />
+              <div v-if="webdavVersions.length" class="kgm-preview-wrap">
+                <table class="kgm-preview-table" data-d1="backup-webdav-version-table">
+                  <thead>
+                    <tr><th>版本文件</th><th>大小</th><th>选择</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="version in webdavVersions" :key="version.name">
+                      <td>
+                        {{ version.name }}
+                        <span v-if="version.modifiedAt" class="muted"> · {{ version.modifiedAt }}</span>
+                      </td>
+                      <td>{{ formatSize(version.size) }}</td>
+                      <td>
+                        <el-radio
+                          :model-value="webdavSelected?.name ?? ''"
+                          :value="version.name"
+                          :disabled="props.frozen || webdavLoading"
+                          :data-d1="`backup-webdav-version-${version.name}`"
+                          @update:model-value="selectWebdavVersion(version)"
+                        >
+                          选择
+                        </el-radio>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="actions">
+                <el-button
+                  type="primary"
+                  :disabled="!webdavSelected || props.frozen || webdavLoading"
+                  data-d1="backup-webdav-download"
+                  @click="downloadWebdavVersion"
+                >
+                  下载并校验
+                </el-button>
+                <el-button :disabled="webdavLoading" data-d1="backup-webdav-versions-close" @click="closeWebdavView">
+                  关闭
+                </el-button>
+              </div>
+            </div>
+
+            <div v-else class="preview" data-d1="backup-webdav-summary">
+              <p v-if="webdavConfigured">
+                已配置：{{ webdavConfig?.url }}（用户 {{ webdavConfig?.username }}）
+              </p>
+              <p v-else-if="webdavPasswordUnavailable" class="muted">
+                本机保存的 WebDAV 密码不可用（可能来自其他 Windows 用户或电脑），请重新填写。
+              </p>
+              <p v-else-if="!webdavAvailable" class="muted">
+                本机维护服务未提供 WebDAV；仍可使用上面的本地备份与恢复。
+              </p>
+              <p v-else class="muted">尚未配置 WebDAV。配置后可备份到远端或从远端恢复。</p>
+              <div class="actions">
+                <el-button
+                  :disabled="props.frozen || webdavLoading"
+                  data-d1="backup-webdav-configure"
+                  @click="openWebdavConfig"
+                >
+                  {{ webdavConfigured ? '修改 WebDAV 配置' : '配置 WebDAV' }}
+                </el-button>
+                <el-button
+                  :disabled="!canOpenWebdavVersions || webdavLoading"
+                  data-d1="backup-webdav-list"
+                  @click="openWebdavVersions"
+                >
+                  从 WebDAV 恢复
+                </el-button>
+              </div>
+            </div>
           </div>
 
           <div v-else-if="phase === 'selecting'" class="kgm-sheet">
@@ -896,18 +1336,29 @@ function onDialogValue(value: boolean): void {
           </div>
 
           <div v-else-if="phase === 'password'" class="kgm-sheet">
-            <div class="kgm-sheet-header">{{ kind === 'backup' ? '备份密码' : '输入备份密码' }}</div>
-            <p v-if="kind === 'backup'" class="muted sheet-note">
+            <div class="kgm-sheet-header">
+              {{
+                kind === 'backup'
+                  ? webdavPasswordOnly
+                    ? 'WebDAV 备份密码'
+                    : '备份密码'
+                  : '输入备份密码'
+              }}
+            </div>
+            <p v-if="kind === 'backup' && webdavPasswordOnly" class="muted sheet-note">
+              远端备份必须使用密码加密；请设置本次备份密码。密码丢失后无法从该备份恢复。
+            </p>
+            <p v-else-if="kind === 'backup'" class="muted sheet-note">
               请选择本次备份是否使用密码。密码丢失后无法找回；不加密文件包含可读业务和照片。
             </p>
             <p v-else class="muted sheet-note">该备份使用密码加密，请输入密码。</p>
-            <p v-if="kind === 'backup' && passwordChoice === null" class="muted sheet-note" data-d1="backup-password-choose">
+            <p v-if="kind === 'backup' && !webdavPasswordOnly && passwordChoice === null" class="muted sheet-note" data-d1="backup-password-choose">
               请选择是否使用密码加密。
             </p>
           </div>
 
           <div
-            v-else-if="phase === 'creating' || phase === 'verifying' || phase === 'waiting' || phase === 'protection' || phase === 'switching' || phase === 'reopening'"
+            v-else-if="phase === 'creating' || phase === 'verifying' || phase === 'downloading' || phase === 'waiting' || phase === 'protection' || phase === 'switching' || phase === 'reopening'"
             class="kgm-sheet"
           >
             <div class="kgm-sheet-header">{{ title }}</div>
@@ -1046,6 +1497,15 @@ function onDialogValue(value: boolean): void {
               >
                 从本地备份恢复
               </el-button>
+              <el-button
+                v-if="props.mode === 'settings'"
+                type="success"
+                :disabled="!canStartWebdavBackup"
+                data-d1="backup-webdav-create"
+                @click="openWebdavBackupPassword"
+              >
+                备份到 WebDAV
+              </el-button>
             </template>
 
             <template v-else-if="phase === 'selecting'">
@@ -1055,7 +1515,7 @@ function onDialogValue(value: boolean): void {
             </template>
 
             <template v-else-if="phase === 'password'">
-              <div v-if="kind === 'backup'" class="rail-field">
+              <div v-if="kind === 'backup' && !webdavPasswordOnly" class="rail-field">
                 <span class="muted">密码方式</span>
                 <el-radio-group
                   :model-value="passwordChoice"
@@ -1067,6 +1527,9 @@ function onDialogValue(value: boolean): void {
                   <el-radio value="plaintext">不加密（文件含可读业务与照片）</el-radio>
                 </el-radio-group>
               </div>
+              <p v-if="webdavPasswordOnly" class="muted" data-d1="backup-webdav-password-only">
+                WebDAV 远端备份必须加密，不提供明文选项。
+              </p>
               <el-input
                 v-if="passwordRequired"
                 v-model="password"
@@ -1091,14 +1554,14 @@ function onDialogValue(value: boolean): void {
                 data-d1="backup-password-submit"
                 @click="submitCredentials"
               >
-                {{ kind === 'backup' ? '开始创建' : '校验备份' }}
+                {{ kind === 'backup' ? (webdavPasswordOnly ? '上传到 WebDAV' : '开始创建') : '校验备份' }}
               </el-button>
               <el-button :disabled="props.frozen" data-d1="backup-password-cancel" @click="cancel">
                 取消
               </el-button>
             </template>
 
-            <template v-else-if="phase === 'creating' || phase === 'verifying' || phase === 'waiting' || phase === 'protection' || phase === 'switching' || phase === 'reopening'">
+            <template v-else-if="phase === 'creating' || phase === 'verifying' || phase === 'downloading' || phase === 'waiting' || phase === 'protection' || phase === 'switching' || phase === 'reopening'">
               <el-button
                 v-if="pendingRequestId || startUnconfirmed"
                 :disabled="props.frozen"
@@ -1148,7 +1611,7 @@ function onDialogValue(value: boolean): void {
               <el-button data-d1="backup-error-close" @click="close">关闭</el-button>
             </template>
 
-            <p class="muted">备份位置、密码、恢复预览和替换确认均按原流程；本面板不会自动猜测未确认结果。</p>
+            <p class="muted">备份位置、密码、恢复预览和替换确认均按原流程；WebDAV 版本先下载到独立暂存再校验，本面板不会自动猜测未确认结果。</p>
           </div>
         </aside>
       </div>
@@ -1177,6 +1640,12 @@ function onDialogValue(value: boolean): void {
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
+}
+.webdav-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
 }
 .actions {
   display: flex;

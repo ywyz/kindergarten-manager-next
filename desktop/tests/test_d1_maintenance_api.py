@@ -1099,3 +1099,168 @@ def test_ordinary_close_allow_is_not_reused_with_unfaulted_recovery():
         assert coordinator._allow_once is False
     finally:
         coordinator._cancel_timer()
+
+
+# ---------------------------------------------------------------------------
+# WebDAV bridge endpoints (recording maintenance fake)
+# ---------------------------------------------------------------------------
+
+
+class FakeWebdavMaintenance(FakeMaintenance):
+    def __init__(self):
+        super().__init__()
+        self.webdav_saved: list[dict] = []
+        self.webdav_started: list[dict] = []
+        self.released: list[object] = []
+        self.webdav_version_error: Exception | None = None
+
+    def webdav_config(self):
+        return {
+            "available": True,
+            "config": {
+                "configured": True,
+                "url": "https://dav.example/backup/",
+                "username": "teacher",
+                "password_available": True,
+            },
+        }
+
+    def save_webdav_config(self, **kwargs):
+        self.webdav_saved.append(kwargs)
+        return {"ok": True, "config": {"configured": True}}
+
+    def webdav_list_versions(self):
+        if self.webdav_version_error is not None:
+            raise self.webdav_version_error
+        return {
+            "versions": [
+                {
+                    "name": "kgm-backup-20261119T120000Z-" + "a" * 32 + ".kgmbackup",
+                    "size": 2048,
+                    "modified_at": "Wed, 19 Nov 2026 12:00:00 GMT",
+                }
+            ],
+            "endpoint_fingerprint": "fingerprint-1",
+            "config": {"configured": True},
+        }
+
+    def start_webdav_backup(self, **kwargs):
+        self.webdav_started.append(kwargs)
+        return {
+            "request_id": kwargs["request_id"],
+            "operation_id": "op-webdav-backup",
+            "generation": 3,
+        }
+
+    def start_webdav_download(self, **kwargs):
+        self.webdav_started.append(kwargs)
+        return {
+            "request_id": kwargs["request_id"],
+            "operation_id": "op-webdav-download",
+            "generation": 4,
+        }
+
+    def release_webdav_selection(self, selection_id):
+        self.released.append(selection_id)
+        return {"released": True}
+
+
+def test_webdav_bridge_maps_payloads_and_opaque_results():
+    maintenance = FakeWebdavMaintenance()
+    host = make_host(FakeWindow("a"), maintenance)
+    bind_page(host)
+
+    config = host.webdav_get_config()
+    assert config["available"] is True
+    assert "password" not in config["config"]
+
+    saved = host.save_webdav_config(
+        {"url": "https://dav.example/backup/", "username": "teacher", "password": "s3cret"}
+    )
+    assert saved["ok"] is True
+    assert maintenance.webdav_saved == [
+        {
+            "url": "https://dav.example/backup/",
+            "username": "teacher",
+            "password": "s3cret",
+        }
+    ]
+
+    versions = host.webdav_list_versions()
+    assert versions["endpoint_fingerprint"] == "fingerprint-1"
+    assert versions["versions"][0]["size"] == 2048
+
+    started = host.start_webdav_backup(
+        {"request_id": "req-webdav-backup", "password": "pw", "explicit_plaintext": False}
+    )
+    assert started["operation_id"] == "op-webdav-backup"
+    download = host.start_webdav_download(
+        {
+            "request_id": "req-webdav-download",
+            "version_name": "kgm-backup-20261119T120000Z-" + "a" * 32 + ".kgmbackup",
+            "endpoint_fingerprint": "fingerprint-1",
+        }
+    )
+    assert download["operation_id"] == "op-webdav-download"
+    assert maintenance.webdav_started[-1] == {
+        "request_id": "req-webdav-download",
+        "version_name": "kgm-backup-20261119T120000Z-" + "a" * 32 + ".kgmbackup",
+        "endpoint_fingerprint": "fingerprint-1",
+    }
+
+    assert host.release_webdav_selection({"selection_id": "sel-1"}) == {
+        "released": True
+    }
+    assert maintenance.released == ["sel-1"]
+
+
+def test_webdav_bridge_errors_are_bounded_and_coded():
+    import maintenance_host as mh
+
+    maintenance = FakeWebdavMaintenance()
+    maintenance.webdav_version_error = mh.MaintenanceHostError(
+        "WEBDAV_AUTH_FAILED", "WebDAV 用户名或密码不正确，或没有访问权限"
+    )
+    host = make_host(FakeWindow("a"), maintenance)
+    bind_page(host)
+    error = host.webdav_list_versions()
+    assert error["error"]["code"] == "WEBDAV_AUTH_FAILED"
+    assert "s3cret" not in str(error)
+
+
+def test_webdav_bridge_guard_refuses_before_page_ready_and_after_retire():
+    maintenance = FakeWebdavMaintenance()
+    host = make_host(FakeWindow("a"), maintenance)
+    assert host.webdav_list_versions()["error"]["code"] == "BRIDGE_NOT_READY"
+    assert (
+        host.save_webdav_config({"url": "https://x"})["error"]["code"]
+        == "BRIDGE_NOT_READY"
+    )
+    bind_page(host)
+    host._block_native_io()
+    assert (
+        host.start_webdav_backup({"request_id": "r"})["error"]["code"]
+        == "HOST_SWITCHING"
+    )
+    assert (
+        host.start_webdav_download({"request_id": "r"})["error"]["code"]
+        == "HOST_SWITCHING"
+    )
+    host._retire()
+    assert host.webdav_get_config() == {
+        "available": False,
+        "config": {"configured": False},
+    }
+    assert host.release_webdav_selection({"selection_id": "s"}) == {"released": False}
+    assert maintenance.released == []
+
+
+def test_webdav_bridge_without_host_stays_unavailable():
+    host = d1_host_api.D1HostApi(launch_token="t")
+    host._page_ready = True
+    assert host.webdav_get_config() == {
+        "available": False,
+        "config": {"configured": False},
+    }
+    assert host.webdav_list_versions()["error"]["code"] == "HOST_CORE_UNAVAILABLE"
+    assert host.release_webdav_selection({"selection_id": "s"}) == {"released": False}
