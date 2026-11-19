@@ -101,9 +101,9 @@ assert.match(source, /生成本领域评价建议/)
 assert.match(source, /AI 协助填写/)
 assert.match(source, /data-d1="listening-ai-field"/)
 assert.doesNotMatch(source, /旧版单张建议/)
-assert.match(source, /只使用已保存内容/)
+assert.match(source, /使用当前表单（含未保存修改）/)
 assert.match(source, /候选不会自动写入 Word/)
-assert.match(source, /仅据照片拟写少量幼儿表达/)
+assert.match(source, /只说明本次输入没有正文/)
 assert.match(source, /AI 可依据图文补写少量幼儿原话/)
 assert.match(source, /仅作候选；请教师核对/)
 assert.match(source, /不能当作现场实际听到的记录/)
@@ -280,7 +280,41 @@ vm.runInNewContext(js, {
     }
     if (spec === '../listening-ai') return ai
     if (spec === '../ai-progress') return aiProgress
-    if (spec === '../listening') return { newRequestId: () => `request-${++uuid}` }
+    if (spec === '../listening') {
+      const domains = ['health', 'language', 'social', 'science', 'art']
+      return {
+        newRequestId: () => `request-${++uuid}`,
+        LISTENING_DOMAINS: domains,
+        DOMAIN_LABELS: {
+          health: '健康',
+          language: '语言',
+          social: '社会',
+          science: '科学',
+          art: '艺术',
+        },
+        buildListeningCurrentForm: (form) => ({
+          schema_version: 1,
+          observation_date: form.observation_date ?? null,
+          adult_count: form.adult_count ?? null,
+          child_age: form.child_age ?? null,
+          goal: form.goal ?? null,
+          observation_area: form.observation_area ?? null,
+          overall_evaluation: form.overall_evaluation ?? null,
+          support_strategy: form.support_strategy ?? null,
+          groups: form.groups.map((group, index) => ({
+            group_id: group.group_id,
+            position: index,
+            work_date: group.work_date ?? null,
+            listening_text: group.listening_text ?? null,
+            asset_id: group.asset_id ?? null,
+          })),
+          evaluation: form.evaluation.map((item) => ({
+            item_id: item.item_id,
+            stars: item.stars ?? null,
+          })),
+        }),
+      }
+    }
     if (spec === './DirectionalRevisionDialog.vue') return { default: {} }
     if (spec === './DirectionalRevisionTrigger.vue') return { default: {} }
     if (spec === '../directional-revision') {
@@ -329,6 +363,7 @@ const state = component.setup(props, {
   emit: (...args) => emitted.push(args),
 })
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 await tick()
 await tick()
 
@@ -886,4 +921,190 @@ async function mountCandidatePanel(groups) {
   }
 }
 
-console.log('listening-ai-ui: 42 checks passed')
+// One explicit "generate all" click schedules every applicable current-form
+// job, waits only for task completion (not adoption), and keeps each result.
+{
+  const previousCreate = ai.createListeningAITask
+  const previousGetTask = ai.getListeningAITask
+  const byId = new Map()
+  let seq = 0
+  calls.create.length = 0
+  calls.adopt.length = 0
+  ai.createListeningAITask = async (payload) => {
+    calls.create.push(payload)
+    seq += 1
+    const taskId = `batch-task-${seq}`
+    byId.set(taskId, {
+      ...task,
+      task_id: taskId,
+      task_type: payload.taskType,
+      listening_domain: payload.domain,
+      status: 'succeeded',
+    })
+    return {
+      ...payload,
+      task_id: taskId,
+      operation_kind: 'create',
+      replayed: false,
+    }
+  }
+  ai.getListeningAITask = async (_recordId, taskId) => byId.get(taskId) ?? task
+  try {
+    const form = {
+      domain: 'health',
+      domain_label: '健康',
+      template_version: 'v1',
+      template_sha256: 'sha-health',
+      observation_date: '2026-09',
+      adult_count: '2',
+      child_age: '5',
+      goal: '未保存的当前目标',
+      observation_area: null,
+      overall_evaluation: '未保存的当前评价',
+      support_strategy: '未保存的当前支持',
+      groups: [
+        {
+          group_id: 'group-0',
+          position: 0,
+          work_date: '2026-09-10',
+          listening_text: '未保存的当前倾听',
+          asset_id: 'asset-0',
+        },
+      ],
+      evaluation: [{ item_id: 'health_1', stars: 2 }],
+    }
+    const props = vue.reactive({
+      recordId: 'record-1',
+      domain: 'health',
+      groups: form.groups,
+      form,
+      forms: { health: form },
+      revision: 5,
+      disabled: false,
+      profileEpoch: 1,
+      ensureSaved: async () => 5,
+    })
+    const state = component.setup(props, {
+      expose: () => undefined,
+      emit: () => undefined,
+    })
+    await tick()
+    await tick()
+    await state.startAll('record')
+    for (let attempt = 0; attempt < 300 && state.batchRunning.value; attempt += 1) {
+      await wait(20)
+    }
+    assert.equal(calls.create.length, 3)
+    assert.deepEqual(
+      calls.create.map((payload) => payload.taskType),
+      [
+        'listening_group_notes',
+        'listening_goal_suggest',
+        'listening_domain_evaluate',
+      ],
+    )
+    for (const payload of calls.create) {
+      assert.equal(payload.currentForm.goal, '未保存的当前目标')
+      assert.equal(
+        payload.currentForm.groups[0].listening_text,
+        '未保存的当前倾听',
+      )
+    }
+    assert.equal(calls.adopt.length, 0, 'batch never forces adoption')
+    assert.equal(state.batchRunning.value, false)
+    assert.equal(state.batchResults.value.length, 3)
+    assert.ok(
+      state.batchResults.value.every((item) => item.status === 'succeeded'),
+    )
+    assert.match(state.batchMessage.value, /已完成/)
+  } finally {
+    ai.createListeningAITask = previousCreate
+    ai.getListeningAITask = previousGetTask
+  }
+}
+
+// Per-group photo-only mode is carried into the reviewable candidate, and
+// provenance markers (not photo_only) decide the source label.
+{
+  const proposals = ai.readListeningGroupNotesPreview({
+    preview_token: 'token',
+    expires_at: '2026-11-07T00:10:00',
+    record_id: 'record-1',
+    domain: 'health',
+    group_id: null,
+    task_type: 'listening_group_notes',
+    candidate_id: 'candidate-1',
+    candidate_hash: 'a'.repeat(64),
+    targets: ['health_0', 'health_1'],
+    target_states: { health_0: 'eligible', health_1: 'eligible' },
+    proposed: {
+      groups: [
+        {
+          target: 'health_0',
+          position: 0,
+          text: 'AI 拟写建议',
+          uncertainties: ['请核对'],
+          current: '',
+          photo_only: true,
+        },
+        {
+          target: 'health_1',
+          position: 1,
+          text: '教师字迹整理',
+          uncertainties: ['照片字迹模糊处请核对'],
+          current: '教师已录正文',
+          photo_only: false,
+        },
+      ],
+    },
+    revision: 5,
+  })
+  assert.equal(proposals[0].photo_only, true)
+  assert.equal(proposals[1].photo_only, false)
+
+  // photo_only alone means "this request carried no saved text"; it can never
+  // label the content, because the photo may hold legible teacher writing.
+  const provenance = ai.readListeningProvenance([
+    'provenance:teacher_clear',
+    '请核对识读原文',
+  ])
+  assert.deepEqual(Array.from(provenance.flags), ['provenance:teacher_clear'])
+  assert.deepEqual(Array.from(provenance.notes), ['请核对识读原文'])
+  assert.equal(provenance.legacy, false)
+  const legacy = ai.readListeningProvenance(['请核对'])
+  assert.deepEqual(Array.from(legacy.flags), [])
+  assert.equal(legacy.legacy, true)
+
+  // The three source labels render distinctly and only from markers.
+  const teacherLabel = state.noteProvenanceLabel([
+    'provenance:teacher_clear',
+  ])
+  assert.match(teacherLabel, /照片字迹可辨/)
+  assert.match(teacherLabel, /原文识读/)
+  assert.doesNotMatch(teacherLabel, /拟写/)
+  const unclearLabel = state.noteProvenanceLabel(['provenance:unclear'])
+  assert.match(unclearLabel, /不清/)
+  assert.match(unclearLabel, /识读原文/)
+  assert.doesNotMatch(unclearLabel, /拟写/)
+  const draftLabel = state.noteProvenanceLabel(['provenance:ai_draft'])
+  assert.match(draftLabel, /没有可辨字迹/)
+  assert.match(draftLabel, /AI 建议/)
+  assert.match(draftLabel, /不是已采集原话或事实/)
+  // A legacy candidate with no marker never gets a guessed label; the neutral
+  // photo-only alert keeps both possibilities open.
+  assert.equal(state.noteProvenanceLabel(['请核对']), '')
+  assert.deepEqual(
+    Array.from(
+      state.noteProvenanceNotes([
+        'provenance:ai_draft',
+        '画面中没有字迹',
+      ]) ?? [],
+    ),
+    ['画面中没有字迹'],
+  )
+  assert.match(source, /listening-ai-group-note-provenance/)
+  assert.match(source, /只说明本次输入没有正文/)
+  assert.match(source, /不是已采集原话或事实/)
+}
+
+console.log('listening-ai-ui: 45 checks passed')

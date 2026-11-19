@@ -366,6 +366,75 @@ export function wholeDirectionalSelection(fieldText: string): DirectionalSelecti
   return { start: 0, end: fieldText.length, text: fieldText }
 }
 
+export interface DirectionalSelectionResolution {
+  selection: DirectionalSelection | null
+  moved: boolean
+  error: string
+}
+
+/**
+ * Resolve an earlier captured selection against the *current* field text.
+ *
+ * A selection is not invalid merely because the record has since gained a new
+ * saved revision or because text before/after it changed.  If the exact
+ * offsets no longer address the same characters, a non-empty selected text is
+ * relocated only when it occurs exactly once.  Ambiguous or missing text never
+ * falls back to a saved snapshot; the caller must ask the teacher to reselect.
+ */
+export function resolveDirectionalSelection(
+  fieldText: string,
+  selection: DirectionalSelection,
+): DirectionalSelectionResolution {
+  const valid = validateDirectionalSelection(fieldText, selection)
+  if (!valid) {
+    return {
+      selection: {
+        start: selection.start,
+        end: selection.end,
+        text: selection.text,
+      },
+      moved: false,
+      error: '',
+    }
+  }
+  if (selection.text === '') {
+    return {
+      selection: null,
+      moved: false,
+      error:
+        fieldText === ''
+          ? valid
+          : '原选区为空，但当前栏已有文字；请重新选择文字或使用整栏修改',
+    }
+  }
+  const first = fieldText.indexOf(selection.text)
+  if (first < 0) {
+    return {
+      selection: null,
+      moved: false,
+      error: '原选段已不在当前正文中；请重新选择文字或使用整栏修改',
+    }
+  }
+  const second = fieldText.indexOf(selection.text, first + 1)
+  if (second >= 0) {
+    return {
+      selection: null,
+      moved: false,
+      error: '原选段在当前正文中出现多次，无法唯一定位；请重新选择文字',
+    }
+  }
+  const relocated: DirectionalSelection = {
+    start: first,
+    end: first + selection.text.length,
+    text: selection.text,
+  }
+  const relocatedError = validateDirectionalSelection(fieldText, relocated)
+  if (relocatedError) {
+    return { selection: null, moved: false, error: relocatedError }
+  }
+  return { selection: relocated, moved: true, error: '' }
+}
+
 export function applyDirectionalReplacement(
   fieldText: string,
   selection: DirectionalSelection,

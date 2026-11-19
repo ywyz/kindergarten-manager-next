@@ -140,8 +140,17 @@ def _candidate_chain(
 
 
 def _current_projection(
-    session: Session, runtime: Any, *, profile_id: str, inp: LocalAIInput
+    session: Session,
+    runtime: Any,
+    *,
+    profile_id: str,
+    inp: LocalAIInput,
+    task: LocalAITask,
 ):
+    if listening_ai_inputs.is_current_form_input(inp):
+        if not listening_ai_inputs.revalidate_source(session, task):
+            raise LocalStorageError("倾听 AI 当前表单身份已变化")
+        return listening_ai_inputs.stored_projection(inp)
     try:
         projection = listening_ai_inputs.project(
             session,
@@ -155,6 +164,53 @@ def _current_projection(
     except Exception:  # noqa: BLE001
         raise LocalStorageError("倾听 AI 当前来源不可读") from None
     return projection
+
+
+def _normalized_current_form(
+    session: Session,
+    *,
+    profile_id: str,
+    inp: LocalAIInput,
+    current_form: object | None,
+) -> dict[str, Any] | None:
+    if not listening_ai_inputs.is_current_form_input(inp):
+        return None
+    if current_form is None:
+        return None
+    dto = listening_service.read_record_no_tx(
+        session, profile_id=profile_id, record_id=inp.listening_record_id
+    )
+    domain_dto = _current_domain(dto, inp.listening_domain)
+    try:
+        return listening_ai_inputs.normalize_current_form(
+            current_form,
+            dto=dto,
+            domain_dto=domain_dto,
+            task_type=inp.task_type,
+            group_id=inp.listening_group_id,
+        )
+    except listening_ai_contracts.ListeningAIContractError as exc:
+        raise LocalValidationError(str(exc)) from None
+
+
+def _frozen_group_ids(inp: LocalAIInput) -> list[str]:
+    return [
+        str(item["group_id"])
+        for item in sorted(
+            dict(inp.dependencies_json or {}).get("current_form_groups") or [],
+            key=lambda item: int(item["position"]),
+        )
+    ]
+
+
+def _group_order_matches(
+    inp: LocalAIInput, current_form: Mapping[str, Any] | None
+) -> bool:
+    if current_form is None:
+        return False
+    return [str(item["group_id"]) for item in current_form["groups"]] == (
+        _frozen_group_ids(inp)
+    )
 
 
 def _current_domain(
@@ -182,11 +238,66 @@ def _current_groups(
     )
 
 
-def _current_targets(session: Session, profile_id: str, inp: LocalAIInput) -> tuple[dict[str, Any], dict[str, Any]]:
+def _current_targets(
+    session: Session,
+    profile_id: str,
+    inp: LocalAIInput,
+    current_form: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     dto = listening_service.read_record_no_tx(
         session, profile_id=profile_id, record_id=inp.listening_record_id
     )
     domain = _current_domain(dto, inp.listening_domain)
+    if listening_ai_inputs.is_current_form_input(inp) and current_form is not None:
+        groups = list(current_form["groups"])
+        if inp.task_type == listening_ai_contracts.TASK_GOAL:
+            return dto, {"goal": (current_form["goal"] or "").strip()}
+        if inp.task_type == listening_ai_contracts.TASK_GROUP:
+            positions = [
+                int(item["position"])
+                for item in dict(inp.payload_json or {}).get("groups") or []
+            ]
+            by_position = {
+                int(group["position"]): group for group in groups
+            }
+            current = {}
+            for position in positions:
+                group = by_position.get(position)
+                if group is None:
+                    raise LocalStorageError("倾听图位缺失")
+                current[
+                    listening_ai_contracts.group_note_target_key(
+                        inp.listening_domain, position
+                    )
+                ] = (group.get("listening_text") or "").strip()
+            return dto, current
+        group_text = None
+        if inp.listening_group_id:
+            group = next(
+                (
+                    item
+                    for item in groups
+                    if item["group_id"] == inp.listening_group_id
+                ),
+                None,
+            )
+            if group is None:
+                raise LocalStorageError("倾听小组缺失")
+            group_text = (group.get("listening_text") or "").strip()
+        stars = {
+            item["item_id"]: item.get("stars")
+            for item in current_form["evaluation"]
+        }
+        return dto, {
+            "listening_text": group_text or "",
+            "overall_evaluation": (
+                current_form["overall_evaluation"] or ""
+            ).strip(),
+            "support_strategy": (
+                current_form["support_strategy"] or ""
+            ).strip(),
+            **{item_id: value for item_id, value in stars.items()},
+        }
     groups = _current_groups(dto, inp.listening_domain)
     if inp.task_type == listening_ai_contracts.TASK_GOAL:
         return dto, {"goal": (domain.get("goal") or "").strip()}
@@ -236,6 +347,7 @@ def preview(
     profile_id: str,
     record_id: str,
     candidate_id: str,
+    current_form: object | None = None,
     launch_id: str,
     session_scope_hash: str,
 ) -> dict[str, Any]:
@@ -246,14 +358,31 @@ def preview(
             record_id=record_id,
             candidate_id=candidate_id,
         )
+        normalized_form = _normalized_current_form(
+            session,
+            profile_id=profile_id,
+            inp=inp,
+            current_form=current_form,
+        )
         projection = _current_projection(
-            session, runtime, profile_id=profile_id, inp=inp
+            session,
+            runtime,
+            profile_id=profile_id,
+            inp=inp,
+            task=task,
         )
         if projection.dependency_hash != inp.dependency_hash:
             raise LocalValidationError("倾听 AI 来源已变化，请重新生成")
         raw = dict(candidate.raw_candidate_json or {})
-        dto, current = _current_targets(session, profile_id, inp)
+        dto, current = _current_targets(
+            session, profile_id, inp, normalized_form
+        )
         target_hashes = dict(inp.target_hashes_json or {})
+        group_order_stable = (
+            candidate.task_type != listening_ai_contracts.TASK_GROUP
+            or not listening_ai_inputs.is_current_form_input(inp)
+            or _group_order_matches(inp, normalized_form)
+        )
         adopted_pairs = set(
             session.execute(
                 select(
@@ -270,7 +399,8 @@ def preview(
             if (candidate.id, target) in adopted_pairs:
                 target_states[target] = "adopted"
             elif (
-                listening_ai_contracts.value_hash(current.get(target))
+                not group_order_stable
+                or listening_ai_contracts.value_hash(current.get(target))
                 != target_hashes[target]
             ):
                 target_states[target] = "changed"
@@ -301,6 +431,10 @@ def preview(
             }
             if set(by_position) != set(input_positions):
                 raise LocalStorageError("倾听 AI 多图位候选与输入不一致")
+            input_groups = {
+                int(item["position"]): item
+                for item in dict(inp.payload_json or {}).get("groups") or []
+            }
             proposed = {
                 "groups": [
                     {
@@ -317,6 +451,15 @@ def preview(
                                 inp.listening_domain, position
                             ),
                             "",
+                        ),
+                        "photo_only": bool(
+                            input_groups.get(position, {}).get("photo")
+                            and not (
+                                input_groups.get(position, {}).get(
+                                    "listening_text"
+                                )
+                                or ""
+                            ).strip()
                         ),
                     }
                     for position in input_positions
@@ -515,6 +658,7 @@ def adopt(
     preview_token: object,
     selections: object,
     candidate_id: str,
+    current_form: object | None = None,
     launch_id: str,
     session_scope_hash: str,
 ) -> dict[str, Any]:
@@ -527,16 +671,16 @@ def adopt(
         raise LocalValidationError("expected_revision 必须是正整数")
     if not isinstance(preview_token, str) or not preview_token:
         raise LocalValidationError("preview_token 不合法")
+    fingerprint_payload: dict[str, Any] = {
+        "record_id": record_id,
+        "expected_revision": expected_revision,
+        "preview_token": preview_token,
+        "selections": selections,
+    }
+    if current_form is not None:
+        fingerprint_payload["current_form"] = current_form
     fingerprint = _digest(
-        {
-            "operation_kind": OP,
-            "payload": {
-                "record_id": record_id,
-                "expected_revision": expected_revision,
-                "preview_token": preview_token,
-                "selections": selections,
-            },
-        }
+        {"operation_kind": OP, "payload": fingerprint_payload}
     )
     with read_scope(session):
         row = _receipt(session, profile_id, rid)
@@ -586,12 +730,32 @@ def adopt(
             raise LocalVersionConflict(
                 details={"current_revision": dto["revision"]}
             )
+        normalized_form = _normalized_current_form(
+            session,
+            profile_id=profile_id,
+            inp=inp,
+            current_form=current_form,
+        )
         projection = _current_projection(
-            session, runtime, profile_id=profile_id, inp=inp
+            session,
+            runtime,
+            profile_id=profile_id,
+            inp=inp,
+            task=task,
         )
         if projection.dependency_hash != payload["dependency_hash"]:
             raise LocalValidationError("倾听 AI 来源已变化，请重新预览")
-        _, current = _current_targets(session, profile_id, inp)
+        if (
+            task_type == listening_ai_contracts.TASK_GROUP
+            and listening_ai_inputs.is_current_form_input(inp)
+            and not _group_order_matches(inp, normalized_form)
+        ):
+            raise LocalValidationError(
+                "当前图文组顺序已变化，请重新预览后再采用"
+            )
+        _, current = _current_targets(
+            session, profile_id, inp, normalized_form
+        )
         for item in selected:
             target = item["target"]
             if target not in payload["target_hashes"]:
@@ -645,10 +809,17 @@ def adopt(
             int(group["position"])
             for group in dict(inp.payload_json or {}).get("groups") or []
         ]
+        if (
+            listening_ai_inputs.is_current_form_input(inp)
+            and normalized_form is not None
+        ):
+            update_groups = list(normalized_form["groups"])
+        else:
+            update_groups = _current_groups(dto, inp.listening_domain)
         updates = group_note_updates(
             domain=inp.listening_domain,
             input_positions=input_positions,
-            groups=_current_groups(dto, inp.listening_domain),
+            groups=update_groups,
             selected=selected,
         )
         patch_groups: list[dict[str, Any]] = []
@@ -708,7 +879,23 @@ def adopt(
             return replay
         if not listening_ai_inputs.revalidate_source(session, task):
             raise LocalValidationError("倾听 AI 来源已变化，请重新预览")
-        dto_now, current_now = _current_targets(session, profile_id, inp)
+        normalized_form_now = _normalized_current_form(
+            session,
+            profile_id=profile_id,
+            inp=inp,
+            current_form=current_form,
+        )
+        if (
+            task_type == listening_ai_contracts.TASK_GROUP
+            and listening_ai_inputs.is_current_form_input(inp)
+            and not _group_order_matches(inp, normalized_form_now)
+        ):
+            raise LocalValidationError(
+                "当前图文组顺序已变化，请重新预览后再采用"
+            )
+        dto_now, current_now = _current_targets(
+            session, profile_id, inp, normalized_form_now
+        )
         if dto_now["revision"] != expected_revision:
             raise LocalVersionConflict(
                 details={"current_revision": dto_now["revision"]}

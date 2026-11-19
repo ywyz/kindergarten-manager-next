@@ -422,7 +422,7 @@ defineExpose({ reload: load, resetForContext })
         </p>
       </div>
       <div class="actions">
-        <el-button data-d1="listening-back" :disabled="!canNavigate" @click="emit('back')">
+        <el-button class="d1-page-back" data-d1="listening-back" :disabled="!canNavigate" @click="emit('back')">
           返回工作台
         </el-button>
         <el-button

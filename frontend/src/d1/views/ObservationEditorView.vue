@@ -85,6 +85,8 @@ const props = defineProps<{
   context: LocalContext
   observationId: string
   frozen: boolean
+  /** Shell left-rail target (#d1-page-navigation); empty renders inline. */
+  navigationTarget?: string
 }>()
 
 const emit = defineEmits<{
@@ -4451,23 +4453,33 @@ onBeforeUnmount(() => {
         </el-button>
       </el-alert>
 
-      <nav class="section-jumps" data-d1="obs-section-jumps" aria-label="直接编辑观察栏目">
-        <span class="section-jumps-label">直接编辑</span>
-        <el-button
-          v-for="section in observationQuickSections"
-          :key="section.key"
-          size="small"
-          class="section-jump"
-          :disabled="props.frozen || editDisabled"
-          :data-d1="`obs-section-open-${section.key}`"
-          :title="`直接打开${section.label}`"
-          @click="openObservationSection(section.key, $event)"
+      <Teleport
+        :to="navigationTarget || 'body'"
+        :disabled="!navigationTarget"
+      >
+        <nav
+          class="section-jumps"
+          :class="{ 'obs-sections-in-rail': !!navigationTarget }"
+          data-d1="obs-section-jumps"
+          aria-label="阅读与编辑观察栏目"
         >
-          {{ section.label }}
-          <span class="section-jump-badge">{{ section.badge }}</span>
-        </el-button>
-        <span class="muted">默认仍显示整份总览；点栏目直接打开独立编辑，照片在独立管理弹窗中处理。</span>
-      </nav>
+          <span class="section-jumps-label">阅读与编辑</span>
+          <el-button
+            v-for="section in observationQuickSections"
+            :key="section.key"
+            size="small"
+            class="section-jump"
+            :disabled="props.frozen || editDisabled"
+            :data-d1="`obs-section-open-${section.key}`"
+            :title="`直接打开${section.label}`"
+            @click="openObservationSection(section.key, $event)"
+          >
+            {{ section.label }}
+            <span class="section-jump-badge">{{ section.badge }}</span>
+          </el-button>
+          <span class="muted">左侧为阅读表栏目入口；点栏目直接打开独立编辑，照片在独立管理弹窗中处理。</span>
+        </nav>
+      </Teleport>
 
       <div class="obs-detail">
         <section class="read-sheet" data-d1="obs-read-table" role="table" aria-label="观察记录阅读表">
@@ -5495,6 +5507,24 @@ onBeforeUnmount(() => {
   margin-left: 4px;
   color: var(--kgm-muted);
   font-size: 0.78rem;
+}
+.section-jumps.obs-sections-in-rail {
+  flex-direction: column;
+  align-items: stretch;
+  margin-top: 0;
+  padding: 0.6rem;
+}
+.section-jumps.obs-sections-in-rail :deep(.el-button) {
+  width: 100%;
+  margin-left: 0;
+  justify-content: flex-start;
+  text-align: left;
+}
+.section-jumps.obs-sections-in-rail .section-jump-badge {
+  margin-left: auto;
+}
+.section-jumps.obs-sections-in-rail .muted {
+  font-size: 0.75rem;
 }
 .obs-detail {
   display: grid;

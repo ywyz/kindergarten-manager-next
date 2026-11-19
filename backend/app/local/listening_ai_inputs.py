@@ -6,12 +6,17 @@ import base64
 import hashlib
 import io
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from PIL import Image
 from sqlalchemy.orm import Session
 
-from app.local import listening_assets, listening_service, listening_templates
+from app.local import (
+    listening_ai_contracts,
+    listening_assets,
+    listening_service,
+    listening_templates,
+)
 from app.local.errors import LocalAiInputTooLarge, LocalStorageError
 from app.local.listening_ai_contracts import (
     INPUT_SCHEMA_VERSION,
@@ -174,6 +179,236 @@ def _groups(domain_dto: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
 
+CURRENT_FORM_SCHEMA_VERSION = 1
+_CURRENT_FORM_KEYS = frozenset(
+    {
+        "schema_version",
+        "observation_date",
+        "adult_count",
+        "child_age",
+        "goal",
+        "observation_area",
+        "overall_evaluation",
+        "support_strategy",
+        "groups",
+        "evaluation",
+    }
+)
+_CURRENT_GROUP_KEYS = frozenset(
+    {"group_id", "position", "work_date", "listening_text", "asset_id"}
+)
+_CURRENT_EVALUATION_KEYS = frozenset({"item_id", "stars"})
+_MAX_SHORT_FORM_FIELD = 200
+_MAX_DATE_FORM_FIELD = 80
+
+
+def _form_text(
+    value: object, field: str, maximum: int
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ListeningAIContractError(f"当前表单 {field} 必须是字符串")
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > maximum:
+        raise ListeningAIContractError(f"当前表单 {field} 超过长度上限")
+    return text
+
+
+def normalize_current_form(
+    value: object,
+    *,
+    dto: Mapping[str, Any],
+    domain_dto: Mapping[str, Any],
+    task_type: str,
+    group_id: str | None,
+) -> dict[str, Any]:
+    """Validate one teacher-supplied current domain form.
+
+    The snapshot may contain unsaved text, dates, goals, evaluation stars and
+    an unsaved group order.  Stable group ids and asset ids, however, must still
+    belong to this record/domain: the AI must never be pointed at a different
+    child record or a photo that is not already saved for that group.
+    """
+
+    if not isinstance(value, Mapping):
+        raise ListeningAIContractError("当前表单必须是对象")
+    if set(value) != _CURRENT_FORM_KEYS:
+        raise ListeningAIContractError("当前表单字段不合法")
+    if value.get("schema_version") != CURRENT_FORM_SCHEMA_VERSION:
+        raise ListeningAIContractError("当前表单版本不合法")
+    saved_groups = {
+        str(group["group_id"]): group
+        for group in domain_dto.get("groups") or []
+    }
+    if len(saved_groups) != 3:
+        raise LocalStorageError("倾听图文组数量不是三组")
+    raw_groups = value.get("groups")
+    if not isinstance(raw_groups, list) or len(raw_groups) != 3:
+        raise ListeningAIContractError("当前表单必须包含三组图文")
+    groups: list[dict[str, Any]] = []
+    seen_groups: set[str] = set()
+    for index, raw in enumerate(raw_groups):
+        if not isinstance(raw, Mapping) or set(raw) != _CURRENT_GROUP_KEYS:
+            raise ListeningAIContractError("当前表单图组字段不合法")
+        group_key = raw.get("group_id")
+        position = raw.get("position")
+        asset_id = raw.get("asset_id")
+        if (
+            not isinstance(group_key, str)
+            or group_key not in saved_groups
+            or group_key in seen_groups
+            or isinstance(position, bool)
+            or not isinstance(position, int)
+            or position != index
+            or (asset_id is not None and not isinstance(asset_id, str))
+        ):
+            raise ListeningAIContractError("当前表单图组身份不合法")
+        saved = saved_groups[group_key]
+        if saved.get("asset_id") != asset_id:
+            raise ListeningAIContractError("当前表单照片与已保存图组不一致")
+        seen_groups.add(group_key)
+        groups.append(
+            {
+                "group_id": group_key,
+                "position": position,
+                "work_date": _form_text(
+                    raw.get("work_date"),
+                    f"第 {index + 1} 组作品日期",
+                    _MAX_DATE_FORM_FIELD,
+                ),
+                "listening_text": _form_text(
+                    raw.get("listening_text"),
+                    f"第 {index + 1} 组倾听正文",
+                    listening_ai_contracts.MAX_TEXT,
+                ),
+                "asset_id": asset_id,
+            }
+        )
+    if seen_groups != set(saved_groups):
+        raise ListeningAIContractError("当前表单图组不完整")
+
+    raw_evaluation = value.get("evaluation")
+    if not isinstance(raw_evaluation, list):
+        raise ListeningAIContractError("当前表单评价字段不合法")
+    saved_item_ids = {
+        str(item["item_id"])
+        for item in domain_dto.get("evaluation") or []
+    }
+    evaluation: list[dict[str, Any]] = []
+    seen_items: set[str] = set()
+    for raw in raw_evaluation:
+        if not isinstance(raw, Mapping) or set(raw) != _CURRENT_EVALUATION_KEYS:
+            raise ListeningAIContractError("当前表单评价项字段不合法")
+        item_id = raw.get("item_id")
+        stars = raw.get("stars")
+        if (
+            not isinstance(item_id, str)
+            or item_id not in saved_item_ids
+            or item_id in seen_items
+            or (
+                stars is not None
+                and (isinstance(stars, bool) or stars not in (1, 2, 3))
+            )
+        ):
+            raise ListeningAIContractError("当前表单评价项不合法")
+        seen_items.add(item_id)
+        evaluation.append({"item_id": item_id, "stars": stars})
+    if seen_items != saved_item_ids:
+        raise ListeningAIContractError("当前表单评价项不完整")
+
+    normalized = {
+        "schema_version": CURRENT_FORM_SCHEMA_VERSION,
+        "observation_date": _form_text(
+            value.get("observation_date"),
+            "观察月份",
+            _MAX_DATE_FORM_FIELD,
+        ),
+        "adult_count": _form_text(
+            value.get("adult_count"),
+            "成人数目",
+            _MAX_SHORT_FORM_FIELD,
+        ),
+        "child_age": _form_text(
+            value.get("child_age"),
+            "幼儿年龄",
+            _MAX_SHORT_FORM_FIELD,
+        ),
+        "goal": _form_text(
+            value.get("goal"),
+            "观察目标",
+            listening_ai_contracts.MAX_GOAL,
+        ),
+        "observation_area": _form_text(
+            value.get("observation_area"),
+            "观察区域",
+            _MAX_SHORT_FORM_FIELD,
+        ),
+        "overall_evaluation": _form_text(
+            value.get("overall_evaluation"),
+            "综合评价",
+            listening_ai_contracts.MAX_TEXT,
+        ),
+        "support_strategy": _form_text(
+            value.get("support_strategy"),
+            "支持策略",
+            listening_ai_contracts.MAX_TEXT,
+        ),
+        "groups": groups,
+        "evaluation": evaluation,
+    }
+    if task_type == TASK_NOTE:
+        if not group_id:
+            raise ListeningAIContractError("倾听小组任务缺少 group_id")
+        group = next(
+            (item for item in groups if item["group_id"] == group_id), None
+        )
+        if group is None:
+            raise ListeningAIContractError("倾听小组不属于当前表单")
+        if not group["listening_text"] and not group["asset_id"]:
+            raise ListeningAIContractError("本组没有可发送的当前正文或作品图")
+    elif task_type == TASK_GROUP:
+        if not any(group["asset_id"] for group in groups):
+            raise ListeningAIContractError("本领域没有可发送的有效照片图位")
+    elif task_type == TASK_GOAL:
+        if not any(
+            group["asset_id"] or group["listening_text"] for group in groups
+        ):
+            raise ListeningAIContractError("本领域没有可发送的当前材料")
+    return normalized
+
+
+def is_current_form_input(inp: LocalAIInput) -> bool:
+    dependencies = getattr(inp, "dependencies_json", None)
+    return (
+        isinstance(dependencies, Mapping)
+        and dependencies.get("source_mode") == "current_form"
+    )
+
+
+def stored_projection(inp: LocalAIInput) -> Projection:
+    """The exact immutable input captured when the task was created."""
+
+    payload = dict(inp.payload_json or {})
+    item_ids = tuple(
+        str(item["item_id"]) for item in payload.get("items") or []
+    )
+    return Projection(
+        task_type=str(inp.task_type),
+        record_id=str(inp.listening_record_id),
+        domain=str(inp.listening_domain),
+        group_id=inp.listening_group_id,
+        payload=payload,
+        dependencies=dict(inp.dependencies_json or {}),
+        dependency_hash=str(inp.dependency_hash),
+        target_hashes=dict(inp.target_hashes_json or {}),
+        source_revision=int(inp.source_revision or 0),
+        item_ids=item_ids,
+    )
+
+
 
 def _read_photo_isolated(
     runtime: Any,
@@ -210,6 +445,7 @@ def project(
     domain: str,
     group_id: str | None,
     task_type: str,
+    current_form: object | None = None,
     stored_photos: dict[str, dict[str, Any]] | None = None,
 ) -> Projection:
     if task_type not in TASK_TYPES:
@@ -228,26 +464,67 @@ def project(
     groups = _groups(domain_dto)
     if len(groups) != 3:
         raise LocalStorageError("倾听图文组数量不是三组")
+    form = (
+        normalize_current_form(
+            current_form,
+            dto=dto,
+            domain_dto=domain_dto,
+            task_type=task_type,
+            group_id=group_id,
+        )
+        if current_form is not None
+        else None
+    )
+    saved_by_group = {str(group["group_id"]): group for group in groups}
+    if form is not None:
+        current_groups = [
+            {
+                **saved_by_group[item["group_id"]],
+                "position": item["position"],
+                "work_date": item["work_date"],
+                "listening_text": item["listening_text"],
+                "asset_id": item["asset_id"],
+            }
+            for item in form["groups"]
+        ]
+    else:
+        current_groups = groups
+
+    def group_text(group: Mapping[str, Any]) -> str | None:
+        return (group.get("listening_text") or "").strip() or None
+
+    def group_date(group: Mapping[str, Any]) -> str | None:
+        return (group.get("work_date") or "").strip() or None
+
+    def form_value(field: str) -> str | None:
+        if form is not None:
+            return form[field]
+        return (domain_dto.get(field) or "").strip() or None
+
     item_ids = [item.item_id for item in template.items]
     photos: list[dict[str, Any]] = []
-    selected_groups = groups
+    selected_groups = current_groups
     if task_type == TASK_NOTE:
-        selected_groups = [group for group in groups if group["group_id"] == group_id]
+        selected_groups = [
+            group for group in current_groups if group["group_id"] == group_id
+        ]
         if len(selected_groups) != 1:
             raise LocalStorageError("倾听小组不存在")
     elif task_type == TASK_GROUP:
-        selected_groups = [group for group in groups if group.get("asset_id")]
+        selected_groups = [
+            group for group in current_groups if group.get("asset_id")
+        ]
         if not 1 <= len(selected_groups) <= 3:
             raise ListeningAIContractError("本领域没有可发送的有效照片图位")
     elif task_type == TASK_GOAL:
         selected_groups = [
             group
-            for group in groups
-            if group.get("asset_id") or (group.get("listening_text") or "").strip()
+            for group in current_groups
+            if group.get("asset_id") or group_text(group)
         ]
         if not 1 <= len(selected_groups) <= 3:
             raise ListeningAIContractError(
-                "本领域没有可发送的已保存文字或照片材料"
+                "本领域没有可发送的当前文字或照片材料"
             )
     stored = stored_photos or {}
     for group in selected_groups:
@@ -275,9 +552,9 @@ def project(
     if task_type == TASK_NOTE:
         group = selected_groups[0]
         photo = photo_by_group.get(group["group_id"])
-        text = (group.get("listening_text") or "").strip() or None
+        text = group_text(group)
         if text is None and photo is None:
-            raise ListeningAIContractError("本组没有可发送的已保存正文或作品图")
+            raise ListeningAIContractError("本组没有可发送的当前正文或作品图")
         payload = {
             "schema_version": INPUT_SCHEMA_VERSION,
             "mode": "group_note",
@@ -288,7 +565,7 @@ def project(
             "template_version": template.version,
             "template_sha256": template.sha256,
             "group_position": int(group["position"]),
-            "work_date": (group.get("work_date") or "").strip() or None,
+            "work_date": group_date(group),
             "listening_text": text,
             "photo": _wire_photo(photo),
             "photo_only": bool(photo is not None and text is None),
@@ -319,11 +596,8 @@ def project(
             payload_groups.append(
                 {
                     "position": int(group["position"]),
-                    "work_date": (group.get("work_date") or "").strip() or None,
-                    "listening_text": (
-                        group.get("listening_text") or ""
-                    ).strip()
-                    or None,
+                    "work_date": group_date(group),
+                    "listening_text": group_text(group),
                     "photo": _wire_photo(photo),
                 }
             )
@@ -340,7 +614,7 @@ def project(
         }
         target_hashes = {
             listening_group_note_target_key(domain, int(group["position"])): value_hash(
-                (group.get("listening_text") or "").strip()
+                group_text(group) or ""
             )
             for group in selected_groups
         }
@@ -365,11 +639,8 @@ def project(
             payload_groups.append(
                 {
                     "position": int(group["position"]),
-                    "work_date": (group.get("work_date") or "").strip() or None,
-                    "listening_text": (
-                        group.get("listening_text") or ""
-                    ).strip()
-                    or None,
+                    "work_date": group_date(group),
+                    "listening_text": group_text(group),
                     "photo": _wire_photo(photo),
                 }
             )
@@ -383,7 +654,7 @@ def project(
             }
             for item in template.items
         ]
-        goal = (domain_dto.get("goal") or "").strip() or None
+        goal = form_value("goal")
         payload = {
             "schema_version": INPUT_SCHEMA_VERSION,
             "mode": "goal_suggest",
@@ -416,13 +687,13 @@ def project(
         }
     else:
         payload_groups = []
-        for group in groups:
+        for group in current_groups:
             photo = photo_by_group.get(group["group_id"])
             payload_groups.append(
                 {
                     "position": int(group["position"]),
-                    "work_date": (group.get("work_date") or "").strip() or None,
-                    "listening_text": (group.get("listening_text") or "").strip() or None,
+                    "work_date": group_date(group),
+                    "listening_text": group_text(group),
                     "photo": _wire_photo(photo),
                 }
             )
@@ -445,21 +716,25 @@ def project(
             "grade_label": listening_templates.GRADE_LABELS[dto["grade"]],
             "template_version": template.version,
             "template_sha256": template.sha256,
-            "goal": (domain_dto.get("goal") or "").strip() or None,
-            "observation_date": (domain_dto.get("observation_date") or "").strip() or None,
-            "adult_count": (domain_dto.get("adult_count") or "").strip() or None,
-            "child_age": (domain_dto.get("child_age") or "").strip() or None,
-            "observation_area": (domain_dto.get("observation_area") or "").strip() or None,
+            "goal": form_value("goal"),
+            "observation_date": form_value("observation_date"),
+            "adult_count": form_value("adult_count"),
+            "child_age": form_value("child_age"),
+            "observation_area": form_value("observation_area"),
             "groups": payload_groups,
             "items": payload_items,
         }
-        stars = {
-            item["item_id"]: item.get("stars")
-            for item in domain_dto.get("evaluation") or []
-        }
+        stars = (
+            {item["item_id"]: item.get("stars") for item in form["evaluation"]}
+            if form is not None
+            else {
+                item["item_id"]: item.get("stars")
+                for item in domain_dto.get("evaluation") or []
+            }
+        )
         target_hashes = {
-            "overall_evaluation": value_hash((domain_dto.get("overall_evaluation") or "").strip()),
-            "support_strategy": value_hash((domain_dto.get("support_strategy") or "").strip()),
+            "overall_evaluation": value_hash(form_value("overall_evaluation") or ""),
+            "support_strategy": value_hash(form_value("support_strategy") or ""),
             **{item_id: value_hash(stars.get(item_id)) for item_id in item_ids},
         }
         dependencies = {
@@ -473,6 +748,22 @@ def project(
             "photos": photos,
             "source_revision": dto["revision"],
         }
+    if form is not None:
+        dependencies.update(
+            {
+                "source_mode": "current_form",
+                "current_form_schema_version": CURRENT_FORM_SCHEMA_VERSION,
+                "current_form_hash": _digest(form),
+                "current_form_groups": [
+                    {
+                        "group_id": item["group_id"],
+                        "position": item["position"],
+                        "asset_id": item["asset_id"],
+                    }
+                    for item in form["groups"]
+                ],
+            }
+        )
     validate_input(task_type, payload)
     dependency_hash = _digest(
         {
@@ -522,6 +813,67 @@ def revalidate_source(session: Session, task: Any) -> bool:
     photos = list(deps.get("photos") or [])
     if len(photos) > MAX_DOMAIN_PHOTOS:
         return False
+    if deps.get("source_mode") == "current_form":
+        # A current-form task intentionally does not require the saved revision
+        # or saved text to stay unchanged: generation must use the form the
+        # teacher explicitly submitted, without forcing an auto-save.  Stable
+        # record/domain/group/photo identity is still required so a candidate
+        # can never be pointed at another child, domain or replacement image.
+        try:
+            dto, domain_dto, template = _load(
+                session,
+                task.profile_id,
+                task.listening_record_id,
+                task.listening_domain,
+            )
+            if template.version != deps.get("template_version") or (
+                template.sha256 != deps.get("template_sha256")
+            ):
+                return False
+            frozen_groups = list(deps.get("current_form_groups") or [])
+            if len(frozen_groups) != 3:
+                return False
+            saved_groups = {
+                str(group["group_id"]): group
+                for group in domain_dto.get("groups") or []
+            }
+            if len(saved_groups) != 3:
+                return False
+            for item in frozen_groups:
+                group = saved_groups.get(str(item.get("group_id")))
+                if group is None or group.get("asset_id") != item.get("asset_id"):
+                    return False
+            if deps.get("current_form_schema_version") != CURRENT_FORM_SCHEMA_VERSION:
+                return False
+        except Exception:  # noqa: BLE001 - unreadable identity is stale
+            return False
+        if task.task_type == TASK_NOTE and len(photos) > 1:
+            return False
+        if task.task_type == TASK_DOMAIN and len(photos) > MAX_DOMAIN_PHOTOS:
+            return False
+        if task.task_type == TASK_GROUP:
+            positions = [
+                int(group["position"])
+                for group in dict(inp.payload_json or {}).get("groups") or []
+            ]
+            if (
+                not 1 <= len(positions) <= MAX_DOMAIN_PHOTOS
+                or len(photos) != len(positions)
+                or deps.get("group_positions") != positions
+            ):
+                return False
+        if task.task_type == TASK_GOAL:
+            positions = [
+                int(group["position"])
+                for group in dict(inp.payload_json or {}).get("groups") or []
+            ]
+            if (
+                not 1 <= len(positions) <= MAX_DOMAIN_PHOTOS
+                or len(photos) > MAX_DOMAIN_PHOTOS
+                or deps.get("group_positions") != positions
+            ):
+                return False
+        return True
     try:
         projected = project(
             session,

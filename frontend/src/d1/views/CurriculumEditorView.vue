@@ -58,6 +58,8 @@ const props = defineProps<{
   frozen?: boolean
   disabled?: boolean
   profileEpoch?: number
+  /** Shell left-rail target (#d1-page-navigation); empty renders the local fallback column. */
+  navigationTarget?: string
 }>()
 
 const emit = defineEmits<{
@@ -225,6 +227,41 @@ const CURRICULUM_MODAL_LABELS: Record<CurriculumModalKind, string> = {
   process: '编辑活动过程',
   reason: '编辑调整理由',
   lesson_revised: '编辑二次稿',
+}
+
+/** 2026-11-19 left split column: one read/edit entry per deliberation section. */
+const CURRICULUM_NAV_SECTIONS: Array<{
+  key: CurriculumModalKind
+  label: string
+}> = [
+  { key: 'lesson_original', label: '原稿教案' },
+  { key: 'basic', label: '基本信息' },
+  { key: 'goals', label: '活动目标' },
+  { key: 'preparation', label: '活动准备' },
+  { key: 'process', label: '活动过程' },
+  { key: 'reason', label: '调整理由' },
+  { key: 'lesson_revised', label: '二次稿' },
+]
+
+const curriculumSectionAnchors = new Map<CurriculumModalKind, HTMLElement>()
+
+function setCurriculumSectionAnchor(
+  key: CurriculumModalKind,
+  el: unknown,
+): void {
+  if (el) {
+    curriculumSectionAnchors.set(key, el as HTMLElement)
+  } else {
+    curriculumSectionAnchors.delete(key)
+  }
+}
+
+/** Read switching: scroll the main sheet to the section row. */
+function scrollToCurriculumSection(key: CurriculumModalKind): void {
+  const el = curriculumSectionAnchors.get(key)
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ block: 'start' })
+  }
 }
 
 function curriculumModalHasChanges(
@@ -1626,7 +1663,47 @@ defineExpose({
         </div>
       </el-card>
 
-      <div class="curriculum-main-grid">
+      <div
+        class="curriculum-layout"
+        :class="{ 'curriculum-layout-teleported': !!navigationTarget }"
+      >
+        <Teleport
+          :to="navigationTarget || 'body'"
+          :disabled="!navigationTarget"
+        >
+          <nav
+            class="curriculum-sections"
+            :class="{ 'curriculum-sections-in-rail': !!navigationTarget }"
+            data-d1="curriculum-sections"
+            aria-label="审议栏目阅读与编辑"
+          >
+            <span class="curriculum-sections-label">审议栏目</span>
+            <div
+              v-for="section in CURRICULUM_NAV_SECTIONS"
+              :key="section.key"
+              class="curriculum-nav-row"
+            >
+              <el-button
+                size="small"
+                class="curriculum-nav-read"
+                :data-d1="`curriculum-nav-read-${section.key}`"
+                @click="scrollToCurriculumSection(section.key)"
+              >
+                {{ section.label }}
+              </el-button>
+              <el-button
+                size="small"
+                class="curriculum-nav-edit"
+                :data-d1="`curriculum-nav-edit-${section.key}`"
+                :disabled="!canMutate"
+                @click="openCurriculumModal(section.key)"
+              >
+                编辑
+              </el-button>
+            </div>
+          </nav>
+        </Teleport>
+        <div class="curriculum-main-grid">
         <div
           class="preview-section curriculum-sheet curriculum-sheet-top"
           data-d1="curriculum-lesson-original-card"
@@ -1645,7 +1722,7 @@ defineExpose({
               </tr>
             </thead>
             <tbody>
-              <tr data-d1="curriculum-lesson-original-row">
+              <tr data-d1="curriculum-lesson-original-row" :ref="(el) => setCurriculumSectionAnchor('lesson_original', el)">
                 <th scope="row">原稿教案</th>
                 <td colspan="2">
                   <div
@@ -1667,7 +1744,7 @@ defineExpose({
                   </el-button>
                 </td>
               </tr>
-              <tr data-d1="curriculum-basic-card">
+              <tr data-d1="curriculum-basic-card" :ref="(el) => setCurriculumSectionAnchor('basic', el)">
                 <th scope="row">基本信息</th>
                 <td colspan="2">
                   <div class="read-grid preview-grid">
@@ -1722,7 +1799,7 @@ defineExpose({
                 </td>
               </tr>
 
-              <tr data-d1="curriculum-goals-card">
+              <tr data-d1="curriculum-goals-card" :ref="(el) => setCurriculumSectionAnchor('goals', el)">
                 <th scope="row">活动目标</th>
                 <td data-d1="curriculum-goals-original">
                   <span class="read-label">原稿</span>
@@ -1756,7 +1833,7 @@ defineExpose({
                   </el-button>
                 </td>
               </tr>
-              <tr data-d1="curriculum-preparation-card">
+              <tr data-d1="curriculum-preparation-card" :ref="(el) => setCurriculumSectionAnchor('preparation', el)">
                 <th scope="row">活动准备</th>
                 <td data-d1="curriculum-preparation-original">
                   <span class="read-label">原稿</span>
@@ -1790,7 +1867,7 @@ defineExpose({
                   </el-button>
                 </td>
               </tr>
-              <tr data-d1="curriculum-process-card">
+              <tr data-d1="curriculum-process-card" :ref="(el) => setCurriculumSectionAnchor('process', el)">
                 <th scope="row">活动过程</th>
                 <td>
                   <span class="read-label">原稿</span>
@@ -1816,7 +1893,7 @@ defineExpose({
                 </td>
               </tr>
 
-              <tr data-d1="curriculum-reason-card">
+              <tr data-d1="curriculum-reason-card" :ref="(el) => setCurriculumSectionAnchor('reason', el)">
                 <th scope="row">调整理由</th>
                 <td colspan="2">
                   <div class="read-text">
@@ -1908,7 +1985,7 @@ defineExpose({
         <div class="table-scroll">
           <table class="read-table curriculum-preview-table">
             <tbody>
-              <tr data-d1="curriculum-lesson-revised-row">
+              <tr data-d1="curriculum-lesson-revised-row" :ref="(el) => setCurriculumSectionAnchor('lesson_revised', el)">
                 <th scope="row">二次稿</th>
                 <td colspan="2">
                   <div class="read-text read-long">
@@ -1933,6 +2010,7 @@ defineExpose({
           </table>
         </div>
         </div>
+      </div>
       </div>
     </template>
 
@@ -2407,13 +2485,64 @@ defineExpose({
 .curriculum-preview-table .read-label {
   display: block;
 }
+.curriculum-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  margin-top: 12px;
+}
+.curriculum-sections {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--kgm-surface);
+  border: 1px solid var(--kgm-border);
+  border-radius: 12px;
+}
+.curriculum-sections-label {
+  color: var(--kgm-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.curriculum-nav-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+.curriculum-nav-row :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+.curriculum-nav-read {
+  min-height: 36px;
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+}
+.curriculum-nav-edit {
+  min-height: 36px;
+}
+/* Embedded in the shell rail the local column collapses: the read/edit nav
+   lives in #d1-page-navigation and the sheets keep the full content width. */
+.curriculum-layout-teleported {
+  grid-template-columns: minmax(0, 1fr);
+}
+.curriculum-sections.curriculum-sections-in-rail {
+  position: static;
+  margin-top: 0;
+  padding: 0.6rem;
+}
 .curriculum-main-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(240px, 280px);
   column-gap: 18px;
   row-gap: 0;
   align-items: start;
-  margin-top: 12px;
 }
 .curriculum-main-grid .preview-section {
   margin-top: 0;
@@ -2493,6 +2622,10 @@ defineExpose({
   gap: 10px;
 }
 @media (max-width: 980px) {
+  .curriculum-layout {
+    grid-template-columns: 150px minmax(0, 1fr);
+    gap: 12px;
+  }
   .curriculum-main-grid {
     grid-template-columns: 1fr;
   }
@@ -2510,6 +2643,12 @@ defineExpose({
 @media (max-width: 900px) {
   .preview-grid {
     grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 720px) {
+  .curriculum-layout {
+    grid-template-columns: 132px minmax(0, 1fr);
+    gap: 10px;
   }
 }
 </style>

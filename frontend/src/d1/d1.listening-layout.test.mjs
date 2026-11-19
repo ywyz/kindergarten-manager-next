@@ -359,6 +359,53 @@ class Harness {
               }
               return ''
             },
+            resolveDirectionalSelection: (text, selection) => {
+              if (
+                Number.isInteger(selection.start) &&
+                Number.isInteger(selection.end) &&
+                selection.start >= 0 &&
+                selection.end >= selection.start &&
+                selection.end <= text.length &&
+                text.slice(selection.start, selection.end) === selection.text
+              ) {
+                return { selection, moved: false, error: '' }
+              }
+              if (!selection.text) {
+                return {
+                  selection: null,
+                  moved: false,
+                  error: '原选区为空',
+                }
+              }
+              const first = text.indexOf(selection.text)
+              if (first < 0) {
+                return {
+                  selection: null,
+                  moved: false,
+                  error: '原选段已不在当前正文中',
+                }
+              }
+              if (text.indexOf(selection.text, first + 1) >= 0) {
+                return {
+                  selection: null,
+                  moved: false,
+                  error: '原选段在当前正文中出现多次',
+                }
+              }
+              return {
+                selection: {
+                  start: first,
+                  end: first + selection.text.length,
+                  text: selection.text,
+                },
+                moved: true,
+                error: '',
+              }
+            },
+            applyDirectionalReplacement: (text, selection, replacement) =>
+              text.slice(0, selection.start) +
+              replacement +
+              text.slice(selection.end),
             wholeDirectionalSelection: (text) => ({
               start: 0,
               end: text.length,
@@ -705,7 +752,7 @@ function bridgeOf(emitted) {
       closest: () => holder,
     },
   })
-  state.openListeningModalDirectional('listening_text', false)
+  await state.openListeningModalDirectional('listening_text', false)
   assert.equal(state.listeningModal.value, null)
   const group = state.session.form().groups.find(
     (item) => item.group_id === 'g-health-0',
@@ -740,7 +787,7 @@ function bridgeOf(emitted) {
       }),
     },
   })
-  state.openListeningModalDirectional('listening_text', false)
+  await state.openListeningModalDirectional('listening_text', false)
   assert.ok(state.listeningModal.value)
   assert.equal(JSON.stringify(state.session.form()), before)
   assert.equal(h.client.patchCalls.length, 0)
@@ -841,17 +888,15 @@ function bridgeOf(emitted) {
   ok('list overview cards load real records and keep open/album wiring')
 }
 
-// The editor rail uses the same directional path with a real current draft.
+// The editor rail converges to two actions and opens one target interaction.
 {
   const h = await mountEditor()
   const state = h.state
   assert.ok(editorSource.includes('data-d1="listening-operations-rail"'))
-  assert.ok(editorSource.includes('data-d1="listening-directional-rail"'))
-  assert.ok(editorSource.includes('data-d1="listening-rail-directional-field"'))
-  assert.ok(
-    editorSource.includes('data-d1="listening-rail-directional-selection"'),
-  )
-  assert.ok(editorSource.includes('data-d1="listening-rail-directional-whole"'))
+  assert.ok(editorSource.includes('data-d1="listening-ai-entry"'))
+  assert.ok(editorSource.includes('data-d1="listening-ai-generate-all"'))
+  assert.ok(editorSource.includes('data-d1="listening-ai-directional"'))
+  assert.doesNotMatch(editorSource, /data-d1="listening-directional-rail"/)
   const goal = state.session.form().goal
   state.openListeningModal('header')
   state.rememberDirectionalSelection({
@@ -866,8 +911,12 @@ function bridgeOf(emitted) {
   })
   await state.confirmListeningModal()
   const patches = h.client.patchCalls.length
-  state.railDirectionalField.value = 'goal'
-  state.openRailDirectional(false)
+  await state.openUnifiedDirectional()
+  assert.equal(state.directionalTargetOpen.value, true)
+  assert.equal(state.directionalTargetField.value, 'goal')
+  assert.equal(state.directionalTargetMode.value, 'selection')
+  await state.continueDirectionalTarget()
+  assert.equal(state.directionalTargetOpen.value, false)
   assert.equal(state.directionalOpen.value, true)
   assert.equal(state.directionalRequest.value.fieldText, goal)
   assert.equal(state.directionalRequest.value.selection.start, 0)
@@ -878,14 +927,19 @@ function bridgeOf(emitted) {
   state.directionalRequest.value = null
   state.railDirectionalField.value = 'listening_text'
   state.railDirectionalGroup.value = 'g-health-1'
+  await state.openUnifiedDirectional()
+  assert.equal(state.directionalTargetOpen.value, true)
+  assert.equal(state.directionalTargetField.value, 'listening_text')
+  assert.equal(state.directionalTargetGroup.value, 'g-health-1')
+  assert.equal(state.directionalTargetMode.value, 'whole')
   const group = state.session.form().groups.find(
     (item) => item.group_id === 'g-health-1',
   )
-  state.openRailDirectional(true)
+  await state.continueDirectionalTarget()
   assert.equal(state.directionalOpen.value, true)
   assert.equal(state.directionalRequest.value.fieldText, group.listening_text)
   assert.equal(h.client.patchCalls.length, patches)
-  ok('right rail opens directional/whole edits from the current draft')
+  ok('right rail opens one target interaction for selected or whole text')
 }
 
 // A Health observation-goal selection must not survive a Language switch.
@@ -909,8 +963,10 @@ function bridgeOf(emitted) {
   await state.confirmListeningModal()
   assert.equal(state.railDirectionalField.value, 'goal')
   assert.equal(state.railDirectionalGroup.value, '')
-  assert.equal(state.railDirectionalSelection.value?.text, '原目标')
-  state.openRailDirectional(false)
+  await state.openUnifiedDirectional()
+  assert.equal(state.directionalTargetOpen.value, true)
+  assert.equal(state.directionalTargetMode.value, 'selection')
+  await state.continueDirectionalTarget()
   assert.equal(state.directionalOpen.value, true)
   assert.equal(state.directionalRequest.value.scope.domain, 'health')
   assert.equal(state.directionalRequest.value.scope.group_id, undefined)
@@ -921,15 +977,16 @@ function bridgeOf(emitted) {
   await state.selectDomain('language')
   assert.equal(state.state.domain, 'language')
   assert.equal(state.railDirectionalGroup.value, '')
-  assert.equal(state.railDirectionalSelection.value, null)
-  state.openRailDirectional(false)
-  assert.equal(state.directionalOpen.value, false)
-  assert.equal(state.directionalRequest.value, null)
-  assert.ok(
-    h.harness.messages.some((message) =>
-      String(message).includes('旧记录、领域、版本或本地会话'),
-    ),
+  await state.openUnifiedDirectional()
+  assert.equal(state.directionalTargetMode.value, 'whole')
+  await state.continueDirectionalTarget()
+  assert.equal(state.directionalOpen.value, true)
+  assert.equal(state.directionalRequest.value.scope.domain, 'language')
+  assert.equal(
+    state.directionalRequest.value.fieldText,
+    state.session.form().goal,
   )
+  assert.notEqual(state.directionalRequest.value.fieldText, goal)
   ok('domain switch clears goal selection and never reuses Health text')
 }
 
@@ -941,7 +998,8 @@ function bridgeOf(emitted) {
   assert.equal(state.state.domain, 'language')
   state.railDirectionalField.value = 'listening_text'
   state.railDirectionalGroup.value = 'g-health-0'
-  state.openRailDirectional(true)
+  await state.openUnifiedDirectional()
+  await state.continueDirectionalTarget()
   assert.equal(state.directionalOpen.value, false)
   assert.equal(state.directionalRequest.value, null)
   assert.ok(
@@ -951,7 +1009,8 @@ function bridgeOf(emitted) {
   )
 
   state.railDirectionalGroup.value = 'g-language-0'
-  state.openRailDirectional(true)
+  await state.openUnifiedDirectional()
+  await state.continueDirectionalTarget()
   assert.equal(state.directionalOpen.value, true)
   const request = state.directionalRequest.value
   assert.equal(request.scope.domain, 'language')
@@ -987,20 +1046,31 @@ function bridgeOf(emitted) {
   }
 
   await selectHealthGroup()
-  assert.ok(state.railDirectionalSelection.value)
   state.state.revision += 1
   await tick()
-  state.openRailDirectional(false)
-  assert.equal(state.directionalOpen.value, false)
-  assert.equal(state.directionalRequest.value, null)
+  await state.openUnifiedDirectional()
+  assert.equal(state.directionalTargetMode.value, 'selection')
+  await state.continueDirectionalTarget()
+  assert.equal(state.directionalOpen.value, true)
+  assert.equal(
+    state.directionalRequest.value.selection.text,
+    '版本会话正文'.slice(0, 2),
+  )
+  state.directionalOpen.value = false
+  state.directionalRequest.value = null
 
   await selectHealthGroup()
-  assert.ok(state.railDirectionalSelection.value)
   h.harness.sessionEpoch = 2
-  state.openRailDirectional(false)
-  assert.equal(state.directionalOpen.value, false)
-  assert.equal(state.directionalRequest.value, null)
-  ok('revision and session changes invalidate captured rail selections')
+  await state.openUnifiedDirectional()
+  assert.equal(state.directionalTargetMode.value, 'whole')
+  await state.continueDirectionalTarget()
+  assert.equal(state.directionalOpen.value, true)
+  assert.equal(state.directionalRequest.value.selection.start, 0)
+  assert.equal(
+    state.directionalRequest.value.selection.end,
+    state.directionalRequest.value.fieldText.length,
+  )
+  ok('revision does not discard a selection; local session does')
 }
 
 // Actual compiled component: domain buttons move to the shared target and
@@ -1905,9 +1975,11 @@ async function mountListeningDom(
     'listening-read-overall',
     'listening-read-support',
   ]
+  const wholeBook = findMarker('listening-whole-book-preview')
+  assert.ok(wholeBook, 'default overview is the whole-book preview')
   assert.ok(groupsCard)
-  for (const marker of markers) assert.ok(!hidden(findMarker(marker)))
-  assert.ok(!groupHidden())
+  for (const marker of markers) assert.ok(hidden(findMarker(marker)))
+  assert.ok(groupHidden())
 
   const sectionNav = walkElements(mounted.root).find(
     (node) => node.props['data-d1'] === 'listening-section-nav',
@@ -1923,6 +1995,12 @@ async function mountListeningDom(
 
   clickSection('record-info')
   await vue.nextTick()
+  assert.equal(
+    walkElements(mounted.root).find(
+      (node) => node.props['data-d1'] === 'listening-whole-book-preview',
+    ),
+    undefined,
+  )
   assert.ok(!hidden(findMarker('listening-record-summary')))
   assert.ok(!hidden(findMarker('listening-read-header')))
   assert.ok(groupHidden())
@@ -1947,8 +2025,13 @@ async function mountListeningDom(
 
   clickSection('overview')
   await vue.nextTick()
-  for (const marker of markers) assert.ok(!hidden(findMarker(marker)))
-  assert.ok(!groupHidden())
+  assert.ok(
+    walkElements(mounted.root).find(
+      (node) => node.props['data-d1'] === 'listening-whole-book-preview',
+    ),
+  )
+  for (const marker of markers) assert.ok(hidden(findMarker(marker)))
+  assert.ok(groupHidden())
   assert.equal(
     walkElements(mounted.root).filter(
       (node) => node.props['data-d1'] === 'listening-ai-stub',
@@ -1965,6 +2048,30 @@ async function mountListeningDom(
   await vue.nextTick()
   ok('section switches hide other cards, return to overview, and do not remount the rail')
 }
+// Whole-book preview is built from all five current forms, including unsaved
+// text, saved photo ids and readable template requirement names.
+{
+  const h = await mountEditor()
+  const state = h.state
+  state.session.setField('goal', '未保存的整册目标')
+  const health = state.session.form()
+  health.groups[0].asset_id = 'asset-whole-book'
+  health.evaluation[0].stars = 3
+  await tick()
+  const preview = state.wholeBookPreview.value
+  assert.equal(preview.length, 5)
+  const healthPreview = preview.find((item) => item.domain === 'health')
+  assert.equal(healthPreview.goal, '未保存的整册目标')
+  assert.equal(healthPreview.groups[0].assetId, 'asset-whole-book')
+  assert.equal(healthPreview.groups[0].hasPhoto, true)
+  assert.equal(healthPreview.evaluation[0].requirement, '要求-health')
+  assert.equal(healthPreview.evaluation[0].stars, 3)
+  assert.match(editorSource, /listening-whole-book-photo-/)
+  assert.match(editorSource, /photoUrls\[group\.assetId\]/)
+  assert.match(editorSource, /entry\.requirement/)
+  ok('whole-book preview shows current forms, photos and readable stars')
+}
+
 // A group draft filled before switching remains intact through section moves.
 {
   const h = await mountEditor()
@@ -2001,16 +2108,16 @@ async function mountListeningDom(
   const batch = rail.children.find(
     (node) => node.props['data-d1'] === 'listening-batch-open',
   )
+  const entry = rail.children.find(
+    (node) => node.props['data-d1'] === 'listening-ai-entry',
+  )
   const ai = rail.children.find(
     (node) => node.props['data-d1'] === 'listening-ai-stub',
   )
-  const directional = rail.children.find(
-    (node) => node.props['data-d1'] === 'listening-directional-rail',
-  )
-  assert.ok(sectionNav && batch && ai && directional)
+  assert.ok(sectionNav && batch && entry && ai)
   assert.ok(rail.children.indexOf(sectionNav) < rail.children.indexOf(batch))
-  assert.ok(rail.children.indexOf(batch) < rail.children.indexOf(ai))
-  assert.ok(rail.children.indexOf(ai) < rail.children.indexOf(directional))
+  assert.ok(rail.children.indexOf(batch) < rail.children.indexOf(entry))
+  assert.ok(rail.children.indexOf(entry) < rail.children.indexOf(ai))
   const links = walkElements(sectionNav).filter(
     (node) =>
       node.tag === 'button' &&

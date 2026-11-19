@@ -1,21 +1,21 @@
 # 当前任务
 
-## 2026-11-18 真实体验反馈修复与隔离源码验收
+## 2026-11-19 预览反馈修复及内部测试功能
 
-在 `fix/preview-feedback-20261117` 的 `bf13334` 上接续本轮教师反馈。前一轮工作台、个人待办、日计划和左栏导航列入源码回归，详见[11 月 17 日审核](../bootstrap/desktop-preview-feedback-20261117-review.md)。本轮修复 1080p 到 2K 的布局适配、周计划总览与栏目级 AI、观察和倾听编辑分栏与倾听 Word 入口、审议分栏与二次稿联动、在线园所和班级名称维护。设置按报告保留现有流程。
+教师确认在线更新成功。以签名预览对应修复线 `fix/preview-feedback-20261117` 的 `fdda56f` 继续，实际已发布程序源码为 `4657454`。稳定线本轮无合并安排。
 
-OpenCode Go 负责周计划与观察分栏。Command Code 负责共用布局、倾听、审议、在线名称维护和入口去重。会话保持文件责任互斥。用户追加允许 OpenCode Go 使用 GLM-5.3，Command Code 使用 GOAT 的 GLM-5.3 Flash。Codex 审核并将问题交回原会话，审核通过后执行隔离源码编译、运行及回归，核对后普通提交并推送此修复分支。
+先在修复分支交付在线协作管理新增园所、班级和教师名称录入／显示，提示词编辑下拉使用实际任务和字段标签。统一桌面各模块“返回工作台”的显著入口；观察与审议栏目放在左侧；倾听默认整册预览，使用“AI 生成全部”和“定向修改”。显式调用时，以当前表单及其中所选内容为输入，含尚未保存的可编辑草稿。候选经教师审核后采用，提交之后的手工编辑需要保护。倾听图片先识别老师笔迹，确无文字时由 AI 根据画面拟写待审核文字。
 
-隔离环境可测试真实应用 AI、Word 副本和浏览器协作。原件仅只读复制，真实教师库和凭据不随源码或证据入仓。在线测试写入使用合成档案和隔离服务。
+原生实现会话文件责任互斥。A OpenCode Go 负责在线管理及提示词，B Command Code GOAT 负责共用入口、观察与审议布局，C OpenCode Go 负责倾听、图像候选和定向接口，D OpenCode Go 负责日／周计划当前表单 AI 输入及采用。缺陷退回原会话。Codex 记录规格、执行独立审核与隔离编译运行测试，核对通过后提交修复分支并合入 `dev/0.1`。OpenCode Go 可用 GLM-5.3／DeepSeek V4.1 Flash，Command Code GOAT 可用 GLM-5.3 Flash／DeepSeek V4.1 Flash。推理强度 max。
 
-本轮追加全量文档和功能入口核查。OpenCode 与 Command Code 各使用独立会话并行审阅，Codex 核对入口、合同、引用与历史证据后收口。只清理已证实重复且无独立作用的功能入口，以及已有权威去向的过时文档。
+修复合入后在开发分支启动两项新功能。WebDAV 在线备份及跨机恢复沿用一致性快照，面向个人数据和应用配置。应用内在线反馈集中到管理站处理。两项按[开发范围](../specs/desktop-webdav-and-online-feedback.md)各自经 Codex 审核、退回修订和隔离源码验收，再普通提交推送。
 
-核对过程和候选证据集中在[本轮审核与验证](../bootstrap/desktop-preview-feedback-20261118-review.md)。
+验证使用隔离源码、档案、凭据、导出目录和在线测试服务。可显式发真实 AI。教师原件可只读复制后拆分测试，OneDrive 原件不得修改。隔离协作测试使用合成园所、班级和两个教师。线上只读检查与隔离业务验证分别记录。用户追加授权将通过审核和隔离测试的在线服务部署到 manager-next.ywyz.tech。使用既有 SSH 主机 `ecs-user@aliyun.ywyz.tech`、现有服务单元及回源，记录候选身份、备份与回滚路径、数据库迁移和公网复验。桌面构建按源码验证交付。
 
-11 月 19 日追加交付已完成。公网管理页显示班级维护，Windows 签名预览 20261119 已发布。包与发行标签对应 `4657454`，本轮文档补记单独推送至修复分支。[部署与发布核查](../bootstrap/desktop-preview-feedback-20261118-review.md#11-月-19-日公网班级维护与签名预览)
+在线管理提交 `278a961` 已部署，修复候选已通过独立编译、运行和专项验收。[本轮修复审核与复验](../bootstrap/desktop-preview-feedback-20261119-review.md)
 
-## 前序结果
+## 前序证据
 
-- [在线更新修复及公开预览](../bootstrap/desktop-update-fix-20261117-review.md)保留 20261117 的构建、签名、发布和受管根更新证据。[20261116 的结果](../bootstrap/desktop-signed-test-20261116-review.md)保留第一次安装失败现场和原有渠道的发布记录。
-- [11 月 17 日体验修复](../bootstrap/desktop-preview-feedback-20261117-review.md)记录本分支的工作台、待办、导航和日计划基线。
-- [桌面左栏与日历回修](../bootstrap/desktop-sidebar-calendar-review.md)、[真实资料及 AI 核查](../bootstrap/desktop-real-ai-material-review.md)保留此前实现、合成数据及教师资料验证的适用范围。
+- [11 月 18 日体验修复、MySQL 联调及 20261119 预览](../bootstrap/desktop-preview-feedback-20261118-review.md)
+- [11 月 17 日体验修复](../bootstrap/desktop-preview-feedback-20261117-review.md)
+- [在线更新修复及 20261117 预览](../bootstrap/desktop-update-fix-20261117-review.md)

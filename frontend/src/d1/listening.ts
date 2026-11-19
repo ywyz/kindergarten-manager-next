@@ -114,6 +114,64 @@ export interface ListeningRecordDetail {
   rotations?: Record<string, number>
 }
 
+export interface ListeningCurrentFormGroup {
+  group_id: string
+  position: number
+  work_date: string | null
+  listening_text: string | null
+  asset_id: string | null
+}
+
+export interface ListeningCurrentForm {
+  schema_version: 1
+  observation_date: string | null
+  adult_count: string | null
+  child_age: string | null
+  goal: string | null
+  observation_area: string | null
+  overall_evaluation: string | null
+  support_strategy: string | null
+  groups: ListeningCurrentFormGroup[]
+  evaluation: Array<{ item_id: string; stars: number | null }>
+}
+
+function currentText(value: string | null | undefined): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null
+}
+
+/**
+ * Freeze the exact current-domain form for one explicit AI request.
+ *
+ * Unsaved text, dates, goals and stars are intentionally included. Stable
+ * group ids and already-saved photo asset ids remain bound to the record so
+ * the server can reject a cross-record, cross-domain or replaced-photo input.
+ */
+export function buildListeningCurrentForm(
+  form: ListeningDomainState,
+): ListeningCurrentForm {
+  return {
+    schema_version: 1,
+    observation_date: currentText(form.observation_date),
+    adult_count: currentText(form.adult_count),
+    child_age: currentText(form.child_age),
+    goal: currentText(form.goal),
+    observation_area: currentText(form.observation_area),
+    overall_evaluation: currentText(form.overall_evaluation),
+    support_strategy: currentText(form.support_strategy),
+    groups: form.groups.map((group, index) => ({
+      group_id: group.group_id,
+      position: index,
+      work_date: currentText(group.work_date),
+      listening_text: currentText(group.listening_text),
+      asset_id: group.asset_id,
+    })),
+    evaluation: form.evaluation.map((item) => ({
+      item_id: item.item_id,
+      stars: item.stars ?? null,
+    })),
+  }
+}
+
 export interface ListeningTemplateItem {
   item_id: string
   level1: string
@@ -1119,6 +1177,76 @@ export function applyOrderToBaseline(
     if (group) ordered.push({ ...group, position: index })
   })
   baseline.groups = ordered
+}
+
+export interface WholeBookGroupPreview {
+  groupId: string
+  position: number
+  workDate: string
+  listeningText: string
+  assetId: string | null
+  hasPhoto: boolean
+}
+
+export interface WholeBookDomainPreview {
+  domain: ListeningDomain
+  label: string
+  observationDate: string
+  adultCount: string
+  childAge: string
+  goal: string
+  groups: WholeBookGroupPreview[]
+  overallEvaluation: string
+  supportStrategy: string
+  evaluation: Array<{ itemId: string; stars: number | null }>
+  dirty: boolean
+}
+
+/**
+ * Whole-book read-only preview from every current domain form.
+ *
+ * This is deliberately built from `forms`, not `baselines`: entering the
+ * record must show unsaved drafts exactly as the editable form currently
+ * holds them. Word/album export remains a separate saved-content action.
+ */
+export function buildWholeBookPreview(
+  forms: Partial<Record<ListeningDomain, ListeningDomainState>>,
+  baselines: Partial<Record<ListeningDomain, ListeningDomainState>>,
+): WholeBookDomainPreview[] {
+  return LISTENING_DOMAINS.flatMap((domain) => {
+    const form = forms[domain]
+    if (!form) return []
+    const baseline = baselines[domain]
+    return [
+      {
+        domain,
+        label: DOMAIN_LABELS[domain],
+        observationDate: form.observation_date ?? '',
+        adultCount: form.adult_count ?? '',
+        childAge: form.child_age ?? '',
+        goal: form.goal ?? '',
+        groups: form.groups.map((group, index) => ({
+          groupId: group.group_id,
+          position: index,
+          workDate: group.work_date ?? '',
+          listeningText: group.listening_text ?? '',
+          assetId: group.asset_id,
+          hasPhoto: Boolean(group.asset_id),
+        })),
+        overallEvaluation: form.overall_evaluation ?? '',
+        supportStrategy: form.support_strategy ?? '',
+        evaluation: form.evaluation.map((item) => ({
+          itemId: item.item_id,
+          stars: item.stars ?? null,
+        })),
+        dirty: Boolean(
+          baseline &&
+            (Object.keys(buildDomainPatch(form, baseline)).length > 0 ||
+              orderChanged(form, baseline)),
+        ),
+      },
+    ]
+  })
 }
 
 export function createListeningState(

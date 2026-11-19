@@ -278,6 +278,18 @@ const MODULE_LABELS: Record<ModuleKey, string> = {
 }
 const moduleNavExpanded = ref(true)
 const activeModuleLabel = computed(() => MODULE_LABELS[activeModule.value])
+/**
+ * One prominent 返回工作台 entry for every non-home page (2026-11-19 item 3).
+ * It reuses goModule('workbench'), so the module-nav blocked state and the
+ * unified leave coordinator (save/conflict/draft/close guards) still apply.
+ */
+const railBackVisible = computed(
+  () =>
+    !(
+      view.value.name === 'workbench' &&
+      (view.value.panel ?? 'home') === 'home'
+    ),
+)
 watch(
   () => {
     const current = view.value
@@ -2336,6 +2348,15 @@ onMounted(() => {
     <template v-else>
       <div class="d1-shell">
         <aside class="d1-left-rail" data-d1="left-rail" aria-label="左侧导航">
+          <el-button
+            v-if="railBackVisible"
+            class="d1-rail-back"
+            data-d1="rail-back-workbench"
+            :disabled="closeLocked"
+            @click="goModule('workbench')"
+          >
+            返回工作台
+          </el-button>
           <div class="d1-rail-group">
             <div class="d1-rail-heading d1-rail-heading-row">
               <span>模块</span>
@@ -2461,9 +2482,6 @@ onMounted(() => {
               data-d1="module-nav-collapsed"
             >
               <div class="d1-rail-current-label">当前：{{ activeModuleLabel }}</div>
-              <el-button link size="small" data-d1="module-back-workbench" :disabled="closeLocked" @click="goModule('workbench')">
-                返回工作台
-              </el-button>
             </div>
           </div>
           <div class="d1-rail-group">
@@ -2509,6 +2527,7 @@ onMounted(() => {
         :context="context!"
         :observation-id="view.observationId"
         :frozen="closeLocked"
+        :navigation-target="PAGE_NAVIGATION_TARGET"
         @register-editor="registerEditor"
         @request-export="requestObservationExport"
         @leave="(kind, run) => void leaveForAction(kind, run)"
@@ -2563,12 +2582,14 @@ onMounted(() => {
         :disabled="closeLocked || maintenanceLocked"
         :profile-epoch="profileEpoch"
         :default-age-group="context?.class?.grade ?? ''"
+        :navigation-target="PAGE_NAVIGATION_TARGET"
         @register-editor="registerCurriculumEditor"
         @busy="onCurriculumEditorBusy"
         @back="() => void backFromCurriculumEditor()"
       />
       <div v-else-if="view.name === 'weekly-plans'" class="weekly-plans-page">
         <el-button
+          class="d1-page-back"
           data-d1="weekly-back"
           :disabled="closeLocked || maintenanceLocked"
           @click="() => void leaveForAction('calendar', goWorkbench)"
@@ -2810,5 +2831,12 @@ body {
 .d1-rail-current-label {
   color: var(--kgm-muted);
   font-size: 0.8rem;
+}
+.d1-rail-back {
+  width: 100%;
+  min-height: 42px;
+  margin-left: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 </style>

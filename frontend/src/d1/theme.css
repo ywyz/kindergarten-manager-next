@@ -223,6 +223,15 @@ body {
   font-weight: 600;
 }
 
+/* Unified prominent page-level 返回工作台 fallback entries (2026-11-19):
+   same clickable height and weight as the shell rail entry, API markers
+   and keyboard behavior stay with each page's own leave flow. */
+.d1-page-back {
+  min-height: 42px;
+  margin-left: 0;
+  font-weight: 600;
+}
+
 .d1-page-navigation {
   display: flex;
   flex-direction: column;

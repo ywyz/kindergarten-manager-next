@@ -145,7 +145,10 @@ PACKAGE_OBSERVATION_DEFAULT_REVISION = PACKAGE_OBSERVATION_R3_REVISION
 # Listening note/group r2 and directional r2 are manifest-layer guidance
 # revisions only; their frozen contract r1 literals stay untouched.
 PACKAGE_LISTENING_QUOTE_DEFAULT_REVISION = 2
+PACKAGE_LISTENING_HANDWRITING_DEFAULT_REVISION = 3
+PACKAGE_LISTENING_EVIDENCE_DEFAULT_REVISION = 2
 PACKAGE_DIRECTIONAL_QUOTE_DEFAULT_REVISION = 2
+PACKAGE_DIRECTIONAL_CURRENT_FORM_DEFAULT_REVISION = 3
 # Reflection is local-only (not in PACKAGE_TASK_TYPES), so its r2 text can ship
 # independently without changing a remotely publishable identity.
 PACKAGE_REFLECTION_DEFAULT_REVISION = 2
@@ -944,6 +947,79 @@ _LISTENING_GROUP_GUIDANCE_R2 = {
         "空槽不会出现在输入中，也不得为未发送图位返回内容。"
     ),
 }
+_LISTENING_HANDWRITING_RULE = (
+    "先读教师已录入的倾听正文；若有，逐字保留，不重写、不替换、不改变顺序和语气。"
+    "再看作品照片：照片上如有教师可辨字迹，先按原文识别并把可辨文字放入候选，"
+    "保留原措辞、顺序、语气和可辨标点；不润色、不补写，不把模糊字迹猜成确定文字。"
+    "只有该组既没有教师已录文字，也没有可辨教师字迹时，才可依据画面拟写少量幼儿话语；"
+    "这类内容必须在正文或 uncertainties 中明确标为 AI 拟写建议，不是已采集的原话或事实。"
+    "模糊或看不清时保留可辨部分并在 uncertainties 列出需教师核对处，无法辨认则留空。"
+    "同时，每段返回的倾听正文必须在 uncertainties 中加入且只加入一个固定来源标记，"
+    "作为独立条目放在最前，标记文本必须逐字一致："
+    "正文完全来自教师已录文字或照片可辨字迹的识读时用「provenance:teacher_clear」；"
+    "照片字迹部分不清、保留可辨部分并有待核对处时用「provenance:unclear」；"
+    "该组没有任何可辨字迹、正文是按画面拟写的建议时用「provenance:ai_draft」。"
+    "来源标记之后才列需要教师核实的简短问题；不得改写、省略或重复标记，也不得用标记代替核对问题。"
+    "不得新增未出现的完整事件、参与者身份、精确时长、家庭情况或发展评价；"
+    "不得把 AI 拟写话语反推为评价或星级依据。"
+)
+_LISTENING_NOTE_GUIDANCE_R3 = {
+    "text": (
+        "根据教师当前本组倾听记录和/或作品照片，起草可直接放回“一对一倾听记录”栏的正文。"
+        + _LISTENING_HANDWRITING_RULE
+        + "保留教师原文中已有的字词与语气，不扩写无关背景。"
+    ),
+    "uncertainties": (
+        "列出需要教师向幼儿或现场核实的简短问题；没有则返回空数组。"
+        "照片字迹模糊、拟写内容或无法确认的线索必须在这里说明，"
+        "不得输出材料中不存在的姓名、文件名、记录编号或图片编号。"
+    ),
+}
+_LISTENING_GROUP_GUIDANCE_R3 = {
+    "mode": "group_notes",
+    "groups": (
+        "按输入 groups 的实际 position 逐图位返回，不增加、遗漏、重复或重排图位。"
+        + _LISTENING_HANDWRITING_RULE
+        + "空槽不会出现在输入中，也不得为未发送图位返回内容。"
+    ),
+}
+_LISTENING_GOAL_GUIDANCE_R2 = {
+    "goal": (
+        "依据教师当前领域文字、作品照片、已知年级和绑定模板要求，起草一条可直接放回“目标”栏的观察目标。"
+        "照片上的教师字迹先按原文识别和保留；只有没有教师文字和可辨字迹时，"
+        "AI 拟写的幼儿话语才可作为情境候选，并明确标为建议，不得当作已核实原话、事实、评价或星级依据。"
+        "目标应具体、可观察、适合教师后续核实；材料不足时写空字符串并在 uncertainties 中提出简短核实问题。"
+    ),
+    "uncertainties": (
+        "列出需要教师核实的简短问题；没有则返回空数组。"
+        "说明照片字迹模糊或 AI 拟写内容；不要输出姓名、文件名、记录编号或图片编号。"
+    ),
+}
+_LISTENING_DOMAIN_GUIDANCE_R2 = {
+    "overall_evaluation": (
+        "依据教师当前领域目标、实际图文与绑定模板标准，写一段供教师预览修改的综合评价。"
+        "照片上的教师字迹先按原文识别和保留；AI 拟写幼儿话语只作情境候选，"
+        "不得当作已核实原话、事实或星级依据；不补造未出现的幼儿行为、引语或家庭情况。"
+    ),
+    "support_strategy": (
+        "写一段与当前表现直接对应的支持策略，供教师预览修改；"
+        "不虚构已实施的活动或结果，不把 AI 拟写幼儿话语当作已核实事实；材料不足时写空字符串。"
+    ),
+    "items": (
+        "对每个 item_id 依据对应逐档标准给出 1、2、3 或 null 的建议星级，并在 basis 中简短说明可见依据。"
+        "教师已录文字和照片可见事实优先；AI 拟写的幼儿话语不能反向充当评价或星级依据。"
+        "不得改动 item_id 集合，不得输出材料之外的编号；没有足够依据时 stars 返回 null，basis 说明缺什么。"
+        "建议只是候选，教师会逐项确认或跳过。"
+    ),
+}
+_LISTENING_DIRECTIONAL_CURRENT_FORM_R3 = (
+    "只修改教师选中的文字，保留未选内容的含义、顺序、事实和语气。"
+    "输入文字来自教师当前表单（当前记录表单）的最新有效值，可能尚未保存；不得假设已保存版本，也不得引入未提供的幼儿原话、"
+    "现场问答、观察经过、家庭情况、评价结果、日期、姓名、园所、照片内容或内部标识。"
+    "仅当 source=listening 且 target=listening_text 时，才可在没有教师文字和可辨字迹可沿用的情况下拟写少量幼儿话语，"
+    "并明确作为 AI 建议；已有教师原话、人物对应和顺序优先保留。拟写话语不冒充录音、实际听到或已采集事实。"
+    "weekly 计划、评价、星级、目标、支持策略及其他字段仍不得补写未提供的幼儿原话或事实；材料不足时返回 clarify 或 no_change。"
+)
 _DIRECTIONAL_FIDELITY_R2 = (
     "只修改教师选中的文字，保留未选内容的含义、顺序、事实和语气。"
     "仅当 source=listening 且 target=listening_text 时，可以依据选区和上下文拟写少量幼儿话语（幼儿原话），"
@@ -1177,6 +1253,18 @@ def _listening_bundle_manifest() -> tuple[dict, ...]:
                     default_revision=PACKAGE_LISTENING_QUOTE_DEFAULT_REVISION,
                 )
             )
+            guidance = dict(item["guidance_defaults_json"])
+            guidance["text"] = _LISTENING_NOTE_GUIDANCE_R3["text"]
+            guidance["uncertainties"] = _LISTENING_NOTE_GUIDANCE_R3["uncertainties"]
+            items.append(
+                _bundle(
+                    item["task_type"],
+                    item["input_schema_json"],
+                    item["output_schema_json"],
+                    guidance,
+                    default_revision=PACKAGE_LISTENING_HANDWRITING_DEFAULT_REVISION,
+                )
+            )
         elif item["task_type"] == listening_ai_contracts.TASK_GROUP:
             guidance = dict(item["guidance_defaults_json"])
             guidance["mode"] = _LISTENING_GROUP_GUIDANCE_R2["mode"]
@@ -1188,6 +1276,49 @@ def _listening_bundle_manifest() -> tuple[dict, ...]:
                     item["output_schema_json"],
                     guidance,
                     default_revision=PACKAGE_LISTENING_QUOTE_DEFAULT_REVISION,
+                )
+            )
+            guidance = dict(item["guidance_defaults_json"])
+            guidance["mode"] = _LISTENING_GROUP_GUIDANCE_R3["mode"]
+            guidance["groups"] = _LISTENING_GROUP_GUIDANCE_R3["groups"]
+            items.append(
+                _bundle(
+                    item["task_type"],
+                    item["input_schema_json"],
+                    item["output_schema_json"],
+                    guidance,
+                    default_revision=PACKAGE_LISTENING_HANDWRITING_DEFAULT_REVISION,
+                )
+            )
+        elif item["task_type"] == listening_ai_contracts.TASK_GOAL:
+            guidance = dict(item["guidance_defaults_json"])
+            guidance["goal"] = _LISTENING_GOAL_GUIDANCE_R2["goal"]
+            guidance["uncertainties"] = _LISTENING_GOAL_GUIDANCE_R2["uncertainties"]
+            items.append(
+                _bundle(
+                    item["task_type"],
+                    item["input_schema_json"],
+                    item["output_schema_json"],
+                    guidance,
+                    default_revision=PACKAGE_LISTENING_EVIDENCE_DEFAULT_REVISION,
+                )
+            )
+        elif item["task_type"] == listening_ai_contracts.TASK_DOMAIN:
+            guidance = dict(item["guidance_defaults_json"])
+            guidance["overall_evaluation"] = _LISTENING_DOMAIN_GUIDANCE_R2[
+                "overall_evaluation"
+            ]
+            guidance["support_strategy"] = _LISTENING_DOMAIN_GUIDANCE_R2[
+                "support_strategy"
+            ]
+            guidance["items"] = _LISTENING_DOMAIN_GUIDANCE_R2["items"]
+            items.append(
+                _bundle(
+                    item["task_type"],
+                    item["input_schema_json"],
+                    item["output_schema_json"],
+                    guidance,
+                    default_revision=PACKAGE_LISTENING_EVIDENCE_DEFAULT_REVISION,
                 )
             )
     return tuple(items)
@@ -1233,6 +1364,19 @@ def _directional_bundle_manifest() -> tuple[dict, ...]:
                 guidance,
                 contract_version=item["contract_version"],
                 default_revision=PACKAGE_DIRECTIONAL_QUOTE_DEFAULT_REVISION,
+            )
+        )
+        guidance = dict(item["guidance_defaults_json"])
+        guidance["fidelity"] = _LISTENING_DIRECTIONAL_CURRENT_FORM_R3
+        guidance["listening_evidence"] = _DIRECTIONAL_LISTENING_EVIDENCE_R2
+        items.append(
+            _bundle(
+                item["task_type"],
+                item["input_schema_json"],
+                item["output_schema_json"],
+                guidance,
+                contract_version=item["contract_version"],
+                default_revision=PACKAGE_DIRECTIONAL_CURRENT_FORM_DEFAULT_REVISION,
             )
         )
     return tuple(items)

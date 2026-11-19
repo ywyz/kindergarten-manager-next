@@ -122,6 +122,7 @@ defineExpose({ reload: load, resetForContext })
       </div>
       <div class="actions">
         <el-button
+          class="d1-page-back"
           data-d1="curriculum-back"
           :disabled="!canNavigate"
           @click="back"

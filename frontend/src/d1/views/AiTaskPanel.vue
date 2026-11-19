@@ -38,6 +38,13 @@ const props = defineProps<{
   hasSplitBaseline?: boolean
   frozen?: boolean
   saveCurrent: () => Promise<SaveOutcome>
+  /**
+   * The live editor form is still different from the last saved baseline.
+   * Checked after the protective save: a shared in-flight save may have
+   * captured an earlier snapshot while the teacher kept typing. AI input must
+   * never silently be built from that older snapshot.
+   */
+  hasUnsavedChanges?: () => boolean
   pollVisibleMs?: number
   pollHiddenMs?: number
   /**
@@ -548,6 +555,15 @@ function requestId(): string {
   return crypto.randomUUID()
 }
 
+/** True only when the live form still has input that was not in the save. */
+function formStillDirty(): boolean {
+  try {
+    return props.hasUnsavedChanges?.() === true
+  } catch {
+    return false
+  }
+}
+
 function tasksUrl(cursor: string | null): string {
   let query = `plan_id=${encodeURIComponent(props.planId)}&limit=${PAGE_LIMIT}`
   if (cursor) query += `&cursor=${encodeURIComponent(cursor)}`
@@ -802,6 +818,14 @@ async function trigger(
     if (createSeq !== operationSeq) return
     if (props.frozen || props.planId !== planAtStart) {
       createError.value = { ...createError.value, [taskType]: '窗口正在关闭：未发起 AI 任务' }
+      return
+    }
+    if (formStillDirty()) {
+      createError.value = {
+        ...createError.value,
+        [taskType]:
+          '保存完成时仍有新的未保存输入：本次未发起 AI 任务，当前输入已保留；请先保存后再生成',
+      }
       return
     }
     const rid = requestId()

@@ -31,11 +31,13 @@ class ListeningAICreateIn(BaseModel):
     domain: Literal["health", "language", "social", "science", "art"]
     group_id: StrictStr | None = None
     task_type: Literal["listening_note_draft", "listening_domain_evaluate", "listening_group_notes", "listening_goal_suggest"]
+    current_form: dict[str, Any] | None = None
 
 
 class ListeningAIAdoptionPreviewIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     candidate_id: StrictStr
+    current_form: dict[str, Any] | None = None
 
 
 class ListeningAIAdoptionIn(BaseModel):
@@ -44,6 +46,7 @@ class ListeningAIAdoptionIn(BaseModel):
     expected_revision: StrictInt
     preview_token: StrictStr
     selections: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+    current_form: dict[str, Any] | None = None
 
 
 def _bound_task(session: Session, record_id: str, task_id: str):
@@ -83,6 +86,7 @@ def create_task(
             expected_revision=data.expected_revision,
             domain=data.domain,
             group_id=data.group_id,
+            current_form=data.current_form,
         )
     if replay is not None:
         response.status_code = status.HTTP_200_OK
@@ -101,6 +105,7 @@ def create_task(
             task_type=data.task_type,
             expected_revision=data.expected_revision,
             request_id=data.request_id,
+            current_form=data.current_form,
         )
         executor.notify()
     if not created:
@@ -212,6 +217,7 @@ def preview_adoption(
             profile_id=_profile_id(session),
             record_id=record_id,
             candidate_id=candidate_id,
+            current_form=data.current_form,
             launch_id=_launch_id(request),
             session_scope_hash=_session_scope(request),
         )
@@ -240,6 +246,7 @@ def adopt(
             preview_token=data.preview_token,
             selections=data.selections,
             candidate_id=candidate_id,
+            current_form=data.current_form,
             launch_id=_launch_id(request),
             session_scope_hash=_session_scope(request),
         )

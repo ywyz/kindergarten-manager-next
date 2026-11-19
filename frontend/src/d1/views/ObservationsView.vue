@@ -1280,7 +1280,7 @@ defineExpose({ reload: load })
         </p>
       </div>
       <div class="actions">
-        <el-button :disabled="frozen || busy" data-d1="obs-back" @click="back">
+        <el-button class="d1-page-back" :disabled="frozen || busy" data-d1="obs-back" @click="back">
           返回工作台
         </el-button>
         <el-button

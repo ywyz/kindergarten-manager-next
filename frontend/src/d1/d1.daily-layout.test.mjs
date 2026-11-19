@@ -166,6 +166,12 @@ function between(source, startToken, endToken, needle, label) {
   assert.match(editorSource, /:has-raw="hasRaw"/)
   assert.match(editorSource, /:has-process="hasProcess"/)
   assert.match(editorSource, /:save-current="saveCurrent"/)
+  assert.match(panelMount, /:has-unsaved-changes="formDirtyForAi"/, 'AI task panel gets the live dirty reader')
+  assert.match(
+    editorSource,
+    /<CandidatePreview[\s\S]*?:has-unsaved-changes="formDirtyForAi"/,
+    'candidate preview gets the live dirty reader',
+  )
 
   // The edit dialog is bound to its opening plan/version/section/session and
   // confirm only merges the draft column; cancel never touches the live form.

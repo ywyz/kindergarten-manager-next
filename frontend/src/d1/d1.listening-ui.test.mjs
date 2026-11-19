@@ -556,8 +556,8 @@ function sessionGoal(state) {
   ok('export generation busy is part of the editor page barrier')
 }
 
-// AI busy participates in the navigation barrier, while the panel's internal
-// ensureSaved path still runs (no self-lock against its own busy flag).
+// AI busy participates in the navigation barrier, while capturing the current
+// form for an explicit AI request never auto-saves the draft.
 {
   const { state, client } = await mountedEditor()
   state.handleAiBusy(true)
@@ -565,15 +565,16 @@ function sessionGoal(state) {
   assert.equal(state.canMutate.value, false)
   await state.selectDomain('science')
   assert.equal(state.state.domain, 'health')
-  state.session.setField('goal', 'ai internal save')
+  state.session.setField('goal', 'ai current form only')
+  const writes = client.domainCalls.length
   const revision = await state.ensureAiSaved()
   assert.equal(typeof revision, 'number')
-  const last = client.domainCalls[client.domainCalls.length - 1]
-  assert.equal(last.body.goal, 'ai internal save')
+  assert.equal(client.domainCalls.length, writes)
+  assert.equal(state.session.form().goal, 'ai current form only')
   state.handleAiBusy(false)
   await tick()
   assert.equal(state.canMutate.value, true)
-  ok('AI busy blocks navigation but not its internal ensureSaved')
+  ok('AI busy blocks navigation; current-form capture performs no save')
 }
 
 // A candidate edit/nullable adoption ticket blocks a domain switch; cancel
@@ -837,8 +838,7 @@ function sessionGoal(state) {
     await wait(10)
     const oldRequests = [...cache.pending]
     assert.ok(oldRequests.length >= 1)
-    await state.selectDomain('language')
-    await state.selectDomain('health')
+    state.invalidatePhotos()
     await wait(10)
     const newRequest = cache.pending[cache.pending.length - 1]
     assert.ok(newRequest && !oldRequests.includes(newRequest))

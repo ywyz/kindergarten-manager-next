@@ -27,8 +27,10 @@ import ListeningAiPanel from '../components/ListeningAiPanel.vue'
 import DirectionalRevisionDialog from '../components/DirectionalRevisionDialog.vue'
 import DirectionalRevisionTrigger from '../components/DirectionalRevisionTrigger.vue'
 import {
+  applyDirectionalReplacement,
   captureDirectionalSelection,
   directionalSelectionKey,
+  resolveDirectionalSelection,
   validateDirectionalSelection,
   wholeDirectionalSelection,
   type DirectionalAdoptPayload,
@@ -45,6 +47,7 @@ import {
   MAX_BATCH_PHOTO_BYTES,
   MAX_BATCH_TOTAL_BYTES,
   ListeningSession,
+  buildWholeBookPreview,
   createListeningState,
   formatRecordTime,
   listeningApi,
@@ -162,6 +165,14 @@ const actionCount = ref(0)
 let actionChain: Promise<unknown> = Promise.resolve()
 const aiBusy = ref(false)
 const aiDraft = ref(false)
+type ListeningAiField = 'goal' | 'note' | 'evaluation'
+const aiPanel = ref<{
+  startField?: (field: ListeningAiField) => void
+  startAll?: (scope: 'record' | 'domain') => Promise<void>
+  stopBatch?: () => void
+} | null>(null)
+const aiBatchRunning = ref(false)
+const aiBatchStatus = ref('')
 const directionalOpen = ref(false)
 const directionalBusy = ref(false)
 const directionalRequest = ref<DirectionalOpenRequest | null>(null)
@@ -188,6 +199,11 @@ const railDirectionalField = ref<RailDirectionalField>('goal')
 const railDirectionalGroup = ref('')
 const railSelectionBinding = ref<RailSelectionBinding | null>(null)
 const directionalNotice = ref('')
+const directionalTargetOpen = ref(false)
+const directionalTargetField = ref<RailDirectionalField>('goal')
+const directionalTargetGroup = ref('')
+const directionalTargetMode = ref<'selection' | 'whole'>('whole')
+const directionalTargetIssue = ref('')
 const actionBusy = computed(
   () => actionCount.value > 0 || state.busy || state.savePromise !== null,
 )
@@ -226,10 +242,7 @@ const listeningSectionLinks: Array<{
 function listeningSectionVisible(
   section: Exclude<ListeningSectionKey, 'overview'>,
 ): boolean {
-  return (
-    activeListeningSection.value === 'overview' ||
-    activeListeningSection.value === section
-  )
+  return activeListeningSection.value === section
 }
 
 function selectListeningSection(section: ListeningSectionKey): void {
@@ -256,6 +269,18 @@ const batchPreviewUrls = ref<string[]>([])
 let batchGeneration = 0
 const form = computed(() => session.form())
 const template = computed(() => session.template())
+const wholeBookPreview = computed(() =>
+  buildWholeBookPreview(state.forms, state.baselines).map((item) => ({
+    ...item,
+    evaluation: item.evaluation.map((entry) => ({
+      ...entry,
+      requirement:
+        state.templates[item.domain]?.items.find(
+          (templateItem) => templateItem.item_id === entry.itemId,
+        )?.requirement ?? entry.itemId,
+    })),
+  })),
+)
 
 const record = computed(() => state.record)
 const termName = computed(() => {
@@ -527,14 +552,15 @@ function openListeningModal(
   listeningModal.value = modal
 }
 
-function openListeningModalDirectional(
+async function openListeningModalDirectional(
   field:
     | 'goal'
     | 'listening_text'
     | 'overall_evaluation'
     | 'support_strategy',
   whole = false,
-): void {
+): Promise<void> {
+  await settleComposition()
   const modal = listeningModal.value
   if (!modal || !canEditRecord.value) return
   if (
@@ -596,7 +622,7 @@ function openListeningModalDirectional(
   }
   applyListeningModalDraft(modal)
   closeListeningModal()
-  openDirectionalSaved(field, modal.groupId, whole)
+  await openDirectionalSaved(field, modal.groupId, whole)
 }
 
 function setListeningModalField(
@@ -861,15 +887,21 @@ function clearPhotoUrls(): void {
   for (const assetId of Object.keys(photoLoading)) delete photoLoading[assetId]
 }
 
+function allCurrentAssetIds(): Set<string> {
+  const ids = new Set<string>()
+  for (const domain of LISTENING_DOMAINS) {
+    for (const group of state.forms[domain]?.groups ?? []) {
+      if (group.asset_id) ids.add(group.asset_id)
+    }
+  }
+  return ids
+}
+
 async function ensurePhoto(assetId: string, explicit = false): Promise<void> {
   const generation = photoGeneration
-  const domain = state.domain
   const stillCurrent = () =>
     generation === photoGeneration &&
-    state.domain === domain &&
-    (session.form()?.groups ?? []).some(
-      (group) => group.asset_id === assetId,
-    )
+    allCurrentAssetIds().has(assetId)
   photoLoading[assetId] = true
   delete photoErrors[assetId]
   try {
@@ -940,10 +972,7 @@ async function rotatePhoto(
 }
 
 function syncPhotoUrls(): void {
-  const groups = session.form()?.groups ?? []
-  const current = new Set(
-    groups.map((group) => group.asset_id).filter((id): id is string => Boolean(id)),
-  )
+  const current = allCurrentAssetIds()
   for (const assetId of Object.keys(photoUrls)) {
     if (!current.has(assetId)) {
       photoCache.release(assetId)
@@ -967,11 +996,16 @@ function invalidatePhotos(): void {
 }
 
 watch(
-  () => [state.recordId, state.domain, props.profileEpoch ?? 0],
+  () => [state.recordId, props.profileEpoch ?? 0],
   () => invalidatePhotos(),
 )
 watch(
-  () => (session.form()?.groups ?? []).map((group) => group.asset_id).join('|'),
+  () =>
+    LISTENING_DOMAINS.map((domain) =>
+      (state.forms[domain]?.groups ?? [])
+        .map((group) => group.asset_id ?? '')
+        .join('|'),
+    ).join('::'),
   () => syncPhotoUrls(),
 )
 
@@ -1118,23 +1152,16 @@ function handleAiDraft(value: boolean): void {
 }
 
 async function ensureAiSaved(): Promise<number | null> {
+  // Deliberately does not save: an explicit AI request freezes the current
+  // form (including unsaved edits) and binds it to the last confirmed
+  // revision.  The panel captures that form immediately after this settles.
   if (!canEdit.value || state.unknown) return null
   if (dateBlocking.value) {
     ElMessage.warning('观察月份变更后请先逐组处理作品日期，或取消日期调整')
     return null
   }
-  const outcome = await runMutating(() => session.saveCurrent())
-  if (outcome === undefined) return null
-  if (outcome !== 'saved' && outcome !== 'unchanged') {
-    ElMessage.warning(outcomeMessage(outcome))
-    return null
-  }
-  clearDirectionalNoticeAfterSave(outcome)
-  if (session.isDirty()) {
-    ElMessage.warning('保存期间又有新输入；请再次保存后再创建 AI 任务')
-    syncPhotoUrls()
-    return null
-  }
+  if (!state.loaded || !session.form()) return null
+  await settleComposition()
   return state.revision >= 1 ? state.revision : null
 }
 
@@ -1233,6 +1260,12 @@ async function openExport(): Promise<void> {
   exportOpen.value = true
 }
 
+async function selectDomainFromNav(domain: ListeningDomain): Promise<void> {
+  activeListeningSection.value = 'record-info'
+  if (domain === state.domain) return
+  await selectDomain(domain)
+}
+
 async function selectDomain(domain: ListeningDomain): Promise<void> {
   if (!canMutate.value || domain === state.domain) return
   if (dateBlocking.value) {
@@ -1255,6 +1288,58 @@ async function selectDomain(domain: ListeningDomain): Promise<void> {
   } else {
     ElMessage.warning(outcomeMessage(outcome))
   }
+}
+
+async function openWholeBookDomain(domain: ListeningDomain): Promise<void> {
+  if (!canMutate.value || domain === state.domain) {
+    if (domain === state.domain) activeListeningSection.value = 'record-info'
+    return
+  }
+  activeListeningSection.value = 'record-info'
+  await selectDomain(domain)
+}
+
+const aiGenerateScope = computed(() =>
+  activeListeningSection.value === 'overview' ? 'record' : 'domain',
+)
+
+const aiGenerateScopeLabel = computed(() =>
+  aiGenerateScope.value === 'record'
+    ? '整册五领域'
+    : `${DOMAIN_LABELS[state.domain]}领域`,
+)
+
+async function startAiGenerateAll(): Promise<void> {
+  if (!canMutate.value || listeningModal.value) {
+    ElMessage.warning('请先处理当前弹窗或等待保存/生成结束')
+    return
+  }
+  if (aiBatchRunning.value || aiBusy.value || aiDraft.value) {
+    ElMessage.warning('请先处理当前 AI 候选或等待当前批量生成结束')
+    return
+  }
+  await settleComposition()
+  const panel = aiPanel.value
+  if (!panel || typeof panel.startAll !== 'function') {
+    ElMessage.warning('AI 协助面板尚未就绪：未创建任务')
+    return
+  }
+  await panel.startAll(aiGenerateScope.value)
+}
+
+function stopAiGenerateAll(): void {
+  const panel = aiPanel.value
+  if (panel && typeof panel.stopBatch === 'function') panel.stopBatch()
+}
+
+function handleAiBatch(payload: {
+  running: boolean
+  total: number
+  done: number
+  message: string
+}): void {
+  aiBatchRunning.value = payload.running
+  aiBatchStatus.value = payload.message
 }
 
 function setField(
@@ -1364,12 +1449,13 @@ function rememberDirectionalSelection(event: Event): void {
   }
 }
 
-function openDirectionalSaved(
+async function openDirectionalSaved(
   field: string,
   groupId: string,
   whole: boolean,
   providedSelection?: DirectionalSelection,
-): void {
+): Promise<void> {
+  await settleComposition()
   if (!canMutate.value) return
   if (state.unknown) {
     ElMessage.warning('保存结果待核对：请先处理原保存，再发起定向修改')
@@ -1395,16 +1481,31 @@ function openDirectionalSaved(
   }
   const text = currentListeningFieldText(scope)
   const key = directionalSelectionKey(field, scopedGroupId)
-  const selection = whole
+  const rawSelection = whole
     ? wholeDirectionalSelection(text)
     : providedSelection ?? directionalSelections.value[key]
-  if (!selection) {
+  if (!rawSelection) {
     ElMessage.warning('请先在正文中选择文字，或使用「整栏修改」')
     return
   }
   if (!whole && text === '') {
     ElMessage.warning('空栏请使用「整栏修改」明确范围')
     return
+  }
+  const resolved = whole
+    ? { selection: rawSelection, moved: false, error: '' }
+    : resolveDirectionalSelection(text, rawSelection)
+  if (resolved.error) {
+    ElMessage.warning(resolved.error)
+    return
+  }
+  const selection = resolved.selection
+  if (!selection) {
+    ElMessage.warning('请先在正文中选择文字，或使用「整栏修改」')
+    return
+  }
+  if (!whole && resolved.moved) {
+    ElMessage.info('已将原选段定位到当前正文中的同一段文字')
   }
   const selectionError = validateDirectionalSelection(text, selection)
   if (selectionError) {
@@ -1423,11 +1524,11 @@ function openDirectionalSaved(
           : '支持策略（当前编辑器）'
   const sourceLines = [
     `领域：${DOMAIN_LABELS[state.domain]}`,
-    `已保存版本 v${state.revision}`,
+    `当前表单基于已保存版本 v${state.revision}，可含未保存修改`,
     ...(field === 'listening_text' && group
       ? [`照片：${group.asset_id ? '有' : '无'}`]
       : []),
-    '当前输入可含未保存修改；生成不会偷偷保存或采用',
+    '生成只读取当前表单；不会自动保存，也不会覆盖生成后的教师编辑',
   ]
   directionalRequest.value = {
     scope,
@@ -1451,7 +1552,10 @@ function railSelectionBindingCurrent(
 ): boolean {
   if (binding.recordId !== props.recordId) return false
   if (binding.domain !== state.domain) return false
-  if (binding.revision !== state.revision) return false
+  // The captured selection belongs to this same record/domain/field.  A later
+  // save must not force the teacher back to an older revision; the selection
+  // is revalidated (and relocated when unambiguous) against the current form
+  // at submit and adoption time instead.
   if (binding.profileEpoch !== (props.profileEpoch ?? 0)) return false
   if (binding.sessionEpoch !== getSessionEpoch()) return false
   if (binding.field !== railDirectionalField.value) return false
@@ -1464,21 +1568,6 @@ function railSelectionBindingCurrent(
   )
 }
 
-const railDirectionalSelection = computed(() => {
-  const binding = railSelectionBinding.value
-  if (!binding || !railSelectionBindingCurrent(binding)) return null
-  return binding.selection
-})
-
-const railDirectionalSummary = computed(() => {
-  const selection = railDirectionalSelection.value
-  if (!selection) return '尚未选择文字；可在该栏编辑弹窗中选中'
-  const text = selection.text || '（空栏）'
-  return `已选：${
-    text.length > 24 ? `${text.slice(0, 24)}…` : text
-  }`
-})
-
 function clearRailDirectionalSelection(): void {
   railSelectionBinding.value = null
 }
@@ -1489,21 +1578,113 @@ function clearDirectionalSelections(): void {
   railSelectionBinding.value = null
 }
 
-function openRailDirectional(whole = false): void {
+function capturedDirectionalSelection(
+  field: RailDirectionalField,
+  groupId: string,
+): DirectionalSelection | null {
+  const binding = railSelectionBinding.value
+  if (
+    !binding ||
+    binding.field !== field ||
+    (binding.groupId ?? '') !== groupId ||
+    !railSelectionBindingCurrent(binding)
+  ) {
+    return null
+  }
+  const key = directionalSelectionKey(field, groupId)
+  return directionalSelections.value[key] ?? binding.selection
+}
+
+const directionalTargetText = computed(() => {
+  if (!form.value) return ''
+  if (directionalTargetField.value === 'listening_text') {
+    return (
+      form.value.groups.find(
+        (group) => group.group_id === directionalTargetGroup.value,
+      )?.listening_text ?? ''
+    )
+  }
+  return form.value[directionalTargetField.value] ?? ''
+})
+
+const directionalTargetResolution = computed(() => {
+  const captured = capturedDirectionalSelection(
+    directionalTargetField.value,
+    directionalTargetField.value === 'listening_text'
+      ? directionalTargetGroup.value
+      : '',
+  )
+  if (!captured) return null
+  return resolveDirectionalSelection(directionalTargetText.value, captured)
+})
+
+const directionalTargetWholeText = computed(() =>
+  wholeDirectionalSelection(directionalTargetText.value),
+)
+
+function syncDirectionalTargetMode(): void {
+  if (directionalTargetField.value !== 'listening_text') {
+    directionalTargetGroup.value = ''
+  } else if (!directionalTargetGroup.value) {
+    directionalTargetGroup.value = form.value?.groups[0]?.group_id ?? ''
+  }
+  const resolved = directionalTargetResolution.value
+  if (!directionalTargetWholeText.value.text) {
+    directionalTargetMode.value = 'whole'
+  } else if (resolved && !resolved.error && resolved.selection) {
+    directionalTargetMode.value = 'selection'
+  } else {
+    directionalTargetMode.value = 'whole'
+  }
+  directionalTargetIssue.value = ''
+}
+
+async function openUnifiedDirectional(): Promise<void> {
+  if (!canMutate.value || state.unknown) return
+  await settleComposition()
+  const binding = railSelectionBinding.value
+  directionalTargetField.value =
+    binding && railSelectionBindingCurrent(binding)
+      ? binding.field
+      : railDirectionalField.value
+  directionalTargetGroup.value =
+    directionalTargetField.value === 'listening_text'
+      ? binding?.groupId || railDirectionalGroupId.value
+      : ''
+  syncDirectionalTargetMode()
+  directionalTargetOpen.value = true
+}
+
+async function continueDirectionalTarget(): Promise<void> {
+  const whole = directionalTargetMode.value === 'whole'
+  const text = directionalTargetText.value
   if (!whole) {
-    const binding = railSelectionBinding.value
-    if (!binding || !railSelectionBindingCurrent(binding)) {
-      ElMessage.warning(
-        '当前选中文字属于旧记录、领域、版本或本地会话：请重新选择',
-      )
+    const resolved = directionalTargetResolution.value
+    if (!resolved) {
+      directionalTargetIssue.value =
+        '当前栏没有可用选段；请重新选择文字或改用整栏修改'
+      return
+    }
+    if (resolved.error) {
+      directionalTargetIssue.value = resolved.error
       return
     }
   }
-  openDirectionalSaved(
-    railDirectionalField.value,
-    railDirectionalGroupId.value,
+  const selection = whole
+    ? directionalTargetWholeText.value
+    : directionalTargetResolution.value?.selection ?? null
+  if (!selection) {
+    directionalTargetIssue.value = '当前选区不可用，请重新选择'
+    return
+  }
+  directionalTargetOpen.value = false
+  await openDirectionalSaved(
+    directionalTargetField.value,
+    directionalTargetField.value === 'listening_text'
+      ? directionalTargetGroup.value
+      : '',
     whole,
-    whole ? undefined : railSelectionBinding.value?.selection,
+    selection,
   )
 }
 
@@ -1538,16 +1719,32 @@ function applyDirectionalAdoption(
   if (currentText !== submitted.fieldText) {
     return {
       ok: false,
-      message: '当前正文已变化：候选和前后文字已保留，请重新选择或重新生成',
+      message:
+        '生成后当前正文已有教师编辑：未覆盖，候选和前后文字保留；请重新生成或重新选择',
     }
+  }
+  const resolved = resolveDirectionalSelection(
+    currentText,
+    submitted.selection,
+  )
+  if (resolved.error) {
+    return { ok: false, message: resolved.error }
+  }
+  if (!resolved.selection) {
+    return { ok: false, message: '当前选区不可用，请重新选择文字' }
   }
   const selectionError = validateDirectionalSelection(
     currentText,
-    submitted.selection,
+    resolved.selection,
   )
   if (selectionError) {
     return { ok: false, message: selectionError }
   }
+  const fieldAfter = applyDirectionalReplacement(
+    currentText,
+    resolved.selection,
+    payload.replacement,
+  )
   if (submitted.scope.field === 'listening_text') {
     if (!submitted.scope.group_id) {
       return { ok: false, message: '倾听正文缺少组标识，未采用' }
@@ -1555,14 +1752,14 @@ function applyDirectionalAdoption(
     session.setGroupField(
       submitted.scope.group_id,
       'listening_text',
-      payload.fieldAfter,
+      fieldAfter,
     )
   } else if (
     submitted.scope.field === 'goal' ||
     submitted.scope.field === 'overall_evaluation' ||
     submitted.scope.field === 'support_strategy'
   ) {
-    session.setField(submitted.scope.field, payload.fieldAfter)
+    session.setField(submitted.scope.field, fieldAfter)
   } else {
     return { ok: false, message: '该字段不支持定向修改，未采用' }
   }
@@ -1873,11 +2070,6 @@ function resetForContext(): void {
   void load()
 }
 
-watch(
-  () => state.revision,
-  () => clearDirectionalSelections(),
-)
-
 watch(railDirectionalField, (field) => {
   if (field !== 'listening_text') railDirectionalGroup.value = ''
 })
@@ -2058,7 +2250,7 @@ defineExpose({
               :type="state.domain === domain ? 'primary' : 'default'"
               :data-d1="`listening-domain-${domain}`"
               :disabled="!canMutate"
-              @click="selectDomain(domain)"
+              @click="selectDomainFromNav(domain)"
             >
               {{ DOMAIN_LABELS[domain] }}
             </el-button>
@@ -2100,6 +2292,53 @@ defineExpose({
           >
             批量选择照片
           </el-button>
+          <div class="rail-card ai-unified" data-d1="listening-ai-entry">
+            <div class="rail-head">
+              <strong>AI 生成与修改</strong>
+              <span class="muted">
+                显式发起；使用当前表单（含未保存修改），不自动保存。
+              </span>
+            </div>
+            <div class="rail-actions">
+              <el-button
+                type="primary"
+                data-d1="listening-ai-generate-all"
+                :loading="aiBatchRunning"
+                :disabled="
+                  !canMutate ||
+                  !!state.unknown ||
+                  aiBusy ||
+                  aiDraft ||
+                  !!listeningModal
+                "
+                @click="startAiGenerateAll"
+              >
+                AI 生成全部（{{ aiGenerateScopeLabel }}）
+              </el-button>
+              <el-button
+                data-d1="listening-ai-directional"
+                :disabled="!canMutate || !!state.unknown"
+                @click="openUnifiedDirectional"
+              >
+                定向修改
+              </el-button>
+              <el-button
+                v-if="aiBatchRunning"
+                text
+                type="warning"
+                data-d1="listening-ai-generate-all-stop"
+                @click="stopAiGenerateAll"
+              >
+                停止后续发送
+              </el-button>
+            </div>
+            <span v-if="aiBatchStatus" class="muted" data-d1="listening-ai-generate-all-status">
+              {{ aiBatchStatus }}
+            </span>
+            <p class="muted">
+              总览时按整册五领域安排适用项目，领域内只安排当前领域；任务串行发送，完成后结果保留供逐项审核。定向修改默认当前选段，未选时按当前整栏。
+            </p>
+          </div>
           <ListeningAiPanel
             v-if="state.loaded && form && template"
             ref="aiPanel"
@@ -2107,88 +2346,149 @@ defineExpose({
             :record-id="props.recordId"
             :domain="state.domain"
             :groups="form.groups"
+            :form="form"
+            :forms="state.forms"
             :saved-groups="savedDirectionalGroups"
+            :saved-forms="state.baselines"
             :revision="state.revision"
             :disabled="!canEdit || actionBusy || exportBusy || !!state.unknown"
             :profile-epoch="props.profileEpoch ?? 0"
             :ensure-saved="ensureAiSaved"
             @busy="handleAiBusy"
             @draft="handleAiDraft"
+            @batch="handleAiBatch"
             @adopted="handleAiAdopted"
           />
-          <div
-            class="rail-card directional-rail"
-            data-d1="listening-directional-rail"
-          >
-            <div class="rail-head">
-              <strong>定向与整栏修改</strong>
-              <span class="muted">
-                先在编辑弹窗中选中文字并确定填入草稿；此处使用当前草稿。
-              </span>
-            </div>
-            <label class="rail-field">
-              <span>栏目</span>
-              <el-select
-                v-model="railDirectionalField"
-                size="small"
-                data-d1="listening-rail-directional-field"
-              >
-                <el-option label="观察目标" value="goal" />
-                <el-option
-                  label="本组倾听记录"
-                  value="listening_text"
-                />
-                <el-option
-                  label="综合评价"
-                  value="overall_evaluation"
-                />
-                <el-option
-                  label="支持策略"
-                  value="support_strategy"
-                />
-              </el-select>
-            </label>
-            <label
-              v-if="railDirectionalField === 'listening_text'"
-              class="rail-field"
-            >
-              <span>目标图组</span>
-              <el-select
-                v-model="railDirectionalGroup"
-                size="small"
-                data-d1="listening-rail-directional-group"
-              >
-                <el-option
-                  v-for="group in form?.groups ?? []"
-                  :key="group.group_id"
-                  :label="`第 ${(group.position ?? 0) + 1} 组`"
-                  :value="group.group_id"
-                />
-              </el-select>
-            </label>
-            <div class="rail-actions">
-              <el-button
-                data-d1="listening-rail-directional-selection"
-                :disabled="!canMutate"
-                @click="openRailDirectional(false)"
-              >
-                修改选段
-              </el-button>
-              <el-button
-                data-d1="listening-rail-directional-whole"
-                :disabled="!canMutate"
-                @click="openRailDirectional(true)"
-              >
-                整栏修改
-              </el-button>
-            </div>
-            <span class="muted" data-d1="listening-rail-selection">
-              {{ railDirectionalSummary }}
-            </span>
-          </div>
         </aside>
 
         <div class="listening-sheet">
+          <el-card
+            v-if="activeListeningSection === 'overview'"
+            shadow="never"
+            class="sheet-section whole-book-preview"
+            data-d1="listening-whole-book-preview"
+          >
+            <div class="reading-head">
+              <div>
+                <h3>整册当前内容</h3>
+                <p class="muted">
+                  按当前表单显示五个领域的未保存草稿；进入领域后可继续编辑。Word 合册仍只取已保存内容。
+                </p>
+              </div>
+              <el-button
+                size="small"
+                data-d1="listening-whole-book-export"
+                :disabled="!canMutate || state.unknown"
+                @click="openExport"
+              >
+                按幼儿合册预览
+              </el-button>
+            </div>
+            <div class="whole-book-grid">
+              <section
+                v-for="item in wholeBookPreview"
+                :key="item.domain"
+                class="whole-book-domain"
+                :data-d1="`listening-whole-book-domain-${item.domain}`"
+              >
+                <header class="whole-book-domain-head">
+                  <div>
+                    <strong>{{ item.label }}领域</strong>
+                    <span
+                      v-if="item.dirty"
+                      class="muted"
+                      :data-d1="`listening-whole-book-dirty-${item.domain}`"
+                    >
+                      含未保存修改
+                    </span>
+                  </div>
+                  <el-button
+                    size="small"
+                    :data-d1="`listening-whole-book-enter-${item.domain}`"
+                    :disabled="!canMutate"
+                    @click="openWholeBookDomain(item.domain)"
+                  >
+                    进入{{ item.label }}
+                  </el-button>
+                </header>
+                <div class="whole-book-field">
+                  <span class="read-label">观察目标</span>
+                  <span class="read-value">{{ readText(item.goal) }}</span>
+                </div>
+                <div class="whole-book-field">
+                  <span class="read-label">观察月份 / 成人数目 / 幼儿年龄</span>
+                  <span class="read-value">
+                    {{ item.observationDate || '—' }} /
+                    {{ item.adultCount || '—' }} /
+                    {{ item.childAge || '—' }}
+                  </span>
+                </div>
+                <div
+                  v-for="group in item.groups"
+                  :key="group.groupId"
+                  class="whole-book-group"
+                  :data-d1="`listening-whole-book-group-${item.domain}-${group.position}`"
+                >
+                  <span class="read-label">
+                    第 {{ group.position + 1 }} 组
+                    <span class="muted">{{ group.workDate || '无作品日期' }}</span>
+                  </span>
+                  <div class="whole-book-photo-row">
+                    <div class="photo-preview compact whole-book-photo">
+                      <img
+                        v-if="group.assetId && photoUrls[group.assetId]"
+                        :src="photoUrls[group.assetId]"
+                        :style="photoRotationStyle(group.assetId)"
+                        :data-d1="`listening-whole-book-photo-${item.domain}-${group.position}`"
+                        alt="幼儿绘画照片缩略图"
+                      />
+                      <span
+                        v-else-if="group.assetId && photoErrors[group.assetId]"
+                        class="photo-error"
+                      >
+                        {{ photoErrors[group.assetId] }}
+                        <el-button
+                          size="small"
+                          text
+                          :disabled="!canEdit || photoLoading[group.assetId]"
+                          :data-d1="`listening-whole-book-photo-retry-${item.domain}-${group.position}`"
+                          @click="retryPhoto(group.assetId)"
+                        >
+                          重试读取
+                        </el-button>
+                      </span>
+                      <span v-else class="muted">
+                        {{ group.assetId ? '图片读取中…' : '尚未选择照片' }}
+                      </span>
+                    </div>
+                    <span class="read-value">{{ readText(group.listeningText) }}</span>
+                  </div>
+                </div>
+                <div class="whole-book-field">
+                  <span class="read-label">综合评价</span>
+                  <span class="read-value">{{ readText(item.overallEvaluation) }}</span>
+                </div>
+                <div class="whole-book-field">
+                  <span class="read-label">支持策略</span>
+                  <span class="read-value">{{ readText(item.supportStrategy) }}</span>
+                </div>
+                <div class="whole-book-field">
+                  <span class="read-label">星级</span>
+                  <span class="read-value">
+                    {{
+                      item.evaluation
+                        .map(
+                          (entry) =>
+                            `${entry.requirement}：${starText(entry.stars)}`,
+                        )
+                        .join('；') || '（未评）'
+                    }}
+                  </span>
+                </div>
+              </section>
+            </div>
+          </el-card>
+
           <el-card
             shadow="never"
             :style="listeningSectionStyle('record-info')"
@@ -2693,6 +2993,87 @@ defineExpose({
       class="block"
       data-d1="listening-directional-notice"
     />
+
+    <el-dialog
+      v-model="directionalTargetOpen"
+      title="定向修改"
+      width="520px"
+      data-d1="listening-directional-target"
+    >
+      <div class="directional-target-form">
+        <label class="rail-field">
+          <span>目标栏目</span>
+          <el-select
+            v-model="directionalTargetField"
+            data-d1="listening-directional-target-field"
+            @change="syncDirectionalTargetMode"
+          >
+            <el-option label="观察目标" value="goal" />
+            <el-option label="本组倾听记录" value="listening_text" />
+            <el-option label="综合评价" value="overall_evaluation" />
+            <el-option label="支持策略" value="support_strategy" />
+          </el-select>
+        </label>
+        <label
+          v-if="directionalTargetField === 'listening_text'"
+          class="rail-field"
+        >
+          <span>目标图组</span>
+          <el-select
+            v-model="directionalTargetGroup"
+            data-d1="listening-directional-target-group"
+            @change="syncDirectionalTargetMode"
+          >
+            <el-option
+              v-for="group in form?.groups ?? []"
+              :key="group.group_id"
+              :label="`第 ${(group.position ?? 0) + 1} 组`"
+              :value="group.group_id"
+            />
+          </el-select>
+        </label>
+        <el-radio-group
+          v-model="directionalTargetMode"
+          data-d1="listening-directional-target-mode"
+        >
+          <el-radio value="selection" :disabled="!directionalTargetResolution">
+            当前选段
+          </el-radio>
+          <el-radio value="whole">当前整栏</el-radio>
+        </el-radio-group>
+        <p class="muted" data-d1="listening-directional-target-summary">
+          <template v-if="directionalTargetMode === 'selection'">
+            已选：{{
+              directionalTargetResolution?.selection?.text ||
+              '（无可用选段，请重新选择或改用整栏）'
+            }}
+          </template>
+          <template v-else>
+            整栏 {{ directionalTargetText.length }} 字：{{
+              directionalTargetText
+                ? directionalTargetText.slice(0, 80)
+                : '（空栏）'
+            }}{{ directionalTargetText.length > 80 ? '…' : '' }}
+          </template>
+        </p>
+        <el-alert
+          v-if="directionalTargetIssue"
+          type="warning"
+          :closable="false"
+          :title="directionalTargetIssue"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="directionalTargetOpen = false">取消</el-button>
+        <el-button
+          type="primary"
+          data-d1="listening-directional-target-continue"
+          @click="continueDirectionalTarget"
+        >
+          继续定向修改
+        </el-button>
+      </template>
+    </el-dialog>
 
     <DirectionalRevisionDialog
       v-if="directionalRequest"
@@ -3789,6 +4170,59 @@ defineExpose({
 }
 .listening-rail :deep(.el-button + .el-button) {
   margin-left: 0;
+}
+.listening-rail :deep(.rail-ai-panel .ai-actions),
+.listening-rail :deep(.rail-ai-panel .rail-note-hint),
+.listening-rail :deep(.rail-ai-panel > .el-card__header) {
+  display: none;
+}
+.whole-book-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+.whole-book-domain {
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+  padding: 10px;
+  min-width: 0;
+}
+.whole-book-domain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.whole-book-field,
+.whole-book-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  min-width: 0;
+}
+.whole-book-photo-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.whole-book-photo {
+  width: 120px;
+  min-height: 90px;
+}
+.whole-book-field .read-value,
+.whole-book-group .read-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 12em;
+  overflow-y: auto;
+}
+.directional-target-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .listening-rail :deep(.rail-ai-panel) {
   margin-top: 0;

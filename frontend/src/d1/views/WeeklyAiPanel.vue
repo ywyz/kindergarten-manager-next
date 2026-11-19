@@ -11,8 +11,10 @@ import { WEEKLY_AI_COLUMNS, candidateLines, createWeeklyAiApi, gameScopeLabel, g
 import DirectionalRevisionDialog from '../components/DirectionalRevisionDialog.vue'
 import DirectionalRevisionTrigger from '../components/DirectionalRevisionTrigger.vue'
 import {
+  applyDirectionalReplacement,
   captureDirectionalSelection,
   directionalSelectionKey,
+  resolveDirectionalSelection,
   validateDirectionalSelection,
   wholeDirectionalSelection,
   type DirectionalAdoptPayload,
@@ -345,20 +347,39 @@ function applyDirectionalAdoption(
     }
   }
   const currentText = editField(candidate, submitted.scope.field)
+  let fieldAfter = payload.fieldAfter
   if (currentText !== submitted.fieldText) {
-    return {
-      ok: false,
-      message: '当前候选文字已变化：候选和前后文字已保留，请重新选择',
+    // The same candidate field gained a later edit while the task ran. Use the
+    // shared directional resolver: apply only if the exact frozen span can be
+    // uniquely re-located in that field; never replace newer text or fall back
+    // to the current selection.
+    const resolved = resolveDirectionalSelection(
+      currentText,
+      submitted.selection,
+    )
+    if (resolved.error || !resolved.selection) {
+      return {
+        ok: false,
+        message:
+          resolved.error ||
+          '当前候选文字已变化，原选区无法在同一个字段中唯一定位：候选和前后文字已保留，请重新选择',
+      }
+    }
+    fieldAfter = applyDirectionalReplacement(
+      currentText,
+      resolved.selection,
+      payload.replacement,
+    )
+  } else {
+    const selectionError = validateDirectionalSelection(
+      currentText,
+      submitted.selection,
+    )
+    if (selectionError) {
+      return { ok: false, message: selectionError }
     }
   }
-  const selectionError = validateDirectionalSelection(
-    currentText,
-    submitted.selection,
-  )
-  if (selectionError) {
-    return { ok: false, message: selectionError }
-  }
-  setEditField(candidate, submitted.scope.field, payload.fieldAfter)
+  setEditField(candidate, submitted.scope.field, fieldAfter)
   directionalNotice.value =
     '已写入候选待采用区，尚未写入周计划；仍需点击「采用并保存」'
   directionalNoticeCandidateId.value = candidate.candidate_id
@@ -531,6 +552,19 @@ function materialsContextSaved(ctx: PanelEpoch): boolean {
   notice.value = ''
   return false
 }
+/**
+ * The shared savePromise can predate input typed while it was in flight. The
+ * live form is then newer than the saved draft the AI endpoint would read.
+ * Refuse that stale snapshot and keep the input; never start an extra silent
+ * save or resend automatically.
+ */
+function savedFormContext(ctx: PanelEpoch, action: string): boolean {
+  if (!currentEpoch(ctx)) return false
+  if (!props.controller.isDirty()) return true
+  error.value = `保存完成时仍有新的未保存输入：本次未${action}，当前输入已保留；请先保存后再操作`
+  notice.value = ''
+  return false
+}
 async function allTasks(planId: string, ctx: PanelEpoch): Promise<WeeklyAiTask[] | null> {
   const result: WeeklyAiTask[] = []
   let cursor: string | undefined
@@ -641,7 +675,12 @@ async function create(
   const ctx = epoch()
   if (!(await ensureSaved(ctx))) { panelRequestFlight = false; return }
   if (!currentEpoch(ctx)) { panelRequestFlight = false; return }
-  if (kind === 'materials' && !materialsContextSaved(ctx)) { panelRequestFlight = false; return }
+  if (kind === 'materials') {
+    if (!materialsContextSaved(ctx)) { panelRequestFlight = false; return }
+  } else if (!savedFormContext(ctx, '发起生成')) {
+    panelRequestFlight = false
+    return
+  }
   const saved = props.controller.savedDraftRef()
   const common = { request_id: newWeeklyRequestId(), expected_draft_version: saved.version }
   const body: Record<string, unknown> = kind === 'columns'
@@ -908,6 +947,10 @@ async function adoptCandidates(chosen: WeeklyAiCandidate[]): Promise<void> {
   const ctx = epoch()
   if (!(await ensureSaved(ctx))) { panelRequestFlight = false; return }
   if (!currentEpoch(ctx)) { panelRequestFlight = false; return }
+  if (!savedFormContext(ctx, '预览或采用候选')) {
+    panelRequestFlight = false
+    return
+  }
   if (weeklyEditSignature(selectionsFor(chosen)) !== selectionSignature) {
     panelRequestFlight = false
     error.value = '保存期间候选编辑已变化：本次未采用，请重新点击'
@@ -1007,6 +1050,10 @@ async function regenerateCandidate(candidate: WeeklyAiCandidate): Promise<void> 
   const ctx = epoch()
   if (!(await ensureSaved(ctx))) { panelRequestFlight = false; return }
   if (!currentEpoch(ctx)) { panelRequestFlight = false; return }
+  if (!savedFormContext(ctx, '重新生成')) {
+    panelRequestFlight = false
+    return
+  }
   if ((regenerateInstructions.value[candidateId] ?? '').trim() !== instructionAtStart) {
     panelRequestFlight = false
     error.value = '保存期间定向要求已变化：本次未重新生成，请重新点击'

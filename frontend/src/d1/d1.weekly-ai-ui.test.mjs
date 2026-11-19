@@ -20,6 +20,7 @@ function loadTsModule(file) {
 const weeklyCore = loadTsModule(path.join(d1Dir, 'weekly.ts'))
 const aiProgress = loadTsModule(path.join(d1Dir, 'ai-progress.ts'))
 const actualEditor = loadTsModule(path.join(d1Dir, 'weekly-editor.ts'))
+const directionalCore = loadTsModule(path.join(d1Dir, 'directional-revision.ts'))
 const viewFile = path.join(d1Dir, 'views', 'WeeklyAiPanel.vue')
 const source = fs.readFileSync(viewFile, 'utf8')
 const descriptor = parse(source, { filename: viewFile }).descriptor
@@ -108,8 +109,7 @@ const weeklyStub = { newWeeklyRequestId: () => 'req-test', createWeeklyApi: () =
 const mod = { exports: {} }
 const mounted = []
 const vueStub = { ...vue, onMounted: (fn) => mounted.push(fn), onBeforeUnmount: (fn) => unmounts.push(fn) }
-const directionalStub = { captureDirectionalSelection: () => null, directionalSelectionKey: (field, group = '', candidate = '') => `${candidate}:${field}:${group}`, validateDirectionalSelection: () => '', wholeDirectionalSelection: (text) => ({ start: 0, end: text.length, text }) }
-const requireStub = (spec) => { if (spec === 'vue') return vueStub; if (spec === '../weekly-ai') return aiStub; if (spec === '../ai-progress') return aiProgress; if (spec === '../client') return { getSessionEpoch: () => sessionValue }; if (spec === '../weekly') return weeklyStub; if (spec === '../leave') return {}; if (spec === '../operations') return { isIndeterminate: (error) => error?.status === 0 || (typeof error?.status === 'number' && error.status >= 500) }; if (spec === '../components/DirectionalRevisionDialog.vue' || spec === '../components/DirectionalRevisionTrigger.vue') return { default: {} }; if (spec === '../directional-revision') return directionalStub; throw new Error(`unexpected ${spec}`) }
+const requireStub = (spec) => { if (spec === 'vue') return vueStub; if (spec === '../weekly-ai') return aiStub; if (spec === '../ai-progress') return aiProgress; if (spec === '../client') return { getSessionEpoch: () => sessionValue }; if (spec === '../weekly') return weeklyStub; if (spec === '../leave') return {}; if (spec === '../operations') return { isIndeterminate: (error) => error?.status === 0 || (typeof error?.status === 'number' && error.status >= 500) }; if (spec === '../components/DirectionalRevisionDialog.vue' || spec === '../components/DirectionalRevisionTrigger.vue') return { default: {} }; if (spec === '../directional-revision') return directionalCore; throw new Error(`unexpected ${spec}`) }
 const js = ts.transpileModule(compiled, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }, fileName: viewFile }).outputText
 vm.runInNewContext(js, { module: mod, exports: mod.exports, require: requireStub, console, Date, JSON, Math, Promise, URLSearchParams, crypto: { randomUUID: () => 'uuid' } }, { filename: viewFile })
 const emitted = []
@@ -667,6 +667,87 @@ function p2Detail() { const value = detail(); value.plan.id = 'p2'; return value
   assert.equal(submitted[0].body.expected_draft_version, 10)
   assert.equal(submitted.some((item) => item.planId === 'p1'), false)
   ok('late focus during a shared theme save blocks materials and keeps input until explicit save-then-retry on p2')
+}
+{
+  // Current-form rule for the other weekly AI operations: the shared save may
+  // have captured an earlier snapshot while the teacher kept typing. Never
+  // build columns/games/candidate adoption from that older saved draft.
+  const lateDetail = p2Detail()
+  lateDetail.plan.id = 'p2late'
+  const target = focusController('p2late', { version: 5, dirty: true, focus: focusChoice })
+  target.controller.saveCurrent = async () => {
+    target.saves.push({ version: 5, focus: true })
+    return 'saved'
+  }
+  const lateState = mountPanel({ controller: target.controller, planId: 'p2late', detail: lateDetail, focusSelected: true })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const beforeColumns = calls.filter((item) => item.kind === 'columns').length
+  await lateState.create('columns', ['key_week_focus'])
+  assert.equal(target.saves.length, 1)
+  assert.equal(calls.filter((item) => item.kind === 'columns').length, beforeColumns)
+  assert.match(lateState.error.value, /未保存输入.*请先保存/)
+
+  const beforeGames = calls.filter((item) => item.kind === 'games').length
+  await lateState.create('games', undefined, 'collective_1')
+  assert.equal(calls.filter((item) => item.kind === 'games').length, beforeGames)
+
+  const candidate = lateState.candidates.value.find((item) => item.eligibility === 'eligible')
+  assert.ok(candidate)
+  const beforePreview = calls.filter((item) => item.kind === 'preview').length
+  await lateState.adoptCandidates([candidate])
+  assert.equal(calls.filter((item) => item.kind === 'preview').length, beforePreview)
+  assert.match(lateState.error.value, /未保存输入.*请先保存/)
+  ok('weekly current form: late input after the shared save blocks columns, games and candidate adoption')
+}
+{
+  // Directional candidate result: when the same field gained later text, only
+  // accept if the frozen selection can be uniquely re-located in that field.
+  const target = focusController('p1', { version: 8 })
+  const directionalProps = vue.shallowReactive({ controller: target.controller, planId: 'p1', detail: detail(), disabled: false, profileEpoch: 1, sessionEpoch: 2 })
+  const directionalState = mountPanel(directionalProps)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const candidate = directionalState.candidates.value.find((item) => item.candidate_id === 'c1')
+  assert.ok(candidate)
+  const field = 'slot.collective_1.name'
+  directionalState.setEditField(candidate, field, '开场 原名 收尾')
+  const scope = { kind: 'weekly_candidate', record_id: 'p1', version: 8, candidate_id: 'c1', field }
+  directionalState.directionalRequest.value = { scope, fieldText: '开场 原名 收尾', selection: { start: 3, end: 5, text: '原名' }, sourceLabel: '', sourceLines: [] }
+  directionalState.setEditField(candidate, field, '新增开头 开场 原名 收尾')
+  const relocated = directionalState.applyDirectionalAdoption({
+    replacement: '新名',
+    fieldAfter: '开场 新名 收尾',
+    snapshot: { sessionEpoch: 2, profileEpoch: 1, scope, fieldText: '开场 原名 收尾', selection: { start: 3, end: 5, text: '原名' } },
+    candidate: { status: 'proposed', replacement: '新名', question: '', notice: '' },
+  })
+  assert.equal(relocated.ok, true)
+  assert.equal(directionalState.editField(candidate, field), '新增开头 开场 新名 收尾')
+  directionalState.directionalRequest.value = { scope, fieldText: '开场 原名 收尾', selection: { start: 3, end: 5, text: '原名' }, sourceLabel: '', sourceLines: [] }
+  directionalState.setEditField(candidate, field, '原名 与 原名')
+  const ambiguous = directionalState.applyDirectionalAdoption({
+    replacement: '新名',
+    fieldAfter: '开场 新名 收尾',
+    snapshot: { sessionEpoch: 2, profileEpoch: 1, scope, fieldText: '开场 原名 收尾', selection: { start: 3, end: 5, text: '原名' } },
+    candidate: { status: 'proposed', replacement: '新名', question: '', notice: '' },
+  })
+  assert.equal(ambiguous.ok, false)
+  assert.match(ambiguous.message, /无法.*唯一定位/)
+  assert.equal(directionalState.editField(candidate, field), '原名 与 原名', 'ambiguous relocation keeps newer edits')
+  const switched = directionalState.applyDirectionalAdoption({
+    replacement: '新名',
+    fieldAfter: '开场 新名 收尾',
+    snapshot: {
+      sessionEpoch: 2,
+      profileEpoch: 1,
+      scope: { ...scope, field: 'slot.collective_1.shared_objectives' },
+      fieldText: '开场 原名 收尾',
+      selection: { start: 3, end: 5, text: '原名' },
+    },
+    candidate: { status: 'proposed', replacement: '新名', question: '', notice: '' },
+  })
+  assert.equal(switched.ok, false, 'a switched field is never overwritten')
+  assert.equal(directionalState.editField(candidate, field), '原名 与 原名')
+  ok('weekly directional: same-field selection relocation only accepts a unique span and preserves later edits')
 }
 const panelProps = vue.shallowReactive({ controller: fakeController, planId: 'p1', detail: detail(), disabled: false, profileEpoch: 1, sessionEpoch: 2 })
 const panelState = mod.exports.default.setup(panelProps, { expose() {}, emit: () => {} })

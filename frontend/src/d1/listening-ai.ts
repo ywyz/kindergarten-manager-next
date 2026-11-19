@@ -6,7 +6,11 @@
  * or image bytes for an AI task.
  */
 import { ApiError, apiGet, apiPost, pathSegment } from './client'
-import { newRequestId, type ListeningDomain } from './listening'
+import {
+  newRequestId,
+  type ListeningCurrentForm,
+  type ListeningDomain,
+} from './listening'
 
 const ROOT = '/api/listening'
 
@@ -58,6 +62,44 @@ export interface ListeningAICandidateEnvelope {
   input_id: string
 }
 
+export const LISTENING_PROVENANCE_MARKERS = {
+  teacher_clear: 'provenance:teacher_clear',
+  unclear: 'provenance:unclear',
+  ai_draft: 'provenance:ai_draft',
+} as const
+
+export type ListeningProvenanceFlag =
+  (typeof LISTENING_PROVENANCE_MARKERS)[keyof typeof LISTENING_PROVENANCE_MARKERS]
+
+export interface ListeningProvenance {
+  flags: ListeningProvenanceFlag[]
+  legacy: boolean
+  notes: string[]
+}
+
+/**
+ * Read the optional stable provenance markers from the existing candidate
+ * uncertainties array.  No output-schema change is needed: old candidates
+ * simply carry no marker and stay neutral (never guessed as OCR or AI draft).
+ */
+export function readListeningProvenance(
+  uncertainties: unknown,
+): ListeningProvenance {
+  const values = Array.isArray(uncertainties)
+    ? uncertainties.filter((value): value is string => typeof value === 'string')
+    : []
+  const markerSet = new Set<string>(Object.values(LISTENING_PROVENANCE_MARKERS))
+  const flags = values.filter((value): value is ListeningProvenanceFlag =>
+    markerSet.has(value),
+  )
+  const uniqueFlags = [...new Set(flags)]
+  return {
+    flags: uniqueFlags,
+    legacy: uniqueFlags.length === 0,
+    notes: values.filter((value) => !markerSet.has(value)),
+  }
+}
+
 export interface ListeningGroupNoteCandidate {
   position: number
   text: string
@@ -70,6 +112,7 @@ export interface ListeningGroupNoteProposal {
   text: string
   uncertainties: string[]
   current: string
+  photo_only?: boolean
 }
 
 /**
@@ -220,6 +263,7 @@ export function readListeningGroupNotesPreview(
     const text = item.text
     const uncertainties = item.uncertainties
     const current = item.current
+    const photoOnly = item.photo_only
     if (
       typeof target !== 'string' ||
       !Number.isInteger(position) ||
@@ -228,7 +272,8 @@ export function readListeningGroupNotesPreview(
       typeof text !== 'string' ||
       !Array.isArray(uncertainties) ||
       uncertainties.some((entry) => typeof entry !== 'string') ||
-      typeof current !== 'string'
+      typeof current !== 'string' ||
+      (photoOnly !== undefined && typeof photoOnly !== 'boolean')
     ) {
       throw new Error('多图位预览结构不合法')
     }
@@ -238,6 +283,7 @@ export function readListeningGroupNotesPreview(
       text,
       uncertainties: uncertainties as string[],
       current,
+      ...(photoOnly === undefined ? {} : { photo_only: photoOnly }),
     }
   })
   const targets = groups.map((group) => group.target)
@@ -678,6 +724,7 @@ export function createListeningAITask(input: {
   taskType: ListeningAITaskType
   expectedRevision: number
   requestId?: string
+  currentForm?: ListeningCurrentForm | null
 }): Promise<ListeningAICreateReceipt> {
   return apiPost<ListeningAICreateReceipt>(
     `${ROOT}/records/${pathSegment(input.recordId)}/ai/tasks`,
@@ -687,6 +734,7 @@ export function createListeningAITask(input: {
       domain: input.domain,
       group_id: input.groupId,
       task_type: input.taskType,
+      ...(input.currentForm ? { current_form: input.currentForm } : {}),
     },
   )
 }
@@ -745,10 +793,14 @@ export function getListeningAICandidate(
 export function previewListeningAICandidate(
   recordId: string,
   candidateId: string,
+  currentForm?: ListeningCurrentForm | null,
 ): Promise<ListeningAIAdoptionPreview> {
   return apiPost(
     `${ROOT}/records/${pathSegment(recordId)}/ai/candidates/${pathSegment(candidateId)}/preview-adoption`,
-    { candidate_id: candidateId },
+    {
+      candidate_id: candidateId,
+      ...(currentForm ? { current_form: currentForm } : {}),
+    },
   )
 }
 
@@ -759,6 +811,7 @@ export function adoptListeningAICandidate(input: {
   expectedRevision: number
   previewToken: string
   selections: Array<Record<string, unknown>>
+  currentForm?: ListeningCurrentForm | null
 }): Promise<unknown> {
   return apiPost(
     `${ROOT}/records/${pathSegment(input.recordId)}/ai/candidates/${pathSegment(input.candidateId)}/adopt`,
@@ -767,6 +820,7 @@ export function adoptListeningAICandidate(input: {
       expected_revision: input.expectedRevision,
       preview_token: input.previewToken,
       selections: input.selections,
+      ...(input.currentForm ? { current_form: input.currentForm } : {}),
     },
   )
 }

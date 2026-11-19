@@ -66,6 +66,29 @@ def _fingerprint(task_type: str, payload: dict[str, Any]) -> str:
     )
 
 
+def _create_fingerprint_payload(
+    *,
+    record_id: str,
+    task_type: str,
+    expected_revision: object,
+    domain: str,
+    group_id: str | None,
+    current_form: object | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "record_id": record_id,
+        "task_type": task_type,
+        "expected_revision": expected_revision,
+        "domain": domain,
+        "group_id": group_id,
+    }
+    # Older persisted requests have no current_form key.  Omitting it when the
+    # caller did not provide one keeps their original receipt replayable.
+    if current_form is not None:
+        payload["current_form"] = current_form
+    return payload
+
+
 def _replay(
     row: LocalAIOperation,
     *,
@@ -93,17 +116,19 @@ def peek_create(
     expected_revision: object,
     domain: str,
     group_id: str | None,
+    current_form: object | None = None,
 ) -> dict[str, Any] | None:
     rid = normalize_request_id(request_id)
     fingerprint = _fingerprint(
         task_type,
-        {
-            "record_id": record_id,
-            "task_type": task_type,
-            "expected_revision": expected_revision,
-            "domain": domain,
-            "group_id": group_id,
-        },
+        _create_fingerprint_payload(
+            record_id=record_id,
+            task_type=task_type,
+            expected_revision=expected_revision,
+            domain=domain,
+            group_id=group_id,
+            current_form=current_form,
+        ),
     )
     with read_scope(session):
         row = session.scalars(
@@ -173,6 +198,7 @@ def create_task(
     task_type: str,
     expected_revision: object,
     request_id: object,
+    current_form: object | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if task_type not in listening_ai_contracts.TASK_TYPES:
         raise LocalValidationError("不支持的倾听 AI 任务类型")
@@ -185,13 +211,14 @@ def create_task(
     rid = normalize_request_id(request_id)
     fingerprint = _fingerprint(
         task_type,
-        {
-            "record_id": record_id,
-            "task_type": task_type,
-            "expected_revision": expected_revision,
-            "domain": domain,
-            "group_id": group_id,
-        },
+        _create_fingerprint_payload(
+            record_id=record_id,
+            task_type=task_type,
+            expected_revision=expected_revision,
+            domain=domain,
+            group_id=group_id,
+            current_form=current_form,
+        ),
     )
     with read_scope(session):
         row = session.scalars(
@@ -220,6 +247,7 @@ def create_task(
                 domain=domain,
                 group_id=group_id,
                 task_type=task_type,
+                current_form=current_form,
             )
         except listening_ai_contracts.ListeningAIContractError:
             raise LocalValidationError("倾听 AI 输入不合法") from None
@@ -267,6 +295,7 @@ def create_task(
             domain=domain,
             group_id=group_id,
             task_type=task_type,
+            current_form=current_form,
             stored_photos=prepared_photos,
         )
         if projection.source_revision != expected_revision:

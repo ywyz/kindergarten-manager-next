@@ -58,6 +58,12 @@ const props = defineProps<{
   contentVersion: number
   disabled?: boolean
   saveBody: () => Promise<SaveOutcome>
+  /**
+   * The live editor form still differs from the saved baseline. Checked after
+   * the protective save so a shared in-flight save that captured an earlier
+   * snapshot can never be used for a preview/adoption/regeneration.
+   */
+  hasUnsavedChanges?: () => boolean
   captureEpoch: () => number
   /**
    * #16: render the ordinary daily candidate beside its own editable region
@@ -230,6 +236,15 @@ function identityStill(planId: string, candidateId: string): boolean {
   return !unmounted && props.planId === planId && props.candidateId === candidateId
 }
 
+/** True only when the live editor form still has input not in the save. */
+function formStillDirty(): boolean {
+  try {
+    return props.hasUnsavedChanges?.() === true
+  } catch {
+    return false
+  }
+}
+
 function editSignature(): string {
   const type = taskType.value
   if (type === 'daily_lesson_split') return JSON.stringify(splitForm.value)
@@ -397,6 +412,11 @@ async function requestPreview(): Promise<void> {
     }
     await nextTick()
     if (seq !== operationSeq || !identityStill(planId, candidateId)) return
+    if (formStillDirty()) {
+      errorText.value =
+        '保存完成时仍有新的未保存输入：未生成采用比较，当前输入已保留；请先保存后再操作'
+      return
+    }
     const edit = currentEdit()
     if (!edit) {
       errorText.value = '编辑内容尚未就绪'
@@ -472,6 +492,11 @@ async function adoptDirect(): Promise<void> {
     }
     await nextTick()
     if (seq !== operationSeq || !identityStill(planId, candidateId)) return
+    if (formStillDirty()) {
+      errorText.value =
+        '保存完成时仍有新的未保存输入：未生成采用比较，当前输入已保留；请先保存后再操作'
+      return
+    }
     const edit = currentEdit()
     if (!edit) {
       errorText.value = '编辑内容尚未就绪'
@@ -772,6 +797,10 @@ async function regenerateAdapt(): Promise<void> {
   const type = taskType.value
   if (!type) return
   if (regenerating.value || previewing.value || adopting.value || pendingAdopt.value || pendingRegenerate.value) return
+  if (formStillDirty()) {
+    errorText.value = '当前正文有未保存输入：请先保存后再重新生成，避免使用旧版本'
+    return
+  }
   let version = props.contentVersion
   if (type === 'daily_process_adapt') {
     if (!preview.value || !previewContext.value) return

@@ -1885,7 +1885,7 @@ defineExpose({
         <el-button size="small" data-d1="settings-section-main" :disabled="frozen" @click="openMainSection">
           返回设置
         </el-button>
-        <el-button size="small" data-d1="back-workbench" :disabled="frozen" @click="backToWorkbench">
+        <el-button class="d1-page-back" data-d1="back-workbench" :disabled="frozen" @click="backToWorkbench">
           返回工作台
         </el-button>
       </div>
@@ -1899,7 +1899,7 @@ defineExpose({
             <p class="kgm-page-kicker">本机档案、学期、AI、游戏配置与维护入口</p>
           </div>
           <div class="actions">
-            <el-button size="small" data-d1="back-workbench" :disabled="frozen" @click="backToWorkbench">
+            <el-button class="d1-page-back" data-d1="back-workbench" :disabled="frozen" @click="backToWorkbench">
               返回工作台
             </el-button>
           </div>

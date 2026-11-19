@@ -272,6 +272,13 @@ def normalize_request(
     if kind.startswith("listening"):
         if field not in contracts.LISTENING_FIELDS:
             raise LocalValidationError("倾听字段不合法")
+        maximum = (
+            contracts.MAX_LISTENING_GOAL
+            if field == "goal"
+            else contracts.MAX_LISTENING_TEXT
+        )
+        if len(field_text) > maximum:
+            raise LocalValidationError("当前表单该栏超过既有长度上限")
         if domain not in listening_service.DOMAINS:
             raise LocalValidationError("domain 不合法")
         if field == "listening_text":
@@ -1164,7 +1171,10 @@ def project_create(
 
 def _notice(target: str, source_identity: Mapping[str, Any]) -> str:
     if target == "listening_text":
-        return "AI 建议：请对照幼儿原话与照片证据核对。"
+        return (
+            "AI 建议：如含拟写幼儿话语（幼儿原话），只是待核对建议，"
+            "不是已采集原话或事实；请对照教师原记录与照片证据核对。"
+        )
     if target == "goal":
         return "AI 建议：请核对已保存的观察目标与证据。"
     if target == "overall_evaluation":

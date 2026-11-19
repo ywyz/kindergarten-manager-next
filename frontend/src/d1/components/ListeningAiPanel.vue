@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * Listening AI panel: explicit task creation, polling, candidate preview and
- * per-target adoption.  It only operates on server-projected saved material.
+ * per-target adoption.  Task creation and adoption bind the exact current
+ * domain form (including unsaved edits), never an implicit save snapshot.
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ApiError, getSessionEpoch } from '../client'
@@ -20,7 +21,9 @@ import {
   readListeningAIAdoptionResult,
   readListeningGroupNotesCandidate,
   readListeningGroupNotesPreview,
+  readListeningProvenance,
   taskIsLive,
+  type ListeningProvenanceFlag,
   type ListeningAIAdoptionExpectation,
   type ListeningAIAdoptionPreview,
   type ListeningAICandidateEnvelope,
@@ -28,7 +31,15 @@ import {
   type ListeningAITaskType,
   type ListeningGroupNoteProposal,
 } from '../listening-ai'
-import { newRequestId, type ListeningDomain } from '../listening'
+import {
+  DOMAIN_LABELS,
+  LISTENING_DOMAINS,
+  buildListeningCurrentForm,
+  newRequestId,
+  type ListeningCurrentForm,
+  type ListeningDomain,
+  type ListeningDomainState,
+} from '../listening'
 import {
   acceptedProgress,
   progressMatchesTask,
@@ -60,7 +71,10 @@ const props = defineProps<{
   recordId: string
   domain: ListeningDomain
   groups: GroupRef[]
+  form?: ListeningDomainState | null
+  forms?: Partial<Record<ListeningDomain, ListeningDomainState>>
   savedGroups?: Array<{ group_id: string; position: number | null }>
+  savedForms?: Partial<Record<ListeningDomain, ListeningDomainState>>
   revision: number
   disabled?: boolean
   profileEpoch?: number
@@ -70,6 +84,12 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'busy', value: boolean): void
   (e: 'draft', value: boolean): void
+  (e: 'batch', payload: {
+    running: boolean
+    total: number
+    done: number
+    message: string
+  }): void
   (e: 'adopted', payload: { domain: ListeningDomain; revision: number; patch: Record<string, unknown> }): void
 }>()
 
@@ -86,12 +106,15 @@ const pendingCreate = ref<{
   groupId: string | null
   photoPositions?: string
   expectedRevision: number
+  currentForm: ListeningCurrentForm | null
+  batchJob?: ListeningAiBatchJob
 } | null>(null)
 const error = ref('')
 const activeTaskId = ref('')
 const progressById = ref<Record<string, AiProgressView>>({})
 const progressLoading = ref<Record<string, boolean>>({})
 const candidate = ref<ListeningAICandidateEnvelope | null>(null)
+const candidateDomain = ref<ListeningDomain>('health')
 const preview = ref<ListeningAIAdoptionPreview | null>(null)
 const groupNotes = ref<ListeningGroupNoteProposal[]>([])
 const groupNoteTexts = ref<Record<string, string>>({})
@@ -103,6 +126,8 @@ const frozenAdoptToken = ref('')
 const frozenAdoptRevision = ref(0)
 const frozenAdoptTaskType = ref<ListeningAITaskType | null>(null)
 const frozenAdoptGroupId = ref<string | null>(null)
+const frozenAdoptDomain = ref<ListeningDomain>('health')
+const frozenAdoptCurrentForm = ref<ListeningCurrentForm | null>(null)
 const frozenAdoptGroups = ref<
   Array<{ group_id: string; position: number | null }>
 >([])
@@ -121,6 +146,27 @@ const directionalRequest = ref<DirectionalOpenRequest | null>(null)
 const directionalSelections = ref<Record<string, DirectionalSelection>>({})
 const directionalNotice = ref('')
 const directionalNoticeTarget = ref('')
+interface ListeningAiBatchJob {
+  domain: ListeningDomain
+  taskType: ListeningAITaskType
+  groupId: string | null
+  currentForm: ListeningCurrentForm
+}
+interface ListeningAiBatchResult {
+  domain: ListeningDomain
+  taskType: ListeningAITaskType
+  taskId: string
+  status: string
+  error?: string
+}
+const batchQueue = ref<ListeningAiBatchJob[]>([])
+const batchJobs = ref<ListeningAiBatchJob[]>([])
+const batchRunning = ref(false)
+const batchCurrent = ref<ListeningAiBatchJob | null>(null)
+const batchWaitingTaskId = ref('')
+const batchResults = ref<ListeningAiBatchResult[]>([])
+const batchMessage = ref('')
+let batchTimer: ReturnType<typeof setTimeout> | null = null
 // A consumed target keeps the value the teacher actually adopted.  Target
 // states from a later preview may still call it eligible, but it must not be
 // re-counted as an unsaved candidate edit merely because the raw model
@@ -136,10 +182,37 @@ const busy = computed(
     creating.value ||
     candidateLoading.value ||
     adopting.value ||
-    directionalBusy.value,
+    directionalBusy.value ||
+    batchRunning.value,
 )
 watch(busy, (value) => emit('busy', value), { immediate: true })
 watch(draft, (value) => emit('draft', value), { immediate: true })
+
+const LISTENING_PROVENANCE_LABELS: Record<ListeningProvenanceFlag, string> = {
+  'provenance:teacher_clear':
+    '照片字迹可辨：本组候选是按原文识读的幼儿原话/教师记录，请对照照片核对。',
+  'provenance:unclear':
+    '照片字迹部分不清：可辨部分为识读原文，不清处未猜写，请逐字核对。',
+  'provenance:ai_draft':
+    '本组没有可辨字迹：候选是按画面拟写的 AI 建议，不是已采集原话或事实，请核对。',
+}
+
+/**
+ * photo_only only proves this request carried no saved text; the photo itself
+ * may still hold legible teacher writing that the model transcribed.  The
+ * stable uncertainties markers, not photo_only, decide the source label; an
+ * old candidate without any marker stays neutral instead of being guessed.
+ */
+function noteProvenanceLabel(uncertainties: unknown): string {
+  const provenance = readListeningProvenance(uncertainties)
+  return provenance.flags
+    .map((flag) => LISTENING_PROVENANCE_LABELS[flag])
+    .join('；')
+}
+
+function noteProvenanceNotes(uncertainties: unknown): string[] {
+  return readListeningProvenance(uncertainties).notes
+}
 
 const photoGroups = computed(() =>
   props.groups.filter((group) => Boolean(group.asset_id)),
@@ -156,6 +229,61 @@ const photoPositions = computed(() =>
     .sort((left, right) => left - right),
 )
 const photoPositionsKey = computed(() => photoPositions.value.join(','))
+
+function formFor(domain: ListeningDomain): ListeningDomainState | null {
+  return (
+    props.forms?.[domain] ??
+    (domain === props.domain ? props.form ?? null : null)
+  )
+}
+
+function savedFormFor(domain: ListeningDomain): ListeningDomainState | null {
+  return (
+    props.savedForms?.[domain] ??
+    (domain === props.domain && props.savedGroups
+      ? {
+          domain,
+          domain_label: domain,
+          template_version: '',
+          template_sha256: '',
+          observation_date: null,
+          adult_count: null,
+          child_age: null,
+          goal: null,
+          observation_area: null,
+          overall_evaluation: null,
+          support_strategy: null,
+          groups: props.savedGroups.map((group) => ({
+            group_id: group.group_id,
+            position: group.position,
+            work_date: null,
+            listening_text: null,
+            asset_id: null,
+          })),
+          evaluation: [],
+        }
+      : null)
+  )
+}
+
+function currentFormSnapshot(
+  domain: ListeningDomain = candidateDomain.value,
+): ListeningCurrentForm | null {
+  const formValue = formFor(domain)
+  return formValue ? buildListeningCurrentForm(formValue) : null
+}
+
+function savedGroupPositionMap(
+  domain: ListeningDomain,
+): Array<{ group_id: string; position: number | null }> {
+  return (
+    savedFormFor(domain)?.groups.map((group, index) => ({
+      group_id: group.group_id,
+      position: group.position ?? index,
+    })) ??
+    (domain === props.domain ? props.savedGroups ?? [] : [])
+  )
+}
 
 const activeTask = computed(
   () => tasks.value.find((task) => task.task_id === activeTaskId.value) ?? null,
@@ -273,6 +401,8 @@ function clearAdoptTicket(): void {
   frozenAdoptRevision.value = 0
   frozenAdoptTaskType.value = null
   frozenAdoptGroupId.value = null
+  frozenAdoptDomain.value = 'health'
+  frozenAdoptCurrentForm.value = null
   frozenAdoptGroups.value = []
 }
 
@@ -285,7 +415,7 @@ function frozenAdoptionExpectation(
   }
   return {
     recordId: props.recordId,
-    domain: props.domain,
+    domain: frozenAdoptDomain.value,
     requestId,
     expectedRevision: frozenAdoptRevision.value,
     taskType,
@@ -335,6 +465,24 @@ function stopPolling(): void {
     clearTimeout(timer)
     timer = null
   }
+}
+
+function stopBatchPolling(): void {
+  if (batchTimer !== null) {
+    clearTimeout(batchTimer)
+    batchTimer = null
+  }
+}
+
+function clearBatch(): void {
+  stopBatchPolling()
+  batchQueue.value = []
+  batchJobs.value = []
+  batchRunning.value = false
+  batchCurrent.value = null
+  batchWaitingTaskId.value = ''
+  batchResults.value = []
+  batchMessage.value = ''
 }
 
 function reset(): void {
@@ -428,6 +576,7 @@ async function loadCandidate(taskId: string): Promise<void> {
     const envelope = await getListeningAICandidate(props.recordId, taskId)
     if (epoch !== generation) return
     candidate.value = envelope
+    candidateDomain.value = envelope.task.listening_domain
     if (envelope.task.task_type === 'listening_group_notes') {
       // Re-check the raw candidate shape against the currently displayed
       // photo positions before asking the server for adoption targets.
@@ -439,6 +588,7 @@ async function loadCandidate(taskId: string): Promise<void> {
     const previewResult = await previewListeningAICandidate(
       props.recordId,
       envelope.candidate_id,
+      currentFormSnapshot(),
     )
     if (epoch !== generation) return
     preview.value = previewResult
@@ -531,8 +681,9 @@ async function startTask(taskType: ListeningAITaskType): Promise<void> {
     photoPositions: photoPositionsKey.value,
     epoch: generation,
   }
-  // Own the mutating phase before the internal save.  Navigation waits on
-  // this flag; ensureSaved itself does not check it, so this cannot deadlock.
+  // Own the mutating phase before capturing the form.  Navigation waits on
+  // this flag; ensureSaved only settles IME and returns the current revision
+  // for this explicit request, so generation never auto-saves the draft.
   creating.value = true
   creatingType.value = taskType
   const epoch = captured.epoch
@@ -540,18 +691,20 @@ async function startTask(taskType: ListeningAITaskType): Promise<void> {
     const confirmedRevision = await props.ensureSaved()
     if (epoch !== generation) return
     if (confirmedRevision === null) {
-      error.value = '当前草稿尚未确认保存，未创建 AI 任务'
+      error.value = '当前表单尚未就绪，未创建 AI 任务'
       return
     }
+    const currentForm = currentFormSnapshot(props.domain)
     if (
       props.recordId !== captured.recordId ||
       props.domain !== captured.domain ||
       (captured.taskType === 'listening_note_draft' &&
         groupId.value !== captured.groupId) ||
       (captured.taskType === 'listening_group_notes' &&
-        photoPositionsKey.value !== captured.photoPositions)
+        photoPositionsKey.value !== captured.photoPositions) ||
+      (props.form && !currentForm)
     ) {
-      error.value = '保存期间页面身份或有效图位已变化，未创建 AI 任务'
+      error.value = '读取期间页面身份或当前表单已变化，未创建 AI 任务'
       return
     }
     const request = {
@@ -561,6 +714,7 @@ async function startTask(taskType: ListeningAITaskType): Promise<void> {
       taskType: captured.taskType,
       groupId: captured.groupId,
       expectedRevision: confirmedRevision,
+      currentForm,
     }
     pendingCreate.value = request
     updateDraft()
@@ -571,6 +725,7 @@ async function startTask(taskType: ListeningAITaskType): Promise<void> {
       taskType: request.taskType,
       expectedRevision: request.expectedRevision,
       requestId: request.requestId,
+      currentForm: request.currentForm,
     })
     if (epoch !== generation) return
     pendingCreate.value = null
@@ -610,11 +765,29 @@ async function retryCreate(): Promise<void> {
       taskType: pending.taskType,
       expectedRevision: pending.expectedRevision,
       requestId: pending.requestId,
+      currentForm: pending.currentForm,
     })
     if (epoch !== generation) return
     pendingCreate.value = null
     updateDraft()
     activeTaskId.value = result.task_id
+    if (pending.batchJob) {
+      batchResults.value = [
+        ...batchResults.value,
+        {
+          domain: pending.batchJob.domain,
+          taskType: pending.batchJob.taskType,
+          taskId: result.task_id,
+          status: 'pending',
+        },
+      ]
+      batchWaitingTaskId.value = result.task_id
+      batchMessage.value = `AI 生成全部：已恢复 ${batchJobLabel(
+        pending.batchJob,
+      )}，等待任务完成。`
+      scheduleBatchPoll()
+      return
+    }
     await loadTasks()
     if (epoch !== generation) return
     schedulePoll()
@@ -645,6 +818,23 @@ async function checkCreateReceipt(): Promise<void> {
     pendingCreate.value = null
     updateDraft()
     activeTaskId.value = receipt.result.task_id
+    if (pending.batchJob) {
+      batchResults.value = [
+        ...batchResults.value,
+        {
+          domain: pending.batchJob.domain,
+          taskType: pending.batchJob.taskType,
+          taskId: receipt.result.task_id,
+          status: 'pending',
+        },
+      ]
+      batchWaitingTaskId.value = receipt.result.task_id
+      batchMessage.value = `AI 生成全部：创建回执已确认，继续等待 ${batchJobLabel(
+        pending.batchJob,
+      )}。`
+      scheduleBatchPoll()
+      return
+    }
     await loadTasks()
     if (epoch !== generation) return
     schedulePoll()
@@ -710,15 +900,18 @@ function setGroupNoteText(target: string, value: string): void {
 
 function directionalSavedGroupId(position: number | null): string {
   return (
-    props.savedGroups?.find((group) => group.position === position)
-      ?.group_id ?? ''
+    savedGroupPositionMap(candidateDomain.value).find(
+      (group) => group.position === position,
+    )?.group_id ?? ''
   )
 }
 
 function savedGroupExists(groupId: string): boolean {
   return (
     Boolean(groupId) &&
-    (props.savedGroups ?? []).some((group) => group.group_id === groupId)
+    savedGroupPositionMap(candidateDomain.value).some(
+      (group) => group.group_id === groupId,
+    )
   )
 }
 
@@ -772,7 +965,7 @@ const directionalLiveScope = computed<DirectionalScope | null>(() => {
   return {
     ...request.scope,
     version: props.revision,
-    domain: props.domain,
+    domain: candidateDomain.value,
     ...(envelope
       ? {
           candidate_id: envelope.candidate_id,
@@ -853,9 +1046,11 @@ function openDirectionalCandidate(
     return
   }
   const note = groupNotes.value.find((item) => item.target === target)
-  const uncertainties = Array.isArray(preview.value.proposed.uncertainties)
-    ? (preview.value.proposed.uncertainties as string[])
-    : []
+  const uncertainties = note
+    ? noteProvenanceNotes(note.uncertainties)
+    : Array.isArray(preview.value.proposed.uncertainties)
+      ? (preview.value.proposed.uncertainties as string[])
+      : []
   const label =
     field === 'listening_text'
       ? note
@@ -869,13 +1064,19 @@ function openDirectionalCandidate(
   const sourceLines = [
     `记录版本 v${props.revision}`,
     ...(note
-      ? [`当前已保存：${note.current || '未填写'}`, ...note.uncertainties]
+      ? [
+          `当前已保存：${note.current || '未填写'}`,
+          ...uncertainties,
+          ...(noteProvenanceLabel(note.uncertainties)
+            ? [noteProvenanceLabel(note.uncertainties)]
+            : []),
+        ]
       : []),
     ...(field === 'listening_text'
       ? [
           ...(preview.value.proposed.photo_only
             ? [
-                '仅据照片拟写少量幼儿表达，待教师核对；不等同于现场采集的原话',
+                '本次请求未收到已保存文字；候选可能来自照片字迹识读，也可能是按画面拟写，请按来源标记核对',
               ]
             : []),
           ...uncertainties,
@@ -889,7 +1090,7 @@ function openDirectionalCandidate(
     version: props.revision,
     candidate_id: candidate.value.candidate_id,
     task_id: candidate.value.task.task_id,
-    domain: props.domain,
+    domain: candidateDomain.value,
     ...(field === 'listening_text' && groupId
       ? { group_id: groupId }
       : {}),
@@ -930,7 +1131,7 @@ function applyDirectionalAdoption(
   if (
     submitted.scope.record_id !== props.recordId ||
     submitted.scope.version !== props.revision ||
-    submitted.scope.domain !== props.domain ||
+    submitted.scope.domain !== candidateDomain.value ||
     submitted.scope.candidate_id !== envelope.candidate_id ||
     (submitted.scope.task_id ?? '') !== envelope.task.task_id ||
     submitted.scope.field !== request.scope.field ||
@@ -1152,6 +1353,7 @@ async function adopt(): Promise<void> {
         refreshed = await previewListeningAICandidate(
           props.recordId,
           envelope.candidate_id,
+          currentFormSnapshot(),
         )
       } catch (exc) {
         if (epoch !== generation) return
@@ -1203,7 +1405,11 @@ async function adopt(): Promise<void> {
       frozenAdoptRevision.value = current.revision
       frozenAdoptTaskType.value = current.task_type
       frozenAdoptGroupId.value = envelope.task.listening_group_id
-      frozenAdoptGroups.value = props.groups.map((group) => ({
+      frozenAdoptDomain.value = candidateDomain.value
+      frozenAdoptCurrentForm.value = currentFormSnapshot()
+      frozenAdoptGroups.value = (
+        formFor(candidateDomain.value)?.groups ?? props.groups
+      ).map((group) => ({
         group_id: group.group_id,
         position: group.position,
       }))
@@ -1217,6 +1423,7 @@ async function adopt(): Promise<void> {
       expectedRevision: frozenAdoptRevision.value,
       previewToken: frozenAdoptToken.value,
       selections,
+      currentForm: frozenAdoptCurrentForm.value,
     })
     if (epoch !== generation) return
     // A 2xx body is not enough: the server may have committed while returning
@@ -1237,7 +1444,7 @@ async function adopt(): Promise<void> {
     edited.value = false
     updateDraft()
     emit('adopted', {
-      domain: props.domain,
+      domain: candidateDomain.value,
       revision: result.revision_after,
       patch,
     })
@@ -1245,6 +1452,7 @@ async function adopt(): Promise<void> {
       const refreshed = await previewListeningAICandidate(
         props.recordId,
         envelope.candidate_id,
+        currentFormSnapshot(),
       )
       if (epoch !== generation) return
       preview.value = refreshed
@@ -1309,7 +1517,7 @@ async function checkAdoptReceipt(): Promise<void> {
     edited.value = false
     updateDraft()
     emit('adopted', {
-      domain: props.domain,
+      domain: candidateDomain.value,
       revision: result.revision_after,
       patch,
     })
@@ -1318,6 +1526,7 @@ async function checkAdoptReceipt(): Promise<void> {
         const refreshed = await previewListeningAICandidate(
           props.recordId,
           candidate.value.candidate_id,
+          currentFormSnapshot(),
         )
         if (epoch === generation) {
           preview.value = refreshed
@@ -1350,8 +1559,17 @@ function refreshPreview(): void {
 }
 
 watch(
-  () => [props.recordId, props.domain, props.profileEpoch ?? 0],
-  () => reset(),
+  () => [props.recordId, props.domain, props.profileEpoch ?? 0] as const,
+  (next, previous) => {
+    const recordChanged =
+      !previous ||
+      next[0] !== previous[0] ||
+      next[2] !== previous[2]
+    reset()
+    if (recordChanged) {
+      clearBatch()
+    }
+  },
   { immediate: true },
 )
 
@@ -1367,6 +1585,7 @@ watch(
 onBeforeUnmount(() => {
   generation += 1
   stopPolling()
+  stopBatchPolling()
   clearPhaseFlags()
   pendingCreate.value = null
   directionalOpen.value = false
@@ -1392,9 +1611,291 @@ function startGoal(): void {
 }
 
 function startField(field: 'goal' | 'note' | 'evaluation'): void {
+  if (batchRunning.value) return
   if (!canRunField(field)) return
   selectedField.value = field
   startSelected()
+}
+
+function taskTypeLabel(value: ListeningAITaskType): string {
+  return (
+    {
+      listening_note_draft: '倾听记录',
+      listening_group_notes: '多组倾听记录',
+      listening_goal_suggest: '观察目标',
+      listening_domain_evaluate: '领域评价',
+    }[value] ?? value
+  )
+}
+
+function batchJobLabel(job: ListeningAiBatchJob): string {
+  return `${DOMAIN_LABELS[job.domain]}·${taskTypeLabel(job.taskType)}`
+}
+
+function batchResultLabel(result: ListeningAiBatchResult): string {
+  return `${DOMAIN_LABELS[result.domain]}·${taskTypeLabel(result.taskType)}`
+}
+
+function buildBatchJobs(scope: 'record' | 'domain'): ListeningAiBatchJob[] {
+  const domains = scope === 'record' ? [...LISTENING_DOMAINS] : [props.domain]
+  const jobs: ListeningAiBatchJob[] = []
+  for (const domain of domains) {
+    const formValue = formFor(domain)
+    if (!formValue) continue
+    const currentForm = buildListeningCurrentForm(formValue)
+    if (formValue.groups.some((group) => Boolean(group.asset_id))) {
+      jobs.push({
+        domain,
+        taskType: 'listening_group_notes',
+        groupId: null,
+        currentForm,
+      })
+    }
+    if (
+      formValue.groups.some(
+        (group) =>
+          Boolean(group.asset_id) ||
+          Boolean((group.listening_text ?? '').trim()),
+      )
+    ) {
+      jobs.push({
+        domain,
+        taskType: 'listening_goal_suggest',
+        groupId: null,
+        currentForm,
+      })
+    }
+    jobs.push({
+      domain,
+      taskType: 'listening_domain_evaluate',
+      groupId: null,
+      currentForm,
+    })
+  }
+  return jobs
+}
+
+const batchDone = computed(
+  () =>
+    batchResults.value.filter((item) =>
+      ['succeeded', 'failed', 'outcome_unknown', 'cancelled'].includes(
+        item.status,
+      ),
+    ).length,
+)
+
+watch(
+  [batchRunning, batchDone, batchMessage, batchJobs],
+  () =>
+    emit('batch', {
+      running: batchRunning.value,
+      total: batchJobs.value.length,
+      done: batchDone.value,
+      message: batchMessage.value,
+    }),
+  { immediate: true, deep: true },
+)
+
+function batchResultFor(taskId: string): ListeningAiBatchResult | undefined {
+  return batchResults.value.find((item) => item.taskId === taskId)
+}
+
+function finishBatch(): void {
+  batchRunning.value = false
+  batchCurrent.value = null
+  batchWaitingTaskId.value = ''
+  stopBatchPolling()
+  batchMessage.value = `AI 生成全部已完成：${batchDone.value} / ${batchJobs.value.length} 项结束；候选保留在下方，请逐项审核。`
+}
+
+async function runBatchNext(): Promise<void> {
+  if (!batchRunning.value) return
+  const job = batchQueue.value.shift()
+  if (!job) {
+    finishBatch()
+    return
+  }
+  batchCurrent.value = job
+  if (props.revision < 1 || !formFor(job.domain)) {
+    batchResults.value = [
+      ...batchResults.value,
+      {
+        domain: job.domain,
+        taskType: job.taskType,
+        taskId: '',
+        status: 'failed',
+        error: '当前表单或记录版本不可用',
+      },
+    ]
+    setTimeout(() => void runBatchNext(), 0)
+    return
+  }
+  creating.value = true
+  creatingType.value = job.taskType
+  const requestId = newRequestId()
+  const expectedRevision = props.revision
+  try {
+    const result = await createListeningAITask({
+      recordId: props.recordId,
+      domain: job.domain,
+      groupId: job.groupId,
+      taskType: job.taskType,
+      expectedRevision,
+      requestId,
+      currentForm: job.currentForm,
+    })
+    if (!batchRunning.value || batchCurrent.value !== job) return
+    batchResults.value = [
+      ...batchResults.value,
+      {
+        domain: job.domain,
+        taskType: job.taskType,
+        taskId: result.task_id,
+        status: 'pending',
+      },
+    ]
+    batchWaitingTaskId.value = result.task_id
+    activeTaskId.value = result.task_id
+    batchMessage.value = `AI 生成全部：已受理 ${batchJobLabel(job)}，等待任务完成。`
+    scheduleBatchPoll()
+  } catch (exc) {
+    if (exc instanceof ApiError && exc.status === 0) {
+      pendingCreate.value = {
+        requestId,
+        recordId: props.recordId,
+        domain: job.domain,
+        taskType: job.taskType,
+        groupId: job.groupId,
+        expectedRevision,
+        currentForm: job.currentForm,
+        batchJob: job,
+      }
+      batchMessage.value =
+        'AI 生成全部已暂停：有一项受理结果未知，请核对创建回执或重试原请求；不会自动重发。'
+      updateDraft()
+      return
+    }
+    batchResults.value = [
+      ...batchResults.value,
+      {
+        domain: job.domain,
+        taskType: job.taskType,
+        taskId: '',
+        status: 'failed',
+        error: exc instanceof Error ? exc.message : String(exc),
+      },
+    ]
+    batchMessage.value = `${batchJobLabel(job)}创建失败：${
+      exc instanceof Error ? exc.message : String(exc)
+    }`
+    setTimeout(() => {
+      if (batchRunning.value) void runBatchNext()
+    }, 0)
+  } finally {
+    creating.value = false
+    creatingType.value = null
+  }
+}
+
+function scheduleBatchPoll(): void {
+  if (batchTimer !== null) clearTimeout(batchTimer)
+  batchTimer = setTimeout(() => {
+    batchTimer = null
+    void pollBatchTask()
+  }, 800)
+}
+
+async function pollBatchTask(): Promise<void> {
+  const taskId = batchWaitingTaskId.value
+  if (!taskId || !batchRunning.value) return
+  try {
+    const task = await getListeningAITask(props.recordId, taskId)
+    const result = batchResultFor(taskId)
+    if (result) {
+      batchResults.value = batchResults.value.map((item) =>
+        item.taskId === taskId ? { ...item, status: task.status } : item,
+      )
+    }
+    if (taskIsLive(task)) {
+      batchMessage.value = `AI 生成全部：${taskTypeLabel(task.task_type)}${statusLabel(
+        task.status,
+      )}，等待完成。`
+      scheduleBatchPoll()
+      return
+    }
+    batchMessage.value =
+      task.status === 'succeeded'
+        ? `AI 生成全部：${taskTypeLabel(task.task_type)}已完成，继续下一项。`
+        : `AI 生成全部：${taskTypeLabel(task.task_type)}${statusLabel(
+            task.status,
+          )}，继续下一项。`
+    batchWaitingTaskId.value = ''
+    batchCurrent.value = null
+    if (batchRunning.value) void runBatchNext()
+  } catch (exc) {
+    batchMessage.value = `AI 生成全部：任务状态读取失败（${
+      exc instanceof Error ? exc.message : String(exc)
+    }）；任务保留，继续查询。`
+    scheduleBatchPoll()
+  }
+}
+
+async function startAll(scope: 'record' | 'domain'): Promise<void> {
+  if (props.disabled || busy.value || batchRunning.value) return
+  error.value = ''
+  const recordId = props.recordId
+  const confirmedRevision = await props.ensureSaved()
+  if (props.recordId !== recordId || confirmedRevision === null) {
+    error.value = '当前表单尚未就绪，未开始 AI 生成全部'
+    return
+  }
+  const jobs = buildBatchJobs(scope)
+  if (!jobs.length) {
+    error.value =
+      scope === 'record'
+        ? '整册当前没有可生成的适用内容'
+        : '当前领域没有可生成的适用内容'
+    return
+  }
+  batchJobs.value = jobs
+  batchQueue.value = jobs.slice()
+  batchResults.value = []
+  batchMessage.value =
+    scope === 'record'
+      ? `AI 生成全部（整册五领域）：共 ${jobs.length} 项，按顺序发送；每项完成后继续下一项，结果保留供逐项审核。`
+      : `AI 生成全部（${DOMAIN_LABELS[props.domain]}领域）：共 ${jobs.length} 项，按顺序发送；每项完成后继续下一项，结果保留供逐项审核。`
+  batchRunning.value = true
+  batchCurrent.value = null
+  void runBatchNext()
+}
+
+function stopBatch(): void {
+  if (!batchRunning.value) return
+  batchRunning.value = false
+  batchQueue.value = []
+  batchCurrent.value = null
+  stopBatchPolling()
+  batchMessage.value =
+    '已停止发送后续项；已创建的任务和候选保留，可逐项审核。'
+}
+
+async function reviewBatchResult(result: ListeningAiBatchResult): Promise<void> {
+  if (!result.taskId || adopting.value) return
+  error.value = ''
+  try {
+    const task = await getListeningAITask(props.recordId, result.taskId)
+    result.status = task.status
+    if (task.status === 'succeeded') {
+      activeTaskId.value = task.task_id
+      await loadCandidate(task.task_id)
+    } else {
+      batchMessage.value = `${batchResultLabel(
+        result,
+      )}：${statusLabel(task.status)}`
+    }
+  } catch (exc) {
+    error.value = exc instanceof Error ? exc.message : String(exc)
+  }
 }
 
 defineExpose({
@@ -1403,6 +1904,9 @@ defineExpose({
   startGoal,
   startSelected,
   startField,
+  startAll,
+  stopBatch,
+  reviewBatchResult,
 })
 </script>
 
@@ -1419,7 +1923,7 @@ defineExpose({
     <template #header>
       <div class="ai-header">
         <span>AI 协助填写</span>
-        <span class="muted">只使用已保存内容；候选不会自动写入 Word</span>
+        <span class="muted">显式使用当前表单（含未保存修改）；候选不会自动写入 Word</span>
       </div>
     </template>
     <div class="ai-actions" data-d1="listening-ai-field">
@@ -1478,6 +1982,51 @@ defineExpose({
       </template>
     </el-alert>
 
+    <div
+      v-if="batchJobs.length"
+      class="batch-results"
+      data-d1="listening-ai-batch"
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        class="block"
+        data-d1="listening-ai-batch-status"
+        :title="batchMessage"
+      />
+      <div
+        v-for="(result, index) in batchResults"
+        :key="`${result.taskId}:${index}`"
+        class="batch-result-row"
+        :data-d1="`listening-ai-batch-result-${index}`"
+      >
+        <span>
+          {{ batchResultLabel(result) }} · {{ statusLabel(result.status) }}
+          <span v-if="result.error" class="muted">（{{ result.error }}）</span>
+        </span>
+        <el-button
+          v-if="result.taskId"
+          size="small"
+          text
+          :disabled="batchRunning || adopting"
+          :data-d1="`listening-ai-batch-review-${index}`"
+          @click="reviewBatchResult(result)"
+        >
+          查看候选
+        </el-button>
+      </div>
+      <el-button
+        v-if="batchRunning"
+        size="small"
+        type="warning"
+        text
+        data-d1="listening-ai-batch-stop"
+        @click="stopBatch"
+      >
+        停止后续发送
+      </el-button>
+    </div>
+
     <p v-if="adoptedMessage" class="muted" data-d1="listening-ai-adopted">{{ adoptedMessage }}</p>
     <el-alert
       v-if="directionalNotice"
@@ -1534,7 +2083,18 @@ defineExpose({
         :closable="false"
         class="block"
         data-d1="listening-ai-photo-only"
-        title="本候选未收到已保存文字，仅据照片拟写少量幼儿表达；请核对后再决定是否采用。"
+        title="本候选未收到已保存文字，只说明本次输入没有正文；候选可能来自照片字迹识读，也可能是按画面拟写，请按来源标记核对。"
+      />
+      <el-alert
+        v-if="
+          preview.task_type === 'listening_note_draft' &&
+          noteProvenanceLabel(preview.proposed.uncertainties)
+        "
+        type="info"
+        :closable="false"
+        class="block"
+        data-d1="listening-ai-note-provenance"
+        :title="noteProvenanceLabel(preview.proposed.uncertainties)"
       />
       <div
         v-if="preview.task_type === 'listening_group_notes'"
@@ -1587,8 +2147,22 @@ defineExpose({
           >
             {{ noteCurrentText(note.current) }}
           </div>
-          <div v-if="note.uncertainties.length" class="muted">
-            待核实：{{ note.uncertainties.join('；') }}
+          <el-alert
+            v-if="noteProvenanceLabel(note.uncertainties)"
+            type="info"
+            :closable="false"
+            data-d1="listening-ai-group-note-provenance"
+            :title="noteProvenanceLabel(note.uncertainties)"
+          />
+          <el-alert
+            v-else-if="note.photo_only"
+            type="info"
+            :closable="false"
+            data-d1="listening-ai-group-note-photo-only"
+            title="本组未收到已保存文字，只说明本次输入没有正文；照片中若有字迹，候选应为识读原文，若无可辨字迹则为拟写建议，请对照照片逐字核对。"
+          />
+          <div v-if="noteProvenanceNotes(note.uncertainties).length" class="muted">
+            待核实：{{ noteProvenanceNotes(note.uncertainties).join('；') }}
           </div>
         </div>
         <p class="muted">
@@ -1635,8 +2209,8 @@ defineExpose({
         >
           {{ noteCurrentText(preview.proposed.current) }}
         </div>
-        <div v-if="(preview.proposed.uncertainties as string[]).length" class="muted">
-          待核实：{{ (preview.proposed.uncertainties as string[]).join('；') }}
+        <div v-if="noteProvenanceNotes(preview.proposed.uncertainties).length" class="muted">
+          待核实：{{ noteProvenanceNotes(preview.proposed.uncertainties).join('；') }}
         </div>
       </div>
 
@@ -1874,6 +2448,19 @@ defineExpose({
 }
 .ai-footer :deep(.el-button + .el-button) {
   margin-left: 0;
+}
+.batch-results {
+  margin-top: 10px;
+}
+.batch-result-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--el-border-color-lighter);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
 }
 .muted {
   color: var(--el-text-color-secondary);

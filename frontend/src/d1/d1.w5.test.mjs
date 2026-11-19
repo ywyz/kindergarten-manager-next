@@ -2518,6 +2518,29 @@ async function testCandidatePreviewSavesFirstThenAdoptUsesViewedToken() {
   ok('candidate R06/R10: preview saves first; adopt uses the exactly-viewed token')
 }
 
+async function testCandidatePreviewRejectsLateInputAfterSharedSave() {
+  let previewPosts = 0
+  const { state } = await mountCandidate({
+    routes: {
+      ...splitDetail,
+      'POST /api/daily-plans/p1/ai-candidates/cand1/preview-adoption': () => {
+        previewPosts += 1
+        return jsonResponse(200, {})
+      },
+    },
+    props: {
+      saveBody: async () => 'saved',
+      hasUnsavedChanges: () => true,
+    },
+  })
+  await settle()
+  await state.requestPreview()
+  await settle()
+  assert.equal(previewPosts, 0, 'late input after the shared save never reaches the comparison')
+  assert.match(state.errorText.value, /未保存输入.*请先保存/)
+  ok('candidate current form: late input after the protective save blocks a stale preview')
+}
+
 async function testCandidateAdoptFailsWhenPreviewSaveFails() {
   let adoptPosts = 0
   const routes = {
@@ -5252,6 +5275,64 @@ async function testOtherSectionTriggerCarriesTargetAndInstruction() {
   ok('section AI: selected column and instruction enter the create body and idempotent request')
 }
 
+async function testAiTaskUsesPostSaveVersionAndRejectsLateInput() {
+  // Normal path: the protective save advances the real content version and the
+  // task body must carry that post-save version, not the version from before.
+  const first = await mountTaskPanel({
+    routes: tasksRouter([[]], {
+      'POST /api/daily-plans/p1/ai-tasks': ({ body }) =>
+        jsonResponse(202, taskFixture({
+          task_type: body.task_type,
+          input_summary: {
+            content_version: body.expected_content_version,
+            target_grade: body.target_grade,
+            target_section: body.target_section,
+            dependency_hash: 'dep',
+          },
+        })),
+    }),
+    props: { contentVersion: 3, hasUnsavedChanges: () => false },
+    saveCurrent: async () => { first.props.contentVersion = 4; return 'saved' },
+  })
+  await settle()
+  await first.state.triggerOtherSection('morning_talk', '')
+  await settle()
+  let posts = callsTo(first.calls, 'POST', '/api/daily-plans/p1/ai-tasks')
+  assert.equal(posts.length, 1)
+  assert.equal(posts[0].body.expected_content_version, 4, 'AI input uses the version produced by this save')
+
+  // Shared-save race: saveCurrent resolves an in-flight save that captured an
+  // earlier snapshot while the live form kept changing. Do not register AI on
+  // the older saved content; keep the input and require an explicit save.
+  let lateInput = false
+  const second = await mountTaskPanel({
+    routes: tasksRouter([[]], {
+      'POST /api/daily-plans/p1/ai-tasks': ({ body }) =>
+        jsonResponse(202, taskFixture({
+          task_type: body.task_type,
+          input_summary: {
+            content_version: body.expected_content_version,
+            target_grade: body.target_grade,
+            dependency_hash: 'dep',
+          },
+        })),
+    }),
+    props: { contentVersion: 4, hasUnsavedChanges: () => lateInput },
+    saveCurrent: async () => { lateInput = true; return 'saved' },
+  })
+  await settle()
+  await second.state.triggerOtherSection('morning_talk', '')
+  await settle()
+  posts = callsTo(second.calls, 'POST', '/api/daily-plans/p1/ai-tasks')
+  assert.equal(posts.length, 0, 'no AI request is built from the earlier saved snapshot')
+  assert.match(
+    second.state.createError.value.daily_other_activities,
+    /未保存输入.*请先保存/,
+    'the teacher is told to save the later input explicitly',
+  )
+  ok('daily AI: uses the current post-save version and never the earlier shared-save snapshot')
+}
+
 async function testSplitSourceContinuationCarriesCandidateWithoutSavedBaselineGate() {
   let saves = 0
   const { state, calls } = await mountTaskPanel({
@@ -5375,6 +5456,7 @@ const tests = [
   testAdaptRequiresSavedSplitBaselineAndExplainsRedline,
   testTaskCalendarWarningRenderedAsText,
   testCandidatePreviewSavesFirstThenAdoptUsesViewedToken,
+  testCandidatePreviewRejectsLateInputAfterSharedSave,
   testCandidateDomDirtyKeepsCompareAndCancelEnabled,
   testCandidateDomCancelRestoresWithoutBodyWrite,
   testCandidateDomDirtyStillBlocksDialogClose,
@@ -5446,6 +5528,7 @@ const tests = [
   testPreAdoptionSplitGeneratedChainOnceAndBound,
   testHistoricalRunningSplitCannotGainAutoChainFromPolling,
   testOtherSectionTriggerCarriesTargetAndInstruction,
+  testAiTaskUsesPostSaveVersionAndRejectsLateInput,
   testSplitSourceContinuationCarriesCandidateWithoutSavedBaselineGate,
   testOtherSectionGateKeepsOneLiveTaskPerPlanType,
   testTargetSectionSelectionAndInlineDiff,

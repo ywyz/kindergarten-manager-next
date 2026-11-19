@@ -364,6 +364,15 @@ function touchEpoch(): void {
   editEpoch.value += 1
 }
 
+/**
+ * Read by AI panels after their protective save. A shared in-flight save may
+ * have captured an earlier snapshot; the panel must not build AI input from
+ * that older version while the live form still has later input.
+ */
+function formDirtyForAi(): boolean {
+  return dirty.value
+}
+
 // -- left-directory read/edit modal -------------------------------------------
 
 function selectLayoutSection(section: DailyLayoutSectionKey): void {
@@ -3864,6 +3873,7 @@ onBeforeUnmount(() => {
         :has-split-baseline="typeof plan.content.split_baseline?.group_activity_process === 'string' && !!plan.content.split_baseline.group_activity_process.trim()"
         :frozen="props.frozen"
         :save-current="saveCurrent"
+        :has-unsaved-changes="formDirtyForAi"
         :split-target="splitTarget"
         :process-target="processTarget"
         :other-target="otherTarget"
@@ -4384,6 +4394,7 @@ onBeforeUnmount(() => {
       :content-version="plan.current_content_version"
       :disabled="locked || props.frozen"
       :save-body="saveCurrent"
+      :has-unsaved-changes="formDirtyForAi"
       :capture-epoch="captureEpoch"
       :inline="candidateInline"
       :inline-target="candidateInlineTarget"
