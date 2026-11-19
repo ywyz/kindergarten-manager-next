@@ -198,6 +198,38 @@
         <div class="list-block" id="term-list"></div>
       </section>
 
+      <details id="feedback-panel" class="release-panel">
+        <summary>应用内反馈</summary>
+        <div id="feedback-body">
+          <p class="muted">
+            打开后才读取教师从应用内提交的反馈。内容按纯文本显示，不会执行任何标记；处理状态只影响本页标注。
+          </p>
+          <div class="row">
+            <div>
+              <label for="feedback-status-filter">状态筛选</label>
+              <select id="feedback-status-filter">
+                <option value="">全部</option>
+                <option value="new">未处理</option>
+                <option value="processing">处理中</option>
+                <option value="resolved">已处理</option>
+              </select>
+            </div>
+            <div>
+              <button type="button" id="feedback-refresh">刷新列表</button>
+            </div>
+          </div>
+          <p class="error" id="feedback-error" role="alert"></p>
+          <p class="muted" id="feedback-notice"></p>
+          <p class="muted hidden" id="feedback-empty">当前筛选下暂无反馈。</p>
+          <div id="feedback-list" class="list-block"></div>
+          <div class="row" id="feedback-pager">
+            <button type="button" class="secondary" id="feedback-prev" disabled>上一页</button>
+            <span class="muted" id="feedback-page-info"></span>
+            <button type="button" class="secondary" id="feedback-next" disabled>下一页</button>
+          </div>
+        </div>
+      </details>
+
       <details id="prompt-release-panel" class="release-panel">
         <summary>提示词发布</summary>
         <div id="prompt-release-body">
@@ -270,7 +302,15 @@
         promptChanges: Object.create(null),
         promptPreview: null,
         promptPreviewDraft: null,
-        promptPendingRollback: null
+        promptPendingRollback: null,
+        feedbackLoaded: false,
+        feedbackBusy: false,
+        feedbackOffset: 0,
+        feedbackLimit: 20,
+        feedbackTotal: 0,
+        // Monotonic sequence: only the newest filter/page/refresh request may
+        // render, so a slow older response can never overwrite newer state.
+        feedbackSeq: 0
       };
       var loginPanel = document.getElementById("login-panel");
       var adminArea = document.getElementById("admin-area");
@@ -348,6 +388,16 @@
       var promptRollbackMeta = document.getElementById("prompt-rollback-meta");
       var promptConfirmRollback = document.getElementById("prompt-confirm-rollback");
       var promptCancelRollback = document.getElementById("prompt-cancel-rollback");
+      var feedbackPanel = document.getElementById("feedback-panel");
+      var feedbackFilter = document.getElementById("feedback-status-filter");
+      var feedbackRefresh = document.getElementById("feedback-refresh");
+      var feedbackError = document.getElementById("feedback-error");
+      var feedbackNotice = document.getElementById("feedback-notice");
+      var feedbackEmpty = document.getElementById("feedback-empty");
+      var feedbackList = document.getElementById("feedback-list");
+      var feedbackPrev = document.getElementById("feedback-prev");
+      var feedbackNext = document.getElementById("feedback-next");
+      var feedbackPageInfo = document.getElementById("feedback-page-info");
 
       function readCookie(name) {
         var prefix = name + "=";
@@ -400,7 +450,15 @@
         state.promptPreview = null;
         state.promptPreviewDraft = null;
         state.promptPendingRollback = null;
+        state.feedbackLoaded = false;
+        // Invalidate any in-flight feedback load and reset pagination so a
+        // late response after logout can never render into a fresh session.
+        state.feedbackSeq += 1;
+        state.feedbackBusy = false;
+        state.feedbackOffset = 0;
+        state.feedbackTotal = 0;
         if (promptPanel) promptPanel.open = false;
+        if (feedbackPanel) feedbackPanel.open = false;
         adminArea.classList.add("hidden");
         loginPanel.classList.remove("hidden");
       }
@@ -1743,6 +1801,184 @@
       promptCancelRollback.addEventListener("click", function () {
         state.promptPendingRollback = null;
         renderRollback();
+      });
+
+      // User feedback renders as text only: every value goes through
+      // textContent, never markup, so any submitted content stays inert.
+      function feedbackStatusLabel(status) {
+        if (status === "new") return "未处理";
+        if (status === "processing") return "处理中";
+        if (status === "resolved") return "已处理";
+        return String(status || "");
+      }
+
+      function setFeedbackMessages(error, notice) {
+        feedbackError.textContent = error || "";
+        feedbackNotice.textContent = notice || "";
+      }
+
+      function renderFeedback(data) {
+        var items = Array.isArray(data.items) ? data.items : [];
+        state.feedbackTotal = typeof data.total === "number"
+          ? data.total
+          : items.length;
+        feedbackList.textContent = "";
+        feedbackEmpty.classList.toggle("hidden", items.length > 0);
+        items.forEach(function (item) {
+          var row = document.createElement("div");
+          row.className = "release-row";
+          row.setAttribute("data-d1", "feedback-" + item.submission_id);
+          var head = document.createElement("p");
+          var handled = item.handled_by_admin_username
+            ? " · 处理人：" + item.handled_by_admin_username
+            : "";
+          head.textContent =
+            feedbackStatusLabel(item.status) +
+            " · " + item.created_at +
+            " · 应用版本：" + (item.app_version || "（未提供）") +
+            " · 联系方式：" + (item.contact || "（未提供）") +
+            handled;
+          var content = document.createElement("pre");
+          content.className = "code";
+          content.textContent = item.content;
+          var controls = document.createElement("div");
+          controls.className = "row";
+          var selectBox = document.createElement("div");
+          var label = document.createElement("label");
+          label.textContent = "处理状态";
+          label.htmlFor = "feedback-status-" + item.submission_id;
+          var select = document.createElement("select");
+          select.id = "feedback-status-" + item.submission_id;
+          ["new", "processing", "resolved"].forEach(function (value) {
+            var option = document.createElement("option");
+            option.value = value;
+            option.textContent = feedbackStatusLabel(value);
+            if (value === item.status) option.selected = true;
+            select.appendChild(option);
+          });
+          selectBox.appendChild(label);
+          selectBox.appendChild(select);
+          var save = document.createElement("button");
+          save.type = "button";
+          save.textContent = "保存状态";
+          save.addEventListener("click", function () {
+            void saveFeedbackStatus(item, select, save);
+          });
+          controls.appendChild(selectBox);
+          controls.appendChild(save);
+          row.appendChild(head);
+          row.appendChild(content);
+          row.appendChild(controls);
+          feedbackList.appendChild(row);
+        });
+        var shownFrom = state.feedbackOffset + 1;
+        var shownTo = state.feedbackOffset + items.length;
+        feedbackPageInfo.textContent = items.length
+          ? "第 " + shownFrom + "–" + shownTo + " 条，共 " +
+            state.feedbackTotal + " 条"
+          : "共 " + state.feedbackTotal + " 条";
+        feedbackPrev.disabled = state.feedbackOffset <= 0;
+        feedbackNext.disabled = shownTo >= state.feedbackTotal;
+      }
+
+      /**
+       * Loads one bounded page.  Each call takes a fresh sequence number and
+       * only the newest response is rendered, so a slow response for an old
+       * filter or page can never overwrite newer state.  Returns true when
+       * this call's response was the newest one and rendered successfully.
+       */
+      async function loadFeedback(force, offset) {
+        if (state.feedbackBusy && !force) return false;
+        state.feedbackBusy = true;
+        setFeedbackMessages("", "");
+        var seq = ++state.feedbackSeq;
+        var effectiveOffset = typeof offset === "number"
+          ? Math.max(0, offset)
+          : state.feedbackOffset;
+        try {
+          var params = [];
+          if (feedbackFilter.value) {
+            params.push("status=" + encodeURIComponent(feedbackFilter.value));
+          }
+          params.push("offset=" + String(effectiveOffset));
+          params.push("limit=" + String(state.feedbackLimit));
+          var data = await request(
+            "/api/collaboration/admin/feedback?" + params.join("&")
+          );
+          if (seq !== state.feedbackSeq) return false;
+          state.feedbackLoaded = true;
+          state.feedbackOffset = effectiveOffset;
+          renderFeedback(data || {});
+          return true;
+        } catch (err) {
+          if (seq !== state.feedbackSeq) return false;
+          setFeedbackMessages(errorText(err), "");
+          if (err && err.status === 401) showLogin();
+          return false;
+        } finally {
+          if (seq === state.feedbackSeq) state.feedbackBusy = false;
+        }
+      }
+
+      async function saveFeedbackStatus(item, select, button) {
+        setFeedbackMessages("", "");
+        var next = select.value;
+        if (!next || next === item.status) {
+          setFeedbackMessages("", "状态未变化。");
+          return;
+        }
+        button.disabled = true;
+        try {
+          await request(
+            "/api/collaboration/admin/feedback/" +
+              encodeURIComponent(item.submission_id),
+            {
+              method: "PATCH",
+              body: { expected_status: item.status, new_status: next }
+            }
+          );
+          // The remote commit and the list refresh are reported separately:
+          // the state IS saved even when the refresh afterwards fails.
+          var refreshed = await loadFeedback(true);
+          setFeedbackMessages(
+            "",
+            refreshed
+              ? "处理状态已保存（服务端已更新），列表已刷新。"
+              : "处理状态已保存（服务端已更新）；列表刷新失败，请手动刷新查看。"
+          );
+        } catch (err) {
+          if (err && err.status === 409) {
+            setFeedbackMessages(
+              "处理状态已在其他窗口修改，未重复保存；请按刷新后的最新状态重试。",
+              ""
+            );
+            await loadFeedback(true);
+          } else {
+            setFeedbackMessages(errorText(err), "");
+          }
+        } finally {
+          button.disabled = false;
+        }
+      }
+
+      feedbackPanel.addEventListener("toggle", function () {
+        if (feedbackPanel.open && !state.feedbackLoaded) {
+          void loadFeedback(true, 0);
+        }
+      });
+      feedbackFilter.addEventListener("change", function () {
+        // A filter change starts page 1 of a new request; the sequence guard
+        // discards any still-running older query.
+        void loadFeedback(true, 0);
+      });
+      feedbackRefresh.addEventListener("click", function () {
+        void loadFeedback(true);
+      });
+      feedbackPrev.addEventListener("click", function () {
+        void loadFeedback(true, Math.max(0, state.feedbackOffset - state.feedbackLimit));
+      });
+      feedbackNext.addEventListener("click", function () {
+        void loadFeedback(true, state.feedbackOffset + state.feedbackLimit);
       });
 
       loginForm.addEventListener("submit", async function (event) {

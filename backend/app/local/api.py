@@ -1315,3 +1315,13 @@ def export_daily_plans(
             "Cache-Control": "no-store",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# In-app online feedback (mounted under /api/local behind the app-session
+# guard; the router itself is owned by app.local.feedback)
+# ---------------------------------------------------------------------------
+
+from app.local.feedback import feedback_router as _feedback_router  # noqa: E402
+
+local_router.include_router(_feedback_router)

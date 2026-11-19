@@ -21,6 +21,7 @@ import type { SettingsDraftTarget, SettingsDraftTargetKind } from '../leave'
 import AiSettingsPanel from './AiSettingsPanel.vue'
 import GameConfigPanel from './GameConfigPanel.vue'
 import CollaborationPanel from './CollaborationPanel.vue'
+import FeedbackPanel from './FeedbackPanel.vue'
 import { createCollaborationApi } from '../collaboration'
 import type { CollaborationPromotionTerm } from '../collaboration'
 
@@ -48,6 +49,8 @@ type SettingsPage = 'identity' | 'terms' | 'ai' | 'games' | 'backup' | 'about'
 type SettingsEditor = 'profile' | 'class' | 'term' | 'new-term' | 'override'
 
 const activeSettingsPage = ref<SettingsPage>('identity')
+/** The in-app feedback dialog is independent from any settings draft. */
+const feedbackOpen = ref(false)
 
 function setSettingsPage(page: SettingsPage): void {
   activeSettingsPage.value = page
@@ -2257,11 +2260,11 @@ defineExpose({
                     <tbody>
                       <tr data-d1="settings-backup-create-row">
                         <td>完整备份</td>
-                        <td>包含全部受管业务、设置、历史与照片；密码或明文由维护面板确认。</td>
+                        <td>包含全部受管业务、设置、历史与照片；可备份到本机或已配置的 WebDAV 远端，密码或明文由维护面板确认。</td>
                         <td>在维护面板创建</td>
                       </tr>
                       <tr data-d1="settings-backup-restore-row">
-                        <td>从本地备份恢复</td>
+                        <td>从本机或 WebDAV 备份恢复</td>
                         <td>先校验、预览并明确确认后才替换；恢复前保留完整保护副本。</td>
                         <td>在维护面板校验</td>
                       </tr>
@@ -2302,6 +2305,13 @@ defineExpose({
                 <p class="muted">在线发布、加入/恢复、选班和升班与本地设置相互独立，不会自动上传本机配置。</p>
                 <el-button data-d1="settings-open-collaboration" :disabled="frozen" @click="openCollaborationSection">
                   打开在线协作
+                </el-button>
+              </el-card>
+              <el-card class="section" shadow="never" data-d1="settings-feedback-card">
+                <template #header>问题反馈</template>
+                <p class="muted">向内部测试组织者发送使用问题或建议。提交前显示实际发送的应用版本和所填内容；不自动收集教师档案、幼儿记录、图片、数据库、凭据或日志。</p>
+                <el-button data-d1="settings-open-feedback" :disabled="frozen" @click="feedbackOpen = true">
+                  打开反馈表单
                 </el-button>
               </el-card>
               <div class="kgm-sheet" data-d1="settings-group-about">
@@ -2418,6 +2428,16 @@ defineExpose({
         @draft-active="(value: boolean) => (collaborationDraftActive = value)"
       />
     </div>
+
+    <el-dialog
+      v-model="feedbackOpen"
+      title="问题反馈"
+      width="640px"
+      :close-on-click-modal="false"
+      data-d1="settings-feedback-dialog"
+    >
+      <FeedbackPanel :frozen="frozen" />
+    </el-dialog>
 
     <el-dialog
       :model-value="editorOpen === 'profile'"

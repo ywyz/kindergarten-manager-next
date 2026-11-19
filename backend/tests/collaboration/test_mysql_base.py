@@ -4,7 +4,7 @@ The integration class runs only when ``KGM_COLLAB_TEST_EMPTY_DATABASE_URL``
 (falling back to ``KGM_COLLAB_TEST_DATABASE_URL``) is set to an explicit
 ``mysql+pymysql://`` URL.  It requires a fresh database (zero tables), applies
 the 0001 migration, verifies the original seven tables and constraints, then
-applies 0002-0006 in order before exercising the current ORM.  It reports the
+applies 0002-0007 in order before exercising the current ORM.  It reports the
 real server version and database name.  It never creates a database, drops
 tables, reads a real secret or runs during ordinary unit-test discovery
 without that URL.
@@ -29,6 +29,7 @@ from sqlalchemy.schema import CreateTable
 from app.collaboration.config import CollaborationSettings
 from app.collaboration.db import create_collaboration_engine
 from app.collaboration.errors import CollaborationError
+from app.collaboration.feedback_models import FeedbackSubmission
 from app.collaboration.models import (
     Classroom,
     CollaborationBase,
@@ -61,6 +62,7 @@ MYSQL_UPGRADE_MIGRATIONS = (
     BACKEND / "migrations_collaboration" / "mysql" / "0004_weekly_plan_sync.sql",
     BACKEND / "migrations_collaboration" / "mysql" / "0005_prompt_releases.sql",
     BACKEND / "migrations_collaboration" / "mysql" / "0006_class_display_override.sql",
+    BACKEND / "migrations_collaboration" / "mysql" / "0007_online_feedback.sql",
 )
 POSTGRES_MIGRATION = (
     BACKEND / "migrations_collaboration" / "0001_initial.sql"
@@ -322,6 +324,79 @@ class CollaborationMySQLIntegrationTests(unittest.TestCase):
             raise AssertionError(f"unexpected foreign keys: {fks!r}")
         for path in MYSQL_UPGRADE_MIGRATIONS:
             _apply_migration(cls.engine, path)
+        with cls.engine.connect() as connection:
+            upgraded_tables = connection.exec_driver_sql(
+                "SELECT TABLE_NAME, ENGINE "
+                "FROM information_schema.tables WHERE table_schema = DATABASE()"
+            ).all()
+            feedback_columns = connection.exec_driver_sql(
+                "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, "
+                "DATETIME_PRECISION FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() "
+                "AND TABLE_NAME = 'feedback_submissions'"
+            ).all()
+            feedback_indexes = connection.exec_driver_sql(
+                "SELECT INDEX_NAME, NON_UNIQUE "
+                "FROM information_schema.statistics "
+                "WHERE table_schema = DATABASE() "
+                "AND TABLE_NAME = 'feedback_submissions' "
+                "GROUP BY INDEX_NAME, NON_UNIQUE"
+            ).all()
+            feedback_fks = connection.exec_driver_sql(
+                "SELECT CONSTRAINT_NAME, REFERENCED_TABLE_NAME "
+                "FROM information_schema.referential_constraints "
+                "WHERE constraint_schema = DATABASE() "
+                "AND TABLE_NAME = 'feedback_submissions'"
+            ).all()
+        # 0001 (7) + 0002-0006 (13) + 0007 (1) = 21 InnoDB tables.
+        if len(upgraded_tables) != 21 or any(
+            row[1] != "InnoDB" for row in upgraded_tables
+        ):
+            raise AssertionError(
+                f"unexpected upgraded tables/engines: {upgraded_tables!r}"
+            )
+        # feedback_columns rows are (COLUMN_NAME, DATA_TYPE,
+        # CHARACTER_MAXIMUM_LENGTH, DATETIME_PRECISION) — no TABLE_NAME
+        # column is selected, so offsets stay fixed by construction.
+        feedback_names = {row[0] for row in feedback_columns}
+        expected_feedback_columns = {
+            "id", "request_id", "content_fingerprint", "content", "contact",
+            "app_version", "feedback_code_hash", "status",
+            "handled_by_admin_id", "handled_at", "created_at", "updated_at",
+        }
+        if feedback_names != expected_feedback_columns:
+            raise AssertionError(
+                f"feedback_submissions columns mismatch: {feedback_names!r}"
+            )
+        id_like = [
+            row for row in feedback_columns
+            if row[0] in {
+                "id", "request_id", "content_fingerprint",
+                "feedback_code_hash", "handled_by_admin_id",
+            }
+        ]
+        # row[2] is CHARACTER_MAXIMUM_LENGTH for the selected columns.
+        if any(row[2] not in (32, 64) for row in id_like):
+            raise AssertionError(
+                f"feedback_submissions char mapping mismatch: {id_like!r}"
+            )
+        # row[1] is DATA_TYPE and row[3] is DATETIME_PRECISION.
+        stamps = [row for row in feedback_columns if row[1] == "datetime"]
+        if not stamps or any(row[3] != 6 for row in stamps):
+            raise AssertionError(
+                f"feedback_submissions datetime precision mismatch: {stamps!r}"
+            )
+        index_names = {row[0] for row in feedback_indexes}
+        if "uq_feedback_request_id" not in index_names:
+            raise AssertionError(
+                f"feedback_submissions unique index missing: {index_names!r}"
+            )
+        if not any(
+            row[1] == "admin_users" for row in feedback_fks
+        ):
+            raise AssertionError(
+                f"feedback_submissions admin foreign key missing: {feedback_fks!r}"
+            )
         cls.Session = sessionmaker(
             bind=cls.engine, autoflush=False, expire_on_commit=False
         )
@@ -511,6 +586,77 @@ class CollaborationMySQLIntegrationTests(unittest.TestCase):
             with self.assertRaises(CollaborationError) as expired:
                 authenticate(session, token, SYNTHETIC_PEPPER)
         self.assertEqual(expired.exception.code, "AUTH_REQUIRED")
+
+    def test_feedback_submission_row_unique_request_and_status_check(self):
+        from sqlalchemy.exc import IntegrityError, OperationalError
+
+        request_id = uuid4()
+        with self.Session() as session:
+            with session.begin():
+                session.add(
+                    FeedbackSubmission(
+                        id=uuid4(),
+                        request_id=request_id,
+                        content_fingerprint="a" * 64,
+                        content="合成反馈内容",
+                        contact="合成联系",
+                        app_version="0.1.0-synthetic",
+                        feedback_code_hash="b" * 64,
+                        status="new",
+                    )
+                )
+        with self.Session() as session:
+            stored = session.scalars(
+                select(FeedbackSubmission).where(
+                    FeedbackSubmission.request_id == request_id
+                )
+            ).one()
+            self.assertEqual(stored.status, "new")
+            self.assertEqual(stored.contact, "合成联系")
+            self.assertIsNotNone(stored.created_at)
+            self.assertIsNotNone(stored.updated_at)
+        # The unique request_id key is the idempotency guarantee.
+        with self.Session() as session:
+            duplicate = FeedbackSubmission(
+                id=uuid4(),
+                request_id=request_id,
+                content_fingerprint="a" * 64,
+                content="合成反馈内容",
+                contact=None,
+                app_version=None,
+                feedback_code_hash="b" * 64,
+                status="new",
+            )
+            with self.assertRaises(IntegrityError):
+                with session.begin():
+                    session.add(duplicate)
+                    session.flush()
+            session.rollback()
+        # The 0007 status vocabulary is enforced by the database itself.
+        # MySQL 8.4 reports a CHECK-constraint violation as
+        # ER_CHECK_CONSTRAINT_VIOLATED (errno 3819), which the PyMySQL
+        # dialect maps to OperationalError — distinct from the duplicate-key
+        # IntegrityError branch above.
+        with self.Session() as session:
+            invalid = FeedbackSubmission(
+                id=uuid4(),
+                request_id=uuid4(),
+                content_fingerprint="c" * 64,
+                content="合成反馈内容",
+                contact=None,
+                app_version=None,
+                feedback_code_hash="b" * 64,
+                status="closed",
+            )
+            with self.assertRaises(OperationalError) as check_violation:
+                with session.begin():
+                    session.add(invalid)
+                    session.flush()
+            session.rollback()
+        origin = getattr(check_violation.exception, "orig", None)
+        self.assertIsNotNone(origin)
+        self.assertEqual(origin.args[0], 3819)
+        self.assertIn("ck_feedback_status", str(origin))
 
 
 def _apply_migration(engine, path: Path) -> None:

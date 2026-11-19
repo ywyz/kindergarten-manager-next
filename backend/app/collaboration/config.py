@@ -30,6 +30,10 @@ class CollaborationSettings:
     token_pepper: str = field(repr=False)
     preview_secret: str = field(repr=False)
     preview_ttl_seconds: int = DEFAULT_PREVIEW_TTL_SECONDS
+    # In-app feedback entry code, distributed by the test organizer.  Empty
+    # means the feedback entry is disabled (the API answers 503); it is never
+    # required for the collaboration service itself and stays out of repr.
+    feedback_code: str = field(repr=False, default="")
 
     @classmethod
     def from_env(
@@ -50,6 +54,7 @@ class CollaborationSettings:
             token_pepper=os.environ.get("KGM_COLLAB_TOKEN_PEPPER", ""),
             preview_secret=os.environ.get("KGM_COLLAB_PREVIEW_SECRET", ""),
             preview_ttl_seconds=ttl,
+            feedback_code=os.environ.get("KGM_COLLAB_FEEDBACK_CODE", "").strip(),
         )
         settings.validate(require_preview_secret=require_preview_secret)
         return settings

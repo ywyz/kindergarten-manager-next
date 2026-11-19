@@ -18,6 +18,7 @@ from .api import router
 from .class_promotion_api import router as class_promotion_router
 from .config import CollaborationSettings
 from .errors import CollaborationError
+from .feedback_api import add_feedback_body_limit, admin_feedback_router, feedback_router
 from .prompt_release_api import admin_router as prompt_release_admin_router
 from .prompt_release_api import package_router as prompt_release_package_router
 from .weekly_plan_api import router as weekly_plan_router
@@ -145,4 +146,8 @@ def create_collaboration_app(
     app.include_router(weekly_plan_router)
     app.include_router(prompt_release_admin_router)
     app.include_router(prompt_release_package_router)
+    app.include_router(feedback_router)
+    app.include_router(admin_feedback_router)
+    # Binds the one public feedback write before any body read (pure ASGI).
+    add_feedback_body_limit(app)
     return app
