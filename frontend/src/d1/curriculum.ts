@@ -593,6 +593,195 @@ export async function saveCurriculumDeliberation(
   return record
 }
 
+// -- saved-version history + record AI task listing (2026-11-22 repair) -----
+// Contract: GET {record route}/versions -> {items:[{version, saved_at}]},
+// GET {record route}/versions/{version} -> {version, saved_at, content} with
+// the module's own record content DTO, and GET {record route}/ai/tasks ->
+// {items:[{task_id, task_type, status, created_at}]} (read-only listing).
+export interface CurriculumVersionSummary {
+  version: number
+  saved_at: string
+}
+
+export interface CurriculumVersionDetail {
+  version: number
+  saved_at: string
+  content: CurriculumContent
+  /** Deliberation-linked document JSON saved with that version, or null. */
+  document: CurriculumDocument | null
+}
+
+export interface CurriculumAiTaskSummary {
+  task_id: string
+  task_type: string
+  status: string
+  created_at: string
+}
+
+function versionValue2(value: unknown, fallback: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback
+}
+
+function normalizeVersionSummary(value: unknown): CurriculumVersionSummary | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  const version = versionValue2(raw.version, -1)
+  if (version < 0) return null
+  return {
+    version,
+    saved_at: stringValue(raw.saved_at),
+  }
+}
+
+export async function listCurriculumVersions(
+  id: string,
+): Promise<{ items: CurriculumVersionSummary[] }> {
+  const data = await apiGet<unknown>(
+    `${API_ROOT}/${pathSegment(id)}/versions`,
+  )
+  const raw = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
+  const rows = Array.isArray(raw.items) ? raw.items : []
+  return {
+    items: rows
+      .map(normalizeVersionSummary)
+      .filter((item): item is CurriculumVersionSummary => item !== null),
+  }
+}
+
+export async function getCurriculumVersion(
+  id: string,
+  version: number,
+): Promise<CurriculumVersionDetail> {
+  const data = await apiGet<unknown>(
+    `${API_ROOT}/${pathSegment(id)}/versions/${pathSegment(String(version))}`,
+  )
+  const raw = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
+  return {
+    version: versionValue2(raw.version, version),
+    saved_at: stringValue(raw.saved_at),
+    content: normalizeCurriculumContent(
+      raw.content as Partial<CurriculumContent> | undefined,
+    ),
+    document: cloneCurriculumDocument(raw.document as CurriculumDocument | null | undefined),
+  }
+}
+
+// -- retained structured deliberation document (version snapshot) ----------
+// Canonical schema: curriculum_ai._build_document -> {
+//   original: {blocks}, revised: {blocks}, columns, schema_version, kind,
+//   record_id, base_version, source_hash }
+// block: {id, source_id?, quote?, section: goals|preparation|process|other,
+//   kind: heading|body, text}. Older drafts may carry one top-level "blocks"
+// list; it renders as the original column. Only teacher-legible fields are
+// projected: technical ids, hashes and column indexes are never displayed.
+export type CurriculumDocumentSection = CurriculumAiSection
+
+export interface CurriculumDocumentBlockView {
+  key: string
+  sectionLabel: string
+  showSectionLabel: boolean
+  kind: 'heading' | 'body'
+  text: string
+  quote: string
+}
+
+export interface CurriculumDocumentView {
+  original: CurriculumDocumentBlockView[]
+  revised: CurriculumDocumentBlockView[]
+}
+
+export const CURRICULUM_DOCUMENT_SECTION_LABELS: Record<string, string> = {
+  goals: '活动目标',
+  preparation: '活动准备',
+  process: '活动过程',
+  other: '其他内容',
+}
+
+function documentBlocksOf(value: unknown): unknown[] | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const blocks = (value as Record<string, unknown>).blocks
+  return Array.isArray(blocks) ? blocks : null
+}
+
+function documentBlockViews(blocks: unknown[]): CurriculumDocumentBlockView[] {
+  const rows: CurriculumDocumentBlockView[] = []
+  let previousSection: string | null = null
+  for (const [index, value] of blocks.entries()) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const raw = value as Record<string, unknown>
+    const text = stringValue(raw.text)
+    const quote = stringValue(raw.quote)
+    // Absent optional/older values stay safe: a block with nothing legible
+    // is skipped instead of rendering an empty row.
+    if (!text && !quote) continue
+    const section =
+      typeof raw.section === 'string' && raw.section in CURRICULUM_DOCUMENT_SECTION_LABELS
+        ? raw.section
+        : 'other'
+    rows.push({
+      key: typeof raw.id === 'string' && raw.id ? raw.id : `block-${index}`,
+      sectionLabel: CURRICULUM_DOCUMENT_SECTION_LABELS[section],
+      showSectionLabel: previousSection !== section,
+      kind: raw.kind === 'heading' ? 'heading' : 'body',
+      text,
+      quote,
+    })
+    previousSection = section
+  }
+  return rows
+}
+
+export function curriculumDocumentView(
+  value: CurriculumDocument | null | undefined,
+): CurriculumDocumentView | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  const originalBlocks = documentBlocksOf(raw.original)
+  // Older compatible shape: one top-level "blocks" list (the array itself).
+  const topLevelBlocks = Array.isArray(raw.blocks) ? raw.blocks : null
+  const revisedBlocks = documentBlocksOf(raw.revised)
+  const original = documentBlockViews(originalBlocks ?? topLevelBlocks ?? [])
+  const revised = documentBlockViews(revisedBlocks ?? [])
+  if (!original.length && !revised.length) return null
+  return { original, revised }
+}
+
+function normalizeAiTaskSummary(value: unknown): CurriculumAiTaskSummary | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  const taskId = stringValue(raw.task_id) || stringValue(raw.id)
+  if (!taskId) return null
+  return {
+    task_id: taskId,
+    task_type: stringValue(raw.task_type ?? raw.kind),
+    status: stringValue(raw.status),
+    created_at: stringValue(raw.created_at),
+  }
+}
+
+export async function listCurriculumAiTasks(
+  id: string,
+  options?: { limit?: number; cursor?: string | null },
+): Promise<{ items: CurriculumAiTaskSummary[]; next_cursor: string | null }> {
+  const limit = options?.limit ?? 100
+  const cursor = options?.cursor ?? ''
+  const query = cursor
+    ? `limit=${limit}&cursor=${encodeURIComponent(cursor)}`
+    : `limit=${limit}`
+  const data = await apiGet<unknown>(
+    `${API_ROOT}/${pathSegment(id)}/ai/tasks?${query}`,
+  )
+  const raw = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
+  const rows = Array.isArray(raw.items) ? raw.items : []
+  return {
+    items: rows
+      .map(normalizeAiTaskSummary)
+      .filter((item): item is CurriculumAiTaskSummary => item !== null),
+    next_cursor: typeof raw.next_cursor === 'string' ? raw.next_cursor : null,
+  }
+}
+
 export async function previewCurriculumDeliberation(
   id: string,
   version: number,

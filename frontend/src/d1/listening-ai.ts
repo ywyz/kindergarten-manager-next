@@ -763,6 +763,23 @@ export function listListeningAITasks(
   )
 }
 
+/**
+ * Record-wide AI task listing for the auxiliary "任务" dialog: every domain of
+ * this one record, read-only. Same existing route as the domain-scoped list;
+ * the domain filter is omitted and the page size follows the server limit.
+ */
+export function listListeningRecordAITasks(
+  recordId: string,
+  options?: { limit?: number; cursor?: string },
+): Promise<{ items: ListeningAITask[]; next_cursor: string | null }> {
+  const params = new URLSearchParams()
+  params.set('limit', String(options?.limit ?? 100))
+  if (options?.cursor) params.set('cursor', options.cursor)
+  return apiGet(
+    `${ROOT}/records/${pathSegment(recordId)}/ai/tasks?${params.toString()}`,
+  )
+}
+
 export function getListeningAITask(
   recordId: string,
   taskId: string,

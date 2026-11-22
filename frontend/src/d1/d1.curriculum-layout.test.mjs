@@ -278,6 +278,11 @@ async function mountEditor() {
       '../leave': {},
       './CurriculumExportDialog.vue': { default: {} },
       './CurriculumAiDialog.vue': { default: {} },
+      '../components/RecordTasksDialog.vue': { default: {} },
+      '../ai': {
+        taskStatusLabel: (status) => `状态:${status}`,
+        taskTypeLabel: (type) => `类型:${type}`,
+      },
       '../curriculum': curriculum,
     },
     {
@@ -374,7 +379,52 @@ function bridgeOf(emitted) {
   assert.ok(editorSource.includes('curriculum-sheet-bottom'))
   assert.ok(editorSource.includes('curriculum-rail'))
   assert.ok(editorSource.includes('curriculum-sheet-title'))
-  assert.ok(editorSource.includes('data-d1="curriculum-open-original"'))
+  // 2026-11-22 repair: the duplicated topbar 原稿教案 entry is gone (the
+  // navigation rail keeps the section edit entry); one auxiliary 任务 entry
+  // carries this record's AI tasks and saved-version history.
+  assert.equal(editorSource.includes('curriculum-open-original'), false)
+  assert.ok(editorSource.includes('data-d1="curriculum-tasks-open"'))
+  assert.ok(editorSource.includes('<RecordTasksDialog'))
+  assert.ok(editorSource.includes('data-d1="curriculum-version-detail"'))
+  assert.ok(editorSource.includes('curriculumVersionRowText'))
+  assert.ok(editorSource.includes('listCurriculumVersions'))
+  assert.ok(editorSource.includes('getCurriculumVersion'))
+  assert.ok(editorSource.includes('listCurriculumAiTasks'))
+  assert.ok(editorSource.includes('versionRequestSeq'))
+  assert.ok(editorSource.includes('curriculumDocumentView'))
+  assert.ok(editorSource.includes('data-d1="curriculum-version-document"'))
+  assert.ok(
+    editorSource.includes('data-d1="curriculum-version-document-original"'),
+  )
+  assert.ok(
+    editorSource.includes('data-d1="curriculum-version-document-revised"'),
+  )
+  assert.ok(editorSource.includes('原稿结构'))
+  assert.ok(editorSource.includes('二次稿结构'))
+  assert.ok(editorSource.includes('来源摘录'))
+  // The saved structured blocks render as text, never as a raw JSON dump.
+  assert.equal(editorSource.includes('JSON.stringify(versionDetail'), false)
+  // Route contract 2026-11-22: the read-only history and task listing follow
+  // the existing record route prefix.
+  const curriculumSource = fs.readFileSync(
+    path.join(d1Dir, 'curriculum.ts'),
+    'utf8',
+  )
+  assert.ok(
+    curriculumSource.includes(
+      '`${API_ROOT}/${pathSegment(id)}/versions`',
+    ),
+  )
+  assert.ok(
+    curriculumSource.includes(
+      '`${API_ROOT}/${pathSegment(id)}/versions/${pathSegment(String(version))}`',
+    ),
+  )
+  assert.ok(
+    curriculumSource.includes(
+      '`${API_ROOT}/${pathSegment(id)}/ai/tasks?${query}`',
+    ),
+  )
   ok('read sections, edit dialogs and original -> review -> revised order remain')
 }
 

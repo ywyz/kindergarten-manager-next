@@ -4,7 +4,9 @@ Ownership is always re-derived from the single local profile and stable class;
 the request never supplies a profile or class id.  Saves use an explicit
 ``BEGIN IMMEDIATE`` transaction and a version compare.  A retry of the same
 content exactly one version behind the current row is returned as the already
-committed result instead of creating a second version.
+committed result instead of creating a second version.  Every actual save also
+retains one full read-only history snapshot (see
+:mod:`app.local.curriculum_history`) in the same transaction.
 """
 
 from __future__ import annotations
@@ -134,6 +136,24 @@ def get_record(
         return _record_payload(row)
 
 
+def require_record(
+    session: Session, *, profile_id: str, record_id: object
+) -> LocalCurriculumDeliberation:
+    """Scoped record lookup shared by history and per-record task reads.
+
+    The profile and class are always derived from the single local profile;
+    a foreign, deleted-scope or malformed record id is a 404, never a leak.
+    """
+    rid = normalize_record_id(record_id)
+    context = _context(session)
+    return _scoped_row(
+        session,
+        profile_id=profile_id,
+        class_id=context.school_class.id,
+        record_id=rid,
+    )
+
+
 def save_record(
     session: Session,
     *,
@@ -158,6 +178,8 @@ def save_record(
         else None
     )
     now = utc_now()
+    # Imported lazily: curriculum_history reads this module for scoping.
+    from app.local import curriculum_history
 
     begin_immediate(session)
     try:
@@ -186,6 +208,9 @@ def save_record(
             )
             session.add(row)
             session.flush()
+            # The creation save is retained history, bound to version 1 in
+            # this same write transaction.
+            curriculum_history.record_initial_version_no_tx(session, row=row)
             result = _record_payload(row)
             session.commit()
             return result
@@ -199,6 +224,9 @@ def save_record(
             else supplied_document
         )
         if row.version == expected:
+            before = curriculum_history.capture_before_no_tx(
+                session, record_id=rid, row=row
+            )
             result = session.execute(
                 update(LocalCurriculumDeliberation)
                 .where(
@@ -228,6 +256,19 @@ def save_record(
                 profile_id=profile_id,
                 class_id=class_id,
                 record_id=rid,
+            )
+            # The actual update save retains one full snapshot, bound to
+            # the new version in this same write transaction.
+            curriculum_history.append_save_no_tx(
+                session,
+                record_id=rid,
+                profile_id=profile_id,
+                before=before,
+                after_version=updated.version,
+                after_content=updated.content_json,
+                after_hash=updated.content_hash,
+                after_document=updated.document_json,
+                saved_at=updated.updated_at,
             )
             result_payload = _record_payload(updated)
             session.commit()
@@ -311,6 +352,7 @@ __all__ = [
     "get_record",
     "list_records",
     "normalize_record_id",
+    "require_record",
     "save_record",
     "word_bytes",
 ]

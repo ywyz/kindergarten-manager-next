@@ -241,7 +241,11 @@ function weeklySectionBadge(key: WeeklySectionKey): string {
     const stale = detail.value?.facts.stale_sources.length ?? 0
     return missing || stale ? `缺 ${missing} · 变 ${stale}` : '无变化'
   }
-  return aiBusy.value ? '进行中' : '候选'
+  // The single auxiliary "任务" section carries the current plan's AI tasks
+  // and its confirmed-version history; the badge reflects both.
+  if (aiBusy.value) return 'AI 进行中'
+  const confirmed = detail.value?.plan.current_confirmed_version ?? null
+  return confirmed ? `已确认 v${confirmed}` : '尚未确认'
 }
 
 const weeklySectionNav = computed(() => WEEKLY_SECTIONS
@@ -1404,11 +1408,6 @@ function openExport(): void {
   if (props.disabled || !controller) return
   exportOpen.value = true
 }
-function openHistoryFromExport(): void {
-  if (props.disabled) return
-  exportOpen.value = false
-  openHistory()
-}
 function onAiBusy(value: boolean): void { aiBusy.value = value; syncState() }
 function onAiBlocking(value: BlockingDraft | null): void { aiBlocking.value = value; syncState() }
 function onAiFocusArea(): void { requestFocusArea() }
@@ -1771,6 +1770,23 @@ defineExpose({ resetForContext })
           </div>
 
           <div v-show="activeSection === 'ai'" class="pane-body" data-d1="weekly-ai-pane">
+            <section class="tasks-history" data-d1="weekly-tasks-history">
+              <div class="card-head">
+                <h4>版本历史（已确认快照）</h4>
+                <el-button
+                  size="small"
+                  data-d1="weekly-tasks-history-open"
+                  :disabled="disabled || busy || reissuePending"
+                  @click="openHistory"
+                >
+                  打开已确认版本
+                </el-button>
+              </div>
+              <p class="muted">
+                每次确认另存都会保留完整只读快照；可查看、导出旧确认，或另存为当前学期名版本。
+                当前已确认 v{{ detail.plan.current_confirmed_version ?? '—' }}。
+              </p>
+            </section>
             <WeeklyAiPanel
               ref="aiPanel"
               v-if="controller"
@@ -2018,7 +2034,6 @@ defineExpose({ resetForContext })
       :disabled="disabled"
       :host="weeklyHost"
       @busy="onExportBusy"
-      @open-history="openHistoryFromExport"
     />
 
     <WeeklyExportDialog v-if="detail" v-model:open="historyExportOpen" :plan-id="detail.plan.id" mode="single" :confirmation="exportConfirmation" :disabled="disabled" :host="weeklyHost" @busy="onExportBusy" />
@@ -2076,6 +2091,15 @@ defineExpose({ resetForContext })
   padding-top: 0.55rem;
   border-top: 1px dashed var(--kgm-border);
 }
+.tasks-history {
+  margin: 0.15rem 0 0.8rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--kgm-border);
+  border-radius: 10px;
+  background: var(--kgm-bg);
+}
+.tasks-history h4 { margin: 0.05rem 0; font-size: 0.9rem; }
+.tasks-history .muted { margin: 0.15rem 0 0; font-size: 0.8rem; }
 .column-block h4, .focus-materials h4 { margin: 0.2rem 0; }
 .framework-materials {
   margin-top: 0.3rem;

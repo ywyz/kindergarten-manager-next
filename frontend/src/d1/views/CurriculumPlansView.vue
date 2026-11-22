@@ -159,9 +159,7 @@ defineExpose({ reload: load, resetForContext })
       >
         <el-table-column label="活动名称" min-width="220">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openRecord(row)">
-              {{ row.activity_name || '（未填写活动名称）' }}
-            </el-button>
+            {{ row.activity_name || '（未填写活动名称）' }}
           </template>
         </el-table-column>
         <el-table-column prop="activity_date" label="活动时间" width="130" />

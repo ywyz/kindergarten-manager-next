@@ -983,9 +983,10 @@ def test_migration_chain_covers_full_linear_history_and_has_one_head():
         "20261110_0019_local_directional_revisions.py",
         "20261111_0020_local_todo_archive.py",
         "20261112_0021_local_term_name_changes.py",
+        "20261122_0022_local_record_history.py",
     ]
-    assert chain["head_revision"] == "20261112_0021_local_term_name_changes"
-    assert chain["head_file"] == "20261112_0021_local_term_name_changes.py"
+    assert chain["head_revision"] == "20261122_0022_local_record_history"
+    assert chain["head_file"] == "20261122_0022_local_record_history.py"
     assert chain["revisions"][-1] == chain["head_revision"]
     source_files = verify_e14_package.source_migration_files(
         build_e14.MIGRATIONS_DIR
@@ -994,7 +995,7 @@ def test_migration_chain_covers_full_linear_history_and_has_one_head():
         "env.py",
         *[f"versions/{name}" for name in chain["files"]],
     ]
-    assert len(source_files) == 22
+    assert len(source_files) == 23
 
 
 def test_source_freeze_contains_every_migration_and_env():
@@ -1202,7 +1203,7 @@ def test_directory_checks_reject_wrong_identity_version_channel_and_head(tmp_pat
     assert identity["uuid"] is True
     assert identity["not_source_id"] is False
     assert identity["valid"] is False
-    assert head == "20261112_0021_local_term_name_changes"
+    assert head == "20261122_0022_local_record_history"
 
 
 def test_package_info_freeze_commit_contract():
@@ -1813,10 +1814,10 @@ def test_missing_listening_template_fails_before_any_build(tmp_path, monkeypatch
 
 def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
     chain = verify_e14_package.discover_migration_chain(build_e14.MIGRATIONS_DIR)
-    assert chain["head_revision"] == "20261112_0021_local_term_name_changes"
-    assert chain["head_file"] == "20261112_0021_local_term_name_changes.py"
-    assert len(chain["files"]) == 21
-    assert len(verify_e14_package.source_migration_files(build_e14.MIGRATIONS_DIR)) == 22
+    assert chain["head_revision"] == "20261122_0022_local_record_history"
+    assert chain["head_file"] == "20261122_0022_local_record_history.py"
+    assert len(chain["files"]) == 22
+    assert len(verify_e14_package.source_migration_files(build_e14.MIGRATIONS_DIR)) == 23
     new_modules = {
         "weekly_ai_adoption", "weekly_ai_api", "weekly_ai_candidates",
         "weekly_ai_contracts", "weekly_ai_inputs", "weekly_ai_service",
@@ -1825,6 +1826,7 @@ def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
         "listening_api", "listening_export_service", "listening_export_api",
         "listening_ai_contracts", "listening_ai_inputs", "listening_ai_service",
         "listening_ai_adoption", "listening_ai_api",
+        "listening_history", "curriculum_history",
         "ai_executor", "ai_worker", "ai_transport", "ai_spawn",
         "ai_task_service",
     }
@@ -1847,6 +1849,7 @@ def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
         "20261102_0008_local_weekly_ai.py",
         "20261107_0009_local_listening.py",
         "20261107_0010_local_listening_ai.py",
+        "20261122_0022_local_record_history.py",
     ):
         assert f"backend/migrations_local/versions/{filename}" in verify_e14_package.REQUIRED_FREEZE_PATHS
     for relative in build_e14.LISTENING_TEMPLATE_REQUIRED_FILES:
@@ -1858,7 +1861,7 @@ def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
         assert relative in verify_e14_package.LISTENING_TEMPLATE_REQUIRED_FILES
     assert verify_e14_portable_archive.discover_migration_chain(
         verify_e14_portable_archive.SOURCE_MIGRATIONS
-    )["head_revision"] == "20261112_0021_local_term_name_changes"
+    )["head_revision"] == "20261122_0022_local_record_history"
     freeze = build_e14.source_freeze()
     paths = {item["path"] for item in freeze["files"]}
     for name in new_modules:
@@ -1870,5 +1873,6 @@ def test_e14_current_head_listening_and_weekly_modules_are_real_requirements():
         "20261102_0008_local_weekly_ai.py",
         "20261107_0009_local_listening.py",
         "20261107_0010_local_listening_ai.py",
+        "20261122_0022_local_record_history.py",
     ):
         assert f"backend/migrations_local/versions/{filename}" in paths

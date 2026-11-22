@@ -28,18 +28,19 @@ function between(source, start, end) {
   return source.slice(from, to)
 }
 
-// Editor: no duplicate header, right actions, section entries, split chain.
+// Editor: no duplicate header, four ordered main actions, consolidated entries.
 assert.doesNotMatch(editor, /class="meta"/, 'duplicate class/school/week/version header is gone')
 assert.doesNotMatch(editor, /内容版本：v\{\{ plan\.current_content_version \}\}/, 'header no longer repeats content version')
-for (const marker of ['manual-save', 'open-export', 'start-split-from-rail', 'open-ai-history']) {
+for (const marker of ['start-split-from-rail', 'open-modify', 'manual-save', 'open-export', 'open-tasks']) {
   assert.ok(editor.includes(`data-d1="${marker}"`), `${marker} is in the right action area`)
 }
 assert.match(editor, /data-d1="start-split-from-rail"[^>]*@click="startSplitFromRail"/)
-assert.match(editor, /data-d1="start-split-from-rail"[^>]*>\s*教案拆分\s*<\/el-button>/)
+assert.match(editor, /data-d1="start-split-from-rail"[^>]*>\s*拆分教案并修改\s*<\/el-button>/)
+assert.doesNotMatch(editor, /data-d1="open-ai-history"/, 'the separate AI history rail entry is consolidated into 任务')
 assert.equal(
-  (editor.match(/data-d1="open-ai-history"/g) ?? []).length,
+  (editor.match(/data-d1="open-tasks"/g) ?? []).length,
   1,
-  'the right rail keeps exactly one task/history view entry',
+  'the right rail keeps exactly one consolidated 任务 entry',
 )
 assert.match(editor, /data-d1="editor-actions-rail"/)
 assert.match(editor, /class="editor-actions-rail"/)
@@ -47,12 +48,16 @@ assert.doesNotMatch(editor, /<div class="actions">/, 'operations are not a heade
 assert.match(editor, /grid-template-columns: minmax\(0, 1fr\) 210px/)
 assert.match(editor, /@media \(max-width: 1100px\)[\s\S]{0,200}editor-actions-rail/)
 for (const key of ['morning_games', 'morning_talk', 'post_group_games', 'afternoon_outdoor']) {
-  assert.ok(editor.includes(`data-d1="section-ai-${key}"`), `${key} has its own AI entry`)
+  assert.ok(
+    editor.includes(`key: '${key}'`),
+    `${key} keeps its existing targeted AI workflow behind 修改指定内容`,
+  )
 }
-assert.match(editor, /openSectionAi\('morning_games'\)/)
-assert.match(editor, /openSectionAi\('morning_talk'\)/)
-assert.match(editor, /openSectionAi\('post_group_games'\)/)
-assert.match(editor, /openSectionAi\('afternoon_outdoor'\)/)
+assert.match(editor, /function submitModifyAi\(\): void \{[\s\S]{0,400}openSectionAi\(meta\.key\)/)
+assert.doesNotMatch(editor, /data-d1="section-ai-(morning_games|morning_talk|post_group_games|afternoon_outdoor)"/, 'no per-section AI buttons repeat inside the reading document')
+assert.match(editor, /data-d1="modify-dialog"/)
+assert.match(editor, /data-d1="modify-edit"/)
+assert.match(editor, /data-d1="modify-ai"/)
 assert.match(editor, /data-d1="section-ai-dialog"/)
 assert.match(editor, /data-d1="section-ai-submit"/)
 assert.match(editor, /data-d1="reflection-ai-dialog"/)
@@ -79,7 +84,7 @@ assert.match(panel, /data-d1="ai-task-backdrop"/)
 assert.match(panel, /data-d1="ai-task-dialog-close"/)
 assert.doesNotMatch(panel, /ai-dialog-generation/, 'the dialog no longer duplicates per-section generation entries')
 assert.doesNotMatch(panel, /open-section-ai|open-reflection-ai|locate-task/, 'removed global/locate panel emits stay removed')
-assert.doesNotMatch(editor, /@open-section-ai=|@open-reflection-ai=|@locate-task=/, 'editor wires section entries in the panes only')
+assert.doesNotMatch(editor, /@open-section-ai=|@open-reflection-ai=|@locate-task=/, 'editor wires section AI only through the 修改指定内容 chooser')
 assert.match(panel, /ai-query-create-\$\{type\}/)
 assert.match(panel, /ai-resubmit-create-\$\{type\}/)
 assert.match(editor, /:dialog-open="aiTaskDialogOpen"/)

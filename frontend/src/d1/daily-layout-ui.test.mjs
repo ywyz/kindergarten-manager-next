@@ -577,6 +577,7 @@ function byD1Button(root, value) {
 async function mountEditor(routes, propsOverrides = {}, options = {}) {
   const fetchImpl = router(routes)
   const harness = new Harness({ fetchImpl })
+  if (options.windowInit) options.windowInit(harness)
   if (options.realPanel) {
     harness.overrides['./AiTaskPanel.vue'] = {
       __esModule: true,
@@ -608,9 +609,11 @@ async function mountEditor(routes, propsOverrides = {}, options = {}) {
   app.component('el-option', OptionStub)
   app.mount(appRoot)
   await waitUntil(
-    () => (propsOverrides.initialMode === 'create'
-      ? harness.window.__d1Editor?.draft?.() === true
-      : harness.window.__d1Editor?.version?.() === 3),
+    () => (options.ready
+      ? options.ready(harness.window.__d1Editor)
+      : (propsOverrides.initialMode === 'create'
+        ? harness.window.__d1Editor?.draft?.() === true
+        : harness.window.__d1Editor?.version?.() === 3)),
     'editor load',
   )
   await settle()
@@ -644,41 +647,57 @@ function saveRoutes(patchBodies) {
   }
 }
 
-async function testMountedDirectoryAndReadPanes() {
+async function testMountedContinuousDocument() {
   const patches = []
   const { root, hook, app, calls } = await mountEditor(saveRoutes(patches))
 
+  // The default view is one continuous 一日活动计划 document: every actual
+  // column is mounted and visible at once, with all of its stored fields.
   const navKeys = ['raw', 'morning', 'talk', 'group', 'post', 'afternoon', 'reflection']
   for (const key of navKeys) {
-    assert.ok(byD1Button(root, `layout-nav-${key}`), `${key} section has a labeled button`)
+    assert.ok(byD1Button(root, `layout-nav-${key}`), `${key} keeps its directory button`)
   }
   assert.equal(
-    byD1Button(root, 'layout-nav-group').props['aria-pressed'],
+    byD1Button(root, 'layout-nav-raw').props['aria-pressed'],
     'true',
-    'the selected section is explicit',
+    'the top section is current: reading starts at the preview top',
   )
   assert.equal(
-    byD1Button(root, 'layout-nav-raw').props['aria-pressed'],
+    byD1Button(root, 'layout-nav-group').props['aria-pressed'],
     'false',
-    'unselected sections are not marked selected',
+    'middle sections are not marked current on open',
   )
   assert.equal(nodeText(byD1Button(root, 'layout-nav-group')), '集体活动')
-  assert.equal(
-    byD1(root, 'layout-section-group').style.display,
-    undefined,
-    'the selected pane is visible',
-  )
-  assert.equal(
-    byD1(root, 'layout-section-talk').style.display,
-    'none',
-    'only the selected pane is shown',
-  )
+  assert.match(nodeText(byD1(root, 'daily-doc-head')), /一日活动计划/)
+  assert.match(nodeText(byD1(root, 'daily-doc-head')), /班级：中一班/)
+  assert.match(nodeText(byD1(root, 'daily-doc-head')), /第8周/)
+  const visibleMarkers = [
+    'raw-lesson',
+    'layout-section-morning',
+    'layout-section-talk',
+    'layout-section-group',
+    'layout-section-post',
+    'layout-section-afternoon',
+    'layout-section-reflection',
+  ]
+  for (const marker of visibleMarkers) {
+    assert.equal(
+      byD1(root, marker).style.display,
+      undefined,
+      `${marker} stays visible in the continuous document`,
+    )
+  }
   assert.ok(byD1(root, 'read-raw-lesson'), 'raw lesson is readable')
   assert.match(nodeText(byD1(root, 'read-raw-lesson')), /原始教案第一行\n原始教案第二行/)
   assert.match(
     nodeText(byD1(root, 'read-group-process')),
     /1\. 猜一猜\n2\. 试一试\n3\. 说一说/,
-    'read pane preserves long-text newlines',
+    'the reading document preserves long-text newlines',
+  )
+  assert.match(
+    nodeText(byD1(root, 'read-split-baseline')),
+    /1\. 猜一猜\n2\. 试一试\n3\. 说一说/,
+    'the stored split baseline stays readable next to the process',
   )
   assert.match(nodeText(root), /圈圈乐/)
   assert.match(nodeText(root), /骑行接力小车队/, 'both morning game names stay visible')
@@ -686,84 +705,95 @@ async function testMountedDirectoryAndReadPanes() {
   const morningOtherPane = byD1(root, 'read-morning-group-1')
   assert.match(nodeText(morningFocusPane), /集体目标/)
   assert.match(nodeText(morningFocusPane), /集体指导/)
-  assert.doesNotMatch(
+  assert.match(
     nodeText(morningOtherPane),
-    /自选历史目标|自选历史指导/,
-    'non-focus historical details are not the current detail set',
+    /自选历史目标/,
+    'the non-focus group keeps its full stored objectives in the preview',
   )
-  assert.ok(
+  assert.match(
+    nodeText(morningOtherPane),
+    /自选历史指导/,
+    'the non-focus group keeps its full stored guidance in the preview',
+  )
+  assert.equal(
     byD1(morningOtherPane, 'morning-hidden-details'),
-    'historical non-focus details remain stored and are disclosed',
+    null,
+    'no hidden-detail rule remains in the continuous preview',
   )
   assert.match(nodeText(root), /美工区、建构区/, 'indoor two-region text is kept')
+  assert.ok(byD1(root, 'read-post-group-0'), 'each post group keeps its own readable block')
   assert.match(nodeText(root), /骑行、沙水池/, 'afternoon two-region text is kept')
-  assert.match(nodeText(root), /旧反思\n第二行/, 'reflection material/body stay readable')
+  assert.match(nodeText(root), /室内支持/, 'every post-group subfield is readable')
+  assert.match(nodeText(root), /户外支持/, 'every afternoon subfield is readable')
+  assert.match(nodeText(root), /旧反思\n第二行/, 'reflection body stays readable')
+  assert.match(nodeText(root), /晨谈话题/, 'morning talk topic stays readable')
+  assert.match(nodeText(root), /问题一\n问题二/, 'morning talk questions keep newlines')
+  assert.match(
+    nodeText(root), /科学：磁铁能吸什么/, 'group activity theme stays readable')
+  assert.match(nodeText(root), /探索磁铁\n尝试记录/, 'objectives keep their newlines')
   assert.equal(
     walkElements(root).filter((node) => node.tag === 'textarea').length,
     0,
-    'the body starts in read mode with no always-open textareas',
+    'the document starts in read mode with no always-open textareas',
   )
+  // Operations are not repeated inside the reading document.
+  for (const gone of [
+    'layout-edit-raw',
+    'layout-edit-morning',
+    'layout-edit-talk',
+    'layout-edit-group',
+    'layout-edit-post',
+    'layout-edit-afternoon',
+    'layout-edit-reflection',
+    'section-ai-morning_games',
+    'section-ai-morning_talk',
+    'section-ai-post_group_games',
+    'section-ai-afternoon_outdoor',
+    'reflection-generate',
+    'reflection-ai-edit',
+    'reflection-guidance',
+    'ai-slot-daily_lesson_split',
+    'ai-slot-daily_process_adapt',
+    'ai-slot-daily_other_activities',
+    'ai-slot-daily_reflection_generate',
+    'reflection-progress-target',
+    'split-needs-save',
+  ]) {
+    assert.equal(byD1(root, gone), null, `${gone} is not repeated inside the document`)
+  }
   assert.equal(
     walkElements(root).filter((node) => node.props['data-d1'] === 'ai-tasks-stub').length,
     1,
     'exactly one AI task panel is mounted',
   )
-
-  // v-show: switching columns hides/shows panes but does not remount anchors.
-  const splitAnchor = byD1(root, 'ai-slot-daily_lesson_split')
-  const processAnchor = byD1(root, 'ai-slot-daily_process_adapt')
-  const reflectionAnchor = byD1(root, 'ai-slot-daily_reflection_generate')
+  // Locating a column changes only the directory highlight; it never writes.
   byD1Button(root, 'layout-nav-reflection').props.onClick({})
   await settle()
   assert.equal(hook.layoutSection(), 'reflection')
-  assert.equal(byD1(root, 'ai-slot-daily_reflection_generate'), reflectionAnchor)
-  assert.equal(byD1(root, 'ai-slot-daily_lesson_split'), splitAnchor)
-  assert.equal(
-    byD1(root, 'raw-lesson').style.display,
-    'none',
-    'inactive columns are hidden with v-show',
-  )
+  for (const marker of visibleMarkers) {
+    assert.equal(byD1(root, marker).style.display, undefined, `${marker} stays visible after locating`)
+  }
   byD1Button(root, 'layout-nav-raw').props.onClick({})
   await settle()
   assert.equal(hook.layoutSection(), 'raw')
-  assert.equal(byD1(root, 'ai-slot-daily_lesson_split'), splitAnchor)
-  assert.equal(byD1(root, 'ai-slot-daily_process_adapt'), processAnchor)
-  assert.equal(byD1(root, 'raw-lesson').style.display, undefined)
-  assert.equal(calls.filter((call) => call.method !== 'GET').length, 0, 'navigation writes nothing')
-
-  // The modal still owns every historical field; clearing the non-focus group
-  // removes only the disclosure in the read pane (both names remain).
-  byD1Button(root, 'layout-edit-morning').props.onClick({})
-  await settle()
-  assert.equal(
-    hook.layoutDraft().form.morning_games[1].shared_objectives,
-    '自选历史目标',
-    'the edit dialog keeps historical non-focus details',
-  )
-  hook.layoutDraft().form.morning_games[1].shared_objectives = ''
-  hook.layoutDraft().form.morning_games[1].guidance_points = ''
-  byD1Button(root, 'layout-edit-confirm').props.onClick({})
-  await settle()
-  assert.equal(hook.content().morning_games[1].shared_objectives, '')
-  assert.equal(
-    byD1(morningOtherPane, 'morning-hidden-details'),
-    null,
-    'a new empty non-focus group has no hidden-detail disclosure',
-  )
-  assert.match(nodeText(morningOtherPane), /骑行接力小车队/)
-  assert.equal(calls.filter((call) => call.method !== 'GET').length, 0)
+  for (const marker of visibleMarkers) {
+    assert.equal(byD1(root, marker).style.display, undefined, `${marker} stays visible after locating back`)
+  }
+  assert.equal(calls.filter((call) => call.method !== 'GET').length, 0, 'locating columns writes nothing')
   app.unmount()
-  ok('mounted daily layout: seven labeled section buttons, selected read pane, one panel and stable anchors')
+  ok('mounted continuous document: all columns visible with every stored field; locating never hides or writes')
 }
 
-async function testMountedGenerationActions() {
+async function testMountedRailOrderAndModifyChooser() {
   let postSeq = 0
+  const posts = []
   const routes = {
     ...saveRoutes([]),
     'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
     'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
     'POST /api/daily-plans/p1/ai-tasks': ({ body }) => {
       postSeq += 1
+      posts.push(body)
       return jsonResponse(200, taskFixture({
         task_type: body.task_type,
         id: `${postSeq}`,
@@ -777,129 +807,166 @@ async function testMountedGenerationActions() {
   }
   const { root, hook, app, calls } = await mountEditor(routes, {}, { realPanel: true })
   await settle()
-  assert.ok(byD1Button(root, 'manual-save'), 'save lives in the right toolbar')
-  assert.ok(byD1Button(root, 'open-export'), 'export lives in the right toolbar')
-  assert.ok(byD1Button(root, 'start-split-from-rail'), 'direct split action lives in the right toolbar')
-  assert.equal(byD1Button(root, 'open-ai-generate'), null, 'no generic global AI action shares the rail')
-  assert.ok(byD1Button(root, 'open-ai-history'), 'AI task/history lives in the right toolbar')
-  const sectionMarkers = [
-    'section-ai-morning_games',
-    'section-ai-morning_talk',
-    'section-ai-post_group_games',
-    'section-ai-afternoon_outdoor',
-  ]
-  for (const marker of sectionMarkers) {
-    assert.ok(byD1Button(root, marker), `${marker} is visible in its own section`)
-  }
-  assert.equal(byD1(root, 'ai-trigger-daily_other_activities'), null, 'no shared full-output trigger remains')
-  assert.equal(allByD1(root, 'reflection-generate').length, 1)
-  assert.ok(byD1Button(root, 'ai-trigger-daily_lesson_split'), 'split remains in the raw section')
-  assert.ok(byD1Button(root, 'ai-trigger-daily_process_adapt'), 'adapt remains in the collective-activity section')
-  assert.equal(allByD1(root, 'ai-tasks').length, 1, 'one AI task panel/state owner is mounted')
+  // Main operations: exactly the four rail actions, in the required order.
+  const rail = byD1(root, 'editor-actions-rail')
+  const railButtons = walkElements(rail)
+    .filter((node) => node.tag === 'button' && typeof node.props['data-d1'] === 'string')
+  assert.deepEqual(
+    railButtons.map((node) => node.props['data-d1']),
+    [
+      'start-split-from-rail',
+      'open-modify',
+      'manual-save',
+      'open-export',
+      'open-tasks',
+      'back-calendar',
+    ],
+    'the rail keeps the four main actions in order plus the auxiliary entries',
+  )
+  assert.equal(nodeText(byD1Button(root, 'start-split-from-rail')).trim(), '拆分教案并修改')
+  assert.equal(nodeText(byD1Button(root, 'open-modify')).trim(), '修改指定内容')
+  assert.equal(nodeText(byD1Button(root, 'manual-save')).trim(), '保存')
+  assert.equal(nodeText(byD1Button(root, 'open-export')).trim(), '导出 Word')
+  assert.equal(
+    nodeText(byD1Button(root, 'back-calendar')).trim(),
+    '日历与已保存计划',
+    'the right-rail back names its real destination (the shell owns 返回工作台)',
+  )
+  assert.equal(
+    byD1Button(root, 'go-settings'),
+    null,
+    'the duplicate settings entry is removed; module navigation still reaches it',
+  )
+  assert.equal(byD1Button(root, 'open-ai-history'), null, 'the old separate AI history rail entry is gone')
+  assert.equal(byD1Button(root, 'open-history'), null, 'the old separate version-history rail entry is gone')
 
-  byD1Button(root, 'ai-trigger-daily_lesson_split').props.onClick({})
+  // 修改指定内容: every column is choosable, with a read-only current copy.
+  byD1Button(root, 'open-modify').props.onClick({})
   await settle()
-  assert.equal(hook.layoutSection(), 'raw')
-  byD1Button(root, 'ai-trigger-daily_process_adapt').props.onClick({})
+  assert.equal(hook.modifyOpen(), true, 'the modify chooser opens')
+  const pickKeys = ['raw', 'morning', 'talk', 'group', 'post', 'afternoon', 'reflection']
+  for (const key of pickKeys) {
+    assert.ok(byD1Button(root, `modify-pick-${key}`), `${key} is choosable in the modify list`)
+  }
+  assert.match(nodeText(byD1(root, 'modify-current')), /1\. 猜一猜/, 'the chooser previews the selected column')
+  byD1Button(root, 'modify-pick-morning').props.onClick({})
   await settle()
-  assert.equal(hook.layoutSection(), 'group')
-  byD1Button(root, 'reflection-generate').props.onClick({})
+  assert.match(nodeText(byD1(root, 'modify-current')), /自选历史目标/, 'the preview follows the chosen column')
+  assert.match(
+    nodeText(byD1Button(root, 'modify-ai')),
+    /AI 生成 \/ 定向修改本栏/,
+    'the four other-activity columns expose their existing AI workflow',
+  )
+  byD1Button(root, 'modify-pick-raw').props.onClick({})
   await settle()
-  assert.equal(hook.layoutSection(), 'reflection')
-  assert.match(hook.reflectionError(), /实施材料/)
+  assert.equal(byD1Button(root, 'modify-ai'), null, 'raw has no separate AI action of its own')
+  assert.match(nodeText(root), /拆分原始教案请使用主操作/)
+  byD1Button(root, 'modify-cancel').props.onClick({})
+  await settle()
+  assert.equal(hook.modifyOpen(), false)
+
+  // The chosen column's AI dialog is the existing section AI workflow.
+  byD1Button(root, 'open-modify').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-pick-morning').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-ai').props.onClick({})
+  await settle()
+  assert.equal(hook.modifyOpen(), false, 'submitting closes the chooser')
+  assert.equal(hook.sectionAiOpen(), true, 'the existing section AI dialog opens')
+  assert.match(nodeText(byD1(root, 'section-ai-current')), /圈圈乐/)
+  byD1(root, 'section-ai-instruction').props.onInput({ target: { value: '更贴近本周主题' } })
+  await settle()
+  byD1Button(root, 'section-ai-submit').props.onClick({})
+  await settle()
+  assert.equal(hook.sectionAiOpen(), false)
+  assert.equal(
+    posts.filter((body) => body.task_type === 'daily_other_activities').length,
+    1,
+    'the section AI dialog registers the existing targeted task',
+  )
+  assert.equal(posts[0].target_section, 'morning_games')
+  assert.equal(posts[0].revision_instruction, '更贴近本周主题')
+  assert.equal(hook.aiTaskDialogOpen(), true, 'receipts stay visible behind the 任务 dialog')
+
+  // 一日反思 keeps its existing reflection AI dialog.
+  byD1Button(root, 'open-modify').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-pick-reflection').props.onClick({})
+  await settle()
+  assert.match(nodeText(byD1Button(root, 'modify-ai')), /AI 生成 \/ 定向修改反思/)
+  byD1Button(root, 'modify-ai').props.onClick({})
+  await settle()
+  assert.equal(hook.reflectionAiOpen(), true, 'the reflection AI dialog opens from the chooser')
+  assert.match(nodeText(byD1(root, 'reflection-ai-materials')), /（未填写实施材料/, 'the dialog discloses the missing material')
+  byD1Button(root, 'reflection-ai-cancel').props.onClick({})
+  await settle()
+
+  // 集体活动 keeps the existing process-adapt trigger with its own guards.
+  byD1Button(root, 'open-modify').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-pick-group').props.onClick({})
+  await settle()
+  const adaptPosts = posts.length
+  byD1Button(root, 'modify-ai').props.onClick({})
+  await waitUntil(() => posts.length === adaptPosts + 1, 'adapt POST')
+  await settle()
+  assert.equal(posts[posts.length - 1].task_type, 'daily_process_adapt')
+  assert.equal(hook.aiTaskDialogOpen(), true, 'the adapt receipt stays in the task dialog')
   assert.equal(
     calls.filter((call) => call.method === 'POST' && call.path.endsWith('/ai-tasks')).length,
     2,
-    'only split/adapt create tasks; reflection still needs implementation material',
+    'section AI + adapt both register exactly one task',
   )
   app.unmount()
-  ok('mounted actions: right toolbar plus four section AI entries, one task owner, no shared full-output trigger')
+  ok('mounted rail: four main actions in order; 修改指定内容 connects hand edit and the existing AI workflows')
 }
 
-async function testDeferredFailureStaysVisibleAfterSectionSwitch() {
-  const pendingPosts = []
+async function testMountedTasksEntryAndHistoryGuard() {
+  const patches = []
   const routes = {
-    ...saveRoutes([]),
+    ...saveRoutes(patches),
     'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
     'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
-    'POST /api/daily-plans/p1/ai-tasks': () => {
-      const gate = deferred()
-      pendingPosts.push(gate)
-      return gate.promise
-    },
   }
-  const { root, hook, app } = await mountEditor(routes, {}, { realPanel: true })
+  const { root, hook, app, calls } = await mountEditor(routes, {}, { realPanel: true })
   await settle()
-  const actions = byD1(root, 'daily-generation-actions')
-  const splitButton = () => byD1Button(root, 'ai-trigger-daily_lesson_split')
-
-  // Start split, then leave the raw pane while the POST is still pending.
-  splitButton().props.onClick({})
-  await waitUntil(() => pendingPosts.length === 1, 'split POST')
-  assert.equal(hook.layoutSection(), 'raw')
-  byD1Button(root, 'layout-nav-group').props.onClick({})
+  // 任务 is the one consolidated auxiliary entry.
+  byD1Button(root, 'open-tasks').props.onClick({})
   await settle()
-  assert.equal(hook.layoutSection(), 'group')
-  assert.equal(byD1(root, 'raw-lesson').style.display, 'none')
-
-  pendingPosts[0].resolve(apiError(401, 'AI_NOT_CONFIGURED', 'AI 未配置'))
-  await waitUntil(
-    () => Boolean(byD1(root, 'ai-trigger-error-daily_lesson_split')),
-    'visible split failure',
-  )
+  assert.equal(hook.tasksOpen(), true, 'the tasks chooser opens')
+  assert.ok(byD1(root, 'tasks-dialog'), 'the tasks dialog renders')
+  byD1Button(root, 'tasks-open-ai').props.onClick({})
   await settle()
-  assert.equal(hook.layoutSection(), 'group', 'async failure does not force-switch over the chosen section')
-  const visibleError = byD1(root, 'ai-trigger-error-daily_lesson_split')
-  assert.ok(
-    walkElements(actions).includes(visibleError),
-    'split failure is inside the always-visible left action group',
-  )
-  assert.match(nodeText(visibleError), /尚未配置/)
+  assert.equal(hook.tasksOpen(), false, 'choosing AI tasks closes the chooser')
+  assert.equal(hook.aiTaskDialogOpen(), true, 'the AI task panel dialog opens')
   assert.equal(
-    allByD1(root, 'ai-trigger-error-daily_lesson_split').length,
+    calls.filter((call) => call.method === 'POST' && call.path.endsWith('/ai-tasks')).length,
+    0,
+    'merely opening the task dialog never creates a real AI request',
+  )
+  assert.ok(byD1(root, 'ai-task-backdrop'), 'the single task panel is visible')
+  assert.ok(byD1Button(root, 'ai-trigger-daily_lesson_split'), 'split trigger lives inside the task dialog')
+  assert.ok(byD1Button(root, 'ai-trigger-daily_process_adapt'), 'adapt trigger lives inside the task dialog')
+  assert.equal(
+    allByD1(root, 'ai-tasks').length,
     1,
-    'the hidden raw row does not duplicate the error',
+    'one AI task panel/state owner is mounted',
   )
-  assert.ok(byD1(visibleError, 'ai-locate-error-daily_lesson_split'), 'failure offers an explicit location action')
-  byD1Button(root, 'layout-edit-group').props.onClick({})
-  await settle()
-  hook.layoutDraft().form.group_activity.process = '编辑中的副本'
-  byD1Button(root, 'ai-locate-error-daily_lesson_split').props.onClick({})
-  await settle()
-  assert.equal(hook.layoutSection(), 'group', 'location never force-switches over an open editing copy')
-  assert.equal(hook.layoutEditingSection(), 'group')
-  assert.equal(hook.layoutDraft().form.group_activity.process, '编辑中的副本')
-  byD1Button(root, 'layout-edit-cancel').props.onClick({})
-  await settle()
-  byD1Button(root, 'ai-locate-error-daily_lesson_split').props.onClick({})
-  await settle()
-  assert.equal(hook.layoutSection(), 'raw', 'location action switches only on explicit click')
-  byD1Button(root, 'layout-nav-group').props.onClick({})
-  await settle()
 
-  // Unknown create: the same left group must show the retained receipt and
-  // same-request recovery controls while the raw pane is hidden.
-  splitButton().props.onClick({})
-  await waitUntil(() => pendingPosts.length === 2, 'second split POST')
-  assert.equal(hook.layoutSection(), 'raw')
-  byD1Button(root, 'layout-nav-group').props.onClick({})
+  // 版本历史 keeps its guarded open flow: it never opens over a dirty body.
+  hook.setText('未保存的正文', '未保存的反思')
   await settle()
-  pendingPosts[1].reject(new Error('network down'))
-  await waitUntil(
-    () => Boolean(byD1(root, 'ai-trigger-pending-daily_lesson_split')),
-    'visible unknown receipt',
-  )
+  byD1Button(root, 'open-tasks').props.onClick({})
   await settle()
-  assert.equal(hook.layoutSection(), 'group', 'unknown receipt does not force-switch')
-  assert.ok(walkElements(actions).includes(byD1(root, 'ai-trigger-pending-daily_lesson_split')))
-  assert.equal(allByD1(root, 'ai-query-create-daily_lesson_split').length, 1)
-  assert.equal(allByD1(root, 'ai-resubmit-create-daily_lesson_split').length, 1)
-  assert.ok(walkElements(actions).includes(byD1(root, 'ai-query-create-daily_lesson_split')))
-  assert.ok(walkElements(actions).includes(byD1(root, 'ai-resubmit-create-daily_lesson_split')))
-  assert.match(nodeText(byD1(root, 'ai-trigger-error-daily_lesson_split')), /提交结果未知|待核对/)
-  assert.ok(byD1(root, 'ai-locate-pending-daily_lesson_split'))
+  byD1Button(root, 'tasks-open-history').props.onClick({})
+  await waitUntil(() => patches.length === 1, 'history protective save')
+  await settle()
+  assert.equal(hook.historyOpen(), true, 'the history dialog opens after the protective save')
+  assert.equal(hook.tasksOpen(), false)
+  assert.equal(patches.length, 1, 'the protected history open saved once through the normal path')
   app.unmount()
-  ok('deferred create failure/unknown: left action group stays visible after switching sections; recovery is same-request')
+  ok('mounted tasks entry: one auxiliary entry leads to AI tasks and the guarded version history')
 }
 
 async function testMountedEditDialogIndependentCopy() {
@@ -909,8 +976,13 @@ async function testMountedEditDialogIndependentCopy() {
   const beforeRaw = hook.raw()
   const epochBefore = hook.editEpoch()
 
-  byD1Button(root, 'layout-edit-group').props.onClick({})
+  byD1Button(root, 'open-modify').props.onClick({})
   await settle()
+  byD1Button(root, 'modify-pick-group').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-edit').props.onClick({})
+  await settle()
+  assert.equal(hook.modifyOpen(), false, 'submitting the chooser closes it first')
   assert.equal(hook.layoutEditingSection(), 'group')
   assert.ok(byD1(root, 'layout-edit-dialog'), 'the edit dialog is open')
   const processInput = byD1(root, 'layout-input-group-process')
@@ -940,7 +1012,11 @@ async function testMountedEditDialogIndependentCopy() {
     'cancel performs zero writes',
   )
 
-  byD1Button(root, 'layout-edit-group').props.onClick({})
+  byD1Button(root, 'open-modify').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-pick-group').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-edit').props.onClick({})
   await settle()
   hook.layoutDraft().form.group_activity.theme = '弹窗主题'
   hook.layoutDraft().form.group_activity.process = '弹窗过程\n第二行'
@@ -977,7 +1053,11 @@ async function testMountedEditDialogIndependentCopy() {
 async function testMountedReflectionAndRawDialog() {
   const patches = []
   const { root, hook, app } = await mountEditor(saveRoutes(patches))
-  byD1Button(root, 'layout-edit-reflection').props.onClick({})
+  byD1Button(root, 'open-modify').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-pick-reflection').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-edit').props.onClick({})
   await settle()
   const reflectionInput = byD1(root, 'layout-input-reflection')
   const materialsInput = byD1(root, 'reflection-materials')
@@ -992,7 +1072,11 @@ async function testMountedReflectionAndRawDialog() {
   assert.equal(hook.dirty(), true)
   assert.equal(patches.length, 0, 'reflection confirm is still only a draft fill')
 
-  byD1Button(root, 'layout-edit-raw').props.onClick({})
+  byD1Button(root, 'open-modify').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-pick-raw').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-edit').props.onClick({})
   await settle()
   hook.layoutDraft().raw = '更新后的原始教案\r\n第二行'
   byD1Button(root, 'layout-edit-confirm').props.onClick({})
@@ -1005,7 +1089,11 @@ async function testMountedReflectionAndRawDialog() {
 
 async function testMountedCompositionAndFrozenConfirm() {
   const { harness, root, hook, app, controls } = await mountEditor(saveRoutes([]))
-  byD1Button(root, 'layout-edit-group').props.onClick({})
+  byD1Button(root, 'open-modify').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-pick-group').props.onClick({})
+  await settle()
+  byD1Button(root, 'modify-edit').props.onClick({})
   await settle()
   const dialogBody = byD1(root, 'layout-dialog-body')
   assert.ok(dialogBody, 'dialog body is mounted')
@@ -1077,53 +1165,6 @@ async function testMountedCompositionAndFrozenConfirm() {
   assert.equal(hook.layoutEditingSection(), null)
   app.unmount()
   ok('mounted guards: modal IME joins leave protection; frozen confirm is disabled and never fills the form')
-}
-
-async function testAutoAdaptContinuationOpensItsContext() {
-  const saved = planFixture({ current_content_version: 4 })
-  saved.content = {
-    ...saved.content,
-    version: 4,
-    split_baseline: { group_activity_process: '拆分原过程' },
-  }
-  const harness = new Harness({
-    fetchImpl: router({
-      'GET /api/daily-plans/by-date': () => jsonResponse(200, planFixture()),
-      'GET /api/daily-plans/p1': () => jsonResponse(200, saved),
-    }),
-    captureHooks: true,
-  })
-  const { state } = harness.setupComponent()
-  harness.runMounted()
-  await waitUntil(() => state.phase.value === 'ready', 'setup editor load')
-  await settle()
-  state.candidateId.value = 'cand1'
-  state.layoutSection.value = 'raw'
-  state.aiTaskPanelRef.value = { continueAfterSplit: async () => true }
-  const epoch = state.editEpoch.value
-  await state.onCandidateAdopted(
-    {
-      changed: true,
-      plan_id: 'p1',
-      content_id: 'cc1',
-      content_version: 4,
-      candidate_id: 'cand1',
-      selected_targets: ['group_activity'],
-      request_id: 'adopt-1',
-    },
-    epoch,
-    {
-      planId: 'p1',
-      candidateId: 'cand1',
-      taskType: 'daily_lesson_split',
-      targetGrade: 'small',
-    },
-  )
-  await settle()
-  assert.equal(state.layoutSection.value, 'group', 'automatic adaptation opens the process context')
-  assert.equal(state.plan.value.current_content_version, 4)
-  harness.unmount()
-  ok('split adoption: the automatic one-time adaptation makes its group/process task context visible')
 }
 
 async function testStaleDialogCannotOverwriteNewVersion() {
@@ -1466,11 +1507,307 @@ async function testRailSplitCreatesDraftThenStartsOnce() {
   ok('rail split: an unsaved draft is created first, then exactly one split starts')
 }
 
-await testMountedDirectoryAndReadPanes()
+async function testRailSplitEmptyRawOpensOriginalInputFirst() {
+  const patches = []
+  const posts = []
+  const routes = {
+    'GET /api/daily-plans/by-date': () => {
+      const empty = planFixture()
+      empty.content = { ...empty.content, raw_lesson_plan: '' }
+      return jsonResponse(200, empty)
+    },
+    'PATCH /api/daily-plans/p1': ({ body }) => {
+      patches.push(body)
+      const next = planFixture({ current_content_version: 4 })
+      next.content = {
+        ...next.content,
+        version: 4,
+        raw_lesson_plan: body.raw_lesson_plan,
+        adopted_content: clone(body.adopted_content),
+      }
+      return jsonResponse(200, next)
+    },
+    'GET /api/local/ai/tasks': () => jsonResponse(200, { items: [], next_cursor: null }),
+    'GET /api/local/ai/prompts': () => jsonResponse(200, { items: [] }),
+    'POST /api/daily-plans/p1/ai-tasks': ({ body }) => {
+      posts.push(body)
+      return jsonResponse(202, taskFixture({
+        task_type: body.task_type,
+        input_summary: {
+          content_version: body.expected_content_version,
+          target_grade: body.target_grade,
+          dependency_hash: 'd',
+        },
+      }))
+    },
+  }
+  const { root, hook, app } = await mountEditor(routes, {}, { realPanel: true })
+  await settle()
+  assert.equal(hook.raw(), '', 'the plan starts without a raw lesson')
+  byD1Button(root, 'start-split-from-rail').props.onClick({})
+  await settle()
+  assert.equal(hook.layoutEditingSection(), 'raw', 'the original-lesson input dialog opens first')
+  assert.ok(byD1(root, 'layout-edit-dialog'), 'the raw column dialog is mounted')
+  assert.equal(patches.length, 0, 'no save is triggered before the raw text exists')
+  assert.equal(posts.length, 0, 'no split task is registered before the raw text exists')
+  hook.layoutDraft().raw = '粘贴的原始教案\n第二段'
+  byD1Button(root, 'layout-edit-confirm').props.onClick({})
+  await settle()
+  assert.equal(hook.raw(), '粘贴的原始教案\n第二段', 'confirm only fills the draft')
+  assert.equal(hook.dirty(), true)
+  assert.equal(patches.length, 0, 'confirm still never saves implicitly')
+
+  // With the raw text in the draft, the same main action runs the real flow.
+  byD1Button(root, 'start-split-from-rail').props.onClick({})
+  await waitUntil(() => posts.length === 1, 'split POST after raw input')
+  await settle()
+  assert.equal(patches.length, 1, 'the guarded save runs once before the split')
+  assert.equal(patches[0].raw_lesson_plan, '粘贴的原始教案\n第二段')
+  assert.equal(posts[0].task_type, 'daily_lesson_split')
+  app.unmount()
+  ok('rail split with empty raw: the original-lesson input dialog opens first, then the same action splits')
+}
+
+async function testMountedEmptyDraftDocument() {
+  const routes = {
+    'GET /api/daily-plans/by-date': () => apiError(404, 'DAILY_PLAN_NOT_FOUND', '未创建'),
+  }
+  const { root, hook, app, calls } = await mountEditor(routes, { initialMode: 'create' })
+  await settle()
+  assert.equal(hook.draft(), true, 'the empty day opens as an unsaved draft')
+  assert.ok(byD1(root, 'draft-notice'), 'the draft notice explains the change-only save rule')
+  assert.match(nodeText(byD1(root, 'daily-doc-head')), /一日活动计划/)
+  assert.match(nodeText(byD1(root, 'daily-doc-head')), /班级：中一班/, 'the draft head uses the local class context')
+  for (const marker of [
+    'raw-lesson',
+    'layout-section-morning',
+    'layout-section-talk',
+    'layout-section-group',
+    'layout-section-post',
+    'layout-section-afternoon',
+    'layout-section-reflection',
+  ]) {
+    assert.ok(byD1(root, marker), `${marker} renders for the empty draft`)
+  }
+  assert.match(nodeText(byD1(root, 'raw-lesson')), /（未填写原始教案/)
+  assert.match(nodeText(byD1(root, 'layout-section-morning')), /暂无晨间游戏组/)
+  assert.match(nodeText(byD1(root, 'layout-section-talk')), /（未填写）/)
+  assert.match(nodeText(byD1(root, 'layout-section-group')), /（未填写）/)
+  assert.match(nodeText(byD1(root, 'layout-section-post')), /暂无集体活动后游戏组/)
+  assert.match(nodeText(byD1(root, 'layout-section-afternoon')), /（未填写区域名称）/)
+  assert.match(nodeText(byD1(root, 'layout-section-reflection')), /（未填写反思）/)
+  assert.equal(byD1(root, 'read-split-baseline'), null, 'no split baseline is invented for an empty draft')
+  // The four main actions exist for the draft; AI/export need a saved plan.
+  assert.equal(byD1Button(root, 'open-modify').props.disabled, false, '修改指定内容 works on the draft')
+  assert.equal(byD1Button(root, 'open-export').props.disabled, true, 'export waits for a saved plan')
+  assert.equal(byD1Button(root, 'start-split-from-rail').props.disabled, false)
+
+  // A first-time empty date never writes anything on its own.
+  assert.equal(
+    calls.filter((call) => call.method !== 'GET').length,
+    0,
+    'plain browsing of an empty draft performs zero writes',
+  )
+
+  // 任务 with no saved plan stays explicit and operable, not a dead click.
+  byD1Button(root, 'open-tasks').props.onClick({})
+  await settle()
+  assert.equal(hook.tasksOpen(), true, 'the tasks chooser opens for a draft too')
+  assert.match(
+    nodeText(byD1(root, 'tasks-draft-hint')),
+    /未保存草稿/,
+    'the no-plan state is explained instead of silently doing nothing',
+  )
+  assert.equal(
+    byD1Button(root, 'tasks-open-ai').props.disabled,
+    true,
+    'AI tasks wait for a saved plan id',
+  )
+  assert.equal(
+    byD1Button(root, 'tasks-open-history').props.disabled,
+    true,
+    'version history waits for a saved plan id',
+  )
+  byD1Button(root, 'tasks-open-ai').props.onClick({})
+  await settle()
+  assert.equal(hook.aiTaskDialogOpen(), false, 'a disabled AI entry never opens an empty dialog')
+  byD1Button(root, 'open-modify').props.onClick({})
+  await settle()
+  assert.match(
+    nodeText(byD1(root, 'modify-dialog')),
+    /需先保存并创建当天计划/,
+    'the modify chooser explains its own no-plan AI state',
+  )
+  assert.equal(byD1Button(root, 'modify-ai').props.disabled, true, 'chooser AI waits for a saved plan')
+  assert.equal(byD1Button(root, 'modify-edit').props.disabled, false, 'hand editing stays usable on a draft')
+  app.unmount()
+  ok('mounted empty draft: the full document renders with explicit empty placeholders; no-plan task/AI states are explicit and never dead clicks')
+}
+
+async function testMountedFirstOpenEmptyDateWritesNothing() {
+  const creates = []
+  const routes = {
+    'GET /api/daily-plans/by-date': () => apiError(404, 'DAILY_PLAN_NOT_FOUND', '未创建'),
+    'POST /api/daily-plans': ({ body }) => {
+      creates.push(body)
+      return jsonResponse(201, planFixture({ current_content_version: 1 }))
+    },
+  }
+  const { root, hook, app, calls } = await mountEditor(
+    routes,
+    { initialMode: 'open' },
+    { ready: (candidate) => candidate?.phase?.() === 'create_confirmation' },
+  )
+  await waitUntil(() => hook.phase() === 'create_confirmation', 'create confirmation')
+  await settle()
+  assert.ok(byD1(root, 'create-confirmation'), 'the first open of an empty date asks before creating')
+  assert.equal(
+    calls.filter((call) => call.method !== 'GET').length,
+    0,
+    'opening an empty date for the first time performs zero writes before the explicit create',
+  )
+  byD1Button(root, 'confirm-create').props.onClick({})
+  await waitUntil(() => hook.phase() === 'ready', 'explicit create')
+  await settle()
+  assert.equal(creates.length, 1, 'exactly one create runs after the teacher clicks')
+  assert.equal(creates[0].plan_date, '2026-10-19')
+  assert.ok(byD1(root, 'daily-doc-head'), 'the fresh plan opens the full document from the top')
+  assert.equal(hook.layoutSection(), 'raw', 'the reading starts at the preview top section')
+  app.unmount()
+  ok('first open of an empty date: nothing is written until the explicit 创建日计划 click')
+}
+
+async function testMountedLegacyPostAreasAndFixedLabel() {
+  const legacy = planFixture()
+  legacy.content = {
+    ...legacy.content,
+    adopted_content: {
+      ...legacy.content.adopted_content,
+      morning_exercise_label: '体能大循环（存档值）',
+      post_group_games: [
+        {
+          group_id: 'pg1',
+          context_kind: 'area',
+          area: '美工区、建构区',
+          games: [{ game_id: 'g4', name: '搭桥' }],
+          focus_guidance: '美工区',
+          objectives: '室内目标',
+          guidance: '室内指导',
+          support_strategy: '室内支持',
+        },
+        {
+          group_id: 'pg2',
+          context_kind: 'outdoor',
+          area: '骑行、沙水池',
+          games: [{ game_id: 'g6', name: '运水接力' }],
+          focus_guidance: '骑行',
+          objectives: '旧版户外目标',
+          guidance: '旧版户外指导',
+          support_strategy: '旧版户外支持',
+        },
+        {
+          group_id: 'pg3',
+          context_kind: 'special_room',
+          area: '木工坊',
+          games: [{ game_id: 'g7', name: '小木匠' }],
+          focus_guidance: '木工坊',
+          objectives: '专用室目标',
+          guidance: '专用室指导',
+          support_strategy: '专用室支持',
+        },
+      ],
+    },
+  }
+  const { root, app } = await mountEditor({
+    'GET /api/daily-plans/by-date': () => jsonResponse(200, legacy),
+  })
+  await settle()
+  assert.match(
+    nodeText(byD1(root, 'layout-section-morning')),
+    /体能大循环（存档值）/,
+    'the fixed activity name follows the stored value when the plan carries one',
+  )
+  for (const gi of [0, 1, 2]) {
+    assert.ok(byD1(root, `read-post-group-${gi}`), `legacy post group ${gi} keeps its own block`)
+  }
+  assert.match(nodeText(byD1(root, 'read-post-group-1')), /旧版户外目标/, 'a legacy outdoor group shows its objectives')
+  assert.match(nodeText(byD1(root, 'read-post-group-1')), /骑行、沙水池/, 'a legacy outdoor group keeps its area')
+  assert.match(nodeText(byD1(root, 'read-post-group-2')), /专用室目标/, 'a special-room group shows its objectives')
+  assert.match(nodeText(byD1(root, 'read-post-group-2')), /木工坊/, 'a special-room group keeps its area')
+  app.unmount()
+
+  const unlabeled = planFixture()
+  unlabeled.content = {
+    ...unlabeled.content,
+    adopted_content: {
+      ...unlabeled.content.adopted_content,
+      morning_exercise_label: undefined,
+    },
+  }
+  const second = await mountEditor({
+    'GET /api/daily-plans/by-date': () => jsonResponse(200, unlabeled),
+  })
+  await settle()
+  assert.match(
+    nodeText(byD1(second.root, 'layout-section-morning')),
+    /晨间 · 体能大循环/,
+    'old data without a stored label falls back to the fixed business label',
+  )
+  second.app.unmount()
+  ok('legacy evidence: all post-group areas/objectives render; the fixed activity name is evidence-first with a fixed fallback')
+}
+
+async function testNarrowActionsBeforeDocument() {
+  // 760x560 geometry regression: in the narrow single-column layout the
+  // action group must sit BEFORE the long reading document (not y=4509), in
+  // the primary order, and the first-open reveal must keep it on screen.
+  const routes = saveRoutes([])
+  const { root, hook, harness, app } = await mountEditor(routes, {}, {
+    windowInit: (narrow) => {
+      narrow.window.matchMedia = () => ({ matches: true })
+    },
+  })
+  await settle()
+  assert.equal(
+    hook.revealTarget(),
+    'actions',
+    'a narrow first open reveals the action bar itself, never scrolling it offscreen',
+  )
+  const rail = byD1(root, 'editor-actions-rail')
+  assert.ok(rail, 'the one action rail exists (no duplicated toolbar DOM)')
+  const railButtons = walkElements(rail)
+    .filter((node) => node.tag === 'button' && typeof node.props['data-d1'] === 'string')
+  assert.deepEqual(
+    railButtons.map((node) => node.props['data-d1']),
+    ['start-split-from-rail', 'open-modify', 'manual-save', 'open-export', 'open-tasks', 'back-calendar'],
+    'the narrow layout keeps the primary order, then 任务 and 日历与已保存计划',
+  )
+  // Same live nodes: narrow reordering is CSS-only, so the actions stay operable.
+  byD1Button(root, 'open-modify').props.onClick({})
+  await settle()
+  assert.equal(hook.modifyOpen(), true, 'the narrow action bar is the same working controls')
+  byD1Button(root, 'modify-cancel').props.onClick({})
+  await settle()
+
+  // Leaving the narrow viewport restores the document-head reveal target.
+  delete harness.window.matchMedia
+  await settle()
+  assert.equal(hook.revealTarget(), 'document', 'the wide layout reveals the document head as before')
+  app.unmount()
+  ok('narrow geometry: the action group precedes the document and stays the reveal target above it')
+}
+
+await testMountedContinuousDocument()
+await testNarrowActionsBeforeDocument()
+await testMountedEmptyDraftDocument()
+await testMountedFirstOpenEmptyDateWritesNothing()
+await testMountedLegacyPostAreasAndFixedLabel()
 await testRailSplitSavesThenStartsOnce()
 await testRailSplitSaveFailureOrUnknownDoesNotStart()
 await testRailSplitCreatesDraftThenStartsOnce()
-await testMountedGenerationActions()
+await testRailSplitEmptyRawOpensOriginalInputFirst()
+await testMountedRailOrderAndModifyChooser()
+await testMountedTasksEntryAndHistoryGuard()
 await testMountedEditDialogIndependentCopy()
 await testMountedReflectionAndRawDialog()
 await testMountedCompositionAndFrozenConfirm()

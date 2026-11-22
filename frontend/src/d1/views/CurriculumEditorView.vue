@@ -11,6 +11,9 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { LeaveEditor } from '../leave'
 import CurriculumExportDialog from './CurriculumExportDialog.vue'
 import CurriculumAiDialog from './CurriculumAiDialog.vue'
+import RecordTasksDialog from '../components/RecordTasksDialog.vue'
+import type { RecordTaskRow, RecordVersionRow } from '../components/RecordTasksDialog.vue'
+import { taskStatusLabel, taskTypeLabel } from '../ai'
 import {
   CURRICULUM_AI_EDIT_FIELDS,
   CURRICULUM_FORM_OPTIONS,
@@ -26,15 +29,19 @@ import {
   curriculumConflicts,
   curriculumContentEquals,
   curriculumDocumentEquals,
+  curriculumDocumentView,
   curriculumErrorMessage,
   curriculumFieldLabel,
   curriculumValidationErrors,
   emptyCurriculumContent,
   formatCurriculumUpdatedAt,
   getCurriculumDeliberation,
+  getCurriculumVersion,
   isCurriculumIndeterminateError,
   isCurriculumVersionConflict,
+  listCurriculumAiTasks,
   listCurriculumDeliberations,
+  listCurriculumVersions,
   newCurriculumRecordId,
   previewCurriculumDeliberation,
   saveCurriculumDeliberation,
@@ -42,12 +49,14 @@ import {
   wholeCurriculumSelection,
   type CurriculumAiAdoptPayload,
   type CurriculumAiSelection,
+  type CurriculumAiTaskSummary,
   type CurriculumConflict,
   type CurriculumContent,
   type CurriculumDocument,
   type CurriculumExportPreview,
   type CurriculumRecord,
   type CurriculumSaveOutcome,
+  type CurriculumVersionDetail,
 } from '../curriculum'
 
 const props = defineProps<{
@@ -110,6 +119,238 @@ const lastSelectionField = ref('')
 const wholeField = ref('lesson_original')
 const composing = ref(false)
 let compositionWaiters: Array<() => void> = []
+
+// -- auxiliary "任务" panel: read-only AI tasks + saved-version history -----
+// Every reopen refetches; a context/record switch resets the state so another
+// record's rows can never appear here. The panel performs no writes.
+const tasksOpen = ref(false)
+const taskRows = ref<RecordTaskRow[]>([])
+const tasksLoading = ref(false)
+const tasksError = ref('')
+const versionRows = ref<RecordVersionRow[]>([])
+const versionsLoading = ref(false)
+const versionsError = ref('')
+const selectedVersion = ref<number | null>(null)
+const versionDetail = ref<CurriculumVersionDetail | null>(null)
+const versionDetailLoading = ref(false)
+const versionDetailError = ref('')
+let tasksGeneration = 0
+/**
+ * Monotonic sequence for version-detail reads. Two clicks on different
+ * versions share one tasksGeneration, so the generation alone cannot stop a
+ * slow first response from overwriting the second selection's detail or
+ * spinner. Every selection, refresh and reset bumps the sequence; only the
+ * newest request may write those states.
+ */
+let versionRequestSeq = 0
+
+function resetTasksPanelState(): void {
+  tasksGeneration += 1
+  versionRequestSeq += 1
+  taskRows.value = []
+  tasksLoading.value = false
+  tasksError.value = ''
+  versionRows.value = []
+  versionsLoading.value = false
+  versionsError.value = ''
+  selectedVersion.value = null
+  versionDetail.value = null
+  versionDetailLoading.value = false
+  versionDetailError.value = ''
+}
+
+async function loadTaskRows(recordId: string, generation: number): Promise<void> {
+  try {
+    const items: CurriculumAiTaskSummary[] = []
+    let cursor: string | null = null
+    let pages = 0
+    do {
+      const page = await listCurriculumAiTasks(recordId, {
+        limit: 100,
+        cursor: cursor ?? undefined,
+      })
+      if (generation !== tasksGeneration || recordId !== props.recordId) return
+      items.push(...page.items)
+      cursor = page.next_cursor
+      pages += 1
+    } while (cursor && pages < 100)
+    if (generation !== tasksGeneration || recordId !== props.recordId) return
+    taskRows.value = items.map((item) => ({
+      key: item.task_id,
+      typeLabel: taskTypeLabel(item.task_type) || item.task_type,
+      status: item.status,
+      statusLabel: taskStatusLabel(item.status),
+      createdAt: formatCurriculumUpdatedAt(item.created_at),
+    }))
+  } catch (error) {
+    if (generation !== tasksGeneration || recordId !== props.recordId) return
+    tasksError.value = `AI 任务读取失败：${curriculumErrorMessage(error)}`
+  } finally {
+    if (generation === tasksGeneration) tasksLoading.value = false
+  }
+}
+
+async function loadVersionRows(recordId: string, generation: number): Promise<void> {
+  try {
+    const data = await listCurriculumVersions(recordId)
+    if (generation !== tasksGeneration || recordId !== props.recordId) return
+    versionRows.value = data.items.map((item) => ({
+      version: item.version,
+      savedAt: formatCurriculumUpdatedAt(item.saved_at),
+    }))
+  } catch (error) {
+    if (generation !== tasksGeneration || recordId !== props.recordId) return
+    versionsError.value = `版本历史读取失败：${curriculumErrorMessage(error)}`
+  } finally {
+    if (generation === tasksGeneration) versionsLoading.value = false
+  }
+}
+
+function refreshTasksPanel(): void {
+  if (props.isNew) {
+    // A never-saved draft has no record identity yet; the panel stays empty
+    // instead of guessing a server history that cannot exist.
+    resetTasksPanelState()
+    return
+  }
+  const generation = ++tasksGeneration
+  const recordId = props.recordId
+  versionRequestSeq += 1
+  selectedVersion.value = null
+  versionDetail.value = null
+  versionDetailError.value = ''
+  // A refresh retires any in-flight version read; the retired request's
+  // finally is sequence-guarded, so the spinner must be cleared here.
+  versionDetailLoading.value = false
+  tasksLoading.value = true
+  versionsLoading.value = true
+  tasksError.value = ''
+  versionsError.value = ''
+  void loadTaskRows(recordId, generation)
+  void loadVersionRows(recordId, generation)
+}
+
+async function selectRecordVersion(nextVersion: number): Promise<void> {
+  if (props.isNew) return
+  const recordId = props.recordId
+  const generation = tasksGeneration
+  const request = ++versionRequestSeq
+  versionDetail.value = null
+  versionDetailError.value = ''
+  selectedVersion.value = nextVersion
+  versionDetailLoading.value = true
+  const stillCurrent = (): boolean =>
+    request === versionRequestSeq
+    && generation === tasksGeneration
+    && recordId === props.recordId
+  try {
+    const detail = await getCurriculumVersion(recordId, nextVersion)
+    if (!stillCurrent()) return
+    if (detail.version !== nextVersion) {
+      versionDetailError.value = '版本回执与所选版本不一致，请重新选择'
+      return
+    }
+    versionDetail.value = detail
+  } catch (error) {
+    if (!stillCurrent()) return
+    versionDetailError.value = `版本内容读取失败：${curriculumErrorMessage(error)}`
+  } finally {
+    if (request === versionRequestSeq && generation === tasksGeneration) {
+      versionDetailLoading.value = false
+    }
+  }
+}
+
+function curriculumVersionStatusText(value: string): string {
+  if (value === 'adjusted') return '有所调整'
+  if (value === 'unchanged') return '保持原设计不变'
+  return '未选择'
+}
+
+function curriculumVersionFormText(content: CurriculumContent): string {
+  if (content.activity_form !== 'other') {
+    const option = CURRICULUM_FORM_OPTIONS.find(
+      (item) => item.value === content.activity_form,
+    )
+    return option ? option.label : content.activity_form || '未选择'
+  }
+  const other = content.activity_form_other.trim()
+  return other ? `其他：${other}` : '其他（未填写）'
+}
+
+const CURRICULUM_VERSION_GROUPS: Array<{
+  label: string
+  rows: Array<{ label: string; key: keyof CurriculumContent; long?: boolean }>
+}> = [
+  {
+    label: '基本信息',
+    rows: [
+      { label: '活动名称', key: 'activity_name' },
+      { label: '活动时间', key: 'activity_date' },
+      { label: '活动形式', key: 'activity_form' },
+      { label: '园所', key: 'institution' },
+      { label: '班级', key: 'class_name' },
+      { label: '幼儿人数', key: 'child_count' },
+      { label: '组织者', key: 'organizer' },
+      { label: '记录人', key: 'recorder' },
+    ],
+  },
+  {
+    label: '活动目标',
+    rows: [
+      { label: '目标原稿', key: 'goals_original', long: true },
+      { label: '目标修订状态', key: 'goals_status' },
+      { label: '目标调整', key: 'goals_adjustment', long: true },
+    ],
+  },
+  {
+    label: '活动准备',
+    rows: [
+      { label: '准备原稿', key: 'preparation_original', long: true },
+      { label: '准备修订状态', key: 'preparation_status' },
+      { label: '准备调整', key: 'preparation_adjustment', long: true },
+    ],
+  },
+  {
+    label: '活动过程',
+    rows: [
+      { label: '过程原稿', key: 'process_original', long: true },
+      { label: '过程调整', key: 'process_adjustment', long: true },
+    ],
+  },
+  {
+    label: '调整理由',
+    rows: [{ label: '调整理由', key: 'reason', long: true }],
+  },
+  {
+    label: '教案正文',
+    rows: [
+      { label: '原稿教案', key: 'lesson_original', long: true },
+      { label: '二次稿', key: 'lesson_revised', long: true },
+    ],
+  },
+]
+
+function curriculumVersionRowText(
+  content: CurriculumContent,
+  row: { label: string; key: keyof CurriculumContent },
+): string {
+  if (row.key === 'activity_form') return curriculumVersionFormText(content)
+  if (row.key === 'goals_status' || row.key === 'preparation_status') {
+    return curriculumVersionStatusText(String(content[row.key]))
+  }
+  const value = String(content[row.key] ?? '')
+  return value.trim() ? value : '（空）'
+}
+
+/**
+ * Teacher-legible rows of the retained structured document. The flat form
+ * stays primary; these sections surface the saved 原稿/二次稿 block
+ * paragraphs (with their source quotes) that the flat fields do not carry.
+ */
+const curriculumVersionDocument = computed(() =>
+  curriculumDocumentView(versionDetail.value?.document),
+)
 
 type CurriculumModalKind =
   | 'basic'
@@ -1409,6 +1650,8 @@ function resetForContext(): void {
   lastSelectionModalToken.value = {}
   lastSelectionField.value = ''
   wholeField.value = 'lesson_original'
+  // A context switch must not keep another record's tasks or versions.
+  resetTasksPanelState()
   releaseComposition()
   const previous = currentOwner.value
   currentOwner.value = `curriculum:${props.recordId}:${
@@ -1475,18 +1718,18 @@ defineExpose({
       </div>
       <div class="actions">
         <el-button
+          data-d1="curriculum-tasks-open"
+          :disabled="!loaded"
+          @click="tasksOpen = true"
+        >
+          任务
+        </el-button>
+        <el-button
           data-d1="curriculum-back"
           :disabled="pageBusy"
           @click="emit('back')"
         >
           返回列表
-        </el-button>
-        <el-button
-          data-d1="curriculum-open-original"
-          :disabled="!canMutate || !loaded"
-          @click="openCurriculumModal('lesson_original')"
-        >
-          原稿教案
         </el-button>
         <el-button
           data-d1="curriculum-save"
@@ -2266,6 +2509,147 @@ defineExpose({
       @busy="onExportBusy"
       @stale="onExportStale"
     />
+
+    <RecordTasksDialog
+      :open="tasksOpen"
+      :disabled="!canEditRecord"
+      title="任务"
+      :tasks="taskRows"
+      :tasks-loading="tasksLoading"
+      :tasks-error="tasksError"
+      :versions="versionRows"
+      :versions-loading="versionsLoading"
+      :versions-error="versionsError"
+      :selected-version="selectedVersion"
+      history-label="版本历史"
+      history-hint="只读；显示当时实际保存的审议内容、修订状态与教案正文。"
+      @update:open="tasksOpen = $event"
+      @refresh="refreshTasksPanel"
+      @select-version="selectRecordVersion"
+    >
+      <template #version-detail>
+        <p
+          v-if="versionDetailLoading"
+          class="muted"
+          data-d1="curriculum-version-loading"
+        >
+          正在读取版本内容…
+        </p>
+        <el-alert
+          v-else-if="versionDetailError"
+          type="error"
+          :closable="false"
+          :title="versionDetailError"
+          data-d1="curriculum-version-error"
+        />
+        <div
+          v-else-if="versionDetail"
+          class="curriculum-version-detail"
+          data-d1="curriculum-version-detail"
+        >
+          <p class="muted" data-d1="curriculum-version-meta">
+            v{{ versionDetail.version }} · 保存于
+            {{ formatCurriculumUpdatedAt(versionDetail.saved_at) || '—' }}
+          </p>
+          <!-- Retained structured document: the saved 原稿/二次稿 block
+               paragraphs (and their source quotes) are teacher-legible here;
+               technical ids/hashes/columns are never rendered. -->
+          <div
+            v-if="versionDetail.document"
+            class="curriculum-version-document"
+            data-d1="curriculum-version-document"
+          >
+            <template v-if="curriculumVersionDocument">
+              <p class="muted curriculum-version-document-note">
+                该次保存同时保留以下结构化教案文档（只读；顺序与段落按当时保存）：
+              </p>
+              <details
+                v-if="curriculumVersionDocument.original.length"
+                open
+                class="curriculum-version-document-section"
+                data-d1="curriculum-version-document-original"
+              >
+                <summary>原稿结构</summary>
+                <div
+                  v-for="block in curriculumVersionDocument.original"
+                  :key="block.key"
+                  class="curriculum-version-document-block"
+                  :data-d1="`curriculum-version-document-original-block-${block.key}`"
+                >
+                  <p v-if="block.showSectionLabel" class="doc-section-label">
+                    {{ block.sectionLabel }}
+                  </p>
+                  <p
+                    class="doc-text"
+                    :class="block.kind === 'heading' ? 'heading' : undefined"
+                  >
+                    {{ block.text || '（空段落）' }}
+                  </p>
+                  <p v-if="block.quote" class="doc-quote">来源摘录：{{ block.quote }}</p>
+                </div>
+              </details>
+              <p v-else class="muted curriculum-version-document-note">
+                该版本未保留原稿结构块。
+              </p>
+              <details
+                v-if="curriculumVersionDocument.revised.length"
+                open
+                class="curriculum-version-document-section"
+                data-d1="curriculum-version-document-revised"
+              >
+                <summary>二次稿结构</summary>
+                <div
+                  v-for="block in curriculumVersionDocument.revised"
+                  :key="block.key"
+                  class="curriculum-version-document-block"
+                  :data-d1="`curriculum-version-document-revised-block-${block.key}`"
+                >
+                  <p v-if="block.showSectionLabel" class="doc-section-label">
+                    {{ block.sectionLabel }}
+                  </p>
+                  <p
+                    class="doc-text"
+                    :class="block.kind === 'heading' ? 'heading' : undefined"
+                  >
+                    {{ block.text || '（空段落）' }}
+                  </p>
+                  <p v-if="block.quote" class="doc-quote">来源摘录：{{ block.quote }}</p>
+                </div>
+              </details>
+              <p v-else class="muted curriculum-version-document-note">
+                该版本未保留二次稿结构块。
+              </p>
+            </template>
+            <p
+              v-else
+              class="muted curriculum-version-document-note"
+              data-d1="curriculum-version-document-notice"
+            >
+              该次保存同时保留审议联结文档（只读，暂无可展示段落）。
+            </p>
+          </div>
+          <section
+            v-for="group in CURRICULUM_VERSION_GROUPS"
+            :key="group.label"
+            class="curriculum-version-group"
+            :data-d1="`curriculum-version-group-${group.label}`"
+          >
+            <h5>{{ group.label }}</h5>
+            <div
+              v-for="row in group.rows"
+              :key="row.key"
+              class="curriculum-version-row"
+              :data-d1="`curriculum-version-row-${row.key}`"
+            >
+              <span class="row-label">{{ row.label }}</span>
+              <span class="row-value" :class="{ long: row.long }">{{
+                curriculumVersionRowText(versionDetail.content, row)
+              }}</span>
+            </div>
+          </section>
+        </div>
+      </template>
+    </RecordTasksDialog>
   </div>
 </template>
 <style scoped>
@@ -2346,6 +2730,89 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+.curriculum-version-detail {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+.curriculum-version-group {
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+  padding: 10px;
+  min-width: 0;
+}
+.curriculum-version-group h5 {
+  margin: 0.1rem 0 0.5rem;
+  font-size: 0.95rem;
+}
+.curriculum-version-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 0.25rem 0;
+  border-top: 1px dashed var(--kgm-border);
+}
+.curriculum-version-row:first-of-type {
+  border-top: 0;
+}
+.curriculum-version-row .row-label {
+  color: var(--kgm-muted);
+  font-size: 0.82rem;
+}
+.curriculum-version-row .row-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.88rem;
+}
+.curriculum-version-row .row-value.long {
+  max-height: 16em;
+  overflow-y: auto;
+}
+.curriculum-version-document {
+  display: grid;
+  gap: 6px;
+}
+.curriculum-version-document-note {
+  margin: 0.1rem 0;
+}
+.curriculum-version-document-section {
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--kgm-bg);
+  min-width: 0;
+}
+.curriculum-version-document-section summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--kgm-text);
+}
+.curriculum-version-document-block {
+  margin: 0.4rem 0;
+}
+.doc-section-label {
+  margin: 0.2rem 0 0.1rem;
+  color: var(--kgm-accent);
+  font-size: 0.82rem;
+}
+.doc-text {
+  margin: 0.15rem 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.88rem;
+}
+.doc-text.heading {
+  font-weight: 600;
+}
+.doc-quote {
+  margin: 0.1rem 0 0.2rem;
+  color: var(--kgm-muted);
+  font-size: 0.8rem;
+  border-left: 2px solid var(--kgm-border);
+  padding-left: 8px;
 }
 .muted {
   color: var(--kgm-muted);

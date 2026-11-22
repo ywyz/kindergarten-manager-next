@@ -1515,6 +1515,28 @@ async function main() {
         'GET /api/observations/o1': () => jsonResponse(200, current),
         'PATCH /api/observations/o1': ({ body }) =>
           jsonResponse(200, savedFixture({ revision: current.revision + 1 })),
+        'GET /api/local/ai/observation-tasks': () =>
+          jsonResponse(200, {
+            items: [
+              {
+                id: 't1',
+                task_type: 'game_observation_generate',
+                status: 'succeeded',
+                reason: null,
+                candidate_id: 'c1',
+                created_at: '2026-09-15T09:00:00',
+              },
+              {
+                id: 't2',
+                task_type: 'game_observation_rewrite',
+                status: 'failed',
+                reason: 'provider_error',
+                candidate_id: null,
+                created_at: '2026-09-15T09:30:00',
+              },
+            ],
+            next_cursor: null,
+          }),
         'GET /api/observations/o1/history': () =>
           jsonResponse(200, [
             {
@@ -1587,6 +1609,13 @@ async function main() {
     await hook.openHistory()
     await settle()
     assert.equal(hook.historyOpen(), true)
+    // The single 任务 dialog carries this record's AI task list read-only.
+    assert.equal(hook.aiTaskListError(), '')
+    assert.equal(hook.aiTaskRows().length, 2)
+    assert.equal(hook.aiTaskRows()[0].id, 't1')
+    assert.equal(hook.aiTaskRows()[0].task_type, 'game_observation_generate')
+    assert.equal(hook.aiTaskRows()[0].status, 'succeeded')
+    assert.equal(hook.aiTaskRows()[1].status, 'failed')
     await hook.selectHistory(1)
     await settle()
     assert.equal(hook.historyDetail().payload.observation_goal, '观察合作')

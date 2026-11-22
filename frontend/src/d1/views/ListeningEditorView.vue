@@ -24,6 +24,8 @@ import type { LeaveEditor } from '../leave'
 import { PhotoUrlCache } from '../observation-photos'
 import ListeningExportDialog from '../components/ListeningExportDialog.vue'
 import ListeningAiPanel from '../components/ListeningAiPanel.vue'
+import RecordTasksDialog from '../components/RecordTasksDialog.vue'
+import type { RecordTaskRow, RecordVersionRow } from '../components/RecordTasksDialog.vue'
 import DirectionalRevisionDialog from '../components/DirectionalRevisionDialog.vue'
 import DirectionalRevisionTrigger from '../components/DirectionalRevisionTrigger.vue'
 import {
@@ -50,6 +52,8 @@ import {
   buildWholeBookPreview,
   createListeningState,
   formatRecordTime,
+  getListeningRecordVersion,
+  listListeningRecordVersions,
   listeningApi,
   newRequestId,
   dateFieldsChanged,
@@ -70,8 +74,15 @@ import {
   type ListeningBatchAssignment,
   type ListeningBatchEntry,
   type ListeningDomain,
+  type ListeningDomainState,
+  type ListeningVersionDetail,
   type SaveOutcome,
 } from '../listening'
+import {
+  listListeningRecordAITasks,
+  type ListeningAITask,
+} from '../listening-ai'
+import { taskStatusLabel, taskTypeLabel } from '../ai'
 
 const props = defineProps<{
   context: LocalContext
@@ -267,6 +278,259 @@ const batchFiles = ref<File[]>([])
 const batchAssignments = ref<ListeningBatchAssignment[]>([])
 const batchPreviewUrls = ref<string[]>([])
 let batchGeneration = 0
+
+// -- auxiliary "任务" panel: read-only AI tasks + saved-version history ------
+// The panel shows only this record. Every reopen refetches, a record switch
+// resets the state, and in-flight responses are generation-guarded so another
+// record's rows can never be shown here.
+const tasksOpen = ref(false)
+const taskRows = ref<RecordTaskRow[]>([])
+const tasksLoading = ref(false)
+const tasksError = ref('')
+const versionRows = ref<RecordVersionRow[]>([])
+const versionsLoading = ref(false)
+const versionsError = ref('')
+const selectedVersion = ref<number | null>(null)
+const versionDetail = ref<ListeningVersionDetail | null>(null)
+const versionDetailLoading = ref(false)
+const versionDetailError = ref('')
+const versionPhotoUrls = reactive<Record<string, string>>({})
+const versionPhotoErrors = reactive<Record<string, string>>({})
+let tasksGeneration = 0
+let versionPhotoGeneration = 0
+/**
+ * Monotonic sequence for version-detail reads. Two clicks on different
+ * versions share one tasksGeneration, so the generation alone cannot stop a
+ * slow first response from overwriting the second selection's detail,
+ * spinner or photos. Every selection, refresh and reset bumps the sequence;
+ * only the newest request may write any of those states.
+ */
+let versionRequestSeq = 0
+const versionPhotoCache = new PhotoUrlCache({
+  load: (assetId, signal) => session.loadAsset(assetId, signal),
+  max: 24,
+  maxPending: 4,
+})
+
+function releaseVersionPhotoUrls(): void {
+  for (const assetId of Object.keys(versionPhotoUrls)) delete versionPhotoUrls[assetId]
+  for (const assetId of Object.keys(versionPhotoErrors)) delete versionPhotoErrors[assetId]
+}
+
+function resetTasksPanelState(): void {
+  tasksGeneration += 1
+  versionRequestSeq += 1
+  versionPhotoGeneration += 1
+  versionPhotoCache.invalidate()
+  releaseVersionPhotoUrls()
+  taskRows.value = []
+  tasksLoading.value = false
+  tasksError.value = ''
+  versionRows.value = []
+  versionsLoading.value = false
+  versionsError.value = ''
+  selectedVersion.value = null
+  versionDetail.value = null
+  versionDetailLoading.value = false
+  versionDetailError.value = ''
+}
+
+async function loadTaskRows(recordId: string, generation: number): Promise<void> {
+  try {
+    const rows: ListeningAITask[] = []
+    let cursor: string | null = null
+    let pages = 0
+    do {
+      const page = await listListeningRecordAITasks(recordId, {
+        limit: 100,
+        cursor: cursor ?? undefined,
+      })
+      if (generation !== tasksGeneration || recordId !== state.recordId) return
+      rows.push(...page.items)
+      cursor = page.next_cursor
+      pages += 1
+    } while (cursor && pages < 100)
+    if (generation !== tasksGeneration || recordId !== state.recordId) return
+    taskRows.value = rows.map((task) => ({
+      key: task.task_id,
+      typeLabel: task.listening_domain
+        ? `${taskTypeLabel(task.task_type)} · ${DOMAIN_LABELS[task.listening_domain as ListeningDomain] ?? task.listening_domain}`
+        : taskTypeLabel(task.task_type),
+      status: task.status,
+      statusLabel: taskStatusLabel(task.status),
+      createdAt: formatRecordTime(task.created_at ?? ''),
+    }))
+  } catch (error) {
+    if (generation !== tasksGeneration || recordId !== state.recordId) return
+    tasksError.value = error instanceof Error ? error.message : 'AI 任务读取失败'
+  } finally {
+    if (generation === tasksGeneration) tasksLoading.value = false
+  }
+}
+
+async function loadVersionRows(recordId: string, generation: number): Promise<void> {
+  try {
+    const data = await listListeningRecordVersions(recordId)
+    if (generation !== tasksGeneration || recordId !== state.recordId) return
+    versionRows.value = data.items.map((item) => ({
+      version: item.version,
+      savedAt: formatRecordTime(item.saved_at),
+    }))
+  } catch (error) {
+    if (generation !== tasksGeneration || recordId !== state.recordId) return
+    versionsError.value = error instanceof Error ? error.message : '版本历史读取失败'
+  } finally {
+    if (generation === tasksGeneration) versionsLoading.value = false
+  }
+}
+
+function refreshTasksPanel(): void {
+  const generation = ++tasksGeneration
+  const recordId = state.recordId
+  versionRequestSeq += 1
+  versionPhotoGeneration += 1
+  versionPhotoCache.invalidate()
+  releaseVersionPhotoUrls()
+  selectedVersion.value = null
+  versionDetail.value = null
+  versionDetailError.value = ''
+  // A refresh retires any in-flight version read; the retired request's
+  // finally is sequence-guarded, so the spinner must be cleared here.
+  versionDetailLoading.value = false
+  tasksLoading.value = true
+  versionsLoading.value = true
+  tasksError.value = ''
+  versionsError.value = ''
+  void loadTaskRows(recordId, generation)
+  void loadVersionRows(recordId, generation)
+}
+
+async function loadVersionPhotos(
+  detail: ListeningVersionDetail,
+  request: number,
+  generation: number,
+): Promise<void> {
+  const photoGeneration = ++versionPhotoGeneration
+  const ids: string[] = []
+  for (const domain of detail.content.domains) {
+    for (const group of domain.groups) {
+      if (group.asset_id) ids.push(group.asset_id)
+    }
+  }
+  const stillCurrent = (): boolean =>
+    photoGeneration === versionPhotoGeneration
+    && request === versionRequestSeq
+    && generation === tasksGeneration
+  for (const assetId of ids) {
+    if (!stillCurrent()) return
+    try {
+      const url = await versionPhotoCache.ensure(assetId)
+      if (!stillCurrent()) return
+      if (url) versionPhotoUrls[assetId] = url
+    } catch {
+      if (!stillCurrent()) return
+      versionPhotoErrors[assetId] = '照片读取失败'
+    }
+  }
+}
+
+async function selectRecordVersion(version: number): Promise<void> {
+  const recordId = state.recordId
+  const generation = tasksGeneration
+  const request = ++versionRequestSeq
+  versionPhotoGeneration += 1
+  releaseVersionPhotoUrls()
+  versionDetail.value = null
+  versionDetailError.value = ''
+  selectedVersion.value = version
+  versionDetailLoading.value = true
+  const stillCurrent = (): boolean =>
+    request === versionRequestSeq
+    && generation === tasksGeneration
+    && recordId === state.recordId
+  try {
+    const detail = await getListeningRecordVersion(recordId, version)
+    if (!stillCurrent()) return
+    if (Number(detail.version) !== version) {
+      versionDetailError.value = '版本回执与所选版本不一致，请重新选择'
+      return
+    }
+    versionDetail.value = detail
+    void loadVersionPhotos(detail, request, generation)
+  } catch (error) {
+    if (!stillCurrent()) return
+    versionDetailError.value = error instanceof Error ? error.message : '版本内容读取失败'
+  } finally {
+    if (request === versionRequestSeq && generation === tasksGeneration) {
+      versionDetailLoading.value = false
+    }
+  }
+}
+
+function retryVersionPhoto(assetId: string): void {
+  const detail = versionDetail.value
+  if (!detail) return
+  delete versionPhotoErrors[assetId]
+  void loadVersionPhotos(detail, versionRequestSeq, tasksGeneration)
+}
+
+function versionPhotoRotationStyle(assetId: string | null): Record<string, string> {
+  if (!assetId) return {}
+  const rotations = versionDetail.value?.content.rotations ?? {}
+  const quarters = rotationQuarters(rotations[assetId] ?? 0) ?? 0
+  const transform = rotationTransform(quarters)
+  if (!transform) return {}
+  return {
+    transform,
+    width: '100%',
+    height: 'auto',
+    aspectRatio: '1',
+    maxWidth: '220px',
+    maxHeight: '220px',
+    objectFit: 'contain',
+  }
+}
+
+function versionDomainLabel(domain: ListeningDomainState): string {
+  return domain.domain_label || DOMAIN_LABELS[domain.domain] || domain.domain
+}
+
+/**
+ * Historical evaluation rows with the requirement text already pinned for
+ * this record (the record-bound template response), one row per template
+ * item — including unfinished entries, which render as 未评. An item the
+ * pinned template cannot resolve keeps its raw item id; nothing is
+ * summarized away or invented.
+ */
+function versionEvaluationRows(domain: ListeningDomainState): Array<{
+  itemId: string
+  requirement: string
+  starLabel: string
+}> {
+  return domain.evaluation.map((entry) => {
+    const requirement = state.templates[domain.domain]?.items.find(
+      (item) => item.item_id === entry.item_id,
+    )?.requirement
+    return {
+      itemId: entry.item_id,
+      requirement: requirement ?? entry.item_id,
+      starLabel: starText(entry.stars),
+    }
+  })
+}
+
+/** Record-level grade label of the historical snapshot itself. */
+const versionGradeLabel = computed(() => {
+  const grade = versionDetail.value?.content.grade ?? ''
+  return GRADE_LABELS[grade] ?? grade
+})
+
+/** Term name of the historical snapshot, resolved from its own term id. */
+const versionTermName = computed(() => {
+  const termId = versionDetail.value?.content.term_id ?? ''
+  return props.context.terms.find((term) => term.id === termId)?.name ?? termId
+})
+
 const form = computed(() => session.form())
 const template = computed(() => session.template())
 const wholeBookPreview = computed(() =>
@@ -997,7 +1261,11 @@ function invalidatePhotos(): void {
 
 watch(
   () => [state.recordId, props.profileEpoch ?? 0],
-  () => invalidatePhotos(),
+  () => {
+    invalidatePhotos()
+    // A record switch must not carry another record's tasks or versions.
+    resetTasksPanelState()
+  },
 )
 watch(
   () =>
@@ -2102,6 +2370,10 @@ onBeforeUnmount(() => {
   unregister()
   photoCache.dispose()
   clearPhotoUrls()
+  versionPhotoGeneration += 1
+  tasksGeneration += 1
+  versionPhotoCache.dispose()
+  releaseVersionPhotoUrls()
   session.reset()
 })
 
@@ -2144,13 +2416,6 @@ defineExpose({
         >
           返回列表
         </el-button>
-        <el-button
-          data-d1="listening-editor-settings"
-          :disabled="!canMutate"
-          @click="emit('open-settings')"
-        >
-          设置与配置维护
-        </el-button>
         <div>
           <h2>{{ state.name || '倾听记录' }}</h2>
           <p class="muted">
@@ -2163,6 +2428,13 @@ defineExpose({
         </div>
       </div>
       <div class="actions">
+        <el-button
+          data-d1="listening-editor-tasks"
+          :disabled="!canMutate || state.unknown"
+          @click="tasksOpen = true"
+        >
+          任务
+        </el-button>
         <el-button
           data-d1="listening-editor-export"
           :disabled="!canMutate || state.unknown"
@@ -3575,6 +3847,124 @@ defineExpose({
       :record-id="props.recordId"
       @busy="handleExportBusy"
     />
+
+    <RecordTasksDialog
+      :open="tasksOpen"
+      :disabled="!canEditRecord"
+      title="任务"
+      :tasks="taskRows"
+      :tasks-loading="tasksLoading"
+      :tasks-error="tasksError"
+      :versions="versionRows"
+      :versions-loading="versionsLoading"
+      :versions-error="versionsError"
+      :selected-version="selectedVersion"
+      history-label="版本历史"
+      history-hint="只读；显示当时实际保存的五领域内容、评价选择与图文顺序。"
+      data-d1="listening-tasks-dialog"
+      @update:open="tasksOpen = $event"
+      @refresh="refreshTasksPanel"
+      @select-version="selectRecordVersion"
+    >
+      <template #version-detail>
+        <p
+          v-if="versionDetailLoading"
+          class="muted version-detail-note"
+          data-d1="listening-version-loading"
+        >
+          正在读取版本内容…
+        </p>
+        <el-alert
+          v-else-if="versionDetailError"
+          type="error"
+          :closable="false"
+          :title="versionDetailError"
+          data-d1="listening-version-error"
+        />
+        <div
+          v-else-if="versionDetail"
+          class="version-detail"
+          data-d1="listening-version-detail"
+        >
+          <p class="muted version-detail-note" data-d1="listening-version-meta">
+            v{{ versionDetail.version }} · 保存于 {{ formatRecordTime(versionDetail.saved_at) }} ·
+            姓名 {{ versionDetail.content.child_name || '（空）' }} ·
+            记录年级 {{ versionGradeLabel || '—' }} ·
+            学期 {{ versionTermName || '—' }}
+          </p>
+          <section
+            v-for="domain in versionDetail.content.domains"
+            :key="`${versionDetail.version}-${domain.domain}`"
+            class="version-domain"
+            :data-d1="`listening-version-domain-${domain.domain}`"
+          >
+            <h5>{{ versionDomainLabel(domain) }}</h5>
+            <p class="version-field">观察目标：{{ readText(domain.goal) }}</p>
+            <p class="version-field">
+              观察月份 {{ domain.observation_date || '—' }} · 成人数目
+              {{ domain.adult_count || '—' }} · 幼儿年龄 {{ domain.child_age || '—' }} ·
+              观察区域 {{ domain.observation_area || '（尚未填写）' }}
+            </p>
+            <div
+              v-for="group in domain.groups"
+              :key="group.group_id"
+              class="version-group"
+              :data-d1="`listening-version-group-${domain.domain}-${group.position}`"
+            >
+              <span class="muted">
+                第 {{ (group.position ?? 0) + 1 }} 组 · {{ group.work_date || '无作品日期' }}
+              </span>
+              <div class="version-photo">
+                <img
+                  v-if="group.asset_id && versionPhotoUrls[group.asset_id]"
+                  :src="versionPhotoUrls[group.asset_id]"
+                  :style="versionPhotoRotationStyle(group.asset_id)"
+                  :alt="'历史作品照片'"
+                  :data-d1="`listening-version-photo-${domain.domain}-${group.position}`"
+                />
+                <span
+                  v-else-if="group.asset_id && versionPhotoErrors[group.asset_id]"
+                  class="photo-error"
+                >
+                  {{ versionPhotoErrors[group.asset_id] }}
+                  <el-button
+                    size="small"
+                    text
+                    :data-d1="`listening-version-photo-retry-${domain.domain}-${group.position}`"
+                    @click="retryVersionPhoto(group.asset_id)"
+                  >
+                    重试读取
+                  </el-button>
+                </span>
+                <span v-else-if="group.asset_id" class="muted">图片读取中…</span>
+                <span v-else class="muted">无照片</span>
+              </div>
+              <p class="version-field">{{ readText(group.listening_text) }}</p>
+            </div>
+            <p class="version-field">综合评价：{{ readText(domain.overall_evaluation) }}</p>
+            <p class="version-field">支持策略：{{ readText(domain.support_strategy) }}</p>
+            <div class="version-eval" :data-d1="`listening-version-eval-${domain.domain}`">
+              <p
+                v-for="(row, index) in versionEvaluationRows(domain)"
+                :key="row.itemId"
+                class="version-field"
+                :data-d1="`listening-version-eval-${domain.domain}-${index}`"
+              >
+                评价 {{ index + 1 }}/{{ versionEvaluationRows(domain).length }} ·
+                {{ row.requirement }}：{{ row.starLabel }}
+              </p>
+              <p
+                v-if="!versionEvaluationRows(domain).length"
+                class="version-field"
+                :data-d1="`listening-version-eval-${domain.domain}-empty`"
+              >
+                （未评）
+              </p>
+            </div>
+          </section>
+        </div>
+      </template>
+    </RecordTasksDialog>
   </div>
 </template>
 
@@ -4223,6 +4613,45 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.version-detail-note {
+  margin: 0.2rem 0;
+}
+.version-detail {
+  margin-top: 0.4rem;
+  display: grid;
+  gap: 10px;
+}
+.version-domain {
+  border: 1px solid var(--kgm-border);
+  border-radius: 8px;
+  padding: 10px;
+  min-width: 0;
+}
+.version-domain h5 {
+  margin: 0.1rem 0 0.4rem;
+}
+.version-field {
+  margin: 0.25rem 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.86rem;
+}
+.version-group {
+  margin: 0.4rem 0;
+  padding: 0.35rem 0;
+  border-top: 1px dashed var(--kgm-border);
+}
+.version-photo {
+  width: 130px;
+  min-height: 96px;
+  margin: 0.25rem 0;
+}
+.version-photo img {
+  display: block;
+  max-width: 130px;
+  max-height: 130px;
+  border-radius: 6px;
 }
 .listening-rail :deep(.rail-ai-panel) {
   margin-top: 0;

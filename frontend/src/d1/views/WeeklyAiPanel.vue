@@ -1292,10 +1292,10 @@ defineExpose({
     @blur.capture="rememberDirectionalSelection"
   >
     <div class="ai-head">
-      <h3>AI 生成与候选</h3>
+      <h3>AI 任务与候选</h3>
       <el-button size="small" :disabled="disabled || aiBusy" @click="refreshBatch">刷新候选与状态</el-button>
     </div>
-    <p class="muted">本栏只显示 AI 候选与任务；当前正文仍按各栏阅读和编辑，“采用并保存”后才更新草稿。生成与定向修改都由教师明确点击发起，不会自动连发。</p>
+    <p class="muted">本栏只显示本计划的 AI 任务与候选；当前正文仍按各栏阅读和编辑，“采用并保存”后才更新草稿。版本历史见上方“版本历史”。生成与定向修改都由教师明确点击发起，不会自动连发。</p>
     <el-alert v-if="error" :title="error" type="warning" :closable="false" />
     <el-alert v-if="readError" :title="readError" type="warning" :closable="false" />
     <div v-if="readError" class="actions"><el-button :disabled="disabled || aiBusy" @click="refreshBatch">重新读取任务与候选</el-button></div>

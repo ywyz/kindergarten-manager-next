@@ -29,6 +29,7 @@ import {
   pathSegment,
 } from '../client'
 import { isIndeterminate } from '../operations'
+import { taskStatusLabel, taskTypeLabel } from '../ai'
 import type { LocalContext } from '../types'
 import type { BlockingDraft, SaveOutcome } from '../leave'
 import {
@@ -167,6 +168,7 @@ interface ObservationAiTask {
   status: string
   reason: string | null
   candidate_id: string | null
+  created_at?: string | null
   retry_requires_ack?: boolean
   execution?: { id: string; attempt_no?: number | null } | null
 }
@@ -418,6 +420,13 @@ const historyItems = ref<ObservationHistoryItem[]>([])
 const historyDetail = ref<ObservationHistoryDetail | null>(null)
 const historyBusy = ref(false)
 const historySettling = ref(false)
+// 2026-11-22 repair: the single auxiliary "任务" dialog carries this record's
+// AI task list next to the version history. Read-only; retries and candidate
+// review keep living in the record rail.
+const aiTaskRows = ref<ObservationAiTask[]>([])
+const aiTaskListLoading = ref(false)
+const aiTaskListError = ref('')
+let aiTaskListSeq = 0
 const restorePreview = ref<RestorePreview | null>(null)
 const restoreTermDecision = ref<
   'keep_history' | 'keep_current' | 'assign_selected' | 'unassigned'
@@ -3392,6 +3401,45 @@ function closeHistory(done: () => void): void {
   done()
 }
 
+async function loadAiTaskList(): Promise<void> {
+  const seq = ++aiTaskListSeq
+  aiTaskListLoading.value = true
+  aiTaskListError.value = ''
+  try {
+    const rows: ObservationAiTask[] = []
+    let cursor: string | null = null
+    let pages = 0
+    do {
+      const suffix: string = cursor
+        ? `&cursor=${encodeURIComponent(cursor)}`
+        : ''
+      const page: {
+        items: ObservationAiTask[]
+        next_cursor: string | null
+      } = await apiGet<{
+        items: ObservationAiTask[]
+        next_cursor: string | null
+      }>(
+        // Contract 2026-11-22: the shared observation task projection,
+        // filtered to this record (items carry task_type/status/created_at).
+        `/api/local/ai/observation-tasks?observation_id=${pathSegment(props.observationId)}&limit=100${suffix}`,
+      )
+      if (seq !== aiTaskListSeq || !editorAlive) return
+      rows.push(...page.items)
+      cursor = page.next_cursor
+      pages += 1
+    } while (cursor && pages < 100)
+    if (seq !== aiTaskListSeq || !editorAlive) return
+    aiTaskRows.value = rows
+  } catch (err) {
+    if (seq !== aiTaskListSeq || !editorAlive) return
+    aiTaskListError.value =
+      err instanceof ApiError ? err.message : `AI 任务读取失败：${String(err)}`
+  } finally {
+    if (seq === aiTaskListSeq) aiTaskListLoading.value = false
+  }
+}
+
 async function openHistory(): Promise<void> {
   if (editDisabled.value) return
   if (restoreUnknown.value) {
@@ -3400,11 +3448,11 @@ async function openHistory(): Promise<void> {
   }
   const outcome = await saveCurrent('manual')
   if (outcome !== 'saved' && outcome !== 'unchanged') {
-    ElMessage.warning('正文未保存成功：请先处理保存结果再打开历史')
+    ElMessage.warning('正文未保存成功：请先处理保存结果再打开任务')
     return
   }
   if (needsSave.value) {
-    ElMessage.warning('正文仍有未保存输入：请先保存后再打开历史')
+    ElMessage.warning('正文仍有未保存输入：请先保存后再打开任务')
     return
   }
   try {
@@ -3415,6 +3463,7 @@ async function openHistory(): Promise<void> {
     restorePreview.value = null
     restoreUseCurrentTermName.value = false
     restoreNotice.value = ''
+    void loadAiTaskList()
     historyOpen.value = true
   } catch (err) {
     ElMessage.error(
@@ -3830,10 +3879,6 @@ function backToList(): void {
   emit('leave', 'observations', () => 'left')
 }
 
-function goSettings(): void {
-  emit('leave', 'settings', () => 'left')
-}
-
 // -- lifecycle -----------------------------------------------------------------
 
 const bridge: EditorBridge = {
@@ -3992,7 +4037,6 @@ onMounted(() => {
     identity: () => identity.value,
     editEpoch: () => epoch.value,
     backToList: () => backToList(),
-    goSettings: () => goSettings(),
     photos: () => photos.value,
     photoChunk: () => photoChunk.value,
     photoChunkCount: () => photoChunks.value.length,
@@ -4121,6 +4165,10 @@ onMounted(() => {
     historyOpen: () => historyOpen.value,
     openHistory: () => openHistory(),
     historyItems: () => historyItems.value,
+    aiTaskRows: () => aiTaskRows.value,
+    aiTaskListLoading: () => aiTaskListLoading.value,
+    aiTaskListError: () => aiTaskListError.value,
+    refreshAiTaskList: () => loadAiTaskList(),
     selectHistory: (version: number) => selectHistory(version),
     historyDetail: () =>
       historyDetail.value
@@ -4280,11 +4328,8 @@ onBeforeUnmount(() => {
         </p>
       </div>
       <div class="actions">
-        <el-button size="small" :disabled="props.frozen" data-d1="obs-open-history" @click="openHistory">
-          历史恢复
-        </el-button>
-        <el-button size="small" :disabled="props.frozen" data-d1="obs-go-settings" @click="goSettings">
-          设置
+        <el-button size="small" :disabled="props.frozen" data-d1="obs-open-tasks" @click="openHistory">
+          任务
         </el-button>
         <el-button size="small" :disabled="props.frozen" data-d1="obs-back-list" @click="backToList">
           返回列表
@@ -5297,13 +5342,52 @@ onBeforeUnmount(() => {
 
     <el-dialog
       v-model="historyOpen"
-      title="历史记录"
+      title="任务"
       width="820px"
       :before-close="closeHistory"
       :close-on-click-modal="!restoreLocked"
       :close-on-press-escape="!restoreLocked"
       data-d1="obs-history"
     >
+      <section class="dialog-tasks" data-d1="obs-tasks">
+        <header class="dialog-tasks-head">
+          <h3>AI 任务</h3>
+          <el-button
+            size="small"
+            :disabled="editDisabled || aiTaskListLoading"
+            data-d1="obs-tasks-refresh"
+            @click="loadAiTaskList"
+          >
+            刷新
+          </el-button>
+        </header>
+        <p class="muted">当前记录的 AI 任务（只读）。生成、重试与候选核对仍在正文旁“生成与操作”。</p>
+        <el-alert
+          v-if="aiTaskListError"
+          type="error"
+          :closable="false"
+          :title="aiTaskListError"
+          data-d1="obs-tasks-error"
+        />
+        <p v-if="aiTaskListLoading" class="muted" data-d1="obs-tasks-loading">正在读取 AI 任务…</p>
+        <div v-else-if="aiTaskRows.length" class="dialog-task-rows" data-d1="obs-task-rows">
+          <p
+            v-for="task in aiTaskRows"
+            :key="task.id"
+            class="dialog-task-row"
+            :data-d1="`obs-task-${task.id}`"
+          >
+            <strong>{{ taskTypeLabel(task.task_type) }}</strong>
+            <span :data-status="task.status">{{ taskStatusLabel(task.status) }}</span>
+            <span class="muted">{{ (task.created_at ?? '').replace('T', ' ').slice(0, 19) }}</span>
+          </p>
+        </div>
+        <p v-else-if="!aiTaskListError" class="muted" data-d1="obs-tasks-empty">暂无 AI 任务记录。</p>
+      </section>
+      <header class="dialog-versions-head" data-d1="obs-versions-head">
+        <h3>版本历史</h3>
+        <p class="muted">选择版本查看当时实际保存的内容；如需恢复会先预览并生成新版本。</p>
+      </header>
       <div class="history">
         <div class="history-list">
           <el-empty v-if="!historyItems.length" description="暂无历史版本" />
@@ -5831,6 +5915,51 @@ label.full {
 }
 .preview {
   margin-top: 12px;
+}
+.dialog-tasks {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--kgm-border);
+}
+.dialog-tasks-head,
+.dialog-versions-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dialog-versions-head {
+  margin-bottom: 6px;
+}
+.dialog-tasks-head h3,
+.dialog-versions-head h3 {
+  margin: 0.2rem 0;
+  font-size: 1rem;
+}
+.dialog-tasks .muted,
+.dialog-versions-head .muted {
+  margin: 0.15rem 0;
+}
+.dialog-task-rows {
+  max-height: 168px;
+  overflow: auto;
+}
+.dialog-task-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0.25rem 0;
+  font-size: 0.85rem;
+}
+.dialog-task-row [data-status='succeeded'] {
+  color: var(--kgm-success);
+}
+.dialog-task-row [data-status='failed'],
+.dialog-task-row [data-status='outcome_unknown'],
+.dialog-task-row [data-status='paused'] {
+  color: var(--kgm-warning);
 }
 .history {
   display: grid;

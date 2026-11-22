@@ -518,6 +518,13 @@ async function mountCurriculum() {
       if (spec === '../leave') return {}
       if (spec === './CurriculumExportDialog.vue') return { default: {} }
       if (spec === './CurriculumAiDialog.vue') return { default: {} }
+      if (spec === '../components/RecordTasksDialog.vue') return { default: {} }
+      if (spec === '../ai') {
+        return {
+          taskStatusLabel: (status) => status,
+          taskTypeLabel: (type) => type,
+        }
+      }
       if (spec === '../curriculum') return curriculum
       throw new Error(`unexpected import ${spec}`)
     },

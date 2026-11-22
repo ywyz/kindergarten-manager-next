@@ -637,7 +637,7 @@ async function main() {
     assert.equal(helpers.WEEKLY_SECTIONS.length, 9)
     assert.deepEqual(
       [...helpers.WEEKLY_SECTIONS.map((section) => section.label)],
-      ['一周总览', '集体游戏一', '集体游戏二', '自选游戏', '重点区域与材料', '本周栏目', '材料准备', '来源核对', 'AI 生成与候选'],
+      ['一周总览', '集体游戏一', '集体游戏二', '自选游戏', '重点区域与材料', '本周栏目', '材料准备', '来源核对', '任务'],
     )
     assert.equal(helpers.weeklyPlanDateLabel('2026-11-02'), '11月2日')
     assert.equal(helpers.weeklyDailySourceLabel('2026-11-02', 3), '11月2日日计划')
@@ -1184,11 +1184,11 @@ async function main() {
         .map((key) => `weekly-section-${key}`),
       'the weekly directory keeps the content frames and AI pane; materials/sources stay contextual',
     )
-    assert.ok(nodeText(navButtons[6]).includes('AI 生成与候选'))
+    assert.ok(nodeText(navButtons[6]).includes('任务'))
     const paneLabel = () => byD1(mountEl, 'weekly-section-pane').props['aria-label']
     byD1(sharedTarget, 'weekly-section-ai').props.onClick({ currentTarget: byD1(sharedTarget, 'weekly-section-ai') })
     await settle()
-    assert.equal(paneLabel(), 'AI 生成与候选')
+    assert.equal(paneLabel(), '任务')
     byD1(sharedTarget, 'weekly-section-collective_1').props.onClick({ currentTarget: byD1(sharedTarget, 'weekly-section-collective_1') })
     await settle()
     assert.equal(paneLabel(), '集体游戏一')
@@ -1662,7 +1662,11 @@ async function main() {
     assert.equal(source.includes('weekly-ai-actions'), false)
     assert.equal(source.includes('weekly-history-open'), false)
     assert.equal(source.includes('本地确认历史'), false)
-    assert.match(source, /@open-history="openHistoryFromExport"/)
+    assert.equal(source.includes('@open-history='), false)
+    // 2026-11-22 repair: the "任务" section carries the AI panel and the
+    // confirmed-version history entry together.
+    assert.match(source, /data-d1="weekly-tasks-history-open"/)
+    assert.match(source, /@click="openHistory"/)
     assert.match(source, /v-show="activeSection === 'ai'"/)
     assert.equal(source.includes('业务版本'), false)
     assert.equal(source.includes('编辑副本'), false)
@@ -1689,6 +1693,20 @@ async function main() {
     const media = styles.slice(mediaStart)
     assert.match(media, /\.section-nav\s*\{[^}]*flex-direction:\s*column/, 'narrow weekly navigation stays a left column')
     assert.doesNotMatch(media, /\.section-nav\s*\{[^}]*flex-direction:\s*row/, 'narrow weekly navigation never becomes a row')
+    // 2026-11-22 repair: the single 任务 entry stays a rendered, clickable
+    // directory item on narrow windows — never hidden, collapsed away or
+    // relabelled.
+    assert.doesNotMatch(
+      media,
+      /\.section-button\s*\{[^}]*display:\s*none/,
+      'narrow styles never hide the section directory (任务 included)',
+    )
+    assert.doesNotMatch(
+      media,
+      /\.section-nav\s*\{[^}]*display:\s*none/,
+      'the directory itself stays visible on narrow widths',
+    )
+    assert.match(media, /\.section-button\s*\{[^}]*width:\s*100%/, 'narrow directory items keep full-width click targets')
     assert.match(media, /grid-template-columns:\s*clamp\(180px/, 'narrow workspace keeps a left rail and content')
     assert.match(media, /weekly-workspace-teleported[\s\S]{0,120}grid-template-columns:\s*minmax\(0, 1fr\)/)
     const plansStyles = (fs.readFileSync(path.join(d1Dir, 'views', 'WeeklyPlansView.vue'), 'utf8').match(/<style[\s\S]*?<\/style>/g) || []).join('\n')

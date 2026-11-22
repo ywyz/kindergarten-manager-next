@@ -121,8 +121,8 @@ export const WEEKLY_SECTIONS: WeeklySectionInfo[] = [
   },
   {
     key: 'ai',
-    label: 'AI 生成与候选',
-    hint: '候选、进度与采用',
+    label: '任务',
+    hint: '当前计划的 AI 任务与已确认版本历史',
     editable: false,
   },
 ]

@@ -41,7 +41,6 @@ const emit = defineEmits<{
   (e: 'busy', value: boolean): void
   (e: 'blocking', value: BlockingDraft | null): void
   (e: 'done', value: 'saved' | 'canceled' | 'failed' | 'pending' | 'unknown'): void
-  (e: 'open-history'): void
 }>()
 
 const api: WeeklyExportApi = createWeeklyExportApi()
@@ -709,13 +708,6 @@ defineExpose({
     </div>
     <template #footer>
       <el-button :disabled="disabled" @click="close">关闭</el-button>
-      <el-button
-        data-d1="weekly-current-export-history"
-        :disabled="disabled || busy"
-        @click="emit('open-history')"
-      >
-        已确认版本
-      </el-button>
       <el-button
         type="primary"
         :disabled="disabled || loading || exporting || barrier || (!preview && !needsSave) || !!operation || done || !host?.save_weekly_export"

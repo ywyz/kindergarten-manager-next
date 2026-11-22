@@ -611,6 +611,18 @@ def _logical_checks(connection: sqlite3.Connection) -> None:
             LEFT JOIN local_observation_export_snapshots s ON s.id = a.snapshot_id
             WHERE s.id IS NULL
         """,
+        "listening_version_record": """
+            SELECT COUNT(*) FROM local_listening_record_versions v
+            LEFT JOIN local_listening_records r
+              ON r.id = v.record_id AND r.profile_id = v.profile_id
+            WHERE r.id IS NULL
+        """,
+        "curriculum_version_record": """
+            SELECT COUNT(*) FROM local_curriculum_deliberation_versions v
+            LEFT JOIN local_curriculum_deliberations d
+              ON d.id = v.record_id AND d.profile_id = v.profile_id
+            WHERE d.id IS NULL
+        """,
     }
     for name, sql in checks.items():
         if _count(connection, sql):
@@ -2313,6 +2325,110 @@ _WEEKLY_AI_TARGETS = (
     "habit_culture", "home_cooperation", "materials",
 )
 
+def _history_content_hash(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _record_history_checks(connection: sqlite3.Connection) -> None:
+    """Validate retained listening/curriculum history rows.
+
+    A retained snapshot must parse as an object, hash to its stored content
+    hash and carry its own record/version identity, and a retained curriculum
+    linkage document must be null or a valid document mapping; a backup that
+    fails any of these is refused rather than restored with unreadable
+    history.  Rows are streamed through the SQLite cursor: a multi-year
+    snapshot set is never materialized in memory during validation.
+    """
+    tables = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "local_listening_record_versions" in tables:
+        rows = connection.execute(
+            "SELECT record_id, version, content_json, content_hash "
+            "FROM local_listening_record_versions"
+        )
+        for record_id, version, content_json, content_hash in rows:
+            try:
+                content = json.loads(content_json)
+                parsed_hash = _history_content_hash(content)
+            except (TypeError, ValueError):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听历史内容不可解析",
+                ) from None
+            if (
+                not isinstance(content, dict)
+                or not isinstance(version, int)
+                or version < 1
+                or content.get("record_id") != record_id
+                or content.get("revision") != version
+                or not isinstance(content_hash, str)
+                or not _HEX64.match(content_hash)
+                or parsed_hash != content_hash
+            ):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库倾听历史版本内容不合法",
+                )
+    if "local_curriculum_deliberation_versions" in tables:
+        from app.local import curriculum_content
+
+        rows = connection.execute(
+            "SELECT record_id, version, content_json, content_hash, "
+            "document_json FROM local_curriculum_deliberation_versions"
+        )
+        for (
+            record_id,
+            version,
+            content_json,
+            content_hash,
+            document_json,
+        ) in rows:
+            try:
+                content = json.loads(content_json)
+                parsed_hash = _history_content_hash(content)
+            except (TypeError, ValueError):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库课程审议历史内容不可解析",
+                ) from None
+            if (
+                not isinstance(content, dict)
+                or not isinstance(version, int)
+                or version < 1
+                or not isinstance(content_hash, str)
+                or not _HEX64.match(content_hash)
+                or parsed_hash != content_hash
+            ):
+                raise BackupValidationError(
+                    "BACKUP_DB_LOGICAL_INVALID",
+                    "备份数据库课程审议历史版本内容不合法",
+                )
+            if document_json is not None:
+                # The linkage document is part of the full read-only
+                # snapshot: an unparsable or non-object retained document is
+                # not a readable full version and refuses the backup.
+                try:
+                    document = json.loads(document_json)
+                    curriculum_content.normalize_document(document)
+                except (LocalError, TypeError, ValueError):
+                    raise BackupValidationError(
+                        "BACKUP_DB_LOGICAL_INVALID",
+                        "备份数据库课程审议历史文档不合法",
+                    ) from None
+
+
 def _listening_checks(connection: sqlite3.Connection) -> None:
     """Validate listening ownership, templates, groups, stars and paths.
 
@@ -3121,6 +3237,7 @@ def validate_database(
         _logical_checks(connection)
         _listening_checks(connection)
         _weekly_checks(connection)
+        _record_history_checks(connection)
     finally:
         connection.close()
     target_size, target_digest = _file_hash(

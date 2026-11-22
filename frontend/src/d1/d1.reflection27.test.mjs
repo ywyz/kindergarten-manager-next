@@ -16,14 +16,14 @@ import ts from 'typescript'
 const d1Dir = path.dirname(fileURLToPath(import.meta.url))
 const viewFile = path.join(d1Dir, 'views', 'EditorView.vue')
 const viewSource = fs.readFileSync(viewFile, 'utf8')
-assert.match(viewSource, /data-d1="split-needs-save"/)
-assert.match(viewSource, /data-d1="reflection-guidance"/)
+assert.match(viewSource, /data-d1="raw-lesson"/)
+assert.match(viewSource, /data-d1="read-reflection-materials"/)
 assert.match(viewSource, /:disabled="editDisabled \|\| !!reflectionFillBlockedReason"\s+data-d1="reflection-fill-result"/)
-assert.ok(
-  viewSource.indexOf('data-d1="raw-lesson"') <
-    viewSource.indexOf('data-d1="split-needs-save"'),
-  'split action is visible under the raw lesson card',
-)
+assert.match(viewSource, /data-d1="reflection-query"/)
+assert.match(viewSource, /data-d1="reflection-resubmit"/)
+assert.match(viewSource, /data-d1="reflection-refresh"/)
+assert.doesNotMatch(viewSource, /data-d1="reflection-generate"/, 'reflection generation is consolidated behind 修改指定内容')
+assert.doesNotMatch(viewSource, /data-d1="reflection-ai-edit"/, 'the direct reflection AI button is not repeated in the document')
 const descriptor = parse(viewSource, { filename: viewFile }).descriptor
 const scriptCode = ts.transpileModule(
   compileScript(descriptor, { id: 'EditorView.vue' }).content,

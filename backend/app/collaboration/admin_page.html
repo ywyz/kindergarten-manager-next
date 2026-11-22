@@ -29,6 +29,9 @@
     .release-panel { background: #fff; border: 1px solid #d9e2e8; border-radius: 8px; padding: 16px 20px; margin-bottom: 18px; }
     .release-panel > summary { cursor: pointer; font-weight: 700; }
     .release-panel[open] > summary { margin-bottom: 14px; }
+    .create-panel { margin: 4px 0 0; }
+    .create-panel > summary { cursor: pointer; font-weight: 700; }
+    .create-panel[open] > summary { margin-bottom: 4px; }
     .list-block { margin: 12px 0; }
     .release-row { border-top: 1px solid #e3eaee; padding: 10px 0; }
     .release-row:first-child { border-top: 0; }
@@ -90,17 +93,20 @@
       <section>
         <h2>已有园所名称</h2>
         <p class="muted">只修改园所显示名称；园所和班级稳定 ID、班级关系与教师绑定保持不变。</p>
-        <div class="row">
-          <div>
-            <label for="new-school-name">新增园所名称</label>
-            <input id="new-school-name" maxlength="120" placeholder="例如：阳光实验幼儿园">
+        <details class="create-panel">
+          <summary>新增园所</summary>
+          <div class="row">
+            <div>
+              <label for="new-school-name">新增园所名称</label>
+              <input id="new-school-name" maxlength="120" placeholder="例如：阳光实验幼儿园">
+            </div>
+            <div>
+              <button type="button" id="create-school-button">新增园所</button>
+            </div>
           </div>
-          <div>
-            <button type="button" id="create-school-button">新增园所</button>
-          </div>
-        </div>
-        <p class="error" id="new-school-error" role="alert"></p>
-        <p class="muted" id="new-school-notice"></p>
+          <p class="error" id="new-school-error" role="alert"></p>
+          <p class="muted" id="new-school-notice"></p>
+        </details>
         <p class="error" id="school-error" role="alert"></p>
         <p class="muted" id="school-notice"></p>
         <div class="list-block" id="school-list"></div>
@@ -114,17 +120,22 @@
             <label for="teacher-school">园所</label>
             <select id="teacher-school"></select>
           </div>
-          <div>
-            <label for="new-teacher-name">新增教师名称</label>
-            <input id="new-teacher-name" maxlength="120" placeholder="例如：王老师">
-          </div>
-          <div>
-            <button type="button" id="create-teacher-button">新增教师</button>
-          </div>
         </div>
+        <details class="create-panel">
+          <summary>新增教师</summary>
+          <div class="row">
+            <div>
+              <label for="new-teacher-name">新增教师名称</label>
+              <input id="new-teacher-name" maxlength="120" placeholder="例如：王老师">
+            </div>
+            <div>
+              <button type="button" id="create-teacher-button">新增教师</button>
+            </div>
+          </div>
+          <p class="error" id="new-teacher-error" role="alert"></p>
+          <p class="muted" id="new-teacher-notice"></p>
+        </details>
         <p class="muted hidden" id="teacher-empty">该园所暂无教师。新增教师后即可在上方签发兑换码。</p>
-        <p class="error" id="new-teacher-error" role="alert"></p>
-        <p class="muted" id="new-teacher-notice"></p>
         <p class="error" id="teacher-error" role="alert"></p>
         <p class="muted" id="teacher-notice"></p>
         <div class="list-block" id="teacher-list"></div>
@@ -139,26 +150,29 @@
             <select id="class-school"></select>
           </div>
         </div>
-        <div class="row">
-          <div>
-            <label for="new-class-grade">新增班级：年级</label>
-            <select id="new-class-grade">
-              <option value="small">小班</option>
-              <option value="middle">中班</option>
-              <option value="large">大班</option>
-            </select>
+        <details class="create-panel">
+          <summary>新增班级</summary>
+          <div class="row">
+            <div>
+              <label for="new-class-grade">新增班级：年级</label>
+              <select id="new-class-grade">
+                <option value="small">小班</option>
+                <option value="middle">中班</option>
+                <option value="large">大班</option>
+              </select>
+            </div>
+            <div>
+              <label for="new-class-number">新增班级：班号（1–99）</label>
+              <input id="new-class-number" type="number" min="1" max="99" step="1">
+            </div>
+            <div>
+              <button type="button" id="create-class-button">新增班级</button>
+            </div>
           </div>
-          <div>
-            <label for="new-class-number">新增班级：班号（1–99）</label>
-            <input id="new-class-number" type="number" min="1" max="99" step="1">
-          </div>
-          <div>
-            <button type="button" id="create-class-button">新增班级</button>
-          </div>
-        </div>
-        <p class="muted" id="new-class-preview"></p>
-        <p class="error" id="new-class-error" role="alert"></p>
-        <p class="muted" id="new-class-notice"></p>
+          <p class="muted" id="new-class-preview"></p>
+          <p class="error" id="new-class-error" role="alert"></p>
+          <p class="muted" id="new-class-notice"></p>
+        </details>
         <p class="muted hidden" id="class-empty">该园所暂无班级。</p>
         <p class="error" id="class-error" role="alert"></p>
         <p class="muted" id="class-notice"></p>
@@ -173,25 +187,28 @@
             <select id="term-school"></select>
           </div>
         </div>
-        <div class="row">
-          <div>
-            <label for="new-term-name">新增学期名称</label>
-            <input id="new-term-name" maxlength="80" placeholder="例如：2026 秋季学期">
+        <details class="create-panel">
+          <summary>新增学期</summary>
+          <div class="row">
+            <div>
+              <label for="new-term-name">新增学期名称</label>
+              <input id="new-term-name" maxlength="80" placeholder="例如：2026 秋季学期">
+            </div>
+            <div>
+              <label for="new-term-start">新增学期：开始日期</label>
+              <input id="new-term-start" type="date">
+            </div>
+            <div>
+              <label for="new-term-end">新增学期：结束日期</label>
+              <input id="new-term-end" type="date">
+            </div>
+            <div>
+              <button type="button" id="create-term-button">新增学期</button>
+            </div>
           </div>
-          <div>
-            <label for="new-term-start">新增学期：开始日期</label>
-            <input id="new-term-start" type="date">
-          </div>
-          <div>
-            <label for="new-term-end">新增学期：结束日期</label>
-            <input id="new-term-end" type="date">
-          </div>
-          <div>
-            <button type="button" id="create-term-button">新增学期</button>
-          </div>
-        </div>
-        <p class="error" id="new-term-error" role="alert"></p>
-        <p class="muted" id="new-term-notice"></p>
+          <p class="error" id="new-term-error" role="alert"></p>
+          <p class="muted" id="new-term-notice"></p>
+        </details>
         <p class="muted hidden" id="term-empty">该园所暂无学期。</p>
         <p class="error" id="term-error" role="alert"></p>
         <p class="muted" id="term-notice"></p>

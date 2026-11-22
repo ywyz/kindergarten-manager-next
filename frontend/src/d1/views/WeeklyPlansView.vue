@@ -434,22 +434,18 @@ onMounted(async () => { await loadTerms(); await load(true) })
         :key="plan.id"
         class="week-card"
         data-d1="weekly-plan-card"
-        role="button"
-        tabindex="0"
-        @click="openPlan(plan)"
-        @keydown.enter.self="openPlan(plan)"
       >
         <div class="week-head">
           <div>
             <h3>第 {{ plan.week_number_snapshot }} 周</h3>
-            <p class="muted">{{ plan.header.class_name }} · {{ plan.header.school_name }}</p>
+            <p class="muted">{{ plan.header.school_name }}</p>
           </div>
           <el-button
             type="primary"
             text
             :disabled="disabled || previewing || creating || createUnknown"
             data-d1="weekly-plan-open"
-            @click.stop="openPlan(plan)"
+            @click="openPlan(plan)"
           >
             打开
           </el-button>
@@ -565,13 +561,7 @@ onMounted(async () => { await loadTerms(); await load(true) })
   border: 1px solid var(--kgm-border);
   border-radius: 12px;
   background: var(--kgm-surface);
-  cursor: pointer;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-.week-card:hover, .week-card:focus-visible {
-  border-color: var(--kgm-accent);
-  outline: 2px solid var(--kgm-focus);
-  outline-offset: 2px;
 }
 .week-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
 .week-head h3 { margin: 0.1rem 0; }

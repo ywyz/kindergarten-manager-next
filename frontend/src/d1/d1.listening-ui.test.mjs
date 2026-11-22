@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
-import { compileScript, parse } from '@vue/compiler-sfc'
+import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as vue from 'vue'
 
@@ -198,6 +198,10 @@ class Harness {
     this.listening = listening
     this.client = client
     this.PhotoCacheClass = PhotoCacheClass
+    this.listeningAi = {
+      listListeningRecordAITasks: () =>
+        Promise.reject(new Error('unexpected record AI task list')),
+    }
     this.messages = []
     this.mounted = []
     this.unmounts = []
@@ -248,8 +252,16 @@ class Harness {
         if (spec === '../observation-photos') return { PhotoUrlCache: harness.PhotoCacheClass }
         if (spec === '../components/ListeningExportDialog.vue') return { default: {} }
         if (spec === '../components/ListeningAiPanel.vue') return { default: {} }
+        if (spec === '../components/RecordTasksDialog.vue') return { default: {} }
         if (spec === '../components/DirectionalRevisionDialog.vue') return { default: {} }
         if (spec === '../components/DirectionalRevisionTrigger.vue') return { default: {} }
+        if (spec === '../listening-ai') return harness.listeningAi
+        if (spec === '../ai') {
+          return {
+            taskStatusLabel: (status) => `状态:${status}`,
+            taskTypeLabel: (type) => `类型:${type}`,
+          }
+        }
         if (spec === '../directional-revision') {
           return {
             captureDirectionalSelection: () => null,
@@ -401,6 +413,32 @@ function editorClient(overrides = {}) {
           rotations: {},
         }
       }
+      if (url === '/api/listening/records/record-1/versions') {
+        return {
+          items: [
+            { version: 2, saved_at: '2026-11-01T09:00:00' },
+            { version: 1, saved_at: '2026-10-01T08:00:00' },
+          ],
+        }
+      }
+      if (url === '/api/listening/records/record-1/versions/2') {
+        const historical = record(overrides.assetId ?? null)
+        historical.child_name = '同名幼儿旧名'
+        historical.revision = 2
+        historical.updated_at = '2026-11-01T09:00:00'
+        historical.domains[0].goal = '旧目标'
+        historical.domains[0].observation_area = '美工区'
+        historical.domains[0].evaluation = [
+          { item_id: 'health_1', stars: 2 },
+          { item_id: 'health_9', stars: null },
+        ]
+        historical.rotations = { 'asset-1': 1 }
+        return {
+          version: 2,
+          saved_at: '2026-11-01T09:00:00',
+          content: historical,
+        }
+      }
       throw new Error(`unexpected GET ${url}`)
     },
     apiPatch: async (url, body) => {
@@ -472,9 +510,11 @@ async function mountedEditor({
   client = editorClient(),
   props = {},
   PhotoCacheClass = FakePhotoCache,
+  listeningAi,
 } = {}) {
   const listening = loadCore(client)
   const harness = new Harness({ listening, client, PhotoCacheClass })
+  if (listeningAi) harness.listeningAi = listeningAi
   const built = harness.load('views/ListeningEditorView.vue', {
     context: {
       terms: [
@@ -881,6 +921,310 @@ function sessionGoal(state) {
   } finally {
     tracker.stop()
   }
+}
+
+// 2026-11-22 repair: the auxiliary 任务 dialog carries this record's AI tasks
+// and the full saved-version history; reopen refetches and a context switch
+// clears everything, so another record's rows can never leak in.
+{
+  const aiTasks = {
+    items: [
+      {
+        task_id: 'task-1',
+        task_type: 'listening_note_draft',
+        status: 'succeeded',
+        reason: null,
+        source_kind: 'one_to_one_listening',
+        listening_record_id: 'record-1',
+        listening_domain: 'health',
+        listening_group_id: 'g-health-0',
+        processing_certainty: 'certain',
+        user_stop_requested: false,
+        candidate_id: 'cand-1',
+        created_at: '2026-11-01T10:00:00',
+      },
+      {
+        task_id: 'task-2',
+        task_type: 'listening_domain_evaluate',
+        status: 'failed',
+        reason: 'provider_error',
+        source_kind: 'one_to_one_listening',
+        listening_record_id: 'record-1',
+        listening_domain: 'language',
+        listening_group_id: null,
+        processing_certainty: 'none',
+        user_stop_requested: false,
+        candidate_id: null,
+        created_at: '2026-11-02T10:00:00',
+      },
+    ],
+    next_cursor: null,
+  }
+  const cache = new FakePhotoCache({})
+  const { state } = await mountedEditor({
+    client: editorClient({ assetId: 'asset-1' }),
+    PhotoCacheClass: photoCacheFactory(cache),
+    listeningAi: {
+      listListeningRecordAITasks: async () => aiTasks,
+    },
+  })
+  // Opening the panel refetches both lists for the current record only.
+  state.tasksOpen.value = true
+  state.refreshTasksPanel()
+  await wait(20)
+  assert.equal(state.tasksLoading.value, false)
+  assert.equal(state.tasksError.value, '')
+  assert.equal(state.taskRows.value.length, 2)
+  assert.equal(state.taskRows.value[0].key, 'task-1')
+  assert.equal(
+    state.taskRows.value[0].typeLabel,
+    '类型:listening_note_draft · 健康',
+  )
+  assert.equal(state.taskRows.value[0].statusLabel, '状态:succeeded')
+  assert.equal(state.taskRows.value[1].statusLabel, '状态:failed')
+  assert.equal(state.versionsLoading.value, false)
+  assert.equal(state.versionsError.value, '')
+  assert.equal(state.versionRows.value.length, 2)
+  assert.equal(state.versionRows.value[0].version, 2)
+  assert.equal(state.versionRows.value[0].savedAt.includes('09:00'), true)
+  // Selecting a version loads the full five-domain snapshot read-only.
+  await state.selectRecordVersion(2)
+  await wait(20)
+  assert.equal(state.versionDetailError.value, '')
+  assert.equal(state.versionDetailLoading.value, false)
+  assert.equal(state.versionDetail.value.version, 2)
+  assert.equal(state.versionDetail.value.content.child_name, '同名幼儿旧名')
+  assert.equal(state.versionDetail.value.content.domains.length, 5)
+  assert.equal(state.versionDetail.value.content.domains[0].goal, '旧目标')
+  assert.equal(state.selectedVersion.value, 2)
+  // Every human-readable record field of the snapshot is carried through.
+  assert.equal(state.versionGradeLabel.value, '中班')
+  assert.equal(state.versionTermName.value, '本学期')
+  assert.equal(state.versionDetail.value.content.domains[0].observation_area, '美工区')
+  const slotTotal = state.versionDetail.value.content.domains.reduce(
+    (sum, domain) => sum + domain.groups.length,
+    0,
+  )
+  assert.equal(slotTotal, 15, 'all five domains keep their three group slots')
+  for (const domain of state.versionDetail.value.content.domains) {
+    assert.equal(domain.groups.length, 3, `domain ${domain.domain} keeps all group slots`)
+  }
+  // Evaluation renders one row per template item under the record-pinned
+  // labels, including unfinished entries; unresolvable items keep their id.
+  const evalRows = state.versionEvaluationRows(
+    state.versionDetail.value.content.domains[0],
+  )
+  assert.equal(evalRows.length, 2)
+  assert.equal(evalRows[0].itemId, 'health_1')
+  assert.equal(evalRows[0].requirement, '要求-health')
+  assert.equal(evalRows[0].starLabel, '★★')
+  assert.equal(evalRows[1].itemId, 'health_9')
+  assert.equal(evalRows[1].requirement, 'health_9')
+  assert.equal(evalRows[1].starLabel, '未评')
+  // The historical photo loads through the shared record asset route.
+  assert.equal(state.versionPhotoUrls['asset-1'], 'blob:asset-1')
+  // The saved rotation applies only to the historical view, per contract.
+  const rotationStyle = state.versionPhotoRotationStyle('asset-1')
+  assert.ok(rotationStyle.transform, 'saved manual rotation is applied')
+  assert.equal(Object.keys(state.versionPhotoRotationStyle('missing-asset')).length, 0)
+  // Reopen clears the previous selection and detail, then refetches.
+  state.tasksOpen.value = false
+  state.refreshTasksPanel()
+  await wait(20)
+  assert.equal(state.selectedVersion.value, null)
+  assert.equal(state.versionDetail.value, null)
+  assert.equal(state.versionRows.value.length, 2)
+  // A record/profile switch resets the panel state entirely.
+  state.resetTasksPanelState()
+  assert.equal(state.taskRows.value.length, 0)
+  assert.equal(state.versionRows.value.length, 0)
+  assert.equal(state.versionDetail.value, null)
+  assert.equal(state.selectedVersion.value, null)
+  assert.equal(state.versionDetailError.value, '')
+  // A late version response after the reset is dropped, never shown.
+  await state.selectRecordVersion(2)
+  await wait(10)
+  state.resetTasksPanelState()
+  await wait(20)
+  assert.equal(state.versionDetail.value, null)
+  ok('tasks panel lists record AI tasks, opens full saved versions and resets on record switch')
+}
+
+// r2 regression: two version clicks whose responses finish reversed, plus a
+// refresh while a read is in flight — a slow stale response must never
+// overwrite the newest selection's detail, spinner, error or photos.
+{
+  const base = editorClient({ assetId: null })
+  const originalGet = base.apiGet
+  const pending = new Map()
+  const versionContent = (version, name) => {
+    const content = record(null)
+    content.child_name = name
+    content.revision = version
+    return { version, saved_at: `2026-11-0${version}T10:00:00`, content }
+  }
+  base.apiGet = async (url) => {
+    if (url === '/api/listening/records/record-1/versions') {
+      return {
+        items: [
+          { version: 3, saved_at: '2026-11-03T10:00:00' },
+          { version: 2, saved_at: '2026-11-02T10:00:00' },
+        ],
+      }
+    }
+    const match = /^\/api\/listening\/records\/record-1\/versions\/(\d+)$/.exec(url)
+    if (match) {
+      const version = Number(match[1])
+      return new Promise((resolve, reject) => {
+        pending.set(version, {
+          resolve: () => resolve(versionContent(version, `第${version}版幼儿`)),
+          reject: () => reject(new Error('network reset')),
+        })
+      })
+    }
+    return originalGet(url)
+  }
+  const { state } = await mountedEditor({ client: base })
+  await wait(10)
+  state.tasksOpen.value = true
+  state.refreshTasksPanel()
+  await wait(20)
+  assert.equal(state.versionRows.value.length, 2)
+  // Click v2, then v3 while v2 is still pending: both share one generation,
+  // only the newest request may write.
+  state.selectRecordVersion(2)
+  await wait(10)
+  assert.equal(state.selectedVersion.value, 2)
+  assert.equal(state.versionDetailLoading.value, true)
+  state.selectRecordVersion(3)
+  await wait(10)
+  assert.equal(state.selectedVersion.value, 3)
+  assert.equal(state.versionDetailLoading.value, true)
+  pending.get(3).resolve()
+  await wait(20)
+  assert.equal(state.versionDetail.value.version, 3)
+  assert.equal(state.versionDetail.value.content.child_name, '第3版幼儿')
+  assert.equal(state.versionDetailLoading.value, false)
+  assert.equal(state.versionDetailError.value, '')
+  // The slow v2 response finishes last and must not overwrite anything.
+  pending.get(2).resolve()
+  await wait(20)
+  assert.equal(state.versionDetail.value.version, 3)
+  assert.equal(state.versionDetail.value.content.child_name, '第3版幼儿')
+  assert.equal(state.selectedVersion.value, 3)
+  assert.equal(state.versionDetailLoading.value, false)
+  assert.equal(state.versionDetailError.value, '')
+  // Refresh while a read is in flight: the pending read is retired, the
+  // spinner is cleared with the refresh, and its late rejection never
+  // surfaces an error.
+  state.selectRecordVersion(2)
+  await wait(10)
+  assert.equal(state.versionDetailLoading.value, true)
+  state.refreshTasksPanel()
+  await wait(20)
+  assert.equal(state.selectedVersion.value, null)
+  assert.equal(state.versionDetail.value, null)
+  assert.equal(state.versionDetailLoading.value, false)
+  pending.get(2).reject()
+  await wait(20)
+  assert.equal(state.versionDetail.value, null)
+  assert.equal(state.versionDetailError.value, '')
+  assert.equal(state.versionDetailLoading.value, false)
+  ok('slow stale version responses never overwrite the newest selection or a refresh')
+}
+
+// 2026-11-22 repair: the shared RecordTasksDialog itself emits refresh on
+// every reopen and keeps the version selection explicit.
+{
+  const file = path.join(d1Dir, 'components/RecordTasksDialog.vue')
+  const source = fs.readFileSync(file, 'utf8')
+  const { descriptor } = parse(source, { filename: file })
+  assert.ok(descriptor.template, 'record tasks dialog template')
+  const compiled = compileScript(descriptor, { id: 'record-tasks-dialog' })
+  const template = compileTemplate({
+    source: descriptor.template.content,
+    filename: file,
+    id: 'record-tasks-dialog',
+  })
+  assert.equal(template.errors.length, 0, 'record tasks dialog template compile')
+  const js = ts.transpileModule(compiled.content, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+  }).outputText
+  const module = { exports: {} }
+  vm.runInNewContext(js, {
+    module,
+    exports: module.exports,
+    require: (spec) => {
+      if (spec === 'vue') return vue
+      throw new Error(`unexpected import ${spec}`)
+    },
+    console,
+    Date,
+    JSON,
+    Math,
+    Object,
+    Array,
+    String,
+    Boolean,
+    Promise,
+    Set,
+    Map,
+  })
+  const emitted = []
+  const props = vue.reactive({
+    open: false,
+    disabled: false,
+    tasks: [
+      { key: 't1', typeLabel: '生成', status: 'succeeded', statusLabel: '已完成', createdAt: '2026-11-01' },
+    ],
+    versions: [
+      { version: 3, savedAt: '2026-11-02 09:00' },
+      { version: 2, savedAt: '2026-11-01 09:00' },
+    ],
+    selectedVersion: null,
+  })
+  const state = module.exports.default.setup(props, {
+    expose: () => undefined,
+    emit: (...args) => emitted.push(args),
+  })
+  await vue.nextTick()
+  assert.equal(emitted.length, 0, 'closed dialog never fetches')
+  props.open = true
+  await vue.nextTick()
+  assert.deepEqual(emitted[0], ['refresh'], 'opening emits one refresh')
+  props.open = false
+  await vue.nextTick()
+  props.open = true
+  await vue.nextTick()
+  assert.equal(
+    emitted.filter((args) => args[0] === 'refresh').length,
+    2,
+    'every reopen emits refresh again',
+  )
+  state.selectVersion(3)
+  assert.deepEqual(emitted.at(-1), ['select-version', 3])
+  props.disabled = true
+  state.selectVersion(2)
+  assert.equal(
+    emitted.filter((args) => args[0] === 'select-version').length,
+    1,
+    'a disabled panel never emits a version selection',
+  )
+  assert.equal(
+    template.code.includes('record-version-list'),
+    true,
+    'versions render from a dedicated list block',
+  )
+  assert.equal(
+    template.code.includes('slot'),
+    true,
+    'the version detail stays module-owned through a slot',
+  )
+  ok('record tasks dialog reopens with refresh and keeps version selection explicit')
 }
 
 console.log(`listening-ui: ${passed} checks passed`)

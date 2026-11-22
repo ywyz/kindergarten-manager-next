@@ -2,11 +2,22 @@
 /**
  * Real daily-plan editor (D1 spec §11.1/§11.2).
  *
- * 2026-11-15 layout: the page body is a read-only left-directory view; an
- * explicit column button opens a dialog with an independent copy. Confirm only
- * fills the live draft (never saves a business version); cancel keeps the
- * previous draft byte-equivalent. The dialog is pinned to its opening
- * plan/version/section/session and joins leave/close and AI-write protection.
+ * 2026-11-22 desktop-feedback layout: the default view is one continuous,
+ * fully readable 一日活动计划 document — every actual column (raw lesson
+ * plan, morning games with every group's every subfield, morning talk,
+ * collective activity incl. the stored split baseline, post-group games,
+ * afternoon outdoor, reflection with implementation material) stays mounted
+ * and visible at once, so old data, long text and empty drafts read without
+ * tab switching. Operations are no longer repeated inside the preview: the
+ * rail keeps exactly the four main actions in order (拆分教案并修改 /
+ * 修改指定内容 / 保存 / 导出 Word) plus the auxiliary entries (任务 for the
+ * AI tasks + version history, back to the workbench, settings).
+ *
+ * Editing still goes through the explicit column dialog with an independent
+ * copy. Confirm only fills the live draft (never saves a business version);
+ * cancel keeps the previous draft byte-equivalent. The dialog is pinned to
+ * its opening plan/version/section/session and joins leave/close and AI-write
+ * protection.
  *
  * State: loading / ready / saving / conflict / save_failed plus the initial
  * create_confirmation. The dirty baseline is the server-normalized saveable
@@ -61,8 +72,6 @@ import {
   applyDailyLayoutSection,
   cloneDailyLayoutDraft,
   dailyLayoutDraftSignature,
-  dailyMorningFocusGroupIndex,
-  dailyMorningGroupHasHiddenDetails,
   type DailyLayoutDraft,
   type DailyLayoutSectionKey,
 } from '../daily-layout-draft'
@@ -208,9 +217,9 @@ const aiTaskDraftActive = ref(false)
 const candidateInline = ref(false)
 const candidateInlineTarget = ref<HTMLElement | null>(null)
 /**
- * #19: anchors for the three daily-plan AI actions. The single AiTaskPanel
- * keeps task state/polling; its per-type rows are teleported beside the raw
- * lesson input, the collective-activity process and the other-activity area.
+ * The single AiTaskPanel keeps all AI task state/polling; its per-type rows
+ * (triggers, receipts, recovery) render inside the panel dialog behind the
+ * 任务 entry — operations are not repeated inside the reading document.
  */
 const aiTaskPanelRef = ref<{
   trigger?: (taskType: TaskType) => Promise<void>
@@ -246,17 +255,13 @@ const SECTION_AI: Array<{
   { key: 'afternoon_outdoor', layout: 'afternoon', label: '下午户外' },
 ]
 // Only the new live split task can start the pre-adoption adapt chain.
-const splitTarget = ref<HTMLElement | null>(null)
-const processTarget = ref<HTMLElement | null>(null)
-const otherTarget = ref<HTMLElement | null>(null)
-const reflectionTarget = ref<HTMLElement | null>(null)
-const reflectionProgressTarget = ref<HTMLElement | null>(null)
 /**
- * 2026-11-15 left-directory layout: reading is the default; only an explicit
- * column button opens a dialog with an independent draft copy. The modal is
- * pinned to the plan/version/section/session it was opened from.
+ * 2026-11-22 continuous full preview: all columns stay mounted and visible in
+ * one readable document. The directory buttons only locate a column; they no
+ * longer hide the others. The default reading position is the preview top
+ * (原始教案), matching where the document starts after every open/date switch.
  */
-const layoutSection = ref<DailyLayoutSectionKey>('group')
+const layoutSection = ref<DailyLayoutSectionKey>('raw')
 const layoutEditing = ref<DailyLayoutSectionKey | null>(null)
 const layoutModalOpen = ref(false)
 const layoutDraft = ref<DailyLayoutDraft>(
@@ -287,6 +292,38 @@ const historyOpen = ref(false)
 const historyBusy = ref(false)
 const historySettling = ref(false)
 const conflictNotice = ref('')
+/**
+ * 2026-11-22 consolidated entries: 修改指定内容 opens one chooser for hand
+ * editing a selected column (the existing per-column dialog) and for that
+ * column's existing AI targeted modification; 任务 opens the auxiliary entry
+ * that leads to the AI task panel dialog and the version-history dialog.
+ */
+const modifyOpen = ref(false)
+const modifySection = ref<DailyLayoutSectionKey>('group')
+const tasksOpen = ref(false)
+/** Section elements of the continuous document, used for locate/scroll only. */
+const sectionEls = ref<Partial<Record<DailyLayoutSectionKey, HTMLElement | null>>>({})
+/** The document head: every fresh open/date switch starts reading here. */
+const docHeadEl = ref<HTMLElement | null>(null)
+/** The action rail: the reveal target in the narrow layout where it sits on top. */
+const actionsRailEl = ref<HTMLElement | null>(null)
+let revealedDocTop = false
+
+/**
+ * Narrow (<=1100px) layout: the single column shows the action group above
+ * the reading body. Read the shared media query so the reveal and the layout
+ * can never disagree. Guarded for non-DOM harnesses (no matchMedia → wide).
+ */
+function narrowActionsViewport(): boolean {
+  try {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false
+    }
+    return window.matchMedia('(max-width: 1100px)').matches
+  } catch {
+    return false
+  }
+}
 
 let inFlight: Promise<SaveResult> | null = null
 let draftReconcileSeq = 0
@@ -373,11 +410,50 @@ function formDirtyForAi(): boolean {
   return dirty.value
 }
 
-// -- left-directory read/edit modal -------------------------------------------
+// -- continuous full preview: locate only, editing stays in dialogs ----------
+
+function setSectionEl(section: DailyLayoutSectionKey, el: unknown): void {
+  sectionEls.value[section] = (el as HTMLElement | null) ?? null
+}
+
+/** Reading document only: locating a column never writes anything. */
+function scrollLayoutSection(section: DailyLayoutSectionKey): void {
+  const el = sectionEls.value[section]
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
+function focusLayoutSection(section: DailyLayoutSectionKey): void {
+  layoutSection.value = section
+  scrollLayoutSection(section)
+}
+
+/**
+ * A fresh open (or date switch) starts reading at the preview top, never at
+ * whatever scroll offset the previous page/day left behind. One-shot per
+ * editor instance; later candidate/AI/recovery flows may still locate.
+ *
+ * In the narrow layout the action group sits above the document: reveal the
+ * action bar itself so the first open keeps the main actions on screen and
+ * never scrolls them off; the reading body follows right below.
+ */
+function revealDocTopOnce(): void {
+  if (revealedDocTop) return
+  revealedDocTop = true
+  void nextTick().then(() => {
+    const el = narrowActionsViewport()
+      ? (actionsRailEl.value ?? docHeadEl.value)
+      : docHeadEl.value
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'auto', block: 'start' })
+    }
+  })
+}
 
 function selectLayoutSection(section: DailyLayoutSectionKey): void {
   if (layoutEditing.value) return
-  layoutSection.value = section
+  focusLayoutSection(section)
 }
 
 function focusLayoutReturn(): void {
@@ -692,9 +768,11 @@ async function load(): Promise<void> {
           `/api/daily-plans/by-date?date=${encodeURIComponent(props.planDate)}`,
         )
         applyPlan(existing)
+        revealDocTopOnce()
       } catch (err) {
         if (err instanceof ApiError && err.status === 404) {
           startDraft()
+          revealDocTopOnce()
           return
         }
         errorText.value =
@@ -709,6 +787,7 @@ async function load(): Promise<void> {
           `/api/daily-plans/by-date?date=${props.planDate}`,
         )
     applyPlan(found)
+    revealDocTopOnce()
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
       phase.value = 'create_confirmation'
@@ -728,6 +807,7 @@ async function confirmCreate(): Promise<void> {
       expected_config_version: props.context.config_version,
     })
     applyPlan(created)
+    revealDocTopOnce()
   } catch (err) {
     if (err instanceof ApiError && err.code === 'CONFIG_VERSION_CONFLICT') {
       // The page's read configuration went stale: refresh the context so the
@@ -1390,14 +1470,32 @@ const sectionAiCurrentText = computed(() => {
 })
 
 /**
- * Read-only morning selection, matching the existing Word/current rule. The
- * teacher still sees both game names; only this group's objectives/guidance
- * are the current detailed set. All stored groups/fields remain in the edit
- * dialog.
+ * 2026-11-22: the continuous preview shows every stored morning group with
+ * all of its subfields — the old focus-group hiding rule no longer decides
+ * what the teacher can read; the Word focus selection stays a Word rule.
  */
-const morningFocusGroupIndex = computed(() =>
-  dailyMorningFocusGroupIndex(form.value.morning_games),
+/**
+ * Evidence first: show the label the server actually issued for this plan;
+ * the fixed business label is only the fallback when old data carries none.
+ */
+const morningExerciseLabel = computed(
+  () => form.value.morning_exercise_label || MORNING_EXERCISE_LABEL,
 )
+
+const splitBaselineProcess = computed(() => {
+  const baseline = plan.value?.content.split_baseline?.group_activity_process
+  return typeof baseline === 'string' ? baseline : ''
+})
+
+/** Document head line: class/grade from the plan (or the local context for a draft). */
+const docMetaText = computed(() => {
+  const className = plan.value?.class_name || props.context.class?.name || ''
+  const grade = (plan.value?.grade ?? props.context.class?.grade) as string | undefined
+  const gradeLabel = grade ? GRADE_LABELS[grade] ?? grade : ''
+  const parts = [className ? `班级：${className}` : '', gradeLabel]
+  if (plan.value && weekLabel.value) parts.push(weekLabel.value)
+  return parts.filter(Boolean).join(' · ')
+})
 
 // #27: reflection owns its material/receipt workflow and shares AiTaskPanel's
 // read-only progress. The saved plan is the original arrangement; only the
@@ -1696,11 +1794,11 @@ async function openCandidate(
   candidateSection.value = targetSection
   candidateInline.value = false
   candidateInlineTarget.value = null
-  if (taskType === 'daily_lesson_split') layoutSection.value = 'raw'
+  if (taskType === 'daily_lesson_split') focusLayoutSection('raw')
   else if (taskType === 'daily_other_activities' && targetSection) {
     const section = SECTION_AI.find((item) => item.key === targetSection)
-    if (section) layoutSection.value = section.layout
-  } else if (taskType === REFLECTION_TASK_TYPE) layoutSection.value = 'reflection'
+    if (section) focusLayoutSection(section.layout)
+  } else if (taskType === REFLECTION_TASK_TYPE) focusLayoutSection('reflection')
   candidateOpen.value = true
   // A new split candidate starts a fresh pre-adoption adapt chain; opening
   // another candidate must not cancel an already registered split relation.
@@ -2011,7 +2109,7 @@ function reflectionStatusText(): string {
   if (task.status === 'outcome_unknown') {
     return '反思生成结果未知：当前反思与已保存版本已保留，未自动重发；可查询原任务。'
   }
-  return '正在生成反思，思考过程见下方；完成后直接填入草稿。'
+  return '正在生成反思；思考过程与回执可在“任务”入口查看；完成后直接填入草稿。'
 }
 
 async function submitReflectionBody(
@@ -2791,7 +2889,7 @@ function goSettings(): void {
   leave('settings', () => 'left')
 }
 
-// -- left-directory generation entries -----------------------------------------
+// -- consolidated generation entries ------------------------------------------
 
 const AI_ACTION_SECTIONS: Partial<Record<TaskType, DailyLayoutSectionKey>> = {
   daily_lesson_split: 'raw',
@@ -2801,15 +2899,15 @@ const AI_ACTION_SECTIONS: Partial<Record<TaskType, DailyLayoutSectionKey>> = {
 }
 
 /**
- * Generation entries live in the right rail and their own sections. Make the
- * matching reading pane current before starting so guidance, prerequisites,
- * live reasoning/progress and error/unknown receipts stay visible.
+ * Generation entries live behind the consolidated dialogs. Make the matching
+ * reading column current before starting so guidance, prerequisites, live
+ * reasoning/progress and error/unknown receipts stay reachable.
  */
 function onAiActionStart(taskType: TaskType): void {
   if (layoutEditing.value) return
   aiTaskDialogOpen.value = true
   const section = AI_ACTION_SECTIONS[taskType]
-  if (section) layoutSection.value = section
+  if (section) focusLayoutSection(section)
 }
 
 function openSectionAi(section: OtherSection): void {
@@ -2827,7 +2925,7 @@ function submitSectionAi(): void {
   const section = SECTION_AI.find((item) => item.key === sectionAiTarget.value)
   if (!section) return
   sectionAiOpen.value = false
-  layoutSection.value = section.layout
+  focusLayoutSection(section.layout)
   aiTaskDialogOpen.value = true
   void aiTaskPanelRef.value?.triggerOtherSection?.(
     section.key,
@@ -2835,20 +2933,171 @@ function submitSectionAi(): void {
   )
 }
 
-function startReflectionFromActions(): void {
-  if (layoutEditing.value) return
-  layoutSection.value = 'reflection'
+function openReflectionAi(): void {
+  if (layoutEditing.value) {
+    ElMessage.info('栏目编辑弹窗未关闭：请先确定或取消后再发起反思')
+    return
+  }
+  reflectionInstruction.value = ''
+  reflectionAiOpen.value = true
+}
+
+function submitReflectionAi(): void {
+  reflectionAiOpen.value = false
+  focusLayoutSection('reflection')
   aiTaskDialogOpen.value = true
-  void createReflectionTask()
+  void createReflectionTask(reflectionInstruction.value)
+}
+
+// -- 修改指定内容: one chooser for hand edit + the column's existing AI --------
+
+type ModifyAiMeta =
+  | { kind: 'section'; key: OtherSection; label: string }
+  | { kind: 'adapt'; label: string }
+  | { kind: 'reflection'; label: string }
+
+/** The existing AI workflow each column already owns, nothing new invented. */
+const MODIFY_AI: Partial<Record<DailyLayoutSectionKey, ModifyAiMeta>> = {
+  morning: { kind: 'section', key: 'morning_games', label: 'AI 生成 / 定向修改本栏' },
+  talk: { kind: 'section', key: 'morning_talk', label: 'AI 生成 / 定向修改本栏' },
+  group: { kind: 'adapt', label: 'AI 适龄调整集体活动过程' },
+  post: { kind: 'section', key: 'post_group_games', label: 'AI 生成 / 定向修改本栏' },
+  afternoon: { kind: 'section', key: 'afternoon_outdoor', label: 'AI 生成 / 定向修改本栏' },
+  reflection: { kind: 'reflection', label: 'AI 生成 / 定向修改反思' },
+}
+
+const modifyAiMeta = computed(() => MODIFY_AI[modifySection.value] ?? null)
+
+function morningGroupsText(): string {
+  return form.value.morning_games
+    .map((group) => {
+      const lines = [
+        `${group.group_kind === 'collective' ? '集体游戏组' : '自主游戏组（自选）'}：${
+          group.games.map((game) => game.name).join('、') || '（未填写游戏名称）'
+        }`,
+      ]
+      if (group.focus_guidance.trim()) lines.push(`重点指导（游戏名称）：${group.focus_guidance}`)
+      if (group.shared_objectives.trim()) lines.push(`共用目标：${group.shared_objectives}`)
+      if (group.guidance_points.trim()) lines.push(`指导要点：${group.guidance_points}`)
+      return lines.join('\n')
+    })
+    .join('\n')
+}
+
+function postGroupsText(): string {
+  return form.value.post_group_games
+    .map((group) => {
+      const lines = [
+        `${postContextLabel(group.context_kind)}${group.area ? `：${group.area}` : ''}`,
+      ]
+      if (group.games.length) lines.push(`游戏名称：${group.games.map((game) => game.name).join('、')}`)
+      if (group.focus_guidance.trim()) lines.push(`重点指导（区域名称）：${group.focus_guidance}`)
+      if (group.objectives.trim()) lines.push(`目标：${group.objectives}`)
+      if (group.guidance.trim()) lines.push(`指导：${group.guidance}`)
+      if (group.support_strategy.trim()) lines.push(`支持策略：${group.support_strategy}`)
+      return lines.join('\n')
+    })
+    .join('\n')
+}
+
+/** Read-only summary of the currently chosen column, full fields included. */
+const modifySectionText = computed(() => {
+  switch (modifySection.value) {
+    case 'raw':
+      return rawLessonPlan.value
+    case 'morning':
+      return morningGroupsText()
+    case 'talk':
+      return [form.value.morning_talk.topic, form.value.morning_talk.questions]
+        .filter((value) => value.trim() !== '')
+        .map((value, index) => (index === 0 ? `话题：${value}` : `问题设计：${value}`))
+        .join('\n')
+    case 'group': {
+      const activity = form.value.group_activity
+      const entries: Array<[string, string]> = [
+        ['活动主题', activity.theme],
+        ['目标', activity.objectives],
+        ['准备', activity.preparation],
+        ['重点', activity.key_points],
+        ['难点', activity.difficult_points],
+        ['过程', activity.process],
+      ]
+      return entries
+        .filter(([, value]) => value.trim() !== '')
+        .map(([label, value]) => `${label}：${value}`)
+        .join('\n')
+    }
+    case 'post':
+      return postGroupsText()
+    case 'afternoon': {
+      const afternoon = form.value.afternoon_outdoor
+      const lines: string[] = []
+      if (afternoon.area.trim()) lines.push(`区域名称：${afternoon.area}`)
+      if (afternoon.games.length) {
+        lines.push(`游戏名称：${afternoon.games.map((game) => game.name).join('、')}`)
+      }
+      if (afternoon.observation_focus.trim()) lines.push(`重点观察（区域名称）：${afternoon.observation_focus}`)
+      if (afternoon.objectives.trim()) lines.push(`目标：${afternoon.objectives}`)
+      if (afternoon.guidance.trim()) lines.push(`指导：${afternoon.guidance}`)
+      if (afternoon.support_strategy.trim()) lines.push(`支持策略：${afternoon.support_strategy}`)
+      return lines.join('\n')
+    }
+    case 'reflection':
+      return form.value.reflection
+  }
+})
+
+function openModifySection(): void {
+  if (props.frozen) return
+  modifyOpen.value = true
+}
+
+/** Hand edit goes straight to the existing per-column independent-copy dialog. */
+function submitModifyEdit(): void {
+  const section = modifySection.value
+  modifyOpen.value = false
+  openLayoutEditor(section)
+}
+
+/** The column's existing AI workflow: section dialog, reflection dialog or
+ * the same guarded process-adapt trigger the task panel exposes. */
+function submitModifyAi(): void {
+  const meta = modifyAiMeta.value
+  if (!meta || !plan.value) return
+  modifyOpen.value = false
+  if (meta.kind === 'section') {
+    openSectionAi(meta.key)
+    return
+  }
+  if (meta.kind === 'reflection') {
+    openReflectionAi()
+    return
+  }
+  void aiTaskPanelRef.value?.trigger?.('daily_process_adapt')
+}
+
+// -- 任务: the auxiliary entry for AI tasks + version history -----------------
+
+function openTasksAi(): void {
+  tasksOpen.value = false
+  aiTaskDialogOpen.value = true
+}
+
+/** History keeps its own guarded open flow (save first, never over a dirty body). */
+function openTasksHistory(): void {
+  tasksOpen.value = false
+  void openHistory()
 }
 
 let splitFromRailBusy = false
 
 /**
- * The right rail is the direct split action: save the current body through the
- * normal guarded path, wait for the single task panel to exist for a newly
- * created plan, then start the same explicit split task the panel exposes.
- * A failed or unknown save never registers a task, and the panel's own guard
+ * 拆分教案并修改 is the first main operation and the head of the real
+ * workflow: an empty raw lesson opens the original-lesson input dialog first
+ * (paste + confirm fills the draft only); with raw text present the body is
+ * saved through the normal guarded path, the explicit split task starts, and
+ * the split + age-appropriate review happens in the candidate dialog. A
+ * failed or unknown save never registers a task, and the panel's own guard
  * still blocks duplicate/pending/live requests.
  */
 async function startSplitFromRail(): Promise<void> {
@@ -2859,9 +3108,8 @@ async function startSplitFromRail(): Promise<void> {
   }
   if (splitFromRailBusy) return
   if (!hasRaw.value) {
-    aiTaskDialogOpen.value = true
-    layoutSection.value = 'raw'
-    ElMessage.warning('原始教案为空：请先填写或粘贴原文再拆分')
+    ElMessage.warning('原始教案为空：请先粘贴原文并“确定填回草稿”，再点击“拆分教案并修改”')
+    openLayoutEditor('raw')
     return
   }
   splitFromRailBusy = true
@@ -2888,29 +3136,13 @@ async function startSplitFromRail(): Promise<void> {
       panel = aiTaskPanelRef.value
     }
     if (!panel?.trigger) {
-      ElMessage.warning('AI 任务面板尚未就绪：请从“AI 任务与历史”重试')
+      ElMessage.warning('AI 任务面板尚未就绪：请从“任务”入口打开 AI 任务与历史后重试')
       return
     }
     await panel.trigger('daily_lesson_split')
   } finally {
     splitFromRailBusy = false
   }
-}
-
-function openReflectionAi(): void {
-  if (layoutEditing.value) {
-    ElMessage.info('栏目编辑弹窗未关闭：请先确定或取消后再发起反思')
-    return
-  }
-  reflectionInstruction.value = ''
-  reflectionAiOpen.value = true
-}
-
-function submitReflectionAi(): void {
-  reflectionAiOpen.value = false
-  layoutSection.value = 'reflection'
-  aiTaskDialogOpen.value = true
-  void createReflectionTask(reflectionInstruction.value)
 }
 
 function onDateChange(value: string | null): void {
@@ -3140,6 +3372,24 @@ onMounted(() => {
     layoutStale: () => layoutStale.value,
     layoutDraft: () => layoutDraft.value,
     layoutOrigin: () => layoutOrigin.value,
+    modifyOpen: () => modifyOpen.value,
+    modifySection: () => modifySection.value,
+    openModify: () => openModifySection(),
+    chooseModifySection: (section: DailyLayoutSectionKey) => {
+      modifySection.value = section
+    },
+    submitModifyEdit: () => submitModifyEdit(),
+    submitModifyAi: () => submitModifyAi(),
+    tasksOpen: () => tasksOpen.value,
+    openTasks: () => {
+      tasksOpen.value = true
+    },
+    openTasksAi: () => openTasksAi(),
+    openTasksHistory: () => openTasksHistory(),
+    revealTarget: () => (narrowActionsViewport() ? 'actions' : 'document'),
+    sectionAiOpen: () => sectionAiOpen.value,
+    reflectionAiOpen: () => reflectionAiOpen.value,
+    aiTaskDialogOpen: () => aiTaskDialogOpen.value,
   }
   emit('register-editor', bridge)
   void load()
@@ -3219,7 +3469,7 @@ onBeforeUnmount(() => {
         :closable="false"
         class="section"
         data-d1="draft-notice"
-        title="未保存草稿：点击各栏「编辑本栏」修改；只有有改动时，保存、返回、切换日期或关窗才会创建当天计划；原样浏览不写库。"
+        title="未保存草稿：修改请使用主操作「修改指定内容」；只有有改动时，保存、返回、切换日期或关窗才会创建当天计划；原样浏览不写库。"
       />
 
       <el-alert
@@ -3345,10 +3595,12 @@ onBeforeUnmount(() => {
         title="候选编辑尚未处理：切换栏目不会丢失输入；请回到对应栏目完成采用并保存，或取消本次候选编辑。"
       />
 
-      <!-- 2026-11-15 left-directory layout: read mode by default. Every column
-           stays mounted with v-show so the single AiTaskPanel's teleport anchors,
-           inline candidates and reflection progress keep their state while the
-           teacher switches columns. -->
+      <!-- 2026-11-22 continuous full preview: the default view is one readable
+           一日活动计划 document. Every actual column stays mounted and
+           visible with all of its stored fields, groups and long text; the
+           directory buttons only locate a column. Operations live in the
+           rail's four main actions plus the 任务 entry, never repeated
+           inside the reading document. -->
       <div
         class="daily-book"
         :class="{ 'daily-book-teleported': !!navigationTarget }"
@@ -3380,89 +3632,38 @@ onBeforeUnmount(() => {
         </nav>
         </Teleport>
         <div class="daily-panes">
+          <header ref="docHeadEl" class="daily-doc-head" data-d1="daily-doc-head">
+            <h3>一日活动计划</h3>
+            <p v-if="docMetaText" class="muted">{{ docMetaText }}</p>
+          </header>
+
           <section
-            v-show="layoutSection === 'raw'"
             class="daily-pane"
             data-d1="raw-lesson"
-            :aria-hidden="layoutSection !== 'raw'"
+            :ref="(el) => setSectionEl('raw', el)"
           >
             <div class="read-title">
               <div>
                 <p class="read-kicker">原始教案</p>
                 <h3>原始教案（可选）</h3>
               </div>
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                data-d1="layout-edit-raw"
-                :disabled="editDisabled || !!layoutEditing"
-                @click="openLayoutEditor('raw')"
-              >
-                编辑本栏
-              </el-button>
             </div>
             <pre v-if="rawLessonPlan.trim()" class="read-pre" data-d1="read-raw-lesson">{{ rawLessonPlan }}</pre>
-            <p v-else class="muted">（未填写原始教案）</p>
-            <div
-              ref="splitTarget"
-              class="ai-action-anchor"
-              data-d1="ai-slot-daily_lesson_split"
-            >
-              <div
-                v-if="!plan"
-                class="split-placeholder"
-                data-d1="split-needs-save"
-              >
-                <span class="muted">
-                  {{
-                    rawLessonPlan.trim()
-                      ? '请使用右侧“教案拆分”发起拆分；保存成功后不会覆盖现有内容'
-                      : '请先点击“编辑本栏”粘贴原始教案，再使用右侧“教案拆分”保存并拆分'
-                  }}
-                </span>
-              </div>
-            </div>
+            <p v-else class="muted">（未填写原始教案；拆分请使用主操作“拆分教案并修改”）</p>
           </section>
 
           <section
-            v-show="layoutSection === 'morning'"
             class="daily-pane"
             data-d1="layout-section-morning"
-            :aria-hidden="layoutSection !== 'morning'"
+            :ref="(el) => setSectionEl('morning', el)"
           >
             <div class="read-title">
               <div>
                 <p class="read-kicker">晨间活动</p>
-                <h3>晨间 · 体能大循环</h3>
+                <h3>晨间 · {{ morningExerciseLabel }}</h3>
               </div>
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                data-d1="layout-edit-morning"
-                :disabled="editDisabled || !!layoutEditing"
-                @click="openLayoutEditor('morning')"
-              >
-                编辑本栏
-              </el-button>
             </div>
-            <p class="fixed-label">固定栏目：<strong>{{ MORNING_EXERCISE_LABEL }}</strong></p>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              data-d1="section-ai-morning_games"
-              :disabled="editDisabled"
-              @click="openSectionAi('morning_games')"
-            >
-              AI 生成 / 定向修改
-            </el-button>
-            <div
-              ref="otherTarget"
-              class="ai-action-anchor"
-              data-d1="ai-slot-daily_other_activities"
-            ></div>
+            <p class="fixed-label">固定栏目：<strong>{{ morningExerciseLabel }}</strong></p>
             <div
               v-for="(group, gi) in form.morning_games"
               :key="group.group_id || (group as any)._tmp || `m-${gi}`"
@@ -3481,67 +3682,37 @@ onBeforeUnmount(() => {
                 </li>
               </ul>
               <p v-else class="muted">（未填写游戏名称）</p>
-              <template v-if="gi === morningFocusGroupIndex">
-                <div class="read-field">
-                  <span class="read-label">重点指导（游戏名称）</span>
-                  <p class="read-value">{{ group.focus_guidance || '（未填写）' }}</p>
-                </div>
-                <div class="read-field">
-                  <span class="read-label">共用目标</span>
-                  <p class="read-value">{{ group.shared_objectives || '（未填写）' }}</p>
-                </div>
-                <div class="read-field">
-                  <span class="read-label">指导要点</span>
-                  <p class="read-value">{{ group.guidance_points || '（未填写）' }}</p>
-                </div>
-              </template>
-              <p
-                v-else-if="dailyMorningGroupHasHiddenDetails(group)"
-                class="muted"
-                data-d1="morning-hidden-details"
-              >
-                本组历史目标/指导已保存；按重点组规则不在阅读区展开，可在“编辑本栏”查看。
-              </p>
+              <div class="read-field">
+                <span class="read-label">重点指导（游戏名称）</span>
+                <p class="read-value">{{ group.focus_guidance || '（未填写）' }}</p>
+              </div>
+              <div class="read-field">
+                <span class="read-label">共用目标</span>
+                <p class="read-value">{{ group.shared_objectives || '（未填写）' }}</p>
+              </div>
+              <div class="read-field">
+                <span class="read-label">指导要点</span>
+                <p class="read-value">{{ group.guidance_points || '（未填写）' }}</p>
+              </div>
             </div>
             <p v-if="!form.morning_games.length" class="muted">暂无晨间游戏组（最多一个集体组与一个自主组）</p>
           </section>
 
           <section
-            v-show="layoutSection === 'talk'"
             class="daily-pane"
             data-d1="layout-section-talk"
-            :aria-hidden="layoutSection !== 'talk'"
+            :ref="(el) => setSectionEl('talk', el)"
           >
             <div class="read-title">
               <div>
                 <p class="read-kicker">晨间谈话</p>
                 <h3>晨间谈话</h3>
               </div>
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                data-d1="layout-edit-talk"
-                :disabled="editDisabled || !!layoutEditing"
-                @click="openLayoutEditor('talk')"
-              >
-                编辑本栏
-              </el-button>
             </div>
             <div class="read-field">
               <span class="read-label">话题</span>
               <p class="read-value">{{ form.morning_talk.topic || '（未填写）' }}</p>
             </div>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              data-d1="section-ai-morning_talk"
-              :disabled="editDisabled"
-              @click="openSectionAi('morning_talk')"
-            >
-              AI 生成 / 定向修改
-            </el-button>
             <div class="read-field">
               <span class="read-label">问题设计</span>
               <p class="read-value">{{ form.morning_talk.questions || '（未填写）' }}</p>
@@ -3549,26 +3720,15 @@ onBeforeUnmount(() => {
           </section>
 
           <section
-            v-show="layoutSection === 'group'"
             class="daily-pane"
             data-d1="layout-section-group"
-            :aria-hidden="layoutSection !== 'group'"
+            :ref="(el) => setSectionEl('group', el)"
           >
             <div class="read-title">
               <div>
                 <p class="read-kicker">集体活动</p>
                 <h3>{{ form.group_activity.theme || '集体活动' }}</h3>
               </div>
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                data-d1="layout-edit-group"
-                :disabled="editDisabled || !!layoutEditing"
-                @click="openLayoutEditor('group')"
-              >
-                编辑本栏
-              </el-button>
             </div>
             <div class="read-field">
               <span class="read-label">活动主题</span>
@@ -3595,49 +3755,28 @@ onBeforeUnmount(() => {
               <pre v-if="form.group_activity.process.trim()" class="read-pre" data-d1="read-group-process">{{ form.group_activity.process }}</pre>
               <p v-else class="read-value">（未填写）</p>
             </div>
-            <div
-              ref="processTarget"
-              class="ai-action-anchor"
-              data-d1="ai-slot-daily_process_adapt"
-            ></div>
+            <div v-if="splitBaselineProcess.trim()" class="read-field" data-d1="read-split-baseline">
+              <span class="read-label">拆分基准过程（Word 标红对照，只读）</span>
+              <pre class="read-pre">{{ splitBaselineProcess }}</pre>
+            </div>
           </section>
 
           <section
-            v-show="layoutSection === 'post'"
             class="daily-pane"
             data-d1="layout-section-post"
-            :aria-hidden="layoutSection !== 'post'"
+            :ref="(el) => setSectionEl('post', el)"
           >
             <div class="read-title">
               <div>
                 <p class="read-kicker">集体活动后游戏</p>
                 <h3>集体活动后游戏</h3>
               </div>
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                data-d1="layout-edit-post"
-                :disabled="editDisabled || !!layoutEditing"
-                @click="openLayoutEditor('post')"
-              >
-                编辑本栏
-              </el-button>
             </div>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              data-d1="section-ai-post_group_games"
-              :disabled="editDisabled"
-              @click="openSectionAi('post_group_games')"
-            >
-              AI 生成 / 定向修改
-            </el-button>
             <div
               v-for="(group, gi) in form.post_group_games"
               :key="group.group_id || (group as any)._tmp || `p-${gi}`"
               class="read-group"
+              :data-d1="`read-post-group-${gi}`"
             >
               <div class="read-group-head">
                 <el-tag size="small">{{ postContextLabel(group.context_kind) }}</el-tag>
@@ -3671,37 +3810,16 @@ onBeforeUnmount(() => {
           </section>
 
           <section
-            v-show="layoutSection === 'afternoon'"
             class="daily-pane"
             data-d1="layout-section-afternoon"
-            :aria-hidden="layoutSection !== 'afternoon'"
+            :ref="(el) => setSectionEl('afternoon', el)"
           >
             <div class="read-title">
               <div>
                 <p class="read-kicker">下午户外</p>
                 <h3>下午户外</h3>
               </div>
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                data-d1="layout-edit-afternoon"
-                :disabled="editDisabled || !!layoutEditing"
-                @click="openLayoutEditor('afternoon')"
-              >
-                编辑本栏
-              </el-button>
             </div>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              data-d1="section-ai-afternoon_outdoor"
-              :disabled="editDisabled"
-              @click="openSectionAi('afternoon_outdoor')"
-            >
-              AI 生成 / 定向修改
-            </el-button>
             <div class="read-field">
               <span class="read-label">区域名称</span>
               <p class="read-value">{{ form.afternoon_outdoor.area || '（未填写区域名称）' }}</p>
@@ -3732,55 +3850,18 @@ onBeforeUnmount(() => {
           </section>
 
           <section
-            v-show="layoutSection === 'reflection'"
             class="daily-pane"
             data-d1="layout-section-reflection"
-            :aria-hidden="layoutSection !== 'reflection'"
+            :ref="(el) => setSectionEl('reflection', el)"
           >
             <div class="read-title">
               <div>
                 <p class="read-kicker">一日反思</p>
                 <h3>反思</h3>
               </div>
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                data-d1="layout-edit-reflection"
-                :disabled="editDisabled || !!layoutEditing"
-                @click="openLayoutEditor('reflection')"
-              >
-                编辑反思与材料
-              </el-button>
             </div>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :loading="reflectionBusy"
-              :disabled="editDisabled || reflectionFillBusy || !!reflectionPending || !!reflectionTask && ['pending', 'claimed', 'dispatching', 'retry_wait'].includes(reflectionTask.status)"
-              data-d1="reflection-generate"
-              @click="startReflectionFromActions"
-            >
-              AI 生成反思
-            </el-button>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :disabled="editDisabled || reflectionBusy || reflectionFillBusy || !!reflectionPending"
-              data-d1="reflection-ai-edit"
-              @click="openReflectionAi"
-            >
-              AI 定向修改
-            </el-button>
             <pre v-if="form.reflection.trim()" class="read-pre" data-d1="read-reflection">{{ form.reflection }}</pre>
             <p v-else class="read-value">（未填写反思）</p>
-            <div
-              ref="reflectionTarget"
-              class="ai-action-anchor"
-              data-d1="ai-slot-daily_reflection_generate"
-            ></div>
             <div class="reflection-ai" data-d1="reflection-ai">
               <div class="read-field">
                 <span class="read-label">活动实施材料（实际发生的活动情况）</span>
@@ -3788,15 +3869,7 @@ onBeforeUnmount(() => {
                 <p v-else class="muted">（未填写实施材料；没有材料时不会发起生成）</p>
               </div>
               <p class="muted reflection-hint">
-                已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。生成入口为本栏“AI 生成反思”。
-                <el-button
-                  size="small"
-                  text
-                  data-d1="reflection-guidance"
-                  @click="openGuidance(REFLECTION_TASK_TYPE)"
-                >
-                  查看反思提示词
-                </el-button>
+                已保存的日计划只作为原定安排；没有填写实施材料时不会发起生成，也不会编造已经发生的课堂。生成与定向修改入口在主操作「修改指定内容」。
               </p>
               <div class="row">
                 <template v-if="reflectionPending">
@@ -3848,7 +3921,6 @@ onBeforeUnmount(() => {
                 data-d1="reflection-task-status"
                 :title="reflectionStatusText()"
               />
-              <div ref="reflectionProgressTarget" data-d1="reflection-progress-target" />
               <el-alert
                 v-if="reflectionError"
                 class="section"
@@ -3874,10 +3946,6 @@ onBeforeUnmount(() => {
         :frozen="props.frozen"
         :save-current="saveCurrent"
         :has-unsaved-changes="formDirtyForAi"
-        :split-target="splitTarget"
-        :process-target="processTarget"
-        :other-target="otherTarget"
-        :reflection-progress-target="reflectionProgressTarget"
         :dialog-open="aiTaskDialogOpen"
         hide-other-row
         @update:dialogOpen="aiTaskDialogOpen = $event"
@@ -3894,15 +3962,29 @@ onBeforeUnmount(() => {
       <div class="row footer">
         <span v-if="phase === 'conflict'" class="muted">请先处理上方的版本冲突</span>
         <span v-else class="muted">
-          正文为阅读模式；点击各栏“编辑本栏”修改，确定后只填回草稿；右侧“保存”写入新版本。
+          正文为完整阅读模式：修改请用主操作「修改指定内容」，拆分用「拆分教案并修改」；「保存」写入新版本，AI 任务与版本历史见「任务」。
         </span>
       </div>
     </template>
       </div>
-      <aside class="editor-actions-rail" data-d1="editor-actions-rail" aria-label="日计划操作">
-        <span class="rail-label">操作</span>
+      <aside ref="actionsRailEl" class="editor-actions-rail" data-d1="editor-actions-rail" aria-label="日计划操作">
+        <span class="rail-label">主操作</span>
         <el-button
           type="primary"
+          :disabled="props.frozen"
+          data-d1="start-split-from-rail"
+          @click="startSplitFromRail"
+        >
+          拆分教案并修改
+        </el-button>
+        <el-button
+          :disabled="props.frozen || !!layoutEditing"
+          data-d1="open-modify"
+          @click="openModifySection"
+        >
+          修改指定内容
+        </el-button>
+        <el-button
           :loading="phase === 'saving'"
           :disabled="editDisabled || phase === 'conflict' || !!layoutEditing"
           data-d1="manual-save"
@@ -3913,22 +3995,12 @@ onBeforeUnmount(() => {
         <el-button :disabled="props.frozen || !plan" data-d1="open-export" @click="exportOpen = true">
           导出 Word
         </el-button>
-        <el-button :disabled="props.frozen" data-d1="start-split-from-rail" @click="startSplitFromRail">
-          教案拆分
+        <span class="rail-label">辅助</span>
+        <el-button :disabled="props.frozen" data-d1="open-tasks" @click="tasksOpen = true">
+          任务
         </el-button>
-        <el-button :disabled="props.frozen" data-d1="open-ai-history" @click="aiTaskDialogOpen = true">
-          AI 任务与历史
-        </el-button>
-        <el-button
-          :disabled="props.frozen || !plan || historyRestoreBlocked"
-          data-d1="open-history"
-          @click="openHistory"
-        >
-          版本历史
-        </el-button>
-        <el-button :disabled="props.frozen" data-d1="go-settings" @click="goSettings">设置</el-button>
         <el-button :disabled="props.frozen" data-d1="back-calendar" @click="backToCalendar">
-          返回日历
+          日历与已保存计划
         </el-button>
       </aside>
     </div>
@@ -4377,12 +4449,94 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="modifyOpen"
+      title="修改指定内容"
+      width="min(720px, 94vw)"
+      :close-on-click-modal="false"
+      append-to-body
+      data-d1="modify-dialog"
+    >
+      <p class="muted">
+        先选择栏目，再手工编辑本栏（独立副本，确定后只填回草稿），或使用该栏已有的 AI 生成 / 定向修改。
+      </p>
+      <div class="modify-section-list" data-d1="modify-section-list">
+        <el-button
+          v-for="section in LAYOUT_SECTIONS"
+          :key="section.key"
+          class="daily-nav-button"
+          :class="{ 'daily-nav-selected': modifySection === section.key }"
+          :type="modifySection === section.key ? 'primary' : 'default'"
+          :data-d1="`modify-pick-${section.key}`"
+          @click="modifySection = section.key"
+        >
+          {{ section.label }}
+        </el-button>
+      </div>
+      <div class="read-field">
+        <span class="read-label">当前栏目内容（只读）</span>
+        <pre class="read-pre" data-d1="modify-current">{{ modifySectionText || '（未填写）' }}</pre>
+      </div>
+      <p v-if="modifySection === 'raw'" class="muted">
+        拆分原始教案请使用主操作「拆分教案并修改」。
+      </p>
+      <p v-if="!plan" class="muted">
+        当前还是未保存草稿：手工编辑可直接使用；AI 生成与定向修改需先保存并创建当天计划。
+      </p>
+      <template #footer>
+        <el-button data-d1="modify-cancel" @click="modifyOpen = false">取消</el-button>
+        <el-button data-d1="modify-edit" @click="submitModifyEdit">手工编辑本栏</el-button>
+        <el-button
+          v-if="modifyAiMeta"
+          type="primary"
+          data-d1="modify-ai"
+          :disabled="!plan || props.frozen"
+          @click="submitModifyAi"
+        >
+          {{ modifyAiMeta.label }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="tasksOpen"
+      title="任务"
+      width="min(480px, 94vw)"
+      :close-on-click-modal="false"
+      append-to-body
+      data-d1="tasks-dialog"
+    >
+      <p class="muted">
+        AI 任务与版本历史集中在此入口；打开版本历史前会先处理未保存的当前草稿，回执与恢复操作不会自动重发。
+      </p>
+      <p v-if="!plan" class="muted" data-d1="tasks-draft-hint">
+        当前是未保存草稿：先点主操作「保存」创建当天计划后，才能使用 AI 任务与版本历史。
+      </p>
+      <div class="row">
+        <el-button
+          data-d1="tasks-open-ai"
+          :disabled="props.frozen || !plan"
+          @click="openTasksAi"
+        >
+          AI 任务与历史
+        </el-button>
+        <el-button
+          data-d1="tasks-open-history"
+          :disabled="props.frozen || !plan || historyRestoreBlocked"
+          @click="openTasksHistory"
+        >
+          版本历史
+        </el-button>
+      </div>
+    </el-dialog>
+
     <ExportDialog
       v-if="plan"
       v-model:open="exportOpen"
       :plan-date="props.planDate"
       :plan-id="plan.id"
       :disabled="locked || props.frozen"
+      :has-unsaved-changes="dirty"
       @busy="(value) => emit('export-busy', value)"
     />
 
@@ -4586,6 +4740,27 @@ onBeforeUnmount(() => {
 .daily-panes {
   min-width: 0;
 }
+.daily-doc-head {
+  padding: 18px 20px 0;
+}
+.daily-doc-head h3 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--kgm-text);
+}
+.daily-doc-head .muted {
+  margin: 4px 0 0;
+}
+.modify-section-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.modify-section-list .el-button {
+  margin-left: 0;
+}
 .daily-pane {
   padding: 18px 20px;
   min-width: 0;
@@ -4675,6 +4850,10 @@ onBeforeUnmount(() => {
     grid-template-columns: minmax(0, 1fr);
   }
   .editor-actions-rail {
+    /* Single column: the action group comes BEFORE the (very long) reading
+       document, immediately visible on entering the plan. Same DOM nodes —
+       only grid visual order changes; the wide rail is untouched. */
+    order: -1;
     position: static;
     flex-direction: row;
     flex-wrap: wrap;
@@ -4721,28 +4900,10 @@ onBeforeUnmount(() => {
 .footer {
   margin-top: 20px;
 }
-/* #19: empty anchors collapse while the AI panel is absent (unsaved draft);
-   once the row is teleported in, the separator keeps it visually attached to
-   the field it operates on. */
-.split-placeholder {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 8px;
-}
-.ai-action-anchor {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--kgm-border);
-}
 .reflection-hint {
   margin: 8px 0 4px;
   color: var(--kgm-muted);
   font-size: 0.82rem;
-}
-.ai-action-anchor:empty {
-  display: none;
 }
 .conflict-body h4 {
   margin: 12px 0 6px;

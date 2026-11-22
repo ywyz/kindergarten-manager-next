@@ -402,6 +402,9 @@ def _import_group_photo_impl(
         if record.revision != revision:
             raise ListeningAssetRevisionConflict()
         group = _group_for(session, record_id, domain, group_id)
+        history_before = service._capture_history_before_no_tx(
+            session, record
+        )
         old_asset_id = group.asset_id
         session.add(
             LocalListeningAsset(
@@ -423,6 +426,13 @@ def _import_group_photo_impl(
         group.updated_at = now
         record.revision += 1
         record.updated_at = now
+        service._retain_history_no_tx(
+            session,
+            record=record,
+            profile_id=profile_id,
+            before=history_before,
+            now=now,
+        )
         result = {
             "record_id": record_id,
             "domain": domain,
@@ -527,6 +537,9 @@ def remove_group_photo(
         if record.revision != revision:
             raise ListeningAssetRevisionConflict()
         group = _group_for(session, record_id, domain, group_id)
+        history_before = service._capture_history_before_no_tx(
+            session, record
+        )
         old_asset_id = group.asset_id
         changed = old_asset_id is not None
         if changed:
@@ -534,6 +547,13 @@ def remove_group_photo(
             group.updated_at = now
             record.revision += 1
             record.updated_at = now
+            service._retain_history_no_tx(
+                session,
+                record=record,
+                profile_id=profile_id,
+                before=history_before,
+                now=now,
+            )
         result = {
             "record_id": record_id,
             "domain": domain,
@@ -647,6 +667,9 @@ def reorder_groups(
         ]
         changed = current_order != group_ids
         if changed:
+            history_before = service._capture_history_before_no_tx(
+                session, record
+            )
             # The unique (record, domain, position) constraint permits
             # multiple NULLs in SQLite.  NULL is therefore the intra-
             # transaction swap placeholder; the service never commits it.
@@ -660,6 +683,13 @@ def reorder_groups(
             session.flush()
             record.revision += 1
             record.updated_at = now
+            service._retain_history_no_tx(
+                session,
+                record=record,
+                profile_id=profile_id,
+                before=history_before,
+                now=now,
+            )
         result = {
             "record_id": record_id,
             "domain": domain,
@@ -819,12 +849,22 @@ def rotate_group_photo(
         group, asset = _asset_for_group(
             session, record_id, domain, group_id
         )
+        history_before = service._capture_history_before_no_tx(
+            session, record
+        )
         old_rotation = int(asset.rotation_quarters or 0)
         changed = old_rotation != target
         if changed:
             asset.rotation_quarters = target
             record.revision += 1
             record.updated_at = now
+            service._retain_history_no_tx(
+                session,
+                record=record,
+                profile_id=profile_id,
+                before=history_before,
+                now=now,
+            )
         result = {
             "record_id": record_id,
             "domain": domain,

@@ -52,6 +52,7 @@ import ObservationEditorView from './views/ObservationEditorView.vue'
 import SettingsView from './views/SettingsView.vue'
 import UpdatePanel from './views/UpdatePanel.vue'
 import BackupRestorePanel from './views/BackupRestorePanel.vue'
+import FeedbackPanel from './views/FeedbackPanel.vue'
 import WeeklyPlansView from './views/WeeklyPlansView.vue'
 import WeeklyPlanEditorView from './views/WeeklyPlanEditorView.vue'
 import ListeningRecordsView from './views/ListeningRecordsView.vue'
@@ -133,6 +134,19 @@ const maintenanceLocked = computed(
 const maintenanceMode = computed<'setup' | 'settings'>(() =>
   bootState.value === 'uninitialized' ? 'setup' : 'settings',
 )
+
+/**
+ * Shared in-app online feedback (2026-11-22): ONE FeedbackPanel instance
+ * hosted by the shell for both entries — the workbench home 在线反馈 button
+ * and the settings 版本说明 entry. The dialog lives outside the view switch,
+ * so a draft or an unknown submission's fixed request id and receipt survive
+ * switching entries; the submit/receipt flow itself stays inside the panel.
+ */
+const feedbackOpen = ref(false)
+
+function openFeedback(): void {
+  feedbackOpen.value = true
+}
 
 /**
  * Appearance lifecycle. The profile epoch changes only on a new profile or a
@@ -1070,8 +1084,10 @@ async function goModule(module: ModuleKey): Promise<void> {
     ) {
       return
     }
-    // Workbench home/todos/daily are distinct pages; every switch goes through
-    // the existing leave coordinator, including home<->todos.
+    // Workbench home/todos and the daily calendar are distinct pages; every
+    // switch goes through the existing leave coordinator. From the daily
+    // editor the 日计划 module returns to the calendar with the original
+    // calendar/saved tab, month and term filter restored.
     await leaveForAction('calendar', () => goWorkbench(panel))
     return
   }
@@ -2516,6 +2532,7 @@ onMounted(() => {
         @open-curriculum="openCurriculumFromWorkbench"
         @open-settings="openSettingsView"
         @check-update="openUpdateManual"
+        @open-feedback="openFeedback"
         @reload-context="reloadContext"
       />
       <ObservationsView
@@ -2654,6 +2671,7 @@ onMounted(() => {
         @leave="onSettingsLeave"
         @open-maintenance="openMaintenance"
         @check-update="openUpdateManual"
+        @open-feedback="openFeedback"
       />
         </main>
       </div>
@@ -2735,6 +2753,16 @@ onMounted(() => {
       @switch-channel="(channel) => void switchUpdateChannel(channel)"
       @refresh="() => void refreshUpdateStatus()"
     />
+
+    <el-dialog
+      v-model="feedbackOpen"
+      title="问题反馈"
+      width="640px"
+      :close-on-click-modal="false"
+      data-d1="feedback-dialog"
+    >
+      <FeedbackPanel :frozen="closeLocked" />
+    </el-dialog>
   </div>
 </template>
 

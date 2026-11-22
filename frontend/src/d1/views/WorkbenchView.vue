@@ -50,6 +50,7 @@ const emit = defineEmits<{
   (e: 'open-listening', termId?: string): void
   (e: 'open-settings', section?: 'collaboration'): void
   (e: 'check-update'): void
+  (e: 'open-feedback'): void
   (e: 'reload-context'): Promise<LocalContext>
   (e: 'busy', value: boolean): void
 }>()
@@ -423,6 +424,14 @@ defineExpose({ reload, blockingDraft, dailyView, captureDailyCalendarState, rest
         </p>
       </div>
       <div class="actions">
+        <el-button
+          v-if="activePanel === 'home'"
+          data-d1="workbench-open-feedback"
+          :disabled="frozen"
+          @click="emit('open-feedback')"
+        >
+          在线反馈
+        </el-button>
         <el-button data-d1="check-update" :disabled="frozen" @click="emit('check-update')">
           检查更新
         </el-button>
@@ -501,7 +510,7 @@ defineExpose({ reload, blockingDraft, dailyView, captureDailyCalendarState, rest
 
         <div v-if="dailyView === 'calendar'" class="kgm-sheet">
           <p class="muted daily-hint">
-            {{ heading }}；点击可创建的日期先确认再新建，已有计划直接打开。
+            {{ heading }}；点击已有计划打开完整预览，可备课的空白日期打开完整空白草稿。
           </p>
 
           <div v-loading="loading" class="calendar" data-d1="calendar" aria-label="月历">

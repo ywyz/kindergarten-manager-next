@@ -319,21 +319,45 @@ class ObservationBundleContractTests(unittest.TestCase):
             3,
         )
 
-    def test_listening_quote_default_is_manifest_r2_and_old_r1_remains(self):
+    def test_listening_quote_default_is_manifest_r3_and_older_revisions_remain(self):
         from app.local import listening_ai_contracts
 
         seed = prompt_bundles.initial_prompt_seed()
         note = seed["listening_note_draft"]
         group = seed["listening_group_notes"]
-        self.assertEqual(note["default_revision"], 2)
-        self.assertEqual(group["default_revision"], 2)
-        self.assertIn("少量幼儿话语", note["guidance"]["text"])
-        self.assertIn("可编辑候选", note["guidance"]["text"])
-        self.assertIn("已有教师原话", note["guidance"]["text"])
-        self.assertIn("不冒充录音", note["guidance"]["text"])
-        self.assertIn("少量幼儿话语", group["guidance"]["groups"])
-        self.assertIn("已有教师原话", group["guidance"]["groups"])
-        self.assertIn("不冒充录音", group["guidance"]["groups"])
+        self.assertEqual(note["default_revision"], 3)
+        self.assertEqual(group["default_revision"], 3)
+        # r3 default: handwriting-first rule with the fixed provenance markers.
+        for text in (note["guidance"]["text"], group["guidance"]["groups"]):
+            self.assertIn("少量幼儿话语", text)
+            self.assertIn("AI 拟写建议", text)
+            self.assertIn("provenance:teacher_clear", text)
+            self.assertIn("provenance:unclear", text)
+            self.assertIn("provenance:ai_draft", text)
+            self.assertIn("不得把 AI 拟写话语反推为评价或星级依据", text)
+        self.assertIn("根据教师当前本组倾听记录", note["guidance"]["text"])
+        self.assertIn("先读教师已录入的倾听正文", note["guidance"]["text"])
+        self.assertIn("按输入 groups 的实际 position", group["guidance"]["groups"])
+        # r2 quote wording stays immutable at its own manifest revision.
+        r2_note = next(
+            bundle
+            for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST
+            if bundle["task_type"] == "listening_note_draft"
+            and bundle["default_revision"] == 2
+        )
+        r2_group = next(
+            bundle
+            for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST
+            if bundle["task_type"] == "listening_group_notes"
+            and bundle["default_revision"] == 2
+        )
+        self.assertIn("少量幼儿话语", r2_note["guidance_defaults_json"]["text"])
+        self.assertIn("可编辑候选", r2_note["guidance_defaults_json"]["text"])
+        self.assertIn("已有教师原话", r2_note["guidance_defaults_json"]["text"])
+        self.assertIn("不冒充录音", r2_note["guidance_defaults_json"]["text"])
+        self.assertIn("少量幼儿话语", r2_group["guidance_defaults_json"]["groups"])
+        self.assertIn("已有教师原话", r2_group["guidance_defaults_json"]["groups"])
+        self.assertIn("不冒充录音", r2_group["guidance_defaults_json"]["groups"])
         old_note = next(
             bundle
             for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST
@@ -361,18 +385,22 @@ class ObservationBundleContractTests(unittest.TestCase):
             "listening_note_draft",
         )
 
-    def test_directional_quote_default_is_manifest_r2_and_old_r1_remains(self):
+    def test_directional_quote_default_is_manifest_r3_and_old_r1_remains(self):
         from app.local import directional_revision_contracts
 
         seed = prompt_bundles.initial_prompt_seed()
         current = seed["directional_revision"]
-        self.assertEqual(current["default_revision"], 2)
+        self.assertEqual(current["default_revision"], 3)
         fidelity = current["guidance"]["fidelity"]
         evidence = current["guidance"]["listening_evidence"]
+        # r3 default follows the teacher's current (possibly unsaved) form.
+        self.assertIn("教师当前表单", fidelity)
+        self.assertIn("不得假设已保存版本", fidelity)
         self.assertIn("source=listening", fidelity)
         self.assertIn("target=listening_text", fidelity)
         self.assertIn("少量幼儿话语", fidelity)
         self.assertIn("weekly 计划", fidelity)
+        # listening-evidence rules are shared with r2 and stay in the default.
         self.assertIn("listening_text", evidence)
         self.assertIn("已有教师原话", evidence)
         self.assertIn("不得改写或新增评价条目星级", evidence)
@@ -384,6 +412,19 @@ class ObservationBundleContractTests(unittest.TestCase):
             "不得补写未提供的幼儿原话",
             directional_revision_contracts._GUIDANCE["fidelity"],
         )
+        # r2 quote wording stays immutable at its own manifest revision.
+        r2 = next(
+            bundle
+            for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST
+            if bundle["task_type"] == "directional_revision"
+            and bundle["default_revision"] == 2
+        )
+        self.assertIn("source=listening", r2["guidance_defaults_json"]["fidelity"])
+        self.assertIn(
+            "target=listening_text", r2["guidance_defaults_json"]["fidelity"]
+        )
+        self.assertIn("少量幼儿话语", r2["guidance_defaults_json"]["fidelity"])
+        self.assertIn("weekly 计划", r2["guidance_defaults_json"]["fidelity"])
         old = next(
             bundle
             for bundle in prompt_bundles.PROMPT_BUNDLE_MANIFEST

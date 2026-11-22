@@ -14,6 +14,7 @@ from app.local import (
     ai_task_service,
     curriculum_ai,
     curriculum_content,
+    curriculum_history,
     curriculum_service,
     profile_service,
 )
@@ -204,6 +205,40 @@ def create_curriculum_ai_task(
 
 
 @curriculum_router.get(
+    "/{record_id}/ai/tasks", response_model=dict[str, Any]
+)
+def list_curriculum_ai_tasks(
+    record_id: str,
+    status_: str | None = Query(default=None, alias="status"),
+    limit: int = Query(ai_task_service.DEFAULT_LIST_LIMIT),
+    cursor: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """Per-record read-only AI task list for the editor's task panel.
+
+    The record is scoped first so a foreign or unknown record id is a 404,
+    never an empty list.  Items are the shared task projections plus a
+    ``task_id`` mirror of ``id``; the existing single-task GET/POST behaviour
+    is unchanged.
+    """
+    with storage_errors():
+        record = curriculum_service.require_record(
+            session, profile_id=_profile_id(session), record_id=record_id
+        )
+        result = ai_task_service.list_tasks(
+            session,
+            source_kind=curriculum_ai.SOURCE_KIND,
+            source_id=record.id,
+            status=status_,
+            limit=limit,
+            cursor=cursor,
+        )
+    for item in result["items"]:
+        item["task_id"] = item["id"]
+    return result
+
+
+@curriculum_router.get(
     "/{record_id}/ai/tasks/{task_id}", response_model=dict[str, Any]
 )
 def read_curriculum_ai_task(
@@ -258,6 +293,40 @@ def read_curriculum_deliberation(
             session,
             profile_id=_profile_id(session),
             record_id=record_id,
+        )
+
+
+@curriculum_router.get(
+    "/{record_id}/versions", response_model=dict[str, Any]
+)
+def read_curriculum_versions(
+    record_id: str,
+    session: Session = Depends(get_session),
+):
+    """Retained save-history versions of one record, newest first (read-only)."""
+    with storage_errors():
+        return curriculum_history.list_versions(
+            session,
+            profile_id=_profile_id(session),
+            record_id=record_id,
+        )
+
+
+@curriculum_router.get(
+    "/{record_id}/versions/{version}", response_model=dict[str, Any]
+)
+def read_curriculum_version(
+    record_id: str,
+    version: int,
+    session: Session = Depends(get_session),
+):
+    """One retained full-content snapshot of a record save (read-only)."""
+    with storage_errors():
+        return curriculum_history.read_version(
+            session,
+            profile_id=_profile_id(session),
+            record_id=record_id,
+            version=version,
         )
 
 

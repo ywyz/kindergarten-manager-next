@@ -1380,7 +1380,24 @@ async function main() {
     assert.equal((source.match(/data-d1="obs-generate"/g) || []).length, 1)
     assert.match(source, /data-d1="obs-read-table"/)
     assert.match(source, /data-d1="obs-rail"/)
-    assert.match(source, /data-d1="obs-open-history"/)
+    // 2026-11-22 repair: one auxiliary "任务" entry carries this record's AI
+    // tasks and version history; the duplicate in-editor settings entry is
+    // gone (settings stays reachable from the shell navigation).
+    assert.match(source, /data-d1="obs-open-tasks"/)
+    assert.equal(source.includes('obs-open-history'), false)
+    assert.equal(source.includes('obs-go-settings'), false)
+    assert.match(source, /data-d1="obs-tasks"/)
+    assert.match(source, /data-d1="obs-task-rows"/)
+    assert.match(source, /data-d1="obs-versions-head"/)
+    assert.match(source, /data-d1="obs-history"/)
+    assert.match(source, /data-d1="obs-open-tasks"[^>]*>\s*任务\s*</)
+    // Route contract 2026-11-22 §3.3: the tasks list reads the shared
+    // observation projection filtered to this record.
+    assert.match(
+      source,
+      /\/api\/local\/ai\/observation-tasks\?observation_id=\$\{pathSegment\(props\.observationId\)\}&limit=100/,
+    )
+    assert.equal(source.includes('openHistoryFromExport'), false)
     assert.match(source, /data-d1="obs-export"/)
     assert.match(source, /data-d1="obs-section-jumps"/)
     assert.match(source, /data-d1="`obs-section-open-\$\{section\.key\}`"/)

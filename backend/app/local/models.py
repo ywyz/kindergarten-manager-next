@@ -3979,6 +3979,111 @@ class LocalCurriculumDeliberation(LocalBase):
     )
 
 
+class LocalListeningRecordVersion(LocalBase):
+    """One retained read-only full-content snapshot of a listening save.
+
+    ``version`` mirrors the record revision produced by that save; the JSON
+    content is the exact record detail projection (domains, groups, stars,
+    asset references and rotations) as saved.  A record first modified after
+    this table existed keeps its usable pre-modification original as the
+    lowest retained version; unknown intermediate revisions are never
+    fabricated.
+    """
+
+    __tablename__ = "local_listening_record_versions"
+    __table_args__ = (
+        CheckConstraint(
+            "typeof(version) = 'integer' AND version >= 1",
+            name="ck_local_listening_record_versions_version",
+        ),
+        CheckConstraint(
+            "length(content_hash) = 64",
+            name="ck_local_listening_record_versions_hash",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id"],
+            ["local_profile.id"],
+            name="fk_local_listening_record_versions_profile",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "record_id"],
+            ["local_listening_records.profile_id",
+             "local_listening_records.id"],
+            name="fk_local_listening_record_versions_record",
+        ),
+        UniqueConstraint(
+            "record_id", "version",
+            name="uq_local_listening_record_versions_record_version",
+        ),
+        Index(
+            "ix_local_listening_record_versions_profile_record",
+            "profile_id", "record_id", "version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
+class LocalCurriculumDeliberationVersion(LocalBase):
+    """One retained read-only snapshot of a curriculum deliberation save.
+
+    ``version`` mirrors the deliberation's own content version produced by
+    that save.  A record first saved after this table existed keeps its
+    usable pre-modification original as the lowest retained version.
+    """
+
+    __tablename__ = "local_curriculum_deliberation_versions"
+    __table_args__ = (
+        CheckConstraint(
+            "typeof(version) = 'integer' AND version >= 1",
+            name="ck_local_curriculum_deliberation_versions_version",
+        ),
+        CheckConstraint(
+            "length(content_hash) = 64",
+            name="ck_local_curriculum_deliberation_versions_hash",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id"],
+            ["local_profile.id"],
+            name="fk_local_curriculum_deliberation_versions_profile",
+        ),
+        ForeignKeyConstraint(
+            ["record_id"],
+            ["local_curriculum_deliberations.id"],
+            name="fk_local_curriculum_deliberation_versions_record",
+        ),
+        UniqueConstraint(
+            "record_id", "version",
+            name="uq_local_curriculum_deliberation_versions_record_version",
+        ),
+        Index(
+            "ix_local_curriculum_deliberation_versions_record",
+            "record_id", "version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    record_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    profile_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False), default=utc_now, nullable=False
+    )
+
+
 # Personal todo tables live in their own module but join the shared local
 # metadata so the single migration chain and backup fingerprints see them.
 from app.local import todo_models as _todo_models  # noqa: E402,F401

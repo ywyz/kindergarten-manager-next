@@ -400,36 +400,54 @@ async function testNavigationTarget() {
   assert.ok(target, 'test navigation target exists')
   assert.ok(byD1(target, 'daily-sections'), 'daily directory teleports into the shared left target')
   assert.equal(allByD1(root, 'daily-sections').length, 1, 'one directory instance after teleport')
-  assert.equal(byD1(target, 'daily-generation-actions'), null, 'the shared rail has no second generation group')
   const navButtons = walkElements(target).filter((node) => node.props['data-d1']?.startsWith('layout-nav-'))
   assert.equal(navButtons.length, 7, 'all seven sections remain in the shared directory')
   assert.deepEqual(
     navButtons.map((node) => node.props['data-d1']),
     ['raw', 'morning', 'talk', 'group', 'post', 'afternoon', 'reflection'].map((key) => `layout-nav-${key}`),
   )
-  for (const key of ['morning_games', 'morning_talk', 'post_group_games', 'afternoon_outdoor']) {
-    assert.ok(byD1(root, `section-ai-${key}`), `${key} has its own entry outside the shared rail`)
+  // The continuous document keeps every section visible; no operation is
+  // repeated inside it and the rail owns the four main actions + 任务.
+  for (const key of ['raw', 'morning', 'talk', 'group', 'post', 'afternoon', 'reflection']) {
+    const pane = byD1(root, key === 'raw' ? 'raw-lesson' : `layout-section-${key}`)
+    assert.ok(!pane.style.display, `${key} stays visible in the continuous document`)
   }
-  assert.equal(byD1(target, 'reflection-generate'), null, 'reflection generation stays in its own section')
-  assert.equal(byD1(root, 'start-split-from-rail') != null, true, 'direct split action stays in the right toolbar')
-  assert.equal(byD1(root, 'open-ai-history') != null, true, 'AI task/history entry stays in the right toolbar')
-  assert.equal(byD1(target, 'layout-nav-group').props['aria-pressed'], 'true')
-  byD1(target, 'layout-nav-raw').props.onClick({})
-  await settle()
-  assert.equal(hook.layoutSection(), 'raw')
+  for (const gone of [
+    'section-ai-morning_games',
+    'section-ai-morning_talk',
+    'section-ai-post_group_games',
+    'section-ai-afternoon_outdoor',
+    'reflection-generate',
+  ]) {
+    assert.equal(byD1(root, gone), null, `${gone} is not repeated inside the document`)
+  }
+  assert.equal(byD1(root, 'start-split-from-rail') != null, true, 'the split main action stays in the right rail')
+  assert.equal(byD1(root, 'open-modify') != null, true, '修改指定内容 stays in the right rail')
+  assert.equal(byD1(root, 'open-tasks') != null, true, 'the consolidated 任务 entry stays in the right rail')
+  assert.equal(byD1(root, 'open-ai-history'), null, 'the old separate AI history entry is gone')
+  assert.equal(byD1(target, 'open-tasks'), null, 'the shared rail keeps no page actions')
   assert.equal(byD1(target, 'layout-nav-raw').props['aria-pressed'], 'true')
   assert.equal(byD1(target, 'layout-nav-group').props['aria-pressed'], 'false')
+  byD1(target, 'layout-nav-morning').props.onClick({})
+  await settle()
+  assert.equal(hook.layoutSection(), 'morning')
+  assert.equal(byD1(target, 'layout-nav-morning').props['aria-pressed'], 'true')
+  assert.equal(byD1(target, 'layout-nav-raw').props['aria-pressed'], 'false')
   assert.match(String(byD1(root, 'daily-book').props.class), /daily-book-teleported/)
 
-  // Dirty modal: changing section must not discard the open editing copy.
+  // Dirty modal: locating another column must not discard the open editing copy.
   byD1(target, 'layout-nav-group').props.onClick({})
   await settle()
-  byD1(root, 'layout-edit-group').props.onClick({})
+  byD1(root, 'open-modify').props.onClick({})
+  await settle()
+  byD1(root, 'modify-pick-group').props.onClick({})
+  await settle()
+  byD1(root, 'modify-edit').props.onClick({})
   await settle()
   hook.layoutDraft().form.group_activity.process = '弹窗中的修改'
   byD1(target, 'layout-nav-raw').props.onClick({})
   await settle()
-  assert.equal(hook.layoutSection(), 'group', 'section stays while an editing copy is open')
+  assert.equal(hook.layoutSection(), 'group', 'the located column stays while an editing copy is open')
   assert.equal(hook.layoutEditingSection(), 'group')
   assert.equal(hook.layoutDraft().form.group_activity.process, '弹窗中的修改')
   byD1(root, 'layout-edit-cancel').props.onClick({})
@@ -441,7 +459,7 @@ async function testNavigationTarget() {
     0,
     'unmount removes teleported navigation',
   )
-  ok('daily navigation target: teleported sections/generation group, selected state, dirty modal guard and cleanup')
+  ok('daily navigation target: teleported directory locates columns of one continuous document; dirty modal guard and cleanup stay')
 }
 
 async function testStandaloneFallback() {
@@ -450,7 +468,7 @@ async function testStandaloneFallback() {
   assert.ok(byD1(book, 'daily-sections'), 'standalone daily editor keeps its local left directory')
   assert.match(String(book.props.class), /daily-book/)
   assert.doesNotMatch(String(book.props.class), /daily-book-teleported/)
-  assert.equal(hook.layoutSection(), 'group')
+  assert.equal(hook.layoutSection(), 'raw', 'standalone reading also starts at the preview top')
   app.unmount()
   ok('daily standalone fallback: local left directory remains when navigationTarget is absent')
 }

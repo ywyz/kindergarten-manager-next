@@ -507,10 +507,6 @@ defineExpose({ reload: load, resetForContext })
             </div>
             <div class="record-meta">
               <div>
-                <span class="meta-label">学期</span>
-                <span>{{ termLabel(item) }}</span>
-              </div>
-              <div>
                 <span class="meta-label">创建时间</span>
                 <span>{{ formatRecordTime(item.created_at) }}</span>
               </div>
@@ -523,10 +519,6 @@ defineExpose({ reload: load, resetForContext })
               <div>
                 <span class="meta-label">修订</span>
                 <span>{{ item.revision }}</span>
-              </div>
-              <div>
-                <span class="meta-label">年级</span>
-                <span>{{ gradeText(item.grade) }}</span>
               </div>
             </div>
           </el-card>

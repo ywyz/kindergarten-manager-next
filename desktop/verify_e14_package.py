@@ -348,6 +348,8 @@ ARCHIVE_REQUIRED_MODULES = (
     "app.local.listening_ai_service",
     "app.local.listening_ai_adoption",
     "app.local.listening_ai_api",
+    "app.local.listening_history",
+    "app.local.curriculum_history",
     "app.services.word_export_listening",
     "app.local.observation_service",
     "app.local.observation_export_service",
@@ -496,6 +498,8 @@ REQUIRED_FREEZE_PATHS = (
     "backend/app/local/listening_ai_service.py",
     "backend/app/local/listening_ai_adoption.py",
     "backend/app/local/listening_ai_api.py",
+    "backend/app/local/listening_history.py",
+    "backend/app/local/curriculum_history.py",
     "backend/app/services/word_export_listening.py",
     "backend/app/local/ai_executor.py",
     "backend/app/local/ai_worker.py",
@@ -506,6 +510,7 @@ REQUIRED_FREEZE_PATHS = (
     "backend/migrations_local/versions/20261102_0008_local_weekly_ai.py",
     "backend/migrations_local/versions/20261107_0009_local_listening.py",
     "backend/migrations_local/versions/20261107_0010_local_listening_ai.py",
+    "backend/migrations_local/versions/20261122_0022_local_record_history.py",
 )
 REQUIRED_STATIC_CHECKS = (
     "static_no_execution",

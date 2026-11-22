@@ -26,6 +26,7 @@ from starlette.concurrency import run_in_threadpool
 from app.local import (
     listening_assets,
     listening_batch_assets,
+    listening_history,
     listening_service,
     profile_service,
 )
@@ -525,6 +526,40 @@ def read_listening_asset(
                 "Cache-Control": "no-store",
                 "Content-Length": str(len(payload)),
             },
+        )
+
+
+@listening_router.get(
+    "/records/{record_id}/versions", response_model=dict[str, Any]
+)
+def read_listening_record_versions(
+    record_id: str,
+    session: Session = Depends(get_session),
+):
+    """Retained full-history versions of one record, newest first (read-only)."""
+    with storage_errors():
+        return listening_history.list_versions(
+            session,
+            profile_id=_profile_id(session),
+            record_id=record_id,
+        )
+
+
+@listening_router.get(
+    "/records/{record_id}/versions/{version}", response_model=dict[str, Any]
+)
+def read_listening_record_version(
+    record_id: str,
+    version: int,
+    session: Session = Depends(get_session),
+):
+    """One retained full-content snapshot of a record save (read-only)."""
+    with storage_errors():
+        return listening_history.read_version(
+            session,
+            profile_id=_profile_id(session),
+            record_id=record_id,
+            version=version,
         )
 
 

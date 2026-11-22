@@ -588,7 +588,15 @@ class TermNameScopeTests(LocalTestCase):
 
         connection = sqlite3.connect(str(self.runtime.db_path))
         try:
+            # Rewind to the pre-0021 state: drop every table created after
+            # that revision so the re-upgrade replays the real chain.
             connection.execute("DROP TABLE local_term_name_changes")
+            connection.execute(
+                "DROP TABLE local_listening_record_versions"
+            )
+            connection.execute(
+                "DROP TABLE local_curriculum_deliberation_versions"
+            )
             connection.execute(
                 "UPDATE local_alembic_version SET version_num = ?",
                 (_PRE_FEATURE_REVISION,),

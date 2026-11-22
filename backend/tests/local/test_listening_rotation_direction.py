@@ -256,6 +256,14 @@ class RotationPersistenceTests(unittest.TestCase):
             patch.object(listening_service, "_groups", return_value=[group]),
             patch.object(listening_service, "_operation", return_value=None),
             patch.object(listening_service, "_audit", return_value=None),
+            patch.object(
+                listening_service,
+                "_capture_history_before_no_tx",
+                return_value=None,
+            ),
+            patch.object(
+                listening_service, "_retain_history_no_tx", return_value=None
+            ),
         ):
             return listening_assets.rotate_group_photo(
                 session,

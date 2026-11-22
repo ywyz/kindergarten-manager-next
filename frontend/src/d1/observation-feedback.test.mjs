@@ -399,7 +399,6 @@ async function main() {
   const hook = harness.window.__d1Observations
   assert.ok(hook)
   assert.ok(byD1(mountEl, 'obs-list'))
-  assert.ok(byD1(mountEl, 'obs-filter-summary'))
   for (const id of ['obs-create', 'obs-export-open', 'obs-range', 'obs-term', 'obs-type', 'obs-subject', 'obs-prev', 'obs-next']) {
     assert.ok(byD1(mountEl, id), `${id} must stay reachable`)
   }
@@ -422,13 +421,13 @@ async function main() {
   assert.ok(firstText.includes('v2'))
   assert.ok(firstText.includes('创建时间'))
   assert.equal(firstText.includes('建构区的桥'), false)
-  assert.ok(byD1(mountEl, 'obs-filter-summary'))
-  const filterText = nodeText(byD1(mountEl, 'obs-filter-summary'))
-  assert.ok(filterText.includes('全部日期'))
-  assert.ok(filterText.includes('全部学期'))
-  assert.ok(filterText.includes('全部类型'))
-  // Card open works; checkbox selection does not open the record.
-  cards[0].props.onClick({ currentTarget: cards[0] })
+  // One visible, keyboard-accessible opening affordance per record card, and
+  // no nested interactive card: the card itself is passive, the 打开 button
+  // (a real focusable button) opens the record.
+  assert.equal(cards[0].props.onClick, undefined, 'the card is no longer a nested interactive element')
+  const openButtons = allD1(mountEl, 'obs-open')
+  assert.equal(openButtons.length, 2)
+  openButtons[0].props.onClick({})
   await settle()
   assert.deepEqual(opened, ['o1'])
   const selectBox = byD1(mountEl, 'obs-select-o2')
@@ -447,19 +446,18 @@ async function main() {
   harness.unmount()
   app.unmount()
   await settle()
-  ok('observation list renders overview cards with real fields and selection independent of opening')
+  ok('observation list renders record cards with a single 打开 affordance and selection independent of opening')
 
-  // Empty search keeps the export summary/card reachable and shows no fake title.
+  // Empty search keeps the export entry reachable and shows no fake title.
   {
     const { app: emptyApp, mountEl: emptyEl, harness: emptyHarness } = await mountList({ items: [] })
     const text = nodeText(emptyEl)
     assert.ok(text.includes('当前筛选下没有观察记录'))
-    assert.ok(byD1(emptyEl, 'obs-filter-summary'))
     assert.equal(byD1(emptyEl, 'obs-export-open').props.disabled, true)
     emptyHarness.unmount()
     emptyApp.unmount()
     await settle()
-    ok('observation list empty state keeps the filter/export summary and disables export')
+    ok('observation list empty state keeps the export entry and disables export')
   }
 
   {

@@ -231,6 +231,11 @@ async function mountEditor({
       '../leave': {},
       './CurriculumExportDialog.vue': { default: {} },
       './CurriculumAiDialog.vue': { default: {} },
+      '../components/RecordTasksDialog.vue': { default: {} },
+      '../ai': {
+        taskStatusLabel: (status) => `状态:${status}`,
+        taskTypeLabel: (type) => `类型:${type}`,
+      },
       '../curriculum': curriculum,
     },
     {
@@ -1827,4 +1832,388 @@ const exportPreview = {
   )
   assert.match(editorSource, /applyCurriculumRevisedDraft\(after, before, document\.value\)/)
   ok('column draft application composes the revision into the same save payload')
-}console.log(`curriculum: ${passed} checks passed`)
+}
+
+// 2026-11-22 repair: the auxiliary 任务 panel lists this record's AI tasks and
+// saved versions read-only; a context switch clears them so another record's
+// rows can never appear.
+{
+  const { client } = makeClient()
+  const savedContent = content({
+    activity_name: '已保存活动',
+    activity_form: 'collective',
+    goals_original: '目标原稿',
+    goals_status: 'adjusted',
+    reason: '历史理由',
+    lesson_original: '历史原稿正文',
+  })
+  const versionContent = content({
+    activity_name: '第一版活动',
+    activity_form: 'other',
+    activity_form_other: '亲子',
+    goals_original: '第一版目标',
+    goals_status: 'unchanged',
+    lesson_original: '第一版原稿',
+  })
+  client.getHandler = async (url) => {
+    if (url === '/api/local/curriculum-deliberations/rec-1') {
+      return {
+        id: 'rec-1',
+        version: 3,
+        content: clone(savedContent),
+        document: null,
+        updated_at: '2026-11-02T10:00:00',
+      }
+    }
+    if (url.startsWith('/api/local/curriculum-deliberations/rec-1/ai/tasks?')) {
+      return {
+        items: [
+          {
+            task_id: 'ct-1',
+            task_type: 'curriculum_review',
+            status: 'succeeded',
+            created_at: '2026-11-01T09:00:00',
+          },
+          {
+            task_id: 'ct-2',
+            task_type: 'curriculum_split',
+            status: 'failed',
+            created_at: '2026-11-02T09:00:00',
+          },
+        ],
+        next_cursor: null,
+      }
+    }
+    if (url === '/api/local/curriculum-deliberations/rec-1/versions') {
+      return {
+        items: [
+          { version: 3, saved_at: '2026-11-02T10:00:00' },
+          { version: 2, saved_at: '2026-11-01T10:00:00' },
+        ],
+      }
+    }
+    if (url === '/api/local/curriculum-deliberations/rec-1/versions/2') {
+      return {
+        version: 2,
+        saved_at: '2026-11-01T10:00:00',
+        content: clone(versionContent),
+        // Canonical retained document (curriculum_ai._build_document) as in
+        // the confirmed teacher workflow: the structured blocks carry their
+        // own saved paragraphs, distinct from the flat form fields.
+        document: {
+          schema_version: 1,
+          kind: 'review',
+          record_id: 'rec-1',
+          base_version: 2,
+          source_hash: 'a'.repeat(64),
+          original: {
+            blocks: [
+              {
+                id: 'ob-1',
+                source_id: '',
+                quote: '',
+                section: 'goals',
+                kind: 'heading',
+                text: '历史原稿结构：分组比较影子。',
+              },
+              {
+                id: 'ob-2',
+                source_id: '',
+                quote: '',
+                section: 'goals',
+                kind: 'body',
+                text: '幼儿两人一组，用手电筒比较影子的大小。',
+              },
+            ],
+          },
+          revised: {
+            blocks: [
+              {
+                id: 'rb-1',
+                source_id: 'ob-1',
+                quote: '历史原稿结构：分组比较影子。',
+                section: 'goals',
+                kind: 'heading',
+                text: '历史二次稿结构：加入小组讲述。',
+              },
+            ],
+          },
+          columns: {
+            goals: { original_ids: ['ob-1', 'ob-2'], revised_ids: ['rb-1'] },
+            preparation: { original_ids: [], revised_ids: [] },
+            process: { original_ids: [], revised_ids: [] },
+            other: { original_ids: [], revised_ids: [] },
+          },
+        },
+      }
+    }
+    throw new Error(`unexpected GET ${url}`)
+  }
+  const curriculum = loadCurriculum(client)
+  const h = await mountEditor({ curriculum, client })
+  const state = h.state
+  assert.equal(state.loaded.value, true)
+  // Opening the panel refetches the record-scoped lists.
+  state.tasksOpen.value = true
+  state.refreshTasksPanel()
+  await wait(20)
+  assert.equal(state.tasksLoading.value, false)
+  assert.equal(state.tasksError.value, '')
+  assert.equal(state.taskRows.value.length, 2)
+  assert.equal(state.taskRows.value[0].key, 'ct-1')
+  assert.equal(state.taskRows.value[0].typeLabel, '类型:curriculum_review')
+  assert.equal(state.taskRows.value[0].statusLabel, '状态:succeeded')
+  assert.equal(state.versionsLoading.value, false)
+  assert.equal(state.versionsError.value, '')
+  assert.equal(state.versionRows.value.length, 2)
+  assert.equal(state.versionRows.value[0].version, 3)
+  // Selecting a version shows the full saved content read-only.
+  await state.selectRecordVersion(2)
+  await wait(20)
+  assert.equal(state.versionDetailError.value, '')
+  assert.equal(state.versionDetailLoading.value, false)
+  assert.equal(state.versionDetail.value.version, 2)
+  assert.equal(state.versionDetail.value.content.activity_name, '第一版活动')
+  // The contract also retains the deliberation-linked document per version,
+  // and its saved structure blocks are visible as teacher-legible text —
+  // the r3 confirmed omission (distinct block paragraphs beyond the flat
+  // form) must stay rendered.
+  assert.ok(state.versionDetail.value.document)
+  const documentView = state.curriculumVersionDocument.value
+  assert.ok(documentView, 'the retained structured document renders rows')
+  assert.equal(documentView.original.length, 2)
+  assert.equal(documentView.original[0].text, '历史原稿结构：分组比较影子。')
+  assert.equal(documentView.original[0].kind, 'heading')
+  assert.equal(documentView.original[0].sectionLabel, '活动目标')
+  assert.equal(documentView.original[0].showSectionLabel, true)
+  assert.equal(documentView.original[1].text, '幼儿两人一组，用手电筒比较影子的大小。')
+  assert.equal(documentView.original[1].kind, 'body')
+  assert.equal(documentView.original[1].showSectionLabel, false)
+  assert.equal(documentView.original[1].quote, '')
+  assert.equal(documentView.revised.length, 1)
+  assert.equal(documentView.revised[0].text, '历史二次稿结构：加入小组讲述。')
+  assert.equal(
+    documentView.revised[0].quote,
+    '历史原稿结构：分组比较影子。',
+    'the revised block keeps its source quote',
+  )
+  // Technical document fields never surface in the rendered rows.
+  assert.equal(JSON.stringify(documentView).includes('source_hash'), false)
+  assert.equal(JSON.stringify(documentView).includes('base_version'), false)
+  assert.equal(
+    state.curriculumVersionRowText(state.versionDetail.value.content, {
+      label: '目标修订状态',
+      key: 'goals_status',
+    }),
+    '保持原设计不变',
+  )
+  assert.equal(
+    state.curriculumVersionRowText(state.versionDetail.value.content, {
+      label: '活动形式',
+      key: 'activity_form',
+    }),
+    '其他：亲子',
+  )
+  assert.equal(
+    state.curriculumVersionRowText(state.versionDetail.value.content, {
+      label: '目标原稿',
+      key: 'goals_original',
+    }),
+    '第一版目标',
+  )
+  assert.equal(
+    state.curriculumVersionRowText(state.versionDetail.value.content, {
+      label: '未填字段',
+      key: 'reason',
+    }),
+    '（空）',
+  )
+  // The panel never writes: a profile/context switch clears all rows.
+  state.resetForContext()
+  await wait(20)
+  assert.equal(state.taskRows.value.length, 0)
+  assert.equal(state.versionRows.value.length, 0)
+  assert.equal(state.versionDetail.value, null)
+  assert.equal(state.selectedVersion.value, null)
+  ok('curriculum tasks panel lists AI tasks, opens saved versions read-only and resets with context')
+}
+
+// r2 regression: two version clicks whose responses finish reversed, plus a
+// refresh while a read is in flight — a slow stale response must never
+// overwrite the newest selection's detail, spinner or error.
+{
+  const { client } = makeClient()
+  const pending = new Map()
+  const savedContent = content({ activity_name: '已保存活动' })
+  client.getHandler = async (url) => {
+    if (url === '/api/local/curriculum-deliberations/rec-1') {
+      return {
+        id: 'rec-1',
+        version: 3,
+        content: clone(savedContent),
+        document: null,
+        updated_at: '2026-11-02T10:00:00',
+      }
+    }
+    if (url.startsWith('/api/local/curriculum-deliberations/rec-1/ai/tasks?')) {
+      return { items: [], next_cursor: null }
+    }
+    if (url === '/api/local/curriculum-deliberations/rec-1/versions') {
+      return {
+        items: [
+          { version: 3, saved_at: '2026-11-03T10:00:00' },
+          { version: 2, saved_at: '2026-11-02T10:00:00' },
+        ],
+      }
+    }
+    const match = /^\/api\/local\/curriculum-deliberations\/rec-1\/versions\/(\d+)$/.exec(url)
+    if (match) {
+      const version = Number(match[1])
+      return new Promise((resolve, reject) => {
+        pending.set(version, {
+          resolve: () =>
+            resolve({
+              version,
+              saved_at: `2026-11-0${version}T10:00:00`,
+              content: content({ activity_name: `第${version}版活动` }),
+              document: null,
+            }),
+          reject: () => reject(new Error('network reset')),
+        })
+      })
+    }
+    throw new Error(`unexpected GET ${url}`)
+  }
+  const curriculum = loadCurriculum(client)
+  const h = await mountEditor({ curriculum, client })
+  const state = h.state
+  state.tasksOpen.value = true
+  state.refreshTasksPanel()
+  await wait(20)
+  assert.equal(state.versionRows.value.length, 2)
+  // Click v2, then v3 while v2 is still pending: both share one generation,
+  // only the newest request may write.
+  state.selectRecordVersion(2)
+  await wait(10)
+  assert.equal(state.selectedVersion.value, 2)
+  assert.equal(state.versionDetailLoading.value, true)
+  state.selectRecordVersion(3)
+  await wait(10)
+  assert.equal(state.selectedVersion.value, 3)
+  assert.equal(state.versionDetailLoading.value, true)
+  pending.get(3).resolve()
+  await wait(20)
+  assert.equal(state.versionDetail.value.version, 3)
+  assert.equal(state.versionDetail.value.content.activity_name, '第3版活动')
+  assert.equal(state.versionDetailLoading.value, false)
+  assert.equal(state.versionDetailError.value, '')
+  // The slow v2 response finishes last and must not overwrite anything.
+  pending.get(2).resolve()
+  await wait(20)
+  assert.equal(state.versionDetail.value.version, 3)
+  assert.equal(state.versionDetail.value.content.activity_name, '第3版活动')
+  assert.equal(state.selectedVersion.value, 3)
+  assert.equal(state.versionDetailLoading.value, false)
+  assert.equal(state.versionDetailError.value, '')
+  // Refresh while a read is in flight: the pending read is retired, the
+  // spinner clears with the refresh, and its late rejection never surfaces
+  // an error.
+  state.selectRecordVersion(2)
+  await wait(10)
+  assert.equal(state.versionDetailLoading.value, true)
+  state.refreshTasksPanel()
+  await wait(20)
+  assert.equal(state.selectedVersion.value, null)
+  assert.equal(state.versionDetail.value, null)
+  assert.equal(state.versionDetailLoading.value, false)
+  pending.get(2).reject()
+  await wait(20)
+  assert.equal(state.versionDetail.value, null)
+  assert.equal(state.versionDetailError.value, '')
+  assert.equal(state.versionDetailLoading.value, false)
+  ok('slow stale curriculum version responses never overwrite the newest selection or a refresh')
+}
+
+// r3: the retained structured document projects teacher-legible rows from the
+// canonical _build_document schema, tolerates older/optional shapes, and
+// never surfaces technical fields.
+{
+  const { client } = makeClient()
+  const curriculum = loadCurriculum(client)
+  const view = curriculum.curriculumDocumentView
+  assert.equal(typeof view, 'function')
+
+  // Older compatible shape: one top-level blocks list renders as the
+  // original column with safe defaults for missing optional fields.
+  const legacy = view({
+    blocks: [
+      { id: 'b1', section: 'process', text: '旧版单列结构：先观察再记录。' },
+      { id: 'b2', section: 'other', text: '安全提示：注意用电。', kind: 'heading' },
+    ],
+  })
+  assert.ok(legacy)
+  assert.equal(legacy.original.length, 2)
+  assert.equal(legacy.revised.length, 0)
+  assert.equal(legacy.original[0].text, '旧版单列结构：先观察再记录。')
+  assert.equal(legacy.original[0].kind, 'body', 'absent kind falls back to body')
+  assert.equal(legacy.original[0].quote, '', 'absent quote stays empty')
+  assert.equal(legacy.original[0].sectionLabel, '活动过程')
+  assert.equal(legacy.original[1].sectionLabel, '其他内容')
+  assert.equal(legacy.original[1].showSectionLabel, true, 'section transitions relabel')
+  assert.equal(legacy.original[1].kind, 'heading')
+
+  // Section labels repeat at every transition and order is preserved.
+  const ordered = view({
+    original: {
+      blocks: [
+        { id: 'g1', section: 'goals', kind: 'heading', text: '目标段' },
+        { id: 'g2', section: 'goals', kind: 'body', text: '目标正文' },
+        { id: 'p1', section: 'preparation', kind: 'heading', text: '准备段' },
+      ],
+    },
+    revised: { blocks: [] },
+  })
+  assert.equal(ordered.original.map((row) => row.showSectionLabel).join(','), 'true,false,true')
+  assert.equal(ordered.original[2].sectionLabel, '活动准备')
+
+  // Unknown/absent sections and nothing-legible documents stay safe.
+  assert.equal(view(null), null)
+  assert.equal(view(undefined), null)
+  assert.equal(view({ original: { blocks: [] }, revised: { blocks: [] } }), null)
+  const partial = view({
+    original: {
+      blocks: [
+        { id: 'x1', section: 'unknown-section', text: '未知栏目仍可读。' },
+        { id: 'x2', section: 'goals' },
+        'not-a-block',
+      ],
+    },
+  })
+  assert.ok(partial)
+  assert.equal(partial.original.length, 1)
+  // An unrecognized older section label falls back to a Chinese label, so a
+  // teacher never sees a technical key.
+  assert.equal(partial.original[0].sectionLabel, '其他内容')
+  assert.equal(partial.original[0].text, '未知栏目仍可读。')
+
+  // Technical fields never reach the rendered rows.
+  const projected = view({
+    schema_version: 2,
+    kind: 'split',
+    record_id: 'rec-9',
+    base_version: 7,
+    source_hash: 'f'.repeat(64),
+    original: { blocks: [{ id: 't1', source_id: 's1', section: 'goals', kind: 'body', text: '正文', quote: '引文' }] },
+    revised: { blocks: [] },
+    columns: { goals: { original_ids: ['t1'], revised_ids: [] } },
+  })
+  const flat = JSON.stringify(projected)
+  assert.equal(flat.includes('source_hash'), false)
+  assert.equal(flat.includes('base_version'), false)
+  assert.equal(flat.includes('record_id'), false)
+  assert.equal(flat.includes('columns'), false)
+  assert.equal(flat.includes('source_id'), false)
+  assert.ok(flat.includes('引文'), 'teacher quotes are kept')
+  ok('retained curriculum document renders teacher blocks from canonical and legacy shapes')
+}
+console.log(`curriculum: ${passed} checks passed`)

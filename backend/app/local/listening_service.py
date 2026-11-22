@@ -9,7 +9,9 @@ Every write follows the existing local protocol: a request receipt is checked
 before a short ``BEGIN IMMEDIATE`` transaction, the current shared record
 revision is checked inside that transaction, one operation increments the
 revision at most once, and a same request id with different content is
-refused.
+refused.  Every actual content change also retains one full read-only
+history snapshot (see :mod:`app.local.listening_history`) in that same
+transaction; a no-change save and an idempotent replay retain nothing.
 """
 
 from __future__ import annotations
@@ -310,6 +312,47 @@ def _audit(
             target_id=record_id,
             target_version_after=revision_after,
         )
+    )
+
+
+def _capture_history_before_no_tx(
+    session: Session, record: LocalListeningRecord
+) -> dict[str, Any] | None:
+    """Snapshot the pre-change record content when it must be retained.
+
+    Imported lazily: ``listening_history`` reads this module for the record
+    projection and scoped loads.  The caller must be inside the write
+    transaction, before applying the change.
+    """
+    from app.local import listening_history
+
+    return listening_history.capture_before_no_tx(session, record=record)
+
+
+def _retain_history_no_tx(
+    session: Session,
+    *,
+    record: LocalListeningRecord,
+    profile_id: str,
+    before: dict[str, Any] | None,
+    now: datetime,
+) -> None:
+    """Append the retained version for one applied content change.
+
+    The caller must be inside the same write transaction that bumped
+    ``record.revision``; the flush makes freshly inserted assets visible to
+    the full projection read.
+    """
+    from app.local import listening_history
+
+    session.flush()
+    listening_history.append_save_no_tx(
+        session,
+        record_id=record.id,
+        profile_id=profile_id,
+        before=before,
+        after=_record_dto(session, record),
+        now=now,
     )
 
 
@@ -746,6 +789,17 @@ def create_record(
                         updated_at=now,
                     )
                 )
+        session.flush()
+        # The creation save is retained history, bound to revision 1 in this
+        # same write transaction.
+        from app.local import listening_history
+
+        listening_history.record_initial_version_no_tx(
+            session,
+            record=record,
+            content=_record_dto(session, record),
+            now=now,
+        )
         result = {
             "record_id": record_id,
             "revision": 1,
@@ -970,11 +1024,19 @@ def patch_record_name(
         record, _context_value = _load_record(session, profile_id, record_id)
         if record.revision != revision:
             raise ListeningRevisionConflict()
+        history_before = _capture_history_before_no_tx(session, record)
         changed = record.child_name != name
         if changed:
             record.child_name = name
             record.revision += 1
             record.updated_at = now
+            _retain_history_no_tx(
+                session,
+                record=record,
+                profile_id=profile_id,
+                before=history_before,
+                now=now,
+            )
         result = {
             "record_id": record.id,
             "child_name": record.child_name,
@@ -1042,6 +1104,7 @@ def domain_patch_kernel_no_tx(
     domain_row = _domain_row(session, record_id, domain)
     _template_for(record, domain_row)
     normalized = _normalize_patch(session, record_id, domain, patch)
+    history_before = _capture_history_before_no_tx(session, record)
     groups = {row.id: row for row in _groups(session, record_id, domain)}
     choices = {
         row.item_id: row
@@ -1095,6 +1158,13 @@ def domain_patch_kernel_no_tx(
         domain_row.updated_at = now
         for group in groups.values():
             group.updated_at = now
+        _retain_history_no_tx(
+            session,
+            record=record,
+            profile_id=profile_id,
+            before=history_before,
+            now=now,
+        )
     result = {
         "record_id": record.id,
         "domain": domain,
@@ -1170,6 +1240,7 @@ def save_domain(
             normalized,
             _term_for(context_value, record.term_id),
         )
+        history_before = _capture_history_before_no_tx(session, record)
         choices = {
             row.item_id: row
             for row in session.scalars(
@@ -1222,6 +1293,13 @@ def save_domain(
             domain_row.updated_at = now
             for group in groups.values():
                 group.updated_at = now
+            _retain_history_no_tx(
+                session,
+                record=record,
+                profile_id=profile_id,
+                before=history_before,
+                now=now,
+            )
         result = {
             "record_id": record.id,
             "domain": domain,

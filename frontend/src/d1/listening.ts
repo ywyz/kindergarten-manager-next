@@ -114,6 +114,87 @@ export interface ListeningRecordDetail {
   rotations?: Record<string, number>
 }
 
+/**
+ * Saved-version history contract (2026-11-22 repair):
+ * GET /api/listening/records/{record_id}/versions -> { items: [{version, saved_at}] }
+ * GET /api/listening/records/{record_id}/versions/{version}
+ *   -> { version, saved_at, content } with `content` shaped like the record
+ *      detail DTO (all five domains with photo groups and evaluation rows).
+ */
+export interface ListeningVersionSummary {
+  version: number
+  saved_at: string
+}
+
+export interface ListeningVersionDetail {
+  version: number
+  saved_at: string
+  content: ListeningRecordDetail
+}
+
+function normalizeListeningVersionContent(value: unknown): ListeningRecordDetail {
+  const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const domains = Array.isArray(raw.domains) ? raw.domains : []
+  return {
+    record_id: typeof raw.record_id === 'string' ? raw.record_id : '',
+    child_name: typeof raw.child_name === 'string' ? raw.child_name : '',
+    class_id: typeof raw.class_id === 'string' ? raw.class_id : '',
+    term_id: typeof raw.term_id === 'string' ? raw.term_id : '',
+    grade: typeof raw.grade === 'string' ? raw.grade : '',
+    revision: typeof raw.revision === 'number' ? raw.revision : 0,
+    created_at: typeof raw.created_at === 'string' ? raw.created_at : '',
+    updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : '',
+    domains: domains.filter(
+      (domain): domain is ListeningDomainState =>
+        !!domain && typeof domain === 'object',
+    ),
+    rotations: raw.rotations && typeof raw.rotations === 'object' && !Array.isArray(raw.rotations)
+      ? raw.rotations as Record<string, number>
+      : undefined,
+  }
+}
+
+function normalizeListeningVersionSummary(value: unknown): ListeningVersionSummary | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  const version = typeof raw.version === 'number' ? raw.version : Number(raw.version)
+  if (!Number.isInteger(version) || version < 1) return null
+  return {
+    version,
+    saved_at: typeof raw.saved_at === 'string' ? raw.saved_at : '',
+  }
+}
+
+export async function listListeningRecordVersions(
+  recordId: string,
+): Promise<{ items: ListeningVersionSummary[] }> {
+  const data = await apiGet<unknown>(
+    `${API_ROOT}/records/${pathSegment(recordId)}/versions`,
+  )
+  const raw = data && typeof data === 'object' ? data as Record<string, unknown> : {}
+  const items = Array.isArray(raw.items) ? raw.items : []
+  return {
+    items: items
+      .map(normalizeListeningVersionSummary)
+      .filter((item): item is ListeningVersionSummary => item !== null),
+  }
+}
+
+export async function getListeningRecordVersion(
+  recordId: string,
+  version: number,
+): Promise<ListeningVersionDetail> {
+  const data = await apiGet<unknown>(
+    `${API_ROOT}/records/${pathSegment(recordId)}/versions/${pathSegment(String(version))}`,
+  )
+  const raw = data && typeof data === 'object' ? data as Record<string, unknown> : {}
+  return {
+    version: typeof raw.version === 'number' ? raw.version : Number(raw.version),
+    saved_at: typeof raw.saved_at === 'string' ? raw.saved_at : '',
+    content: normalizeListeningVersionContent(raw.content),
+  }
+}
+
 export interface ListeningCurrentFormGroup {
   group_id: string
   position: number

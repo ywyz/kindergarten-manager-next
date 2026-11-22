@@ -1303,7 +1303,7 @@ defineExpose({ reload: load })
       >
         新建观察记录
       </el-button>
-      <span class="muted">先选择记录再批量导出；记录卡片可打开当前草稿。</span>
+      <span class="muted">先选择记录再批量导出；打开记录可继续填写当前草稿。</span>
     </div>
 
     <el-alert
@@ -1433,7 +1433,6 @@ defineExpose({ reload: load })
 
     <div class="list-head">
       <h3>观察记录</h3>
-      <span class="muted">共 {{ total }} 份 · 第 {{ page }}/{{ pageCount }} 页</span>
     </div>
     <div v-loading="loading" class="card-grid" data-d1="obs-list">
       <el-empty
@@ -1446,14 +1445,10 @@ defineExpose({ reload: load })
         :key="row.observation_id"
         class="obs-card"
         data-d1="obs-card"
-        role="button"
-        tabindex="0"
-        @click="openItem(row)"
-        @keydown.enter.self="openItem(row)"
       >
         <div class="card-head">
           <div class="card-title">
-            <span class="select-box" @click.stop @keydown.stop>
+            <span class="select-box">
               <el-checkbox
                 :model-value="isSelected(row.observation_id)"
                 :disabled="selectionLocked"
@@ -1470,7 +1465,7 @@ defineExpose({ reload: load })
               </p>
             </div>
           </div>
-          <el-button type="primary" text data-d1="obs-open" @click.stop="openItem(row)">
+          <el-button type="primary" text data-d1="obs-open" @click="openItem(row)">
             打开
           </el-button>
         </div>
@@ -1481,18 +1476,6 @@ defineExpose({ reload: load })
           <div><dt>草稿版本</dt><dd>v{{ row.current_draft_revision }}<template v-if="row.current_version != null"> · 已存 v{{ row.current_version }}</template></dd></div>
           <div><dt>创建时间</dt><dd>{{ row.created_at.replace('T', ' ').slice(5, 19) }}</dd></div>
         </dl>
-      </article>
-
-      <article class="obs-card filter-summary" data-d1="obs-filter-summary">
-        <div class="card-head">
-          <h3>筛选与导出</h3>
-        </div>
-        <dl class="card-meta">
-          <div><dt>日期 / 学期</dt><dd>{{ rangeLabel }} · {{ termFilterLabel }}</dd></div>
-          <div><dt>观察类型</dt><dd>{{ typeFilterLabel }}<template v-if="subjectFilter.trim()"> · 幼儿 {{ subjectFilter.trim() }}</template></dd></div>
-          <div><dt>已选 / 顺序</dt><dd>{{ selectedCount }} 份 · {{ manualOrder ? '手动顺序' : '日期、开始时间、创建顺序' }}</dd></div>
-        </dl>
-        <p class="muted">筛选和翻页不会改变已选顺序；导出前会再核对当前稿。</p>
       </article>
     </div>
 
@@ -1854,13 +1837,6 @@ defineExpose({ reload: load })
   border: 1px solid var(--kgm-border);
   border-radius: 12px;
   background: var(--kgm-surface);
-  cursor: pointer;
-}
-.obs-card:hover,
-.obs-card:focus-visible {
-  border-color: var(--kgm-accent);
-  outline: 2px solid var(--kgm-focus);
-  outline-offset: 2px;
 }
 .card-head {
   display: flex;
@@ -1875,8 +1851,6 @@ defineExpose({ reload: load })
 .card-meta div { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); gap: 0.75rem; align-items: baseline; }
 .card-meta dt { color: var(--kgm-muted); font-size: 0.82rem; }
 .card-meta dd { margin: 0; overflow-wrap: anywhere; }
-.filter-summary { cursor: default; border-style: dashed; }
-.filter-summary:hover { border-color: var(--kgm-border); outline: none; }
 .empty-card { grid-column: 1 / -1; }
 .block { margin-top: 16px; }
 .create-terms {

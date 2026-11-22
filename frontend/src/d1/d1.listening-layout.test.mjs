@@ -305,10 +305,23 @@ class Harness {
         if (
           spec === '../components/ListeningExportDialog.vue' ||
           spec === '../components/ListeningAiPanel.vue' ||
+          spec === '../components/RecordTasksDialog.vue' ||
           spec === '../components/DirectionalRevisionDialog.vue' ||
           spec === '../components/DirectionalRevisionTrigger.vue'
         ) {
           return { default: {} }
+        }
+        if (spec === '../listening-ai') {
+          return {
+            listListeningRecordAITasks: () =>
+              Promise.reject(new Error('unexpected listListeningRecordAITasks')),
+          }
+        }
+        if (spec === '../ai') {
+          return {
+            taskStatusLabel: (status) => status,
+            taskTypeLabel: (type) => type,
+          }
         }
         if (spec === '../directional-revision') {
           return {
@@ -1296,8 +1309,17 @@ async function mountListeningDom(
     '../observation-photos': { PhotoUrlCache: FakePhotoCache },
     '../components/ListeningAiPanel.vue': AiStub,
     '../components/ListeningExportDialog.vue': NullStub,
+    '../components/RecordTasksDialog.vue': NullStub,
     '../components/DirectionalRevisionDialog.vue': NullStub,
     '../components/DirectionalRevisionTrigger.vue': NullStub,
+    '../listening-ai': {
+      listListeningRecordAITasks: () =>
+        Promise.reject(new Error('unexpected dom AI task list')),
+    },
+    '../ai': {
+      taskStatusLabel: (status) => status,
+      taskTypeLabel: (type) => type,
+    },
     '../directional-revision': {
       captureDirectionalSelection: () => null,
       directionalSelectionKey: (field, group = '', candidate = '') =>
@@ -1878,7 +1900,7 @@ async function mountListeningDom(
   assert.ok(headerText.includes('记录年级 中班'))
   const headerButtons = {
     'listening-editor-back': '返回列表',
-    'listening-editor-settings': '设置与配置维护',
+    'listening-editor-tasks': '任务',
     'listening-editor-export': '导出 Word',
     'listening-editor-save': '保存',
   }
@@ -1890,6 +1912,14 @@ async function mountListeningDom(
     assert.equal(textOf(button).trim(), label)
     assert.equal(button.tag, 'button')
   }
+  // The duplicate in-editor settings entry is gone; settings stays reachable
+  // from the shell navigation (2026-11-22 repair).
+  assert.equal(
+    walkElements(topbarNode).some(
+      (node) => node.props['data-d1'] === 'listening-editor-settings',
+    ),
+    false,
+  )
   assert.ok(
     walkElements(identityNode).some(
       (node) => node.props['data-d1'] === 'listening-editor-back',
@@ -2127,6 +2157,52 @@ async function mountListeningDom(
   mounted.app.unmount()
   await vue.nextTick()
   ok('section nav stays discoverable and rail action buttons share one column')
+}
+
+// 2026-11-22 repair: one auxiliary 任务 entry carries this record's AI tasks
+// and its saved-version history; the duplicated in-editor settings entry is
+// gone (settings stays reachable from the shell navigation).
+{
+  assert.match(editorSource, /data-d1="listening-editor-tasks"/)
+  assert.match(editorSource, /RecordTasksDialog/)
+  assert.match(editorSource, /@refresh="refreshTasksPanel"/)
+  assert.match(editorSource, /@select-version="selectRecordVersion"/)
+  assert.match(editorSource, /listListeningRecordVersions/)
+  assert.match(editorSource, /getListeningRecordVersion/)
+  assert.match(editorSource, /listListeningRecordAITasks/)
+  assert.match(editorSource, /data-d1="listening-version-detail"/)
+  assert.match(editorSource, /listening-version-domain-\$\{domain\.domain\}/)
+  assert.match(editorSource, /listening-version-eval-\$\{domain\.domain\}/)
+  assert.match(editorSource, /观察区域/)
+  assert.match(editorSource, /versionEvaluationRows/)
+  assert.match(editorSource, /versionRequestSeq/)
+  assert.match(editorSource, /versionPhotoUrls/)
+  assert.equal(editorSource.includes('data-d1="listening-editor-settings"'), false)
+  assert.equal(editorSource.includes('设置与配置维护'), false)
+  assert.equal(editorSource.includes('历史版本对话框'), false)
+  // Route contract 2026-11-22: version history and record-wide task listing
+  // follow the agreed read-only endpoints on the record route prefix.
+  const listeningSource = fs.readFileSync(
+    path.join(d1Dir, 'listening.ts'),
+    'utf8',
+  )
+  assert.match(
+    listeningSource,
+    /`\$\{API_ROOT\}\/records\/\$\{pathSegment\(recordId\)\}\/versions`/,
+  )
+  assert.match(
+    listeningSource,
+    /`\$\{API_ROOT\}\/records\/\$\{pathSegment\(recordId\)\}\/versions\/\$\{pathSegment\(String\(version\)\)\}`/,
+  )
+  const listeningAiSource = fs.readFileSync(
+    path.join(d1Dir, 'listening-ai.ts'),
+    'utf8',
+  )
+  assert.match(
+    listeningAiSource,
+    /`\$\{ROOT\}\/records\/\$\{pathSegment\(recordId\)\}\/ai\/tasks\?\$\{params\.toString\(\)\}`/,
+  )
+  ok('listening editor keeps one auxiliary 任务 entry for AI tasks and full versions')
 }
 
 console.log(`listening-layout: ${passed} checks passed`)

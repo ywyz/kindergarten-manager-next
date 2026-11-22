@@ -492,6 +492,10 @@ class BatchTransactionBoundaryTests(unittest.TestCase):
                 patch.object(batch, "begin_immediate"),
                 patch.object(service, "_operation", return_value=None),
                 patch.object(service, "_audit", return_value=None),
+                patch.object(
+                    service, "_capture_history_before_no_tx", return_value=None
+                ),
+                patch.object(service, "_retain_history_no_tx", return_value=None),
             ):
                 with self.assertRaises(batch.ListeningBatchCommitUncertain) as raised:
                     batch._import_batch_impl(

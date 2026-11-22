@@ -536,6 +536,9 @@ def _import_batch_impl(
             group = groups[entry["item"]["group_id"]]
             if group.asset_id is not None:
                 raise ListeningBatchTargetOccupied()
+        history_before = service._capture_history_before_no_tx(
+            session, record
+        )
         result_items: list[dict[str, Any]] = []
         for entry in prepared:
             item = entry["item"]
@@ -574,6 +577,13 @@ def _import_batch_impl(
             )
         record.revision += 1
         record.updated_at = now
+        service._retain_history_no_tx(
+            session,
+            record=record,
+            profile_id=profile_id,
+            before=history_before,
+            now=now,
+        )
         result = {
             "record_id": record_id,
             "revision": record.revision,

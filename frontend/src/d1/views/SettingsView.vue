@@ -21,7 +21,6 @@ import type { SettingsDraftTarget, SettingsDraftTargetKind } from '../leave'
 import AiSettingsPanel from './AiSettingsPanel.vue'
 import GameConfigPanel from './GameConfigPanel.vue'
 import CollaborationPanel from './CollaborationPanel.vue'
-import FeedbackPanel from './FeedbackPanel.vue'
 import { createCollaborationApi } from '../collaboration'
 import type { CollaborationPromotionTerm } from '../collaboration'
 
@@ -41,6 +40,7 @@ const emit = defineEmits<{
   (e: 'open-maintenance'): void
   (e: 'section', section: 'collaboration' | null): void
   (e: 'check-update'): void
+  (e: 'open-feedback'): void
 }>()
 
 type SettingsSection = 'main' | 'collaboration'
@@ -49,8 +49,6 @@ type SettingsPage = 'identity' | 'terms' | 'ai' | 'games' | 'backup' | 'about'
 type SettingsEditor = 'profile' | 'class' | 'term' | 'new-term' | 'override'
 
 const activeSettingsPage = ref<SettingsPage>('identity')
-/** The in-app feedback dialog is independent from any settings draft. */
-const feedbackOpen = ref(false)
 
 function setSettingsPage(page: SettingsPage): void {
   activeSettingsPage.value = page
@@ -537,14 +535,6 @@ watch(
   () => emit('draft-targets', draftTargets()),
   { deep: true, immediate: true },
 )
-
-function focusAi(kind: 'ai-config' | 'ai-prompts'): void {
-  aiPanelRef.value?.focusDraftTarget?.(kind)
-}
-
-function focusGame(): void {
-  gamePanelRef.value?.focusDraftTarget?.()
-}
 
 function clearPreview(): void {
   previewData.value = null
@@ -2310,7 +2300,7 @@ defineExpose({
               <el-card class="section" shadow="never" data-d1="settings-feedback-card">
                 <template #header>问题反馈</template>
                 <p class="muted">向内部测试组织者发送使用问题或建议。提交前显示实际发送的应用版本和所填内容；不自动收集教师档案、幼儿记录、图片、数据库、凭据或日志。</p>
-                <el-button data-d1="settings-open-feedback" :disabled="frozen" @click="feedbackOpen = true">
+                <el-button data-d1="settings-open-feedback" :disabled="frozen" @click="emit('open-feedback')">
                   打开反馈表单
                 </el-button>
               </el-card>
@@ -2377,25 +2367,6 @@ defineExpose({
               <p class="muted">仅在已连接在线班级时读取园所学期名称；只填入起止日期唯一匹配的名称，不提交修改。</p>
             </div>
 
-            <div v-if="activeSettingsPage === 'ai'" class="kgm-rail-panel">
-              <h3 class="kgm-rail-title">操作</h3>
-              <el-button data-d1="settings-focus-ai-config" :disabled="frozen" @click="focusAi('ai-config')">
-                编辑 AI 供应商配置
-              </el-button>
-              <el-button data-d1="settings-focus-ai-prompts" :disabled="frozen" @click="focusAi('ai-prompts')">
-                编辑个人指导
-              </el-button>
-              <p class="muted">密钥只在安全配置面板中输入和保存；普通正文与日志不显示密钥。</p>
-            </div>
-
-            <div v-if="activeSettingsPage === 'games'" class="kgm-rail-panel">
-              <h3 class="kgm-rail-title">操作</h3>
-              <el-button data-d1="settings-focus-game-config" :disabled="frozen" @click="focusGame">
-                编辑班级游戏配置
-              </el-button>
-              <p class="muted">本地配置、来源带入和发布仍保留各自的预览与确认流程。</p>
-            </div>
-
             <div v-if="activeSettingsPage === 'backup'" class="kgm-rail-panel">
               <h3 class="kgm-rail-title">操作</h3>
               <el-button data-d1="open-backup-restore" type="primary" class="kgm-primary-action" :disabled="frozen" @click="emit('open-maintenance')">
@@ -2428,16 +2399,6 @@ defineExpose({
         @draft-active="(value: boolean) => (collaborationDraftActive = value)"
       />
     </div>
-
-    <el-dialog
-      v-model="feedbackOpen"
-      title="问题反馈"
-      width="640px"
-      :close-on-click-modal="false"
-      data-d1="settings-feedback-dialog"
-    >
-      <FeedbackPanel :frozen="frozen" />
-    </el-dialog>
 
     <el-dialog
       :model-value="editorOpen === 'profile'"

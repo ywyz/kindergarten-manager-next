@@ -69,7 +69,8 @@ function resolveTsFile(spec, fromFile) {
 }
 
 class Harness {
-  constructor() {
+  constructor({ overrides = {} } = {}) {
+    this.overrides = overrides
     this.moduleCache = new Map()
     this.mounted = []
     this.unmounts = []
@@ -127,6 +128,9 @@ class Harness {
     }
     if (spec === 'element-plus') return { ElMessage: this.message }
     if (spec === './bridge') return bridgeStub
+    if (Object.prototype.hasOwnProperty.call(this.overrides, spec)) {
+      return this.overrides[spec]
+    }
     if (spec.endsWith('.vue')) return {}
     const file = resolveTsFile(spec, fromFile)
     if (!file) throw new Error(`cannot resolve ${spec} from ${fromFile}`)
@@ -320,7 +324,7 @@ function navButton(html, marker) {
 
   await state.goModule('daily')
   assert.equal(state.view.value.name, 'workbench')
-  assert.equal(state.view.value.panel, 'daily', 'daily module opens the calendar/history pane')
+  assert.equal(state.view.value.panel, 'daily', 'the daily module opens the calendar first — no editor, no auto-opened date, no creation')
   await state.goModule('todos')
   assert.equal(state.view.value.panel, 'todos', 'personal todo entry is its own full-management panel')
   await state.goModule('workbench')
@@ -453,12 +457,12 @@ async function testRealWorkbenchTodoModalBinding() {
   assert.match(app.state.currentBlockingDraft().message, /个人待办编辑/)
   assert.equal(workbench.state.activePanel.value, 'todos')
   await app.state.goModule('daily')
-  assert.equal(app.state.view.value.panel, 'todos', 'the open todo modal blocks the pane switch')
+  assert.equal(app.state.view.value.panel, 'todos', 'the open todo modal blocks the daily module entry')
   assert.ok(harness.messages.some((message) => String(message).includes('个人待办编辑')))
   todo.state.cancelEditor()
   assert.equal(app.state.currentBlockingDraft(), null)
   await app.state.goModule('daily')
-  assert.equal(app.state.view.value.panel, 'daily', 'top daily navigation selects the calendar pane')
+  assert.equal(app.state.view.value.panel, 'daily', 'the daily module opens the calendar pane, never an editor')
   workbench.props.panel = 'daily'
   await vue.nextTick()
   assert.equal(workbench.state.activePanel.value, 'daily')
@@ -582,6 +586,162 @@ async function testModuleNavigationSavesDirtyEditor() {
   assert.equal(state.view.value.name, 'editor', 'a failed save keeps the editor page')
   ok('top module navigation preserves the leave coordinator save/conflict guards')
 }
+async function testDailyCalendarEntryOpensDatePreviews() {
+  const appHarness = new Harness()
+  const { state } = appHarness.setupApp()
+  state.bootState.value = 'ready'
+  state.context.value = contextFixture()
+
+  // Structure: no shell daily browse group; the workbench calendar is the
+  // module entry and keeps its own 月历/已保存计划 tabs and hint.
+  state.view.value = { name: 'editor', planDate: '2026-09-15', mode: 'open' }
+  const editorRail = await renderApp(state)
+  assert.doesNotMatch(editorRail, /data-d1="daily-browse-group"/, 'no shell daily browse group on the daily editor')
+  assert.doesNotMatch(editorRail, /daily-browse-calendar|daily-browse-saved/)
+  state.view.value = { name: 'workbench', panel: 'home' }
+  const homeRail = await renderApp(state)
+  assert.doesNotMatch(homeRail, /data-d1="daily-browse-group"/, 'no shell daily browse group on the workbench home')
+
+  // Real calendar first: browsing the month is GET-only (no write anywhere),
+  // and clicking a date routes to that date's full preview without creating.
+  const gets = []
+  const writes = []
+  const clientStub = {
+    ApiError: class ApiError extends Error {},
+    pathSegment: (value) => encodeURIComponent(String(value)),
+    apiGet: async (url) => {
+      gets.push(String(url))
+      const target = String(url)
+      if (target.startsWith('/api/local/calendar')) {
+        return { items: [
+          {
+            date: '2026-09-15', effective_state: 'teaching', date_eligible: true,
+            existing_plan_id: 'p-101', term_id: 't1', week_number: 3, reason: null,
+          },
+          {
+            date: '2026-09-16', effective_state: 'teaching', date_eligible: true,
+            existing_plan_id: null, term_id: 't1', week_number: 3, reason: null,
+          },
+          {
+            date: '2026-09-20', effective_state: 'non_teaching', date_eligible: false,
+            existing_plan_id: null, term_id: 't1', week_number: 3, reason: '休息日',
+          },
+        ] }
+      }
+      if (target.startsWith('/api/daily-plans')) return { items: [], next_cursor: null }
+      throw new Error(`unexpected apiGet ${target}`)
+    },
+    apiPost: async (url) => {
+      writes.push(String(url))
+      throw new Error(`unexpected apiPost ${url}`)
+    },
+    apiPatch: async (url) => {
+      writes.push(String(url))
+      throw new Error(`unexpected apiPatch ${url}`)
+    },
+  }
+  const workHarness = new Harness({
+    overrides: { '../client': clientStub, './client': clientStub },
+  })
+  const workbench = workHarness.setupSfc('views/WorkbenchView.vue', {
+    context: contextFixture(),
+    panel: 'daily',
+    frozen: false,
+  }, { runMounted: true })
+  state.workbenchRef.value = workbench.state
+  for (let i = 0; i < 6; i += 1) await Promise.resolve()
+  await vue.nextTick()
+  assert.ok(gets.some((url) => url.startsWith('/api/local/calendar')), 'the calendar loads by GET')
+  assert.equal(writes.length, 0, 'calendar browsing never writes')
+
+  // The outdated "confirm before create" hint is gone; the hint matches the
+  // direct preview semantics.
+  const source = fs.readFileSync(path.join(d1Dir, 'views', 'WorkbenchView.vue'), 'utf8')
+  assert.match(source, /点击已有计划打开完整预览，可备课的空白日期打开完整空白草稿/)
+  assert.doesNotMatch(source, /先确认再新建/)
+
+  // Existing plan: the click opens that date's full preview (open mode).
+  workbench.state.clickDay({
+    date: '2026-09-15', effective_state: 'teaching', date_eligible: true,
+    existing_plan_id: 'p-101', term_id: 't1',
+  })
+  // Eligible blank teachable date: the complete unpersisted blank draft.
+  workbench.state.clickDay({
+    date: '2026-09-16', effective_state: 'teaching', date_eligible: true,
+    existing_plan_id: null, term_id: 't1',
+  })
+  // The existing selectable-day rule still holds: a non-teaching day never opens.
+  workbench.state.clickDay({
+    date: '2026-09-20', effective_state: 'non_teaching', date_eligible: false,
+    existing_plan_id: null, term_id: 't1',
+  })
+  assert.deepEqual(
+    workbench.emitted
+      .filter(([event]) => event === 'open-editor')
+      .map(([, ...args]) => args),
+    [
+      ['2026-09-15', 'open', 'p-101', 't1'],
+      ['2026-09-16', 'create'],
+    ],
+    'a plan day opens its preview, an eligible blank day opens the blank draft, a rest day opens nothing',
+  )
+  assert.equal(writes.length, 0, 'picking dates never writes; the blank draft persists only on an explicit save')
+
+  // App routing: the click lands in the editor with the calendar captured, and
+  // re-selecting 日计划 returns to the calendar with the original month, term
+  // filter and tab — through the existing unsaved-leave protection.
+  workbench.state.month.value = '2026-09'
+  workbench.state.termFilter.value = null
+  workbench.state.dailyView.value = 'calendar'
+  state.openEditorFromWorkbench('2026-09-15', 'open', 'p-101', 't1')
+  assert.equal(state.view.value.name, 'editor', 'the date click opens the daily editor for that date')
+  assert.equal(state.view.value.planDate, '2026-09-15')
+  assert.equal(state.view.value.mode, 'open')
+  let editorSaves = 0
+  let editorDirty = true
+  state.registerEditor({
+    isDirty: () => editorDirty,
+    identity: () => 'p-101:1',
+    saveCurrent: async () => {
+      editorSaves += 1
+      editorDirty = false
+      return 'saved'
+    },
+  })
+  await state.goModule('daily')
+  assert.equal(editorSaves, 1, 'module re-entry from the editor still saves unsaved input first')
+  assert.equal(state.view.value.name, 'workbench')
+  assert.equal(state.view.value.panel, 'daily', 're-selecting the 日计划 module returns to the calendar')
+  await vue.nextTick()
+  await vue.nextTick()
+  assert.equal(workbench.state.month.value, '2026-09', 'the return restores the calendar month')
+  assert.equal(workbench.state.termFilter.value, null, 'the return restores the term filter')
+  assert.equal(workbench.state.dailyView.value, 'calendar', 'the return restores the calendar tab')
+
+  // Saved-list return state: opening a saved record from the saved tab and
+  // coming back restores the saved tab and its month.
+  workbench.state.month.value = '2026-10'
+  workbench.state.dailyView.value = 'saved'
+  state.view.value = { name: 'workbench', panel: 'daily' }
+  state.openEditorFromWorkbench('2026-10-05', 'open', 'p-201')
+  assert.equal(state.view.value.planDate, '2026-10-05')
+  const savedOutcome = await state.leaveForAction('calendar', () => 'left')
+  assert.equal(savedOutcome, 'left')
+  assert.equal(state.view.value.panel, 'daily', 'the guarded editor back returns to the daily pane')
+  await vue.nextTick()
+  await vue.nextTick()
+  assert.equal(workbench.state.dailyView.value, 'saved', 'a saved record returns to the saved tab')
+  assert.equal(workbench.state.month.value, '2026-10', 'the saved tab keeps its month')
+
+  // The close freeze still blocks the module entry.
+  state.closeLocked.value = true
+  const before = state.view.value
+  await state.goModule('daily')
+  assert.equal(state.view.value, before, 'the close freeze blocks the daily module entry')
+  state.closeLocked.value = false
+
+  ok('daily calendar entry: date clicks open date previews, browsing never writes, guarded returns restore month/term/tab')
+}
 const tests = [
   testVisibleLabeledButtonsAndSelectedState,
   testNavigationKeepsLeaveAndCloseGuards,
@@ -590,6 +750,7 @@ const tests = [
   testRealWorkbenchTodoModalBinding,
   testCalendarLeaveRestoresDailyAndKeepsOrdinaryHome,
   testModuleNavigationSavesDirtyEditor,
+  testDailyCalendarEntryOpensDatePreviews,
 ]
 for (const test of tests) {
   console.log(`- ${test.name}`)
