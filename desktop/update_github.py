@@ -9,6 +9,13 @@ embedded Ed25519 keys and its package URL is bound to the same release
 tag/asset. Preview manifest/download verification remains a later reviewed
 slice; preview discovery never turns a GitHub Release into an installable
 package by itself.
+
+Release files (the signed manifest and the package zip) are fetched from the
+fixed ``https://github.ywyz.tech/`` prefix followed by the original full
+public GitHub file URL, with the official ``github.com`` URL kept as the
+fallback.  The official discovery API contract, the repo/tag/asset binding,
+digest lengths and signature checks are unchanged; the mirror is a product
+constant, never a configurable origin, and redirects are not loosened.
 """
 
 from __future__ import annotations
@@ -36,6 +43,11 @@ PREVIEW_RELEASES_MAX_PAGES = 3
 MAX_RELEASES_PAGE_BYTES = 8 * 1024 * 1024
 GITHUB_DOWNLOAD_ORIGIN = "https://github.com"
 GITHUB_ASSET_HOST = "release-assets.githubusercontent.com"
+# Fixed download mirror for release files. Its URL is the fixed host followed
+# by the original full public GitHub file URL; it is a product constant, never
+# a configurable origin, and it never applies to the official discovery API.
+GITHUB_MIRROR_HOST = "github.ywyz.tech"
+GITHUB_MIRROR_ORIGIN = f"https://{GITHUB_MIRROR_HOST}"
 MANIFEST_ASSET = "update-manifest-windows-x64.json"
 PACKAGE_ASSET = "KindergartenManager-windows-x64.zip"
 MAX_API_BYTES = 256 * 1024
@@ -393,6 +405,30 @@ def validate_github_manifest_for_version(manifest, version: str) -> None:
         raise ManifestError("UPDATE_METADATA_INVALID", "签名包地址未绑定固定 GitHub Release 资产")
 
 
+def release_download_urls(source: ReleaseSource, url: str) -> tuple[str, ...]:
+    """Candidate fetch URLs for one official release file: mirror first.
+
+    The original URL is validated first with the exact official
+    ``github.com`` release-file rules (fixed repo/tag, fixed asset names,
+    HTTPS, no userinfo/query/fragment).  Only such a canonical URL is
+    wrapped: the fixed mirror prefix is concatenated in front of the
+    untouched original URL string.  The discovery API and any disallowed
+    shape (explicit ports, fragments, query, other repos) are returned
+    unchanged, so the regular hop validation still refuses them; they are
+    never silently translated into a different valid URL.
+    """
+    parts = urlsplit(url)
+    if parts.scheme != "https" or (parts.hostname or "").lower() != "github.com":
+        return (url,)
+    try:
+        if parts.port is not None or parts.fragment:
+            return (url,)
+        validate_github_url(source, url)
+    except (ReleaseConfigError, ValueError):
+        return (url,)
+    return (f"{GITHUB_MIRROR_ORIGIN}/{url}", url)
+
+
 def validate_github_url(source: ReleaseSource, url: str) -> str:
     """Validate one GitHub/API/CDN hop; never accepts arbitrary hosts."""
     if source.provider != "github":
@@ -427,6 +463,21 @@ def validate_github_url(source: ReleaseSource, url: str) -> str:
         name = parts.path[len(prefix):]
         if name not in (MANIFEST_ASSET, PACKAGE_ASSET):
             raise ReleaseConfigError("GitHub 下载资产名不在固定清单")
+        return url
+    if host == GITHUB_MIRROR_HOST:
+        # The mirror must carry the original full public GitHub file URL for
+        # this source's fixed repo/tag and one of the two fixed assets.
+        if source.github_tag is None:
+            raise ReleaseConfigError("GitHub 镜像下载缺少固定 tag")
+        prefix = (
+            f"/https://github.com/{GITHUB_REPO}/releases/download/"
+            f"{source.github_tag}/"
+        )
+        if not parts.path.startswith(prefix) or parts.query:
+            raise ReleaseConfigError("GitHub 镜像路径不是固定仓库/tag 资产")
+        name = parts.path[len(prefix):]
+        if name not in (MANIFEST_ASSET, PACKAGE_ASSET):
+            raise ReleaseConfigError("GitHub 镜像资产名不在固定清单")
         return url
     if host == GITHUB_ASSET_HOST:
         if GITHUB_ASSET_HOST not in source.allowed_redirect_hosts:
@@ -474,6 +525,8 @@ __all__ = [
     "PREVIEW_RELEASES_MAX_PAGES",
     "PREVIEW_RELEASES_PER_PAGE",
     "GITHUB_ASSET_HOST",
+    "GITHUB_MIRROR_HOST",
+    "GITHUB_MIRROR_ORIGIN",
     "GITHUB_REPO",
     "GitHubRelease",
     "MANIFEST_ASSET",
@@ -485,6 +538,7 @@ __all__ = [
     "parse_latest_release",
     "parse_preview_release_page",
     "public_ipv4_or_ipv6",
+    "release_download_urls",
     "select_preview_release",
     "validate_github_manifest_for_version",
     "validate_github_url",

@@ -26,6 +26,7 @@ import base64
 import binascii
 import ctypes
 import json
+import re
 import secrets
 import urllib.parse
 from dataclasses import dataclass, field
@@ -45,6 +46,19 @@ DPAPI_DESCRIPTION = "KindergartenManager WebDAV credential"
 MOVE_REPLACE_EXISTING = 0x00000001
 
 _ALLOWED_SCHEME = "https"
+# Naked host/path shapes eligible for HTTPS completion: a bare host
+# (reg-name or IPv4), a bracketed IPv6 literal, an optional numeric port and
+# an optional path/query/fragment tail.  Anything else without ``://`` - for
+# example a malformed scheme like ``https:/host`` or an empty port ``host:`` -
+# is rejected instead of being silently turned into a different host.
+_BARE_URL_RE = re.compile(
+    r"^(?:"
+    r"\[[0-9A-Fa-f:.]+\]"
+    r"|[A-Za-z0-9][A-Za-z0-9.-]*"
+    r")"
+    r"(?::[0-9]{1,5})?"
+    r"(?:[/?#].*)?$"
+)
 
 
 class WebdavCredentialError(RuntimeError):
@@ -82,6 +96,17 @@ def normalize_collection_url(raw: object) -> str:
     # TAB/CR/LF and would otherwise accept a mangled URL.
     if any(ord(char) < 32 or ord(char) == 127 for char in text):
         raise WebdavCredentialError("WEBDAV_URL_INVALID", "WebDAV 地址包含控制字符")
+    if "://" not in text:
+        # A clearly valid naked host/path is completed to HTTPS; an explicit
+        # scheme (including http://) is validated below and stays a refusal
+        # unless it is exactly https.  Shapes that are not clearly a host
+        # (malformed schemes like ``https:/host``, empty or non-numeric
+        # ports) are rejected instead of being completed.
+        if not _BARE_URL_RE.match(text):
+            raise WebdavCredentialError(
+                "WEBDAV_URL_INVALID", "WebDAV 地址格式不正确"
+            )
+        text = "https://" + text
     try:
         parts = urllib.parse.urlsplit(text)
     except ValueError as exc:
@@ -101,6 +126,10 @@ def normalize_collection_url(raw: object) -> str:
         raise WebdavCredentialError("WEBDAV_URL_INVALID", "WebDAV 端口不正确") from exc
     if not host:
         raise WebdavCredentialError("WEBDAV_URL_INVALID", "WebDAV 地址缺少主机名")
+    if ":" in parts.netloc and parts.netloc.rpartition(":")[2] == "":
+        # An explicit empty port (``host:``) must be a refusal, never a
+        # silently dropped port.
+        raise WebdavCredentialError("WEBDAV_URL_INVALID", "WebDAV 端口不正确")
     if port is not None and not 1 <= port <= 65535:
         raise WebdavCredentialError("WEBDAV_URL_INVALID", "WebDAV 端口不正确")
     if parts.query or parts.fragment:

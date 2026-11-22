@@ -1,5 +1,9 @@
 # D3-U：应用版本更新
 
+## 2026-11-22 下载加速
+
+正式和预览渠道继续向本项目的 GitHub Releases API 查询版本。下载签名清单和更新 ZIP 时，先使用 `https://github.ywyz.tech/` 加该附件原有的完整 HTTPS 下载地址。清单签名、仓库、标签、包名、长度和摘要仍按原始发布身份验证。
+
 ## 2026-11-16：所有安装包同步提供在线更新资产
 
 用户明确要求本版及以后每个安装包均支持在线更新。今后每次 Windows 安装包发布，必须同时提供有效签名 Setup、`KindergartenManager-windows-x64.zip`、Ed25519 签名的 `update-manifest-windows-x64.json` 和 `SHA256SUMS.txt`。先完成本地身份／信任／完整包验证，再上传草稿、核对服务端摘要与下载字节，最后公开符合渠道规则的 Release；不公开缺失资产的标准版本 tag 抢占完整更新候选。

@@ -6,7 +6,8 @@ dependency is introduced.  The client is deliberately narrow:
 - HTTPS only (the URL is validated by ``webdav_credentials``); TLS
   certificate and hostname verification is always on by default.  Tests may
   inject an isolated ``ssl.SSLContext`` built from a synthetic CA; the
-  production default is ``ssl.create_default_context()``.
+  production default is ``ssl.create_default_context()`` with the bundled
+  certifi public roots loaded on top of the system trust store.
 - Redirects are never followed.  Any 3xx answer is a controlled error, so
   credentials cannot be forwarded to a different origin.
 - Every remote path is built strictly below the configured collection; upload
@@ -171,6 +172,19 @@ def _basic_auth(username: str, password: str) -> str:
     return f"Basic {token}"
 
 
+def _load_bundled_public_roots(context: ssl.SSLContext) -> None:
+    """Add the bundled certifi public roots on top of the system trust.
+
+    A public WebDAV host can chain to a root the Windows system store lacks
+    (observed for the CFCA chain of data.cstcloud.cn).  certifi ships with
+    the locked package and is loaded in addition to, never instead of, the
+    system roots; certificate and hostname verification stays strict.
+    """
+    import certifi
+
+    context.load_verify_locations(cafile=certifi.where())
+
+
 def _read_body_bounded(response, limit: int) -> bytes:
     chunks: list[bytes] = []
     total = 0
@@ -293,8 +307,18 @@ class WebdavClient:
 
     # -- TLS / connection ------------------------------------------------
     def _context(self) -> ssl.SSLContext:
-        # Production default: full certificate + hostname verification.
-        return self._ssl_context if self._ssl_context is not None else ssl.create_default_context()
+        # Production default: full certificate + hostname verification over
+        # the system trust store plus the bundled certifi public roots.
+        # Tests pass their own isolated context, which is returned untouched.
+        if self._ssl_context is not None:
+            return self._ssl_context
+        context = ssl.create_default_context()
+        try:
+            _load_bundled_public_roots(context)
+        except (ImportError, OSError, ssl.SSLError):
+            # The strict system trust store still applies without the bundle.
+            pass
+        return context
 
     def _connect(self) -> http.client.HTTPSConnection:
         context = self._context()

@@ -248,6 +248,108 @@ def test_github_url_allowlist_and_repo_tag_binding():
             update_github.validate_github_url(manifest, bad)
 
 
+def test_release_download_urls_prefer_fixed_mirror_prefix():
+    """Only exactly valid release-file URLs are wrapped, mirror first."""
+    release = update_github.parse_latest_release(
+        json.dumps(_release()).encode(), CURRENT.version
+    )
+    manifest = update_github.manifest_source(release, {"test-key": PUBLIC})
+    official = (
+        f"https://github.com/{update_github.GITHUB_REPO}/releases/download/"
+        f"v0.2.0/{update_github.PACKAGE_ASSET}"
+    )
+    mirror = f"{update_github.GITHUB_MIRROR_ORIGIN}/{official}"
+    assert update_github.release_download_urls(manifest, official) == (
+        mirror,
+        official,
+    )
+    preview = (
+        f"https://github.com/{update_github.GITHUB_REPO}/releases/download/"
+        f"v0.2.0-listening-test.10/{update_github.MANIFEST_ASSET}"
+    )
+    previews, _, _ = update_github.parse_preview_release_page(
+        json.dumps(
+            [_release("v0.2.0-listening-test.10", prerelease=True)]
+        ).encode()
+    )
+    preview_source = update_github.manifest_source(
+        previews[0], {"test-key": PUBLIC}
+    )
+    preview = (
+        f"https://github.com/{update_github.GITHUB_REPO}/releases/download/"
+        f"v0.2.0-listening-test.10/{update_github.MANIFEST_ASSET}"
+    )
+    assert update_github.release_download_urls(preview_source, preview) == (
+        f"{update_github.GITHUB_MIRROR_ORIGIN}/{preview}",
+        preview,
+    )
+    api = update_github.GITHUB_API_ORIGIN + update_github.GITHUB_API_PATH
+    assert update_github.release_download_urls(_source(), api) == (api,)
+    ported = (
+        f"https://github.com:8443/{update_github.GITHUB_REPO}/releases/"
+        f"download/v0.2.0/{update_github.PACKAGE_ASSET}"
+    )
+    for unchanged in (
+        ported,
+        f"https://github.com:443/{update_github.GITHUB_REPO}/releases/"
+        f"download/v0.2.0/{update_github.PACKAGE_ASSET}",
+        official + "#windows-x64",
+        official + "?token=x",
+        f"https://github.com/other/repo/releases/download/v0.2.0/"
+        f"{update_github.PACKAGE_ASSET}",
+        f"https://github.com/{update_github.GITHUB_REPO}/releases/download/"
+        f"v0.2.0/other.zip",
+        f"https://github.com/{update_github.GITHUB_REPO}/releases/download/"
+        f"v0.2.0/a/b/{update_github.PACKAGE_ASSET}",
+        "http://github.com/" + update_github.GITHUB_REPO,
+    ):
+        assert update_github.release_download_urls(manifest, unchanged) == (
+            unchanged,
+        )
+    with pytest.raises(ReleaseConfigError):
+        update_github.validate_github_url(manifest, ported)
+    with pytest.raises(ReleaseConfigError):
+        update_github.validate_github_url(manifest, official + "#windows-x64")
+
+
+def test_github_url_accepts_fixed_mirror_with_original_binding():
+    """The mirror hop keeps repo/tag/asset binding and strict redirects."""
+    release = update_github.parse_latest_release(
+        json.dumps(_release()).encode(), CURRENT.version
+    )
+    manifest = update_github.manifest_source(release, {"test-key": PUBLIC})
+    mirror = (
+        f"{update_github.GITHUB_MIRROR_ORIGIN}/https://github.com/"
+        f"{update_github.GITHUB_REPO}/releases/download/v0.2.0/"
+        f"{update_github.MANIFEST_ASSET}"
+    )
+    assert update_github.validate_github_url(manifest, mirror) == mirror
+    cdn = (
+        "https://release-assets.githubusercontent.com/"
+        "github-production-release-asset/93446099/"
+        "d39d1596-8cd3-40db-9201-ef23820cb68f?sp=r&sig=x"
+    )
+    assert update_github.validate_github_url(manifest, cdn) == cdn
+    for bad in (
+        mirror.replace("v0.2.0/", "v0.3.0/"),
+        mirror.replace(update_github.MANIFEST_ASSET, "other.zip"),
+        mirror.replace(update_github.GITHUB_REPO, "other/repo"),
+        mirror + "?sp=r",
+        mirror.replace("https://github.ywyz.tech/", "http://github.ywyz.tech/"),
+        (
+            "https://mirror.example/https://github.com/"
+            f"{update_github.GITHUB_REPO}/releases/download/v0.2.0/"
+            f"{update_github.MANIFEST_ASSET}"
+        ),
+    ):
+        with pytest.raises(Exception):
+            update_github.validate_github_url(manifest, bad)
+    source = _source()
+    with pytest.raises(Exception):
+        # An API-only discovery source never fetches through the mirror.
+        update_github.validate_github_url(source, mirror)
+
+
 def test_manifest_binding_and_config_roundtrip(tmp_path: Path):
     release = update_github.parse_latest_release(
         json.dumps(_release()).encode(), CURRENT.version
@@ -518,20 +620,27 @@ def test_github_download_uses_manifest_source_package_url(monkeypatch, tmp_path:
     manager._manifest_source = manifest_source
     with manager._lock:
         manager._generation = 1
-    seen: dict[str, str] = {}
+    seen: list[str] = []
 
     def fake_open(source, url, read_timeout=update_service.READ_TIMEOUT, *, deadline=None):
-        seen["url"] = url
+        seen.append(url)
         return None, _Response(404, b""), _Sock()
 
     monkeypatch.setattr(update_service, "_open_url", fake_open)
     staging = tmp_path / "staging" / "download"
     staging.mkdir(parents=True)
     manager._download_worker(1, manifest, staging)
-    assert seen["url"] == (
-        f"https://github.com/{update_github.GITHUB_REPO}/releases/download/"
-        f"v0.2.0/{update_github.PACKAGE_ASSET}"
-    )
+    assert seen == [
+        (
+            f"{update_github.GITHUB_MIRROR_ORIGIN}/https://github.com/"
+            f"{update_github.GITHUB_REPO}/releases/download/"
+            f"v0.2.0/{update_github.PACKAGE_ASSET}"
+        ),
+        (
+            f"https://github.com/{update_github.GITHUB_REPO}/releases/download/"
+            f"v0.2.0/{update_github.PACKAGE_ASSET}"
+        ),
+    ]
 
 
 def test_github_manager_manifest_404_is_discoverable_but_unavailable(monkeypatch, tmp_path):
@@ -946,12 +1055,14 @@ class _GitHubTls:
         release: dict | None = None,
         redirect_location: str | None = None,
         hold_package: bool = False,
+        mirror_missing: bool = False,
     ):
         self.manifest = manifest
         self.package = package
         self.release = release or _release()
         self.redirect_location = redirect_location
         self.hold_package = hold_package
+        self.mirror_missing = mirror_missing
         self.package_started = threading.Event()
         ca_dir = tmp_path / "ca"
         _cert, _key, pem = w3_tls.create_ca(ca_dir)
@@ -961,6 +1072,7 @@ class _GitHubTls:
             hostnames=[
                 "api.github.com",
                 "github.com",
+                update_github.GITHUB_MIRROR_HOST,
                 update_github.GITHUB_ASSET_HOST,
             ],
         )
@@ -976,6 +1088,11 @@ class _GitHubTls:
         head = request.split(b"\r\n", 1)[0].decode("ascii", "replace")
         parts = head.split(" ")
         path = parts[1] if len(parts) > 1 else ""
+        mirror_prefix = "/https://github.com"
+        if path.startswith(mirror_prefix + "/"):
+            if self.mirror_missing:
+                return [(_http(b"{}", status="404 Not Found"), 0)]
+            path = path[len(mirror_prefix):]
         if path == update_github.GITHUB_API_PATH:
             return [(_http(json.dumps(self.release).encode()), 0)]
         if path == self.MANIFEST_PATH:
@@ -1064,9 +1181,46 @@ def test_github_real_tls_check_redirect_manifest_download_and_verify(tmp_path):
         ).is_file()
         requests = b"".join(fixture.server.requests)
         assert b"Host: api.github.com" in requests
-        assert b"Host: github.com" in requests
+        assert b"Host: github.ywyz.tech" in requests
+        assert b"GET /https://github.com/" in requests
         assert b"Host: release-assets.githubusercontent.com" in requests
         assert b"Authorization" not in requests
+    finally:
+        fixture.stop()
+
+
+def test_github_real_tls_mirror_404_falls_back_to_official(tmp_path):
+    """A mirror miss must transparently fall back to the official URL."""
+    package, build_id, sha, size = _make_package(tmp_path)
+    manifest = _manifest_bytes(
+        package_size=size, package_sha256=sha, build_id=build_id
+    )
+    fixture = _GitHubTls(
+        tmp_path / "mirror-missing",
+        manifest=manifest,
+        package=package.read_bytes(),
+        mirror_missing=True,
+    )
+    try:
+        manager = update_service.UpdateManager(
+            CURRENT,
+            source=fixture.source(),
+            enabled=True,
+            staging_root=tmp_path / "staging-mirror-missing",
+            allow_install=True,
+        )
+        manager.check()
+        state = _wait_state(manager, "available", timeout=8.0)
+        assert state["target"]["version"] == "0.2.0"
+        manager.download()
+        ready = _wait_state(manager, "ready", timeout=15.0)
+        assert ready["progress"]["percent"] == 100
+        payload = manager.install_payload()
+        assert payload["package_zip"].read_bytes() == package.read_bytes()
+        requests = b"".join(fixture.server.requests)
+        assert b"Host: github.ywyz.tech" in requests
+        assert b"Host: github.com" in requests
+        assert b"Host: release-assets.githubusercontent.com" in requests
     finally:
         fixture.stop()
 

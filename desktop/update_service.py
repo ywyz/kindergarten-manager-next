@@ -278,6 +278,42 @@ def _open_url(
     raise UpdateError("UPDATE_DOWNLOAD_INVALID", "GitHub 跳转次数超限")
 
 
+def _open_release_file_url(
+    source: ReleaseSource,
+    url: str,
+    read_timeout: float = READ_TIMEOUT,
+    *,
+    deadline: float | None = None,
+):
+    """Open one release file: fixed mirror prefix first, official fallback.
+
+    Release files (the signed manifest and the package zip) are requested
+    from the fixed mirror prefix of the original public GitHub URL.  A mirror
+    transport failure or a non-200 answer falls back to the official
+    ``github.com`` URL, so every hop is validated exactly as before and the
+    official origin's final status or error always decides the outcome.
+    """
+    candidates = update_github.release_download_urls(source, url)
+    for index, candidate in enumerate(candidates):
+        last = index == len(candidates) - 1
+        try:
+            conn, response, sock = _open_url(
+                source, candidate, read_timeout, deadline=deadline
+            )
+        except UpdateCancelled:
+            raise
+        except Exception:  # noqa: BLE001 - try the official URL next
+            if last:
+                raise
+            continue
+        if response.status == 200 or last:
+            # The official origin's answer always decides when the mirror
+            # does not return the file itself.
+            return conn, response, sock
+        _close_io(response=response, sock=sock, conn=conn)
+    raise UpdateError("UPDATE_DOWNLOAD_INVALID", "没有可用的更新下载地址")
+
+
 def _read_exact(
     response,
     limit: int,
@@ -889,7 +925,7 @@ class UpdateManager:
                 connect_port=self.source.connect_port,
                 server_hostname=self.source.server_hostname,
             )
-            conn2, response2, sock2 = _open_url(
+            conn2, response2, sock2 = _open_release_file_url(
                 manifest_source,
                 manifest_source.metadata_url(),
                 self.read_timeout,
@@ -1141,7 +1177,7 @@ class UpdateManager:
                 connect_port=self.source.connect_port,
                 server_hostname=self.source.server_hostname,
             )
-            conn2, response2, sock2 = _open_url(
+            conn2, response2, sock2 = _open_release_file_url(
                 manifest_source,
                 manifest_source.metadata_url(),
                 self.read_timeout,
@@ -1300,7 +1336,7 @@ class UpdateManager:
             deadline = time.monotonic() + self.total_timeout
             if self.source.provider == "github":
                 assert self._manifest_source is not None
-                conn, response, sock = _open_url(
+                conn, response, sock = _open_release_file_url(
                     self._manifest_source,
                     self._manifest_source.package_url(manifest.package_url),
                     self.read_timeout,

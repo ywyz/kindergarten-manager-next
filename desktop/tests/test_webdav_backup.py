@@ -32,6 +32,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import webdav_backup as wb
+import webdav_credentials
 from app.local import backup_format
 from webdav_credentials import WebdavEndpoint
 
@@ -606,6 +607,69 @@ def test_production_default_rejects_untrusted_certificate(tmp_path):
             client.ensure_collection()
         assert caught.value.code == "WEBDAV_CERTIFICATE_INVALID"
         assert "127.0.0.1" not in caught.value.message
+
+
+def test_production_default_context_adds_bundled_certifi_roots():
+    """The default context keeps system trust and adds the certifi bundle."""
+    import certifi
+
+    endpoint = WebdavEndpoint(
+        url="https://webdav.example.invalid/dav/",
+        username="teacher",
+        password="pass",
+    )
+    client = wb.WebdavClient(endpoint)
+    context = client._context()
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+    subjects = {cert["subject"] for cert in context.get_ca_certs()}
+    bundled = ssl.create_default_context(cafile=certifi.where())
+    assert {cert["subject"] for cert in bundled.get_ca_certs()} <= subjects
+    system = ssl.create_default_context()
+    assert {cert["subject"] for cert in system.get_ca_certs()} <= subjects
+
+
+def test_injected_ssl_context_is_used_untouched():
+    """Synthetic-CA test contexts bypass the certifi-augmented default."""
+    endpoint = WebdavEndpoint(
+        url="https://webdav.example.invalid/dav/",
+        username="teacher",
+        password="pass",
+    )
+    context = ssl.create_default_context()
+    client = wb.WebdavClient(endpoint, ssl_context=context)
+    assert client._context() is context
+
+
+def test_normalize_collection_url_completes_bare_domain_to_https():
+    """A bare host/path becomes HTTPS; explicit non-HTTPS stays refused."""
+    normalize = webdav_credentials.normalize_collection_url
+    assert normalize("data.cstcloud.cn/dav/") == "https://data.cstcloud.cn/dav/"
+    assert normalize("data.cstcloud.cn") == "https://data.cstcloud.cn/"
+    assert (
+        normalize("data.cstcloud.cn:8443/dav/")
+        == "https://data.cstcloud.cn:8443/dav/"
+    )
+    assert (
+        normalize("[2001:db8::1]:8443/dav/")
+        == "https://[2001:db8::1]:8443/dav/"
+    )
+    assert normalize("[2001:db8::1]/dav/") == "https://[2001:db8::1]/dav/"
+    with pytest.raises(webdav_credentials.WebdavCredentialError) as plain:
+        normalize("http://data.cstcloud.cn/dav/")
+    assert plain.value.code == "WEBDAV_URL_NOT_HTTPS"
+    for malformed in (
+        "https:/data.cstcloud.cn/dav",
+        "https:data.cstcloud.cn/dav",
+        "HTTPS:/data.cstcloud.cn/dav",
+        "data.cstcloud.cn:/dav/",
+        "data.cstcloud.cn:abc/dav/",
+        "//data.cstcloud.cn/dav/",
+        "[2001:db8::1/dav/",
+    ):
+        with pytest.raises(webdav_credentials.WebdavCredentialError) as invalid:
+            normalize(malformed)
+        assert invalid.value.code == "WEBDAV_URL_INVALID"
 
 
 def test_plaintext_package_is_never_uploaded(tmp_path):
