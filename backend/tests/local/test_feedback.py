@@ -9,13 +9,15 @@ explicitly injected for this test (``app.state.feedback_ssl_context``), never
 an environment override of trust.  No real teacher data, no real secrets and
 no real deployment origin are touched.
 
-Covered here (per the accepted feedback scope): the local entry (status and
-submit), upstream idempotency (duplicate receipts, single admin row),
-permission isolation (anonymous admin access, CSRF, invalid feedback code),
-bounded bodies (declared-oversize rejection without reading the remainder,
-chunked streams hard-capped at 65 536 bytes), rate limiting, offline
-behaviour with an outcome-unknown message, and the admin pagination/filter
-API.
+Covered here (per the accepted feedback scope): the local entry (status,
+submit, diagnostics window), upstream idempotency (duplicate receipts, a
+single admin row), permission isolation (anonymous admin access, CSRF), the
+legacy feedback-code field as a pure format bound (never verified), bounded
+bodies (declared-oversize rejection without reading the remainder, chunked
+streams hard-capped at 65 536 bytes), rate limiting, offline behaviour with
+an outcome-unknown message, the exact forwarded submission JSON (attached
+diagnostics travel; a cancelled attach omits the key), the finite
+diagnostics vocabulary on both ends, and the admin pagination/filter API.
 """
 
 from __future__ import annotations
@@ -318,6 +320,56 @@ def _status_line(raw: bytes) -> str:
     return raw.split(b"\r\n", 1)[0].decode("latin-1", "replace")
 
 
+class _CaptureSubmissionBodyMiddleware:
+    """Test-only innermost ASGI capture of the exact submission JSON.
+
+    The production body bound (outermost) already buffered the within-cap
+    body into one replayed message, so this layer just records it and
+    replays it once more for the route.  It never runs for an over-cap
+    request: the outer bound answers 413 before the app is invoked.
+    """
+
+    def __init__(self, app, captured: list | None = None) -> None:
+        self.app = app
+        self.captured = captured if captured is not None else []
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope["type"] != "http"
+            or scope.get("method") != "POST"
+            or scope.get("path") != "/api/collaboration/feedback/submissions"
+        ):
+            await self.app(scope, receive, send)
+            return
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                await self.app(scope, receive, send)
+                return
+            if message["type"] != "http.request":
+                continue
+            chunk = message.get("body") or b""
+            if chunk:
+                body.extend(chunk)
+            if not message.get("more_body"):
+                break
+        try:
+            self.captured.append(json.loads(bytes(body).decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.captured.append(None)
+        replayed = False
+
+        async def replay() -> dict:
+            nonlocal replayed
+            if replayed:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            replayed = True
+            return {"type": "http.request", "body": bytes(body), "more_body": False}
+
+        await self.app(scope, replay, send)
+
+
 class FeedbackEndToEndTests(LocalTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -453,7 +505,15 @@ class FeedbackEndToEndTests(LocalTestCase):
         app.include_router(admin_router)
         app.include_router(feedback_router)
         app.include_router(admin_feedback_router)
-        # Same pure-ASGI body bound as the production collaboration app.
+
+        # Test-only innermost capture of the exact submission JSON that
+        # reached the upstream, so a cancelled attach can be proven to omit
+        # the diagnostics key from the forwarded POST itself.  It is
+        # registered BEFORE the body bound so the pure-ASGI guard stays the
+        # outermost layer, exactly like the production collaboration app.
+        captured: list[dict] = []
+        app.state.feedback_captured_bodies = captured
+        app.add_middleware(_CaptureSubmissionBodyMiddleware, captured=captured)
         add_feedback_body_limit(app)
         with factory() as session:
             bootstrap_admin(session, ADMIN_USERNAME, ADMIN_PASSWORD)
@@ -463,19 +523,26 @@ class FeedbackEndToEndTests(LocalTestCase):
         self,
         *,
         request_id: UUID | None = None,
-        code: str = SYNTHETIC_CODE,
+        code: str | None = SYNTHETIC_CODE,
         content: str = "游戏观察导出在周五崩溃了",
         contact: str | None = None,
+        diagnostics: list[dict] | None = None,
     ) -> tuple[int, object]:
-        return self.local.post(
-            "/api/local/feedback/submissions",
-            {
-                "request_id": str(request_id or uuid4()),
-                "feedback_code": code,
-                "content": content,
-                "contact": contact,
-            },
-        )
+        """POST through the local entry.
+
+        ``code=None`` sends no code key at all (the new code-free form);
+        ``code="..."`` keeps the already-released client form.
+        """
+        body: dict = {
+            "request_id": str(request_id or uuid4()),
+            "content": content,
+            "contact": contact,
+        }
+        if code is not None:
+            body["feedback_code"] = code
+        if diagnostics is not None:
+            body["diagnostics"] = diagnostics
+        return self.local.post("/api/local/feedback/submissions", body)
 
     # -- entry ------------------------------------------------------------
 
@@ -540,15 +607,256 @@ class FeedbackEndToEndTests(LocalTestCase):
         )
         self.assertEqual(page["total"], 1)
 
-    def test_invalid_code_rejected_without_storage(self):
-        status, error = self.submit_feedback(code="wrong-code")
+    def test_legacy_code_field_is_only_a_format_bound(self):
+        # A well-formed code (right or wrong) needs no organizer value and is
+        # accepted — the field carries no authentication meaning anymore.
+        captured = self.upstream_app.state.feedback_captured_bodies
+        captured.clear()
+        status, receipt = self.submit_feedback(code="any-wrong-but-well-formed")
+        self.assertEqual(status, 200, receipt)
+        # Over-long or NUL-bearing values are refused by the local bound.
+        for code in ("x" * 600, "bad\x00code"):
+            with self.subTest(code=code[:8]):
+                status, error = self.submit_feedback(code=code)
+                self.assertEqual(status, 422)
+                self.assertEqual(error["error"]["code"], "VALIDATION_ERROR")
+        # A padded value passes the local bound and is refused uniformly by
+        # the upstream legacy-field format check; nothing is stored for it.
+        status, error = self.submit_feedback(code=" padded-code ")
         self.assertEqual(status, 400)
         self.assertEqual(error["error"]["code"], "FEEDBACK_CODE_INVALID")
         self.admin.login()
         _status, page, _cookies = self.admin.request(
             "GET", "/api/collaboration/admin/feedback"
         )
-        self.assertEqual(page["total"], 0)
+        self.assertEqual(page["total"], 1, "only the accepted row is stored")
+
+    # -- code-free submissions (2026-11-24) ------------------------------
+
+    def test_submit_without_code_creates_row_and_admin_sees_it(self):
+        # A new submission needs no code and no collaboration account; the
+        # row carries no code digest and the admin list still shows it.
+        request_id = uuid4()
+        status, receipt = self.submit_feedback(request_id=request_id, code=None)
+        self.assertEqual(status, 200, receipt)
+        self.assertEqual(receipt["request_id"], str(request_id))
+        self.assertFalse(receipt["replayed"])
+
+        self.admin.login()
+        status, page, _cookies = self.admin.request(
+            "GET", "/api/collaboration/admin/feedback?limit=10"
+        )
+        self.assertEqual(status, 200)
+        item = page["items"][0]
+        self.assertEqual(item["request_id"], str(request_id))
+        self.assertIsNone(item["diagnostics_events"])
+        # A code-free replay with the same request id resolves to the same
+        # receipt (the idempotency key is untouched by the code change).
+        retry_status, retry = self.submit_feedback(
+            request_id=request_id, code=None
+        )
+        self.assertEqual(retry_status, 200)
+        self.assertTrue(retry["replayed"])
+        self.assertEqual(retry["submission_id"], receipt["submission_id"])
+
+    def test_old_client_code_bearing_submission_still_works(self):
+        # The already-released client form (code sent while the deployment
+        # distributes one) keeps its old behavior end-to-end.
+        request_id = uuid4()
+        status, receipt = self.submit_feedback(request_id=request_id)
+        self.assertEqual(status, 200)
+        self.assertFalse(receipt["replayed"])
+        self.admin.login()
+        _status, page, _cookies = self.admin.request(
+            "GET", "/api/collaboration/admin/feedback?limit=10"
+        )
+        self.assertEqual(page["total"], 1)
+
+    # -- attached diagnostics events (2026-11-24) ------------------------
+
+    def _record_sample_events(self) -> None:
+        from app.local import diagnostics
+
+        # The local app factory binds the store to the runtime data dir.
+        self.assertTrue(
+            diagnostics.record(
+                "export_word",
+                "failed",
+                "SAVE_TARGET_IN_USE",
+            )
+        )
+        self.assertTrue(diagnostics.record("local_backup", "ok"))
+        self.assertTrue(
+            diagnostics.record(
+                "update_check",
+                "failed",
+                "UPDATE_RATE_LIMITED",
+            )
+        )
+
+    def test_diagnostics_endpoint_returns_bounded_recent_window(self):
+        self._record_sample_events()
+        status, data = self.local.get("/api/local/feedback/diagnostics-events")
+        self.assertEqual(status, 200)
+        events = data["events"]
+        self.assertEqual(len(events), 3)
+        # Newest first, fixed fields only.
+        self.assertEqual(events[0]["event_type"], "update_check")
+        self.assertEqual(events[0]["result"], "failed")
+        self.assertEqual(events[0]["error_code"], "UPDATE_RATE_LIMITED")
+        self.assertEqual(events[1]["event_type"], "local_backup")
+        self.assertIsNone(events[1]["error_code"])
+        self.assertEqual(events[2]["event_type"], "export_word")
+        for event in events:
+            self.assertEqual(
+                set(event), {"event_type", "time", "result", "error_code"}
+            )
+
+    def test_submit_with_diagnostics_admin_sees_exact_events(self):
+        self._record_sample_events()
+        _status, window = self.local.get(
+            "/api/local/feedback/diagnostics-events"
+        )
+        events = window["events"]
+        request_id = uuid4()
+        captured = self.upstream_app.state.feedback_captured_bodies
+        captured.clear()
+        status, receipt = self.submit_feedback(
+            request_id=request_id, code=None, diagnostics=events
+        )
+        self.assertEqual(status, 200, receipt)
+        # The forwarded POST itself carries the attached window.
+        self.assertEqual(len(captured), 1)
+        forwarded = captured[-1]
+        self.assertEqual(forwarded["request_id"], str(request_id))
+        self.assertEqual(forwarded["diagnostics"], events)
+
+        self.admin.login()
+        _status, page, _cookies = self.admin.request(
+            "GET", "/api/collaboration/admin/feedback?limit=10"
+        )
+        item = page["items"][0]
+        self.assertEqual(item["request_id"], str(request_id))
+        # The administrator sees exactly the events that were sent.
+        self.assertEqual(item["diagnostics_events"], events)
+        # Same request id with the same window replays without a duplicate.
+        retry_status, retry = self.submit_feedback(
+            request_id=request_id, code=None, diagnostics=events
+        )
+        self.assertEqual(retry_status, 200)
+        self.assertTrue(retry["replayed"])
+        # Changing the attached window for the same request id conflicts.
+        conflict_status, conflict = self.submit_feedback(
+            request_id=request_id, code=None, diagnostics=events[:1]
+        )
+        self.assertEqual(conflict_status, 409)
+        self.assertEqual(
+            conflict["error"]["code"], "FEEDBACK_REQUEST_CONFLICT"
+        )
+        _status, page, _cookies = self.admin.request(
+            "GET", "/api/collaboration/admin/feedback"
+        )
+        self.assertEqual(page["total"], 1)
+
+    def test_submit_without_diagnostics_carries_none(self):
+        # The default (nothing attached) submission stores no diagnostics, the
+        # admin page still renders the feedback (未附带), and the forwarded
+        # POST provably carries no diagnostics key at all.
+        captured = self.upstream_app.state.feedback_captured_bodies
+        captured.clear()
+        request_id = uuid4()
+        status, receipt = self.submit_feedback(request_id=request_id, code=None)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(captured), 1)
+        self.assertNotIn("diagnostics", captured[-1])
+        self.admin.login()
+        _status, page, _cookies = self.admin.request(
+            "GET", "/api/collaboration/admin/feedback?limit=10"
+        )
+        item = page["items"][0]
+        self.assertEqual(item["request_id"], str(request_id))
+        self.assertIsNone(item["diagnostics_events"])
+
+    def test_invalid_diagnostics_are_rejected_by_the_local_entry(self):
+        cases = [
+            [{"event_type": "guess", "time": "2026-11-24T08:30:12Z",
+              "result": "ok", "error_code": None}],
+            [{"event_type": "export_word", "time": "not-a-time",
+              "result": "ok", "error_code": None}],
+            [{"event_type": "export_word", "time": "2026-11-24T08:30:12Z",
+              "result": "maybe", "error_code": None}],
+            [{"event_type": "export_word", "time": "2026-11-24T08:30:12Z",
+              "result": "failed", "error_code": None}],
+            [{"event_type": "export_word", "time": "2026-11-24T08:30:12Z",
+              "result": "failed", "error_code": "SHOULD_NOT_BE_HERE"}],
+            [{"event_type": "export_word", "time": "2026-11-24T08:30:12Z",
+              "result": "failed", "error_code": "SYNTHETIC_PRIVATE_CANARY"}],
+            [{"event_type": "export_word", "time": "2026-11-24T08:30:12Z",
+              "result": "ok", "error_code": None, "extra": "leak"}],
+            ["not-an-object"],
+        ]
+        for index, events in enumerate(cases):
+            with self.subTest(index=index):
+                status, error = self.submit_feedback(
+                    code=None, diagnostics=events
+                )
+                self.assertEqual(status, 422)
+                self.assertEqual(error["error"]["code"], "VALIDATION_ERROR")
+        self.admin.login()
+        _status, page, _cookies = self.admin.request(
+            "GET", "/api/collaboration/admin/feedback"
+        )
+        self.assertEqual(page["total"], 0, "nothing was stored or sent")
+
+    # -- real business save routes feed the log (2026-11-24 #2) ------------
+
+    def test_real_daily_plan_save_routes_record_fixed_events(self):
+        # The real daily-plan write routes feed the diagnostics window: one
+        # ok event for a successful save, a fixed VALIDATION_FAILED class for
+        # a term-validated refusal and a fixed VERSION_CONFLICT class for a
+        # stale-version save.  No raw path, id, form or exception travels.
+        self.initialize(self.local)
+        status, plan = self.local.post(
+            "/api/daily-plans",
+            {"plan_date": "2026-09-01", "raw_lesson_plan": "原始教案"},
+        )
+        self.assertEqual(status, 201, plan)
+
+        status, error = self.local.post(
+            "/api/daily-plans",
+            {"plan_date": "2026-12-25", "raw_lesson_plan": "学期外"},
+        )
+        self.assertEqual(status, 422)
+        self.assertEqual(error["error"]["code"], "OUTSIDE_TERM")
+
+        plan_id = plan["id"]
+        status, conflict = self.local.patch(
+            f"/api/daily-plans/{plan_id}",
+            {"expected_content_version": 999, "raw_lesson_plan": "并发内容"},
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(conflict["error"]["code"], "VERSION_CONFLICT")
+
+        status, window = self.local.get("/api/local/feedback/diagnostics-events")
+        self.assertEqual(status, 200)
+        events = window["events"]
+        # Newest first: the conflict, the validation refusal, the success.
+        self.assertEqual(
+            [
+                (event["event_type"], event["result"], event["error_code"])
+                for event in events
+            ],
+            [
+                ("save_daily_plan", "failed", "VERSION_CONFLICT"),
+                ("save_daily_plan", "failed", "VALIDATION_FAILED"),
+                ("save_daily_plan", "ok", None),
+            ],
+        )
+        # The window carries only the four fixed fields per event.
+        for event in events:
+            self.assertEqual(
+                set(event), {"event_type", "time", "result", "error_code"}
+            )
 
     # -- permissions --------------------------------------------------------
 

@@ -34,6 +34,7 @@ from app.local import (
     profile_service,
 )
 from app.local.api import _task_progress, get_session
+from app.local.diagnostics import records_save_event
 from app.local.errors import (
     LocalAiContractObsolete,
     LocalAiExecutorUnavailable,
@@ -231,6 +232,7 @@ def _parse_multipart_body(body: bytes, boundary: bytes) -> tuple[dict[str, str],
 @observations_router.post(
     "", status_code=status.HTTP_201_CREATED, response_model=dict[str, Any]
 )
+@records_save_event("save_observation")
 def create_observation(
     data: LocalObservationCreateIn,
     session: Session = Depends(get_session),
@@ -312,6 +314,7 @@ def read_observation(
 @observations_router.patch(
     "/{observation_id}", response_model=LocalObservationSaveOut
 )
+@records_save_event("save_observation")
 def save_observation(
     observation_id: str,
     data: LocalObservationSaveIn,

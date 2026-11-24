@@ -51,6 +51,7 @@ from app.local.ai_config_service import (
     get_operation,
     patch_config,
 )
+from app.local.diagnostics import records_save_event
 from app.local.errors import (
     LocalAiExecutorUnavailable,
     LocalPromptSyncUnavailable,
@@ -652,6 +653,7 @@ def get_daily_plan_by_date(
     response_model=LocalDailyPlanOut,
     status_code=status.HTTP_201_CREATED,
 )
+@records_save_event("save_daily_plan")
 def create_daily_plan(
     response: Response,
     data: LocalDailyPlanCreateIn,
@@ -782,6 +784,7 @@ def get_daily_plan_restore_operation(
 
 
 @plans_router.patch("/daily-plans/{plan_id}", response_model=LocalDailyPlanOut)
+@records_save_event("save_daily_plan")
 def patch_daily_plan(    plan_id: str,
     data: LocalDailyPlanPatchIn,
     session: Session = Depends(get_session),

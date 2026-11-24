@@ -30,9 +30,10 @@ class CollaborationSettings:
     token_pepper: str = field(repr=False)
     preview_secret: str = field(repr=False)
     preview_ttl_seconds: int = DEFAULT_PREVIEW_TTL_SECONDS
-    # In-app feedback entry code, distributed by the test organizer.  Empty
-    # means the feedback entry is disabled (the API answers 503); it is never
-    # required for the collaboration service itself and stays out of repr.
+    # Legacy in-app feedback code variable (KGM_COLLAB_FEEDBACK_CODE).  Since
+    # 2026-11-24 submissions never verify any code: the value is retained
+    # only for deployment compatibility, is ignored by the feedback endpoint
+    # and stays out of repr.
     feedback_code: str = field(repr=False, default="")
 
     @classmethod

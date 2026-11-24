@@ -26,6 +26,38 @@ class MaintenanceHostError(RuntimeError):
         self.message = message
 
 
+def _diagnostics_record(
+    event_type: str, result: str, error_code: str | None = None
+) -> None:
+    """Best-effort fixed-shape diagnostic event; never blocks maintenance.
+
+    The bounded ring lives in ``app.local.diagnostics`` (same process as the
+    local API server thread).  A failure to record is swallowed: the backup
+    or restore result itself is authoritative.  A failure code merges into
+    the shared finite vocabulary (the detailed core code stays in the
+    operation status the teacher already sees); ok/cancel results keep no
+    code at all.
+    """
+    if error_code is not None:
+        fallback = (
+            "WEBDAV_BACKUP_FAILED"
+            if event_type == "webdav_backup"
+            else "BACKUP_FAILED"
+        )
+        try:
+            from app.diagnostics_contract import normalize_error_code
+
+            error_code = normalize_error_code(error_code, fallback)
+        except Exception:  # noqa: BLE001 - diagnostics never hinder business
+            error_code = fallback
+    try:
+        from app.local import diagnostics
+
+        diagnostics.record(event_type, result, error_code)
+    except Exception:  # noqa: BLE001 - diagnostics never hinder business
+        pass
+
+
 _TERMINAL = {"completed", "cancelled", "error", "recovery_required", "downloaded"}
 _TOO_LATE = {"switching", "reopening"}
 # Handed-to-panel WebDAV selections kept for an immediate retry/verify.  A
@@ -807,20 +839,26 @@ class MaintenanceHost:
                 protection={"display_text": f"备份文件：{target.name}"},
             ):
                 return
+            _diagnostics_record("local_backup", "ok")
             _ = result
         except Exception as exc:  # noqa: BLE001 - host boundary
             code = str(getattr(exc, "code", ""))
             cancelled = code == "LOCAL_BACKUP_CANCELLED" or type(exc).__name__ == "SnapshotCancelled"
+            outcome: tuple[str, str | None] | None = None
             with self._lock:
                 if op["phase"] in _TERMINAL:
-                    return
-                if cancelled:
+                    outcome = None
+                elif cancelled:
                     op["phase"] = "cancelled"
-                    return
-                op["phase"] = "error"
-                op["error"] = self._error(
-                    code or "BACKUP_FAILED", "备份失败，当前档案未更改"
-                )
+                    outcome = ("canceled", None)
+                else:
+                    op["phase"] = "error"
+                    op["error"] = self._error(
+                        code or "BACKUP_FAILED", "备份失败，当前档案未更改"
+                    )
+                    outcome = ("failed", code or "BACKUP_FAILED")
+            if outcome is not None:
+                _diagnostics_record("local_backup", outcome[0], outcome[1])
         finally:
             self._resume_weekly(weekly_owner)
             self._sweep_managed_staging()
@@ -931,7 +969,9 @@ class MaintenanceHost:
                         "但服务器未提供大小核对；请刷新版本列表确认。"
                     )
                 op["protection"] = {"display_text": notice}
-            self._transition(op, "completed", committed=True, progress=None)
+            if self._transition(op, "completed", committed=True, progress=None):
+                _diagnostics_record("webdav_backup", "ok")
+            return
         except Exception as exc:  # noqa: BLE001 - host boundary
             code = str(getattr(exc, "code", ""))
             cancelled = code in {
@@ -939,14 +979,19 @@ class MaintenanceHost:
                 "WEBDAV_CANCELLED",
             } or type(exc).__name__ in {"SnapshotCancelled", "WebdavCancelled"}
             message = getattr(exc, "message", "") or "WebDAV 备份失败，当前档案未更改"
+            outcome: tuple[str, str | None] | None = None
             with self._lock:
                 if op["phase"] in _TERMINAL:
-                    return
-                if cancelled:
+                    outcome = None
+                elif cancelled:
                     op["phase"] = "cancelled"
-                    return
-                op["phase"] = "error"
-                op["error"] = self._error(code or "WEBDAV_BACKUP_FAILED", message)
+                    outcome = ("canceled", None)
+                else:
+                    op["phase"] = "error"
+                    op["error"] = self._error(code or "WEBDAV_BACKUP_FAILED", message)
+                    outcome = ("failed", code or "WEBDAV_BACKUP_FAILED")
+            if outcome is not None:
+                _diagnostics_record("webdav_backup", outcome[0], outcome[1])
         finally:
             if work is not None:
                 try:

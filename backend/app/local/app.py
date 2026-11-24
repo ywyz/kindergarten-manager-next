@@ -146,6 +146,12 @@ def create_local_app(
     )
     app.state.runtime = runtime
     app.state.executor = executor
+    # Bind the bounded diagnostics event store to this data directory (the
+    # same in-process store the desktop host records into). Best-effort and
+    # never a launch gate: unbound stays memory-only.
+    from app.local import diagnostics
+
+    diagnostics.configure(runtime.data_dir)
     # Prompt-package cache verification is local-only.  It re-applies a cached
     # package after a database restore before any AI request can run; an
     # unconfigured source performs no network and leaves built-in guidance.

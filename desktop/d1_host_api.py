@@ -163,6 +163,64 @@ def _host_log(message: str) -> None:
         pass
 
 
+def _diagnostics_record(
+    event_type: str, result: str, error_code: str | None = None
+) -> None:
+    """Best-effort fixed-shape diagnostic event; never blocks the host.
+
+    The bounded ring lives in ``app.local.diagnostics`` (same process as the
+    local API server thread).  Every failure of the recording itself is
+    swallowed: diagnostics must never hinder the business operation.
+    """
+    try:
+        from app.local import diagnostics
+
+        diagnostics.record(event_type, result, error_code)
+    except Exception:  # noqa: BLE001 - diagnostics never hinder business
+        pass
+
+
+# The real fixed host errors kept verbatim for export_word events; every
+# other save/export failure classifies as EXPORT_FAILED (the detailed code
+# stays in the operation result the teacher already sees).
+_EXPORT_WORD_CODE_FALLBACK = "EXPORT_FAILED"
+
+
+def _export_word_code(code: object) -> str:
+    try:
+        from app.diagnostics_contract import normalize_error_code
+
+        return normalize_error_code(
+            str(code or "") or _EXPORT_WORD_CODE_FALLBACK,
+            _EXPORT_WORD_CODE_FALLBACK,
+        )
+    except Exception:  # noqa: BLE001 - recording never hinders business
+        return _EXPORT_WORD_CODE_FALLBACK
+
+
+def _record_export_word_result(result: dict | None) -> None:
+    """One export_word event per terminal host Word-save outcome.
+
+    The event reuses the operation's existing fixed, desensitized status and
+    code — nothing else is recorded (no filename, path or payload detail).
+    Pending and unrecognized shapes are not terminal outcomes and record
+    nothing.
+    """
+    status = str(((result or {}).get("status")) or "")
+    if status == "saved":
+        _diagnostics_record("export_word", "ok")
+    elif status == "canceled":
+        _diagnostics_record("export_word", "canceled")
+    elif status == "unknown":
+        _diagnostics_record(
+            "export_word", "unknown", _export_word_code(result.get("code"))
+        )
+    elif status == "failed":
+        _diagnostics_record(
+            "export_word", "failed", _export_word_code(result.get("code"))
+        )
+
+
 class _SaveDialogError(RuntimeError):
     """The native save dialog could not be opened (R16).
 
@@ -2436,6 +2494,7 @@ class D1HostApi:
                 "code": "SAVE_FAILED",
                 "message": "保存失败：发生未预期的错误，请重试",
             }
+        _record_export_word_result(result)
         with self._save_lock:
             self._save_inflight -= 1
             record = self._save_records.get(request_id) or {}
@@ -2604,6 +2663,7 @@ class D1HostApi:
                 "code": "EXPORT_SAVE_FAILED",
                 "message": "导出保存失败：发生未预期的错误，请重试",
             }
+        _record_export_word_result(result)
         forget = bool(result.pop("_forget", False))
         with self._save_lock:
             self._save_inflight -= 1
@@ -3034,6 +3094,7 @@ class D1HostApi:
                 "code": "LISTENING_EXPORT_SAVE_FAILED",
                 "message": "倾听记录保存失败：发生未预期的错误，请重试",
             }
+        _record_export_word_result(result)
         forget = bool(result.pop("_forget", False))
         with self._save_lock:
             self._save_inflight -= 1
@@ -3520,6 +3581,7 @@ class D1HostApi:
             result = {"status": "failed", "code": "WEEKLY_EXPORT_SAVE_FAILED",
                       "message": "周计划导出保存失败，请重试",
                       "export_id": export_id, "filename": filename}
+        _record_export_word_result(result)
         receipt_hash = result.pop("_receipt_hash", None)
         terminal_payload = result.pop("_terminal_payload", None)
         with self._save_lock:

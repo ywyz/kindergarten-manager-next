@@ -2761,7 +2761,7 @@ onMounted(() => {
       :close-on-click-modal="false"
       data-d1="feedback-dialog"
     >
-      <FeedbackPanel :frozen="closeLocked" />
+      <FeedbackPanel :frozen="closeLocked" :open="feedbackOpen" />
     </el-dialog>
   </div>
 </template>

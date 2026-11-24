@@ -5,6 +5,11 @@
  * the shared workbench/settings feedback entry. No network, database, browser
  * storage, or real code. Type checking is run separately. Named with the
  * session-owned `test_feedback*` prefix.
+ *
+ * 2026-11-24: no feedback code is collected; the submission defaults to
+ * attaching the recent bounded diagnostics window, the attach is previewable
+ * and cancellable, and an unknown outcome retries with the SAME request id
+ * and the SAME frozen log snapshot.
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -75,10 +80,20 @@ function ok(name) {
 
 assert.match(api, /\/api\/local\/feedback\/status/, 'status path exists')
 assert.match(api, /\/api\/local\/feedback\/submissions/, 'submit path exists')
+assert.match(
+  api,
+  /\/api\/local\/feedback\/diagnostics-events/,
+  'diagnostics events path exists',
+)
 assert.doesNotMatch(
   api,
   /localStorage|sessionStorage/,
   'feedback client never touches browser storage',
+)
+assert.doesNotMatch(
+  api,
+  /feedback_code/,
+  'the new client never sends or collects a feedback code',
 )
 ok('feedback API client paths and storage boundary')
 
@@ -108,7 +123,7 @@ assert.match(
 assert.match(
   panel,
   /:disabled="frozen \|\| !configured \|\| submitting"/,
-  'all three inputs lock while a submission is in flight',
+  'the inputs lock while a submission is in flight',
 )
 assert.match(
   panel,
@@ -123,7 +138,7 @@ assert.match(
 )
 assert.match(
   panel,
-  /提交结果未确认：服务端返回的回执与本次请求不一致/,
+  /提交结果未确认：服务端返回的回执与本次请求不一致。/,
   'a mismatched receipt stays an unknown outcome',
 )
 assert.match(
@@ -141,11 +156,12 @@ assert.match(
   /content\.value = ''\s*\n\s*contact\.value = ''\s*\n\s*pendingRequestId = ''/,
   'the request id resets only after a trusted receipt',
 )
-assert.match(
+assert.doesNotMatch(
   panel,
   /data-d1="feedback-code"/,
-  'code entry has a locator',
+  'no feedback code entry exists anymore',
 )
+assert.doesNotMatch(panel, /反馈码/, 'no feedback code copy remains')
 assert.match(
   panel,
   /data-d1="feedback-content"/,
@@ -176,22 +192,92 @@ assert.match(
   /将发送的内容（点击提交前请核对）/,
   'preview block names what will be sent',
 )
-assert.match(
-  panel,
-  /反馈码：/,
-  'preview states the feedback code is part of the submission',
-)
-assert.match(
+assert.doesNotMatch(
   panel,
   /请求标识/,
-  'preview states the request identifier is part of the submission',
+  'no resident paragraph explains the request-id mechanism to teachers',
 )
 assert.match(
   panel,
-  /不会自动收集教师档案、幼儿记录、图片、数据库、凭据或日志/,
+  /placeholder="例如：点了保存后没有反应"/,
+  'the problem input carries the short example hint',
+)
+assert.match(
+  panel,
+  /附带诊断日志/,
+  'the attach control uses the short name',
+)
+assert.match(
+  panel,
+  /查看日志/,
+  'the preview expander uses the short name',
+)
+assert.match(
+  panel,
+  /const attachDiagnostics = ref\(true\)/,
+  'the diagnostics attach defaults to on',
+)
+assert.match(
+  panel,
+  /data-d1="feedback-diagnostics-toggle"/,
+  'the attach cancel has a locator',
+)
+assert.match(
+  panel,
+  /data-d1="feedback-diagnostics-preview-toggle"/,
+  'the preview expander has a locator',
+)
+assert.match(
+  panel,
+  /data-d1="feedback-diagnostics-preview"/,
+  'the expanded preview has a locator',
+)
+assert.match(
+  panel,
+  /watch\(\[content, contact, attachDiagnostics\]/,
+  'editing content/contact or changing the attach choice starts a new intent',
+)
+assert.match(
+  panel,
+  /if \(pendingDiagnostics\) input\.diagnostics = pendingDiagnostics/,
+  'a cancelled attach leaves the payload without any diagnostics key',
+)
+assert.match(
+  panel,
+  /attachDiagnostics\.value && diagEvents\.value\.length/,
+  'the frozen snapshot is taken from the previewed window at submit time',
+)
+assert.match(
+  panel,
+  /不会自动收集教师档案、幼儿记录、图片、数据库、凭据或原始日志。/,
   'preview states the no-auto-collection boundary',
 )
-ok('panel submission/receipt/retry contract')
+assert.match(
+  panel,
+  /诊断日志读取失败：本次不会附带任何日志，可直接提交/,
+  'an unavailable log still allows feedback',
+)
+assert.match(
+  panel,
+  /诊断日志加载中…（可直接提交不带日志的反馈）/,
+  'a slow log load is explained and never blocks submit',
+)
+assert.match(
+  panel,
+  /save_daily_plan\|save_weekly_plan\|save_observation\|save_listening\|save_curriculum/,
+  'the panel accepts the shared event-type vocabulary including saves',
+)
+assert.match(
+  panel,
+  /void loadDiagnostics\(\)/,
+  'a trusted receipt refreshes the attachable window for the next feedback',
+)
+assert.match(
+  panel,
+  /watch\(\s*\n\s*\(\) => props\.open,/,
+  'the panel refreshes the attachable window on each dialog open',
+)
+ok('panel submission/receipt/retry/diagnostics contract')
 
 // -- shared entry: workbench home + settings, ONE shell-hosted panel --------
 
@@ -217,8 +303,8 @@ assert.match(
 )
 assert.match(
   app,
-  /<FeedbackPanel :frozen="closeLocked" \/>/,
-  'the shared dialog mounts the feedback panel with the close freeze',
+  /<FeedbackPanel :frozen="closeLocked" :open="feedbackOpen" \/>/,
+  'the shared dialog mounts the panel with the close freeze and open state',
 )
 assert.doesNotMatch(
   app,
@@ -293,7 +379,7 @@ assert.match(
 )
 ok('settings WebDAV copy')
 
-// -- admin page: text rendering, pagination and ordering --------------------
+// -- admin page: text rendering, pagination, ordering and diagnostics -------
 
 assert.match(adminPage, /id="feedback-panel"/, 'admin feedback panel exists')
 assert.match(adminPage, /id="feedback-prev"/, 'pagination has a previous control')
@@ -319,6 +405,16 @@ assert.match(
   adminPage,
   /content\.textContent = item\.content;/,
   'feedback content renders as text only',
+)
+assert.match(
+  adminPage,
+  /renderDiagnosticsEvents\(item\.diagnostics_events\)/,
+  'the admin list renders the attached diagnostics',
+)
+assert.match(
+  adminPage,
+  /pre\.textContent = "附带诊断事件：未附带";/,
+  'old feedback without logs stays viewable',
 )
 assert.doesNotMatch(
   adminPage,
@@ -625,6 +721,22 @@ function setInput(root, locator, value) {
   input.props.onInput({ target: { value } })
 }
 
+function setCheckbox(root, locator, checked) {
+  const input = walkElements(root).find(
+    (node) => node.tag === 'input' && node.props['data-d1'] === locator,
+  )
+  assert.ok(input, `${locator} checkbox rendered`)
+  input.props.onChange({ target: { checked } })
+}
+
+function isCheckboxChecked(root, locator) {
+  const input = walkElements(root).find(
+    (node) => node.tag === 'input' && node.props['data-d1'] === locator,
+  )
+  assert.ok(input, `${locator} checkbox rendered`)
+  return input.props.checked === true
+}
+
 // The workbench home entry is visible, labelled, and opens the shared dialog;
 // the todos/daily panels keep their own pages without it.
 {
@@ -680,10 +792,28 @@ function setInput(root, locator, value) {
   ok('shell openFeedback drives the single shared dialog')
 }
 
-// Connected feedback service: the entry's panel submits and keeps the draft
-// when the outcome is unknown; only /api/local/feedback/* is contacted.
+const SAMPLE_EVENTS = [
+  {
+    event_type: 'export_word',
+    time: '2026-11-24T08:30:12Z',
+    result: 'failed',
+    error_code: 'SAVE_TARGET_IN_USE',
+  },
+  {
+    event_type: 'local_backup',
+    time: '2026-11-24T07:12:00Z',
+    result: 'ok',
+    error_code: null,
+  },
+]
+
+// Connected feedback service: the entry's panel defaults to attaching the
+// recent diagnostics window, previews exactly what is sent, keeps the draft
+// and the SAME frozen window when the outcome is unknown, and only
+// /api/local/feedback/* is contacted.
 {
   const posts = []
+  const gets = []
   class ApiError extends Error {
     constructor(status, message) {
       super(message)
@@ -693,8 +823,14 @@ function setInput(root, locator, value) {
   const clientStub = {
     ApiError,
     apiGet: async (url) => {
-      assert.equal(url, '/api/local/feedback/status', 'only the feedback status endpoint is read')
-      return { configured: true, app_version: '0.1.0-test', message: null }
+      gets.push(url)
+      if (url === '/api/local/feedback/status') {
+        return { configured: true, app_version: '0.1.0-test', message: null }
+      }
+      if (url === '/api/local/feedback/diagnostics-events') {
+        return { events: SAMPLE_EVENTS.map((event) => ({ ...event })) }
+      }
+      throw new ApiError(404, 'unexpected path')
     },
     apiPost: async (url, body) => {
       posts.push({ url, body })
@@ -708,11 +844,11 @@ function setInput(root, locator, value) {
     },
   })
   const panelComponent = harness.loadSfc('views/FeedbackPanel.vue')
-  const hostState = vue.reactive({ open: false })
+  const hostState = vue.reactive({ open: true })
   const Host = {
     setup() {
       return () => vue.h(DomDialogStub, { modelValue: hostState.open, 'data-d1': 'feedback-dialog' }, {
-        default: () => vue.h(panelComponent, { frozen: false }),
+        default: () => vue.h(panelComponent, { frozen: false, open: hostState.open }),
       })
     },
   }
@@ -720,25 +856,41 @@ function setInput(root, locator, value) {
   harness.runMounted()
   await settle()
   assert.equal(byD1(mountEl, 'feedback-unconfigured'), null, 'a configured service shows no unconfigured warning')
-  setInput(mountEl, 'feedback-code', 'FC-1234')
+  assert.equal(isCheckboxChecked(mountEl, 'feedback-diagnostics-toggle'), true, 'the attach defaults to on')
   setInput(mountEl, 'feedback-content', '导出按钮太挤了')
   // Let the edit-watch flush before submitting, like a real typing pause.
   await settle()
   const submit = byD1(mountEl, 'feedback-submit')
   assert.equal(submit.props.disabled, false)
+
+  // Expand the preview: it must show exactly the events that will be sent.
+  byD1(mountEl, 'feedback-diagnostics-preview-toggle').props.onClick({})
+  await settle()
+  const preview = byD1(mountEl, 'feedback-diagnostics-preview')
+  assert.ok(preview, 'the expanded preview renders')
+  const previewText = nodeText(preview)
+  assert.match(previewText, /默认附带：将随反馈发送以下 2 条/, 'the preview states the default attach')
+  assert.match(previewText, /2026-11-24T08:30:12Z · 导出 Word · 失败（SAVE_TARGET_IN_USE）/, 'the preview shows the failure event verbatim')
+  assert.match(previewText, /2026-11-24T07:12:00Z · 本机备份 · 成功/, 'the preview shows the success event verbatim')
+
   submit.props.onClick({})
   await settle()
   assert.equal(posts.length, 1, 'one submission per explicit submit')
   assert.equal(posts[0].url, '/api/local/feedback/submissions')
-  assert.equal(posts[0].body.feedback_code, 'FC-1234')
   assert.equal(posts[0].body.content, '导出按钮太挤了')
   assert.match(posts[0].body.request_id, /^[0-9a-f-]{36}$/)
+  assert.equal('feedback_code' in posts[0].body, false, 'no feedback code is collected or sent')
+  assert.equal(
+    JSON.stringify(posts[0].body.diagnostics),
+    JSON.stringify(SAMPLE_EVENTS),
+    'the default attach sends the previewed window',
+  )
   assert.ok(byD1(mountEl, 'feedback-unknown-outcome'), 'an unknown outcome is announced')
   const contentInput = walkElements(mountEl).find((node) => node.props['data-d1'] === 'feedback-content')
   assert.equal(contentInput.props.value, '导出按钮太挤了', 'the draft content survives the unknown outcome')
 
-  // Reopening the shared dialog must show the same kept draft and pending
-  // outcome (one panel instance; the shell dialog never destroys it).
+  // Reopening the shared dialog must show the same kept draft, the same
+  // pending outcome and the same frozen window (one panel instance).
   hostState.open = false
   await settle()
   hostState.open = true
@@ -753,7 +905,252 @@ function setInput(root, locator, value) {
   await settle()
   assert.equal(posts.length, 2)
   assert.equal(posts[1].body.request_id, posts[0].body.request_id, 'the retry reuses the SAME request id')
-  ok('connected flow: same-request retry after unknown outcome, draft kept across reopen, feedback endpoints only')
+  assert.equal(
+    JSON.stringify(posts[1].body.diagnostics),
+    JSON.stringify(SAMPLE_EVENTS),
+    'the retry reuses the SAME frozen window',
+  )
+
+  // Editing the content starts a new intent: a new request id, and the
+  // current (reloaded) window is frozen fresh for it.
+  setInput(mountEl, 'feedback-content', '导出按钮太挤了，而且保存也慢')
+  await settle()
+  submit.props.onClick({})
+  await settle()
+  assert.equal(posts.length, 3)
+  assert.notEqual(posts[2].body.request_id, posts[0].body.request_id, 'an edit produces a NEW intent')
+  assert.equal(
+    JSON.stringify(posts[2].body.diagnostics),
+    JSON.stringify(SAMPLE_EVENTS),
+    'the new intent re-freezes the current window',
+  )
+
+  // Cancelling the attach leaves the payload without any diagnostics key.
+  setCheckbox(mountEl, 'feedback-diagnostics-toggle', false)
+  await settle()
+  submit.props.onClick({})
+  await settle()
+  const lastPost = posts[posts.length - 1]
+  assert.equal('diagnostics' in lastPost.body, false, 'a cancelled attach omits the diagnostics key entirely')
+  assert.notEqual(lastPost.body.request_id, posts[2].body.request_id, 'changing the attach choice produces a NEW intent')
+  ok('connected flow: default attach with exact preview, same-request/same-log retry, edit and cancel produce new intents')
+}
+
+// An unavailable diagnostics window never blocks the feedback: the panel
+// explains and submits without any diagnostics key.
+{
+  const posts = []
+  class ApiError extends Error {
+    constructor(status, message) {
+      super(message)
+      this.status = status
+    }
+  }
+  const clientStub = {
+    ApiError,
+    apiGet: async (url) => {
+      if (url === '/api/local/feedback/status') {
+        return { configured: true, app_version: '0.1.0-test', message: null }
+      }
+      if (url === '/api/local/feedback/diagnostics-events') {
+        throw new ApiError(0, 'log unavailable')
+      }
+      throw new ApiError(404, 'unexpected path')
+    },
+    apiPost: async (url, body) => {
+      posts.push({ url, body })
+      return {
+        submission_id: '11111111-2222-4333-8444-555566667777',
+        request_id: body.request_id,
+        received_at: '2026-11-24T09:00:00Z',
+        replayed: false,
+      }
+    },
+  }
+  const harness = new Harness({
+    overrides: {
+      '../client': clientStub,
+      './client': clientStub,
+    },
+  })
+  const panelComponent = harness.loadSfc('views/FeedbackPanel.vue')
+  const { mountEl } = mountWith(panelComponent, { frozen: false })
+  harness.runMounted()
+  await settle()
+  byD1(mountEl, 'feedback-diagnostics-preview-toggle').props.onClick({})
+  await settle()
+  const preview = byD1(mountEl, 'feedback-diagnostics-preview')
+  assert.match(nodeText(preview), /诊断日志读取失败：本次不会附带任何日志，可直接提交/, 'the unavailable window is explained')
+  setInput(mountEl, 'feedback-content', '表单建议')
+  await settle()
+  const submit = byD1(mountEl, 'feedback-submit')
+  assert.equal(submit.props.disabled, false, 'submit stays usable without a log')
+  submit.props.onClick({})
+  await settle()
+  assert.equal(posts.length, 1, 'the feedback still submits')
+  assert.equal('diagnostics' in posts[0].body, false, 'no diagnostics key is attached')
+  assert.ok(byD1(mountEl, 'feedback-receipt'), 'a trusted receipt is shown')
+  ok('unavailable log flow: entry opens, explains, submits without diagnostics')
+}
+
+// Lifecycle: the panel keeps ONE instance; the first open, a completed
+// feedback's next round, and closing the form for other work then coming
+// back all end up with the recent events, while a pending outcome keeps the
+// frozen snapshot and request id untouched.
+{
+  const posts = []
+  const diagGets = []
+  const firstEvents = [SAMPLE_EVENTS[0]]
+  const refreshedEvents = [SAMPLE_EVENTS[1]]
+  let currentEvents = firstEvents
+  class ApiError extends Error {
+    constructor(status, message) {
+      super(message)
+      this.status = status
+    }
+  }
+  const clientStub = {
+    ApiError,
+    apiGet: async (url) => {
+      if (url === '/api/local/feedback/status') {
+        return { configured: true, app_version: '0.1.0-test', message: null }
+      }
+      if (url === '/api/local/feedback/diagnostics-events') {
+        diagGets.push(url)
+        return { events: currentEvents.map((event) => ({ ...event })) }
+      }
+      throw new ApiError(404, 'unexpected path')
+    },
+    apiPost: async (url, body) => {
+      posts.push({ url, body })
+      // New events recorded while the submission is in flight land before
+      // the receipt-time refresh reads the window again.
+      currentEvents = refreshedEvents
+      return {
+        submission_id: '12345678-1234-4333-8444-555566667777',
+        request_id: body.request_id,
+        received_at: '2026-11-24T10:00:00Z',
+        replayed: false,
+      }
+    },
+  }
+  const harness = new Harness({
+    overrides: {
+      '../client': clientStub,
+      './client': clientStub,
+    },
+  })
+  const panelComponent = harness.loadSfc('views/FeedbackPanel.vue')
+  const hostState = vue.reactive({ open: true })
+  const Host = {
+    setup() {
+      return () => vue.h(DomDialogStub, { modelValue: hostState.open, 'data-d1': 'feedback-dialog' }, {
+        default: () => vue.h(panelComponent, { frozen: false, open: hostState.open }),
+      })
+    },
+  }
+  const { mountEl } = mountWith(Host, {})
+  harness.runMounted()
+  await settle()
+  assert.equal(diagGets.length, 1, 'the first open loads the attachable window')
+
+  setInput(mountEl, 'feedback-content', '保存后没反应')
+  await settle()
+  byD1(mountEl, 'feedback-submit').props.onClick({})
+  await settle()
+  assert.equal(posts.length, 1)
+  assert.equal(
+    JSON.stringify(posts[0].body.diagnostics),
+    JSON.stringify(firstEvents),
+    'the first feedback attaches the loaded window',
+  )
+  assert.ok(byD1(mountEl, 'feedback-receipt'), 'the receipt is shown')
+  assert.equal(diagGets.length, 2, 'a trusted receipt refreshed the window')
+
+  // The next feedback round (same open dialog) picks up the refreshed
+  // events that landed while the first submission was in flight.
+  setInput(mountEl, 'feedback-content', '第二条反馈')
+  await settle()
+  byD1(mountEl, 'feedback-submit').props.onClick({})
+  await settle()
+  assert.equal(posts.length, 2)
+  assert.equal(
+    JSON.stringify(posts[1].body.diagnostics),
+    JSON.stringify(refreshedEvents),
+    'the next feedback attaches the refreshed window',
+  )
+
+  // Closing the form for other work and coming back refreshes again.
+  hostState.open = false
+  await settle()
+  hostState.open = true
+  await settle()
+  assert.equal(diagGets.length, 4, 'the second receipt and the reopen each refreshed the window')
+  ok('lifecycle: first open, receipt refresh and reopen all refresh the attachable window')
+}
+
+// A slow diagnostics load never blocks the feedback: while the window is
+// still loading the teacher can already send a log-free submission, and the
+// loading state is explained instead of pretending there are no events.
+{
+  const posts = []
+  let release = null
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  class ApiError extends Error {
+    constructor(status, message) {
+      super(message)
+      this.status = status
+    }
+  }
+  const clientStub = {
+    ApiError,
+    apiGet: async (url) => {
+      if (url === '/api/local/feedback/status') {
+        return { configured: true, app_version: '0.1.0-test', message: null }
+      }
+      if (url === '/api/local/feedback/diagnostics-events') {
+        await gate
+        return { events: SAMPLE_EVENTS.map((event) => ({ ...event })) }
+      }
+      throw new ApiError(404, 'unexpected path')
+    },
+    apiPost: async (url, body) => {
+      posts.push({ url, body })
+      return {
+        submission_id: '23456789-1234-4333-8444-555566667777',
+        request_id: body.request_id,
+        received_at: '2026-11-24T11:00:00Z',
+        replayed: false,
+      }
+    },
+  }
+  const harness = new Harness({
+    overrides: {
+      '../client': clientStub,
+      './client': clientStub,
+    },
+  })
+  const panelComponent = harness.loadSfc('views/FeedbackPanel.vue')
+  const { mountEl } = mountWith(panelComponent, { frozen: false })
+  harness.runMounted()
+  await settle()
+  byD1(mountEl, 'feedback-diagnostics-preview-toggle').props.onClick({})
+  await settle()
+  const preview = byD1(mountEl, 'feedback-diagnostics-preview')
+  assert.match(nodeText(preview), /诊断日志加载中…（可直接提交不带日志的反馈）/, 'the loading state is explained')
+  const submit = byD1(mountEl, 'feedback-submit')
+  assert.equal(submit.props.disabled, false, 'submit stays usable while loading')
+  setInput(mountEl, 'feedback-content', '加载慢也要能发')
+  await settle()
+  submit.props.onClick({})
+  await settle()
+  assert.equal(posts.length, 1, 'the log-free feedback submits while loading')
+  assert.equal('diagnostics' in posts[0].body, false, 'nothing is attached while the window is still loading')
+  release()
+  await settle()
+  ok('slow load: a log-free feedback is still sendable')
 }
 
 // Disconnected/unconfigured feedback service: the entry still opens the same
@@ -768,7 +1165,15 @@ function setInput(root, locator, value) {
   }
   const unconfiguredClient = {
     ApiError,
-    apiGet: async () => ({ configured: false, app_version: '0.1.0-test', message: '未配置反馈服务地址' }),
+    apiGet: async (url) => {
+      if (url === '/api/local/feedback/status') {
+        return { configured: false, app_version: '0.1.0-test', message: '未配置反馈服务地址' }
+      }
+      if (url === '/api/local/feedback/diagnostics-events') {
+        return { events: [] }
+      }
+      throw new ApiError(404, 'unexpected path')
+    },
     apiPost: async (url, body) => {
       posts.push({ url, body })
       return {}

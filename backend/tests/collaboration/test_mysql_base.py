@@ -4,7 +4,7 @@ The integration class runs only when ``KGM_COLLAB_TEST_EMPTY_DATABASE_URL``
 (falling back to ``KGM_COLLAB_TEST_DATABASE_URL``) is set to an explicit
 ``mysql+pymysql://`` URL.  It requires a fresh database (zero tables), applies
 the 0001 migration, verifies the original seven tables and constraints, then
-applies 0002-0007 in order before exercising the current ORM.  It reports the
+applies 0002-0008 in order before exercising the current ORM.  It reports the
 real server version and database name.  It never creates a database, drops
 tables, reads a real secret or runs during ordinary unit-test discovery
 without that URL.
@@ -63,6 +63,7 @@ MYSQL_UPGRADE_MIGRATIONS = (
     BACKEND / "migrations_collaboration" / "mysql" / "0005_prompt_releases.sql",
     BACKEND / "migrations_collaboration" / "mysql" / "0006_class_display_override.sql",
     BACKEND / "migrations_collaboration" / "mysql" / "0007_online_feedback.sql",
+    BACKEND / "migrations_collaboration" / "mysql" / "0008_feedback_diagnostics.sql",
 )
 POSTGRES_MIGRATION = (
     BACKEND / "migrations_collaboration" / "0001_initial.sql"
@@ -361,7 +362,8 @@ class CollaborationMySQLIntegrationTests(unittest.TestCase):
         feedback_names = {row[0] for row in feedback_columns}
         expected_feedback_columns = {
             "id", "request_id", "content_fingerprint", "content", "contact",
-            "app_version", "feedback_code_hash", "status",
+            "app_version", "feedback_code_hash", "diagnostics_events",
+            "status",
             "handled_by_admin_id", "handled_at", "created_at", "updated_at",
         }
         if feedback_names != expected_feedback_columns:
@@ -657,6 +659,51 @@ class CollaborationMySQLIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(origin)
         self.assertEqual(origin.args[0], 3819)
         self.assertIn("ck_feedback_status", str(origin))
+
+    def test_feedback_0008_shape_code_free_with_diagnostics(self):
+        # The 0008 shape on a real MySQL 8.4 database: a code-free submission
+        # stores a NULL digest (the replaced check accepts it) and the
+        # canonical diagnostics JSON round-trips.
+        import json as json_module
+
+        events = [
+            {
+                "event_type": "save_daily_plan",
+                "time": "2026-11-24T08:30:12Z",
+                "result": "failed",
+                "error_code": "VERSION_CONFLICT",
+            }
+        ]
+        diagnostics_json = json_module.dumps(
+            events, ensure_ascii=False, separators=(",", ":")
+        )
+        request_id = uuid4()
+        with self.Session() as session:
+            with session.begin():
+                session.add(
+                    FeedbackSubmission(
+                        id=uuid4(),
+                        request_id=request_id,
+                        content_fingerprint="d" * 64,
+                        content="免码带日志的合成反馈",
+                        contact=None,
+                        app_version="0.1.0-synthetic",
+                        feedback_code_hash=None,
+                        diagnostics_events=diagnostics_json,
+                        status="new",
+                    )
+                )
+        with self.Session() as session:
+            stored = session.scalars(
+                select(FeedbackSubmission).where(
+                    FeedbackSubmission.request_id == request_id
+                )
+            ).one()
+            self.assertIsNone(stored.feedback_code_hash)
+            self.assertEqual(stored.diagnostics_events, diagnostics_json)
+            self.assertEqual(
+                json_module.loads(stored.diagnostics_events), events
+            )
 
 
 def _apply_migration(engine, path: Path) -> None:

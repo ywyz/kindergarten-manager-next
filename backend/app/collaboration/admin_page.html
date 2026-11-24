@@ -1829,6 +1829,56 @@
         return String(status || "");
       }
 
+      // Attached diagnostics carry only fixed enum values; the labels below
+      // are the fixed renderings.  Unknown values (never produced by this
+      // service) fall back to their raw text, still through textContent.
+      function diagnosticsEventLabel(eventType) {
+        if (eventType === "export_word") return "导出 Word";
+        if (eventType === "local_backup") return "本机备份";
+        if (eventType === "webdav_backup") return "WebDAV 备份";
+        if (eventType === "update_check") return "更新检查";
+        if (eventType === "update_download") return "更新下载";
+        if (eventType === "save_daily_plan") return "保存日计划";
+        if (eventType === "save_weekly_plan") return "保存周计划";
+        if (eventType === "save_observation") return "保存观察记录";
+        if (eventType === "save_listening") return "保存倾听记录";
+        if (eventType === "save_curriculum") return "保存课程审议";
+        return String(eventType || "");
+      }
+
+      function diagnosticsResultLabel(result) {
+        if (result === "ok") return "成功";
+        if (result === "canceled") return "已取消";
+        if (result === "failed") return "失败";
+        if (result === "unknown") return "结果未知";
+        return String(result || "");
+      }
+
+      function renderDiagnosticsEvents(events) {
+        var pre = document.createElement("pre");
+        pre.className = "code";
+        pre.setAttribute("data-d1", "feedback-diagnostics");
+        if (!Array.isArray(events) || !events.length) {
+          pre.textContent = "附带诊断事件：未附带";
+          return pre;
+        }
+        var lines = events.map(function (event) {
+          var code = event && event.error_code
+            ? " · " + String(event.error_code)
+            : "";
+          return (
+            String((event && event.time) || "") +
+            " · " + diagnosticsEventLabel(event && event.event_type) +
+            " · " + diagnosticsResultLabel(event && event.result) +
+            code
+          );
+        });
+        pre.textContent =
+          "附带诊断事件（仅固定事件类型、时间、结果和错误码）：\n" +
+          lines.join("\n");
+        return pre;
+      }
+
       function setFeedbackMessages(error, notice) {
         feedbackError.textContent = error || "";
         feedbackNotice.textContent = notice || "";
@@ -1858,6 +1908,7 @@
           var content = document.createElement("pre");
           content.className = "code";
           content.textContent = item.content;
+          var diagnostics = renderDiagnosticsEvents(item.diagnostics_events);
           var controls = document.createElement("div");
           controls.className = "row";
           var selectBox = document.createElement("div");
@@ -1885,6 +1936,7 @@
           controls.appendChild(save);
           row.appendChild(head);
           row.appendChild(content);
+          row.appendChild(diagnostics);
           row.appendChild(controls);
           feedbackList.appendChild(row);
         });

@@ -31,6 +31,7 @@ from app.local import (
     profile_service,
 )
 from app.local.api import get_session
+from app.local.diagnostics import records_save_event
 from app.local.errors import LocalError, LocalValidationError
 from app.local.observation_api import _BOUNDARY_RE, _int_field, _read_multipart
 from app.local.observation_assets import ObservationMaterialLimit
@@ -115,6 +116,7 @@ def _domain_patch(data: LocalListeningDomainPatchIn) -> dict[str, Any]:
 @listening_router.post(
     "/records", status_code=status.HTTP_201_CREATED, response_model=dict[str, Any]
 )
+@records_save_event("save_listening")
 def create_listening_record(
     data: LocalListeningCreateIn,
     session: Session = Depends(get_session),
@@ -196,6 +198,7 @@ def read_listening_record(
 
 
 @listening_router.patch("/records/{record_id}", response_model=dict[str, Any])
+@records_save_event("save_listening")
 def patch_listening_record(
     record_id: str,
     data: LocalListeningRecordPatchIn,
@@ -236,6 +239,7 @@ def read_listening_record_operation(
 @listening_router.patch(
     "/records/{record_id}/domains/{domain}", response_model=dict[str, Any]
 )
+@records_save_event("save_listening")
 def save_listening_domain(
     record_id: str,
     domain: str,

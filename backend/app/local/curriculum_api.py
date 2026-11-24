@@ -19,6 +19,7 @@ from app.local import (
     profile_service,
 )
 from app.local.api import _require_executor, _task_progress, get_session
+from app.local.diagnostics import records_save_event
 from app.local.errors import (
     LocalAiExecutorUnavailable,
     LocalAiNotFound,
@@ -331,6 +332,7 @@ def read_curriculum_version(
 
 
 @curriculum_router.post("/{record_id}/save", response_model=dict[str, Any])
+@records_save_event("save_curriculum")
 def save_curriculum_deliberation(
     record_id: str,
     data: CurriculumSaveIn,

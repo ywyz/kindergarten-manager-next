@@ -5,9 +5,18 @@ arbitrary target: this module forwards exactly one fixed endpoint
 (``POST /api/collaboration/feedback/submissions``) to the one
 deployment-configured HTTPS origin.  A submission is anonymous by design —
 no teacher credential or collaboration session is read, attached or required,
-so the entry works with and without class collaboration.  The application
-version is filled in by the local API from this process's runtime, never by
-the renderer.
+so the entry works with and without class collaboration, and since
+2026-11-24 it also works without any feedback code: the optional
+``feedback_code`` field exists only for already-released clients that still
+send one.  The application version is filled in by the local API from this
+process's runtime, never by the renderer.
+
+A submission may attach the recent local diagnostic events (the bounded
+fixed-shape ring owned by :mod:`app.local.diagnostics`).  The attach is the
+teacher's explicit choice made in the panel with a preview; when no events
+are supplied the payload simply carries none.  The read endpoint
+(``GET /api/local/feedback/diagnostics-events``) hands the panel the same
+bounded window that would be attached.
 
 The upstream leg reuses the collaboration proxy's transport discipline:
 HTTPS-only normalized origin, no redirects, no system proxy, a bounded
@@ -25,18 +34,27 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.diagnostics_contract import (
+    ERROR_CODES as _DIAGNOSTICS_ERROR_CODES,
+)
 from app.local.collaboration_proxy import (
     _NoRedirect,
     _packaged_collaboration_origin,
+)
+from app.local.diagnostics import (
+    EVENT_TYPES,
+    RESULTS,
 )
 from app.local.errors import LocalError
 
@@ -45,6 +63,11 @@ FEEDBACK_MAX_RESPONSE_BYTES = 65_536
 MAX_CONTENT_CHARS = 4000
 MAX_CONTACT_CHARS = 200
 MAX_CODE_CHARS = 512
+MAX_DIAGNOSTICS_EVENTS = 50
+
+_DIAGNOSTICS_EVENT_TYPES = frozenset(EVENT_TYPES)
+_DIAGNOSTICS_RESULTS = frozenset(RESULTS)
+_DIAGNOSTICS_TIME_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 _UPSTREAM_SUBMISSION_PATH = "/api/collaboration/feedback/submissions"
 _CONTENT_MAX_BYTES = 65_536
@@ -56,21 +79,112 @@ class FeedbackStatusOut(BaseModel):
     message: str | None = None
 
 
+class FeedbackDiagnosticsEvent(BaseModel):
+    """One fixed-shape diagnostic event (strict: no extra keys, fixed enums).
+
+    The panel reads and submits exactly this shape; the upstream validates
+    it again independently.  ``error_code`` is required for a failure/unknown
+    result and must be null otherwise.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: str
+    time: str
+    result: str
+    error_code: str | None = None
+
+    @field_validator("event_type")
+    @classmethod
+    def _known_event_type(cls, value: str) -> str:
+        if value not in _DIAGNOSTICS_EVENT_TYPES:
+            raise ValueError("unknown diagnostics event type")
+        return value
+
+    @field_validator("time")
+    @classmethod
+    def _bounded_time(cls, value: str) -> str:
+        if _DIAGNOSTICS_TIME_PATTERN.match(value) is None:
+            raise ValueError("diagnostics time must be a UTC second stamp")
+        try:
+            datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            raise ValueError("diagnostics time is not a valid UTC stamp") from None
+        return value
+
+    @field_validator("result")
+    @classmethod
+    def _known_result(cls, value: str) -> str:
+        if value not in _DIAGNOSTICS_RESULTS:
+            raise ValueError("unknown diagnostics result")
+        return value
+
+    @field_validator("error_code")
+    @classmethod
+    def _bounded_error_code(cls, value: str | None, info) -> str | None:
+        if value is not None and value not in _DIAGNOSTICS_ERROR_CODES:
+            # A finite vocabulary shared with the collector and the
+            # collaboration receiver: a crafted unknown code never travels.
+            raise ValueError("diagnostics error code is not a fixed code")
+        result = info.data.get("result")
+        if result in ("failed", "unknown"):
+            if not value:
+                raise ValueError("failed diagnostics events carry a fixed code")
+        elif value is not None:
+            raise ValueError("non-failure diagnostics events carry no code")
+        return value
+
+
+class FeedbackDiagnosticsOut(BaseModel):
+    """The bounded recent window the panel may attach (already validated)."""
+
+    events: list[FeedbackDiagnosticsEvent]
+
+
 class FeedbackSubmitIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: UUID
-    feedback_code: str = Field(..., min_length=1, max_length=MAX_CODE_CHARS)
+    # Old-request compatibility only: released clients still send a code; new
+    # submissions carry none and no code is ever required.
+    feedback_code: str | None = Field(
+        default=None, max_length=MAX_CODE_CHARS
+    )
     content: str = Field(..., min_length=1, max_length=MAX_CONTENT_CHARS)
     contact: str | None = Field(default=None, max_length=MAX_CONTACT_CHARS)
+    diagnostics: list[FeedbackDiagnosticsEvent] | None = Field(
+        default=None, max_length=MAX_DIAGNOSTICS_EVENTS
+    )
 
-    @field_validator("feedback_code", "content", "contact")
+    @field_validator("feedback_code")
+    @classmethod
+    def _bounded_code(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        if "\x00" in value:
+            raise ValueError("value must not contain NUL characters")
+        return value
+
+    @field_validator("content", "contact")
     @classmethod
     def _bounded_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         if "\x00" in value or any(ord(char) < 32 and char != "\n" for char in value):
             raise ValueError("value must not contain control characters")
+        return value
+
+    @field_validator("diagnostics")
+    @classmethod
+    def _bounded_diagnostics(
+        cls, value: list[FeedbackDiagnosticsEvent] | None
+    ) -> list[FeedbackDiagnosticsEvent] | None:
+        if value is None:
+            return None
+        if len(value) > MAX_DIAGNOSTICS_EVENTS:
+            raise ValueError("too many diagnostics events")
         return value
 
 
@@ -391,6 +505,24 @@ def feedback_status(request: Request) -> FeedbackStatusOut:
     )
 
 
+@feedback_router.get("/diagnostics-events", response_model=FeedbackDiagnosticsOut)
+def feedback_diagnostics_events() -> FeedbackDiagnosticsOut:
+    """The bounded recent event window the panel may attach.
+
+    Read-only and best-effort: a store that is unavailable or empty answers
+    an empty list so the feedback form always stays usable.
+    """
+    from app.local import diagnostics
+
+    events = []
+    for event in diagnostics.recent_events():
+        try:
+            events.append(FeedbackDiagnosticsEvent.model_validate(event))
+        except ValueError:
+            continue
+    return FeedbackDiagnosticsOut(events=events)
+
+
 @feedback_router.post("/submissions", response_model=FeedbackReceiptOut)
 def feedback_submit(
     data: FeedbackSubmitIn,
@@ -399,15 +531,21 @@ def feedback_submit(
 ) -> FeedbackReceiptOut:
     runtime = request.app.state.runtime
     app_version = str(getattr(runtime, "app_version", "") or "")
-    receipt = client.submit(
-        {
-            "request_id": str(data.request_id),
-            "feedback_code": data.feedback_code,
-            "content": data.content,
-            "contact": data.contact,
-            "app_version": app_version or None,
-        }
-    )
+    payload: dict[str, Any] = {
+        "request_id": str(data.request_id),
+        "content": data.content,
+        "contact": data.contact,
+        "app_version": app_version or None,
+    }
+    if data.feedback_code is not None:
+        # Old-request compatibility: only sent when a released client still
+        # provides one; new submissions carry no code at all.
+        payload["feedback_code"] = data.feedback_code
+    if data.diagnostics:
+        payload["diagnostics"] = [
+            event.model_dump() for event in data.diagnostics
+        ]
+    receipt = client.submit(payload)
     submission_id = receipt.get("submission_id")
     request_id = receipt.get("request_id")
     received_at = receipt.get("received_at")

@@ -28,14 +28,23 @@ from app.collaboration.feedback_service import (
     FeedbackRateLimiter,
     content_fingerprint,
     digest_feedback_code,
+    diagnostics_json,
     list_feedback,
+    parse_diagnostics_events,
     rate_limiter,
     submit_feedback,
     update_feedback_status,
+    validate_submission_diagnostics,
 )
 
 BACKEND = Path(__file__).resolve().parents[2]
 MIGRATION = BACKEND / "migrations_collaboration" / "mysql" / "0007_online_feedback.sql"
+MIGRATION_0008 = (
+    BACKEND
+    / "migrations_collaboration"
+    / "mysql"
+    / "0008_feedback_diagnostics.sql"
+)
 
 SYNTHETIC_PEPPER = "synthetic-feedback-pepper-0123456789abcdef"
 SYNTHETIC_PREVIEW = "synthetic-feedback-preview-0123456789abcdef"
@@ -49,6 +58,23 @@ def _settings(code: str = SYNTHETIC_CODE) -> CollaborationSettings:
         preview_secret=SYNTHETIC_PREVIEW,
         feedback_code=code,
     )
+
+
+def _sample_diagnostics() -> list[dict]:
+    return [
+        {
+            "event_type": "export_word",
+            "time": "2026-11-24T08:30:12Z",
+            "result": "failed",
+            "error_code": "SAVE_TARGET_IN_USE",
+        },
+        {
+            "event_type": "local_backup",
+            "time": "2026-11-24T07:12:00Z",
+            "result": "ok",
+            "error_code": None,
+        },
+    ]
 
 
 class FeedbackStaticContractTests(unittest.TestCase):
@@ -74,6 +100,35 @@ class FeedbackStaticContractTests(unittest.TestCase):
             # environment variable and the required database privileges.
             "KGM_COLLAB_FEEDBACK_CODE",
             "privileges",
+        ):
+            self.assertIn(marker, sql)
+
+    def test_migration_0008_is_one_atomic_incremental_alter(self):
+        # The 2026-11-24 adjustment ships as ONE atomic ALTER TABLE on the
+        # one existing table: a mid-way failure can never leave the table
+        # half-migrated, and no row is rewritten (diagnostics stays NULL for
+        # the pre-0008 rows).
+        sql = MIGRATION_0008.read_text(encoding="utf-8")
+        upper = sql.upper()
+        self.assertNotIn("CREATE DATABASE", upper)
+        self.assertNotIn("CREATE SCHEMA", upper)
+        self.assertNotIn("DROP TABLE", upper)
+        self.assertNotRegex(sql, r"(?im)^\s*USE\s+")
+        self.assertEqual(sql.count("ALTER TABLE feedback_submissions"), 1)
+        for marker in (
+            "MODIFY feedback_code_hash CHAR(64)",
+            "DROP CHECK ck_feedback_code_hash",
+            "ADD COLUMN diagnostics_events TEXT",
+            "CONSTRAINT ck_feedback_code_hash_length",
+            "feedback_code_hash IS NULL OR CHAR_LENGTH(feedback_code_hash) = 64",
+            "diagnostics_events IS NULL",
+            "BETWEEN 2 AND 65536",
+            # The legacy environment code variable is documented as ignored
+            # for submissions, and the required privileges are named.
+            "KGM_COLLAB_FEEDBACK_CODE",
+            "is ignored for submissions",
+            "privileges",
+            "ONE atomic ALTER TABLE",
         ):
             self.assertIn(marker, sql)
 
@@ -202,26 +257,89 @@ class FeedbackServiceTests(unittest.TestCase):
         self.assertEqual(conflict.exception.code, "REQUEST_CONFLICT")
 
     def test_invalid_code_is_rejected_uniformly(self):
-        for code in ("wrong-code", "", "x" * 600):
+        # Old-client compatibility: only a *malformed* legacy field is
+        # refused (format bound).  The code is never verified against any
+        # distributed value, so a well-formed wrong code is accepted and
+        # stored as a digest.
+        for code in ("x" * 600, "bad\x00code", " pad-code "):
             with self.subTest(code=code[:8]):
                 with self.assertRaises(CollaborationError) as invalid:
                     self.submit(code=code)
                 self.assertEqual(invalid.exception.code, "FEEDBACK_CODE_INVALID")
+        receipt = self.submit(code="any-wrong-but-well-formed-code")
+        self.assertFalse(receipt.replayed)
 
-    def test_unconfigured_code_disables_the_entry(self):
+    def test_code_bearing_submission_needs_no_valid_code_even_if_configured(self):
+        # A released client walking through the submission channel needs no
+        # organizer-provided valid code: the legacy environment value still
+        # present in the service process is ignored entirely.
+        for settings in (self.settings, _settings(code="")):
+            with self.subTest(configured=bool(settings.feedback_code)):
+                with self.session_factory() as session:
+                    receipt = submit_feedback(
+                        session,
+                        settings,
+                        request_id=uuid4(),
+                        code="definitely-not-the-distributed-code",
+                        content="旧客户端免鉴权提交",
+                        contact=None,
+                        app_version="0.1.0-old",
+                        client_ip="127.0.0.7",
+                    )
+                self.assertFalse(receipt.replayed)
+
+    def test_submission_without_code_needs_no_code_or_account(self):
+        # A new submission carries no code at all: no verification, no stored
+        # digest, and the entry works with no environment code configured.
+        for settings in (self.settings, _settings(code="")):
+            with self.subTest(configured=bool(settings.feedback_code)):
+                with self.session_factory() as session:
+                    receipt = submit_feedback(
+                        session,
+                        settings,
+                        request_id=uuid4(),
+                        code=None,
+                        content="免反馈码的新提交",
+                        contact=None,
+                        app_version="0.1.0-test",
+                        client_ip="127.0.0.2",
+                    )
+                self.assertFalse(receipt.replayed)
+                with self.session_factory() as session:
+                    row = session.scalars(
+                        select(FeedbackSubmission).where(
+                            FeedbackSubmission.id == receipt.submission_id
+                        )
+                    ).one()
+                self.assertIsNone(row.feedback_code_hash)
+
+    def test_old_client_code_still_accepted_without_configured_code(self):
+        # Released clients always send some code.  Without a configured
+        # environment code the code-bearing request is accepted and only its
+        # keyed digest is stored (nothing is verified against nothing).
+        unconfigured = _settings(code="")
         with self.session_factory() as session:
-            with self.assertRaises(CollaborationError) as disabled:
-                submit_feedback(
-                    session,
-                    _settings(code=""),
-                    request_id=uuid4(),
-                    code=SYNTHETIC_CODE,
-                    content="内容",
-                    contact=None,
-                    app_version=None,
-                    client_ip="127.0.0.1",
+            receipt = submit_feedback(
+                session,
+                unconfigured,
+                request_id=uuid4(),
+                code=SYNTHETIC_CODE,
+                content="旧客户端仍带反馈码",
+                contact=None,
+                app_version="0.1.0-old",
+                client_ip="127.0.0.3",
+            )
+        self.assertFalse(receipt.replayed)
+        with self.session_factory() as session:
+            row = session.scalars(
+                select(FeedbackSubmission).where(
+                    FeedbackSubmission.id == receipt.submission_id
                 )
-        self.assertEqual(disabled.exception.code, "FEEDBACK_NOT_CONFIGURED")
+            ).one()
+        self.assertEqual(
+            row.feedback_code_hash,
+            digest_feedback_code(unconfigured, SYNTHETIC_CODE),
+        )
 
     def test_input_bounds_are_enforced(self):
         # Each case uses its own client IP so the shared per-IP rate limit
@@ -253,16 +371,17 @@ class FeedbackServiceTests(unittest.TestCase):
         self.assertEqual(row.contact, "王老师 wl@example.com")
         self.assertEqual(row.app_version, "0.1.0-test")
 
-    def test_rate_limit_counts_attempts_before_code_check(self):
-        # Invalid-code attempts are counted first: five uniform rejections,
-        # then the same-shaped sixth attempt is rate limited.
+    def test_rate_limit_counts_attempts_before_other_checks(self):
+        # Attempts are counted before every other check: five uniform
+        # format-bound rejections of the legacy field, then the same-shaped
+        # sixth attempt is rate limited.
         for index in range(5):
             with self.subTest(index=index):
                 with self.assertRaises(CollaborationError) as invalid:
-                    self.submit(code=f"wrong-{index}")
+                    self.submit(code=f"overlong-{index}-" + "x" * 600)
                 self.assertEqual(invalid.exception.code, "FEEDBACK_CODE_INVALID")
         with self.assertRaises(CollaborationError) as limited:
-            self.submit(code="wrong-6")
+            self.submit(code="overlong-6-" + "x" * 600)
         self.assertEqual(limited.exception.code, "FEEDBACK_RATE_LIMITED")
         self.assertGreaterEqual(
             limited.exception.details.get("retry_after_seconds", 0), 1
@@ -308,6 +427,377 @@ class FeedbackServiceTests(unittest.TestCase):
         for variant in variants:
             with self.subTest():
                 self.assertNotEqual(base, variant)
+
+    def test_fingerprint_keeps_the_v1_shape_without_diagnostics(self):
+        # A payload without diagnostics must hash byte-for-byte like the
+        # historical formula, so an in-flight retry from an already-released
+        # client still resolves against a row committed before the change.
+        import hashlib
+        import hmac as hmac_module
+
+        request_id = uuid4()
+        canonical = (
+            '["feedback-submission-v1","'
+            + str(request_id)
+            + '","内容",null,"0.1.0"]'
+        ).encode("utf-8")
+        expected = hmac_module.new(
+            SYNTHETIC_PEPPER.encode("utf-8"), canonical, hashlib.sha256
+        ).hexdigest()
+        self.assertEqual(
+            content_fingerprint(self.settings, request_id, "内容", None, "0.1.0"),
+            expected,
+        )
+        with_diagnostics = content_fingerprint(
+            self.settings,
+            request_id,
+            "内容",
+            None,
+            "0.1.0",
+            _sample_diagnostics(),
+        )
+        self.assertNotEqual(
+            with_diagnostics,
+            content_fingerprint(self.settings, request_id, "内容", None, "0.1.0"),
+            "attached diagnostics must change the fingerprint",
+        )
+
+    def test_diagnostics_window_is_validated_stored_and_listed(self):
+        request_id = uuid4()
+        events = _sample_diagnostics()
+        with self.session_factory() as session:
+            receipt = submit_feedback(
+                session,
+                self.settings,
+                request_id=request_id,
+                code=None,
+                content="附带日志的反馈",
+                contact=None,
+                app_version="0.1.0-test",
+                client_ip="127.0.0.4",
+                diagnostics=events,
+            )
+        self.assertFalse(receipt.replayed)
+        with self.session_factory() as session:
+            row = session.scalars(
+                select(FeedbackSubmission).where(
+                    FeedbackSubmission.id == receipt.submission_id
+                )
+            ).one()
+        self.assertEqual(
+            row.diagnostics_events, diagnostics_json(events)
+        )
+        self.assertEqual(parse_diagnostics_events(row.diagnostics_events), events)
+        # The admin list returns exactly what was sent.
+        page = self.list_items()
+        item = next(
+            entry for entry in page.items if entry.submission_id == receipt.submission_id
+        )
+        self.assertEqual(item.diagnostics_events, events)
+
+    def test_same_request_with_same_diagnostics_replays(self):
+        request_id = uuid4()
+        events = _sample_diagnostics()
+        payload = {
+            "request_id": request_id,
+            "code": None,
+            "content": "附带日志的反馈",
+            "contact": None,
+            "app_version": "0.1.0-test",
+            "client_ip": "127.0.0.5",
+            "diagnostics": events,
+        }
+        with self.session_factory() as session:
+            first = submit_feedback(session, self.settings, **payload)
+        with self.session_factory() as session:
+            replay = submit_feedback(session, self.settings, **payload)
+        self.assertTrue(replay.replayed)
+        self.assertEqual(replay.submission_id, first.submission_id)
+        # A different diagnostics window for the same request id conflicts.
+        with self.session_factory() as session:
+            with self.assertRaises(CollaborationError) as conflict:
+                submit_feedback(
+                    session,
+                    self.settings,
+                    **{**payload, "diagnostics": events[:1]},
+                )
+        self.assertEqual(conflict.exception.code, "REQUEST_CONFLICT")
+
+    def test_tolerated_clock_skew_is_accepted_but_far_future_is_not(self):
+        # The teacher's machine is never required to be accurate to the
+        # second: a stamp slightly ahead of the receiving clock passes.
+        from datetime import datetime, timedelta, timezone as tzinfo_module
+
+        slightly_ahead = (
+            datetime.now(tzinfo_module.utc) + timedelta(hours=2)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        events = [
+            {
+                "event_type": "local_backup",
+                "time": slightly_ahead,
+                "result": "ok",
+                "error_code": None,
+            }
+        ]
+        with self.session_factory() as session:
+            receipt = submit_feedback(
+                session,
+                self.settings,
+                request_id=uuid4(),
+                code=None,
+                content="时钟略快的附带",
+                contact=None,
+                app_version=None,
+                client_ip="127.0.0.8",
+                diagnostics=events,
+            )
+        self.assertFalse(receipt.replayed)
+        # A stamp far beyond the fixed tolerance is still refused.
+        far_ahead = (
+            datetime.now(tzinfo_module.utc) + timedelta(days=90)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self.session_factory() as session:
+            with self.assertRaises(CollaborationError) as invalid:
+                submit_feedback(
+                    session,
+                    self.settings,
+                    request_id=uuid4(),
+                    code=None,
+                    content="远未来时间戳",
+                    contact=None,
+                    app_version=None,
+                    client_ip="127.0.0.9",
+                    diagnostics=[
+                        {
+                            "event_type": "local_backup",
+                            "time": far_ahead,
+                            "result": "ok",
+                            "error_code": None,
+                        }
+                    ],
+                )
+        self.assertEqual(invalid.exception.code, "FEEDBACK_INVALID")
+
+    def test_old_committed_row_replays_its_original_receipt(self):
+        # A row committed by the 0007-era service (v1 fingerprint over the
+        # code-bearing request) keeps its idempotency after the upgrade: the
+        # new service resolves the retry against the committed row and never
+        # creates a second admin entry.
+        request_id = uuid4()
+        content = "0007 时代已提交的反馈"
+        app_version = "0.1.0-old"
+        old_fingerprint = content_fingerprint(
+            self.settings, request_id, content, None, app_version
+        )
+        with self.session_factory() as session:
+            with session.begin():
+                session.add(
+                    FeedbackSubmission(
+                        id=uuid4(),
+                        request_id=request_id,
+                        content_fingerprint=old_fingerprint,
+                        content=content,
+                        contact=None,
+                        app_version=app_version,
+                        feedback_code_hash=digest_feedback_code(
+                            self.settings, SYNTHETIC_CODE
+                        ),
+                        diagnostics_events=None,
+                        status="new",
+                    )
+                )
+        # The released client retries the same request (code included).
+        with self.session_factory() as session:
+            receipt = submit_feedback(
+                session,
+                self.settings,
+                request_id=request_id,
+                code=SYNTHETIC_CODE,
+                content=content,
+                contact=None,
+                app_version=app_version,
+                client_ip="127.0.0.10",
+            )
+        self.assertTrue(receipt.replayed)
+        with self.session_factory() as session:
+            rows = list(
+                session.scalars(
+                    select(FeedbackSubmission).where(
+                        FeedbackSubmission.request_id == request_id
+                    )
+                )
+            )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].content_fingerprint, old_fingerprint)
+
+    def test_invalid_diagnostics_are_rejected(self):
+        cases = {
+            "not-a-list": {"event_type": "export_word"},
+            "unknown-type": [
+                {
+                    "event_type": "teacher_input",
+                    "time": "2026-11-24T08:30:12Z",
+                    "result": "ok",
+                    "error_code": None,
+                }
+            ],
+            "unknown-result": [
+                {
+                    "event_type": "export_word",
+                    "time": "2026-11-24T08:30:12Z",
+                    "result": "green",
+                    "error_code": None,
+                }
+            ],
+            "bad-time-format": [
+                {
+                    "event_type": "export_word",
+                    "time": "2026-11-24 08:30:12",
+                    "result": "ok",
+                    "error_code": None,
+                }
+            ],
+            "impossible-time": [
+                {
+                    "event_type": "export_word",
+                    "time": "2026-11-31T08:30:12Z",
+                    "result": "ok",
+                    "error_code": None,
+                }
+            ],
+            "future-time": [
+                {
+                    "event_type": "export_word",
+                    "time": "2100-01-01T00:00:00Z",
+                    "result": "ok",
+                    "error_code": None,
+                }
+            ],
+            "ancient-time": [
+                {
+                    "event_type": "export_word",
+                    "time": "1999-12-31T00:00:00Z",
+                    "result": "ok",
+                    "error_code": None,
+                }
+            ],
+            "missing-code-on-failure": [
+                {
+                    "event_type": "export_word",
+                    "time": "2026-11-24T08:30:12Z",
+                    "result": "failed",
+                    "error_code": None,
+                }
+            ],
+            "bad-code-shape": [
+                {
+                    "event_type": "export_word",
+                    "time": "2026-11-24T08:30:12Z",
+                    "result": "failed",
+                    "error_code": "a path leaked here",
+                }
+            ],
+            "crafted-canary-code": [
+                {
+                    "event_type": "export_word",
+                    "time": "2026-11-24T08:30:12Z",
+                    "result": "failed",
+                    "error_code": "SYNTHETIC_PRIVATE_CANARY",
+                }
+            ],
+            "code-on-success": [
+                {
+                    "event_type": "export_word",
+                    "time": "2026-11-24T08:30:12Z",
+                    "result": "ok",
+                    "error_code": "SAVE_FAILED",
+                }
+            ],
+            "extra-field": [
+                {
+                    "event_type": "export_word",
+                    "time": "2026-11-24T08:30:12Z",
+                    "result": "ok",
+                    "error_code": None,
+                    "raw_log": "C:\\teacher\\secret.txt",
+                }
+            ],
+            "non-object-item": ["export_word"],
+            "too-many-items": [
+                {
+                    "event_type": "export_word",
+                    "time": "2026-11-24T08:30:12Z",
+                    "result": "ok",
+                    "error_code": None,
+                }
+            ] * 51,
+        }
+        for name, value in cases.items():
+            with self.subTest(case=name):
+                with self.assertRaises(CollaborationError) as invalid:
+                    validate_submission_diagnostics(value)
+                self.assertEqual(invalid.exception.code, "FEEDBACK_INVALID")
+        # None and the empty list stay the no-attachment form.
+        self.assertIsNone(validate_submission_diagnostics(None))
+        self.assertIsNone(validate_submission_diagnostics([]))
+
+    def test_submission_with_invalid_diagnostics_stores_nothing(self):
+        with self.session_factory() as session:
+            with self.assertRaises(CollaborationError) as invalid:
+                submit_feedback(
+                    session,
+                    self.settings,
+                    request_id=uuid4(),
+                    code=None,
+                    content="带非法日志的反馈",
+                    contact=None,
+                    app_version=None,
+                    client_ip="127.0.0.6",
+                    diagnostics=[
+                        {
+                            "event_type": "export_word",
+                            "time": "2026-11-24T08:30:12Z",
+                            "result": "ok",
+                            "error_code": "LEAKED",
+                        }
+                    ],
+                )
+        self.assertEqual(invalid.exception.code, "FEEDBACK_INVALID")
+        with self.session_factory() as session:
+            count = len(list(session.scalars(select(FeedbackSubmission))))
+        self.assertEqual(count, 0, "an invalid submission stores no row")
+
+    def test_old_structure_rows_keep_reading_without_diagnostics(self):
+        # A row in the pre-0008 structure (code digest set, no diagnostics
+        # column value) stays fully readable and lists without attachment.
+        receipt = self.submit(content="旧结构反馈")
+        page = self.list_items()
+        item = next(
+            entry
+            for entry in page.items
+            if entry.submission_id == receipt.submission_id
+        )
+        self.assertIsNone(item.diagnostics_events)
+        self.assertEqual(item.content, "旧结构反馈")
+        # A corrupt stored diagnostics value is reported unavailable, never
+        # guessed, and the feedback itself stays viewable.
+        with self.session_factory() as session:
+            row = session.scalars(
+                select(FeedbackSubmission).where(
+                    FeedbackSubmission.id == receipt.submission_id
+                )
+            ).one()
+            row.diagnostics_events = "{not json"
+            session.commit()
+        self.assertIsNone(parse_diagnostics_events("{not json"))
+        page = self.list_items()
+        item = next(
+            entry
+            for entry in page.items
+            if entry.submission_id == receipt.submission_id
+        )
+        self.assertIsNone(item.diagnostics_events)
+        self.assertEqual(item.content, "旧结构反馈")
 
     def test_admin_list_orders_and_filters(self):
         self.submit(content="一条反馈")

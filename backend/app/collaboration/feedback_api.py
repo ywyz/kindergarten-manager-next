@@ -12,12 +12,17 @@ Three deliberately separate pieces:
   parsed and committed while the client is told 413.  Only the feedback
   submission route is intercepted.
 - ``/api/collaboration/feedback/submissions`` — the one unauthenticated
-  write used by the desktop app.  It requires the organizer-distributed
-  feedback code and bounded input, and it never reads or returns any stored
-  feedback.
+  write used by the desktop app.  Since 2026-11-24 it needs no feedback code
+  and no collaboration account; the optional ``feedback_code`` is accepted
+  only for already-released clients, and the optional ``diagnostics``
+  window is a bounded list of fixed-shape events.  It never reads or
+  returns any stored feedback.
 - ``/api/collaboration/admin/feedback`` — the admin list (bounded offset /
   limit pagination with a total count) and processing-state update,
-  protected by the existing administrator session and CSRF checks.
+  protected by the existing administrator session and CSRF checks.  The list
+  carries each submission's attached diagnostics verbatim so the
+  administrator sees exactly the events that were sent; old submissions
+  without an attachment keep rendering (their diagnostics stay null).
 
 User content crosses this boundary only as JSON values; the admin page is
 responsible for text-only rendering.
@@ -52,16 +57,34 @@ class _StrictModel(BaseModel):
 
 class FeedbackSubmitIn(_StrictModel):
     request_id: UUID
-    feedback_code: str = Field(..., min_length=1, max_length=512)
+    # Old-request compatibility only: released clients still send a code; a
+    # new submission carries none and needs no code, account or login.
+    feedback_code: str | None = Field(default=None, max_length=512)
     content: str = Field(..., min_length=1, max_length=4000)
     contact: str | None = Field(default=None, max_length=200)
     app_version: str | None = Field(default=None, max_length=100)
+    diagnostics: list[dict[str, Any]] | None = Field(default=None)
 
     @field_validator("feedback_code", "content", "contact", "app_version")
     @classmethod
     def _no_nul(cls, value: str | None) -> str | None:
         if value is not None and "\x00" in value:
             raise ValueError("value must not contain NUL characters")
+        return value
+
+    @field_validator("diagnostics")
+    @classmethod
+    def _bounded_diagnostics(
+        cls, value: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]] | None:
+        # A structural bound only; the fixed vocabulary, timestamps and code
+        # rules are enforced by the service-level validation.
+        from .feedback_service import MAX_DIAGNOSTICS_EVENTS
+
+        if value is None:
+            return None
+        if len(value) > MAX_DIAGNOSTICS_EVENTS:
+            raise ValueError("too many diagnostics events")
         return value
 
 
@@ -79,6 +102,7 @@ class FeedbackItemOut(_StrictModel):
     content: str
     contact: str | None
     app_version: str | None
+    diagnostics_events: list[dict[str, Any]] | None
     handled_by_admin_username: str | None
     handled_at: str | None
     created_at: str
@@ -108,6 +132,7 @@ def _item_out(item: FeedbackListItem) -> FeedbackItemOut:
         content=item.content,
         contact=item.contact,
         app_version=item.app_version,
+        diagnostics_events=item.diagnostics_events,
         handled_by_admin_username=item.handled_by_admin_username,
         handled_at=_iso(item.handled_at) if item.handled_at else None,
         created_at=_iso(item.created_at),
@@ -266,6 +291,7 @@ def submit(
         contact=data.contact,
         app_version=data.app_version,
         client_ip=client_ip,
+        diagnostics=data.diagnostics,
     )
     return FeedbackReceiptOut(
         submission_id=receipt.submission_id,

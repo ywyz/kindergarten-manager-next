@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.local import weekly_plan_service
 from app.local.api import _launch_id, _session_scope, get_session
+from app.local.diagnostics import records_save_event
 from app.local.errors import LocalValidationError
 from app.local.observation_api import _profile_id
 from app.local.schemas import (
@@ -140,6 +141,7 @@ def weekly_detail(
 
 
 @weekly_plans_router.patch("/{plan_id}", response_model=dict[str, Any])
+@records_save_event("save_weekly_plan")
 def weekly_save(
     plan_id: str,
     data: WeeklySaveIn,

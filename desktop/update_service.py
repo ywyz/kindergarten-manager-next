@@ -41,6 +41,21 @@ CHUNK = 64 * 1024
 MAX_REDIRECTS = 0
 MAX_GITHUB_REDIRECTS = update_github.MAX_GITHUB_REDIRECTS
 UPDATE_CHANNELS = ("stable", "preview")
+
+
+def _classify_update_code(error_code: object, fallback: str) -> str:
+    """Map one update code onto the shared finite diagnostics vocabulary.
+
+    Codes already part of the fixed vocabulary pass through; other update
+    failures merge into the check/download family fallback.  Module-level
+    so the recording path never depends on a manager instance.
+    """
+    try:
+        from app.diagnostics_contract import normalize_error_code
+
+        return normalize_error_code(str(error_code or ""), fallback)
+    except Exception:  # noqa: BLE001 - recording never blocks updates
+        return fallback
 PREVIEW_PAGE_SIZE = update_github.PREVIEW_RELEASES_PER_PAGE
 PREVIEW_MAX_PAGES = update_github.PREVIEW_RELEASES_MAX_PAGES
 CHANNEL_PREFERENCE_NAME = "channel-preference.json"
@@ -667,11 +682,67 @@ class UpdateManager:
         error_message: str | None = None,
     ) -> None:
         with self._lock:
+            previous = self._state
             self._state = state
             self._reason = reason
             self._error_code = error_code
             self._error_message = error_message
             self._channel_error = None
+        self._record_update_event(previous, state, error_code)
+
+    def _record_update_event(
+        self, previous: str, state: str, error_code: str | None
+    ) -> None:
+        """One fixed diagnostics event per terminal discovery/download result.
+
+        Recorded at the time the outcome is reached, never on reads.  Only
+        terminal transitions out of the check/download phases produce an
+        event; intermediate phases and foreign transitions are ignored.  The
+        event carries nothing but the fixed event type, time, result and the
+        operation's code classified onto the shared finite vocabulary.
+        """
+        try:
+            from app.local import diagnostics
+        except Exception:  # noqa: BLE001 - diagnostics never block updates
+            return
+        try:
+            if previous == "checking":
+                if state in ("up_to_date", "available", "no_release"):
+                    diagnostics.record("update_check", "ok")
+                elif state == "failed":
+                    diagnostics.record(
+                        "update_check",
+                        "failed",
+                        _classify_update_code(
+                            error_code, "UPDATE_CHECK_FAILED"
+                        ),
+                    )
+            elif previous in ("downloading", "verifying"):
+                if state == "ready":
+                    diagnostics.record("update_download", "ok")
+                elif state == "failed":
+                    diagnostics.record(
+                        "update_download",
+                        "failed",
+                        _classify_update_code(
+                            error_code, "UPDATE_DOWNLOAD_FAILED"
+                        ),
+                    )
+                elif state == "cancelled":
+                    diagnostics.record("update_download", "canceled")
+            elif previous == "available":
+                # A synchronous download-initiation refusal (staging safety
+                # or an unavailable staging root) is a real download failure.
+                if state == "failed":
+                    diagnostics.record(
+                        "update_download",
+                        "failed",
+                        _classify_update_code(
+                            error_code, "UPDATE_DOWNLOAD_FAILED"
+                        ),
+                    )
+        except Exception:  # noqa: BLE001 - never hinder the state machine
+            return
 
     def _is_current(self, generation: int) -> bool:
         with self._lock:
@@ -693,6 +764,7 @@ class UpdateManager:
         with self._lock:
             if self._closed or generation != self._generation:
                 return False
+            previous = self._state
             self._state = state
             self._reason = reason
             self._error_code = error_code
@@ -706,7 +778,8 @@ class UpdateManager:
                 self._progress_total = total
             if staging_dir is not None:
                 self._staging_dir = staging_dir
-            return True
+        self._record_update_event(previous, state, error_code)
+        return True
 
     def check(self) -> dict[str, Any]:
         if not self.enabled:
@@ -799,6 +872,7 @@ class UpdateManager:
                 self._error_message = None
                 self._progress_downloaded = 0
                 self._progress_total = 0
+            self._record_update_event("checking", "available", None)
         except ManifestError as exc:
             if not self._is_current(generation):
                 return
@@ -811,6 +885,7 @@ class UpdateManager:
                     self._reason = None
                     self._error_code = None
                     self._error_message = None
+                self._record_update_event("checking", "up_to_date", None)
             else:
                 self._set("failed", error_code=exc.code, error_message=exc.message)
         except (TimeoutError, socket.timeout):
@@ -904,6 +979,7 @@ class UpdateManager:
                     self._reason = "UPDATE_ASSETS_MISSING"
                     self._error_code = "UPDATE_ASSETS_MISSING"
                     self._error_message = "该 Release 缺少固定清单或完整包资产"
+                self._record_update_event("checking", "available", None)
                 return
             if not self.source.public_keys:
                 with self._lock:
@@ -915,6 +991,7 @@ class UpdateManager:
                     self._reason = "UPDATE_TRUST_UNCONFIGURED"
                     self._error_code = "UPDATE_TRUST_UNCONFIGURED"
                     self._error_message = "尚未配置发行公钥；发现新版但暂不可安全下载"
+                self._record_update_event("checking", "available", None)
                 return
             manifest_source = update_github.manifest_source(
                 release,
@@ -941,6 +1018,7 @@ class UpdateManager:
                     self._reason = "UPDATE_ASSETS_MISSING"
                     self._error_code = "UPDATE_ASSETS_MISSING"
                     self._error_message = "该 Release 的签名清单资产不可用；暂不可下载"
+                self._record_update_event("checking", "available", None)
                 return
             if response2.status != 200:
                 raise UpdateError(
@@ -972,6 +1050,7 @@ class UpdateManager:
                 self._reason = None
                 self._error_code = None
                 self._error_message = None
+            self._record_update_event("checking", "available", None)
         except ManifestError as exc:
             if exc.code == "UPDATE_NO_NEW_VERSION":
                 if release is not None:
@@ -1222,6 +1301,7 @@ class UpdateManager:
                 self._reason = None
                 self._error_code = None
                 self._error_message = None
+            self._record_update_event("checking", "available", None)
         except ManifestError as exc:
             if exc.code == "UPDATE_NO_NEW_VERSION":
                 self._publish(
@@ -1287,6 +1367,9 @@ class UpdateManager:
                 self._error_code = isolation_error
                 self._error_message = "更新暂存目录与数据或凭据根重叠，已拒绝下载"
                 self._reason = None
+                self._record_update_event(
+                    "available", "failed", self._error_code
+                )
                 return self._snapshot()
             try:
                 ensure_safe_path(self.staging_root)
@@ -1298,6 +1381,9 @@ class UpdateManager:
                 self._error_code = "UPDATE_STAGING_UNSAFE"
                 self._error_message = "更新暂存路径包含链接或重解析点，已拒绝写入"
                 self._reason = None
+                self._record_update_event(
+                    "available", "failed", self._error_code
+                )
                 return self._snapshot()
             except OSError:
                 self._staging_dir = None
@@ -1305,6 +1391,9 @@ class UpdateManager:
                 self._error_code = "UPDATE_STAGING_UNAVAILABLE"
                 self._error_message = "更新暂存目录不可用，已拒绝下载"
                 self._reason = None
+                self._record_update_event(
+                    "available", "failed", self._error_code
+                )
                 return self._snapshot()
             self._cancel.clear()
             self._progress_downloaded = 0

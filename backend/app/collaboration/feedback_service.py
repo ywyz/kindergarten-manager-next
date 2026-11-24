@@ -2,11 +2,20 @@
 
 The feedback entry is deliberately independent from teacher collaboration
 sessions: a desktop submission carries only the client-generated request id,
-the organizer-distributed feedback code, the teacher-typed content, optional
-contact information and the application version string.  The code is verified
-as a keyed digest and only the digest is stored; the request id is the
-idempotency key, so a retry after a lost response returns the original
-receipt and never creates a second admin-list entry.
+the teacher-typed content, optional contact information, the application
+version string and — since 2026-11-24 — an optional bounded window of
+fixed-shape diagnostic events.  No feedback code, collaboration account,
+secret or login is required: the optional ``feedback_code`` exists only for
+already-released clients that still send one, and it is never verified
+against anything — whether or not the service process still holds a legacy
+``KGM_COLLAB_FEEDBACK_CODE`` value, a well-formed supplied code is stored
+as a keyed digest (never the plaintext) and a code-free submission stores
+null.  The request id is the idempotency key, so a retry after a lost
+response returns the original receipt and never creates a second admin-list
+entry; the content fingerprint covers every submitted field including the
+attached diagnostics (the no-diagnostics form keeps the historical v1
+canonical shape so old in-flight retries, and old rows committed by the
+0007-era service, still resolve).
 
 Rate limiting is in-process and bounded: per client IP within a sliding
 window, with a hard cap on tracked IPs so memory stays bounded even under
@@ -39,6 +48,16 @@ from .feedback_models import (
     FEEDBACK_STATUS_DEFAULT,
     FeedbackSubmission,
 )
+from app.diagnostics_contract import (
+    ERROR_CODES as DIAGNOSTICS_ERROR_CODES,
+    EVENT_TYPES as DIAGNOSTICS_EVENT_TYPES,
+    FUTURE_TOLERANCE_SECONDS,
+    MAX_DIAGNOSTICS_EVENTS,
+    MAX_DIAGNOSTICS_JSON_CHARS,
+    MIN_EVENT_YEAR,
+    RESULTS as DIAGNOSTICS_RESULTS,
+    TIME_PATTERN as _DIAGNOSTICS_TIME_PATTERN,
+)
 
 MAX_CONTENT_CHARS = 4000
 MAX_CONTACT_CHARS = 200
@@ -46,6 +65,11 @@ MAX_CODE_CHARS = 512
 MAX_APP_VERSION_CHARS = 100
 # Hard cap for one JSON submission body (the valid payload stays far below).
 MAX_BODY_BYTES = 65_536
+
+# A recorded stamp may run ahead of the receiving clock by this fixed
+# tolerance: the teacher's machine is never required to be accurate to the
+# second (or even the hour).
+_DIAGNOSTICS_FUTURE_TOLERANCE = timedelta(seconds=FUTURE_TOLERANCE_SECONDS)
 
 RATE_WINDOW_SECONDS = 600
 RATE_MAX_PER_WINDOW = 5
@@ -55,16 +79,10 @@ _LIST_LIMIT_DEFAULT = 50
 _LIST_LIMIT_MAX = 200
 
 
-def feedback_not_configured() -> CollaborationError:
-    return CollaborationError(
-        503,
-        "FEEDBACK_NOT_CONFIGURED",
-        "反馈入口未启用，请联系测试组织者",
-    )
-
-
 def feedback_code_invalid() -> CollaborationError:
-    # Deliberately uniform: unknown, mistyped or revoked codes look the same.
+    # Deliberately uniform: over-long or control-character codes look the
+    # same.  Raised only as a format bound on the legacy field; the code is
+    # never verified against any distributed value.
     return CollaborationError(
         400,
         "FEEDBACK_CODE_INVALID",
@@ -123,15 +141,110 @@ def _reject_control_chars(value: str) -> bool:
     return not any(ord(char) < 32 and char != "\n" for char in value)
 
 
-def validate_feedback_code(code: object) -> str:
+def validate_feedback_code(code: object) -> str | None:
+    """Bound an old-client supplied code; ``None`` means "no code sent".
+
+    Only the format is checked: the field carries no authentication meaning
+    anymore (whether or not the service process still holds a legacy
+    ``KGM_COLLAB_FEEDBACK_CODE`` value), so a well-formed code from a
+    released client is accepted as-is and only its keyed digest is stored.
+    """
+    if code is None:
+        return None
     if not isinstance(code, str):
         raise feedback_validation("反馈码必须是字符串")
+    if code == "":
+        # An empty string is the no-code form, not an invalid code.
+        return None
     value = code.strip()
     if not value or len(value) > MAX_CODE_CHARS:
         raise feedback_code_invalid()
     if not _reject_control_chars(value) or value != code:
         raise feedback_code_invalid()
     return value
+
+
+def validate_submission_diagnostics(value: object) -> list[dict] | None:
+    """Strict validation of the optional attached diagnostics window.
+
+    Every event must carry exactly the four fixed fields with fixed enum
+    values; the UTC time is a real second-resolution stamp; a failed/unknown
+    result requires a fixed error code and the other results require none.
+    The window is capped by item count and by the serialized size that will
+    be stored.  ``None`` or an empty list means "nothing attached".
+    """
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        raise feedback_validation("诊断事件必须是列表")
+    if not value:
+        return None
+    if len(value) > MAX_DIAGNOSTICS_EVENTS:
+        raise feedback_validation(
+            f"诊断事件最多 {MAX_DIAGNOSTICS_EVENTS} 条"
+        )
+    events: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise feedback_validation("诊断事件必须是对象")
+        if set(item) != {"event_type", "time", "result", "error_code"}:
+            raise feedback_validation("诊断事件字段不合法")
+        event_type = item.get("event_type")
+        if event_type not in DIAGNOSTICS_EVENT_TYPES:
+            raise feedback_validation("诊断事件类型不合法")
+        result = item.get("result")
+        if result not in DIAGNOSTICS_RESULTS:
+            raise feedback_validation("诊断事件结果不合法")
+        time_value = item.get("time")
+        if not isinstance(time_value, str):
+            raise feedback_validation("诊断事件时间必须是字符串")
+        if _DIAGNOSTICS_TIME_PATTERN.match(time_value) is None:
+            raise feedback_validation("诊断事件时间必须是 UTC 秒级时间戳")
+        try:
+            parsed = datetime.strptime(time_value, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            raise feedback_validation("诊断事件时间不合法") from None
+        # The stamp is UTC by format; a naive comparison against a naive UTC
+        # now keeps the bound independent of the host clock's tz database.
+        # The fixed forward tolerance means the teacher's machine clock is
+        # never required to be accurate to the second (or even the hour).
+        now = _utcnow().replace(tzinfo=None)
+        if parsed.year < MIN_EVENT_YEAR or parsed > now + _DIAGNOSTICS_FUTURE_TOLERANCE:
+            raise feedback_validation("诊断事件时间不在可接受范围内")
+        error_code = item.get("error_code")
+        if result in ("failed", "unknown"):
+            if not isinstance(error_code, str):
+                raise feedback_validation("失败的诊断事件必须携带固定错误码")
+            if error_code not in DIAGNOSTICS_ERROR_CODES:
+                # A finite vocabulary shared with the collector: a crafted
+                # unknown code (never emitted by the desktop) is refused
+                # here and can never reach the admin list.
+                raise feedback_validation("诊断事件错误码不合法")
+        elif error_code is not None:
+            raise feedback_validation("非失败的诊断事件不携带错误码")
+        events.append(
+            {
+                "event_type": event_type,
+                "time": time_value,
+                "result": result,
+                "error_code": error_code,
+            }
+        )
+    canonical = diagnostics_json(events)
+    if len(canonical) > MAX_DIAGNOSTICS_JSON_CHARS:
+        raise feedback_validation("诊断事件序列化后超过大小限制")
+    return events
+
+
+def diagnostics_json(events: list[dict] | None) -> str | None:
+    """The canonical stored form: fixed key order, compact, no free text."""
+    if not events:
+        return None
+    return json.dumps(
+        events,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def validate_submission_content(
@@ -194,16 +307,35 @@ def content_fingerprint(
     content: str,
     contact: str | None,
     app_version: str | None,
+    diagnostics: list[dict] | None = None,
 ) -> str:
-    """Keyed digest of the submitted fields for same-request replay checks."""
-    canonical = json.dumps(
-        [
+    """Keyed digest of the submitted fields for same-request replay checks.
+
+    A payload without attached diagnostics keeps the historical v1 canonical
+    shape byte-for-byte, so a retry from an already-released client still
+    resolves against a row committed before the 2026-11-24 change.  A
+    payload with diagnostics uses the v2 shape, which also covers the exact
+    attached events.
+    """
+    if diagnostics:
+        payload = [
+            "feedback-submission-v2",
+            str(request_id),
+            content,
+            contact,
+            app_version,
+            diagnostics,
+        ]
+    else:
+        payload = [
             "feedback-submission-v1",
             str(request_id),
             content,
             contact,
             app_version,
-        ],
+        ]
+    canonical = json.dumps(
+        payload,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -298,22 +430,37 @@ def submit_feedback(
     contact: object,
     app_version: object,
     client_ip: str,
+    diagnostics: object = None,
 ) -> FeedbackReceipt:
-    """Verify the code and bounds, then commit one idempotent submission."""
-    if not settings.feedback_code:
-        raise feedback_not_configured()
-    # The rate limit runs before the code check so guessing codes stays slow.
+    """Validate the bounds, then commit one idempotent submission.
+
+    No feedback code, collaboration account or login is required — whether
+    or not the service process still holds a legacy
+    ``KGM_COLLAB_FEEDBACK_CODE`` value, the field is never verified against
+    anything: a submission without ``code`` stores a null code digest, and
+    a well-formed code sent by an already-released client is stored as a
+    keyed digest only.  The old in-flight-request receipt compatibility is
+    preserved by the unchanged v1 content fingerprint.  The optional
+    diagnostics window is validated against the shared finite vocabulary
+    and stored as canonical JSON.
+    """
+    # The rate limit runs before every other check so abuse stays slow.
     rate_limiter.check(client_ip or "unknown")
     clean_code = validate_feedback_code(code)
-    supplied_hash = digest_feedback_code(settings, clean_code)
-    configured_hash = digest_feedback_code(settings, settings.feedback_code)
-    if not hmac.compare_digest(supplied_hash, configured_hash):
-        raise feedback_code_invalid()
+    supplied_hash = (
+        digest_feedback_code(settings, clean_code) if clean_code else None
+    )
     clean_content, clean_contact, clean_version = validate_submission_content(
         content, contact, app_version
     )
+    clean_diagnostics = validate_submission_diagnostics(diagnostics)
     fingerprint = content_fingerprint(
-        settings, request_id, clean_content, clean_contact, clean_version
+        settings,
+        request_id,
+        clean_content,
+        clean_contact,
+        clean_version,
+        clean_diagnostics,
     )
 
     def transaction() -> FeedbackReceipt:
@@ -335,6 +482,7 @@ def submit_feedback(
                 contact=clean_contact,
                 app_version=clean_version,
                 feedback_code_hash=supplied_hash,
+                diagnostics_events=diagnostics_json(clean_diagnostics),
                 status=FEEDBACK_STATUS_DEFAULT,
             )
             session.add(row)
@@ -358,9 +506,42 @@ class FeedbackListItem:
     content: str
     contact: str | None
     app_version: str | None
+    diagnostics_events: list[dict] | None
     handled_by_admin_username: str | None
     handled_at: datetime | None
     created_at: datetime
+
+
+def parse_diagnostics_events(raw: object) -> list[dict] | None:
+    """Read the stored canonical diagnostics JSON back for the admin list.
+
+    Old rows (and every row without an attachment) stay ``None``; a corrupt
+    value is reported as unavailable rather than guessed, so an old feedback
+    without logs is still fully viewable.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        return None
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(value, list):
+        return None
+    events: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        events.append(
+            {
+                "event_type": item.get("event_type"),
+                "time": item.get("time"),
+                "result": item.get("result"),
+                "error_code": item.get("error_code"),
+            }
+        )
+    return events or None
 
 
 @dataclass(frozen=True)
@@ -411,6 +592,9 @@ def list_feedback(
                 content=row.content,
                 contact=row.contact,
                 app_version=row.app_version,
+                diagnostics_events=parse_diagnostics_events(
+                    row.diagnostics_events
+                ),
                 handled_by_admin_username=username,
                 handled_at=_as_utc(row.handled_at),
                 created_at=_as_utc(row.created_at) or _utcnow(),
@@ -467,6 +651,9 @@ def update_feedback_status(
             content=row.content,
             contact=row.contact,
             app_version=row.app_version,
+            diagnostics_events=parse_diagnostics_events(
+                row.diagnostics_events
+            ),
             handled_by_admin_username=username,
             handled_at=_as_utc(row.handled_at),
             created_at=_as_utc(row.created_at) or _utcnow(),
