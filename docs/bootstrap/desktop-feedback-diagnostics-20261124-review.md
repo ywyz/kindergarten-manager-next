@@ -19,6 +19,19 @@
 
 锁定环境为 CPython 3.14.10 x64。协作服务 160 项、本地反馈及编辑页相关测试 111 项、桌面保存、备份和更新相关测试 337 项通过。前端 59 个测试文件通过，TypeScript 类型检查和桌面前端构建通过。
 
+## 部署与签名发行
+
+11 月 24 日将源码 `1e8de326ef2a66f94fa4b24026449f060d9dce07` 部署到现有协作管理站。已核对原服务文件和旧表结构，执行单条 MySQL 增量迁移，验证原有字段、约束和运行账号读取权限，再切换服务。公网健康检查返回 200，管理页面与该提交的内容一致，匿名读取反馈列表返回 401。[管理站](https://manager-next.ywyz.tech/admin)
+
+Windows 11 x64 预览版 `0.1.0-listening-test.20261124` 从同一提交构建，构建标识为 `a5a6ca1a-14a5-4583-b55c-deeee9b01110`。已在冻结包内找到反馈、诊断存储和共享字段定义。应用与更新程序中的 167 个 PE 文件均已验签，安装程序和卸载程序通过 Authenticode 与时间戳校验。安装包、更新 ZIP、Ed25519 签名清单和校验和均与 GitHub 附件核对一致。[GitHub 预览发行](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261124)
+
+| 公开文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `KGNext-Win11-x64-Preview-Setup.exe` | 47,505,024 | `af57a1d1731856bcb05b4adce9ce2e26db3ec9b3c349280945c1cf1ef54fd01c` |
+| `KindergartenManager-windows-x64.zip` | 46,458,810 | `4cbdf430faff2f49680dcf615b7110086f6aff687cb72b680005be187798717c` |
+
+11 月 20 日和 22 日预览的更新器均接受了本次签名清单与完整更新 ZIP。公开发行后，使用 11 月 22 日版的实际更新代码、发行身份和已封装的信任配置，在隔离目录发现新版。清单与全部 46,458,810 字节的 ZIP 都经 `github.ywyz.tech` 下载，签名、包哈希、解压后的构建标识均匹配，更新器到达 `ready`。另从加速地址下载 EXE，再次核对了 SHA-256 和 Authenticode。[加速下载 Windows 安装包](https://github.ywyz.tech/https://github.com/ywyz/kindergarten-manager-next/releases/download/v0.1.0-listening-test.20261124/KGNext-Win11-x64-Preview-Setup.exe)
+
 ## 教师测试范围
 
-11 月 22 日的预览截至本轮开始仍待教师真机测试。本轮的浏览器操作、旧版更新检查和签名验证与教师在原测试机上的安装体验分别记录。
+签名应用在独立数据目录启动，本地健康接口与包内前端入口均返回 200。隐藏启动的自动检查没有观测到可关闭的主窗口，因此未取得正常退出证据。教师在原测试机上点击「安装并重启」、核对原有档案以及按正常流程关闭应用仍待实测。

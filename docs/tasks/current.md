@@ -4,7 +4,7 @@
 
 从 `dev/0.1` 的 `9a43f22` 开始，在 `fix/feedback-diagnostics` 实现。教师无需获取反馈码。反馈默认附带近期操作的诊断日志，可在发送前预览或取消，管理员登录后在对应反馈中查看。字段、重试及验收约定见[在线反馈规格](../specs/desktop-webdav-and-online-feedback.md#应用内在线反馈)。
 
-本轮用户授权在隔离环境验收后部署协作服务和增量迁移，并发布 Windows 签名预览版。通过 11 月 22 日客户端使用的加速下载路径复查公开的签名清单和更新包。验证结果见[免码反馈与诊断日志验收](../bootstrap/desktop-feedback-diagnostics-20261124-review.md)。
+协作服务和 MySQL 增量迁移已部署，Windows 签名预览版已从 `1e8de32` 发布。11 月 22 日更新器已通过加速器下载并验证公开的签名清单和完整更新包，进入可安装状态。教师原机安装重启和正常关闭仍待测试。[预览版下载](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261124) · [免码反馈与诊断日志验收](../bootstrap/desktop-feedback-diagnostics-20261124-review.md)
 
 ## 2026-11-22 教师反馈与 Dependabot #21
 
