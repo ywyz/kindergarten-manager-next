@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -343,8 +344,10 @@ def _remove_empty_sidecars(db_path: Path) -> None:
     for suffix in ("-wal", "-shm", "-journal"):
         side = db_path.with_name(db_path.name + suffix)
         try:
-            if side.exists() and side.stat().st_size == 0:
-                side.unlink()
+            if backup_fs.source_exists(side):
+                info = os.stat(backup_fs.extended(side))
+                if info.st_size == 0:
+                    os.unlink(backup_fs.extended(side))
         except OSError:
             pass
 

@@ -672,30 +672,43 @@ def test_normalize_collection_url_completes_bare_domain_to_https():
         assert invalid.value.code == "WEBDAV_URL_INVALID"
 
 
-def test_plaintext_package_is_never_uploaded(tmp_path):
+def test_plaintext_package_uploads_when_acknowledged(tmp_path):
+    """2026-11-26 decision: the WebDAV remote copy may be plaintext.
+
+    The choice (password or explicit plaintext) is enforced by the host; this
+    transport accepts both fixed Format 1 modes and keeps the immutable
+    publish + collision rules in either mode.
+    """
     with running_server(tmp_path) as (state, cert, port):
         client = make_client(state, cert, port)
         package = tmp_path / "plain.kgmbackup"
         build_plaintext_package(package)
-        with pytest.raises(wb.WebdavError) as caught:
-            client.upload(package, snapshot_id(10))
-        assert caught.value.code == "WEBDAV_ENCRYPTION_REQUIRED"
-        assert client.list_versions() == []
-        assert not any(
-            request["method"] == "PUT" for request in state.requests
-        )
+        result = client.upload(package, snapshot_id(10))
+        assert result.name.endswith(".kgmbackup")
+        assert result.verified is True
+        versions = client.list_versions()
+        assert [item.name for item in versions] == [result.name]
+        # A repeat of the same snapshot is recognised, never replaced.
+        repeat = client.upload(package, snapshot_id(10))
+        assert repeat.already_published is True
 
 
-def test_plaintext_remote_package_is_rejected_on_download(tmp_path):
+def test_plaintext_remote_package_downloads_with_clear_mode_flag(tmp_path):
+    """A plaintext remote package downloads and reports encrypted=False.
+
+    The panel uses the flag to show the no-password hint; the transport keeps
+    the same TLS, redirect, path and integrity protections.
+    """
     with running_server(tmp_path) as (state, cert, port):
         client = make_client(state, cert, port)
         client.ensure_collection()
         name = f"kgm-backup-20260101T000000Z-{snapshot_id(11)}.kgmbackup"
         build_plaintext_package(state.root / "dav" / name)
-        with pytest.raises(wb.WebdavError) as caught:
-            client.download(name, tmp_path / "out.kgmbackup")
-        assert caught.value.code == "WEBDAV_FORMAT_MISMATCH"
-        assert not (tmp_path / "out.kgmbackup").exists()
+        target = tmp_path / "out.kgmbackup"
+        result = client.download(name, target)
+        assert result.encrypted is False
+        assert result.size == target.stat().st_size
+        assert result.sha256 == wb.backup_format.sha256_file(target)
 
 
 def test_wrong_password_is_auth_error(tmp_path):

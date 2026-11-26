@@ -936,6 +936,100 @@ const SAMPLE_EVENTS = [
   ok('connected flow: default attach with exact preview, same-request/same-log retry, edit and cancel produce new intents')
 }
 
+// 2026-11-26 rework: desktop-recorded remote download/restore events must
+// survive the panel filter end to end.  Codex reproduced a real Edge run
+// where the store held webdav_restore/failed/RESTORE_PASSWORD_INVALID and
+// the preview still claimed 「近期没有可附着的诊断事件」because this
+// panel's vocabulary had not been extended with the new families.
+{
+  const DESKTOP_EVENTS = [
+    {
+      event_type: 'webdav_restore',
+      time: '2026-11-26T08:31:00Z',
+      result: 'failed',
+      error_code: 'RESTORE_PASSWORD_INVALID',
+    },
+    {
+      event_type: 'webdav_download',
+      time: '2026-11-26T08:30:40Z',
+      result: 'ok',
+      error_code: null,
+    },
+    {
+      event_type: 'local_restore',
+      time: '2026-11-26T07:58:00Z',
+      result: 'failed',
+      error_code: 'RESTORE_PACKAGE_INVALID',
+    },
+    {
+      event_type: 'update_check',
+      time: '2026-11-26T07:40:00Z',
+      result: 'ok',
+      error_code: null,
+    },
+  ]
+  const posts = []
+  class ApiError extends Error {
+    constructor(status, message) {
+      super(message)
+      this.status = status
+    }
+  }
+  const clientStub = {
+    ApiError,
+    apiGet: async (url) => {
+      if (url === '/api/local/feedback/status') {
+        return { configured: true, app_version: '0.1.0-test', message: null }
+      }
+      if (url === '/api/local/feedback/diagnostics-events') {
+        return { events: DESKTOP_EVENTS.map((event) => ({ ...event })) }
+      }
+      throw new ApiError(404, 'unexpected path')
+    },
+    apiPost: async (url, body) => {
+      posts.push({ url, body })
+      return {
+        submission_id: 'aaaabbbb-cccc-4ddd-8eee-ffff00001111',
+        request_id: body.request_id,
+        received_at: '2026-11-26T09:00:00Z',
+        replayed: false,
+      }
+    },
+  }
+  const harness = new Harness({
+    overrides: {
+      '../client': clientStub,
+      './client': clientStub,
+    },
+  })
+  const panelComponent = harness.loadSfc('views/FeedbackPanel.vue')
+  const { mountEl } = mountWith(panelComponent, { frozen: false })
+  harness.runMounted()
+  await settle()
+  setInput(mountEl, 'feedback-content', 'WebDAV 恢复一直失败，请看日志')
+  await settle()
+
+  byD1(mountEl, 'feedback-diagnostics-preview-toggle').props.onClick({})
+  await settle()
+  const preview = byD1(mountEl, 'feedback-diagnostics-preview')
+  const previewText = nodeText(preview)
+  assert.doesNotMatch(previewText, /近期没有可附着的诊断事件/, 'the new families are not filtered out of the preview')
+  assert.match(previewText, /默认附带：将随反馈发送以下 4 条/, 'all four desktop events are attached')
+  assert.match(previewText, /WebDAV 恢复 · 失败（RESTORE_PASSWORD_INVALID）/, 'the WebDAV restore failure shows its fixed label and code')
+  assert.match(previewText, /WebDAV 下载 · 成功/, 'the download event shows its label')
+  assert.match(previewText, /本机恢复 · 失败（RESTORE_PACKAGE_INVALID）/, 'the local restore failure shows its label and code')
+
+  byD1(mountEl, 'feedback-submit').props.onClick({})
+  await settle()
+  assert.equal(posts.length, 1, 'one submission carries the desktop events')
+  assert.equal(
+    JSON.stringify(posts[0].body.diagnostics),
+    JSON.stringify(DESKTOP_EVENTS),
+    'the submission sends the previewed desktop events verbatim, none filtered',
+  )
+  ok('desktop webdav_download/webdav_restore/local_restore events survive preview and submission')
+}
+
 // An unavailable diagnostics window never blocks the feedback: the panel
 // explains and submits without any diagnostics key.
 {

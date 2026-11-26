@@ -10,6 +10,8 @@ import hashlib
 import http.client
 import json
 import os
+import queue
+import re
 import secrets
 import shutil
 import socket
@@ -41,6 +43,62 @@ CHUNK = 64 * 1024
 MAX_REDIRECTS = 0
 MAX_GITHUB_REDIRECTS = update_github.MAX_GITHUB_REDIRECTS
 UPDATE_CHANNELS = ("stable", "preview")
+
+# Bounded parallel Range download for the large package ZIP (2026-11-26).
+# The existing accelerator (the fixed mirror prefix, then the official
+# origin) stays the only trust boundary: every segment request walks the
+# same validated hop chain with the same strict TLS checks.  A server that
+# does not answer 206 with an exact Content-Range, or a segment that stays
+# unreliable after bounded retries, falls back to the consistent
+# single-stream whole-package download; a mis-spliced package is never
+# silently accepted (every segment is length-checked and the assembled
+# whole is digest-checked against the signed manifest).
+PARALLEL_MAX_WORKERS = 4
+PARALLEL_MIN_SEGMENT_BYTES = 4 * 1024 * 1024
+PARALLEL_MAX_SEGMENTS = 48
+SEGMENT_ATTEMPTS = 3
+
+_CONTENT_RANGE_RE = re.compile(r"^bytes ([0-9]+)-([0-9]+)/([0-9]+)$")
+
+
+def _plan_ranges(total: int) -> list[tuple[int, int]]:
+    """Cover ``[0, total)`` with bounded, reasonably sized byte ranges."""
+    if total <= 0:
+        return []
+    segments = max(
+        1,
+        min(
+            PARALLEL_MAX_SEGMENTS,
+            (total + PARALLEL_MIN_SEGMENT_BYTES - 1) // PARALLEL_MIN_SEGMENT_BYTES,
+        ),
+    )
+    base = total // segments
+    remainder = total % segments
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    for index in range(segments):
+        size = base + (1 if index < remainder else 0)
+        end = start + size - 1
+        ranges.append((start, end))
+        start = end + 1
+    return ranges
+
+
+def _content_range_matches(
+    header: str | None, start: int, end: int, total: int
+) -> bool:
+    """Strictly validate one ``Content-Range`` answer."""
+    if not header:
+        return False
+    match = _CONTENT_RANGE_RE.fullmatch(header.strip())
+    if match is None:
+        return False
+    got_start, got_end, got_total = (
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3)),
+    )
+    return got_start == start and got_end == end and got_total == total
 
 
 def _classify_update_code(error_code: object, fallback: str) -> str:
@@ -256,8 +314,13 @@ def _open_url(
     read_timeout: float = READ_TIMEOUT,
     *,
     deadline: float | None = None,
+    extra_headers: dict[str, str] | None = None,
 ):
-    """Open one fixed GitHub URL, following only bounded allowed redirects."""
+    """Open one fixed GitHub URL, following only bounded allowed redirects.
+
+    ``extra_headers`` is used by the bounded parallel segment transport to
+    carry one strict ``Range`` request; it never widens the hop validation.
+    """
     current = url
     for redirect_no in range(MAX_GITHUB_REDIRECTS + 1):
         try:
@@ -271,6 +334,9 @@ def _open_url(
         conn.putheader("Host", parts.netloc)
         conn.putheader("Accept", "application/json, application/octet-stream")
         conn.putheader("Accept-Encoding", "identity")
+        if extra_headers:
+            for name, value in extra_headers.items():
+                conn.putheader(name, value)
         conn.putheader("Connection", "close")
         conn.putheader("User-Agent", "KindergartenManager/0.1.0")
         conn.endheaders()
@@ -327,6 +393,85 @@ def _open_release_file_url(
             return conn, response, sock
         _close_io(response=response, sock=sock, conn=conn)
     raise UpdateError("UPDATE_DOWNLOAD_INVALID", "没有可用的更新下载地址")
+
+
+def _open_range_url(
+    source: ReleaseSource,
+    url: str,
+    start: int,
+    end: int,
+    read_timeout: float = READ_TIMEOUT,
+    *,
+    deadline: float | None = None,
+):
+    """Open one fixed release URL with a strict byte-range request.
+
+    Same candidate order and hop validation as the whole-file download; the
+    official origin's answer decides when the mirror does not answer 206.
+    """
+    candidates = update_github.release_download_urls(source, url)
+    for index, candidate in enumerate(candidates):
+        last = index == len(candidates) - 1
+        try:
+            conn, response, sock = _open_url(
+                source,
+                candidate,
+                read_timeout,
+                deadline=deadline,
+                extra_headers={"Range": f"bytes={start}-{end}"},
+            )
+        except UpdateCancelled:
+            raise
+        except Exception:  # noqa: BLE001 - try the official URL next
+            if last:
+                raise
+            continue
+        if response.status == 206 or last:
+            return conn, response, sock
+        _close_io(response=response, sock=sock, conn=conn)
+    raise UpdateError("UPDATE_DOWNLOAD_INVALID", "没有可用的更新下载地址")
+
+
+def _probe_range_total(
+    source: ReleaseSource,
+    url: str,
+    expected_total: int,
+    read_timeout: float = READ_TIMEOUT,
+    *,
+    deadline: float | None = None,
+) -> int | None:
+    """Probe Range support with a ``bytes=0-0`` request.
+
+    Returns the declared total only for a strict 206 answer whose
+    ``Content-Range`` is exactly ``bytes 0-0/<expected_total>``.  A 200
+    answer, a missing/foreign Content-Range or a different total means the
+    whole-package path stays authoritative (it re-validates the declared
+    size itself), so ``None`` requests that consistent fallback.
+    """
+    try:
+        conn, response, sock = _open_range_url(
+            source, url, 0, 0, read_timeout, deadline=deadline
+        )
+    except UpdateCancelled:
+        raise
+    except Exception:  # noqa: BLE001 - unusable Range → whole-file fallback
+        return None
+    try:
+        if response.status != 206:
+            return None
+        if not _content_range_matches(
+            response.getheader("Content-Range"), 0, 0, expected_total
+        ):
+            return None
+        # Drain the single-byte body so the connection closes cleanly.
+        _read_exact(response, 1, sock=sock, deadline=deadline, read_timeout=read_timeout)
+        return expected_total
+    except UpdateCancelled:
+        raise
+    except Exception:  # noqa: BLE001 - unusable Range → whole-file fallback
+        return None
+    finally:
+        _close_io(response=response, sock=sock, conn=conn)
 
 
 def _read_exact(
@@ -492,6 +637,8 @@ class UpdateManager:
         self._active_connection = None
         self._active_response = None
         self._active_socket = None
+        # Live parallel-segment transports; cancel/shutdown interrupt each.
+        self._segment_ios: list[tuple[Any, Any, Any]] = []
         self._closed = False
         self._generation = 0
         self._validate_initial_state()
@@ -1425,82 +1572,38 @@ class UpdateManager:
             deadline = time.monotonic() + self.total_timeout
             if self.source.provider == "github":
                 assert self._manifest_source is not None
-                conn, response, sock = _open_release_file_url(
-                    self._manifest_source,
-                    self._manifest_source.package_url(manifest.package_url),
-                    self.read_timeout,
-                    deadline=deadline,
+                package_url = self._manifest_source.package_url(
+                    manifest.package_url
                 )
-                with self._lock:
-                    if self._closed or generation != self._generation:
-                        conn.close()
-                        return
-                    self._active_connection = conn
-                    self._active_response = response
-                    self._active_socket = sock
+                # Bounded parallel Range transport through the same fixed
+                # mirror/official candidates; a consistent whole-package
+                # download follows whenever the segments prove unusable.
+                digest_hex = self._parallel_package_download(
+                    generation,
+                    self._manifest_source,
+                    package_url,
+                    manifest,
+                    staging_dir,
+                    deadline,
+                )
+                if digest_hex is None:
+                    digest_hex = self._whole_file_download(
+                        generation,
+                        self._manifest_source,
+                        package_url,
+                        manifest,
+                        part,
+                        deadline,
+                    )
             else:
-                conn = _request(
+                digest_hex = self._whole_file_download(
+                    generation,
                     self.source,
                     manifest.package_url,
-                    self.read_timeout,
-                    deadline=deadline,
+                    manifest,
+                    part,
+                    deadline,
                 )
-                with self._lock:
-                    if self._closed or generation != self._generation:
-                        conn.close()
-                        return
-                    self._active_connection = conn
-                _set_socket_timeout(conn.sock, self.read_timeout, deadline)
-                response = conn.getresponse()
-                sock = _response_socket(response, conn)
-            with self._lock:
-                if self._closed or generation != self._generation:
-                    return
-                self._active_response = response
-                self._active_socket = sock
-            _set_socket_timeout(sock, self.read_timeout, deadline)
-            if response.status != 200:
-                raise UpdateError("UPDATE_DOWNLOAD_FAILED", f"下载 HTTP {response.status}")
-            length = response.getheader("Content-Length")
-            if length is None:
-                raise UpdateError("UPDATE_DOWNLOAD_INVALID", "下载响应缺少 Content-Length")
-            try:
-                size = int(length)
-            except ValueError:
-                raise UpdateError("UPDATE_DOWNLOAD_INVALID", "下载大小不合法") from None
-            if size != manifest.package_size or size > MAX_PACKAGE_BYTES:
-                raise UpdateError("UPDATE_PACKAGE_MISMATCH", "下载大小与发行元数据不符")
-            digest = hashlib.sha256()
-            downloaded = 0
-            with part.open("xb") as handle:
-                while downloaded < size:
-                    if self._cancel.is_set() or not self._is_current(generation):
-                        raise UpdateCancelled()
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise UpdateError("UPDATE_DOWNLOAD_TIMEOUT", "下载超过总期限")
-                    if sock is not None:
-                        sock.settimeout(min(self.read_timeout, remaining))
-                    chunk = response.read1(min(CHUNK, size - downloaded))
-                    if not chunk:
-                        if time.monotonic() > deadline:
-                            raise UpdateError("UPDATE_DOWNLOAD_TIMEOUT", "下载超过总期限")
-                        raise UpdateError("UPDATE_DOWNLOAD_INVALID", "下载提前结束")
-                    if time.monotonic() > deadline:
-                        raise UpdateError("UPDATE_DOWNLOAD_TIMEOUT", "下载超过总期限")
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    downloaded += len(chunk)
-                    with self._lock:
-                        if self._closed or generation != self._generation:
-                            raise UpdateCancelled()
-                        self._progress_downloaded = downloaded
-                handle.flush()
-                os.fsync(handle.fileno())
-            if self._cancel.is_set() or not self._is_current(generation):
-                raise UpdateCancelled()
-            if digest.hexdigest() != manifest.package_sha256:
-                raise UpdateError("UPDATE_PACKAGE_MISMATCH", "下载 SHA-256 与发行元数据不符")
             if self._cancel.is_set() or not self._is_current(generation):
                 raise UpdateCancelled()
             part.replace(package)
@@ -1584,6 +1687,384 @@ class UpdateManager:
                 if self._active_socket is sock:
                     self._active_socket = None
 
+    # -- bounded parallel Range transport ---------------------------------
+
+    def _register_segment_io(self, conn, response, sock) -> tuple:
+        entry = (conn, response, sock)
+        with self._lock:
+            self._segment_ios.append(entry)
+        return entry
+
+    def _unregister_segment_io(self, entry: tuple) -> None:
+        with self._lock:
+            try:
+                self._segment_ios.remove(entry)
+            except ValueError:
+                pass
+
+    def _download_one_segment(
+        self,
+        generation: int,
+        source: ReleaseSource,
+        url: str,
+        start: int,
+        end: int,
+        total: int,
+        part_path: Path,
+        deadline: float,
+    ) -> None:
+        """Download exactly ``[start, end]`` into ``part_path``.
+
+        Each attempt is a fresh strict 206 request with an exact
+        ``Content-Range``; a short/long body or a foreign range is a failed
+        attempt, never a silently accepted splice.  ``SEGMENT_ATTEMPTS``
+        bounded retries use a new connection each time.
+        """
+        expected = end - start + 1
+        last_error: Exception | None = None
+        for _attempt in range(SEGMENT_ATTEMPTS):
+            if self._cancel.is_set() or not self._is_current(generation):
+                raise UpdateCancelled()
+            conn = response = sock = None
+            entry = None
+            try:
+                conn, response, sock = _open_range_url(
+                    source,
+                    url,
+                    start,
+                    end,
+                    self.read_timeout,
+                    deadline=deadline,
+                )
+                entry = self._register_segment_io(conn, response, sock)
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        raise UpdateCancelled()
+                if response.status != 206:
+                    raise UpdateError(
+                        "UPDATE_DOWNLOAD_INVALID", "分段响应不是 206"
+                    )
+                if not _content_range_matches(
+                    response.getheader("Content-Range"), start, end, total
+                ):
+                    raise UpdateError(
+                        "UPDATE_DOWNLOAD_INVALID", "分段 Content-Range 不合法"
+                    )
+                downloaded = 0
+                with part_path.open("wb") as handle:
+                    while downloaded < expected:
+                        if self._cancel.is_set() or not self._is_current(generation):
+                            raise UpdateCancelled()
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise UpdateError(
+                                "UPDATE_DOWNLOAD_TIMEOUT", "下载超过总期限"
+                            )
+                        if sock is not None:
+                            sock.settimeout(min(self.read_timeout, remaining))
+                        chunk = response.read1(min(CHUNK, expected - downloaded))
+                        if not chunk:
+                            raise UpdateError(
+                                "UPDATE_DOWNLOAD_INVALID", "分段提前结束"
+                            )
+                        if time.monotonic() > deadline:
+                            raise UpdateError(
+                                "UPDATE_DOWNLOAD_TIMEOUT", "下载超过总期限"
+                            )
+                        handle.write(chunk)
+                        downloaded += len(chunk)
+                        with self._lock:
+                            if self._closed or generation != self._generation:
+                                raise UpdateCancelled()
+                            self._progress_downloaded += len(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                if downloaded != expected:
+                    raise UpdateError(
+                        "UPDATE_DOWNLOAD_INVALID", "分段长度不正确"
+                    )
+                return
+            except UpdateCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - retry this segment
+                last_error = exc
+            finally:
+                if entry is not None:
+                    self._unregister_segment_io(entry)
+                _close_io(response=response, sock=sock, conn=conn)
+            # A failed attempt leaves no partial splice behind.
+            try:
+                part_path.unlink()
+            except OSError:
+                pass
+        raise UpdateError(
+            "UPDATE_DOWNLOAD_INVALID",
+            f"分段下载多次失败（{last_error.__class__.__name__}）",
+        )
+
+    def _parallel_package_download(
+        self,
+        generation: int,
+        source: ReleaseSource,
+        url: str,
+        manifest: UpdateManifest,
+        staging_dir: Path,
+        deadline: float,
+    ) -> str | None:
+        """Try the bounded parallel Range download of the package.
+
+        Returns the assembled, digest-verified hex digest on success, or
+        ``None`` when this attempt proved unusable (no strict Range answer
+        or unreliable segments) and the consistent whole-package download
+        must run instead.  A teacher cancel raises ``UpdateCancelled``; a
+        mis-spliced or invalid package raises instead of being accepted.
+        """
+        total = _probe_range_total(
+            source,
+            url,
+            manifest.package_size,
+            self.read_timeout,
+            deadline=deadline,
+        )
+        if total is None:
+            return None
+        if self._cancel.is_set() or not self._is_current(generation):
+            raise UpdateCancelled()
+        ranges = _plan_ranges(total)
+        if not ranges:
+            return None
+        segment_paths = [
+            staging_dir / f"package.zip.seg-{index:03d}"
+            for index in range(len(ranges))
+        ]
+        pending: queue.Queue[int] = queue.Queue()
+        for index in range(len(ranges)):
+            pending.put(index)
+        failures: list[BaseException] = []
+        failure_lock = threading.Lock()
+
+        def stop_requested() -> bool:
+            if self._cancel.is_set() or not self._is_current(generation):
+                return True
+            with failure_lock:
+                return bool(failures)
+
+        def worker() -> None:
+            while not stop_requested():
+                try:
+                    index = pending.get_nowait()
+                except queue.Empty:
+                    return
+                start, end = ranges[index]
+                try:
+                    self._download_one_segment(
+                        generation,
+                        source,
+                        url,
+                        start,
+                        end,
+                        total,
+                        segment_paths[index],
+                        deadline,
+                    )
+                except UpdateCancelled as exc:
+                    with failure_lock:
+                        failures.append(exc)
+                    return
+                except Exception as exc:  # noqa: BLE001 - bounded per segment
+                    with failure_lock:
+                        failures.append(exc)
+                    return
+
+        workers = [
+            threading.Thread(
+                target=worker,
+                name=f"update-parallel-{generation}-{index}",
+                daemon=True,
+            )
+            for index in range(min(PARALLEL_MAX_WORKERS, len(ranges)))
+        ]
+        for thread in workers:
+            thread.start()
+        for thread in workers:
+            thread.join()
+        try:
+            if failures:
+                for failure in failures:
+                    if isinstance(failure, UpdateCancelled):
+                        raise UpdateCancelled()
+                # The segments stayed unreliable: request the consistent
+                # whole-package download instead of accepting a splice.
+                return None
+            if self._cancel.is_set() or not self._is_current(generation):
+                raise UpdateCancelled()
+            # Assemble in order; every segment must be exactly its range
+            # length before one byte enters the package part file.
+            part = staging_dir / "package.zip.part"
+            digest = hashlib.sha256()
+            assembled = 0
+            with part.open("xb") as handle:
+                for (start, end), seg_path in zip(ranges, segment_paths):
+                    expected = end - start + 1
+                    try:
+                        size = seg_path.stat().st_size
+                    except OSError:
+                        raise UpdateError(
+                            "UPDATE_DOWNLOAD_INVALID", "分段文件缺失"
+                        ) from None
+                    if size != expected:
+                        raise UpdateError(
+                            "UPDATE_PACKAGE_MISMATCH", "分段长度与请求范围不符"
+                        )
+                    with seg_path.open("rb") as seg:
+                        while True:
+                            chunk = seg.read(CHUNK)
+                            if not chunk:
+                                break
+                            handle.write(chunk)
+                            digest.update(chunk)
+                            assembled += len(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if assembled != manifest.package_size:
+                raise UpdateError(
+                    "UPDATE_PACKAGE_MISMATCH", "下载大小与发行元数据不符"
+                )
+            if digest.hexdigest() != manifest.package_sha256:
+                raise UpdateError(
+                    "UPDATE_PACKAGE_MISMATCH", "下载 SHA-256 与发行元数据不符"
+                )
+            return digest.hexdigest()
+        finally:
+            for seg_path in segment_paths:
+                try:
+                    seg_path.unlink()
+                except OSError:
+                    pass
+
+    # -- consistent whole-package download --------------------------------
+
+    def _whole_file_download(
+        self,
+        generation: int,
+        source: ReleaseSource,
+        url: str,
+        manifest: UpdateManifest,
+        part: Path,
+        deadline: float,
+    ) -> str:
+        """Single-stream whole-package download (the historical path).
+
+        Used directly for non-GitHub sources and as the consistent fallback
+        whenever the parallel segments prove unusable.  Returns the verified
+        digest hex; the part file is complete and fsynced on return.
+        """
+        conn = None
+        response = None
+        sock = None
+        try:
+            if source.provider == "github":
+                conn, response, sock = _open_release_file_url(
+                    source,
+                    url,
+                    self.read_timeout,
+                    deadline=deadline,
+                )
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        conn.close()
+                        raise UpdateCancelled()
+                    self._active_connection = conn
+                    self._active_response = response
+                    self._active_socket = sock
+            else:
+                conn = _request(
+                    source,
+                    url,
+                    self.read_timeout,
+                    deadline=deadline,
+                )
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        conn.close()
+                        raise UpdateCancelled()
+                    self._active_connection = conn
+                _set_socket_timeout(conn.sock, self.read_timeout, deadline)
+                response = conn.getresponse()
+                sock = _response_socket(response, conn)
+                with self._lock:
+                    if self._closed or generation != self._generation:
+                        raise UpdateCancelled()
+                    self._active_response = response
+                    self._active_socket = sock
+            _set_socket_timeout(sock, self.read_timeout, deadline)
+            if response.status != 200:
+                raise UpdateError(
+                    "UPDATE_DOWNLOAD_FAILED", f"下载 HTTP {response.status}"
+                )
+            length = response.getheader("Content-Length")
+            if length is None:
+                raise UpdateError(
+                    "UPDATE_DOWNLOAD_INVALID", "下载响应缺少 Content-Length"
+                )
+            try:
+                size = int(length)
+            except ValueError:
+                raise UpdateError("UPDATE_DOWNLOAD_INVALID", "下载大小不合法") from None
+            if size != manifest.package_size or size > MAX_PACKAGE_BYTES:
+                raise UpdateError("UPDATE_PACKAGE_MISMATCH", "下载大小与发行元数据不符")
+            digest = hashlib.sha256()
+            downloaded = 0
+            with part.open("xb") as handle:
+                while downloaded < size:
+                    if self._cancel.is_set() or not self._is_current(generation):
+                        raise UpdateCancelled()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise UpdateError(
+                            "UPDATE_DOWNLOAD_TIMEOUT", "下载超过总期限"
+                        )
+                    if sock is not None:
+                        sock.settimeout(min(self.read_timeout, remaining))
+                    chunk = response.read1(min(CHUNK, size - downloaded))
+                    if not chunk:
+                        if time.monotonic() > deadline:
+                            raise UpdateError(
+                                "UPDATE_DOWNLOAD_TIMEOUT", "下载超过总期限"
+                            )
+                        raise UpdateError(
+                            "UPDATE_DOWNLOAD_INVALID", "下载提前结束"
+                        )
+                    if time.monotonic() > deadline:
+                        raise UpdateError(
+                            "UPDATE_DOWNLOAD_TIMEOUT", "下载超过总期限"
+                        )
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    downloaded += len(chunk)
+                    with self._lock:
+                        if self._closed or generation != self._generation:
+                            raise UpdateCancelled()
+                        self._progress_downloaded = downloaded
+                handle.flush()
+                os.fsync(handle.fileno())
+            if self._cancel.is_set() or not self._is_current(generation):
+                raise UpdateCancelled()
+            if digest.hexdigest() != manifest.package_sha256:
+                raise UpdateError(
+                    "UPDATE_PACKAGE_MISMATCH", "下载 SHA-256 与发行元数据不符"
+                )
+            return digest.hexdigest()
+        finally:
+            _close_io(response=response, sock=sock, conn=conn)
+            with self._lock:
+                if self._active_connection is conn:
+                    self._active_connection = None
+                if self._active_response is response:
+                    self._active_response = None
+                if self._active_socket is sock:
+                    self._active_socket = None
+
     def cancel(self) -> dict[str, Any]:
         with self._lock:
             if self._state != "downloading":
@@ -1592,7 +2073,11 @@ class UpdateManager:
             conn = self._active_connection
             response = self._active_response
             sock = self._active_socket
+            segment_ios = list(self._segment_ios)
         _close_io(response=response, sock=sock, conn=conn)
+        # Interrupt every live parallel-segment transport the same way.
+        for seg_conn, seg_response, seg_sock in segment_ios:
+            _close_io(response=seg_response, sock=seg_sock, conn=seg_conn)
         return self._snapshot()
 
     def _clean_cancel(self, staging_dir: Path) -> None:
@@ -1628,7 +2113,10 @@ class UpdateManager:
             conn = self._active_connection
             response = self._active_response
             sock = self._active_socket
+            segment_ios = list(self._segment_ios)
         _close_io(response=response, sock=sock, conn=conn)
+        for seg_conn, seg_response, seg_sock in segment_ios:
+            _close_io(response=seg_response, sock=seg_sock, conn=seg_conn)
         if thread is not None:
             thread.join(timeout=5.0)
             return not thread.is_alive()

@@ -807,7 +807,8 @@ async function testMountedRailOrderAndModifyChooser() {
   }
   const { root, hook, app, calls } = await mountEditor(routes, {}, { realPanel: true })
   await settle()
-  // Main operations: exactly the four rail actions, in the required order.
+  // Main operations: the rail actions, in the required order (split plus the
+  // two generation entries before 修改指定内容).
   const rail = byD1(root, 'editor-actions-rail')
   const railButtons = walkElements(rail)
     .filter((node) => node.tag === 'button' && typeof node.props['data-d1'] === 'string')
@@ -815,13 +816,15 @@ async function testMountedRailOrderAndModifyChooser() {
     railButtons.map((node) => node.props['data-d1']),
     [
       'start-split-from-rail',
+      'open-generate-activities',
+      'open-generate-reflection',
       'open-modify',
       'manual-save',
       'open-export',
       'open-tasks',
       'back-calendar',
     ],
-    'the rail keeps the four main actions in order plus the auxiliary entries',
+    'the rail keeps the main actions in order plus the auxiliary entries',
   )
   assert.equal(nodeText(byD1Button(root, 'start-split-from-rail')).trim(), '拆分教案并修改')
   assert.equal(nodeText(byD1Button(root, 'open-modify')).trim(), '修改指定内容')
@@ -1779,7 +1782,16 @@ async function testNarrowActionsBeforeDocument() {
     .filter((node) => node.tag === 'button' && typeof node.props['data-d1'] === 'string')
   assert.deepEqual(
     railButtons.map((node) => node.props['data-d1']),
-    ['start-split-from-rail', 'open-modify', 'manual-save', 'open-export', 'open-tasks', 'back-calendar'],
+    [
+      'start-split-from-rail',
+      'open-generate-activities',
+      'open-generate-reflection',
+      'open-modify',
+      'manual-save',
+      'open-export',
+      'open-tasks',
+      'back-calendar',
+    ],
     'the narrow layout keeps the primary order, then 任务 and 日历与已保存计划',
   )
   // Same live nodes: narrow reordering is CSS-only, so the actions stay operable.

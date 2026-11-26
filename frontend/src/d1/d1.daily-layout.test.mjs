@@ -152,7 +152,9 @@ function between(source, startToken, endToken, needle, label) {
     assert.ok(!editorSource.includes(`data-d1="${gone}"`), `${gone} is not repeated inside the document`)
   }
 
-  // Main operations: exactly four rail actions in the required order, plus
+  // Main operations: the rail actions in the required order (拆分教案并修改 —
+  // shown as 填入原教案 while the raw lesson is empty — plus the two generation
+  // entries), plus
   // the auxiliary entries (任务 and the real back-to-calendar destination);
   // the shell rail owns the true 返回工作台 and the module navigation owns
   // settings, so the editor must not duplicate either.
@@ -171,8 +173,17 @@ function between(source, startToken, endToken, needle, label) {
     (railBlock.match(/data-d1="([a-z-]+)"/g) ?? [])
       .map((value) => value.slice(9, -1))
       .filter((value) => value !== 'editor-actions-rail'),
-    ['start-split-from-rail', 'open-modify', 'manual-save', 'open-export', 'open-tasks', 'back-calendar'],
-    'the rail keeps the four main actions in order plus the auxiliary entries',
+    [
+      'start-split-from-rail',
+      'open-generate-activities',
+      'open-generate-reflection',
+      'open-modify',
+      'manual-save',
+      'open-export',
+      'open-tasks',
+      'back-calendar',
+    ],
+    'the rail keeps the main actions in order plus the auxiliary entries',
   )
   assert.match(
     editorSource,

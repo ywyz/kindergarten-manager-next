@@ -38,6 +38,9 @@ ALEMBIC_INI = d0_paths.BACKEND_ROOT / "alembic-local.ini"
 MIGRATIONS_DIR = d0_paths.BACKEND_ROOT / "migrations_local"
 
 APP_NAME = "KGNext-D1Verify"
+# The application icon (2026-11-26 original artwork): embedded into the exe
+# by PyInstaller, which also gives the frozen window/taskbar its icon.
+APP_ICON = d0_paths.APP_DIR / "assets" / "app_icon.ico"
 
 
 def os_sep() -> str:
@@ -81,6 +84,8 @@ def build_package(dist_root: Path) -> Path:
         "--clean",
         "--onedir",
         "--windowed",
+        "--icon",
+        str(APP_ICON),
         "--name",
         APP_NAME,
         "--distpath",

@@ -37,8 +37,12 @@ const MAX_CONTENT_CHARS = 4000
 const MAX_CONTACT_CHARS = 200
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 // The fixed event-type vocabulary, kept in sync with the shared contract
-// (backend/app/diagnostics_contract.py).
-const EVENT_TYPE_PATTERN = /^(export_word|local_backup|webdav_backup|update_check|update_download|save_daily_plan|save_weekly_plan|save_observation|save_listening|save_curriculum)$/
+// (backend/app/diagnostics_contract.py).  The 2026-11-26 round added the
+// remote-download and restore families: a desktop-recorded WebDAV restore
+// failure must survive this filter so the teacher's feedback preview and
+// submission carry it (Codex rework: previously the preview claimed
+// 「近期没有可附着的诊断事件」while the store actually held the failure).
+const EVENT_TYPE_PATTERN = /^(export_word|local_backup|webdav_backup|webdav_download|webdav_restore|local_restore|update_check|update_download|save_daily_plan|save_weekly_plan|save_observation|save_listening|save_curriculum)$/
 const RESULT_PATTERN = /^(ok|canceled|failed|unknown)$/
 const CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/
 const TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/
@@ -47,6 +51,9 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   export_word: '导出 Word',
   local_backup: '本机备份',
   webdav_backup: 'WebDAV 备份',
+  webdav_download: 'WebDAV 下载',
+  webdav_restore: 'WebDAV 恢复',
+  local_restore: '本机恢复',
   update_check: '更新检查',
   update_download: '更新下载',
   save_daily_plan: '保存日计划',

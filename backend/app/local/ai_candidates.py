@@ -143,6 +143,13 @@ def candidate_applicability(
         session, plan=plan, content=content, input_row=input_row
     ):
         return STATE_ELIGIBLE
+    # An already-applied targeted/direct-fill candidate (the saved target now
+    # equals the candidate's own output and nothing else changed) stays
+    # adoptable; a real source change or a concurrent target edit does not.
+    if ai_inputs.candidate_target_applied(
+        session, plan=plan, content=content, candidate=candidate, input_row=input_row
+    ):
+        return STATE_ELIGIBLE
     return STATE_SOURCE_CHANGED
 
 

@@ -4087,3 +4087,4 @@ class LocalCurriculumDeliberationVersion(LocalBase):
 # Personal todo tables live in their own module but join the shared local
 # metadata so the single migration chain and backup fingerprints see them.
 from app.local import todo_models as _todo_models  # noqa: E402,F401
+from app.local import todo_sync_models as _todo_sync_models  # noqa: E402,F401

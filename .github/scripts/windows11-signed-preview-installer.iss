@@ -27,9 +27,13 @@
 #endif
 
 #define AppExeName "KindergartenManager.exe"
+; The installer and its uninstall entry share the application icon artwork
+; (repo desktop/assets/app_icon.ico); shortcut icons come from the exe itself.
+#define AppIcon "..\..\desktop\assets\app_icon.ico"
 
 [Setup]
 AppId={{FD74C3C8-0EEB-4C88-9E7D-3F3042CFF823}
+SetupIconFile={#AppIcon}
 AppName=幼儿园信息管理系统（签名预览）
 AppVersion={#AppVersion}
 AppVerName=幼儿园信息管理系统（签名预览） {#AppVersion} ({#BuildId})

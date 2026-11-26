@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -19,9 +19,14 @@ from app.local import todo_domain as domain
 from app.local import todo_repository, todo_service
 from app.local.api import get_session
 from app.local.profile_service import require_context
+from app.local.todo_sync_api import nextcloud_router
 from app.local.tx import read_scope, storage_errors
 
 todos_router = APIRouter(prefix="/api/local/todos", tags=["todos"])
+# Optional Nextcloud Tasks (CalDAV) linkage, mounted inside this router so
+# the local API entry module stays untouched.  The sub-router keeps its own
+# ``/nextcloud`` prefix; every endpoint is idempotent by request id.
+todos_router.include_router(nextcloud_router)
 
 
 class TodoOut(BaseModel):
@@ -100,6 +105,24 @@ def _handle(fn: Callable[[], Any]) -> Any:
         return _error_response(exc)
 
 
+def _schedule_todo_sync(request) -> None:
+    """Best-effort coalesced two-way sync; never blocks or fails a write.
+
+    The linkage is off unless the teacher enabled it; the worker thread
+    checks the setting itself and exits immediately when disabled.
+    """
+    try:
+        runtime = getattr(getattr(request, "app", None), "state", None)
+        runtime = getattr(runtime, "runtime", None)
+        if runtime is None:
+            return
+        from app.local import todo_sync_service
+
+        todo_sync_service.schedule_background_sync(runtime)
+    except Exception:  # noqa: BLE001 - linkage must never hinder a todo write
+        pass
+
+
 def _profile_id(session: Session) -> str:
     with read_scope(session):
         context = require_context(session, date.today())
@@ -151,15 +174,21 @@ def read_operation(request_id: str, session: Session = Depends(get_session)):
 
 
 @todos_router.post("", response_model=TodoOut)
-def create_todo(data: TodoCreateIn, session: Session = Depends(get_session)):
+def create_todo(
+    request: Request,
+    data: TodoCreateIn,
+    session: Session = Depends(get_session),
+):
     def action():
         repo = _repository(session)
-        return todo_service.create_todo(
+        result = todo_service.create_todo(
             repo,
             request_id=data.request_id,
             title=data.title,
             due_date=data.due_date,
         )
+        _schedule_todo_sync(request)
+        return result
 
     return _handle(action)
 
@@ -167,6 +196,7 @@ def create_todo(data: TodoCreateIn, session: Session = Depends(get_session)):
 @todos_router.patch("/{todo_id}", response_model=TodoOut)
 def update_todo(
     todo_id: str,
+    request: Request,
     data: TodoUpdateIn,
     session: Session = Depends(get_session),
 ):
@@ -183,13 +213,15 @@ def update_todo(
                 raise domain.TodoInputError("completed 不能为 null")
             fields["completed"] = data.completed
         repo = _repository(session)
-        return todo_service.update_todo(
+        result = todo_service.update_todo(
             repo,
             todo_id=todo_id,
             request_id=data.request_id,
             expected_version=data.expected_version,
             fields=fields,
         )
+        _schedule_todo_sync(request)
+        return result
 
     return _handle(action)
 
@@ -197,17 +229,20 @@ def update_todo(
 @todos_router.post("/{todo_id}/unarchive", response_model=TodoOut)
 def unarchive_todo(
     todo_id: str,
+    request: Request,
     data: TodoUnarchiveIn,
     session: Session = Depends(get_session),
 ):
     def action():
         repo = _repository(session)
-        return todo_service.unarchive_todo(
+        result = todo_service.unarchive_todo(
             repo,
             todo_id=todo_id,
             request_id=data.request_id,
             expected_version=data.expected_version,
         )
+        _schedule_todo_sync(request)
+        return result
 
     return _handle(action)
 
@@ -215,17 +250,20 @@ def unarchive_todo(
 @todos_router.delete("/{todo_id}", response_model=TodoOperationOut)
 def delete_todo(
     todo_id: str,
+    request: Request,
     data: TodoDeleteIn,
     session: Session = Depends(get_session),
 ):
     def action():
         repo = _repository(session)
-        return todo_service.delete_todo(
+        result = todo_service.delete_todo(
             repo,
             todo_id=todo_id,
             request_id=data.request_id,
             expected_version=data.expected_version,
         )
+        _schedule_todo_sync(request)
+        return result
 
     return _handle(action)
 

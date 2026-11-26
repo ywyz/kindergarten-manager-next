@@ -83,7 +83,20 @@ def _make_junction(link: Path, target: Path) -> None:
 
 
 def _norm(path: Path | str) -> str:
-    return os.path.normcase(str(path))
+    """Canonical comparison key for injected-path matching.
+
+    The product now passes Win32 extended-length paths (``\\\\?\\...``) to
+    kernel32, so the same directory arrives as both ``C:\\...`` and
+    ``\\\\?\\C:\\...`` (and ``\\\\?\\UNC\\...`` for shares).  Strip the
+    extended prefix before normcasing so a test's plain-path injection key
+    matches the extended call the product actually makes.
+    """
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[8:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    return os.path.normcase(text)
 
 
 class _FaultKernel32:

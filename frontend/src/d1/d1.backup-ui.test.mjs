@@ -1128,15 +1128,64 @@ async function testWebdavDownloadHandoffWrongPasswordRetryAndCancel() {
   ok('WebDAV download hands off, wrong password keeps it, cancel releases it')
 }
 
-async function testWebdavBackupRequiresPasswordOnly() {
+async function testWebdavPlaintextDownloadShowsHintAndVerifiesDirectly() {
+  const fake = makeHost()
+  const { state, unmount } = await mountPanel({ host: fake.host })
+  const versionName = 'kgm-backup-20261119T120000Z-' + 'a'.repeat(32) + '.kgmbackup'
+  await state.openWebdavVersions()
+  await flush()
+  state.selectWebdavVersion(state.webdavVersions.value[0])
+  fake.setStatus(
+    status({ phase: 'downloading', kind: 'restore', operationId: 'webdav-download-op' }),
+  )
+  await state.downloadWebdavVersion()
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  await flush()
+
+  // 2026-11-26 decision: a no-password remote package is a clear, explicitly
+  // shown state — the panel shows the hint and continues to verify without a
+  // password prompt, never silently treating it as encrypted.
+  fake.setStatus(
+    status({
+      phase: 'downloaded',
+      kind: 'restore',
+      operationId: 'webdav-download-op',
+      selection: {
+        selectionId: 'webdav-sel-plain',
+        displayName: versionName,
+        encrypted: false,
+      },
+    }),
+  )
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  await flush()
+  assert.equal(state.selection.value.selectionId, 'webdav-sel-plain')
+  assert.match(state.webdavPlaintextNotice.value, /未加密/)
+  assert.match(state.webdavPlaintextNotice.value, /TLS/)
+  // The verify starts immediately with no password.
+  const verify = lastStart(fake.calls, 'startRestoreVerify')
+  assert.equal(verify.selectionId, 'webdav-sel-plain')
+  assert.equal(verify.password, null)
+  unmount()
+  ok('plaintext WebDAV download shows the clear hint and verifies without a password')
+}
+
+async function testWebdavBackupOffersPasswordOrAcknowledgedPlaintext() {
   const fake = makeHost()
   const { state, emitted, unmount } = await mountPanel({ host: fake.host })
   await flush()
   assert.equal(state.canStartWebdavBackup.value, true)
-  state.openWebdavBackupPassword()
+  state.openWebdavBackupChoice()
   assert.equal(state.phase.value, 'password')
-  assert.equal(state.webdavPasswordOnly.value, true)
+  // Neither choice made yet: submission is refused before any host call.
   assert.equal(state.canSubmitCredentials.value, false)
+  await state.submitCredentials()
+  assert.equal(
+    fake.webdavCalls.filter((call) => call.name === 'startWebdavBackup').length,
+    0,
+  )
+  // A password backup uploads encrypted as before.
+  state.onPasswordMode('password')
   state.password.value = 'pw'
   assert.equal(state.canSubmitCredentials.value, true)
   await state.submitCredentials()
@@ -1145,6 +1194,7 @@ async function testWebdavBackupRequiresPasswordOnly() {
     .filter((call) => call.name === 'startWebdavBackup')
     .at(-1)
   assert.equal(start.input.password, 'pw')
+  assert.equal(start.input.explicitPlaintext, false)
   assert.equal(state.phase.value, 'creating')
   fake.setStatus(
     status({ kind: 'backup', phase: 'completed', operationId: 'webdav-backup-op' }),
@@ -1154,8 +1204,30 @@ async function testWebdavBackupRequiresPasswordOnly() {
   const completed = emitted.filter(([event]) => event === 'completed').at(-1)?.[1]
   assert.equal(completed.kind, 'backup')
   assert.equal(completed.target, 'webdav')
+
+  // 2026-11-26 decision: the plaintext option is offered for WebDAV too, but
+  // only an explicit acknowledgement submits it.
+  state.phase.value = 'idle'
+  state.openWebdavBackupChoice()
+  state.onPasswordMode('plaintext')
+  assert.equal(state.canSubmitCredentials.value, false)
+  await state.submitCredentials()
+  assert.equal(
+    fake.webdavCalls.filter((call) => call.name === 'startWebdavBackup').length,
+    1,
+  )
+  state.plaintextAcknowledged.value = true
+  assert.equal(state.canSubmitCredentials.value, true)
+  await state.submitCredentials()
+  await flush()
+  const plainStart = fake.webdavCalls
+    .filter((call) => call.name === 'startWebdavBackup')
+    .at(-1)
+  assert.equal(plainStart.input.password, null)
+  assert.equal(plainStart.input.explicitPlaintext, true)
+  assert.equal(state.phase.value, 'creating')
   unmount()
-  ok('WebDAV backup requires a password and never offers plaintext')
+  ok('WebDAV backup offers password or explicitly acknowledged plaintext')
 }
 
 async function testSetupModeCanRestoreFromWebdav() {
@@ -1232,7 +1304,8 @@ async function main() {
     testWebdavWrongPasswordKeepsConfigFormAndShowsError,
     testWebdavEmptyVersionListIsUnderstandable,
     testWebdavDownloadHandoffWrongPasswordRetryAndCancel,
-    testWebdavBackupRequiresPasswordOnly,
+    testWebdavPlaintextDownloadShowsHintAndVerifiesDirectly,
+    testWebdavBackupOffersPasswordOrAcknowledgedPlaintext,
     testSetupModeCanRestoreFromWebdav,
     testWebdavTemplateAlertsVisibleOutsideBranches,
     testUnmountClearsWebdavPasswordAndReleasesSelection,
@@ -1245,5 +1318,7 @@ async function main() {
 
 main().catch((error) => {
   console.error(error)
-  process.exitCode = 1
+  // A failed test may leave the panel's poll timer self-scheduling; exit
+  // now so the runner reports the failure instead of hanging the process.
+  process.exit(1)
 })

@@ -63,6 +63,9 @@ ONLINE_INTEGRATION_TEST_HOOK = (
 COLLABORATION_RELEASE_FILENAME = "collaboration_release.json"
 
 TEMPLATE_DIR = d0_paths.BACKEND_ROOT / "app" / "assets" / "word_templates"
+# The application icon (2026-11-26 original artwork): embedded into the E14
+# exe by PyInstaller, which also gives the frozen window/taskbar its icon.
+APP_ICON = d0_paths.APP_DIR / "assets" / "app_icon.ico"
 LISTENING_TEMPLATE_DIR = (
     d0_paths.BACKEND_ROOT / "app" / "assets" / "listening_templates"
 )
@@ -178,6 +181,7 @@ SOURCE_GROUPS: dict[str, tuple[str, ...]] = {
     ),
     "build": (
         "desktop/build_e14.py",
+        ".github/scripts/windows11-signed-preview-installer.iss",
         "desktop/e14_online_integration_test_hook.py",
         "desktop/build_d0.py",
         "desktop/verify_e14_package.py",
@@ -200,6 +204,7 @@ SOURCE_GROUPS: dict[str, tuple[str, ...]] = {
     "resources": (
         "backend/app/assets/word_templates",
         "backend/app/assets/listening_templates",
+        "desktop/assets",
     ),
 }
 CACHE_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
@@ -755,6 +760,8 @@ def build_package(
         "--clean",
         "--onedir",
         "--windowed",
+        "--icon",
+        str(APP_ICON),
         "--name",
         APP_NAME,
         "--distpath",
@@ -892,6 +899,18 @@ def build_package(
         "app.local.listening_ai_api",
         "--hidden-import",
         "app.services.word_export_listening",
+        "--hidden-import",
+        "app.local.todo_sync_api",
+        "--hidden-import",
+        "app.local.todo_sync_models",
+        "--hidden-import",
+        "app.local.todo_sync_service",
+        "--hidden-import",
+        "app.local.todo_sync_caldav",
+        "--hidden-import",
+        "app.local.todo_sync_credentials",
+        "--hidden-import",
+        "app.local.todo_sync_merge",
         "--hidden-import",
         "app.local.ai_executor",
         "--hidden-import",

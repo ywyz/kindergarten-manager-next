@@ -824,6 +824,14 @@ def create_task(
         plan, content = _load_plan_and_content(session, plan_id)
         if content.version != expected_content_version:
             raise LocalVersionConflict(details={"current_content_version": content.version})
+        if task_type == "daily_reflection_generate":
+            missing = ai_inputs.daily_reflection_missing_boards(content)
+            if missing:
+                raise LocalValidationError(
+                    "当日活动未填写完整：缺少"
+                    + "、".join(missing)
+                    + "；请先填写各栏活动，再生成反思"
+                )
         if base is not None:
             from app.local import ai_candidates
 

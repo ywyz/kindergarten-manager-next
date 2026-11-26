@@ -40,6 +40,7 @@ import ctypes
 import ctypes.wintypes as wtypes
 import hashlib
 import json
+import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -515,16 +516,98 @@ def _validate_handle_security(
 # Fail-closed path / handle checks
 # ---------------------------------------------------------------------------
 
+# Device-namespace spellings are never our own internal path form; a caller
+# handing one in is refused instead of being silently transformed.
+_DEVICE_NAMESPACE_PREFIXES = ("\\\\.\\", "\\??\\")
+_EXTENDED_PREFIX = "\\\\?\\"
+
+
+def _validate_absolute_windows_path(text: str) -> None:
+    """Shape-check one *unprefixed* internal absolute Windows path.
+
+    Accepts only a drive-absolute (``X:\\...``) or UNC (``\\\\server\\share\\...``)
+    filesystem path with no ``.``/``..`` segment.  Device namespaces are
+    refused outright.  This is the shared contract for both the plain and the
+    already-extended forms handled by :func:`_extended_win_path`.
+    """
+    if text.startswith(_DEVICE_NAMESPACE_PREFIXES):
+        raise LocalValidationError("拒绝设备命名空间路径")
+    if text.startswith("\\\\"):
+        parts = text[2:].split("\\")
+        if len(parts) < 2 or not parts[0] or not parts[1]:
+            raise LocalValidationError("内部 UNC 路径必须含服务器与共享名")
+        segments = parts[2:]
+    else:
+        drive, rest = os.path.splitdrive(text)
+        if not drive or len(drive) != 2 or drive[1] != ":" or rest[:1] != "\\":
+            raise LocalValidationError("内部路径必须是带盘符的绝对路径")
+        segments = rest.split("\\")[1:]
+    for segment in segments:
+        if segment in (".", ".."):
+            raise LocalValidationError("内部路径不得包含 . 或 .. 段")
+
+
+def _extended_win_path(path) -> str:
+    """One internal absolute path in Win32 extended-length form (``\\\\?\\``).
+
+    Win32 calls opened without the prefix fail with error 206 once an
+    internal path below a legitimately deep data/credential root exceeds
+    MAX_PATH.  The prefix keeps every existing alias/reparse/DACL check
+    unchanged: it is applied only to already-validated *internal* absolute
+    paths (runtime data/credential roots and trees built strictly below
+    them).  A relative path, a ``.``/``..`` component or a foreign device
+    namespace (``\\\\.\\``, ``\\??\\``) is a safe refusal, never silently
+    transformed.
+
+    An already extended form is accepted only when it is one of our own
+    canonical outputs — a drive or ``UNC`` filesystem path below the prefix
+    with backslash separators and no relative segment.  Anything else below
+    the prefix (device namespaces, ``GLOBALROOT``, ``.``/``..``, empty or
+    forward-slash bodies) is refused, so a repeated internal conversion can
+    only round-trip an already validated canonical directory or file.
+    """
+    raw = os.fspath(path)
+    if not isinstance(raw, str):
+        raise LocalValidationError("内部路径必须是文本路径")
+    text = raw
+    if text.startswith(_EXTENDED_PREFIX):
+        body = text[len(_EXTENDED_PREFIX):]
+        if "/" in body:
+            raise LocalValidationError("扩展路径必须使用反斜杠分隔")
+        if body.startswith("UNC\\"):
+            inner = "\\\\" + body[4:]
+        else:
+            inner = body
+        _validate_absolute_windows_path(inner)
+        return text
+    if text.startswith(_DEVICE_NAMESPACE_PREFIXES):
+        raise LocalValidationError("拒绝设备命名空间路径")
+    if not os.path.isabs(text):
+        raise LocalValidationError("内部路径必须是绝对路径")
+    # Win32 extended paths require backslash separators.
+    if "/" in text:
+        text = text.replace("/", "\\")
+    _validate_absolute_windows_path(text)
+    if text.startswith("\\\\"):
+        # UNC share path: the \\?\UNC\ form.
+        return _EXTENDED_PREFIX + "UNC\\" + text[2:]
+    return _EXTENDED_PREFIX + text
+
+
 def _raw_attributes(path: Path) -> int | None:
     """Raw attributes of ``path`` (reparse information intact).
 
     ``None`` means a definite "not found" (Win32 error 2/3), so the path is
     legitimately absent. Any other attribute-query failure is a safe refusal:
-    an unverifiable path must never be reported as normal.
+    an unverifiable path must never be reported as normal.  The query runs
+    on the extended-length form so a deep internal tree stays reachable
+    past MAX_PATH.
     """
     info = _WIN32_FILE_ATTRIBUTE_DATA()
     if _kernel32.GetFileAttributesExW(
-        str(path), GET_FILE_EX_INFO_STANDARD, ctypes.byref(info)
+        _extended_win_path(path),
+        GET_FILE_EX_INFO_STANDARD,
+        ctypes.byref(info),
     ):
         return int(info.dwFileAttributes)
     error = ctypes.get_last_error()
@@ -551,7 +634,7 @@ def _has_multiple_hard_links(path: Path) -> bool:
     query is a safe refusal.
     """
     handle = _kernel32.CreateFileW(
-        str(path),
+        _extended_win_path(path),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         None,
@@ -623,7 +706,7 @@ def _open_managed_dir(raw_dir: Path, owner_sid: str) -> wtypes.HANDLE:
     unsafe directories raise ``LocalStorageError``/``LocalValidationError``.
     """
     handle = _kernel32.CreateFileW(
-        str(raw_dir),
+        _extended_win_path(raw_dir),
         GENERIC_READ,
         _MANAGED_DIR_SHARE,
         None,
@@ -649,7 +732,9 @@ def _create_managed_dir(raw_dir: Path, owner_sid: str) -> None:
     """Create a managed directory with the restricted DACL in one step."""
     sa = _make_security_attributes(owner_sid)
     try:
-        if not _kernel32.CreateDirectoryW(str(raw_dir), ctypes.byref(sa)):
+        if not _kernel32.CreateDirectoryW(
+            _extended_win_path(raw_dir), ctypes.byref(sa)
+        ):
             error = ctypes.get_last_error()
             if error != ERROR_ALREADY_EXISTS:
                 raise LocalStorageError(
@@ -682,7 +767,7 @@ def _ensure_unmanaged_parents(raw_dir: Path) -> None:
             raise LocalValidationError(
                 f"路径不得是重解析点或符号链接: {level}"
             )
-        if not _kernel32.CreateDirectoryW(str(level), None):
+        if not _kernel32.CreateDirectoryW(_extended_win_path(level), None):
             error = ctypes.get_last_error()
             if error != ERROR_ALREADY_EXISTS:
                 raise LocalStorageError(
@@ -727,7 +812,7 @@ def _open_verified_file(
     reparse point and denying write/delete sharing, then verify it on the
     very handle that will be read from."""
     handle = _kernel32.CreateFileW(
-        str(path),
+        _extended_win_path(path),
         GENERIC_READ,
         FILE_SHARE_READ,
         None,

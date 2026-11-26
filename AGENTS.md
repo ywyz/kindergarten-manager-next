@@ -6,7 +6,7 @@ For structural codebase exploration, use the installed `codebase-memory` skill.
 
 ## 当前阶段与入口
 
-当前开发集成使用 dev 分支加小版本号，本轮为 `dev/0.1`。`main` 为稳定线，`docs` 用于文档维护，修复分支按 `fix/<问题>` 命名。预览在线更新修复使用 `fix/preview-update`。11 月 17–18 日预览体验修复使用 `fix/preview-feedback-20261117`。历史 `codex/*` 分支保留至本轮用户测试结束。唯一执行入口为 [当前任务](docs/tasks/current.md)。在线协作见 [模块合同](docs/modules/online-collaboration.md) 和 [部署联调](docs/bootstrap/online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)。Windows 教师反馈、长文本和签名预览见 [多设备预览验收](docs/bootstrap/desktop-multi-device-preview-review.md)。倾听、关闭／恢复和旧测试机证据见 [倾听核查](docs/bootstrap/desktop-one-to-one-listening-review.md) 及 [原测试机记录](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。
+当前开发集成使用 dev 分支加小版本号，本轮为 `dev/0.1`。`main` 为稳定线，`docs` 用于文档维护，修复分支按 `fix/<问题>` 命名。预览在线更新修复使用 `fix/preview-update`。11 月 17–18 日预览体验修复使用 `fix/preview-feedback-20261117`。历史 `codex/*` 分支保留至本轮用户测试结束。11 月 26 日教师反馈修复使用 `fix/desktop-feedback-20261126`，见[本轮复验](docs/bootstrap/desktop-feedback-20261126-review.md)。唯一执行入口为 [当前任务](docs/tasks/current.md)。在线协作见 [模块合同](docs/modules/online-collaboration.md) 和 [部署联调](docs/bootstrap/online-collaboration-integration-review.md#2026-11-12-管理端学期更名部署与联调)。Windows 教师反馈、长文本和签名预览见 [多设备预览验收](docs/bootstrap/desktop-multi-device-preview-review.md)。倾听、关闭／恢复和旧测试机证据见 [倾听核查](docs/bootstrap/desktop-one-to-one-listening-review.md) 及 [原测试机记录](docs/bootstrap/desktop-windows11-white-concurrency-review.md)。
 
 Codex 维护正式规格和审核记录。已结束轮次的写入白名单与原生会话权限归各轮结果，后续工作按当轮责任执行。
 

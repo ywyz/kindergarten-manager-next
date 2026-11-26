@@ -358,8 +358,13 @@ export interface WebdavConfigSaveInput {
 }
 
 export interface WebdavBackupStartInput extends MaintenanceRequestRef {
-  /** WebDAV packages must be encrypted; the host never accepts plaintext. */
-  password: string
+  /**
+   * 2026-11-26 decision: the remote package is either password-encrypted
+   * (password set) or an explicitly acknowledged plaintext package.  The
+   * host refuses a plaintext upload without the acknowledgement.
+   */
+  password: string | null
+  explicitPlaintext: boolean
 }
 
 export interface WebdavDownloadInput extends MaintenanceRequestRef {
@@ -510,7 +515,7 @@ export function createWebdavHost(): WebdavHostMethods {
         )({
           request_id: input.requestId,
           password: input.password,
-          explicit_plaintext: false,
+          explicit_plaintext: input.explicitPlaintext === true,
         }),
       )
     },

@@ -19,6 +19,14 @@ from alembic.script import ScriptDirectory
 from app.local.base import LocalBase
 from app.local.migrate import alembic_config
 from app.local.todo_models import LocalTodo, LocalTodoOperation
+# The optional Nextcloud sync models join the shared local metadata through
+# app.local.models; importing them here keeps a standalone run of this test
+# module registering the same table set as the application does.
+from app.local.todo_sync_models import (  # noqa: F401
+    LocalTodoSyncLink,
+    LocalTodoSyncOperation,
+    LocalTodoSyncSetting,
+)
 
 MIGRATION = (
     Path(__file__).resolve().parents[2]
@@ -36,6 +44,13 @@ ARCHIVE_MIGRATION = (
 )
 ARCHIVE_REVISION = "20261111_0020_local_todo_archive"
 ARCHIVE_PREVIOUS = "20261110_0019_local_directional_revisions"
+# Optional Nextcloud Tasks (CalDAV) sync tables (2026-11-26 teacher choice).
+SYNC_MIGRATION = (
+    Path(__file__).resolve().parents[2]
+    / "migrations_local"
+    / "versions"
+    / "20261126_0023_local_todo_nextcloud_sync.py"
+)
 
 
 class TodoSchemaSourceTests(unittest.TestCase):
@@ -134,7 +149,32 @@ class TodoSchemaSourceTests(unittest.TestCase):
         finally:
             migration.op = original
 
-        self.assertEqual(set(tables), {"local_todos", "local_todo_operations"})
+        # The optional Nextcloud sync tables come from their own forward-only
+        # migration; recording it the same way keeps the union of migration
+        # sources covering the registered todo-family metadata.
+        sync_spec = importlib.util.spec_from_file_location(
+            "todo_migration_0023_source", SYNC_MIGRATION
+        )
+        assert sync_spec is not None and sync_spec.loader is not None
+        migration_sync = importlib.util.module_from_spec(sync_spec)
+        sync_spec.loader.exec_module(migration_sync)
+        original_sync = migration_sync.op
+        migration_sync.op = Recorder
+        try:
+            migration_sync.upgrade()
+        finally:
+            migration_sync.op = original_sync
+
+        self.assertEqual(
+            set(tables),
+            {
+                "local_todos",
+                "local_todo_operations",
+                "local_todo_sync_settings",
+                "local_todo_sync_links",
+                "local_todo_sync_operations",
+            },
+        )
         for table_name, recorded in tables.items():
             table = LocalBase.metadata.tables[table_name]
             recorded_columns = {

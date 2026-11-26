@@ -1256,10 +1256,10 @@ onBeforeUnmount(() => {
       <template v-if="taskType === 'daily_lesson_split' && splitForm">
         <div class="field-grid">
           <div class="field"><label>活动主题</label><el-input v-model="splitForm.theme" :disabled="!editable" /></div>
-          <div class="field"><label>目标</label><el-input v-model="splitForm.objectives" type="textarea" :rows="2" :disabled="!editable" /></div>
-          <div class="field"><label>准备</label><el-input v-model="splitForm.preparation" type="textarea" :rows="2" :disabled="!editable" /></div>
-          <div class="field"><label>重点</label><el-input v-model="splitForm.key_points" type="textarea" :rows="2" :disabled="!editable" /></div>
-          <div class="field"><label>难点</label><el-input v-model="splitForm.difficult_points" type="textarea" :rows="2" :disabled="!editable" /></div>
+          <div class="field"><label>目标</label><el-input v-model="splitForm.objectives" type="textarea" :rows="6" :disabled="!editable" data-d1="split-field-objectives" /></div>
+          <div class="field"><label>准备</label><el-input v-model="splitForm.preparation" type="textarea" :rows="6" :disabled="!editable" data-d1="split-field-preparation" /></div>
+          <div class="field"><label>重点</label><el-input v-model="splitForm.key_points" type="textarea" :rows="6" :disabled="!editable" data-d1="split-field-key_points" /></div>
+          <div class="field"><label>难点</label><el-input v-model="splitForm.difficult_points" type="textarea" :rows="6" :disabled="!editable" data-d1="split-field-difficult_points" /></div>
         </div>
         <div class="split-adapt-review" data-d1="split-adapt-review">
           <el-alert

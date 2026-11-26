@@ -35,8 +35,9 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from datetime import date, timedelta
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from sqlalchemy.orm import Session
 
@@ -732,6 +733,203 @@ def dependency_matches(
     return projected.dependency_hash == input_row.dependency_hash
 
 
+def daily_reflection_missing_boards(content: Any) -> list[str]:
+    """Activity boards that still have no content for the one-day reflection.
+
+    The one-day reflection may only be generated when every activity of the
+    day has been filled in (frontend and backend enforce the same board
+    rule): otherwise the model would have to invent the missing parts of an
+    already-happened day. Returns the missing board labels in display order;
+    an empty list means the gate passes.
+    """
+    try:
+        dumped = parse_adopted_content(content.adopted_content).model_dump(
+            exclude_none=True
+        )
+    except ContentValidationError:
+        return ["计划内容"]
+
+    def _text(value: Any) -> str:
+        return value.strip() if isinstance(value, str) else ""
+
+    def _game_names(games: Any) -> bool:
+        if not isinstance(games, list):
+            return False
+        return any(
+            _text(game.get("name")) for game in games if isinstance(game, dict)
+        )
+
+    def _groups_filled(groups: Any, extra_fields: tuple[str, ...]) -> bool:
+        if not isinstance(groups, list) or not groups:
+            return False
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            if _game_names(group.get("games")) or _text(group.get("focus_guidance")):
+                return True
+            if any(_text(group.get(field)) for field in extra_fields):
+                return True
+        return False
+
+    missing: list[str] = []
+    if not _groups_filled(
+        dumped.get("morning_games"),
+        ("shared_objectives", "guidance_points"),
+    ):
+        missing.append("晨间活动")
+    talk = dumped.get("morning_talk")
+    if not isinstance(talk, dict) or (
+        _text(talk.get("topic")) == "" and _text(talk.get("questions")) == ""
+    ):
+        missing.append("晨间谈话")
+    group = dumped.get("group_activity")
+    if not isinstance(group, dict) or not any(
+        _text(group.get(field))
+        for field in (
+            "theme",
+            "objectives",
+            "preparation",
+            "key_points",
+            "difficult_points",
+            "process",
+        )
+    ):
+        missing.append("集体活动")
+    if not _groups_filled(
+        dumped.get("post_group_games"),
+        ("objectives", "guidance", "support_strategy"),
+    ):
+        missing.append("活动后游戏")
+    afternoon = dumped.get("afternoon_outdoor")
+    if not isinstance(afternoon, dict) or (
+        _text(afternoon.get("area")) == ""
+        and not _game_names(afternoon.get("games"))
+        and _text(afternoon.get("observation_focus")) == ""
+        and _text(afternoon.get("objectives")) == ""
+        and _text(afternoon.get("guidance")) == ""
+        and _text(afternoon.get("support_strategy")) == ""
+    ):
+        missing.append("下午户外")
+    return missing
+
+
+def candidate_replaced_targets(
+    task_type: str,
+    dependencies_json: Mapping[str, Any],
+    candidate_raw: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Generation-time pre-states of the values this candidate may replace.
+
+    Only task types whose replaceable value is *also* part of the dependency
+    fingerprint need a pre-state restore: other-activities (the board values
+    inside ``daily_plan_snapshot``) and a targeted reflection revision
+    (``current_reflection``). The adapt process is deliberately excluded —
+    the process is an input too, and a changed process is a real source
+    change (spec §9.3-4). An empty result means "nothing to restore".
+    """
+    deps = dependencies_json if isinstance(dependencies_json, Mapping) else {}
+    raw = candidate_raw if isinstance(candidate_raw, Mapping) else {}
+    if task_type == "daily_other_activities":
+        snapshot = deps.get("daily_plan_snapshot")
+        if not isinstance(snapshot, Mapping):
+            return {}
+        target = deps.get("target_section")
+        if isinstance(target, str) and target in _OTHER_BOARDS:
+            return {target: snapshot.get(target)}
+        return {
+            board: snapshot.get(board)
+            for board in _OTHER_BOARDS
+            if raw.get(board) is not None
+        }
+    if task_type == "daily_reflection_generate":
+        # Without a revision instruction the reflection is never part of the
+        # dependency fingerprint, so the plain dependency check already stays
+        # valid and no restore is needed.
+        if "current_reflection" not in deps:
+            return {}
+        return {"reflection": deps.get("current_reflection")}
+    return {}
+
+
+def candidate_target_applied(
+    session: Session,
+    *,
+    plan: LocalDailyPlan,
+    content: LocalDailyPlanContent,
+    candidate: Any,
+    input_row: Any,
+    holiday_provider: HolidayProvider | None = None,
+) -> bool:
+    """True when the candidate was already applied with no further edit.
+
+    The direct-fill flow writes the generated boards/reflection into the
+    teacher's draft and a normal save stores them as a new version. The saved
+    value then differs from the generation-time pre-state *only* because the
+    candidate's own output replaced it, which must not be misread as a real
+    source change: the candidate stays adoptable (the adoption then recognises
+    identical content and commits no new version). A board that was blank at
+    generation time has absence as its legitimate frozen pre-state, so the
+    first direct fill of an initially empty board keeps the candidate
+    adoptable too.
+
+    Strictly protected states stay protected: any *other* dependency change
+    (raw lesson, collective activity, calendar, game configuration, plan
+    date/grade, instruction, implementation materials) fails the restored
+    re-projection, and a replaceable target that now differs from the
+    candidate's own output is a concurrent teacher edit. Both keep the
+    candidate view-only.
+    """
+    task_type = input_row.task_type
+    deps = dict(input_row.dependencies_json or {})
+    raw = dict(candidate.raw_candidate_json or {})
+    replaced = candidate_replaced_targets(task_type, deps, raw)
+    if not replaced:
+        return False
+    try:
+        dumped = parse_adopted_content(content.adopted_content).model_dump(
+            exclude_none=True
+        )
+    except ContentValidationError:
+        return False
+    # The current replaceable values must equal the candidate's own output
+    # (server-owned ids excluded): otherwise a real edit happened.
+    for key, pre_state in replaced.items():
+        candidate_value = raw.get(key)
+        if candidate_value is None:
+            return False
+        if task_type == "daily_reflection_generate" and key == "reflection":
+            if dumped.get("reflection") != candidate_value:
+                return False
+            continue
+        current_value = _strip_ids(dumped.get(key))
+        if canonical_json(current_value) != canonical_json(_strip_ids(candidate_value)):
+            return False
+    synthetic_adopted = dict(content.adopted_content or {})
+    for key, pre_state in replaced.items():
+        if isinstance(pre_state, (dict, list)) or (
+            isinstance(pre_state, str) and pre_state.strip()
+        ):
+            synthetic_adopted[key] = pre_state
+        else:
+            # A blank board's frozen generation-time pre-state is its
+            # absence; restore exactly that instead of a placeholder.
+            synthetic_adopted.pop(key, None)
+    # A plain value view over the projection inputs: never a copy of (or a
+    # write into) the ORM entity, and never a mutation of the live content.
+    view = SimpleNamespace(
+        raw_lesson_plan=content.raw_lesson_plan,
+        adopted_content=synthetic_adopted,
+        version=content.version,
+    )
+    return dependency_matches(
+        session,
+        plan=plan,
+        content=view,
+        input_row=input_row,
+        holiday_provider=holiday_provider,
+    )
+
+
 def source_excerpt(
     task_type: str,
     payload: dict[str, Any],
@@ -826,6 +1024,8 @@ __all__ = [
     "ProjectedInput",
     "business_dependency_view",
     "calendar_coverage_warning",
+    "candidate_replaced_targets",
+    "candidate_target_applied",
     "dependency_matches",
     "source_excerpt",
     "holiday_context",

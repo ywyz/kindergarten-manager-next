@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import unicodedata
+import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
@@ -54,8 +55,27 @@ class BackupValidationError(LocalError):
 
 
 def _connect_readonly(path: Path) -> sqlite3.Connection:
+    """Open one backup database strictly read-only (never creates a file).
+
+    Windows: a plain path fails past MAX_PATH inside the SQLite win32 VFS,
+    and ``PRAGMA query_only`` alone would silently create an empty database
+    when the file is missing.  The verified form is a URI-built
+    ``file:`` URL over the Win32 extended-length path with ``mode=ro``
+    (percent-encoding keeps ``#``/``%``/spaces and non-ASCII intact).
+    Other platforms keep the historical ``Path.as_uri()`` form.
+    """
     try:
-        return sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        if os.name == "nt":
+            extended_uri = "file:" + urllib.parse.quote(
+                str(backup_fs.extended(path)), safe=""
+            )
+            connection = sqlite3.connect(
+                f"{extended_uri}?mode=ro", uri=True
+            )
+        else:
+            connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        connection.execute("PRAGMA query_only=ON")
+        return connection
     except (OSError, sqlite3.Error) as exc:
         raise BackupValidationError(
             "BACKUP_DB_UNREADABLE", "备份数据库无法读取"

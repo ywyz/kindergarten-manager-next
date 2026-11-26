@@ -18,6 +18,13 @@ dependency is introduced.  The client is deliberately narrow:
   ``Overwrite: F`` publishes it.  An existing final name is never replaced;
   a repeat of the same snapshot is verified (HEAD size) and reported as
   already published, a different file is a collision.
+- Per the 2026-11-26 teacher decision the WebDAV remote copy may be either
+  password-encrypted (Format 1 MODE_PASSWORD, the historical default) or an
+  explicitly acknowledged plaintext package (MODE_PLAINTEXT).  The host
+  enforces the explicit acknowledgement before any plaintext upload; this
+  client accepts both modes and reports the mode it saw on download so the
+  panel can show the no-password hint.  TLS, redirect, path and size
+  protections apply identically in both modes.
 - Size, whole-operation time and transfer-rate limits are enforced; cancel is
   checked between chunks.  All failures map to stable ``WEBDAV_*`` codes with
   teacher-facing text; no URL with credentials, password or absolute local
@@ -100,6 +107,9 @@ class DownloadResult:
     name: str
     size: int
     sha256: str
+    # False for an explicitly-acknowledged plaintext package: the panel shows
+    # the no-password hint instead of asking for a restore password.
+    encrypted: bool = True
 
 
 def remote_name_for(snapshot_id: str, *, now: datetime | None = None) -> str:
@@ -595,11 +605,15 @@ class WebdavClient:
         if size <= 0 or size > self.max_package_bytes:
             raise WebdavError("WEBDAV_SIZE_LIMIT", "备份文件大小超出 WebDAV 上传上限")
         header = self._peek_local_header(package)
-        if header.mode != backup_format.MODE_PASSWORD:
-            # A remote copy must never contain readable business/photos.
+        if header.mode not in (
+            backup_format.MODE_PASSWORD,
+            backup_format.MODE_PLAINTEXT,
+        ):
+            # Only the two fixed Format 1 modes are uploadable; the host has
+            # already required either a password or an explicit plaintext
+            # acknowledgement before this transport is reached.
             raise WebdavError(
-                "WEBDAV_ENCRYPTION_REQUIRED",
-                "上传到 WebDAV 的备份必须使用密码加密；请重新创建加密备份",
+                "WEBDAV_LOCAL_PACKAGE_INVALID", "本地备份文件格式不正确"
             )
 
         # The remote name is bound to the snapshot's own creation time, so a
@@ -939,12 +953,20 @@ class WebdavClient:
             if total < backup_format.HEADER_LEN:
                 raise WebdavError("WEBDAV_TRANSFER_INCOMPLETE", "远端备份不完整")
             header = self._peek_local_header(target)
-            if header.mode != backup_format.MODE_PASSWORD:
+            if header.mode not in (
+                backup_format.MODE_PASSWORD,
+                backup_format.MODE_PLAINTEXT,
+            ):
                 raise WebdavError(
                     "WEBDAV_FORMAT_MISMATCH",
-                    "远端备份未加密，已拒绝作为恢复来源",
+                    "远端备份格式不受支持，已拒绝作为恢复来源",
                 )
-            return DownloadResult(name=name, size=total, sha256=hasher.hexdigest())
+            return DownloadResult(
+                name=name,
+                size=total,
+                sha256=hasher.hexdigest(),
+                encrypted=header.mode == backup_format.MODE_PASSWORD,
+            )
         except WebdavError:
             if sink is not None:
                 try:

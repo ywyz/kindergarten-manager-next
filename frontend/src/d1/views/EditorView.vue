@@ -9,7 +9,8 @@
  * afternoon outdoor, reflection with implementation material) stays mounted
  * and visible at once, so old data, long text and empty drafts read without
  * tab switching. Operations are no longer repeated inside the preview: the
- * rail keeps exactly the four main actions in order (拆分教案并修改 /
+ * rail keeps the main actions in order (拆分教案并修改 — shown as 填入原教案
+ * while the raw lesson is empty / 生成其他活动内容 / 生成一日活动反思 /
  * 修改指定内容 / 保存 / 导出 Word) plus the auxiliary entries (任务 for the
  * AI tasks + version history, back to the workbench, settings).
  *
@@ -1452,6 +1453,86 @@ function removeLayoutAfternoonGame(gameIndex: number): void {
 const planGrade = computed<Grade>(() => (plan.value?.grade as Grade) ?? 'middle')
 const hasRaw = computed(() => rawLessonPlan.value.trim() !== '')
 const hasProcess = computed(() => form.value.group_activity.process.trim() !== '')
+/**
+ * 拆分后（本计划存在拆分基准过程）目标／准备／重点／难点的编辑文本区加高：
+ * 拆分结果通常远长于手工输入，固定两行会迫使教师频繁滚动核对。
+ */
+const splitApplied = computed(() => {
+  const baseline = plan.value?.content.split_baseline?.group_activity_process
+  return typeof baseline === 'string' && baseline.trim() !== ''
+})
+const splitFieldRows = computed(() => (splitApplied.value ? 6 : 2))
+
+/**
+ * 「生成一日活动反思」的前端门槛：当日所有活动栏目均有内容才可发起。
+ * 与后端 create_task 的反思门槛使用同一栏目判定；任一栏缺失时给出具体
+ * 栏目提示，而不是允许生成一段编造完整一日活动的反思。
+ */
+const reflectionMissingBoard = computed<string>(() => {
+  const groupsHaveContent = (
+    groups: Array<{
+      games: Array<{ name: string }>
+      focus_guidance: string
+      shared_objectives?: string
+      guidance_points?: string
+      objectives?: string
+      guidance?: string
+      support_strategy?: string
+    }>,
+  ): boolean =>
+    groups.some(
+      (group) =>
+        group.games.some((game) => game.name.trim() !== '') ||
+        group.focus_guidance.trim() !== '' ||
+        (group.shared_objectives ?? '').trim() !== '' ||
+        (group.guidance_points ?? '').trim() !== '' ||
+        (group.objectives ?? '').trim() !== '' ||
+        (group.guidance ?? '').trim() !== '' ||
+        (group.support_strategy ?? '').trim() !== '',
+    )
+  if (
+    form.value.morning_games.length === 0 ||
+    !groupsHaveContent(form.value.morning_games)
+  ) {
+    return '晨间活动'
+  }
+  if (
+    form.value.morning_talk.topic.trim() === '' &&
+    form.value.morning_talk.questions.trim() === ''
+  ) {
+    return '晨间谈话'
+  }
+  const activity = form.value.group_activity
+  if (
+    activity.theme.trim() === '' &&
+    activity.objectives.trim() === '' &&
+    activity.preparation.trim() === '' &&
+    activity.key_points.trim() === '' &&
+    activity.difficult_points.trim() === '' &&
+    activity.process.trim() === ''
+  ) {
+    return '集体活动'
+  }
+  if (
+    form.value.post_group_games.length === 0 ||
+    !groupsHaveContent(form.value.post_group_games)
+  ) {
+    return '活动后游戏'
+  }
+  const afternoon = form.value.afternoon_outdoor
+  if (
+    afternoon.area.trim() === '' &&
+    !afternoon.games.some((game) => game.name.trim() !== '') &&
+    afternoon.observation_focus.trim() === '' &&
+    afternoon.objectives.trim() === '' &&
+    afternoon.guidance.trim() === '' &&
+    afternoon.support_strategy.trim() === ''
+  ) {
+    return '下午户外'
+  }
+  return ''
+})
+const reflectionGateReady = computed(() => reflectionMissingBoard.value === '')
 const sectionAiCurrentText = computed(() => {
   switch (sectionAiTarget.value) {
     case 'morning_games':
@@ -2933,6 +3014,50 @@ function submitSectionAi(): void {
   )
 }
 
+/**
+ * 「生成其他活动内容」：一次点击直接发起一个完整的其他活动生成请求，
+ * 一次提供晨间活动、晨间谈话、活动后游戏、下午户外全部四个板块
+ * （不带 target_section）。逐栏选择生成保留在「修改指定内容」里。
+ */
+function startGenerateActivities(): void {
+  if (layoutEditing.value) {
+    ElMessage.info('栏目编辑弹窗未关闭：请先确定或取消后再发起 AI 生成')
+    return
+  }
+  if (!plan.value) {
+    ElMessage.warning('草稿尚未保存：请先保存并创建日计划后再生成其他活动内容')
+    return
+  }
+  onAiActionStart('daily_other_activities')
+  void aiTaskPanelRef.value?.trigger?.('daily_other_activities')
+}
+
+/**
+ * 「生成一日活动反思」：一次点击直接发起反思生成。全部活动均有内容时
+ * 立即提交（该门槛同样由后端 API 强制）；缺少活动实施材料时给出可操作的
+ * 路径——打开反思栏编辑弹窗填写材料，而不是静默失败。
+ */
+function startGenerateReflection(): void {
+  if (layoutEditing.value) {
+    ElMessage.info('栏目编辑弹窗未关闭：请先确定或取消后再发起反思')
+    return
+  }
+  if (!plan.value) {
+    ElMessage.warning('草稿尚未保存：请先保存并创建日计划后再生成反思')
+    return
+  }
+  if (reflectionMaterials.value.trim() === '') {
+    ElMessage.warning(
+      '请先填写活动实施材料（实际发生的活动情况）：没有材料时不生成，避免编造已发生的课堂。已打开反思栏编辑，请填写“活动实施材料”后再次点击生成。',
+    )
+    openLayoutEditor('reflection')
+    return
+  }
+  focusLayoutSection('reflection')
+  aiTaskDialogOpen.value = true
+  void createReflectionTask()
+}
+
 function openReflectionAi(): void {
   if (layoutEditing.value) {
     ElMessage.info('栏目编辑弹窗未关闭：请先确定或取消后再发起反思')
@@ -3108,7 +3233,9 @@ async function startSplitFromRail(): Promise<void> {
   }
   if (splitFromRailBusy) return
   if (!hasRaw.value) {
-    ElMessage.warning('原始教案为空：请先粘贴原文并“确定填回草稿”，再点击“拆分教案并修改”')
+    ElMessage.warning(
+      '原始教案为空：请在弹窗中粘贴原文并“确定填回草稿”；填好后主操作会变为“拆分教案并修改”',
+    )
     openLayoutEditor('raw')
     return
   }
@@ -3390,6 +3517,13 @@ onMounted(() => {
     sectionAiOpen: () => sectionAiOpen.value,
     reflectionAiOpen: () => reflectionAiOpen.value,
     aiTaskDialogOpen: () => aiTaskDialogOpen.value,
+    startGenerateActivities: () => startGenerateActivities(),
+    startGenerateReflection: () => startGenerateReflection(),
+    railSplitLabel: () => (hasRaw.value ? '拆分教案并修改' : '填入原教案'),
+    splitApplied: () => splitApplied.value,
+    splitFieldRows: () => splitFieldRows.value,
+    reflectionGateReady: () => reflectionGateReady.value,
+    reflectionMissingBoard: () => reflectionMissingBoard.value,
   }
   emit('register-editor', bridge)
   void load()
@@ -3975,7 +4109,22 @@ onBeforeUnmount(() => {
           data-d1="start-split-from-rail"
           @click="startSplitFromRail"
         >
-          拆分教案并修改
+          {{ hasRaw ? '拆分教案并修改' : '填入原教案' }}
+        </el-button>
+        <el-button
+          :disabled="props.frozen || !!layoutEditing"
+          data-d1="open-generate-activities"
+          @click="startGenerateActivities"
+        >
+          生成其他活动内容
+        </el-button>
+        <el-button
+          :disabled="props.frozen || !!layoutEditing || !reflectionGateReady"
+          :title="reflectionGateReady ? '依据已填写并保存的各栏活动与实施材料，直接生成一日活动反思' : `当日活动未填写完整：缺少${reflectionMissingBoard}`"
+          data-d1="open-generate-reflection"
+          @click="startGenerateReflection"
+        >
+          生成一日活动反思
         </el-button>
         <el-button
           :disabled="props.frozen || !!layoutEditing"
@@ -4163,7 +4312,7 @@ onBeforeUnmount(() => {
             <el-input
               v-model="layoutDraft.form.group_activity.objectives"
               type="textarea"
-              :rows="2"
+              :rows="splitFieldRows"
               :disabled="editDisabled"
               data-d1="layout-input-group-objectives"
             />
@@ -4173,7 +4322,7 @@ onBeforeUnmount(() => {
             <el-input
               v-model="layoutDraft.form.group_activity.preparation"
               type="textarea"
-              :rows="2"
+              :rows="splitFieldRows"
               :disabled="editDisabled"
               data-d1="layout-input-group-preparation"
             />
@@ -4181,14 +4330,14 @@ onBeforeUnmount(() => {
           <div class="field-grid">
             <div class="field">
               <label>重点</label>
-              <el-input v-model="layoutDraft.form.group_activity.key_points" type="textarea" :rows="2" :disabled="editDisabled" />
+              <el-input v-model="layoutDraft.form.group_activity.key_points" type="textarea" :rows="splitFieldRows" :disabled="editDisabled" />
             </div>
             <div class="field">
               <label>难点</label>
               <el-input
                 v-model="layoutDraft.form.group_activity.difficult_points"
                 type="textarea"
-                :rows="2"
+                :rows="splitFieldRows"
                 :disabled="editDisabled"
               />
             </div>

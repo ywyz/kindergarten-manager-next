@@ -397,6 +397,13 @@ def preview_adoption(
             content=content,
             input_row=input_row,
             holiday_provider=holiday_provider,
+        ) and not ai_inputs.candidate_target_applied(
+            session,
+            plan=plan,
+            content=content,
+            candidate=candidate,
+            input_row=input_row,
+            holiday_provider=holiday_provider,
         ):
             raise LocalAiSourceChanged(
                 details=ai_candidates.source_change_details(
@@ -607,6 +614,13 @@ def adopt(
             session,
             plan=plan,
             content=content,
+            input_row=input_row,
+            holiday_provider=holiday_provider,
+        ) and not ai_inputs.candidate_target_applied(
+            session,
+            plan=plan,
+            content=content,
+            candidate=candidate,
             input_row=input_row,
             holiday_provider=holiday_provider,
         ):

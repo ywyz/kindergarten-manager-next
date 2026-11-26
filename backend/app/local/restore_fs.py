@@ -22,6 +22,11 @@ from typing import Any
 
 from app.local import backup_fs, credentials
 from app.local.errors import LocalError
+
+
+def _extended(path: Path) -> str:
+    """Win32 extended-length form for internal restore paths."""
+    return credentials._extended_win_path(path)  # noqa: SLF001
 from app.local.restore_types import RestoreFailure
 
 _OP_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -106,13 +111,13 @@ def _ensure_private_dir(path: Path) -> None:
     # created with the restricted security descriptor itself.
     missing: list[Path] = []
     cursor = path
-    while not os.path.lexists(cursor):
+    while not os.path.lexists(_extended(cursor)):
         missing.append(cursor)
         parent = cursor.parent
         if parent == cursor:
             break
         cursor = parent
-    if os.path.lexists(cursor):
+    if os.path.lexists(_extended(cursor)):
         if credentials._is_reparse_point(cursor):  # noqa: SLF001
             raise RestoreFailure(
                 "RESTORE_PATH_UNSAFE", "prepare", "恢复目录祖先包含重解析点"
@@ -128,12 +133,12 @@ def _ensure_private_dir(path: Path) -> None:
 
 
 def _directory_identity(path: Path) -> tuple[int, int]:
-    info = os.lstat(path)
+    info = os.lstat(_extended(path))
     if getattr(info, "st_file_attributes", 0) & _REPARSE:
         raise RestoreFailure(
             "RESTORE_PATH_UNSAFE", "prepare", "恢复目录不得是重解析点"
         )
-    if not os.path.isdir(path):
+    if not os.path.isdir(_extended(path)):
         raise RestoreFailure(
             "RESTORE_PATH_UNSAFE", "prepare", "恢复目录不是普通目录"
         )
@@ -172,10 +177,10 @@ def operation_paths(runtime: Any, operation_id: str, *, create: bool) -> Restore
         receipts_dir=data_dir / ".restore-receipts",
     )
     if create:
-        data_stat = os.stat(data_dir)
+        data_stat = os.stat(_extended(data_dir))
         for root in (work_root, guard_root):
             _ensure_private_dir(root)
-            if os.stat(root).st_dev != data_stat.st_dev:
+            if os.stat(_extended(root)).st_dev != data_stat.st_dev:
                 raise RestoreFailure(
                     "RESTORE_NOT_SAME_VOLUME",
                     "prepare",
@@ -199,14 +204,14 @@ def directory_identity(path: Path) -> tuple[int, int]:
 def file_identity(path: Path, *, hash_content: bool = True) -> FileIdentity:
     path = _absolute(path)
     try:
-        info = os.lstat(path)
+        info = os.lstat(_extended(path))
     except FileNotFoundError:
         return FileIdentity(present=False)
     if getattr(info, "st_file_attributes", 0) & _REPARSE:
         raise RestoreFailure(
             "RESTORE_PATH_UNSAFE", "verify", "恢复组件不得是重解析点"
         )
-    if not os.path.isfile(path):
+    if not os.path.isfile(_extended(path)):
         raise RestoreFailure(
             "RESTORE_PATH_UNSAFE", "verify", "恢复组件不是普通文件"
         )
@@ -246,7 +251,7 @@ def _entry_identity(info: os.stat_result) -> tuple[int, int]:
 def tree_manifest(root: Path, *, strict_regular: bool) -> dict[str, Any]:
     """Hash every object under one assets directory without following links."""
     root = _absolute(root)
-    if not root.exists():
+    if not os.path.lexists(_extended(root)):
         return {
             "present": False,
             "root_identity": None,
@@ -257,7 +262,7 @@ def tree_manifest(root: Path, *, strict_regular: bool) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
 
     def walk(current: Path, relative: str) -> None:
-        with os.scandir(current) as scan:
+        with os.scandir(_extended(current)) as scan:
             for entry in sorted(scan, key=lambda item: item.name):
                 child = Path(entry.path)
                 child_rel = f"{relative}/{entry.name}" if relative else entry.name
@@ -403,7 +408,7 @@ def _create_private_file(path: Path, *, private_parent: bool = True) -> int:
     handle = _INVALID_HANDLE_VALUE
     try:
         handle = credentials._kernel32.CreateFileW(  # noqa: SLF001
-            str(path),
+            _extended(path),
             _GENERIC_WRITE,
             0,
             ctypes.byref(sa),
@@ -438,7 +443,7 @@ def copy_file(
 ) -> FileIdentity:
     source = _absolute(source)
     target = _absolute(target)
-    if target.exists():
+    if os.path.lexists(_extended(target)):
         raise RestoreFailure(
             "RESTORE_TARGET_EXISTS", "prepare", "恢复目标已存在，拒绝覆盖"
         )
@@ -476,7 +481,7 @@ def copy_file(
         if fd >= 0:
             os.close(fd)
         try:
-            target.unlink()
+            os.unlink(_extended(target))
         except OSError:
             pass
         raise
@@ -489,7 +494,7 @@ def copy_file(
         raise RestoreFailure(
             "RESTORE_COMPONENT_CHANGED", "prepare", "恢复组件 hash 不一致"
         )
-    final = os.lstat(target)
+    final = os.lstat(_extended(target))
     if (int(final.st_dev), int(final.st_ino)) != identity or final.st_size != size:
         raise RestoreFailure(
             "RESTORE_COMPONENT_CHANGED", "prepare", "恢复组件落盘后被替换"
@@ -509,19 +514,21 @@ def move_no_replace(
 ) -> None:
     source = _absolute(source)
     target = _absolute(target)
-    if not source.exists() and not os.path.lexists(source):
+    if not os.path.lexists(_extended(source)):
         raise RestoreFailure(
             "RESTORE_COMPONENT_MISSING", "switch", "恢复源组件不存在"
         )
-    if os.path.lexists(target):
+    if os.path.lexists(_extended(target)):
         raise RestoreFailure(
             "RESTORE_TARGET_EXISTS", "switch", "恢复目标已存在，拒绝覆盖"
         )
     if private_parent:
         _ensure_private_dir(target.parent)
-    elif not target.parent.is_dir():
-        target.parent.mkdir(parents=True, exist_ok=True)
-    if not _kernel32.MoveFileExW(str(source), str(target), _MOVEFILE_WRITE_THROUGH):
+    elif not os.path.isdir(_extended(target.parent)):
+        os.makedirs(_extended(target.parent), exist_ok=True)
+    if not _kernel32.MoveFileExW(
+        _extended(source), _extended(target), _MOVEFILE_WRITE_THROUGH
+    ):
         error = ctypes.get_last_error()
         if error in (_ERROR_SHARING_VIOLATION, _ERROR_LOCK_VIOLATION):
             raise RestoreFailure(
@@ -557,7 +564,7 @@ def atomic_write_json(
         if fd >= 0:
             os.close(fd)
         try:
-            temp.unlink()
+            os.unlink(_extended(temp))
         except OSError:
             pass
         raise
@@ -567,7 +574,7 @@ def atomic_write_json(
     moved = False
     error = 0
     for attempt in range(20):
-        if _kernel32.MoveFileExW(str(temp), str(path), flags):
+        if _kernel32.MoveFileExW(_extended(temp), _extended(path), flags):
             moved = True
             error = 0
             break
@@ -581,7 +588,7 @@ def atomic_write_json(
         time.sleep(0.005 * (attempt + 1))
     if not moved:
         try:
-            temp.unlink()
+            os.unlink(_extended(temp))
         except OSError:
             pass
         raise RestoreFailure(
@@ -595,7 +602,8 @@ def atomic_write_json(
 def read_json(path: Path) -> dict[str, Any] | None:
     path = _absolute(path)
     try:
-        raw = path.read_bytes()
+        with open(_extended(path), "rb") as handle:
+            raw = handle.read()
     except FileNotFoundError:
         return None
     try:
@@ -621,10 +629,10 @@ def probe_database_family(db_path: Path) -> bool:
         db_path.with_name(db_path.name + "-journal"),
     ]
     for path in family:
-        if not path.exists():
+        if not os.path.lexists(_extended(path)):
             continue
         handle = credentials._kernel32.CreateFileW(  # noqa: SLF001
-            str(path),
+            _extended(path),
             _GENERIC_READ | _GENERIC_WRITE,
             0,
             None,
@@ -644,7 +652,9 @@ def probe_database_family(db_path: Path) -> bool:
 
 
 def same_volume(path: Path, other: Path) -> bool:
-    return os.stat(_absolute(path)).st_dev == os.stat(_absolute(other)).st_dev
+    return os.stat(_extended(_absolute(path))).st_dev == os.stat(
+        _extended(_absolute(other))
+    ).st_dev
 
 
 def path_is_within(path: Path, root: Path) -> bool:

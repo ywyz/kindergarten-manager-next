@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ids import new_opaque_id
-from app.local import backup_barrier
+from app.local import backup_barrier, credentials
 from app.local.base import utc_now
 from app.local.errors import LocalError, LocalStorageError, LocalValidationError
 from app.local.models import (
@@ -397,7 +397,7 @@ def _asset_root(runtime: Any) -> Path:
 
 def _check_no_reparse(path: Path, *, missing_ok: bool = True) -> None:
     try:
-        info = os.lstat(path)
+        info = os.lstat(_extended(path))
     except FileNotFoundError:
         if missing_ok:
             return
@@ -513,7 +513,17 @@ def _same_identity(left: os.stat_result, right: os.stat_result) -> bool:
 
 
 def _normalized_path(path: Path) -> str:
-    return os.path.normcase(os.path.abspath(str(path)))
+    text = os.path.abspath(str(path))
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[8:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    return os.path.normcase(text)
+
+
+def _extended(path: Path) -> str:
+    """Win32 extended-length form for internal managed paths."""
+    return credentials._extended_win_path(path)  # noqa: SLF001
 
 
 def _verify_open_file(fd: int, path: Path, root: Path) -> os.stat_result:
@@ -571,7 +581,7 @@ def _open_dir_handle(path: Path) -> int:
     ]
     kernel32.CreateFileW.restype = ctypes.wintypes.HANDLE
     handle = kernel32.CreateFileW(
-        str(path),
+        _extended(path),
         0x00000080,  # FILE_READ_ATTRIBUTES
         0x00000001 | 0x00000002,  # share read/write, deliberately not delete
         None,
@@ -627,7 +637,7 @@ def _open_verified_dir(path: Path, expected: Path) -> int:
 def _prepare_managed_dir(root: Path, path: Path) -> None:
     try:
         _ensure_managed_dir(root, path)
-        path.mkdir(parents=True, exist_ok=True)
+        os.makedirs(_extended(path), exist_ok=True)
         _ensure_managed_dir(root, path)
     except LocalError:
         raise
@@ -643,7 +653,7 @@ def _write_staging(path: Path, stream: BinaryIO, root: Path) -> tuple[str, int]:
     try:
         with _hold_managed_dirs(root, path):
             fd = os.open(
-                path,
+                _extended(path),
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
                 0o600,
             )
@@ -668,7 +678,7 @@ def _write_staging(path: Path, stream: BinaryIO, root: Path) -> tuple[str, int]:
                 written = os.fstat(handle.fileno())
             if not _same_object(info, written) or written.st_size != total:
                 raise ObservationAssetStorage("图片临时文件写入期间被替换")
-            path_info = os.lstat(path)
+            path_info = os.lstat(_extended(path))
             if (
                 not _same_identity(written, path_info)
                 or getattr(path_info, "st_file_attributes", 0) & 0x400
@@ -1027,7 +1037,7 @@ def _prepare_staged_asset(path: Path, root: Path) -> PreparedAsset:
     """Decode the staging file through one verified handle while parents are pinned."""
     try:
         with _hold_managed_dirs(root, path):
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            fd = os.open(_extended(path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
             try:
                 info = _verify_handle_path(
                     fd, path, root, error_cls=ObservationMaterialCorrupt
@@ -1035,7 +1045,7 @@ def _prepare_staged_asset(path: Path, root: Path) -> PreparedAsset:
                 with os.fdopen(os.dup(fd), "rb") as handle:
                     prepared = _prepare_asset(handle)
                 after = os.fstat(fd)
-                path_info = os.lstat(path)
+                path_info = os.lstat(_extended(path))
                 if (
                     not _same_identity(info, after)
                     or not _same_identity(info, path_info)
@@ -1062,7 +1072,7 @@ def inspect_managed_asset(
     """
     try:
         with _hold_managed_dirs(root, path):
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            fd = os.open(_extended(path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
             try:
                 info = _verify_handle_path(
                     fd, path, root, error_cls=ObservationMaterialCorrupt
@@ -1101,7 +1111,7 @@ def inspect_managed_asset(
                                 _validate_icc(image)
                                 image.load()
                 after = os.fstat(fd)
-                path_info = os.lstat(path)
+                path_info = os.lstat(_extended(path))
                 if (
                     not _same_identity(info, after)
                     or not _same_identity(info, path_info)
@@ -1144,12 +1154,12 @@ def verify_managed_asset_identity(
     """Short final-lock check: path/parents/final handle and identity only."""
     try:
         with _hold_managed_dirs(root, path):
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            fd = os.open(_extended(path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
             try:
                 info = _verify_handle_path(
                     fd, path, root, error_cls=ObservationMaterialCorrupt
                 )
-                path_info = os.lstat(path)
+                path_info = os.lstat(_extended(path))
                 identity = (
                     int(info.st_dev),
                     int(info.st_ino),
@@ -1181,9 +1191,11 @@ def _move_file(
 ) -> None:
     try:
         _prepare_managed_dir(root, target.parent)
-        if os.path.lexists(target):
+        if os.path.lexists(_extended(target)):
             raise ObservationAssetStorage("材料目标已存在")
-        source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        source_fd = os.open(
+            _extended(source), os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        )
         try:
             source_info = _verify_handle_path(
                 source_fd, source, root, error_cls=ObservationAssetStorage
@@ -1201,16 +1213,18 @@ def _move_file(
         finally:
             os.close(source_fd)
         with _hold_managed_dirs(root, source), _hold_managed_dirs(root, target):
-            source_path_info = os.lstat(source)
+            source_path_info = os.lstat(_extended(source))
             if (
                 not _same_identity(source_info, source_path_info)
                 or getattr(source_path_info, "st_file_attributes", 0) & 0x400
                 or getattr(source_path_info, "st_nlink", 1) != 1
-                or os.path.lexists(target)
+                or os.path.lexists(_extended(target))
             ):
                 raise ObservationAssetStorage("材料源文件或目标在落盘前被替换")
-            os.replace(source, target)
-            target_fd = os.open(target, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            os.replace(_extended(source), _extended(target))
+            target_fd = os.open(
+                _extended(target), os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            )
             try:
                 target_info = _verify_handle_path(
                     target_fd, target, root, error_cls=ObservationAssetStorage
@@ -1225,7 +1239,7 @@ def _move_file(
                     hasher.update(chunk)
                 if hasher.hexdigest() != expected_hash:
                     raise ObservationAssetStorage("材料落盘后哈希不一致")
-                target_path_info = os.lstat(target)
+                target_path_info = os.lstat(_extended(target))
                 if (
                     not _same_identity(target_info, target_path_info)
                     or getattr(target_path_info, "st_file_attributes", 0) & 0x400
@@ -1927,7 +1941,7 @@ def _read_verified_file(
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, flags | nofollow)
+        fd = os.open(_extended(path), flags | nofollow)
     except OSError:
         raise ObservationMaterialMissing("材料不存在") from None
     try:
@@ -1954,7 +1968,7 @@ def _read_verified_file(
         if hasher.hexdigest() != expected_hash:
             raise ObservationMaterialCorrupt("材料文件哈希不一致")
         try:
-            path_info = os.lstat(path)
+            path_info = os.lstat(_extended(path))
         except OSError:
             raise ObservationMaterialCorrupt("材料文件在读取期间被替换") from None
         if (

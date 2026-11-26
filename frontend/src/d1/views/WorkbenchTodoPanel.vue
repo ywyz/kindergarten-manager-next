@@ -12,6 +12,11 @@ import {
   type LocalTodo,
   type TodoStore,
 } from '../todos'
+import {
+  createTodoSyncStore,
+  rememberWorkbenchSyncStatus,
+  workbenchSyncLabel,
+} from '../todoSync'
 import type { BlockingDraft } from '../leave'
 
 const props = withDefaults(defineProps<{
@@ -25,6 +30,9 @@ const emit = defineEmits<{
 
 const activeStore = props.store ?? todoStore
 const state = activeStore.state
+const syncStore = createTodoSyncStore()
+const syncState = syncStore.state
+const syncLabel = computed(() => workbenchSyncLabel())
 const writeDisabled = computed(
   () =>
     props.disabled
@@ -117,7 +125,25 @@ watch(
 onMounted(() => {
   activeStore.setProfile(props.profileId)
   if (props.profileId) void activeStore.load()
+  void loadSyncStatus()
 })
+
+async function loadSyncStatus(): Promise<void> {
+  await syncStore.loadStatus()
+  if (syncState.status) {
+    rememberWorkbenchSyncStatus(syncState.status)
+  }
+}
+
+async function syncNow(): Promise<void> {
+  if (props.disabled || syncState.syncing) return
+  const ok = await syncStore.syncNow()
+  if (ok && syncState.status) {
+    rememberWorkbenchSyncStatus(syncState.status)
+    ElMessage.success(syncState.notice)
+    await activeStore.load()
+  }
+}
 
 function openCreateEditor(): void {
   if (writeDisabled.value) return
@@ -260,6 +286,21 @@ defineExpose({
       <div class="todo-header">
         <span>个人待办（表格预览）</span>
         <span class="muted">仅本人可见，不随班级或学期变化</span>
+      </div>
+      <div class="todo-sync-status" data-d1="todo-sync-status">
+        <span v-if="syncLabel" class="muted">{{ syncLabel }}</span>
+        <el-button
+          v-if="syncLabel"
+          size="small"
+          text
+          type="primary"
+          :disabled="props.disabled || syncState.syncing"
+          :loading="syncState.syncing"
+          data-d1="todo-sync-now"
+          @click="syncNow"
+        >
+          立即同步
+        </el-button>
       </div>
       <el-radio-group
         class="todo-view-switch"
@@ -565,6 +606,14 @@ defineExpose({
   gap: 10px;
   align-items: baseline;
   flex-wrap: wrap;
+}
+.todo-sync-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 12px;
 }
 .todo-view-switch {
   margin-top: 8px;

@@ -1,5 +1,7 @@
 # D2 每日活动计划 AI：产品决定与工程规格
 
+2026-11-26 更新。一次生成四栏、反思前置条件及定向候选的采用规则见 [日计划合同](../modules/daily-plans.md#2026-11-26-教案与生成操作)。
+
 状态更新：2026-10-19，用户已确认Q1–Q6按推荐方案，Q7按OpenAI兼容方向收敛。E1–E5设计核查已完成，具体契约和验收见[工程规格](desktop-ai-engineering.md)。用户随后明确授权OpenCode先实施W1数据迁移与凭据保存，由Codex核查和交回修复；W1已由OpenCode交付并通过Codex当前Windows 11合成环境工程核查，见[W1最终核查](../bootstrap/desktop-d2-w1-review.md#12-最终工程结论w1通过停在w1)。用户随后授权W2游戏配置与提示词，现已由OpenCode交付并通过[Codex工程核查](../bootstrap/desktop-d2-w2-review.md#8-最终工程结论w2通过停在w2)；W3已通过[当前Windows 11合成环境工程核查](../bootstrap/desktop-d2-w3-review.md)；W4候选与原子采用已通过[当前Windows 11合成环境工程核查](../bootstrap/desktop-d2-w4-review.md)；W5界面与宿主整合已通过[W5核查§8](../bootstrap/desktop-d2-w5-review.md#8-最终工程结论w5限定源码集成通过)所列限定源码集成工程核查；W6导出／无AI降级／新完整包已通过[当前Windows 11合成环境工程核查§9](../bootstrap/desktop-d2-w6-review.md#9-最终工程结论w6限定环境工程核查通过)；新Word逐页、真实系统睡眠、G17–G18仍待验，不调用应用真实AI或发布，见[当前任务](../tasks/current.md)。
 
 2026-10-22接续：用户已授权真实AI验收，MiMo本轮不测。换行、编号及晨间全户外指导整改后，r03新A已采用保存v6；新B成功返回，小班难度获认可，但教师话语不足，按约定停在B未采用、新C未发起。用户随后确认每个环节都要有教师可直接说的话，关键处补引导语、提问和回应，要求见§2；适龄r3源码整改及限定离线检查通过，新包启动被Windows策略阻止（4551），包验证及真实调用保持停止。本次旧Word两页由用户确认正常。实际状态及新包窗口波动边界见[G17结果§7](../bootstrap/desktop-d2-g17-result.md#7-r03真实质量复验2026-10-22)，不判G17质量、完整G18或发行通过。上方2026-10-19状态为历史事实。

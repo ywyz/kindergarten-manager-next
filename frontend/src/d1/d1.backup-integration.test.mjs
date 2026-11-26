@@ -653,6 +653,7 @@ function baseStatus(overrides = {}) {
   const backup = await webdav.startWebdavBackup({
     requestId: 'req-wb',
     password: 'pw',
+    explicitPlaintext: false,
   })
   assert.deepEqual(backup, {
     requestId: 'req-wb',
@@ -660,6 +661,18 @@ function baseStatus(overrides = {}) {
     generation: 1,
   })
   assert.equal(calls.at(-1).payload.explicit_plaintext, false)
+  assert.equal(calls.at(-1).payload.password, 'pw')
+
+  // 2026-11-26 decision: an explicitly acknowledged plaintext WebDAV
+  // package is carried through; the host still refuses it without the
+  // acknowledgement, so the adapter never invents the flag on its own.
+  await webdav.startWebdavBackup({
+    requestId: 'req-wb-plain',
+    password: null,
+    explicitPlaintext: true,
+  })
+  assert.equal(calls.at(-1).payload.password, null)
+  assert.equal(calls.at(-1).payload.explicit_plaintext, true)
 
   const download = await webdav.startWebdavDownload({
     requestId: 'req-wd',
@@ -679,7 +692,7 @@ function baseStatus(overrides = {}) {
     name: 'release',
     payload: { selection_id: 'sel-1' },
   })
-  ok('WebDAV adapter maps opaque DTOs and never sends plaintext uploads')
+  ok('WebDAV adapter maps opaque DTOs and carries the explicit plaintext choice')
 }
 
 {

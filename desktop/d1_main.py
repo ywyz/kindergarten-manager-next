@@ -51,6 +51,15 @@ from d0_main import (  # noqa: E402
 SELFTEST_DEADLINE_SECONDS = 240.0
 PRODUCT_TITLE = "幼儿园信息管理系统"
 
+# Application icon (2026-11-26 original artwork).  A frozen exe carries the
+# icon as its own resource and pywebview then extracts it automatically, so
+# only source runs need the explicit path.
+def _app_icon_path() -> str | None:
+    if d0_paths.is_frozen():
+        return None
+    candidate = d0_paths.APP_DIR / "assets" / "app_icon.ico"
+    return str(candidate) if candidate.is_file() else None
+
 # Optional startup diagnostics (verification only): when set, each startup
 # step appends one line to this file. Never writes elsewhere and is inert
 # for normal runs.
@@ -7305,7 +7314,7 @@ def run_selftest(args) -> int:
 
         threading.Thread(target=watchdog, daemon=True).start()
         _startup_log("run_selftest:webview.start begin")
-        webview.start(gui="edgechromium", func=driver_task)
+        webview.start(gui="edgechromium", func=driver_task, icon=_app_icon_path())
         _startup_log("run_selftest:webview.start returned")
         closing_finished.set()
         if args.phase == "w5-ui":
@@ -8119,7 +8128,7 @@ def _run_interactive_session(args, state: dict) -> int:
         window, host_api, lifecycle, bundle, runtime, args, recovery_holder
     )
     try:
-        webview.start(gui="edgechromium")
+        webview.start(gui="edgechromium", icon=_app_icon_path())
     except Exception as exc:
         _stop_service(service)
         show_error("窗口失败", f"窗口启动失败：\n{exc}")

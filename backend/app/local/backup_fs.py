@@ -53,7 +53,34 @@ class BackupPathError(LocalError):
 
 
 def _normalized(path: Path) -> str:
-    return os.path.normcase(os.path.abspath(str(path)))
+    text = os.path.abspath(str(path))
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[8:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    return os.path.normcase(text)
+
+
+def source_exists(path: Path) -> bool:
+    """Existence probe for an internal path on the extended form.
+
+    Deep data roots make a plain ``Path.exists()`` fail past MAX_PATH; the
+    extended form keeps the probe working without changing its semantics
+    (broken reparse points still count as existing, matching lexists).
+    """
+    return os.path.lexists(extended(path))
+
+
+def extended(path: Path) -> str:
+    """Internal absolute path in Win32 extended-length form (``\\\\?\\``).
+
+    Backup workspaces legitimately live below the (possibly deep) data root,
+    so every Win32 call and plain ``os`` call on internal paths goes through
+    this form: the 260-character limit never applies to them.  The helper
+    still refuses relative paths, ``.``/``..`` segments and device
+    namespaces, and alias/reparse/DACL checks are unchanged.
+    """
+    return credentials._extended_win_path(path)  # noqa: SLF001
 
 
 def _handle_info(handle) -> credentials._BY_HANDLE_FILE_INFORMATION:  # noqa: SLF001
@@ -98,7 +125,7 @@ def _close_handle(handle) -> None:
 
 def _open_directory(path: Path):
     handle = credentials._kernel32.CreateFileW(  # noqa: SLF001
-        str(path),
+        extended(path),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         None,
@@ -141,7 +168,14 @@ class DirectoryGuard:
         self.final_path: Path | None = None
 
     def __enter__(self) -> "DirectoryGuard":
-        absolute = Path(os.path.abspath(str(self.path)))
+        text = str(self.path)
+        if text.startswith("\\\\?\\"):
+            # An already extended input is re-validated through the same
+            # helper (canonical drive/UNC body only) instead of being
+            # blindly trusted.
+            absolute = Path(extended(self.path))
+        else:
+            absolute = Path(os.path.abspath(text))
         if not absolute.is_absolute():
             raise BackupPathError("BACKUP_PATH_INVALID", "备份目录必须是绝对路径")
         current = Path(absolute.anchor)
@@ -224,7 +258,7 @@ class FileLease:
 
     def __enter__(self) -> "FileLease":
         handle = credentials._kernel32.CreateFileW(  # noqa: SLF001
-            str(self.path),
+            extended(self.path),
             GENERIC_READ,
             FILE_SHARE_READ,
             None,
@@ -363,7 +397,7 @@ class PrivateWorkArea:
         return self
 
     def _set_path_identity(self) -> None:
-        info = os.lstat(self.path)
+        info = os.lstat(extended(self.path))
         self.path_identity = (int(info.st_dev), int(info.st_ino))
 
     def subdir(self, *parts: str) -> Path:
@@ -384,7 +418,7 @@ class PrivateWorkArea:
         handle = INVALID_HANDLE_VALUE
         try:
             handle = credentials._kernel32.CreateFileW(  # noqa: SLF001
-                str(path),
+                extended(path),
                 GENERIC_WRITE,
                 0,
                 ctypes.byref(sa),
@@ -533,7 +567,7 @@ def create_output_temp(parent: Path, stem: str) -> tuple[int, Path]:
         candidate = parent / f".{stem}-{secrets.token_hex(8)}.tmp"
         try:
             fd = os.open(
-                candidate,
+                extended(candidate),
                 os.O_WRONLY
                 | os.O_CREAT
                 | os.O_EXCL
@@ -551,13 +585,13 @@ def create_output_temp(parent: Path, stem: str) -> tuple[int, Path]:
 def publish_no_replace(temp: Path, target: Path) -> None:
     """Atomically create ``target`` from ``temp`` without ever replacing it."""
     try:
-        os.link(temp, target)
+        os.link(extended(temp), extended(target))
     except FileExistsError as exc:
         raise BackupPathError("BACKUP_TARGET_EXISTS", "备份目标已存在，拒绝覆盖") from exc
     except OSError as exc:
         raise BackupPathError("BACKUP_TARGET_INVALID", "备份目标无法原子发布") from exc
     try:
-        os.unlink(temp)
+        os.unlink(extended(temp))
     except OSError as exc:
         warnings.warn(
             f"backup temp output cleanup failed: {exc}",

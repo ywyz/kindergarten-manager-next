@@ -19,6 +19,7 @@ import type {
 import type { UpdateStatus } from '../update'
 import type { SettingsDraftTarget, SettingsDraftTargetKind } from '../leave'
 import AiSettingsPanel from './AiSettingsPanel.vue'
+import TodoSyncPanel from './TodoSyncPanel.vue'
 import GameConfigPanel from './GameConfigPanel.vue'
 import CollaborationPanel from './CollaborationPanel.vue'
 import { createCollaborationApi } from '../collaboration'
@@ -2158,6 +2159,8 @@ defineExpose({
                   </div>
                 </div>
               </div>
+
+              <TodoSyncPanel :frozen="frozen" />
             </section>
 
             <section v-show="activeSettingsPage === 'terms'" data-d1="settings-page-terms-content">

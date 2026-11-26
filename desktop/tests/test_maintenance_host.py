@@ -1323,6 +1323,7 @@ class FakeDownload:
     name: str
     size: int
     sha256: str = "0" * 64
+    encrypted: bool = True
 
 
 class FakeWebdavEndpoint:
@@ -1523,11 +1524,13 @@ def test_webdav_list_versions_maps_display_dto(tmp_path):
     assert result["config"]["configured"] is True
 
 
-def test_webdav_backup_requires_password_and_uploads_under_staging(tmp_path):
+def test_webdav_backup_password_or_explicit_plaintext_uploads(tmp_path):
     host, backup, _core, _store, client = webdav_host(tmp_path)
+    # Neither a password nor an acknowledged plaintext upload is a refusal:
+    # the teacher must make the choice explicitly.
     with pytest.raises(mh.MaintenanceHostError) as caught:
         host.start_webdav_backup(request_id="webdav-plain", password=None)
-    assert caught.value.code == "WEBDAV_ENCRYPTION_REQUIRED"
+    assert caught.value.code == "PLAINTEXT_NOT_ACKNOWLEDGED"
 
     ref = host.start_webdav_backup(request_id="webdav-backup-1", password="pw")
     status = wait_phase(host, "webdav-backup-1", {"completed", "error"})
@@ -1541,6 +1544,17 @@ def test_webdav_backup_requires_password_and_uploads_under_staging(tmp_path):
     work_root = tmp_path / "webdav-work"
     wait_no_matches(work_root, "webdav-backup-*")
     assert ref["operation_id"]
+
+    # An explicitly acknowledged plaintext WebDAV package uploads too; the
+    # relaxation is WebDAV-only and the acknowledgement stays mandatory.
+    ref_plain = host.start_webdav_backup(
+        request_id="webdav-backup-plain", password=None, explicit_plaintext=True
+    )
+    status_plain = wait_phase(host, "webdav-backup-plain", {"completed", "error"})
+    assert status_plain["phase"] == "completed"
+    assert backup.calls == 2
+    assert len(client.uploads) == 2
+    assert ref_plain["operation_id"]
 
 
 def test_webdav_backup_error_maps_message_and_keeps_no_staging(tmp_path):

@@ -20,7 +20,7 @@ export interface FeedbackStatus {
 
 /** One fixed-shape diagnostic event (strict: four fixed fields only). */
 export interface FeedbackDiagnosticsEvent {
-  event_type: 'export_word' | 'local_backup' | 'webdav_backup' | 'update_check' | 'update_download' | 'save_daily_plan' | 'save_weekly_plan' | 'save_observation' | 'save_listening' | 'save_curriculum'
+  event_type: 'export_word' | 'local_backup' | 'webdav_backup' | 'webdav_download' | 'webdav_restore' | 'local_restore' | 'update_check' | 'update_download' | 'save_daily_plan' | 'save_weekly_plan' | 'save_observation' | 'save_listening' | 'save_curriculum'
   time: string
   result: 'ok' | 'canceled' | 'failed' | 'unknown'
   error_code: string | null

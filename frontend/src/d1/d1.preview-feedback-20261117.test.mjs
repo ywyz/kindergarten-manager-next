@@ -35,7 +35,11 @@ for (const marker of ['start-split-from-rail', 'open-modify', 'manual-save', 'op
   assert.ok(editor.includes(`data-d1="${marker}"`), `${marker} is in the right action area`)
 }
 assert.match(editor, /data-d1="start-split-from-rail"[^>]*@click="startSplitFromRail"/)
-assert.match(editor, /data-d1="start-split-from-rail"[^>]*>\s*拆分教案并修改\s*<\/el-button>/)
+assert.match(
+  editor,
+  /data-d1="start-split-from-rail"[^>]*>\s*\{\{ hasRaw \? '拆分教案并修改' : '填入原教案' \}\}\s*<\/el-button>/,
+  'the first main action switches between 填入原教案 and 拆分教案并修改',
+)
 assert.doesNotMatch(editor, /data-d1="open-ai-history"/, 'the separate AI history rail entry is consolidated into 任务')
 assert.equal(
   (editor.match(/data-d1="open-tasks"/g) ?? []).length,

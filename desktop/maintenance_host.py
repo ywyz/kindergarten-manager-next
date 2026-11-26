@@ -26,6 +26,34 @@ class MaintenanceHostError(RuntimeError):
         self.message = message
 
 
+_DIAG_EVENT_FALLBACK = {
+    "webdav_backup": "WEBDAV_BACKUP_FAILED",
+    "webdav_download": "WEBDAV_DOWNLOAD_FAILED",
+    "webdav_restore": "RESTORE_FAILED",
+    "local_restore": "RESTORE_FAILED",
+    "local_backup": "BACKUP_FAILED",
+}
+
+# Restore-phase codes mapped onto the shared finite vocabulary; anything
+# unlisted keeps its own code only when the vocabulary already knows it
+# (normalize_error_code decides) and otherwise merges to RESTORE_FAILED.
+_RESTORE_DIAG_CODE = {
+    "RESTORE_RESTART_REQUIRED": "RESTORE_RECOVERY_REQUIRED",
+    "RESTORE_RECOVERY_REQUIRED": "RESTORE_RECOVERY_REQUIRED",
+    "REOPEN_FAILED": "RESTORE_REOPEN_FAILED",
+    "RESTORE_REOPEN_FAILED": "RESTORE_REOPEN_FAILED",
+    "RESTORE_PACKAGE_INVALID": "RESTORE_PACKAGE_INVALID",
+    "WRONG_PASSWORD": "RESTORE_PASSWORD_INVALID",
+    "RESTORE_FAILED": "RESTORE_INSTALL_FAILED",
+}
+
+
+def _restore_diag_code(code: str) -> str:
+    """Map one restore core code onto the finite diagnostics vocabulary."""
+    value = str(code or "")
+    return _RESTORE_DIAG_CODE.get(value, value)
+
+
 def _diagnostics_record(
     event_type: str, result: str, error_code: str | None = None
 ) -> None:
@@ -36,14 +64,13 @@ def _diagnostics_record(
     or restore result itself is authoritative.  A failure code merges into
     the shared finite vocabulary (the detailed core code stays in the
     operation status the teacher already sees); ok/cancel results keep no
-    code at all.
+    code at all.  Recorded codes are fixed identifiers only: never a URL,
+    password, path or exception text.
     """
     if error_code is not None:
-        fallback = (
-            "WEBDAV_BACKUP_FAILED"
-            if event_type == "webdav_backup"
-            else "BACKUP_FAILED"
-        )
+        fallback = _DIAG_EVENT_FALLBACK.get(event_type, "UNKNOWN_ERROR")
+        if event_type in ("webdav_restore", "local_restore"):
+            error_code = _restore_diag_code(error_code)
         try:
             from app.diagnostics_contract import normalize_error_code
 
@@ -518,6 +545,8 @@ class MaintenanceHost:
         kind: str,
         fingerprint: str,
         exc: "MaintenanceHostError",
+        *,
+        diag_event: str | None = None,
     ) -> None:
         """Make a rejected start/confirm queryable by the same request id.
 
@@ -525,6 +554,10 @@ class MaintenanceHost:
         request to the same terminal error instead of hanging or resending a
         side effect.  Rejection records never start a worker and never
         overwrite an existing operation.
+
+        When ``diag_event`` names a fixed diagnostics family, the rejection
+        is a real teacher-visible failure and is recorded with its fixed
+        code only (never a URL, password or path).
         """
         if not request_id:
             return
@@ -560,6 +593,8 @@ class MaintenanceHost:
             }
             self._ops[op["operation_id"]] = op
             self._by_request[request_id] = op
+        if diag_event is not None:
+            _diagnostics_record(diag_event, "failed", exc.code)
 
     def recovery_required(self) -> bool:
         """True when the core journal requires a restart before new work."""
@@ -793,7 +828,13 @@ class MaintenanceHost:
                 if self.backup_service is None:
                     raise MaintenanceHostError("HOST_CORE_UNAVAILABLE", "备份引擎尚未就绪")
             except MaintenanceHostError as exc:
-                self._record_rejection(request_id, "backup", fingerprint, exc)
+                self._record_rejection(
+                    request_id,
+                    "backup",
+                    fingerprint,
+                    exc,
+                    diag_event="local_backup",
+                )
                 raise
             op = self._new_op(request_id, "backup", "creating", fingerprint)
             self._sweep_managed_staging()
@@ -870,7 +911,13 @@ class MaintenanceHost:
         password: str | None,
         explicit_plaintext: bool = False,
     ) -> dict[str, Any]:
-        """Create an encrypted snapshot locally, then upload it to WebDAV."""
+        """Create a snapshot locally, then upload it to WebDAV.
+
+        Per the 2026-11-26 teacher decision the remote package is either
+        password-encrypted (the historical default) or an explicitly
+        acknowledged plaintext package; the transport itself keeps TLS,
+        redirect, path and integrity protections in both modes.
+        """
         with self._lock:
             payload = {
                 "password": password,
@@ -888,12 +935,12 @@ class MaintenanceHost:
                 if password is not None:
                     if not isinstance(password, str) or not password:
                         raise MaintenanceHostError(
-                            "PASSWORD_REQUIRED", "请输入密码；WebDAV 备份必须加密"
+                            "PASSWORD_REQUIRED", "请输入密码；不会自动降级为明文"
                         )
-                else:
+                elif not explicit_plaintext:
                     raise MaintenanceHostError(
-                        "WEBDAV_ENCRYPTION_REQUIRED",
-                        "WebDAV 备份必须使用密码加密；请选择密码后重试",
+                        "PLAINTEXT_NOT_ACKNOWLEDGED",
+                        "请确认明文远端备份包含可读业务和照片",
                     )
                 if self.backup_service is None:
                     raise MaintenanceHostError(
@@ -901,7 +948,13 @@ class MaintenanceHost:
                     )
                 endpoint = self._load_endpoint()
             except MaintenanceHostError as exc:
-                self._record_rejection(request_id, "webdav-backup", fingerprint, exc)
+                self._record_rejection(
+                    request_id,
+                    "webdav-backup",
+                    fingerprint,
+                    exc,
+                    diag_event="webdav_backup",
+                )
                 raise
             op = self._new_op(request_id, "backup", "creating", fingerprint)
             op["category"] = "webdav"
@@ -1048,7 +1101,11 @@ class MaintenanceHost:
                     )
             except MaintenanceHostError as exc:
                 self._record_rejection(
-                    request_id, "webdav-download", fingerprint, exc
+                    request_id,
+                    "webdav-download",
+                    fingerprint,
+                    exc,
+                    diag_event="webdav_download",
                 )
                 raise
             op = self._new_op(request_id, "restore", "downloading", fingerprint)
@@ -1086,7 +1143,7 @@ class MaintenanceHost:
             target = work.path / version_name
             client = self._webdav_client(endpoint)
             fd = work.create_file(target)
-            client.download(
+            download = client.download(
                 version_name,
                 target,
                 fd=fd,
@@ -1094,35 +1151,52 @@ class MaintenanceHost:
                 progress=lambda value: self._progress(op, value),
             )
             selection_id = secrets.token_urlsafe(18)
+            cancelled_late = False
             with self._lock:
-                if op["phase"] in _TERMINAL or op["_cancel"].is_set():
-                    if op["phase"] not in _TERMINAL:
-                        op["phase"] = "cancelled"
+                if op["phase"] in _TERMINAL:
                     return
-                self._selections[selection_id] = target
-                self._managed_selections[selection_id] = work
-                op["selection"] = {
-                    "selection_id": selection_id,
-                    "display_name": version_name,
-                    "encrypted": True,
-                }
-                op["phase"] = "downloaded"
-                op["progress"] = None
+                if op["_cancel"].is_set():
+                    # The cancel arrived after a complete download: the
+                    # staging file is dropped with the work area below.
+                    op["phase"] = "cancelled"
+                    cancelled_late = True
+                else:
+                    self._selections[selection_id] = target
+                    self._managed_selections[selection_id] = work
+                    op["selection"] = {
+                        "selection_id": selection_id,
+                        "display_name": version_name,
+                        "encrypted": bool(
+                            getattr(download, "encrypted", True)
+                        ),
+                    }
+                    op["phase"] = "downloaded"
+                    op["progress"] = None
+            if cancelled_late:
+                _diagnostics_record("webdav_download", "canceled")
+                return
             work = None  # ownership moved into the managed selection map
+            _diagnostics_record("webdav_download", "ok")
+            return
         except Exception as exc:  # noqa: BLE001 - host boundary
             code = str(getattr(exc, "code", ""))
             cancelled = code == "WEBDAV_CANCELLED" or type(exc).__name__ == "WebdavCancelled"
             message = getattr(exc, "message", "") or "WebDAV 下载失败，当前档案未更改"
+            outcome: tuple[str, str | None] | None = None
             with self._lock:
                 if op["phase"] in _TERMINAL:
                     return
                 if cancelled:
                     op["phase"] = "cancelled"
-                    return
-                op["phase"] = "error"
-                op["error"] = self._error(
-                    code or "WEBDAV_DOWNLOAD_FAILED", message
-                )
+                    outcome = ("canceled", None)
+                else:
+                    op["phase"] = "error"
+                    op["error"] = self._error(
+                        code or "WEBDAV_DOWNLOAD_FAILED", message
+                    )
+                    outcome = ("failed", code or "WEBDAV_DOWNLOAD_FAILED")
+            if outcome is not None:
+                _diagnostics_record("webdav_download", outcome[0], outcome[1])
         finally:
             if work is not None:
                 try:
@@ -1164,12 +1238,26 @@ class MaintenanceHost:
                 if password is not None and (not isinstance(password, str) or not password):
                     raise MaintenanceHostError("PASSWORD_REQUIRED", "请输入备份密码")
             except MaintenanceHostError as exc:
-                self._record_rejection(request_id, "restore", fingerprint, exc)
+                # A WebDAV-staged selection is one this host downloaded; the
+                # restore-family diagnostics stay fine-grained by source.
+                source = (
+                    "webdav_restore"
+                    if selection_id in self._managed_selections
+                    else "local_restore"
+                )
+                self._record_rejection(
+                    request_id, "restore", fingerprint, exc, diag_event=source
+                )
                 raise
             op = self._new_op(
                 request_id, "restore", "verifying", fingerprint
             )
             op["_selection_id"] = selection_id
+            op["_source"] = (
+                "webdav_restore"
+                if selection_id in self._managed_selections
+                else "local_restore"
+            )
             self._sweep_managed_staging()
             owner = f"host:{op['operation_id']}:verify"
             try:
@@ -1253,6 +1341,13 @@ class MaintenanceHost:
                 return
         except Exception as exc:  # noqa: BLE001 - host boundary
             code = str(getattr(exc, "code", "RESTORE_VERIFY_FAILED"))
+            # The core's own message is already a fixed teacher-facing text
+            # (no path, URL or credential); surfacing it replaces the old
+            # identical "当前档案未更改" line that hid every distinct cause.
+            core_message = getattr(exc, "message", "") or ""
+            if not _has_cjk(core_message):
+                core_message = "备份校验失败，当前档案未更改"
+            event = op.get("_source") or "local_restore"
             retire_wrong = False
             with self._lock:
                 if op["phase"] in _TERMINAL:
@@ -1263,14 +1358,17 @@ class MaintenanceHost:
                     op["preview"] = None
                     op["progress"] = None
                     op["_cancelling"] = False
-                    return
-                if code == "WRONG_PASSWORD":
+                    outcome = ("canceled", None)
+                elif code == "WRONG_PASSWORD":
                     op["phase"] = "password"
                     op["error"] = self._error("WRONG_PASSWORD", "密码不正确，请重新输入")
                     retire_wrong = True
+                    outcome = ("failed", "RESTORE_PASSWORD_INVALID")
                 else:
                     op["phase"] = "error"
-                    op["error"] = self._error(code, "备份校验失败，当前档案未更改")
+                    op["error"] = self._error(code, core_message)
+                    outcome = ("failed", code or "RESTORE_VERIFY_FAILED")
+            _diagnostics_record(event, outcome[0], outcome[1])
             if retire_wrong and self.restore_core is not None:
                 try:
                     result = self.restore_core.cancel(op["operation_id"])
@@ -1331,7 +1429,18 @@ class MaintenanceHost:
                 if self.restore_core is None:
                     raise MaintenanceHostError("HOST_CORE_UNAVAILABLE", "恢复核心尚未就绪")
             except MaintenanceHostError as exc:
-                self._record_rejection(request_id, "restore", fingerprint, exc)
+                # A confirm rejection is a real teacher-visible restore
+                # failure; record it with the fixed code only.  The source
+                # family follows the operation being confirmed when known.
+                local = self._ops.get(operation_id)
+                self._record_rejection(
+                    request_id,
+                    "restore",
+                    fingerprint,
+                    exc,
+                    diag_event=(
+                        local or {}).get("_source") or "local_restore",
+                )
                 raise
             op["request_id"] = request_id
 
@@ -1355,6 +1464,12 @@ class MaintenanceHost:
             )
             self._start_worker(op, thread, owner)
             return self._ref(op)
+
+    def _record_restore_outcome(
+        self, op: dict[str, Any], result: str, code: str | None = None
+    ) -> None:
+        """Record one restore-family diagnostics outcome (fixed codes only)."""
+        _diagnostics_record(op.get("_source") or "local_restore", result, code)
 
     def _run_install(self, op: dict[str, Any], weekly_owner: str) -> None:
         installed = False
@@ -1405,7 +1520,7 @@ class MaintenanceHost:
                     # the authority after restart.
                     with self._lock:
                         self._recovery_required = True
-                    self._transition(
+                    if self._transition(
                         op,
                         "error",
                         committed=True,
@@ -1415,14 +1530,17 @@ class MaintenanceHost:
                             "恢复未完成，请重启应用核对当前档案",
                             committed=True,
                         ),
-                    )
-                else:
-                    self._transition(op, "cancelled")
+                    ):
+                        self._record_restore_outcome(
+                            op, "failed", "RESTORE_RECOVERY_REQUIRED"
+                        )
+                elif self._transition(op, "cancelled"):
+                    self._record_restore_outcome(op, "canceled")
                 return
             if state == "recovery_required":
                 with self._lock:
                     self._recovery_required = True
-                self._transition(
+                if self._transition(
                     op,
                     "error",
                     committed=True,
@@ -1432,7 +1550,10 @@ class MaintenanceHost:
                         "恢复状态需要处理，请重启应用",
                         committed=True,
                     ),
-                )
+                ):
+                    self._record_restore_outcome(
+                        op, "failed", "RESTORE_RECOVERY_REQUIRED"
+                    )
                 return
             if state == "failed_keep_old":
                 # The core reports whether it already closed the engine and
@@ -1448,28 +1569,66 @@ class MaintenanceHost:
                 if restart_required:
                     with self._lock:
                         self._recovery_required = True
-                self._transition(
+                # Preserve the core's fixed, teacher-actionable failure code
+                # (disk space, busy maintenance, source/preparation
+                # problems) instead of collapsing every failure into
+                # RESTORE_FAILED; the archive state stays accurate (old
+                # data kept unless a restart is required).
+                warnings = (
+                    public.get("warnings")
+                    if isinstance(public, dict)
+                    else None
+                )
+                original_code = (
+                    str(warnings[0])
+                    if isinstance(warnings, (list, tuple)) and warnings
+                    else None
+                )
+                known_codes = {
+                    "RESTORE_BUSY": (
+                        "恢复维护忙碌（已有恢复/导出/AI 任务进行中），"
+                        "当前档案未更改；请稍后重试"
+                    ),
+                    "RESTORE_STORAGE_UNAVAILABLE": (
+                        "恢复所需磁盘空间或存储不可用，当前档案未更改；"
+                        "请清理磁盘后重试"
+                    ),
+                    "RESTORE_SOURCE_INVALID": (
+                        "备份来源无效或不完整，当前档案未更改；"
+                        "请核对备份文件后重试"
+                    ),
+                }
+                if restart_required:
+                    error_code = "RESTORE_RESTART_REQUIRED"
+                    error_message = "恢复未完成，请重启应用核对当前档案"
+                    outcome_code = "RESTORE_RECOVERY_REQUIRED"
+                elif original_code in known_codes:
+                    error_code = original_code
+                    error_message = known_codes[original_code]
+                    outcome_code = original_code
+                else:
+                    error_code = "RESTORE_FAILED"
+                    error_message = "恢复未完成，当前档案未更改"
+                    outcome_code = "RESTORE_INSTALL_FAILED"
+                if self._transition(
                     op,
                     "error",
                     committed=restart_required,
                     progress=None,
                     error=self._error(
-                        "RESTORE_RESTART_REQUIRED"
-                        if restart_required
-                        else "RESTORE_FAILED",
-                        "恢复未完成，请重启应用核对当前档案"
-                        if restart_required
-                        else "恢复未完成，当前档案未更改",
+                        error_code,
+                        error_message,
                         committed=restart_required,
                     ),
-                )
+                ):
+                    self._record_restore_outcome(op, "failed", outcome_code)
                 return
             if state != "installed_retired":
                 # Only the explicit installed_retired result may reopen.
                 # Unknown/None/malformed/future states are never success.
                 with self._lock:
                     self._recovery_required = True
-                self._transition(
+                if self._transition(
                     op,
                     "error",
                     committed=True,
@@ -1479,7 +1638,10 @@ class MaintenanceHost:
                         "恢复状态无法确认，请重启应用核查",
                         committed=True,
                     ),
-                )
+                ):
+                    self._record_restore_outcome(
+                        op, "failed", "RESTORE_INSTALL_FAILED"
+                    )
                 return
             installed = True
             with self._lock:
@@ -1494,7 +1656,7 @@ class MaintenanceHost:
                 except Exception as exc:  # noqa: BLE001 - host boundary
                     with self._lock:
                         self._recovery_required = True
-                    self._transition(
+                    if self._transition(
                         op,
                         "error",
                         committed=True,
@@ -1504,7 +1666,10 @@ class MaintenanceHost:
                             "宿主退休失败，请重启应用",
                             committed=True,
                         ),
-                    )
+                    ):
+                        self._record_restore_outcome(
+                            op, "failed", "RESTORE_RECOVERY_REQUIRED"
+                        )
                     _ = exc
                     return
             reopen = self.restore_core.reopen()
@@ -1525,7 +1690,7 @@ class MaintenanceHost:
                     ) != "reopened":
                         with self._lock:
                             self._recovery_required = True
-                        self._transition(
+                        if self._transition(
                             op,
                             "error",
                             committed=True,
@@ -1535,19 +1700,23 @@ class MaintenanceHost:
                                 "资料已恢复，重新打开失败，请重启应用",
                                 committed=True,
                             ),
-                        )
+                        ):
+                            self._record_restore_outcome(
+                                op, "failed", "RESTORE_REOPEN_FAILED"
+                            )
                         return
-                self._transition(
+                if self._transition(
                     op,
                     "completed",
                     committed=True,
                     reopened=True,
                     progress=None,
-                )
+                ):
+                    self._record_restore_outcome(op, "ok")
                 return
             with self._lock:
                 self._recovery_required = True
-            self._transition(
+            if self._transition(
                 op,
                 "error",
                 committed=True,
@@ -1557,7 +1726,10 @@ class MaintenanceHost:
                     "资料已恢复，重新打开失败，请重启应用",
                     committed=True,
                 ),
-            )
+            ):
+                self._record_restore_outcome(
+                    op, "failed", "RESTORE_REOPEN_FAILED"
+                )
         except Exception as exc:  # noqa: BLE001 - host boundary
             code = str(getattr(exc, "code", "RESTORE_FAILED"))
             transport_stopped = bool(self._transport_stopped)
@@ -1568,7 +1740,7 @@ class MaintenanceHost:
                 if transport_stopped:
                     with self._lock:
                         self._recovery_required = True
-                    self._transition(
+                    if self._transition(
                         op,
                         "error",
                         committed=True,
@@ -1578,15 +1750,18 @@ class MaintenanceHost:
                             "恢复未完成，请重启应用核对当前档案",
                             committed=True,
                         ),
-                    )
-                else:
-                    self._transition(op, "cancelled")
+                    ):
+                        self._record_restore_outcome(
+                            op, "failed", "RESTORE_RECOVERY_REQUIRED"
+                        )
+                elif self._transition(op, "cancelled"):
+                    self._record_restore_outcome(op, "canceled")
                 return
             if installed:
                 # The switch already completed; only reopening failed.
                 with self._lock:
                     self._recovery_required = True
-                self._transition(
+                if self._transition(
                     op,
                     "error",
                     committed=True,
@@ -1596,11 +1771,14 @@ class MaintenanceHost:
                         "资料已恢复，重新打开失败，请重启应用",
                         committed=True,
                     ),
-                )
+                ):
+                    self._record_restore_outcome(
+                        op, "failed", "RESTORE_REOPEN_FAILED"
+                    )
                 return
             if not install_started:
                 # prepare failed before any protection/live change.
-                self._transition(
+                if self._transition(
                     op,
                     "error",
                     committed=False,
@@ -1608,14 +1786,15 @@ class MaintenanceHost:
                     error=self._error(
                         code, "恢复未完成，当前档案未更改"
                     ),
-                )
+                ):
+                    self._record_restore_outcome(op, "failed", code)
                 return
             # An unexpected install exception may have changed live files
             # before the core could report a bounded state.  Restart is the
             # honest next action; the journal decides on startup.
             with self._lock:
                 self._recovery_required = True
-            self._transition(
+            if self._transition(
                 op,
                 "error",
                 committed=True,
@@ -1623,7 +1802,10 @@ class MaintenanceHost:
                 error=self._error(
                     code, "恢复未完成，请重启应用核对当前档案", committed=True
                 ),
-            )
+            ):
+                self._record_restore_outcome(
+                    op, "failed", "RESTORE_INSTALL_FAILED"
+                )
         finally:
             self._resume_weekly(weekly_owner)
             self._retire_operation_selection(op)
@@ -1694,6 +1876,11 @@ class MaintenanceHost:
                 op["progress"] = None
                 self._retire_operation_selection(op)
                 self._sweep_managed_staging()
+                # A teacher-confirmed cancel of a restore verify/install:
+                # record the honest outcome (best-effort, own store lock).
+                _diagnostics_record(
+                    op.get("_source") or "local_restore", "canceled"
+                )
                 return {"accepted": True, "state": "cancelled"}
             if state == "switching":
                 return {"accepted": False, "state": "too_late"}

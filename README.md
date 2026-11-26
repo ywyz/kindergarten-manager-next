@@ -2,11 +2,11 @@
 
 面向幼儿园教师的本地教育工作支持应用，支持每日活动计划、游戏观察记录和周计划。项目由个人维护，原创内容采用 MIT 许可，暂无商业发行计划。
 
-默认 [`main`](https://github.com/ywyz/kindergarten-manager-next/tree/main) 保留已合并的稳定源码线；当前开发集成为 [`dev/0.1`](https://github.com/ywyz/kindergarten-manager-next/tree/dev/0.1)，文档维护使用独立的 [`docs`](https://github.com/ywyz/kindergarten-manager-next/tree/docs) 分支，预览体验修复在 [`fix/preview-feedback-20261117`](https://github.com/ywyz/kindergarten-manager-next/tree/fix/preview-feedback-20261117) 验证，预览在线更新修复历史见 [`fix/preview-update`](https://github.com/ywyz/kindergarten-manager-next/tree/fix/preview-update)。修复分支使用 `fix/<问题>`，旧 `codex/*` 分支保留历史。
+默认分支 `main` 保存稳定源码，开发集成使用 `dev/0.1`，`docs` 用于文档维护。11 月 26 日教师反馈修复位于 `fix/desktop-feedback-20261126`。[当前任务与验收记录](docs/tasks/current.md)
 
-当前公开的 Windows 签名预览为 20261119。签名应用已在 Windows 隔离档案中打开首次设置界面，公网协作管理页已显示班级维护入口。稳定签名的正式发行待定。[下载 20261119 签名预览](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261119) · [本次预览核查](docs/bootstrap/desktop-preview-feedback-20261118-review.md#11-月-19-日公网班级维护与签名预览)
+Windows 11 x64 测试版提供签名安装程序和在线更新。首次安装在对应的 GitHub Release 中下载文件名含有 `Setup` 的 EXE。已有预览版也可以在应用内检查更新。[Windows 预览版下载](https://github.com/ywyz/kindergarten-manager-next/releases) · [11 月 26 日修复与复验](docs/bootstrap/desktop-feedback-20261126-review.md)
 
-This Windows desktop application helps kindergarten teachers manage daily and weekly plans, game observation records, one-to-one listening, curriculum deliberation, and optional class collaboration. Original code and documentation are MIT licensed. The default `main` branch holds the stable source line. Active development uses `dev/0.1`, and documentation work uses `docs`. Fix branches use `fix/<issue>` and historical `codex/*` branches are retained. The 20261119 signed preview was built from `fix/preview-feedback-20261117`. Public downloads and signatures were verified, and the signed app opened the first-run setup screen with an isolated local profile. A stable signed desktop release is pending. [Maintainer](https://github.com/ywyz) · [Download the 20261119 preview](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261119)
+This Windows desktop application helps kindergarten teachers prepare daily and weekly plans, record game observations, document one-to-one listening, discuss the curriculum, and collaborate with colleagues in their class. Personal records stay on the teacher’s computer. The signed Windows 11 x64 preview ships as a Setup EXE and supports in-app updates. Original code and documentation are MIT licensed. The stable source is on `main` and active development uses `dev/0.1`. [Maintainer](https://github.com/ywyz) · [Preview downloads](https://github.com/ywyz/kindergarten-manager-next/releases)
 
 ## 当前可以做什么
 
@@ -15,7 +15,8 @@ This Windows desktop application helps kindergarten teachers manage daily and we
 - 按教师主动发起的操作，使用 AI 生成候选内容、重写并选择采用；生成失败或结果不明时可手动重试。
 - 整理游戏观察记录的文字、照片、保存历史和 Word 导出；指定观察 Word 的工程页检与教师回执见[另机测试收口](docs/bootstrap/desktop-weekly-target-test-closeout.md)。
 - 使用本地教师档案、班级及学期配置，无需旧版账号注册和管理员分班。
-- 从应用创建完整本地备份、校验预览并明确恢复；源码验证、内部包静态与目标机实际恢复的结果分别记录。
+- 在本机或 WebDAV 上保存完整备份，恢复前可核对内容。WebDAV 备份可另设独立密码。[备份与恢复](docs/specs/desktop-webdav-and-online-feedback.md)
+- 在工作台管理个人待办。设置中可连接自己的 Nextcloud 账户并选择一个清单，双向同步新增、编辑和完成状态。[待办同步](docs/adr/0006-optional-nextcloud-tasks.md)
 
 首发面向 Windows 11。当前采用 Vue 3、TypeScript、Element Plus，Python/FastAPI、SQLAlchemy/Alembic、SQLite，以及 pywebview/WebView2。系统架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 

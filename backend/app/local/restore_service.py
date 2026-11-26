@@ -181,9 +181,64 @@ def _read_preview_meta(db_path: Path, credential_root: Path) -> dict[str, Any]:
         connection.close()
 
 
+def _apply_todo_sync_consent_reset(db_path: Path) -> int:
+    """Neutralize restored Nextcloud linkage rows in the prepared copy.
+
+    A restored profile must never talk to the origin (or any other)
+    Nextcloud account by itself: the linkage is data, but the consent to use
+    machine credentials is per-machine.  After install sync is disabled, the
+    list binding cleared, and every link detached (local todos retained,
+    nothing pushed); rows with malformed URLs/hrefs are deleted outright so
+    a corrupt package can never send a task to another server.
+    """
+    connection = sqlite3.connect(backup_fs.extended(db_path))
+    changed = 0
+    try:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "local_todo_sync_settings" in tables:
+            cursor = connection.execute(
+                "DELETE FROM local_todo_sync_settings "
+                "WHERE TRIM(server_url) = '' "
+                "OR server_url NOT LIKE 'https://%' "
+                "OR length(server_url) > 2048"
+            )
+            changed += int(cursor.rowcount or 0)
+            connection.execute(
+                "UPDATE local_todo_sync_settings "
+                "SET enabled = 0, list_href = NULL, list_name = NULL, "
+                "setting_version = setting_version + 1, updated_at = ?",
+                (_utc_text(),),
+            )
+        if "local_todo_sync_links" in tables:
+            cursor = connection.execute(
+                "DELETE FROM local_todo_sync_links "
+                "WHERE TRIM(remote_href) = '' OR remote_href NOT LIKE '/%' "
+                "OR length(remote_href) > 2048 "
+                "OR INSTR(remote_href, '\\') > 0 "
+                "OR INSTR(remote_href, '..') > 0"
+            )
+            changed += int(cursor.rowcount or 0)
+            connection.execute(
+                "UPDATE local_todo_sync_links SET remote_missing = 1, "
+                "remote_etag = NULL"
+            )
+        if changed or "local_todo_sync_settings" in tables:
+            connection.commit()
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            connection.commit()
+        return changed
+    finally:
+        connection.close()
+
+
 def _apply_auth_cleanup(db_path: Path) -> int:
     """Expire one-time observation restore previews in the prepared copy."""
-    connection = sqlite3.connect(str(db_path))
+    connection = sqlite3.connect(backup_fs.extended(db_path))
     try:
         exists = connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
@@ -651,6 +706,7 @@ class RestoreCore:
                 cancel=cancel,
             )
             auth_count = _apply_auth_cleanup(db_target)
+            _apply_todo_sync_consent_reset(db_target)
             _remove_empty_sidecars(db_target)
             copied_db = file_identity(db_target)
             resources = list(verified.manifest.get("resources") or [])
@@ -954,7 +1010,7 @@ class RestoreCore:
                 if not first_change:
                     self._check_cancel(cancel)
                 source = restore_group.live_db_path(paths, name)
-                if source.exists():
+                if backup_fs.source_exists(source):
                     restore_group.move_live_component_to_old(paths, name)
                     if not first_change:
                         first_change = True
