@@ -215,6 +215,7 @@ def get_promotion(
             TeacherClassMembership.class_id,
             Classroom.display_name,
             Classroom.display_name_override,
+            Classroom.deleted_at,
             ClassPromotionState.class_number,
             ClassPromotionState.base_grade,
             ClassPromotionState.version,
@@ -242,12 +243,19 @@ def get_promotion(
         class_id,
         display_name,
         display_name_override,
+        class_deleted_at,
         class_number,
         base_grade,
         version,
         grade,
     ) = row
-    if school_id != principal.school_id or display_name is None:
+    if (
+        school_id != principal.school_id
+        or display_name is None
+        or class_deleted_at is not None
+    ):
+        # An archived class keeps its history but is no longer the live
+        # promotion view: the teacher reselects a listed (live) class.
         raise membership_changed()
     if version is None or class_number is None or base_grade is None:
         raise promotion_not_ready()

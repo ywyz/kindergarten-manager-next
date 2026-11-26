@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -35,13 +35,29 @@ from .admin_models import AdminCode, AdminSession, AdminUser
 from .config import CollaborationSettings
 from .class_promotion_models import (
     GRADES,
+    ClassPromotionHistory,
+    ClassPromotionOperation,
     ClassPromotionState,
     CollaborationTerm,
     effective_class_name_now,
     make_class_name,
 )
+from .feedback_models import FeedbackSubmission  # noqa: F401 (history tables)
+from .weekly_plan_models import (
+    WeeklyPlanConfirmation,
+    WeeklyPlanOperation,
+    WeeklyPlanWeek,
+)
 from .errors import CollaborationError
-from .models import Classroom, School, Teacher, TeacherClassMembership, TeacherToken
+from .models import (
+    Classroom,
+    CollaborationOperation,
+    School,
+    Teacher,
+    TeacherClassMembership,
+    TeacherGameConfig,
+    TeacherToken,
+)
 from .schemas import MembershipOut
 from .security import issue_bearer_token
 
@@ -483,7 +499,11 @@ def revoke_admin_session(session: Session, principal: AdminPrincipal) -> None:
 
 def list_schools(session: Session) -> list[School]:
     return list(
-        session.scalars(select(School).order_by(School.name, School.id)).all()
+        session.scalars(
+            select(School)
+            .where(School.deleted_at.is_(None))
+            .order_by(School.name, School.id)
+        ).all()
     )
 
 
@@ -530,7 +550,7 @@ def update_school_name(
         if admin is None or not admin.active:
             raise admin_auth_required()
         school = session.get(School, school_id, with_for_update=True)
-        if school is None:
+        if school is None or school.deleted_at is not None:
             raise CollaborationError(
                 404, "SCHOOL_NOT_FOUND", "没有找到该园所"
             )
@@ -622,7 +642,12 @@ def list_teachers(session: Session, school_id: UUID) -> list[Teacher]:
     return list(
         session.scalars(
             select(Teacher)
-            .where(Teacher.school_id == school_id)
+            .join(School, School.id == Teacher.school_id)
+            .where(
+                Teacher.school_id == school_id,
+                Teacher.deleted_at.is_(None),
+                School.deleted_at.is_(None),
+            )
             .order_by(Teacher.active.desc(), Teacher.display_name, Teacher.id)
         ).all()
     )
@@ -682,7 +707,7 @@ def create_teacher(
             if admin is None or not admin.active:
                 raise admin_auth_required()
             school = session.get(School, school_id, with_for_update=True)
-            if school is None:
+            if school is None or school.deleted_at is not None:
                 raise CollaborationError(
                     404, "SCHOOL_NOT_FOUND", "没有找到该园所"
                 )
@@ -748,7 +773,11 @@ def update_teacher_name(
         if admin is None or not admin.active:
             raise admin_auth_required()
         teacher = session.get(Teacher, teacher_id, with_for_update=True)
-        if teacher is None or teacher.school_id != school_id:
+        if (
+            teacher is None
+            or teacher.school_id != school_id
+            or teacher.deleted_at is not None
+        ):
             raise CollaborationError(404, "TEACHER_NOT_FOUND", "没有找到该教师")
         current = teacher.display_name
         if current == expected:
@@ -824,7 +853,7 @@ def _valid_term_name(value: object) -> str:
 
 def list_terms(session: Session, school_id: UUID) -> list[AdminTerm]:
     school = session.get(School, school_id)
-    if school is None:
+    if school is None or school.deleted_at is not None:
         raise admin_validation("所选的园所不存在")
     rows = session.scalars(
         select(CollaborationTerm)
@@ -890,7 +919,12 @@ def list_classes(session: Session, school_id: UUID) -> list[AdminClass]:
         raise admin_validation("所选的园所不存在")
     rows = session.scalars(
         select(Classroom)
-        .where(Classroom.school_id == school_id)
+        .join(School, School.id == Classroom.school_id)
+        .where(
+            Classroom.school_id == school_id,
+            Classroom.deleted_at.is_(None),
+            School.deleted_at.is_(None),
+        )
         .order_by(Classroom.display_name, Classroom.id)
     ).all()
     return [_class_view(session, row) for row in rows]
@@ -916,7 +950,11 @@ def update_class_name(
         if admin is None or not admin.active:
             raise admin_auth_required()
         classroom = session.get(Classroom, class_id, with_for_update=True)
-        if classroom is None or classroom.school_id != school_id:
+        if (
+            classroom is None
+            or classroom.school_id != school_id
+            or classroom.deleted_at is not None
+        ):
             raise CollaborationError(
                 404, "CLASS_NOT_FOUND", "没有找到该班级"
             )
@@ -1031,7 +1069,7 @@ def create_class(
             if admin is None or not admin.active:
                 raise admin_auth_required()
             school = session.get(School, school_id, with_for_update=True)
-            if school is None:
+            if school is None or school.deleted_at is not None:
                 raise CollaborationError(
                     404, "SCHOOL_NOT_FOUND", "没有找到该园所"
                 )
@@ -1176,7 +1214,7 @@ def create_term(
             if admin is None or not admin.active:
                 raise admin_auth_required()
             school = session.get(School, school_id, with_for_update=True)
-            if school is None:
+            if school is None or school.deleted_at is not None:
                 raise CollaborationError(
                     404, "SCHOOL_NOT_FOUND", "没有找到该园所"
                 )
@@ -1248,6 +1286,256 @@ def create_term(
             False,
         )
 
+def _count(session: Session, model, *conditions) -> int:
+    return int(
+        session.scalar(
+            select(func.count()).select_from(model).where(*conditions)
+        )
+        or 0
+    )
+
+
+def school_history_counts(session: Session, school_id: UUID) -> dict[str, int]:
+    """Rows that keep a school history and force a deactivation delete."""
+    return {
+        "teachers": _count(session, Teacher, Teacher.school_id == school_id),
+        "classes": _count(session, Classroom, Classroom.school_id == school_id),
+        "terms": _count(
+            session, CollaborationTerm, CollaborationTerm.school_id == school_id
+        ),
+        "codes": _count(session, AdminCode, AdminCode.school_id == school_id),
+    }
+
+
+def teacher_history_counts(
+    session: Session, teacher_id: UUID
+) -> dict[str, int]:
+    """Rows that keep a teacher history and force a deactivation delete."""
+    return {
+        "memberships": _count(
+            session,
+            TeacherClassMembership,
+            TeacherClassMembership.teacher_id == teacher_id,
+        ),
+        "game_configs": _count(
+            session,
+            TeacherGameConfig,
+            TeacherGameConfig.teacher_id == teacher_id,
+        ),
+        "codes": _count(session, AdminCode, AdminCode.teacher_id == teacher_id),
+        "operations": _count(
+            session,
+            CollaborationOperation,
+            CollaborationOperation.actor_teacher_id == teacher_id,
+        )
+        + _count(
+            session,
+            CollaborationOperation,
+            CollaborationOperation.source_teacher_id == teacher_id,
+        ),
+        "promotion_operations": _count(
+            session,
+            ClassPromotionOperation,
+            ClassPromotionOperation.actor_teacher_id == teacher_id,
+        ),
+        "weekly_plan_operations": _count(
+            session,
+            WeeklyPlanOperation,
+            WeeklyPlanOperation.actor_teacher_id == teacher_id,
+        ),
+        "weekly_plan_confirmations": _count(
+            session,
+            WeeklyPlanConfirmation,
+            WeeklyPlanConfirmation.confirmed_by == teacher_id,
+        ),
+    }
+
+
+def class_history_counts(session: Session, class_id: UUID) -> dict[str, int]:
+    """Rows that keep a class history and force a deactivation delete."""
+    return {
+        "memberships": _count(
+            session,
+            TeacherClassMembership,
+            TeacherClassMembership.class_id == class_id,
+        ),
+        "game_configs": _count(
+            session,
+            TeacherGameConfig,
+            TeacherGameConfig.class_id == class_id,
+        ),
+        "operations": _count(
+            session,
+            CollaborationOperation,
+            CollaborationOperation.class_id == class_id,
+        ),
+        "promotion_history": _count(
+            session,
+            ClassPromotionHistory,
+            ClassPromotionHistory.class_id == class_id,
+        ),
+        "promotion_operations": _count(
+            session,
+            ClassPromotionOperation,
+            ClassPromotionOperation.class_id == class_id,
+        ),
+        "weekly_plan_weeks": _count(
+            session, WeeklyPlanWeek, WeeklyPlanWeek.class_id == class_id
+        ),
+        "weekly_plan_confirmations": _count(
+            session,
+            WeeklyPlanConfirmation,
+            WeeklyPlanConfirmation.class_id == class_id,
+        ),
+        "weekly_plan_operations": _count(
+            session,
+            WeeklyPlanOperation,
+            WeeklyPlanOperation.class_id == class_id,
+        ),
+    }
+
+
+def delete_school(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    confirm_deactivate: bool = False,
+) -> dict:
+    """Delete one school, or deactivate and hide it when it has history.
+
+    An empty school (no teachers, classes, terms or codes) is removed
+    outright.  With history the row keeps its stable id and every referencing
+    row; deleted_at is set, every admin list hides it and no teacher of that
+    school can authenticate or redeem again.  The first call without
+    confirmation reports 409 SCHOOL_DELETE_BLOCKED with the counts, so the
+    admin page can ask for the explicit deactivation confirmation.
+    """
+    with session.begin():
+        admin = session.get(AdminUser, principal.admin_id)
+        if admin is None or not admin.active:
+            raise admin_auth_required()
+        school = session.get(School, school_id, with_for_update=True)
+        if school is None or school.deleted_at is not None:
+            raise CollaborationError(404, "SCHOOL_NOT_FOUND", "没有找到该园所")
+        counts = school_history_counts(session, school_id)
+        if sum(counts.values()) == 0:
+            session.delete(school)
+            session.flush()
+            return {"outcome": "deleted", "counts": counts}
+        if not confirm_deactivate:
+            raise CollaborationError(
+                409,
+                "SCHOOL_DELETE_BLOCKED",
+                "该园所存在教师、班级、学期或兑换码记录：删除将停用并隐藏该园所（其教师不能再登录或使用在线协作）；请确认后重试。",
+                details={"counts": counts},
+            )
+        school.deleted_at = _utcnow()
+        session.flush()
+        return {"outcome": "deactivated", "counts": counts}
+
+
+def delete_teacher(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    teacher_id: UUID,
+    confirm_deactivate: bool = False,
+) -> dict:
+    """Delete one teacher, or deactivate and hide them when they have history.
+
+    An empty teacher (no memberships, game configs, operations, codes or
+    weekly-plan records) is removed outright.  With history the row keeps its
+    stable id: active is cleared, every bearer token is revoked and the list
+    hides the row, so the teacher can no longer log in, act or receive codes
+    while every historical record stays intact.
+    """
+    with session.begin():
+        admin = session.get(AdminUser, principal.admin_id)
+        if admin is None or not admin.active:
+            raise admin_auth_required()
+        teacher = session.get(Teacher, teacher_id, with_for_update=True)
+        if (
+            teacher is None
+            or teacher.school_id != school_id
+            or teacher.deleted_at is not None
+        ):
+            raise CollaborationError(404, "TEACHER_NOT_FOUND", "没有找到该教师")
+        counts = teacher_history_counts(session, teacher_id)
+        if sum(counts.values()) == 0:
+            session.delete(teacher)
+            session.flush()
+            return {"outcome": "deleted", "counts": counts}
+        if not confirm_deactivate:
+            raise CollaborationError(
+                409,
+                "TEACHER_DELETE_BLOCKED",
+                "该教师存在关系、操作或兑换码记录：删除将停用并隐藏该教师（不能再登录或使用在线协作）；请确认后重试。",
+                details={"counts": counts},
+            )
+        now = _utcnow()
+        teacher.active = False
+        teacher.deleted_at = now
+        session.execute(
+            update(TeacherToken)
+            .where(
+                TeacherToken.teacher_id == teacher.id,
+                TeacherToken.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+        )
+        session.flush()
+        return {"outcome": "deactivated", "counts": counts}
+
+
+def delete_class(
+    session: Session,
+    principal: AdminPrincipal,
+    *,
+    school_id: UUID,
+    class_id: UUID,
+    confirm_deactivate: bool = False,
+) -> dict:
+    """Delete one class, or deactivate and hide it when it has history.
+
+    An empty class (no memberships, game configs, operations, promotion or
+    weekly-plan records) is removed outright together with its registration
+    state row.  With history the row keeps its stable id and every record;
+    deleted_at is set, the class disappears from every list and can no longer
+    be selected, paired or written to.
+    """
+    with session.begin():
+        admin = session.get(AdminUser, principal.admin_id)
+        if admin is None or not admin.active:
+            raise admin_auth_required()
+        classroom = session.get(Classroom, class_id, with_for_update=True)
+        if (
+            classroom is None
+            or classroom.school_id != school_id
+            or classroom.deleted_at is not None
+        ):
+            raise CollaborationError(404, "CLASS_NOT_FOUND", "没有找到该班级")
+        counts = class_history_counts(session, class_id)
+        if sum(counts.values()) == 0:
+            state = session.get(ClassPromotionState, class_id)
+            if state is not None:
+                session.delete(state)
+            session.delete(classroom)
+            session.flush()
+            return {"outcome": "deleted", "counts": counts}
+        if not confirm_deactivate:
+            raise CollaborationError(
+                409,
+                "CLASS_DELETE_BLOCKED",
+                "该班级存在成员、配置或计划记录：删除将停用并隐藏该班级（不能再被选择或写入）；请确认后重试。",
+                details={"counts": counts},
+            )
+        classroom.deleted_at = _utcnow()
+        session.flush()
+        return {"outcome": "deactivated", "counts": counts}
+
+
 def issue_code(
     session: Session,
     settings: CollaborationSettings,
@@ -1269,9 +1557,14 @@ def issue_code(
             raise admin_auth_required()
         school = session.get(School, school_id)
         teacher = session.get(Teacher, teacher_id)
-        if school is None or teacher is None or teacher.school_id != school.id:
+        if (
+            school is None
+            or school.deleted_at is not None
+            or teacher is None
+            or teacher.school_id != school.id
+        ):
             raise admin_validation("选择的教师不属于所选园所")
-        if not teacher.active:
+        if not teacher.active or teacher.deleted_at is not None:
             raise admin_teacher_inactive()
         row = AdminCode(
             id=uuid4(),
@@ -1327,6 +1620,8 @@ def redeem_code(
             or school is None
             or not teacher.active
             or teacher.school_id != school.id
+            or teacher.deleted_at is not None
+            or school.deleted_at is not None
         ):
             raise admin_code_invalid()
 
@@ -1339,7 +1634,11 @@ def redeem_code(
             ).one_or_none()
             if current is not None and current.school_id == school.id:
                 classroom = session.get(Classroom, current.class_id)
-                if classroom is not None and classroom.school_id == school.id:
+                if (
+                    classroom is not None
+                    and classroom.school_id == school.id
+                    and classroom.deleted_at is None
+                ):
                     membership = MembershipOut(
                         teacher_id=teacher.id,
                         school_id=school.id,

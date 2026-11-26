@@ -64,6 +64,7 @@ MYSQL_UPGRADE_MIGRATIONS = (
     BACKEND / "migrations_collaboration" / "mysql" / "0006_class_display_override.sql",
     BACKEND / "migrations_collaboration" / "mysql" / "0007_online_feedback.sql",
     BACKEND / "migrations_collaboration" / "mysql" / "0008_feedback_diagnostics.sql",
+    BACKEND / "migrations_collaboration" / "mysql" / "0009_entity_deletion.sql",
 )
 POSTGRES_MIGRATION = (
     BACKEND / "migrations_collaboration" / "0001_initial.sql"

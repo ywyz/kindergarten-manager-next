@@ -114,6 +114,11 @@ class School(CollaborationBase):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP(6)"),
     )
+    # Administrator deletion: the object is deactivated and hidden while it
+    # still has history; an empty object is deleted outright.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(), nullable=True
+    )
 
 
 class Classroom(CollaborationBase):
@@ -151,6 +156,11 @@ class Classroom(CollaborationBase):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP(6)"),
     )
+    # Administrator deletion: the object is deactivated and hidden while it
+    # still has history; an empty object is deleted outright.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(), nullable=True
+    )
 
 
 class Teacher(CollaborationBase):
@@ -185,6 +195,11 @@ class Teacher(CollaborationBase):
         UTCDateTime(),
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP(6)"),
+    )
+    # Administrator deletion: the object is deactivated and hidden while it
+    # still has history; an empty object is deleted outright.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(), nullable=True
     )
 
 

@@ -233,7 +233,13 @@ def _context(
         class_row = _lock_class(session, principal.school_id, class_id)
     else:
         class_row = session.get(Classroom, class_id)
-        if class_row is None or class_row.school_id != principal.school_id:
+        if (
+            class_row is None
+            or class_row.school_id != principal.school_id
+            or class_row.deleted_at is not None
+        ):
+            # An archived class is unreachable for every ordinary weekly
+            # read/write route, exactly like the locked write path.
             raise class_not_found()
     membership = _membership(session, principal.teacher_id)
     if membership is None:

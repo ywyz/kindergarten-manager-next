@@ -92,7 +92,7 @@
 
       <section>
         <h2>已有园所名称</h2>
-        <p class="muted">只修改园所显示名称；园所和班级稳定 ID、班级关系与教师绑定保持不变。</p>
+        <p class="muted">只修改园所显示名称；园所和班级稳定 ID、班级关系与教师绑定保持不变。删除园所：空园所彻底删除；有记录的园所需确认，确认后停用并隐藏（其教师不能再登录或使用在线协作）。</p>
         <details class="create-panel">
           <summary>新增园所</summary>
           <div class="row">
@@ -114,7 +114,7 @@
 
       <section>
         <h2>教师名称</h2>
-        <p class="muted">为所选园所新增具名教师并在下方维护名称；新教师立即出现在上方发码名单。教师 ID、园所绑定、兑换码资格与配对关系不受改名影响。</p>
+        <p class="muted">为所选园所新增具名教师并在下方维护名称；新教师立即出现在上方发码名单。教师 ID、园所绑定、兑换码资格与配对关系不受改名影响。删除教师：无任何记录的教师彻底删除；有记录的教师需确认，确认后停用并隐藏（不能再登录、发码或使用）。</p>
         <div class="row">
           <div>
             <label for="teacher-school">园所</label>
@@ -143,7 +143,7 @@
 
             <section>
         <h2>已有班级显示名称</h2>
-        <p class="muted">只修改班级显示名称；班级稳定 ID、教师绑定、班级号与年级升班记录保持不变。</p>
+        <p class="muted">只修改班级显示名称；班级稳定 ID、教师绑定、班级号与年级升班记录保持不变。删除班级：空班级彻底删除；有记录的班级需确认，确认后停用并隐藏（不能再被选择或写入）。</p>
         <div class="row">
           <div>
             <label for="class-school">园所</label>
@@ -459,6 +459,36 @@
         return "请求失败，请稍后重试";
       }
 
+      // Delete flow shared by schools, teachers and classes.  The first
+      // request runs without confirmation; a 409 DELETE_BLOCKED answer names
+      // the history counts, the page asks for the explicit deactivation
+      // confirmation and only then re-sends with confirm_deactivate=true.
+      async function deleteEntity(path, historyIntro) {
+        try {
+          return await request(path, { method: "DELETE" });
+        } catch (err) {
+          var counts = err && err.payload && err.payload.error
+            && err.payload.error.details
+            ? err.payload.error.details.counts
+            : null;
+          if (err.status !== 409 || !counts) throw err;
+          var summary = Object.keys(counts).map(function (key) {
+            return key + " " + counts[key];
+          }).join("，");
+          var message = historyIntro + "：" + summary +
+            "。确认后该记录将停用并隐藏（历史保留，不能再登录或被使用）。";
+          if (!window.confirm(message)) {
+            var cancelled = new Error("已取消删除");
+            cancelled.cancelled = true;
+            throw cancelled;
+          }
+          var joiner = path.indexOf("?") >= 0 ? "&" : "?";
+          return await request(path + joiner + "confirm_deactivate=true", {
+            method: "DELETE"
+          });
+        }
+      }
+
       function showLogin() {
         state.csrf = "";
         state.promptLoaded = false;
@@ -671,13 +701,45 @@
           button.addEventListener("click", function () {
             void saveClass(item, input, button);
           });
-          editor.appendChild(label);
-          editor.appendChild(input);
-          editor.appendChild(button);
+          var deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.className = "secondary";
+          deleteButton.setAttribute("data-d1", "delete-class");
+          deleteButton.textContent = "删除班级";
+          deleteButton.addEventListener("click", function () {
+            void deleteClassRow(item, deleteButton);
+          });
+          editor.appendChild(deleteButton);
           row.appendChild(info);
           row.appendChild(editor);
           classList.appendChild(row);
         });
+      }
+
+      async function deleteClassRow(item, button) {
+        classError.textContent = "";
+        classNotice.textContent = "";
+        button.disabled = true;
+        try {
+          var result = await deleteEntity(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(classSchool.value) +
+              "/classes/" + encodeURIComponent(item.class_id),
+            "该班级存在以下记录"
+          );
+          await loadSchools();
+          classNotice.textContent = result.outcome === "deleted"
+            ? "班级已彻底删除。"
+            : "班级已停用并隐藏；历史保留，不能再被选择或写入。";
+        } catch (err) {
+          if (err && err.cancelled) {
+            classNotice.textContent = "已取消删除。";
+          } else {
+            classError.textContent = errorText(err);
+          }
+        } finally {
+          button.disabled = false;
+        }
       }
 
       async function loadClasses() {
@@ -771,13 +833,44 @@
           button.addEventListener("click", function () {
             void saveSchool(school, input, button);
           });
-          editor.appendChild(label);
-          editor.appendChild(input);
-          editor.appendChild(button);
+          var deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.className = "secondary";
+          deleteButton.setAttribute("data-d1", "delete-school");
+          deleteButton.textContent = "删除园所";
+          deleteButton.addEventListener("click", function () {
+            void deleteSchoolRow(school, deleteButton);
+          });
+          editor.appendChild(deleteButton);
           row.appendChild(info);
           row.appendChild(editor);
           schoolList.appendChild(row);
         });
+      }
+
+      async function deleteSchoolRow(school, button) {
+        schoolError.textContent = "";
+        schoolNotice.textContent = "";
+        button.disabled = true;
+        try {
+          var result = await deleteEntity(
+            "/api/collaboration/admin/schools/" +
+              encodeURIComponent(school.school_id),
+            "该园所存在以下记录"
+          );
+          await loadSchools();
+          schoolNotice.textContent = result.outcome === "deleted"
+            ? "园所已彻底删除。"
+            : "园所已停用并隐藏；历史保留，其教师不能再登录或使用在线协作。";
+        } catch (err) {
+          if (err && err.cancelled) {
+            schoolNotice.textContent = "已取消删除。";
+          } else {
+            schoolError.textContent = errorText(err);
+          }
+        } finally {
+          button.disabled = false;
+        }
       }
 
       async function saveSchool(school, input, button) {
@@ -883,13 +976,45 @@
           button.addEventListener("click", function () {
             void saveTeacher(teacher, input, button);
           });
-          editor.appendChild(label);
-          editor.appendChild(input);
-          editor.appendChild(button);
+          var deleteButton = document.createElement("button");
+          deleteButton.type = "button";
+          deleteButton.className = "secondary";
+          deleteButton.setAttribute("data-d1", "delete-teacher");
+          deleteButton.textContent = "删除教师";
+          deleteButton.addEventListener("click", function () {
+            void deleteTeacherRow(teacher, deleteButton);
+          });
+          editor.appendChild(deleteButton);
           row.appendChild(info);
           row.appendChild(editor);
           teacherList.appendChild(row);
         });
+      }
+
+      async function deleteTeacherRow(teacher, button) {
+        teacherError.textContent = "";
+        teacherNotice.textContent = "";
+        button.disabled = true;
+        try {
+          var result = await deleteEntity(
+            "/api/collaboration/admin/teachers/" +
+              encodeURIComponent(teacher.teacher_id) +
+              "?school_id=" + encodeURIComponent(teacherSchool.value),
+            "该教师存在以下记录"
+          );
+          await loadSchools();
+          teacherNotice.textContent = result.outcome === "deleted"
+            ? "教师已彻底删除。"
+            : "教师已停用并隐藏；历史保留，不能再登录、发码或使用在线协作。";
+        } catch (err) {
+          if (err && err.cancelled) {
+            teacherNotice.textContent = "已取消删除。";
+          } else {
+            teacherError.textContent = errorText(err);
+          }
+        } finally {
+          button.disabled = false;
+        }
       }
 
       async function loadTeacherDirectory() {
@@ -1835,7 +1960,10 @@
       function diagnosticsEventLabel(eventType) {
         if (eventType === "export_word") return "导出 Word";
         if (eventType === "local_backup") return "本机备份";
+        if (eventType === "local_restore") return "本机恢复";
         if (eventType === "webdav_backup") return "WebDAV 备份";
+        if (eventType === "webdav_download") return "WebDAV 下载";
+        if (eventType === "webdav_restore") return "WebDAV 恢复";
         if (eventType === "update_check") return "更新检查";
         if (eventType === "update_download") return "更新下载";
         if (eventType === "save_daily_plan") return "保存日计划";

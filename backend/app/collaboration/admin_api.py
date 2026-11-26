@@ -18,11 +18,15 @@ from .admin_service import (
     ADMIN_CSRF_HEADER,
     AdminPrincipal,
     admin_cookie_secure,
+    admin_validation,
     authenticate_admin,
     create_class,
     create_school,
     create_teacher,
     create_term,
+    delete_class,
+    delete_school,
+    delete_teacher,
     issue_code,
     list_classes,
     list_schools,
@@ -160,6 +164,11 @@ class AdminTermCreateOut(_StrictModel):
     start_date: date
     end_date: date
     created: bool
+
+
+class AdminDeleteOut(_StrictModel):
+    outcome: str
+    counts: dict[str, int] | None = None
 
 
 class AdminCodeIn(_StrictModel):
@@ -301,6 +310,78 @@ def admin_login(
         csrf_token=result.csrf_token,
         expires_at=result.expires_at,
     )
+
+
+@router.delete(
+    "/api/collaboration/admin/schools/{school_id}",
+    response_model=AdminDeleteOut,
+)
+def admin_delete_school(
+    school_id: UUID,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+    confirm_deactivate: bool = False,
+) -> AdminDeleteOut:
+    """Delete a school; with history it deactivates and hides after confirm."""
+    result = delete_school(
+        session,
+        principal,
+        school_id=school_id,
+        confirm_deactivate=confirm_deactivate,
+    )
+    _no_store(response)
+    return AdminDeleteOut(outcome=result["outcome"], counts=result["counts"])
+
+
+@router.delete(
+    "/api/collaboration/admin/teachers/{teacher_id}",
+    response_model=AdminDeleteOut,
+)
+def admin_delete_teacher(
+    teacher_id: UUID,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+    school_id: UUID | None = None,
+    confirm_deactivate: bool = False,
+) -> AdminDeleteOut:
+    """Delete a teacher; with history it deactivates and hides after confirm."""
+    if school_id is None:
+        raise admin_validation("必须提供教师所属的园所")
+    result = delete_teacher(
+        session,
+        principal,
+        school_id=school_id,
+        teacher_id=teacher_id,
+        confirm_deactivate=confirm_deactivate,
+    )
+    _no_store(response)
+    return AdminDeleteOut(outcome=result["outcome"], counts=result["counts"])
+
+
+@router.delete(
+    "/api/collaboration/admin/schools/{school_id}/classes/{class_id}",
+    response_model=AdminDeleteOut,
+)
+def admin_delete_class(
+    school_id: UUID,
+    class_id: UUID,
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: AdminPrincipal = Depends(get_admin_csrf_principal),
+    confirm_deactivate: bool = False,
+) -> AdminDeleteOut:
+    """Delete a class; with history it deactivates and hides after confirm."""
+    result = delete_class(
+        session,
+        principal,
+        school_id=school_id,
+        class_id=class_id,
+        confirm_deactivate=confirm_deactivate,
+    )
+    _no_store(response)
+    return AdminDeleteOut(outcome=result["outcome"], counts=result["counts"])
 
 
 @router.post(

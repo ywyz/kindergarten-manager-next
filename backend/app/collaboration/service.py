@@ -172,6 +172,7 @@ def _lock_class(
         .where(
             Classroom.id == class_id,
             Classroom.school_id == school_id,
+            Classroom.deleted_at.is_(None),
         )
         .with_for_update()
     ).one_or_none()
@@ -203,6 +204,16 @@ def _require_membership(
         raise membership_changed()
     if class_id is not None and membership.class_id != class_id:
         raise membership_changed()
+    # An archived class keeps its history but is no longer a live target:
+    # every write through the membership is refused until the teacher
+    # reselects a listed (live) class.
+    classroom = session.get(Classroom, membership.class_id)
+    if (
+        classroom is None
+        or classroom.school_id != membership.school_id
+        or classroom.deleted_at is not None
+    ):
+        raise membership_changed()
     return membership
 
 
@@ -220,7 +231,8 @@ def list_classes(
 ) -> list[ClassOut]:
     rows = session.scalars(
         select(Classroom).where(
-            Classroom.school_id == principal.school_id
+            Classroom.school_id == principal.school_id,
+            Classroom.deleted_at.is_(None),
         )
     ).all()
     names = effective_class_names_now(session, [row.id for row in rows])
@@ -261,6 +273,11 @@ def current_membership(
         or class_row is None
     ):
         raise membership_changed()
+    if class_row.deleted_at is not None:
+        # The archived membership row is preserved as history, but the
+        # teacher is back to the unselected state and may reselect any
+        # listed (live) class.
+        return None
     return MembershipOut(
         teacher_id=principal.teacher_id,
         school_id=principal.school_id,
@@ -377,6 +394,15 @@ def list_classmates(
         raise membership_required()
     actor_row = rows[0][0]
     if actor_row.school_id != principal.school_id:
+        raise membership_changed()
+    classroom = session.get(Classroom, actor_row.class_id)
+    if (
+        classroom is None
+        or classroom.school_id != principal.school_id
+        or classroom.deleted_at is not None
+    ):
+        # Pairing stays unavailable in an archived class; the teacher
+        # reselects a listed (live) class first.
         raise membership_changed()
     return [
         ClassmateOut(
@@ -679,6 +705,13 @@ def preview_import(
     if (
         actor_membership_row.school_id != principal.school_id
         or actor_membership_row.class_id != data.class_id
+    ):
+        raise membership_changed()
+    classroom = session.get(Classroom, data.class_id)
+    if (
+        classroom is None
+        or classroom.school_id != principal.school_id
+        or classroom.deleted_at is not None
     ):
         raise membership_changed()
     if (

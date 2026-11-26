@@ -93,6 +93,8 @@ def authenticate(
         .where(
             TeacherToken.token_hash == digest,
             TeacherToken.revoked_at.is_(None),
+            Teacher.deleted_at.is_(None),
+            School.deleted_at.is_(None),
         )
     ).one_or_none()
     if row is None:

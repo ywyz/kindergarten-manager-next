@@ -48,6 +48,12 @@ EVENT_TYPES = (
     # Desktop backup engines.
     "local_backup",
     "webdav_backup",
+    # Remote-version download and restore engines (WebDAV).  The restore
+    # families distinguish a local-file restore from a WebDAV-staged one
+    # so the fixed codes stay fine-grained without any path or URL.
+    "webdav_download",
+    "webdav_restore",
+    "local_restore",
     # Update discovery/download outcomes.
     "update_check",
     "update_download",
@@ -85,6 +91,19 @@ ERROR_CODES = frozenset(
         "WEBDAV_CERTIFICATE_INVALID",
         "WEBDAV_TLS_FAILED",
         "WEBDAV_TIMEOUT",
+        # Remote-version download (WebDAV staging) and restore engines:
+        # fixed families for the download/verify/install/reopen phases.
+        # The detailed core code stays in the operation status the teacher
+        # already sees; these codes never carry a path, URL or credential.
+        "WEBDAV_DOWNLOAD_FAILED",
+        "WEBDAV_TRANSFER_INCOMPLETE",
+        "RESTORE_FAILED",
+        "RESTORE_VERIFY_FAILED",
+        "RESTORE_PACKAGE_INVALID",
+        "RESTORE_PASSWORD_INVALID",
+        "RESTORE_INSTALL_FAILED",
+        "RESTORE_REOPEN_FAILED",
+        "RESTORE_RECOVERY_REQUIRED",
         # Update discovery/download: the common fixed codes; other update
         # failures classify into the check/download family fallbacks.
         "UPDATE_CHECK_FAILED",
