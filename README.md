@@ -4,9 +4,9 @@
 
 默认分支 `main` 保存稳定源码，开发集成使用 `dev/0.1`，`docs` 用于文档维护。11 月 26 日教师反馈修复位于 `fix/desktop-feedback-20261126`。[当前任务与验收记录](docs/tasks/current.md)
 
-Windows 11 x64 测试版提供签名安装程序和在线更新。首次安装在对应的 GitHub Release 中下载文件名含有 `Setup` 的 EXE。已有预览版也可以在应用内检查更新。[Windows 预览版下载](https://github.com/ywyz/kindergarten-manager-next/releases) · [11 月 26 日修复与复验](docs/bootstrap/desktop-feedback-20261126-review.md)
+Windows 11 x64 测试版提供签名安装程序和在线更新。首次安装可下载 `KGNext-Win11-x64-Preview-Setup.exe`。已有预览版也可以在应用内检查更新，11 月 24 日版升级至本版已通过验证。[11 月 26 日签名预览版下载](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261126) · [修复与升级验收记录](docs/bootstrap/desktop-feedback-20261126-review.md)
 
-This Windows desktop application helps kindergarten teachers prepare daily and weekly plans, record game observations, document one-to-one listening, discuss the curriculum, and collaborate with colleagues in their class. Personal records stay on the teacher’s computer. The signed Windows 11 x64 preview ships as a Setup EXE and supports in-app updates. Original code and documentation are MIT licensed. The stable source is on `main` and active development uses `dev/0.1`. [Maintainer](https://github.com/ywyz) · [Preview downloads](https://github.com/ywyz/kindergarten-manager-next/releases)
+This Windows desktop application helps kindergarten teachers prepare daily and weekly plans, record game observations, document one-to-one listening, discuss the curriculum, and collaborate with colleagues in their class. Personal records stay on the teacher’s computer. The signed Windows 11 x64 preview ships as a Setup EXE and supports in-app updates. Original code and documentation are MIT licensed. The stable source is on `main` and active development uses `dev/0.1`. [Maintainer](https://github.com/ywyz) · [November 26 preview](https://github.com/ywyz/kindergarten-manager-next/releases/tag/v0.1.0-listening-test.20261126)
 
 ## 当前可以做什么
 
